@@ -1,0 +1,236 @@
+variables:
+  GIT_TERMINAL_PROMPT: 1
+  NGC_ORG: nv-ngc-devops
+  NGC_TEAM: nvsentinel
+  NGC_USER_NAME: '$$oauthtoken'
+  NVCR_CONTAINER_REPO: nvcr.io
+  HELM_URL: https://helm.ngc.nvidia.com
+
+  KANIKO_IMAGE: "gcr.io/kaniko-project/executor:v1.19.2-debug"
+
+image: $CI_REGISTRY_IMAGE/ci:latest
+
+stages:
+  - lint
+  - test
+  - publish
+
+example health monitor lint:
+  stage: lint
+  script:
+    - cd health-monitors/example-health-monitor
+    - poetry install
+    - poetry run black --check .
+
+example health monitor test:
+  stage: test
+  script:
+    - cd health-monitors/example-health-monitor
+    - poetry install
+    - poetry run coverage run -m pytest -vv --junitxml=report.xml || true
+    - poetry run coverage xml || true
+    - poetry run coverage report || true
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+
+example health monitor container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  script:
+    - cd health-monitors/example-health-monitor
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/health-monitors/example-health-monitor"
+      --dockerfile "${CI_PROJECT_DIR}/health-monitors/example-health-monitor/Dockerfile"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/example-health-monitor:${CI_COMMIT_REF_SLUG}"
+
+
+gpu health monitor lint:
+  stage: lint
+  script:
+    - cd health-monitors/gpu-health-monitor
+    - poetry install
+    - poetry run black --check .
+
+gpu health monitor test:
+  stage: test
+  script:
+    - cd health-monitors/gpu-health-monitor
+    - poetry install
+    - poetry run coverage run -m pytest -vv --junitxml=report.xml
+    - poetry run coverage xml || true
+    - poetry run coverage report || true
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+
+gpu health monitor container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  script:
+    - cd health-monitors/gpu-health-monitor
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor"
+      --dockerfile "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor/Dockerfile"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/gpu-health-monitor:${CI_COMMIT_REF_SLUG}"
+
+nic health monitor lint:
+  stage: lint
+  script:
+    - cd health-monitors/nic-health-monitor
+    - go vet ./...
+    - golangci-lint run
+  artifacts:
+    when: always
+    reports:
+      codequality: platform-connectors/code-quality-report.json
+    paths:
+      - platform-connectors/code-quality-report.json
+
+nic health monitor test:
+  stage: test
+  script:
+    - cd health-monitors/nic-health-monitor
+    - gotestsum --junitfile report.xml -- -race -short ./... -coverpkg=./... -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: platform-connectors/coverage.xml
+      junit: platform-connectors/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+nic health monitor container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  script:
+    - cd health-monitors/nic-health-monitor
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor"
+      --dockerfile "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor/Dockerfile"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nic-health-monitor:${CI_COMMIT_REF_SLUG}"
+
+nvswitch health monitor lint:
+  stage: lint
+  script:
+    - cd health-monitors/nvswitch-health-monitor
+    - go vet ./...
+    - golangci-lint run
+  artifacts:
+    when: always
+    reports:
+      codequality: platform-connectors/code-quality-report.json
+    paths:
+      - platform-connectors/code-quality-report.json
+
+nvswitch health monitor test:
+  stage: test
+  script:
+    - cd health-monitors/nvswitch-health-monitor
+    - gotestsum --junitfile report.xml -- -race -short ./... -coverpkg=./... -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: platform-connectors/coverage.xml
+      junit: platform-connectors/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+nvswitch health monitor container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  script:
+    - cd health-monitors/nvswitch-health-monitor
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor"
+      --dockerfile "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor/Dockerfile"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nvswitch-health-monitor:${CI_COMMIT_REF_SLUG}"
+
+platform connectors lint:
+  stage: lint
+  script:
+    - cd platform-connectors
+    - go vet ./...
+    - golangci-lint run
+  artifacts:
+    when: always
+    reports:
+      codequality: platform-connectors/code-quality-report.json
+    paths:
+      - platform-connectors/code-quality-report.json
+
+platform connectors test:
+  stage: test
+  script:
+    - cd platform-connectors
+    - gotestsum --junitfile report.xml -- -race -short ./... -coverpkg=./... -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: platform-connectors/coverage.xml
+      junit: platform-connectors/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+platform connectors container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  script:
+    - cd platform-connectors
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/platform-connectors"
+      --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/platform-connectors:${CI_COMMIT_REF_SLUG}"
+
+kubernetes distro lint:
+  stage: lint
+  script:
+    - cd distros/kubernetes
+    - helm lint nvsentinel/
+
+kubernetes distro helm publish:
+  stage: publish
+  script:
+    - cd distros/kubernetes
+    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
+    - helm package nvsentinel
+    - helm cm-push -f nvsentinel-0.1.0.tgz ngc
