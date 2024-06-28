@@ -27,7 +27,24 @@ gpu_health_monitor = "gpu_health_monitor.cli:cli"
 [tool.black]
 line-length = 120
 include = '\.pyi?$'
-exclude = "'"
+exclude = '''
+
+(
+  /(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+  | gpu_health_monitor/platform_connector/protos
+)
+'''
 
 [tool.coverage.report]
 exclude_also = [
@@ -44,5 +61,6 @@ exclude_also = [
 ]
 omit = [
     "tests/*",
-    "/usr/local/dcgm/*"
+    "/usr/local/dcgm/*",
+    "gpu_health_monitor/platform_connector/protos/*"
 ]

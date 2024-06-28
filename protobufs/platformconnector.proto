@@ -1,0 +1,44 @@
+syntax = "proto3";
+package platformconnector;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors";
+
+service PlatformConnector {
+  rpc HealthEventOccuredV1(HealthEvents) returns (google.protobuf.Empty) {}
+}
+
+message HealthEvents {
+  uint32 version = 1;
+  repeated HealthEvent events = 2;
+}
+
+enum RecommenedAction {
+  NONE = 0;
+  NODE_REBOOT = 1;
+  COMPONENT_RESET = 2;
+  COMPONENT_REPLACEMENT = 3;
+  APPLICATION_RESTART = 4;
+
+  UNKNOWN = 99;
+}
+
+message HealthEvent {
+  uint32 version = 1;
+
+  string agent = 2;
+  string componentClass = 3;
+
+  string checkName = 4;
+  bool isFatal = 5;
+  bool isHealthy = 6;
+  string message = 7;
+  RecommenedAction recommendedAction = 8;
+  string errorCode = 9;
+  repeated string entitiesImpacted = 10;
+
+  map<string, string> metadata = 11;
+  google.protobuf.Timestamp generatedTimestamp = 12;
+}
