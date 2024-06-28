@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+data:
+  config.ini: |
+    [logging]
+    LogFormat = %%(asctime)s,%%(msecs)03d %%(levelname)-8s [%%(filename)s:%%(lineno)d] %%(message)s
+    DateTimeFormat = %%Y-%%m-%%d:%%H:%%M:%%S
+
+    [dcgm]
+    PollIntervalSeconds = 15
+    FieldsToMonitor = DCGM_FI_DEV_RETIRED_SBE,DCGM_FI_DEV_RETIRED_DBE,DCGM_FI_DEV_RETIRED_PENDING,DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS,DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS,DCGM_FI_DEV_ROW_REMAP_FAILURE,DCGM_FI_DEV_ROW_REMAP_PENDING
+
+    [eventprocessors.kubernetes]
+    ConflictRetryCount = 10
+    FatalXidErrors = 63,64,93
+
+    [eventprocessors.platformconnector]
+    SocketPath = /var/run/nvsentinel.sock
+
+    [cli]
+    EnabledEventProcessors = PlatformConnectorEventProcessor
