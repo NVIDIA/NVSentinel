@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "nvsentinel.fullname" . }}-platform-connector
+  labels:
+    {{- include "nvsentinel.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: {{ .Values.platformConnector.updateStrategy }}
+    {{- if eq .Values.platformConnector.updateStrategy "RollingUpdate"}}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.platformConnector.maxUnavailable }}
+    {{- end}}
+  selector:
+    matchLabels:
+      {{- include "nvsentinel.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "nvsentinel.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.platformConnector.podSecurityContext | nindent 8 }}
+      containers:
+        - name: platform-connector
+          securityContext:
+            {{- toYaml .Values.platformConnector.securityContext | nindent 12 }}
+          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.platformConnector.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
+          args:
+          - -socket
+          - {{ .Values.socketPath }} 
+          resources:
+            {{- toYaml .Values.platformConnector.resources | nindent 12 }}
+          volumeMounts:
+            - name: var-run-vol
+              mountPath: /var/run
+            - name: platform-connector-configmap
+              mountPath: /etc/config/
+          env: 
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+      volumes:
+        - name: var-run-vol
+          hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
+        - name: platform-connector-configmap
+          configMap:
+            name: platform-connector-configmap
+      tolerations:
+        - operator: Exists
+

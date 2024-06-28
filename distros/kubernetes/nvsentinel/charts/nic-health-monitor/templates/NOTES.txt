@@ -1,0 +1,1 @@
+The nic health monitor has been successfully deployed!

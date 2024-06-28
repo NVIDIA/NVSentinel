@@ -1,0 +1,1 @@
+GPU health monitor has been successfully installed.

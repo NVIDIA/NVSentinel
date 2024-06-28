@@ -1,0 +1,1 @@
+The example health monitor has been successfully deployed!

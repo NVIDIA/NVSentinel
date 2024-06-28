@@ -1,0 +1,43 @@
+image:
+  repository: nvcr.io/nv-ngc-devops/nvsentinel/nic-health-monitor
+  pullPolicy: IfNotPresent
+  tag: "main"
+
+imagePullSecrets:
+  - name: nvidia-ngcuser-pull-secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+updateStrategy: RollingUpdate
+maxUnavailable: 1
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext:
+  runAsUser: 0
+
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+resources: 
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: 
+  nvidia.com/gpu.present: "true"
+
+tolerations: []
+
+affinity: {}
