@@ -121,7 +121,7 @@ nic health monitor test:
   stage: test
   script:
     - cd health-monitors/nic-health-monitor
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverpkg=$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
@@ -164,7 +164,7 @@ nvswitch health monitor test:
   stage: test
   script:
     - cd health-monitors/nvswitch-health-monitor
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverpkg=$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
@@ -207,7 +207,7 @@ platform connectors test:
   stage: test
   script:
     - cd platform-connectors
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverpkg=$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
