@@ -13,7 +13,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o platform-connectors cmd/platformconnectors.go
+RUN go build -o platform-connectors main.go
 
 FROM $IMG:$TAG
 
