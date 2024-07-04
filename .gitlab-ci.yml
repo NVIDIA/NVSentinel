@@ -78,7 +78,7 @@ gpu health monitor test:
   script:
     - cd health-monitors/gpu-health-monitor
     - poetry install
-    - poetry run coverage run -m pytest -vv --junitxml=report.xml
+    - poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml
     - poetry run coverage xml || true
     - poetry run coverage report || true
   artifacts:
@@ -121,7 +121,7 @@ nic health monitor test:
   stage: test
   script:
     - cd health-monitors/nic-health-monitor
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
@@ -164,7 +164,7 @@ nvswitch health monitor test:
   stage: test
   script:
     - cd health-monitors/nvswitch-health-monitor
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
@@ -207,7 +207,7 @@ platform connectors test:
   stage: test
   script:
     - cd platform-connectors
-    - - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
