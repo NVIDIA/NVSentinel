@@ -18,3 +18,12 @@ RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v27.1/pro
     cp protoc-27.1-linux-x86_64/bin/protoc /usr/local/bin/ && mkdir -p /usr/local/bin/include/google && cp -r protoc-27.1-linux-x86_64/include/google /usr/local/bin/include && \
     go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1 && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2 && \
     python3 -m pip install --break-system-packages grpcio grpcio-tools
+
+RUN apt-get update && apt-get install -y wget && \
+    wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb && \
+    apt-get update && apt-get install -y datacenter-gpu-manager=1:3.3.5 && \
+    apt-get clean
+
+ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
+    PYTHONUNBUFFERED=1

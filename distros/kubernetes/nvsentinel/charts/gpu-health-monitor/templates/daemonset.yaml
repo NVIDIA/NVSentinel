@@ -32,12 +32,8 @@ spec:
       containers:
         - name: {{ .Chart.Name }}
           args:
-            - --node-name
-            - "$(NODE_NAME)"
             - --config-file
             - "/etc/dcgmhealth/config.ini"
-            - --kubeconfig
-            - ""
             - --dcgm-addr
             - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.useHostNetworking }}"
             - --port

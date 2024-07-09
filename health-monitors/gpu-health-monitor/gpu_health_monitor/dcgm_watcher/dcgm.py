@@ -1,0 +1,237 @@
+import dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bisect
+import logging as log
+from . import types, metrics
+from threading import Event
+from ctypes import *
+from functools import partial
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+
+XID_CALLBACK = CFUNCTYPE(None, c_void_p)
+
+
+class DCGMWatcher:
+    def __init__(self, addr: str, poll_interval_seconds: int, callbacks: list[types.CallbackInterface]) -> None:
+        self._addr = addr
+        self._poll_interval_seconds = poll_interval_seconds
+        self._callbacks = callbacks
+
+        self._health_watches = self._get_available_health_watches()
+        log.debug(f"Got available health watches {self._health_watches}")
+        metrics.num_health_watches.set(len(self._health_watches))
+
+        self._error_codes = self._get_available_error_codes()
+        log.debug(f"Got available error codes {self._error_codes}")
+
+        self._dcgm_fields = self._get_available_fields()
+        log.debug(f"Got available dcgm fields {self._dcgm_fields}")
+        metrics.num_fields.set(len(self._dcgm_fields))
+        self._dcgm_fields_inverse = {y: x for x, y in self._dcgm_fields.items()}
+
+        self._callback_thread_pool = ThreadPoolExecutor()
+
+    def _get_available_health_watches(self) -> dict[int, str]:
+        health_watches = {}
+        for var in dir(dcgm_structs):
+            if var.startswith("DCGM_HEALTH_WATCH") and not var.endswith("ALL") and not "_COUNT_" in var:
+                health_watches[getattr(dcgm_structs, var)] = var
+        return health_watches
+
+    def _get_available_error_codes(self) -> dict[int, str]:
+        error_codes = {}
+        for var in dir(dcgm_errors):
+            if var.startswith("DCGM_FR") and not var.endswith("MSG") and not var.endswith("NEXT"):
+                error_codes[getattr(dcgm_errors, var)] = var
+        return error_codes
+
+    def _get_available_fields(self) -> dict[str, int]:
+        fields = {}
+        for var in dir(dcgm_fields):
+            if var.startswith("DCGM_FI_DEV"):
+                fields[var] = getattr(dcgm_fields, var)
+        return fields
+
+    def _get_health_status_dict(self) -> dict[str, types.HealthDetails]:
+        health_status = {}
+        for system_name in self._health_watches.values():
+            health_status[system_name] = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
+        return health_status
+
+    def _fire_callback_funcs(self, func_name: str, args: list[any]):
+        def done_callback(class_name: str, func_name: str, future):
+            e = future.exception()
+            if e is not None:
+                log.exception(e)
+                metrics.callback_failures.labels(class_name, func_name).inc()
+            else:
+                metrics.callback_success.labels(class_name, func_name).inc()
+
+        for callback in self._callbacks:
+            log.info(f"Invoking callback {func_name} on {callback.__class__.__name__}")
+            self._callback_thread_pool.submit(getattr(callback, func_name), *args).add_done_callback(
+                partial(done_callback, callback.__class__.__name__, func_name)
+            )
+
+    def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
+        dcgm_system = dcgm_handle.GetSystem()
+
+        with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
+            supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+        log.info(f"supported gpus are {supported_gpus}")
+        with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
+            supported_switches = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_SWITCH, True)
+        log.info(f"supported switches are {supported_switches}")
+
+        dcgm_group = pydcgm.DcgmGroup(dcgm_handle, groupName="dcgm_health", groupType=dcgm_structs.DCGM_GROUP_EMPTY)
+        for gpu in supported_gpus:
+            with metrics.dcgm_api_latency.labels("discovery_group_add_entity").time():
+                dcgm_group.AddEntity(dcgm_fields.DCGM_FE_GPU, gpu)
+        for switch in supported_switches:
+            with metrics.dcgm_api_latency.labels("discovery_group_add_entity").time():
+                dcgm_group.AddEntity(dcgm_fields.DCGM_FE_SWITCH, switch)
+
+        return dcgm_group
+
+    def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> dict[str, types.HealthDetails]:
+        with metrics.dcgm_api_latency.labels("health_check").time():
+            health_details = dcgm_group.health.Check()
+        log.info(f"initial health status is {health_details}")
+
+        health_status = self._get_health_status_dict()
+        for i in range(health_details.incidentCount):
+            incident = health_details.incidents[i]
+            health_status[self._health_watches[incident.system]].status = types.HealthStatus(int(incident.health))
+            health_status[self._health_watches[incident.system]].entity_failures[incident.entityInfo.entityId] = (
+                types.ErrorDetails(message=incident.error.msg, code=self._error_codes[incident.error.code])
+            )
+        log.info(f"filled in health details is {health_status}")
+        return health_status
+
+    def _xid_event_callback_func(self, gpu_id, data):
+        callbackData = dcgm_structs.c_dcgmPolicyCallbackResponse_v1()
+        memmove(addressof(callbackData), data, callbackData.FieldsSizeof())
+        xid_error = int(callbackData.val.xid.errnum)
+        log.info(f"detected xid error {xid_error} on {gpu_id}")
+        self._fire_callback_funcs(types.CallbackInterface.xid_event_occurred.__name__, [gpu_id, xid_error])
+
+    def _register_xid_callbacks_on_all_gpus(self, dcgm_handle: pydcgm.DcgmHandle) -> list[pydcgm.DcgmGroup]:
+        dcgm_system = dcgm_handle.GetSystem()
+
+        with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
+            supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+
+        dcgm_groups = []
+        # hold a reference to the xid callback functions so that it does not get garbage collected resulting in
+        # segmentation fault
+        self._xid_callback_funcs = []
+        """
+            TODO:Need to try with python SDK API for this
+            policy = dcgm_structs.c_dcgmPolicy_v1()
+            policy.version = dcgm_structs.dcgmPolicy_version1
+            policy.condition = dcgm_structs.DCGM_POLICY_COND_XID
+            policy.mode = dcgm_structs.DCGM_POLICY_MODE_MANUAL
+            policy.isolation = dcgm_structs.DCGM_POLICY_ISOLATION_NONE
+            policy.action = dcgm_structs.DCGM_POLICY_ACTION_NONE
+            policy.validation = dcgm_structs.DCGM_POLICY_VALID_NONE
+            dcgm_group.policy.Set(policy=policy)
+        """
+        command = "/bin/bash -c 'dcgmi policy --set 0,0 -x'"
+        try:
+            subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except subprocess.CalledProcessError as e:
+            log.fatal(f"Command failed with exit status {e.returncode} and error {e.stderr}")
+
+        for gpu in supported_gpus:
+            dcgm_group = pydcgm.DcgmGroup(dcgm_handle, groupName="dcgm_health", groupType=dcgm_structs.DCGM_GROUP_EMPTY)
+            with metrics.dcgm_api_latency.labels("group_add_gpu").time():
+                dcgm_group.AddGpu(gpu)
+            log.info(f"Registering XID callback for GPU {gpu}")
+            _xid_event_callback_func = XID_CALLBACK(partial(self._xid_event_callback_func, gpu))
+            with metrics.dcgm_api_latency.labels("policy_register").time():
+                returnVal = dcgm_group.policy.Register(
+                    condition=dcgm_structs.DCGM_POLICY_COND_XID, beginCallback=_xid_event_callback_func
+                )
+                log.info(f"dcgm XID error  notification register with returnValue {returnVal}")
+            self._xid_callback_funcs.append(_xid_event_callback_func)
+
+            dcgm_groups.append(dcgm_group)
+
+        return dcgm_groups
+
+    def _unregister_xid_callbacks(self, dcgm_groups: list[pydcgm.DcgmGroup]):
+        # TODO:Need to try with python SDK API for this
+        command = "/bin/bash -c dcgmi policy --clear"
+        try:
+            subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except subprocess.CalledProcessError as e:
+            log.fatal(f"Command failed with exit status {e.returncode} and error {e.stderr}")
+        for dcgm_group in dcgm_groups:
+            log.info(f"Unregistering XID callback from {dcgm_group.GetId()}")
+            dcgm_group.policy.Unregister(condition=dcgm_structs.DCGM_POLICY_COND_XID)
+
+    def _create_dcgm_field_group(self, dcgm_handle: pydcgm.DcgmHandle, fields: list[str]) -> pydcgm.DcgmFieldGroup:
+        field_ids = []
+        for field in fields:
+            field_ids.append(self._dcgm_fields[field])
+        log.info(f"got dcgm field IDs {field_ids}")
+
+        return pydcgm.DcgmFieldGroup(dcgm_handle, "dcgm-health", field_ids)
+
+    def _fetch_field_values(self, dcgm_field_group: pydcgm.DcgmFieldGroup, dcgm_group: pydcgm.DcgmGroup):
+        with metrics.dcgm_api_latency.labels("group_samples_get_latest").time():
+            samples = dcgm_group.samples.GetLatest(dcgm_field_group)
+
+        field_values = {}
+        for gpu, field in samples.values.items():
+            for field_id, data in field.items():
+                field_details = types.FieldDetails(
+                    field_id=self._dcgm_fields_inverse[field_id],
+                    value=str(data[0].value) if not dcgmvalue.DCGM_INT32_IS_BLANK(data[0].value) else "0",
+                )
+                field_values.setdefault(gpu, [])
+                bisect.insort(field_values[gpu], field_details)
+        log.info(f"field values are {field_values}")
+
+        return field_values
+
+    def start(self, fields_to_monitor: list[str], exit: Event) -> None:
+        dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        dcgm_system = dcgm_handle.GetSystem()
+
+        dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
+        with metrics.dcgm_api_latency.labels("group_health_set").time():
+            dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+
+        dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
+
+        dcgm_field_group = self._create_dcgm_field_group(dcgm_handle, fields_to_monitor)
+        with metrics.dcgm_api_latency.labels("group_samples_watch_fields").time():
+            dcgm_group.samples.WatchFields(
+                dcgm_field_group, int((self._poll_interval_seconds / 2) * 1e6), 2 * self._poll_interval_seconds, 2
+            )
+
+        with metrics.dcgm_api_latency.labels("system_update_all_fields").time():
+            dcgm_system.UpdateAllFields(waitForUpdate=True)
+        self._fire_callback_funcs(types.CallbackInterface.clear_all_xid_errors.__name__, [])
+        older_field_values = {}
+        while not exit.is_set():
+            with metrics.overall_reconcile_loop_time.time():
+                log.info("Running health check")
+                health_status = self._perform_health_check(dcgm_group)
+                self._fire_callback_funcs(types.CallbackInterface.health_event_occurred.__name__, [health_status])
+
+                log.info("Fetching field values")
+                field_values = self._fetch_field_values(dcgm_field_group, dcgm_group)
+                if older_field_values != field_values:
+                    self._fire_callback_funcs(
+                        types.CallbackInterface.field_change_event_occurred.__name__, [field_values]
+                    )
+                    older_field_values = field_values
+                else:
+                    log.info("Field values remained the same, skipping callback")
+
+            log.info("Waiting till next cycle")
+            exit.wait(self._poll_interval_seconds)
+
+        self._unregister_xid_callbacks(dcgm_groups_with_xid_policy)
+        self._callback_thread_pool.shutdown(cancel_futures=True)

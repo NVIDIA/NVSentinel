@@ -48,7 +48,6 @@ class HealthEvent(_message.Message):
         "checkName",
         "isFatal",
         "isHealthy",
-        "actionRequired",
         "message",
         "recommendedAction",
         "errorCode",
@@ -73,7 +72,6 @@ class HealthEvent(_message.Message):
     CHECKNAME_FIELD_NUMBER: _ClassVar[int]
     ISFATAL_FIELD_NUMBER: _ClassVar[int]
     ISHEALTHY_FIELD_NUMBER: _ClassVar[int]
-    ACTIONREQUIRED_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     RECOMMENDEDACTION_FIELD_NUMBER: _ClassVar[int]
     ERRORCODE_FIELD_NUMBER: _ClassVar[int]
@@ -86,7 +84,6 @@ class HealthEvent(_message.Message):
     checkName: str
     isFatal: bool
     isHealthy: bool
-    actionRequired: bool
     message: str
     recommendedAction: RecommenedAction
     errorCode: str
@@ -101,7 +98,6 @@ class HealthEvent(_message.Message):
         checkName: _Optional[str] = ...,
         isFatal: bool = ...,
         isHealthy: bool = ...,
-        actionRequired: bool = ...,
         message: _Optional[str] = ...,
         recommendedAction: _Optional[_Union[RecommenedAction, str]] = ...,
         errorCode: _Optional[str] = ...,
