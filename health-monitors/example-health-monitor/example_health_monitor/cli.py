@@ -32,7 +32,6 @@ def cli(socket):
                 componentClass = "example-component"
                 generatedTimestamp = timestamp
                 isFatal = True if random.random() < 0.5 else False
-                actionRequired = True if random.random() < 0.5 else False
                 errorCode = (
                     (
                         "".join(
@@ -67,7 +66,6 @@ def cli(socket):
                 print(f"componentClass={componentClass}")
                 print(f"generatedTimestamp={generatedTimestamp}")
                 print(f"isFatal={isFatal}")
-                print(f"actionRequired={actionRequired}")
                 print(f"errorCode={errorCode}")
                 print(f"entitiesImpacted={entitiesImpacted}")
                 print(f"message={message}")
@@ -82,7 +80,6 @@ def cli(socket):
                         generatedTimestamp=generatedTimestamp,
                         isFatal=isFatal,
                         isHealthy=isHealthy,
-                        actionRequired=actionRequired,
                         errorCode=errorCode,
                         entitiesImpacted=entitiesImpacted,
                         message=message,

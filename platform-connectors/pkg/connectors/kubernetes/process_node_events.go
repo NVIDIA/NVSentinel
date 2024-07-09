@@ -89,7 +89,7 @@ func (r *K8sConnector) fetchHealthEventReason(healthEvent *platformconnector.Hea
 		if healthEvent.IsHealthy {
 			reason = fmt.Sprintf("%sIsHealthy", healthEvent.CheckName)
 		} else {
-			reason = healthEvent.ErrorCode
+			reason = fmt.Sprintf("%sIsNotHealthy", healthEvent.CheckName)
 		}
 	}
 
@@ -104,14 +104,15 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 	} else {
 		if healthEvent.CheckName == XidErrorCheck {
 			message = "XID" + healthEvent.ErrorCode
-			for _, entity := range healthEvent.EntitiesImpacted {
-				message += ":" + entity
-			}
-
-			message += "."
 		} else {
-			message = healthEvent.Message
+			message = healthEvent.ErrorCode
 		}
+
+		for _, entity := range healthEvent.EntitiesImpacted {
+			message += ":" + entity
+		}
+
+		message += "."
 	}
 
 	return message
