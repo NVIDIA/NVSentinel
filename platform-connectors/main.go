@@ -15,7 +15,6 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"k8s.io/klog/v2"
 
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/example"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/server"
 	"google.golang.org/grpc"
@@ -61,14 +60,9 @@ func main() {
 	if enableK8sPlatformConnector == "true" {
 		ringBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
 		server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
-		k8sConnector := kubernetes.InitializeK8sConnector(ringBuffer, string(nodeName), stopCh)
+		k8sConnector := kubernetes.InitializeK8sConnector(ringBuffer, string(nodeName), stopCh, ctx)
 
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
-	} else {
-		ringBuffer := ringbuffer.NewRingBuffer("example", ctx)
-		exampleConnector := example.InitializeExampleConnector(ringBuffer, string(nodeName))
-
-		go exampleConnector.FetchAndProcessHealthMetric(ctx)
 	}
 
 	err = os.RemoveAll(*socket)

@@ -53,14 +53,6 @@ func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *platformconnector.He
 	rb.healthMetricQueue.Forget(data)
 }
 
-func (rb *RingBuffer) GetName() string {
-	return rb.ringBufferIdentifier
-}
-
-func (rb *RingBuffer) GetSize() int {
-	return rb.healthMetricQueue.Len()
-}
-
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
 	rb.healthMetricQueue.ShutDown()
 }

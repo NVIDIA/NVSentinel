@@ -2,6 +2,8 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
+	"k8s.io/klog/v2"
 	"os"
 	"testing"
 	"time"
@@ -27,7 +29,7 @@ func TestMain(m *testing.M) {
 	ctx = context.Background()
 	stopCh := make(chan struct{})
 	ringBuffer := ringbuffer.NewRingBuffer("k8sRingBuffer", ctx)
-	k8sConnector = NewK8sConnector(clientSet, ringBuffer, "testnode", stopCh)
+	k8sConnector = NewK8sConnector(clientSet, ringBuffer, "testnode", stopCh, ctx)
 	exitVal := m.Run()
 	os.Exit(exitVal)
 }
@@ -103,6 +105,37 @@ func TestK8sNodeConditions(t *testing.T) {
 		{
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
+				IsHealthy:          true,
+				EntitiesImpacted:   []string{},
+				ErrorCode:          "",
+				IsFatal:            false,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+			},
+			ExpectedOutputMessage:       "No Health Failures",
+			ExpectedOutputReason:        "GpuPcieWatchIsHealthy",
+			ExpectedOutputConditionType: "GpuPcieWatch",
+			ExpectedHealthFailureStatus: "False",
+		},
+		{
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "XidError",
+				IsHealthy:          true,
+				Message:            "",
+				EntitiesImpacted:   []string{},
+				ErrorCode:          "",
+				IsFatal:            false,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+			},
+			ExpectedOutputMessage:       NoHealthFailureMsg,
+			ExpectedOutputReason:        "NoXidErrorDetected",
+			ExpectedOutputConditionType: "XidError",
+			ExpectedHealthFailureStatus: "False",
+		},
+		{
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
 				EntitiesImpacted:   []string{"0"},
 				ErrorCode:          "DCGM_FR_PCI_REPLAY_RATE",
@@ -166,9 +199,9 @@ func TestK8sNodeConditions(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		t.Errorf("Failed to create  node with err %s", err)
+		klog.Errorf("Failed to create  node with err %s", err)
+		os.Exit(1)
 	}
-
 	for testCase, healthEvent := range healthEvents {
 		err := k8sConnector.processHealthEvents(ctx, healthEvent.healthEvent)
 		if err != nil {
@@ -197,5 +230,131 @@ func TestK8sNodeConditions(t *testing.T) {
 		if conditionFound == false {
 			t.Errorf("Testcase %d nodeCondition is missing", testCase)
 		}
+	}
+	err = clientSet.CoreV1().Nodes().Delete(ctx, fakeNode.Name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Errorf("Failed to delete  node with err %s", err)
+	}
+}
+
+// Insert 1001 healthEvents as nodeEvents. Once 1000 events has been processed, then during the last healthEvent processing,
+// cache should be resetted in order to prevent memory exhaustion
+func TestK8sEventsCacheFullScenario(t *testing.T) {
+	healthEvents := make([]*platformconnector.HealthEvent, 0)
+	for i := 0; i <= EventCacheSizeUpperLimit; i++ {
+		healthEvent := &platformconnector.HealthEvent{
+			CheckName:          "XidError",
+			IsHealthy:          false,
+			Message:            "",
+			EntitiesImpacted:   []string{"0"},
+			ErrorCode:          fmt.Sprintf("%d", i),
+			IsFatal:            false,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "gpu",
+		}
+		healthEvents = append(healthEvents, healthEvent)
+	}
+	fakeNode := getNode()
+	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+	if err != nil {
+		t.Errorf("Failed to create  node with err %s", err)
+
+	}
+	for _, healthEvent := range healthEvents {
+		err := k8sConnector.processHealthEvents(ctx, healthEvent)
+		if err != nil {
+			t.Errorf("Failed to process healthEvent with err %s", err)
+		}
+	}
+
+	if len(k8sConnector.eventCache) != 1 {
+		t.Errorf("Total events %d is not equal to 1", len(k8sConnector.eventCache))
+	}
+	err = clientSet.CoreV1().Nodes().Delete(ctx, fakeNode.Name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Errorf("Failed to delete  node with err %s", err)
+	}
+}
+
+func TestK8sNodeEvents(t *testing.T) {
+	healthEvents := []*healthConditionList{
+		{
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "GpuPcieWatch",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"0"},
+				ErrorCode:          "DCGM_FR_PCI_REPLAY_RATE",
+				IsFatal:            false,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+			},
+			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:0.",
+			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
+			ExpectedOutputConditionType: "GpuPcieWatch",
+		},
+		{
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "GpuThermalWatch",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"0"},
+				ErrorCode:          "DCGM_FR_EC_HARDWARE_MEMORY",
+				IsFatal:            false,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+			},
+			ExpectedOutputMessage:       "DCGM_FR_EC_HARDWARE_MEMORY:0.",
+			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
+			ExpectedOutputConditionType: "GpuThermalWatch",
+		},
+		{
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "GpuThermalWatch",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"0"},
+				ErrorCode:          "DCGM_FR_EC_HARDWARE_MEMORY",
+				IsFatal:            false,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+			},
+			ExpectedOutputMessage:       "DCGM_FR_EC_HARDWARE_MEMORY:0.",
+			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
+			ExpectedOutputConditionType: "GpuThermalWatch",
+		},
+	}
+	clear(k8sConnector.eventCache)
+	fakeNode := getNode()
+	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+	if err != nil {
+		klog.Errorf("Failed to create  node with err %s", err)
+		os.Exit(1)
+	}
+	for testCase, healthEvent := range healthEvents {
+		err := k8sConnector.processHealthEvents(ctx, healthEvent.healthEvent)
+		if err != nil {
+			t.Errorf("Failed to process healthEvent for testCase %d with err %s", testCase, err)
+		}
+		events, err := clientSet.CoreV1().Events("").List(ctx, metav1.ListOptions{
+			FieldSelector: fmt.Sprintf("involvedObject.kind=Node,involvedObject.name=%s", fakeNode.Name),
+		})
+		conditionFound := false
+		for _, event := range events.Items {
+			if event.Type == healthEvent.ExpectedOutputConditionType {
+				conditionFound = true
+
+				if healthEvent.ExpectedOutputMessage != string(event.Message) {
+					t.Errorf("Testcase %d. Node event Message  %s is not matching with expectedEventMessage %s", testCase, string(event.Message), healthEvent.ExpectedOutputMessage)
+				}
+				if healthEvent.ExpectedOutputReason != string(event.Reason) {
+					t.Errorf("Testcase %d. Node event Reason %s is not matching with expectedEventReason %s", testCase, string(event.Reason), healthEvent.ExpectedOutputReason)
+				}
+			}
+		}
+		if conditionFound == false {
+			t.Errorf("Testcase %d nodeEvent is missing", testCase)
+		}
+	}
+	err = clientSet.CoreV1().Nodes().Delete(ctx, fakeNode.Name, metav1.DeleteOptions{})
+	if err != nil {
+		t.Errorf("Failed to delete  node with err %s", err)
 	}
 }
