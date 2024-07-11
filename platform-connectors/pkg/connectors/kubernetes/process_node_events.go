@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/klog/v2"
-
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	corev1 "k8s.io/api/core/v1"
@@ -64,15 +63,19 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) error {
-	_, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
-	if err != nil {
-		klog.Infof("Error creating event: %s", err)
+	aggregatedEvent := r.AggregateEvent(event)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if aggregatedEvent.Count > 1 {
+			_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, aggregatedEvent, metav1.UpdateOptions{})
+			return err
+		}
+
+		_, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+
 		return err
-	}
+	})
 
-	klog.Infof("Event created for node %s", r.nodeName)
-
-	return nil
+	return err
 }
 
 func (r *K8sConnector) fetchHealthEventReason(healthEvent *platformconnector.HealthEvent) string {
@@ -129,9 +132,6 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 	reason := r.fetchHealthEventReason(healthEvent)
 	message := r.fetchHealthEventMessage(healthEvent)
 
-	klog.Infof("healthEvent checkType %s isHealthy %t isFatal %t",
-		healthEvent.CheckName, healthEvent.IsHealthy, healthEvent.IsFatal)
-
 	if healthEvent.IsHealthy || healthEvent.IsFatal {
 		newCondition := corev1.NodeCondition{
 			Type:               conditionType,
@@ -161,6 +161,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 		ReportingController: healthEvent.Agent,
 		ReportingInstance:   r.nodeName,
 		Message:             message,
+		Count:               1,
 		Source: corev1.EventSource{
 			Component: healthEvent.Agent,
 			Host:      r.nodeName,
@@ -171,11 +172,27 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 	}
 
 	if !healthEvent.IsHealthy {
-		klog.Infof("healthEvent is not healthy.Writing event %s", healthEvent.CheckName)
 		return r.writeNodeEvent(ctx, event)
 	}
 
-	klog.Infof("healhtEvent is healthy.Writing event %s", healthEvent.CheckName)
+	return nil
+}
 
-	return r.writeNodeEvent(ctx, event)
+func (r *K8sConnector) AggregateEvent(event *corev1.Event) *corev1.Event {
+	key := fmt.Sprintf("%s/%s/%s", event.InvolvedObject.Name, event.Reason, event.Message)
+	if cachedEvent, exists := r.eventCache[key]; exists {
+		cachedEvent.Count++
+		cachedEvent.LastTimestamp = event.LastTimestamp
+
+		return cachedEvent
+	}
+
+	if uint32(len(r.eventCache)+1) > r.eventCacheSize {
+		klog.Infof("Resetting  cache  as eventCache size is greater than %d", r.eventCacheSize)
+		clear(r.eventCache)
+	}
+
+	r.eventCache[key] = event
+
+	return event
 }

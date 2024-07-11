@@ -20,3 +20,5 @@ rules:
   - events
   verbs:
   - create
+  - update
+  - list
