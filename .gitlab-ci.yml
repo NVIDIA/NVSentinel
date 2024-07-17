@@ -114,24 +114,24 @@ nic health monitor lint:
   artifacts:
     when: always
     reports:
-      codequality: platform-connectors/code-quality-report.json
+      codequality: nic-health-monitor/code-quality-report.json
     paths:
-      - platform-connectors/code-quality-report.json
+      - nic-health-monitor/code-quality-report.json
 
 nic health monitor test:
   stage: test
   script:
     - cd health-monitors/nic-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
+    - go tool cover -func coverage.txt
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
       coverage_report:
         coverage_format: cobertura
-        path: platform-connectors/coverage.xml
-      junit: platform-connectors/report.xml
+        path: nic-health-monitor/coverage.xml
+      junit: nic-health-monitor/report.xml
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 nic health monitor container publish:
@@ -157,9 +157,9 @@ nvswitch health monitor lint:
   artifacts:
     when: always
     reports:
-      codequality: platform-connectors/code-quality-report.json
+      codequality: nvswitch-health-monitor/code-quality-report.json
     paths:
-      - platform-connectors/code-quality-report.json
+      - nvswitch-health-monitor/code-quality-report.json
 
 nvswitch health monitor test:
   stage: test
@@ -173,8 +173,8 @@ nvswitch health monitor test:
     reports:
       coverage_report:
         coverage_format: cobertura
-        path: platform-connectors/coverage.xml
-      junit: platform-connectors/report.xml
+        path: nvswitch-health-monitor/coverage.xml
+      junit: nvswitch-health-monitor/report.xml
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 nvswitch health monitor container publish:
