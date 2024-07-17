@@ -115,7 +115,7 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 			message += ":" + entity
 		}
 
-		message += "."
+		message += fmt.Sprintf(" Recommended Action=%s.", healthEvent.RecommendedAction.String())
 	}
 
 	return message

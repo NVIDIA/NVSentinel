@@ -14,6 +14,23 @@ from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, 
 socket_path = "/tmp/nvsentinel.sock"
 
 
+def create_recommend_action_mapping_from_xid_error_to_platform_connector():
+    xid_error_recommend_action_connector_mapping: dict[str, platformconnector_pb2.RecommenedAction] = {}
+    xid_error_recommend_action_connector_mapping["UNEXPECTED_ERR_REPORT_ISSUE"] = platformconnector_pb2.REPORT_ISSUE
+    xid_error_recommend_action_connector_mapping["WORKFLOW_XID_13_31"] = platformconnector_pb2.UNKNOWN
+    xid_error_recommend_action_connector_mapping["IGNORE "] = platformconnector_pb2.NONE
+    xid_error_recommend_action_connector_mapping["WORKFLOW_ECC_DBE_SRAM"] = platformconnector_pb2.UNKNOWN
+    xid_error_recommend_action_connector_mapping["REPORT_ISSUE"] = platformconnector_pb2.REPORT_ISSUE
+    xid_error_recommend_action_connector_mapping["RUN_FIELDDIAG"] = platformconnector_pb2.RUN_FIELDDIAG
+    xid_error_recommend_action_connector_mapping["WORKFLOW_NVLINK_ERR"] = platformconnector_pb2.UNKNOWN
+    xid_error_recommend_action_connector_mapping["RESTART_APP"] = platformconnector_pb2.APPLICATION_RESTART
+    xid_error_recommend_action_connector_mapping["RESET_GPU"] = platformconnector_pb2.COMPONENT_RESET
+    xid_error_recommend_action_connector_mapping["RESOLUTION_BUCKET_TBD"] = platformconnector_pb2.UNKNOWN
+    xid_error_recommend_action_connector_mapping["WORKFLOW_NVLINK5_ERR"] = platformconnector_pb2.UNKNOWN
+
+    return xid_error_recommend_action_connector_mapping
+
+
 class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServicer):
     def __init__(self) -> None:
         self.health_events: platformconnector_pb2.HealthEvents = None
@@ -35,7 +52,40 @@ class TestPlatformConnectors(unittest.TestCase):
         server.start()
         watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])
         exit = Event()
-        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(socket_path, exit)
+        xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
+        xid_errors_info_dict["1"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_FIFO_ERROR_FIFO_METHOD",
+            recommended_action="UNEXPECTED_ERR_REPORT_ISSUE",
+            fatal="FATAL",
+        )
+        xid_errors_info_dict["13"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_GR_ERROR_SW_NOTIFY",
+            recommended_action="WORKFLOW_XID_13_31",
+            fatal="FATAL",
+        )
+        xid_errors_info_dict["43"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_RESETCHANNEL_VERIF_ERROR",
+            recommended_action="IGNORE",
+            fatal="NONFATAL",
+        )
+        xid_errors_info_dict["48"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_GPU_ECC_DBE",
+            recommended_action="WORKFLOW_ECC_DBE_SRAM",
+            fatal="FATAL",
+        )
+        xid_errors_info_dict["64"] = platform_connector.XidErrorsMappingDetails(
+            name="INFOROM_DRAM_RETIREMENT_FAILURE", recommended_action="RUN_FIELDDIAG", fatal="FATAL"
+        )
+        xid_errors_info_dict["74"] = platform_connector.XidErrorsMappingDetails(
+            name="NVLINK_ERROR", recommended_action="WORKFLOW_NVLINK_ERR", fatal="FATAL"
+        )
+        xid_errors_info_dict["110"] = platform_connector.XidErrorsMappingDetails(
+            name="SEC_FAULT_ERROR", recommended_action="RESOLUTION_BUCKET_TBD", fatal="FATAL"
+        )
+        xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
+        )
         dcgm_health_events = watcher._get_health_status_dict()
         platform_connector_test.health_event_occurred(dcgm_health_events)
         health_events = healthEventProcessor.health_events
@@ -43,16 +93,18 @@ class TestPlatformConnectors(unittest.TestCase):
             assert event.isHealthy == True
             assert event.checkName != ""
             assert len(dcgm_health_events) == len(health_events)
-        platform_connector_test.xid_event_occurred("0", "79")
+        platform_connector_test.xid_event_occurred("0", "64")
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "XidError"
-        assert health_event.errorCode == "79"
+        assert health_event.errorCode == "64"
         assert health_event.entitiesImpacted == ["0"]
+        assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.RUN_FIELDDIAG
         platform_connector_test.clear_all_xid_errors()
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "XidError"
         assert health_event.errorCode == ""
         assert health_event.entitiesImpacted == []
+        assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE
         server.stop(0)

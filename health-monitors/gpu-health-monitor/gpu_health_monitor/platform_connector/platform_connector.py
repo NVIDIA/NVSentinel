@@ -1,3 +1,4 @@
+import dataclasses
 import logging as log
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from threading import Event
@@ -7,17 +8,28 @@ import grpc
 from . import metrics
 
 
+@dataclasses.dataclass
+class XidErrorsMappingDetails:
+    name: str
+    recommended_action: str
+    fatal: str
+
+
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def __init__(
         self,
         socket_path: str,
         exit: Event,
+        xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
+        xid_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
         self._version = 1
         self._agent = "gpu-health-monitor"
         self._component_class = "gpu"
+        self.xid_errors_info_dict = xid_errors_info_dict
+        self.xid_errors_recommend_action_mapping = xid_errors_recommend_action_mapping
 
     def _get_dcgm_watch(self, watch_name: str) -> str:
         watch_names = watch_name.split("_")[3:]
@@ -67,6 +79,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             recommendedAction=platformconnector_pb2.UNKNOWN,
                         )
                     )
+                    break
                 else:
                     health_events.append(
                         platformconnector_pb2.HealthEvent(
@@ -83,7 +96,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             recommendedAction=platformconnector_pb2.UNKNOWN,
                         )
                     )
-
+            log.debug(f"xid health event is {health_events}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
@@ -93,48 +106,61 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.info("received callback for for clearing of xid errors")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            checkName = "XidError"
+            check_name = "XidError"
             message = "NoXidErrorDetected"
-            entitiesImpacted = []
-            errorCode = ""
+            entities_impacted = []
+            error_code = ""
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
                 componentClass=self._component_class,
-                checkName=checkName,
+                checkName=check_name,
                 generatedTimestamp=timestamp,
                 isFatal=False,
                 isHealthy=True,
-                errorCode=errorCode,
-                entitiesImpacted=entitiesImpacted,
+                errorCode=error_code,
+                entitiesImpacted=entities_impacted,
                 message=message,
-                recommendedAction=platformconnector_pb2.UNKNOWN,
+                recommendedAction=platformconnector_pb2.NONE,
             )
+            log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+
+    def get_recommended_action_from_xid_error_map(self, error_code):
+        recommended_action = self.xid_errors_info_dict[error_code].recommended_action
+        return self.xid_errors_recommend_action_mapping[recommended_action]
 
     def xid_event_occurred(self, gpu_id: str, error_num: int):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            checkName = "XidError"
+            check_name = "XidError"
             message = "XID error occured"
-            entitiesImpacted = [f"{gpu_id}"]
-            errorCode = str(error_num)
+            entities_impacted = [f"{gpu_id}"]
+            error_code = str(error_num)
+            is_fatal = True
+            recommended_action = platformconnector_pb2.UNKNOWN
+            if error_code in self.xid_errors_info_dict:
+                if self.xid_errors_info_dict[error_code].fatal == "NONFATAL":
+                    is_fatal = False
+                recommended_action = self.get_recommended_action_from_xid_error_map(error_code)
+
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
                 componentClass=self._component_class,
-                checkName=checkName,
+                checkName=check_name,
                 generatedTimestamp=timestamp,
-                isFatal=True,
+                isFatal=is_fatal,
                 isHealthy=False,
-                errorCode=errorCode,
-                entitiesImpacted=entitiesImpacted,
+                errorCode=error_code,
+                entitiesImpacted=entities_impacted,
                 message=message,
-                recommendedAction=platformconnector_pb2.UNKNOWN,
+                recommendedAction=recommended_action,
             )
+            log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
