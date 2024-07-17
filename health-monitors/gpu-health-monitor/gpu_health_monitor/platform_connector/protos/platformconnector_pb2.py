@@ -16,7 +16,7 @@ from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17platformconnector.proto\x12\x11platformconnector\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"O\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12.\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x1e.platformconnector.HealthEvent\"\xa3\x03\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12>\n\x11recommendedAction\x18\x08 \x01(\x0e\x32#.platformconnector.RecommenedAction\x12\x11\n\terrorCode\x18\t \x01(\t\x12\x18\n\x10\x65ntitiesImpacted\x18\n \x03(\t\x12>\n\x08metadata\x18\x0b \x03(\x0b\x32,.platformconnector.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01*\x83\x01\n\x10RecommenedAction\x12\x08\n\x04NONE\x10\x00\x12\x0f\n\x0bNODE_REBOOT\x10\x01\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x19\n\x15\x43OMPONENT_REPLACEMENT\x10\x03\x12\x17\n\x13\x41PPLICATION_RESTART\x10\x04\x12\x0b\n\x07UNKNOWN\x10\x63\x32\x66\n\x11PlatformConnector\x12Q\n\x14HealthEventOccuredV1\x12\x1f.platformconnector.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00\x42RZPgitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectorsb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17platformconnector.proto\x12\x11platformconnector\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"O\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12.\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x1e.platformconnector.HealthEvent\"\xa3\x03\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12>\n\x11recommendedAction\x18\x08 \x01(\x0e\x32#.platformconnector.RecommenedAction\x12\x11\n\terrorCode\x18\t \x01(\t\x12\x18\n\x10\x65ntitiesImpacted\x18\n \x03(\t\x12>\n\x08metadata\x18\x0b \x03(\x0b\x32,.platformconnector.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01*\xa8\x01\n\x10RecommenedAction\x12\x08\n\x04NONE\x10\x00\x12\x0f\n\x0bNODE_REBOOT\x10\x01\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x19\n\x15\x43OMPONENT_REPLACEMENT\x10\x03\x12\x17\n\x13\x41PPLICATION_RESTART\x10\x04\x12\x10\n\x0cREPORT_ISSUE\x10\x05\x12\x11\n\rRUN_FIELDDIAG\x10\x06\x12\x0b\n\x07UNKNOWN\x10\x63\x32\x66\n\x11PlatformConnector\x12Q\n\x14HealthEventOccuredV1\x12\x1f.platformconnector.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00\x42RZPgitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectorsb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -27,13 +27,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_HEALTHEVENT_METADATAENTRY']._loaded_options = None
   _globals['_HEALTHEVENT_METADATAENTRY']._serialized_options = b'8\001'
   _globals['_RECOMMENEDACTION']._serialized_start=612
-  _globals['_RECOMMENEDACTION']._serialized_end=743
+  _globals['_RECOMMENEDACTION']._serialized_end=780
   _globals['_HEALTHEVENTS']._serialized_start=108
   _globals['_HEALTHEVENTS']._serialized_end=187
   _globals['_HEALTHEVENT']._serialized_start=190
   _globals['_HEALTHEVENT']._serialized_end=609
   _globals['_HEALTHEVENT_METADATAENTRY']._serialized_start=562
   _globals['_HEALTHEVENT_METADATAENTRY']._serialized_end=609
-  _globals['_PLATFORMCONNECTOR']._serialized_start=745
-  _globals['_PLATFORMCONNECTOR']._serialized_end=847
+  _globals['_PLATFORMCONNECTOR']._serialized_start=782
+  _globals['_PLATFORMCONNECTOR']._serialized_end=884
 # @@protoc_insertion_point(module_scope)

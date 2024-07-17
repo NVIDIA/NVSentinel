@@ -15,12 +15,16 @@ class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     COMPONENT_RESET: _ClassVar[RecommenedAction]
     COMPONENT_REPLACEMENT: _ClassVar[RecommenedAction]
     APPLICATION_RESTART: _ClassVar[RecommenedAction]
+    REPORT_ISSUE: _ClassVar[RecommenedAction]
+    RUN_FIELDDIAG: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
 NONE: RecommenedAction
 NODE_REBOOT: RecommenedAction
 COMPONENT_RESET: RecommenedAction
 COMPONENT_REPLACEMENT: RecommenedAction
 APPLICATION_RESTART: RecommenedAction
+REPORT_ISSUE: RecommenedAction
+RUN_FIELDDIAG: RecommenedAction
 UNKNOWN: RecommenedAction
 
 class HealthEvents(_message.Message):

@@ -34,10 +34,14 @@ spec:
           args:
             - --config-file
             - "/etc/dcgmhealth/config.ini"
+            - --xid-error-mapping-config-file
+            - "/etc/dcgmhealth/xiderrorsmapping.csv"
             - --dcgm-addr
             - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.useHostNetworking }}"
             - --port
             - "{{ .Values.metricsPort }}"
+            - --verbose
+            - "False"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
