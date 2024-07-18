@@ -1,8 +1,10 @@
 all: binary
 
+test:
+	go test ./...
+
 binary:
-	go build -o nic-health-monitor  main.go
+	go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
 image:
-	docker build -t nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor:latest -f ./Dockerfile .
-
+	docker build -t nvcr.io/nv-ngc-devops/nvsentinel/nvswitch-monitor:latest .

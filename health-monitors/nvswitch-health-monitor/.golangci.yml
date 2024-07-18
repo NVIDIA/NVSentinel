@@ -110,5 +110,4 @@ linters:
     - nilerr
     - noctx
     - whitespace
-    - wsl
     - gosec
