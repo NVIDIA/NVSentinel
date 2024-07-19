@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"time"
 
 	lsnvlink "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/lsnvlink"
@@ -14,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/klog"
 )
 
 const (
@@ -67,18 +67,12 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 }
 
 func main() {
-	var socket = flag.String("socket", "/var/run/nvsentinel.sock", "unix domain socket")
+	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 	flag.Parse()
 
-	dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-		return net.Dial("unix", addr)
-	}
-
-	conn, err := grpc.NewClient(
-		*socket,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(dialer),
-	)
+	var opts []grpc.DialOption
+	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(*socket, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -104,7 +98,9 @@ func main() {
 		case sxidError := <-sxidErrorMonitor.EventChan:
 			healthEvents := SxidError2HealthEvents(sxidError)
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
-			panic(err)
+			if err != nil {
+				klog.Error(err)
+			}
 		}
 	}
 }
