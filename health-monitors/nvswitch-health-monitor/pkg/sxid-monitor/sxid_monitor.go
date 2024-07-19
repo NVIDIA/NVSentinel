@@ -78,7 +78,7 @@ func (c *SxidErrorMonitor) Run() error {
 		}
 
 		if m != nil {
-			fmt.Print(m)
+			klog.Info(m)
 			c.EventChan <- m
 		}
 	}
