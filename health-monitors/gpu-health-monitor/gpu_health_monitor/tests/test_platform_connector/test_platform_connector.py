@@ -12,6 +12,7 @@ from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, platformconnector_pb2_grpc
 
 socket_path = "/tmp/nvsentinel.sock"
+node_name = "node1"
 
 
 def create_recommend_action_mapping_from_xid_error_to_platform_connector():
@@ -84,7 +85,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
+            socket_path, node_name, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
         )
         dcgm_health_events = watcher._get_health_status_dict()
         platform_connector_test.health_event_occurred(dcgm_health_events)
@@ -98,6 +99,7 @@ class TestPlatformConnectors(unittest.TestCase):
         health_event = health_events[0]
         assert health_event.checkName == "XidError"
         assert health_event.errorCode == "64"
+        assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted == ["0"]
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.RUN_FIELDDIAG
         platform_connector_test.clear_all_xid_errors()

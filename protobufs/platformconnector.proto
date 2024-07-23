@@ -43,4 +43,5 @@ message HealthEvent {
 
   map<string, string> metadata = 11;
   google.protobuf.Timestamp generatedTimestamp = 12;
+  string nodeName = 13;
 }

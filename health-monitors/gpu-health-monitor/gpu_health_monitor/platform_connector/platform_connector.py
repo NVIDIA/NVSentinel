@@ -19,12 +19,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def __init__(
         self,
         socket_path: str,
+        node_name: str,
         exit: Event,
         xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
         xid_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
+        self._node_name = node_name
         self._version = 1
         self._agent = "gpu-health-monitor"
         self._component_class = "gpu"
@@ -77,6 +79,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             entitiesImpacted=entities_impacted,
                             message=message,
                             recommendedAction=platformconnector_pb2.UNKNOWN,
+                            nodeName=self._node_name,
                         )
                     )
                     break
@@ -94,6 +97,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             entitiesImpacted=[],
                             message=message,
                             recommendedAction=platformconnector_pb2.UNKNOWN,
+                            nodeName=self._node_name,
                         )
                     )
             log.debug(f"xid health event is {health_events}")
@@ -122,6 +126,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 entitiesImpacted=entities_impacted,
                 message=message,
                 recommendedAction=platformconnector_pb2.NONE,
+                nodeName=self._node_name,
             )
             log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
@@ -159,6 +164,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 entitiesImpacted=entities_impacted,
                 message=message,
                 recommendedAction=recommended_action,
+                nodeName=self._node_name,
             )
             log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
