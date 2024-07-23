@@ -1,3 +1,4 @@
+import os
 import click, configparser, signal, sys
 import logging as log
 from threading import Event
@@ -11,6 +12,7 @@ from .platform_connector.protos import platformconnector_pb2
 def _init_event_processor(
     event_processor_name: str,
     config: configparser.ConfigParser,
+    node_name: str,
     exit: Event,
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails],
     xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
@@ -20,6 +22,7 @@ def _init_event_processor(
         case platform_connector.PlatformConnectorEventProcessor.__name__:
             return platform_connector.PlatformConnectorEventProcessor(
                 socket_path=platform_connector_config["SocketPath"],
+                node_name=node_name,
                 exit=exit,
                 xid_errors_info_dict=xid_errors_info_dict,
                 xid_errors_recommend_action_mapping=xid_error_recommend_action_mapping,
@@ -57,6 +60,11 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
     logging_config = config["logging"]
     dcgm_config = config["dcgm"]
     cli_config = config["cli"]
+    node_name = os.getenv("NODE_NAME")
+    if node_name == "":
+        log.fatal("Failed to fetch nodename from environment variable 'NODE_NAME'")
+        sys.exit(1)
+
     xid_error_recommend_action_mapping_config = config["xiderrorrecommendactiontoplatformconnectormapping"]
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
     with open(xid_error_mapping_config_file, mode="r") as file:
@@ -91,7 +99,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
     for event_processor in enabled_event_processor_names:
         enabled_event_processors.append(
             _init_event_processor(
-                event_processor, config, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
+                event_processor, config, node_name, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
             )
         )
 

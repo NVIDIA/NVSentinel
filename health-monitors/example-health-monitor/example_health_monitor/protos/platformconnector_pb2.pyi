@@ -16,16 +16,22 @@ DESCRIPTOR: _descriptor.FileDescriptor
 
 class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
+    NONE: _ClassVar[RecommenedAction]
     NODE_REBOOT: _ClassVar[RecommenedAction]
     COMPONENT_RESET: _ClassVar[RecommenedAction]
     COMPONENT_REPLACEMENT: _ClassVar[RecommenedAction]
     APPLICATION_RESTART: _ClassVar[RecommenedAction]
+    REPORT_ISSUE: _ClassVar[RecommenedAction]
+    RUN_FIELDDIAG: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
 
+NONE: RecommenedAction
 NODE_REBOOT: RecommenedAction
 COMPONENT_RESET: RecommenedAction
 COMPONENT_REPLACEMENT: RecommenedAction
 APPLICATION_RESTART: RecommenedAction
+REPORT_ISSUE: RecommenedAction
+RUN_FIELDDIAG: RecommenedAction
 UNKNOWN: RecommenedAction
 
 class HealthEvents(_message.Message):
@@ -54,6 +60,7 @@ class HealthEvent(_message.Message):
         "entitiesImpacted",
         "metadata",
         "generatedTimestamp",
+        "nodeName",
     )
 
     class MetadataEntry(_message.Message):
@@ -78,6 +85,7 @@ class HealthEvent(_message.Message):
     ENTITIESIMPACTED_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
     GENERATEDTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    NODENAME_FIELD_NUMBER: _ClassVar[int]
     version: int
     agent: str
     componentClass: str
@@ -90,6 +98,7 @@ class HealthEvent(_message.Message):
     entitiesImpacted: _containers.RepeatedScalarFieldContainer[str]
     metadata: _containers.ScalarMap[str, str]
     generatedTimestamp: _timestamp_pb2.Timestamp
+    nodeName: str
     def __init__(
         self,
         version: _Optional[int] = ...,
@@ -104,4 +113,5 @@ class HealthEvent(_message.Message):
         entitiesImpacted: _Optional[_Iterable[str]] = ...,
         metadata: _Optional[_Mapping[str, str]] = ...,
         generatedTimestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        nodeName: _Optional[str] = ...,
     ) -> None: ...
