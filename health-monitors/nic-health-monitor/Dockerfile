@@ -5,15 +5,11 @@ FROM golang:1.22 as builder
 
 ENV CGO_ENABLED=0
 
-RUN mkdir -p /etc/config
 WORKDIR /go/src/nic-health-monitor
-
-COPY go.mod go.sum ./
-RUN go mod download
 
 COPY . .
 
-RUN go build -o nic-health-monitor cmd/nichealthmonitor.go
+RUN make
 
 FROM $IMG:$TAG
 
