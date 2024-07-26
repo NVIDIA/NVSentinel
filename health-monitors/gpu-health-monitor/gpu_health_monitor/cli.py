@@ -1,4 +1,5 @@
 import os
+import threading
 import click, configparser, signal, sys
 import logging as log
 from threading import Event
@@ -7,6 +8,7 @@ import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
 from .platform_connector.protos import platformconnector_pb2
+from gpu_health_monitor.nvml_parser.nvml_xid_parser import DummyNvmlXidParser
 
 
 def _init_event_processor(
@@ -16,6 +18,9 @@ def _init_event_processor(
     exit: Event,
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails],
     xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
+    xid_errors_batch_processing_interval: int,
+    xid_errors_batch_processing_enabled: bool,
+    nvml_xid_parser,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -26,6 +31,9 @@ def _init_event_processor(
                 exit=exit,
                 xid_errors_info_dict=xid_errors_info_dict,
                 xid_errors_recommend_action_mapping=xid_error_recommend_action_mapping,
+                xid_errors_batch_processing_interval=xid_errors_batch_processing_interval,
+                xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
+                nvml_xid_parser=nvml_xid_parser,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -66,6 +74,9 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
         sys.exit(1)
 
     xid_error_recommend_action_mapping_config = config["xiderrorrecommendactiontoplatformconnectormapping"]
+    xid_errors_config = config["xiderrorsconfig"]
+    xid_errors_batch_processing_enabled = config.getboolean("xiderrorsconfig", "XidErrorsBatchProcessingEnabled")
+    xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
     with open(xid_error_mapping_config_file, mode="r") as file:
         # Create a CSV reader
@@ -93,13 +104,21 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
 
     prom_server, t = start_http_server(port)
     log.info("Initialization completed")
-
+    nvml_xid_parser = DummyNvmlXidParser()
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
         enabled_event_processors.append(
             _init_event_processor(
-                event_processor, config, node_name, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
+                event_processor,
+                config,
+                node_name,
+                exit,
+                xid_errors_info_dict,
+                xid_error_recommend_action_mapping,
+                int(xid_errors_batch_processing_interval),
+                xid_errors_batch_processing_enabled,
+                nvml_xid_parser,
             )
         )
 

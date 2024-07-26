@@ -65,9 +65,9 @@ class HealthEvent(_message.Message):
     isHealthy: bool
     message: str
     recommendedAction: RecommenedAction
-    errorCode: str
+    errorCode: _containers.RepeatedScalarFieldContainer[str]
     entitiesImpacted: _containers.RepeatedScalarFieldContainer[str]
     metadata: _containers.ScalarMap[str, str]
     generatedTimestamp: _timestamp_pb2.Timestamp
     nodeName: str
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[str] = ..., entitiesImpacted: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ...) -> None: ...
+    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ...) -> None: ...

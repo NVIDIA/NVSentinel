@@ -1,11 +1,14 @@
 import dataclasses
 import logging as log
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
+import threading
 from threading import Event
 from .protos import platformconnector_pb2, platformconnector_pb2_grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics
+from collections import defaultdict
+from gpu_health_monitor.nvml_parser.nvml_parser import NvmlXidParser
 
 
 @dataclasses.dataclass
@@ -23,6 +26,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         exit: Event,
         xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
         xid_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
+        xid_errors_batch_processing_interval: int,
+        xid_errors_batch_processing_enabled: bool,
+        nvml_xid_parser: NvmlXidParser,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -32,6 +38,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._component_class = "gpu"
         self.xid_errors_info_dict = xid_errors_info_dict
         self.xid_errors_recommend_action_mapping = xid_errors_recommend_action_mapping
+        self.xid_errors_batch_processing_interval = xid_errors_batch_processing_interval
+        self.xid_errors_sliding_window_index = 0
+        self.nvml_xid_parser = nvml_xid_parser
+        self.xid_errors_batch_processing_enabled = xid_errors_batch_processing_enabled
+        self.nvml_xid_parser.register_xid_processing_done_callback(self.xid_error_batch_processing)
 
     def _get_dcgm_watch(self, watch_name: str) -> str:
         watch_names = watch_name.split("_")[3:]
@@ -64,7 +75,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
                 error_code = ""
                 for id, failure_details in details.entity_failures.items():
-                    error_code = f"{failure_details.code}"
+                    error_code = [f"{failure_details.code}"]
                     entities_impacted = [f"{id}"]
                     health_events.append(
                         platformconnector_pb2.HealthEvent(
@@ -93,7 +104,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             generatedTimestamp=timestamp,
                             isFatal=False if details.status == dcgmtypes.HealthStatus.PASS else True,
                             isHealthy=True if details.status == dcgmtypes.HealthStatus.PASS else False,
-                            errorCode="",
+                            errorCode=[],
                             entitiesImpacted=[],
                             message=message,
                             recommendedAction=platformconnector_pb2.UNKNOWN,
@@ -113,7 +124,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             check_name = "XidError"
             message = "NoXidErrorDetected"
             entities_impacted = []
-            error_code = ""
+            error_code = []
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
@@ -138,19 +149,23 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         return self.xid_errors_recommend_action_mapping[recommended_action]
 
     def xid_event_occurred(self, gpu_id: str, error_num: int):
+        # The below if flag xid_errors_batch_processing_enabled is disabled for now as the NVML XID parser library is
+        # not available yet. Once that is available, then this flag will be enabled.
+        if self.xid_errors_batch_processing_enabled:
+            self.nvml_xid_parser.process_xid_errors_on_gpu(error_num, gpu_id)
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             check_name = "XidError"
             message = "XID error occured"
             entities_impacted = [f"{gpu_id}"]
-            error_code = str(error_num)
+            error_code = [f"{error_num}"]
             is_fatal = True
             recommended_action = platformconnector_pb2.UNKNOWN
-            if error_code in self.xid_errors_info_dict:
-                if self.xid_errors_info_dict[error_code].fatal == "NONFATAL":
+            if str(error_num) in self.xid_errors_info_dict:
+                if self.xid_errors_info_dict[str(error_num)].fatal == "NONFATAL":
                     is_fatal = False
-                recommended_action = self.get_recommended_action_from_xid_error_map(error_code)
+                recommended_action = self.get_recommended_action_from_xid_error_map(str(error_num))
 
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
@@ -173,3 +188,34 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
     def field_change_event_occurred(self, fields_changes: dict[str, list[dcgmtypes.FieldDetails]]):
         log.debug(f"received callback for field change event {fields_changes}")
+
+    def xid_error_batch_processing(
+        self, xid_errors_list: list, gpu_id: str, recommendation_action: platformconnector_pb2.RecommenedAction
+    ):
+        log.debug(f"xid_error_list: {xid_errors_list}, gpu_id: {gpu_id} and recommeded_action: {recommendation_action}")
+        with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            check_name = "XidBatchError"
+            message = "XID batch errors occured"
+            entities_impacted = [f"{gpu_id}"]
+            error_code = [str(xid_error) for xid_error in xid_errors_list]
+            is_fatal = True
+            recommended_action = recommendation_action
+            health_event = platformconnector_pb2.HealthEvent(
+                version=self._version,
+                agent=self._agent,
+                componentClass=self._component_class,
+                checkName=check_name,
+                generatedTimestamp=timestamp,
+                isFatal=is_fatal,
+                isHealthy=False,
+                errorCode=error_code,
+                entitiesImpacted=entities_impacted,
+                message=message,
+                recommendedAction=recommended_action,
+            )
+            log.info(f"xid health event is {health_event}")
+            with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
+                stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
+                stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))

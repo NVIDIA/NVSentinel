@@ -10,6 +10,8 @@ from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, platformconnector_pb2_grpc
+from gpu_health_monitor.nvml_parser.nvml_xid_parser import DummyNvmlXidParser
+
 
 socket_path = "/tmp/nvsentinel.sock"
 node_name = "node1"
@@ -77,6 +79,17 @@ class TestPlatformConnectors(unittest.TestCase):
         xid_errors_info_dict["64"] = platform_connector.XidErrorsMappingDetails(
             name="INFOROM_DRAM_RETIREMENT_FAILURE", recommended_action="RUN_FIELDDIAG", fatal="FATAL"
         )
+
+        xid_errors_info_dict["65"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_NVENC1_ERROR", recommended_action="UNEXPECTED_ERR_REPORT_ISSUE", fatal="FATAL"
+        )
+
+        xid_errors_info_dict["66"] = platform_connector.XidErrorsMappingDetails(
+            name="ROBUST_CHANNEL_FECS_ERR_REG_ACCESS_VIOLATION",
+            recommended_action="UNEXPECTED_ERR_REPORT_ISSUE",
+            fatal="FATAL",
+        )
+
         xid_errors_info_dict["74"] = platform_connector.XidErrorsMappingDetails(
             name="NVLINK_ERROR", recommended_action="WORKFLOW_NVLINK_ERR", fatal="FATAL"
         )
@@ -84,8 +97,18 @@ class TestPlatformConnectors(unittest.TestCase):
             name="SEC_FAULT_ERROR", recommended_action="RESOLUTION_BUCKET_TBD", fatal="FATAL"
         )
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+        xid_errors_sliding_window_size = 3
+        xid_errors_batch_processing_interval = 4
+        xid_errors_batch_processing_enabled = True
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
-            socket_path, node_name, exit, xid_errors_info_dict, xid_error_recommend_action_mapping
+            socket_path,
+            node_name,
+            exit,
+            xid_errors_info_dict,
+            xid_error_recommend_action_mapping,
+            xid_errors_batch_processing_interval,
+            xid_errors_batch_processing_enabled,
+            DummyNvmlXidParser(),
         )
         dcgm_health_events = watcher._get_health_status_dict()
         platform_connector_test.health_event_occurred(dcgm_health_events)
@@ -94,19 +117,29 @@ class TestPlatformConnectors(unittest.TestCase):
             assert event.isHealthy == True
             assert event.checkName != ""
             assert len(dcgm_health_events) == len(health_events)
-        platform_connector_test.xid_event_occurred("0", "64")
+        platform_connector_test.xid_event_occurred("0", 64)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "XidError"
-        assert health_event.errorCode == "64"
+        assert health_event.errorCode[0] == "64"
         assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted == ["0"]
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.RUN_FIELDDIAG
+
+        platform_connector_test.xid_event_occurred("0", 65)
+        health_events = healthEventProcessor.health_events
+        health_event = health_events[0]
+        assert health_event.checkName == "XidError"
+        assert health_event.errorCode[0] == "65"
+        assert health_event.nodeName == "node1"
+        assert health_event.entitiesImpacted == ["0"]
+        assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
+
         platform_connector_test.clear_all_xid_errors()
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "XidError"
-        assert health_event.errorCode == ""
+        assert health_event.errorCode == []
         assert health_event.entitiesImpacted == []
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE
         server.stop(0)

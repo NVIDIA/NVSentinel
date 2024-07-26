@@ -38,7 +38,7 @@ message HealthEvent {
   bool isHealthy = 6;
   string message = 7;
   RecommenedAction recommendedAction = 8;
-  string errorCode = 9;
+  repeated string errorCode = 9;
   repeated string entitiesImpacted = 10;
 
   map<string, string> metadata = 11;
