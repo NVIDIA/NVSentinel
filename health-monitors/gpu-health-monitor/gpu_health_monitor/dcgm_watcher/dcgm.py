@@ -160,7 +160,7 @@ class DCGMWatcher:
 
     def _unregister_xid_callbacks(self, dcgm_groups: list[pydcgm.DcgmGroup]):
         # TODO:Need to try with python SDK API for this
-        command = "/bin/bash -c dcgmi policy --clear"
+        command = "/bin/bash -c 'dcgmi policy --clear'"
         try:
             subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except subprocess.CalledProcessError as e:

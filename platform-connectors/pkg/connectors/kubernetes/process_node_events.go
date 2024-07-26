@@ -18,6 +18,7 @@ const (
 	DefaultNamespace   = "default"
 	NoHealthFailureMsg = "No Health Failures"
 	XidErrorCheck      = "XidError"
+	XidBatchErrorCheck = "XidBatchError"
 )
 
 func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1.NodeCondition, isHealthy bool) error {
@@ -81,7 +82,7 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 func (r *K8sConnector) fetchHealthEventReason(healthEvent *platformconnector.HealthEvent) string {
 	reason := ""
 
-	if healthEvent.CheckName == XidErrorCheck {
+	if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
 		switch healthEvent.IsHealthy {
 		case true:
 			reason = "NoXidErrorDetected"
@@ -105,10 +106,12 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 	if healthEvent.IsHealthy {
 		message = NoHealthFailureMsg
 	} else {
-		if healthEvent.CheckName == XidErrorCheck {
-			message = "XID" + healthEvent.ErrorCode
-		} else {
-			message = healthEvent.ErrorCode
+		for _, errorCode := range healthEvent.ErrorCode {
+			if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
+				message += fmt.Sprintf("XID%s", errorCode)
+			} else {
+				message += errorCode
+			}
 		}
 
 		for _, entity := range healthEvent.EntitiesImpacted {

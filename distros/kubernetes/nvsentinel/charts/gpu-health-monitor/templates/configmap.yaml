@@ -23,6 +23,11 @@ data:
 
     [cli]
     EnabledEventProcessors = PlatformConnectorEventProcessor
+    
+    [xiderrorsconfig]
+    XidErrorsBatchProcessingEnabled = false
+    XidErrorsSlidingWindowSize = 3
+    XidErrorsBatchProcessingInterval = 10
 
     [xiderrorrecommendactiontoplatformconnectormapping]
     UNEXPECTED_ERR_REPORT_ISSUE = 5

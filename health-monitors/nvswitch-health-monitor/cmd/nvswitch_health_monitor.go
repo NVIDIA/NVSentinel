@@ -54,7 +54,7 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 		ComponentClass:     COMPONENT_CLASS,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		IsFatal:            sxidError.IsFatal,
-		ErrorCode:          fmt.Sprint(sxidError.ErrorNum),
+		ErrorCode:          []string{fmt.Sprint(sxidError.ErrorNum)},
 		EntitiesImpacted:   entitiesImpacted,
 		Message:            sxidError.Message,
 		// ActionRequired:     false,
