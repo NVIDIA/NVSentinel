@@ -22,6 +22,8 @@ const (
 	COMPONENT_CLASS = "nvswitch"
 )
 
+const defaultStateFilePath = "/var/run/nvswitch_monitor/state.json"
+
 func GetGPUID(nvswitch, nvlink int) (int, error) {
 	dgxType := lsnvlink.GetDGXType()
 
@@ -80,7 +82,7 @@ func main() {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	sxidErrorMonitor, err := sxid.NewSxidErrorMonitor()
+	sxidErrorMonitor, err := sxid.NewSxidErrorMonitor(defaultStateFilePath)
 	if err != nil {
 		panic(err)
 	}

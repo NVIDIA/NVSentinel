@@ -41,20 +41,11 @@ spec:
           volumeMounts:
             - name: var-run-vol
               mountPath: /var/run/
-            - name: dev-kmsg
-              mountPath: /dev/kmsg
-              readOnly: true
-          securityContext:
-            privileged: true
       volumes:
         - name: var-run-vol
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
-        - name: dev-kmsg
-          hostPath:
-            path: /dev/kmsg
-            type: CharDevice
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

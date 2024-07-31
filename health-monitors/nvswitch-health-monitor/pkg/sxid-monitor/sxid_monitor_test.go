@@ -17,7 +17,9 @@
 package sxid_monitor
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -76,4 +78,95 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 	_, err = ParseSXIDError(logMissingLink)
 	require.Error(t, err)
 
+}
+
+func TestStatePersistence(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	initialState := nvSwitchMonitorState{
+		LastTimestamp: 12345.6789,
+		LastLogLine:   "test log line",
+	}
+
+	err := saveState(testStateFilePath, initialState)
+	require.NoError(t, err)
+
+	loadedState, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, initialState, loadedState)
+}
+
+func TestExtractTimestamp(t *testing.T) {
+	log := "<12>[73309.599396] nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
+
+	timestamp, err := extractTimestamp(log)
+	require.NoError(t, err)
+	require.Equal(t, 73309.599396, timestamp)
+
+	invalidLog := "Invalid log line"
+	_, err = extractTimestamp(invalidLog)
+	require.Error(t, err)
+}
+
+func TestSxidErrorMonitorInitialization(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	monitor, err := NewSxidErrorMonitor(testStateFilePath)
+	require.NoError(t, err)
+	require.NotNil(t, monitor)
+	defer monitor.Close()
+
+	require.Equal(t, float64(0), monitor.lastTimestamp)
+	require.Equal(t, "", monitor.lastLogLine)
+	require.Equal(t, testStateFilePath, monitor.stateFilePath)
+}
+
+func TestProcessLog(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	monitor, err := NewSxidErrorMonitor(testStateFilePath)
+	require.NoError(t, err)
+	require.NotNil(t, monitor)
+	defer monitor.Close()
+
+	log := "<12>[73309.599396] nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
+
+	expectedEvent := &SXIDErrorEvent{
+		ErrorNum: 20009,
+		IsFatal:  false,
+		NVSwitch: 0,
+		PCI:      "0000:06:00.0",
+		Link:     4,
+		Message:  "nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate",
+	}
+
+	// start a goroutine to read from the event channel to prevent blocking
+	done := make(chan struct{})
+	var receivedEvent *SXIDErrorEvent
+	go func() {
+		receivedEvent = <-monitor.EventChan
+		close(done)
+	}()
+
+	err = monitor.processLog(log)
+	require.NoError(t, err)
+
+	require.Equal(t, 73309.599396, monitor.lastTimestamp)
+	require.Equal(t, log, monitor.lastLogLine)
+
+	state, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, 73309.599396, state.LastTimestamp)
+	require.Equal(t, log, state.LastLogLine)
+
+	select {
+	case <-done:
+		require.NotNil(t, receivedEvent)
+		require.Equal(t, expectedEvent, receivedEvent)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for event")
+	}
 }
