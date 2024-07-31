@@ -18,13 +18,8 @@ podSecurityContext: {}
 
 securityContext:
   runAsUser: 0
-
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+  capabilities:
+    add: ["SYSLOG"]
 
 resources: 
   limits:
