@@ -1,7 +1,6 @@
 image:
   repository: nvcr.io/nv-ngc-devops/nvsentinel/gpu-health-monitor
   pullPolicy: IfNotPresent
-  tag: "main"
 
 imagePullSecrets: 
   - name: nvidia-ngcuser-pull-secret

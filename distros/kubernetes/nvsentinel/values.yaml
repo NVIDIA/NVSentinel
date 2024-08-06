@@ -2,6 +2,9 @@ platformConnector:
   image:
     repository: nvcr.io/nv-ngc-devops/nvsentinel/platform-connectors
     pullPolicy: IfNotPresent
+
+global:
+  image:
     tag: "main"
 
   resources: 

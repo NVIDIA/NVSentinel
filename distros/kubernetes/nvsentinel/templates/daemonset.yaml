@@ -34,7 +34,7 @@ spec:
         - name: platform-connector
           securityContext:
             {{- toYaml .Values.platformConnector.securityContext | nindent 12 }}
-          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.platformConnector.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
           args:
           - -socket
