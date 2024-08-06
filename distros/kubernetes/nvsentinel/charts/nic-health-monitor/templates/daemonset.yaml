@@ -16,9 +16,8 @@ spec:
       {{- include "nic-health-monitor.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      annotations:
-        rollme: {{ randAlphaNum 5 | quote }}
       {{- with .Values.podAnnotations }}
+      annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:

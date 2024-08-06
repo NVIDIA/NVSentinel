@@ -26,8 +26,26 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-nodeSelector: 
-  nvidia.com/gpu.deploy.dcgm: "true"
+nodeSelector:
+  nvidia.com/gpu.present: "true"
+
+additionalHostVolumes:
+  - name: vulkan-icd-mount
+    hostPath:
+      path: /home/kubernetes/bin/nvidia/vulkan/icd.d
+      type: Directory
+  - name: nvidia-install-dir-host
+    hostPath:
+      path: /home/kubernetes/bin/nvidia
+      type: Directory
+
+additionalVolumeMounts:
+  - mountPath: /usr/local/nvidia
+    name: nvidia-install-dir-host
+    readOnly: true
+  - mountPath: /etc/vulkan/icd.d
+    name: vulkan-icd-mount
+    readOnly: true
 
 tolerations: 
   - effect: NoSchedule
