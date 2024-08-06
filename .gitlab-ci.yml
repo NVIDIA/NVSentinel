@@ -255,6 +255,7 @@ platform connectors container publish:
       --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
       --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/platform-connectors:${CI_COMMIT_TAG}"
 
+
 platform connectors container main branch publish:
   image:
     name: $KANIKO_IMAGE
@@ -286,6 +287,8 @@ kubernetes distro helm publish:
     - cd distros/kubernetes
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm package nvsentinel --version ${CI_COMMIT_TAG}
+    - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
+    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
 
 kubernetes distro helm main branch publish:
