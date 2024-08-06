@@ -52,6 +52,9 @@ spec:
             - name: metrics
               containerPort: {{ .Values.metricsPort }}
           volumeMounts:
+            {{- if .Values.additionalVolumeMounts }}
+            {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}
+            {{- end }}
             - name: config-vol
               mountPath: /etc/dcgmhealth
             - name: var-run-vol
@@ -70,6 +73,9 @@ spec:
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
+        {{- if .Values.additionalHostVolumes }}
+        {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
+        {{- end }}
       {{- if .Values.useHostNetworking }}
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet

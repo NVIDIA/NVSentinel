@@ -34,9 +34,15 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-nodeSelector: 
+nodeSelector:
   nvidia.com/gpu.present: "true"
 
-tolerations: []
+
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
 
 affinity: {}
