@@ -9,10 +9,10 @@ platformConnector:
 
   resources: 
     limits:
-      cpu: 500m
+      cpu: 200m
       memory: 512Mi
     requests:
-      cpu: 500m
+      cpu: 200m
       memory: 512Mi
 
   securityContext:
@@ -20,6 +20,8 @@ platformConnector:
     capabilities:
       drop:
       - ALL
+
+  kubectlImage: "nvcr.io/nv-ngc-devops/kubectl:1.28.5"
 
   podSecurityContext: {}
 
