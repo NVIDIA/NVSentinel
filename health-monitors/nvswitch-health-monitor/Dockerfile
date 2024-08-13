@@ -1,16 +1,19 @@
 ARG TAG=v3.0.5
 ARG IMG=nvcr.io/nvidian/distroless/go
-FROM golang:1.22 as builder
+FROM golang:1.22 AS builder
 
 ENV CGO_ENABLED=0
 
 WORKDIR /go/src/nvswitch-health-monitor
 
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
-RUN make
+RUN go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
-FROM debian:bullseye-slim as build1
+FROM debian:bullseye-slim AS build1
 # Install pciutils
 RUN apt-get update && apt-get install -y pciutils
 FROM $IMG:$TAG

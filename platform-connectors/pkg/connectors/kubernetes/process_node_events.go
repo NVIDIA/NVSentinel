@@ -110,12 +110,12 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 			if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
 				message += fmt.Sprintf("XID%s", errorCode)
 			} else {
-				message += errorCode
+				message += fmt.Sprintf("%s:%s", errorCode, healthEvent.Message)
 			}
 		}
 
 		for _, entity := range healthEvent.EntitiesImpacted {
-			message += ":" + entity
+			message += fmt.Sprintf(" GPU:%s", entity)
 		}
 
 		message += fmt.Sprintf(" Recommended Action=%s.", healthEvent.RecommendedAction.String())

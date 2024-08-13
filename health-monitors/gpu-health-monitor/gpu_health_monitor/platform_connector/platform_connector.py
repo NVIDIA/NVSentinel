@@ -75,6 +75,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
                 error_code = ""
                 for id, failure_details in details.entity_failures.items():
+                    message = failure_details.message
                     error_code = [f"{failure_details.code}"]
                     entities_impacted = [f"{id}"]
                     health_events.append(
