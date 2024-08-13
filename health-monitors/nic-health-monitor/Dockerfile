@@ -1,15 +1,18 @@
 ARG TAG=v3.0.5
 ARG IMG=nvcr.io/nvidian/distroless/go
 
-FROM golang:1.22 as builder
+FROM golang:1.22 AS builder
 
 ENV CGO_ENABLED=0
 
 WORKDIR /go/src/nic-health-monitor
 
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
-RUN make
+RUN go build -o nic-health-monitor cmd/nichealthmonitor.go
 
 FROM $IMG:$TAG
 

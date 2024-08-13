@@ -48,7 +48,7 @@ class TestDCGMHealthChecks:
     def test_get_available_error_codes(self):
         watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])
         error_codes = watcher._get_available_error_codes()
-        assert len(error_codes) == 113
+        assert len(error_codes) == 112
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])

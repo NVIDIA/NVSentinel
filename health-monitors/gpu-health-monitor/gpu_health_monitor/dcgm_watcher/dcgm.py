@@ -39,9 +39,34 @@ class DCGMWatcher:
 
     def _get_available_error_codes(self) -> dict[int, str]:
         error_codes = {}
+        lines = []
         for var in dir(dcgm_errors):
-            if var.startswith("DCGM_FR") and not var.endswith("MSG") and not var.endswith("NEXT"):
-                error_codes[getattr(dcgm_errors, var)] = var
+            if (
+                var.startswith("DCGM_FR")
+                and not var.startswith("DCGM_FR_EC_")
+                and not var.endswith("MSG")
+                and not var.endswith("NEXT")
+            ):
+
+                val = getattr(dcgm_errors, var)
+                """
+                TODO : Fix it https://nvbugspro.nvidia.com/bug/4803080
+                This is to handle a special case of error code DCGM_FR_PCIE_H_REPLAY_VIOLATION. What is happening here
+                is error code DCGM_FR_PCIE_H_REPLAY_VIOLATION is present twice in dcgm_errors.py as seen below.
+                DCGM_FR_PCIE_H_REPLAY_VIOLATION             = 98 # Host PCIe replay count violation
+                DCGM_FR_PCIE_H_REPLAY_VIOLATION       = "GPU %u host-side correctable PCIe replay count violation, see dmesg for more information."
+                Ideally, the second occurance should have MSG suffix appended to it. Due to this, the first occurance of
+                this will be written by the second occurance. Since this comes from dcgm, hence  they should correct it.
+                For the time being ignore this DCGM error  as only second occurance is getting considered which we don't
+                want.This is due to the behaviour of how dictionary works in python.
+                Will fix this code later.
+                """
+                if str(val).startswith("GPU"):
+                    continue
+                if str(val).startswith("(") and str(val).endswith(")"):
+                    val = str(val)[1:-2]
+                error_codes[int(val)] = var
+        log.info(f"error_codes {error_codes}")
         return error_codes
 
     def _get_available_fields(self) -> dict[str, int]:
@@ -104,7 +129,8 @@ class DCGMWatcher:
             health_status[self._health_watches[incident.system]].entity_failures[incident.entityInfo.entityId] = (
                 types.ErrorDetails(message=incident.error.msg, code=self._error_codes[incident.error.code])
             )
-        log.info(f"filled in health details is {health_status}")
+            log.debug(f"incident.error.code is {incident.error.code} and error msg is {incident.error.msg}")
+        log.debug(f"filled in health details is {health_status}")
         return health_status
 
     def _xid_event_callback_func(self, gpu_id, data):
