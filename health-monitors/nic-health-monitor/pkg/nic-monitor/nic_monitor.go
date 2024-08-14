@@ -17,6 +17,7 @@
 package nic_monitor
 
 import (
+	"os"
 	"time"
 
 	"k8s.io/klog"
@@ -43,12 +44,29 @@ func NewNicErrorMonitor() (*NicErrorMonitor, error) {
 		EventChan: make(chan *[]NicErrorEvent),
 	}
 
-	// TODO (https://jirasw.nvidia.com/browse/NGCC-19001)
-	// Replace with register function and make this configurable
-	collector.Monitors = append(collector.Monitors, &InfinibandDeviceMonitor{})
-	collector.Monitors = append(collector.Monitors, &EthernetDeviceMonitor{})
+	scanAndRegisterNics(collector)
 
 	return collector, nil
+}
+
+func scanAndRegisterNics(collector *NicErrorMonitor) {
+	// check if the infiniband directory exists
+	if _, err := os.Stat(SYS_CLASS_INFINIBAND_PATH); err != nil {
+		if !os.IsNotExist(err) {
+			klog.Errorf("error occurred while reading directory info: %v", err)
+		}
+	} else {
+		collector.Monitors = append(collector.Monitors, &InfinibandDeviceMonitor{})
+	}
+
+	// check if the ethernet directory exists
+	if _, err := os.Stat(SYS_CLASS_NET_PATH); err != nil {
+		if !os.IsNotExist(err) {
+			klog.Errorf("error occurred while reading directory info: %v", err)
+		}
+	} else {
+		collector.Monitors = append(collector.Monitors, &EthernetDeviceMonitor{})
+	}
 }
 
 func (c *NicErrorMonitor) Close() error {
