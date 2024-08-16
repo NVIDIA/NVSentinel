@@ -42,8 +42,7 @@ spec:
               mountPath: /var/run/
             - name: sys
               mountPath: /sys
-          securityContext:
-            privileged: true
+              readOnly: true
       volumes:
         - name: var-run-vol
           hostPath:
