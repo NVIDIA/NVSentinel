@@ -38,7 +38,7 @@ const (
 )
 
 // kernel log starts with this timestamp format (e.g. <12>[73309.599396])
-var logPrefixPattern = regexp.MustCompile(`^<\d+>\[(\d+\.\d+)\] `)
+var logPrefixPattern = regexp.MustCompile(`^<\d+>\[\s*(\d+\.\d+)\s*\]`)
 
 type nvSwitchMonitorState struct {
 	LastTimestamp float64 `json:"last_timestamp"`
