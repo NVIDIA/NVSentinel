@@ -52,8 +52,8 @@ spec:
             - name: metrics
               containerPort: {{ .Values.metricsPort }}
           volumeMounts:
-            {{- if .Values.additionalVolumeMounts }}
-            {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}
+            {{- if .Values.global.gpuHealthMonitorAdditionalVolumeMounts }}
+            {{ toYaml .Values.global.gpuHealthMonitorAdditionalVolumeMounts | nindent 12 }}
             {{- end }}
             - name: config-vol
               mountPath: /etc/dcgmhealth
@@ -73,8 +73,8 @@ spec:
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
-        {{- if .Values.additionalHostVolumes }}
-        {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
+        {{- if .Values.global.gpuHealthMonitorAdditionalHostVolumes }}
+        {{ toYaml .Values.global.gpuHealthMonitorAdditionalHostVolumes | nindent 8 }}
         {{- end }}
       {{- if .Values.useHostNetworking }}
       hostNetwork: true
