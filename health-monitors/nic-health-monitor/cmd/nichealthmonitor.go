@@ -92,6 +92,8 @@ func main() {
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
 			if err != nil {
 				klog.Error(err)
+			} else {
+				klog.Infof("Successfully sent health events: %+v", healthEvents)
 			}
 		}
 	}
