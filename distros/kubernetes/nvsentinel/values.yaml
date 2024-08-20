@@ -2,6 +2,24 @@ global:
   image:
     tag: "main"
 
+  gpuHealthMonitorAdditionalHostVolumes:
+    - name: vulkan-icd-mount
+      hostPath:
+        path: /home/kubernetes/bin/nvidia/vulkan/icd.d
+        type: Directory
+    - name: nvidia-install-dir-host
+      hostPath:
+        path: /home/kubernetes/bin/nvidia
+        type: Directory
+
+  gpuHealthMonitorAdditionalVolumeMounts:
+    - mountPath: /usr/local/nvidia
+      name: nvidia-install-dir-host
+      readOnly: true
+    - mountPath: /etc/vulkan/icd.d
+      name: vulkan-icd-mount
+      readOnly: true
+
 platformConnector:
   image:
     repository: nvcr.io/nv-ngc-devops/nvsentinel/platform-connectors
@@ -48,3 +66,4 @@ tolerations: []
 affinity: {}
 
 socketPath: "/var/run/nvsentinel.sock"
+
