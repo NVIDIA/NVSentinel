@@ -18,6 +18,10 @@ FROM debian:bullseye-slim AS build1
 RUN apt-get update && apt-get install -y pciutils
 FROM $IMG:$TAG
 
+RUN echo "before copying lscpi related files"
+RUN ls -l /usr/bin && ls -l /usr/lib/x86_64-linux-gnu
+
+
 COPY --from=build1 /usr/bin/lspci /usr/bin/lspci
 COPY --from=build1 /usr/bin/setpci /usr/bin/setpci
 COPY --from=build1 /usr/lib/x86_64-linux-gnu/libpci.so.3 /usr/lib/x86_64-linux-gnu/libpci.so.3
@@ -31,6 +35,9 @@ COPY --from=build1 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /usr/lib/x86_64-li
 COPY --from=build1 /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 COPY --from=build1 /lib/x86_64-linux-gnu/libpthread.so.0 /lib/x86_64-linux-gnu/libpthread.so.0
 COPY --from=build1 /lib/x86_64-linux-gnu/libdl.so.2 /lib/x86_64-linux-gnu/libdl.so.2
+
+RUN echo "after copying lscpi related files"
+RUN ls -l /usr/bin && ls -l /usr/lib/x86_64-linux-gnu
 
 COPY --from=builder /go/src/nvswitch-health-monitor/nvswitch-health-monitor /app/nvswitch-health-monitor
 
