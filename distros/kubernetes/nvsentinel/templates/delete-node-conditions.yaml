@@ -63,7 +63,13 @@ metadata:
     "helm.sh/hook-weight": "-1"
     "helm.sh/hook-delete-policy": "hook-succeeded"
 spec:
+  selector:
+    matchLabels:
+      job-name: "delete-node-conditions-pre-install-job"
   template:
+    metadata:
+      labels:
+        job-name: "delete-node-conditions-pre-install-job"
     spec:
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}-pre-install
       {{- with .Values.imagePullSecrets }}
