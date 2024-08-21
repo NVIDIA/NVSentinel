@@ -60,16 +60,10 @@ metadata:
   name: "delete-node-conditions-pre-install-job"
   annotations:
     "helm.sh/hook": pre-install
-    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-weight": "1"
     "helm.sh/hook-delete-policy": "hook-succeeded"
 spec:
-  selector:
-    matchLabels:
-      job-name: "delete-node-conditions-pre-install-job"
   template:
-    metadata:
-      labels:
-        job-name: "delete-node-conditions-pre-install-job"
     spec:
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}-pre-install
       {{- with .Values.imagePullSecrets }}
@@ -84,7 +78,6 @@ spec:
             - -c
             - |
               #!/bin/bash
-              set -euo pipefail
               echo "Deleting node conditions..."
               nodeConditions=("XidError" "GpuDbeMsbeProblem" "GpuHWSlowDown")
               nodes=$(kubectl get nodes -o name)
