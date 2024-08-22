@@ -62,7 +62,7 @@ func TestScrapPhyEthernetDevices(t *testing.T) {
 		"eth0": {Name: "eth0", Operstate: "up"},
 	}
 
-	actualDevs, err := GetPhyEthernetDevices()
+	actualDevs, err := GetPhyEthernetDevices(nil)
 	require.NoError(t, err)
 	require.NotNil(t, actualDevs)
 	require.Equal(t, expected, actualDevs)
@@ -90,36 +90,104 @@ func TestPhyEthernetMonitor(t *testing.T) {
 
 	ethMonitor := &EthernetDeviceMonitor{}
 
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil}
+
 	// eth0 is up, so no error expected
-	actualErrors, err := ethMonitor.Monitor()
+	actualErrors, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// eth0 become down, so report nic down event
 	mockFS.Fs["sys/class/net/eth0/operstate"].Data = []byte("down")
-	actualErrors, err = ethMonitor.Monitor()
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedDown, actualErrors)
 
 	// eth0 is still down, but it is not a new error, so do not report it
-	actualErrors, err = ethMonitor.Monitor()
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// eth0 become up - no error reports
 	mockFS.Fs["sys/class/net/eth0/operstate"].Data = []byte("up")
-	actualErrors, err = ethMonitor.Monitor()
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// eth0 become down again, so report nic down event
 	mockFS.Fs["sys/class/net/eth0/operstate"].Data = []byte("down")
-	actualErrors, err = ethMonitor.Monitor()
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedDown, actualErrors)
+}
+
+func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
+	fileSystem = MockFileSystem{
+		Fs: fstest.MapFS{
+			"sys/class/net/eth0/device":    {Mode: fs.ModeDir},
+			"sys/class/net/eth0/operstate": {Data: []byte("up")},
+			"sys/class/net/eth0/type":      {Data: []byte("1")},
+			"sys/class/net/eth1/device":    {Mode: fs.ModeDir},
+			"sys/class/net/eth1/operstate": {Data: []byte("down")},
+			"sys/class/net/eth1/type":      {Data: []byte("1")},
+			"sys/class/net/eth2/device":    {Mode: fs.ModeDir},
+			"sys/class/net/eth2/operstate": {Data: []byte("up")},
+			"sys/class/net/eth2/type":      {Data: []byte("1")},
+			"sys/class/net/eth3/device":    {Mode: fs.ModeDir},
+			"sys/class/net/eth3/operstate": {Data: []byte("down")},
+			"sys/class/net/eth3/type":      {Data: []byte("1")},
+		},
+	}
+
+	mockFS := fileSystem.(MockFileSystem)
+
+	expectedNoError := []NicErrorEvent{}
+
+	ethMonitor := &EthernetDeviceMonitor{}
+
+	// exclusion regex to exclude eth1 and eth3
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: []string{"^eth1$", "^eth3$"}}
+
+	// eth0 and eth2 are not excluded so no error expected
+	actualErrors, err := ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
+
+	// update eth1 state to "up" and verify it is not detected as it is excluded
+	mockFS.Fs["sys/class/net/eth1/operstate"].Data = []byte("up")
+
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
+
+	// update eth2 to have a state change so it should be detected
+	mockFS.Fs["sys/class/net/eth2/operstate"].Data = []byte("down")
+
+	expectedStateDown := []NicErrorEvent{
+		{
+			NicType: Ethernet,
+			Name:    "eth2",
+			Message: "state: down",
+		},
+	}
+
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedStateDown, actualErrors)
+
+	// update eth3 state to "up" and verify it is not detected as it is excluded
+	mockFS.Fs["sys/class/net/eth3/operstate"].Data = []byte("up")
+
+	actualErrors, err = ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
 }
