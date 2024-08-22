@@ -55,7 +55,7 @@ func TestScrapInfinibandDevices(t *testing.T) {
 		},
 	}
 
-	actualDevs, err := GetInfinibandDevices()
+	actualDevs, err := GetInfinibandDevices(nil)
 	require.NoError(t, err)
 	require.NotNil(t, actualDevs)
 	require.Equal(t, expected, actualDevs)
@@ -77,8 +77,10 @@ func TestInfinibandMonitor(t *testing.T) {
 
 	ibMonitor := &InfinibandDeviceMonitor{}
 
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil}
+
 	// mlx5_0 port 1 is up, so no error expected
-	actualErrors, err := ibMonitor.Monitor()
+	actualErrors, err := ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
@@ -94,27 +96,27 @@ func TestInfinibandMonitor(t *testing.T) {
 		},
 	}
 
-	actualErrors, err = ibMonitor.Monitor()
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedPhyStatePolling, actualErrors)
 
 	// mlx5_0 port 1 is still down, but it is not a new error, so do not report it
-	actualErrors, err = ibMonitor.Monitor()
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// mlx5_0 port 1 become up - no error reports
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("5: LinkUp")
-	actualErrors, err = ibMonitor.Monitor()
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// // eth0 become down again, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
-	actualErrors, err = ibMonitor.Monitor()
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedPhyStatePolling, actualErrors)
@@ -130,7 +132,73 @@ func TestInfinibandMonitor(t *testing.T) {
 		},
 	}
 
-	actualErrors, err = ibMonitor.Monitor()
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedStateDown, actualErrors)
+}
+
+func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
+	fileSystem = MockFileSystem{
+		Fs: fstest.MapFS{
+			// mlx5_0 with port 1
+			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
+			"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
+			"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
+			// mlx5_1 with port 1
+			"sys/class/infiniband/mlx5_1/ports/1":            {Mode: fs.ModeDir},
+			"sys/class/infiniband/mlx5_1/ports/1/phys_state": {Data: []byte("5: LinkUp")},
+			"sys/class/infiniband/mlx5_1/ports/1/state":      {Data: []byte("4: ACTIVE")},
+			// mlx5_2 with port 1
+			"sys/class/infiniband/mlx5_2/ports/1":            {Mode: fs.ModeDir},
+			"sys/class/infiniband/mlx5_2/ports/1/phys_state": {Data: []byte("5: LinkUp")},
+			"sys/class/infiniband/mlx5_2/ports/1/state":      {Data: []byte("4: ACTIVE")},
+		},
+	}
+
+	mockFS := fileSystem.(MockFileSystem)
+
+	expectedNoError := []NicErrorEvent{}
+
+	ibMonitor := &InfinibandDeviceMonitor{}
+
+	// exclude mlx5_1 and mlx5_2
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: []string{"^mlx5_1$", "^mlx5_2$"}}
+
+	// mlx5_0 port 1 is up, and mlx5_1 and mlx5_2 are excluded, so no error expected
+	actualErrors, err := ibMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
+
+	// update mlx5_1 state and verify it is not detected as  it is excluded
+	mockFS.Fs["sys/class/infiniband/mlx5_1/ports/1/state"].Data = []byte("1: Down")
+
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
+
+	// udate mlx5_2 phys_state and verify it is not detected as it is excluded
+	mockFS.Fs["sys/class/infiniband/mlx5_2/ports/1/phys_state"].Data = []byte("2: Polling")
+
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualErrors)
+	require.Equal(t, expectedNoError, actualErrors)
+
+	// update mlx5_0 to have a state change, it should be detected
+	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
+
+	expectedStateDown := []NicErrorEvent{
+		{
+			NicType: Infiniband,
+			Name:    "mlx5_0_1",
+			Message: "state: 1: Down",
+		},
+	}
+
+	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedStateDown, actualErrors)

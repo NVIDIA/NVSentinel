@@ -40,7 +40,7 @@ type InfinibandDeviceMonitor struct {
 	Devices map[string]InfiniBandDevice
 }
 
-func GetInfinibandDevices() (map[string]InfiniBandDevice, error) {
+func GetInfinibandDevices(exclusionRegexList []string) (map[string]InfiniBandDevice, error) {
 	deviceList := map[string]InfiniBandDevice{}
 
 	dirs, err := fileSystem.ReadDir(SYS_CLASS_INFINIBAND_PATH)
@@ -50,6 +50,10 @@ func GetInfinibandDevices() (map[string]InfiniBandDevice, error) {
 
 	for _, device := range dirs {
 		deviceName := device.Name()
+
+		if isExcluded(deviceName, exclusionRegexList) {
+			continue
+		}
 
 		ports, err := GetInfinibandPorts(deviceName)
 		if err != nil {
@@ -105,8 +109,8 @@ func GetPortPhysState(devname, portName string) string {
 }
 
 // nolint: gocognit, cyclop
-func (m *InfinibandDeviceMonitor) Monitor() ([]NicErrorEvent, error) {
-	deviceList, err := GetInfinibandDevices()
+func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error) {
+	deviceList, err := GetInfinibandDevices(config.ExclusionRegexes)
 	if err != nil {
 		return nil, err
 	}

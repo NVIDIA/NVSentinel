@@ -38,6 +38,8 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: config-vol
+              mountPath: /etc/nichealthmonitor
             - name: var-run-vol
               mountPath: /var/run/
             - name: sys
@@ -48,6 +50,9 @@ spec:
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
+        - name: config-vol
+          configMap:
+            name: {{ include "nic-health-monitor.fullname" . }}
         - name: sys
           hostPath:
             path: /sys

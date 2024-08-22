@@ -105,7 +105,7 @@ func GetEthernetOperstate(devname string) string {
 	return strings.TrimSpace(string(state))
 }
 
-func GetPhyEthernetDevices() (map[string]EthernetDevice, error) {
+func GetPhyEthernetDevices(exclusionRegexList []string) (map[string]EthernetDevice, error) {
 	deviceList := map[string]EthernetDevice{}
 
 	dirs, err := fileSystem.ReadDir(SYS_CLASS_NET_PATH)
@@ -115,6 +115,10 @@ func GetPhyEthernetDevices() (map[string]EthernetDevice, error) {
 
 	for _, device := range dirs {
 		deviceName := device.Name()
+
+		if isExcluded(deviceName, exclusionRegexList) {
+			continue
+		}
 
 		isPhy, err := IsPhyEthernet(deviceName)
 		if err != nil {
@@ -131,8 +135,8 @@ func GetPhyEthernetDevices() (map[string]EthernetDevice, error) {
 	return deviceList, nil
 }
 
-func (m *EthernetDeviceMonitor) Monitor() ([]NicErrorEvent, error) {
-	deviceList, err := GetPhyEthernetDevices()
+func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error) {
+	deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
 	if err != nil {
 		return nil, err
 	}

@@ -18,6 +18,7 @@ package nic_monitor
 
 import (
 	"os"
+	"regexp"
 	"time"
 
 	"k8s.io/klog"
@@ -30,18 +31,24 @@ const (
 	Infiniband
 )
 
+type NicMonitorConfig struct {
+	ExclusionRegexes []string
+}
+
 type NicMonitor interface {
-	Monitor() ([]NicErrorEvent, error)
+	Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error)
 }
 
 type NicErrorMonitor struct {
-	EventChan chan *[]NicErrorEvent
-	Monitors  []NicMonitor
+	EventChan     chan *[]NicErrorEvent
+	Monitors      []NicMonitor
+	monitorConfig *NicMonitorConfig
 }
 
-func NewNicErrorMonitor() (*NicErrorMonitor, error) {
+func NewNicErrorMonitor(config *NicMonitorConfig) (*NicErrorMonitor, error) {
 	collector := &NicErrorMonitor{
-		EventChan: make(chan *[]NicErrorEvent),
+		EventChan:     make(chan *[]NicErrorEvent),
+		monitorConfig: config,
 	}
 
 	scanAndRegisterNics(collector)
@@ -81,7 +88,7 @@ func (c *NicErrorMonitor) Run() error {
 	func() {
 		for range ticker.C {
 			for _, monitor := range c.Monitors {
-				events, err := monitor.Monitor()
+				events, err := monitor.Monitor(c.monitorConfig)
 				if err != nil {
 					klog.Errorf("error occurred: %v", err)
 				} else if len(events) != 0 {
@@ -92,6 +99,17 @@ func (c *NicErrorMonitor) Run() error {
 	}()
 
 	return nil
+}
+
+// check if a nic name matches any exclusion regex
+func isExcluded(name string, exclusionRegexes []string) bool {
+	for _, regex := range exclusionRegexes {
+		if match, _ := regexp.MatchString(regex, name); match {
+			return true
+		}
+	}
+
+	return false
 }
 
 type NicErrorEvent struct {
