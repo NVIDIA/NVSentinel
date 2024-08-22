@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: platform-connector-test-pod
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: "gke-dgxc-runai-us-east5--customer-gpu-42cf53ce-09nn"
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
+    - effect: NoExecute
+      operator: Exists
+  containers:
+  - name: platform-connector-test-pod
+    image: nvcr.io/nv-ngc-devops/nvsentinel/platform-connector-testutils:latest
+    command: ["sh", "-c", "sleep infinity"]
+    imagePullPolicy: Always
+    volumeMounts:
+      - name: var-run-vol
+        mountPath: /var/run/
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+  imagePullSecrets:
+    - name: nvidia-ngcuser-pull-secret
+  restartPolicy: Never
+  volumes:
+    - name: var-run-vol
+      hostPath:
+        path: /var/run/nvsentinel
+        type: Directory
