@@ -33,8 +33,15 @@ class DCGMWatcher:
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
         for var in dir(dcgm_structs):
-            if var.startswith("DCGM_HEALTH_WATCH") and not var.endswith("ALL") and not "_COUNT_" in var:
+            if (
+                var.startswith("DCGM_HEALTH_WATCH")
+                and not var.endswith("ALL")
+                and not "_COUNT_" in var
+                and not "DCGM_GROUP_MAX_ENTITIES" in var
+                and not "DCGM_HEALTH_WATCH_MAX_INCIDENTS" in var
+            ):
                 health_watches[getattr(dcgm_structs, var)] = var
+        log.info(f"dcgm_health_watches {health_watches}")
         return health_watches
 
     def _get_available_error_codes(self) -> dict[int, str]:
