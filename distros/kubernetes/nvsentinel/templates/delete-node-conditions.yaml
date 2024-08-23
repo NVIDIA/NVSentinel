@@ -70,6 +70,13 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      nodeSelector:
+        nodeGroup: system-cpu
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
       containers:
         - name: delete-node-condition-pre-install-job
           image: {{ .Values.platformConnector.kubectlImage }}
