@@ -31,12 +31,17 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: nic-health-monitor
+          args:
+            - "--metrics-port={{ .Values.metricsPort }}"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
           volumeMounts:
             - name: config-vol
               mountPath: /etc/nichealthmonitor
