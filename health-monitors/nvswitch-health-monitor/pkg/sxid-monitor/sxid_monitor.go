@@ -121,6 +121,7 @@ func (c *SxidErrorMonitor) Run() error {
 	pollingInterval := 100 * time.Millisecond
 
 	for {
+		start := time.Now()
 		readSize, err := readKernelLog(buffer, size)
 		if err != nil {
 			klog.Errorf("error while reading kernel log buffer: %v", err)
@@ -141,17 +142,22 @@ func (c *SxidErrorMonitor) Run() error {
 			}
 		}
 
+		duration := float64(time.Since(start).Milliseconds())
+		pollingLoopProcessingDuration.Observe(duration)
 		time.Sleep(pollingInterval)
 	}
 }
 
 // read the entire kernel log buffer non-destructively
 func readKernelLog(buffer []byte, size uintptr) (int, error) {
+	syslogReadCallsSucceeded.Inc()
 	readSize, _, errno := syscall.Syscall(syscall.SYS_SYSLOG,
 		SYSLOG_ACTION_READ_ALL, uintptr(unsafe.Pointer(&buffer[0])), size)
 	if errno != 0 {
+		syslogReadCallsFailed.Inc()
 		return 0, fmt.Errorf("failed to read kernel log buffer: %w", errno)
 	}
+	//nolint:gosec // G115: integer overflow conversion uintptr -> int
 	return int(readSize), nil
 }
 
@@ -160,6 +166,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 	if log == "" {
 		return nil
 	}
+	kernelLogsProcessed.Inc()
 
 	timestamp, err := extractTimestamp(log)
 	if err != nil {
@@ -172,12 +179,14 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 	if timestamp > c.lastTimestamp || (timestamp == c.lastTimestamp && log != c.lastLogLine) {
 		m, err := ParseSXIDError(log)
 		if err != nil {
+			sxidLogsProcessingFailed.Inc()
 			return fmt.Errorf("failed to parse SXID error: %w", err)
 		}
 
 		if m != nil {
 			klog.Info(m)
 			c.EventChan <- m
+			sxidLogsProcessingSucceeded.Inc()
 		}
 
 		c.lastTimestamp = timestamp

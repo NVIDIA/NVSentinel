@@ -5,8 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	lsnvlink "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/lsnvlink"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/protos"
 	sxid "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/sxid-monitor"
@@ -23,6 +27,26 @@ const (
 )
 
 const defaultStateFilePath = "/var/run/nvswitch_monitor/state.json"
+
+// prometheus metrics
+var (
+	healthEventsPublished = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nvswitch_monitor_health_events_published_total",
+		Help: "The total number of health events that the nvswitch monitor has raised",
+	})
+
+	gpuIdCalculationDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "nvswitch_monitor_gpu_id_calculation_duration_milliseconds",
+		Help:    "The time taken for calculating GPU ID for each sxid event in milliseconds",
+		Buckets: prometheus.LinearBuckets(0, 10, 500),
+	}, []string{"gpu_id"})
+
+	healthEventPublishDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nvswitch_monitor_health_event_publish_duration_milliseconds",
+		Help:    "The time taken by nvswitch monitor to publish health event in milliseconds",
+		Buckets: prometheus.LinearBuckets(0, 10, 500),
+	})
+)
 
 func GetGPUID(nvswitch, nvlink int) (int, error) {
 	dgxType := lsnvlink.GetDGXType()
@@ -43,7 +67,12 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 		sxidError.PCI,
 		fmt.Sprintf("nvlink%d", sxidError.Link),
 	}
+	start := time.Now()
+
 	gpuID, err := GetGPUID(sxidError.NVSwitch, sxidError.Link)
+
+	duration := float64(time.Since(start).Milliseconds())
+	gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
 
 	if err != nil {
 		entitiesImpacted = append(entitiesImpacted, fmt.Sprintf("gpu%d", gpuID))
@@ -70,6 +99,9 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 
 func main() {
 	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+
+	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	flag.Parse()
 
 	var opts []grpc.DialOption
@@ -93,15 +125,29 @@ func main() {
 		errChan <- sxidErrorMonitor.Run()
 	}()
 
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+*metricsPort, nil)
+		if err != nil {
+			klog.Fatalf("Failed to start metrics server: %v", err)
+		}
+	}()
+
 	for {
 		select {
 		case err := <-errChan:
 			panic(err)
 		case sxidError := <-sxidErrorMonitor.EventChan:
 			healthEvents := SxidError2HealthEvents(sxidError)
+			start := time.Now()
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
+			duration := float64(time.Since(start).Milliseconds())
+			healthEventPublishDuration.Observe(duration)
 			if err != nil {
 				klog.Error(err)
+			} else if len(healthEvents.Events) > 0 {
+				healthEventsPublished.Add(float64(len(healthEvents.Events)))
 			}
 		}
 	}

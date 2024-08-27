@@ -40,3 +40,5 @@ tolerations:
 
 
 affinity: {}
+
+metricsPort: 2112
