@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"k8s.io/klog"
 )
 
@@ -29,6 +31,14 @@ type NicType int
 const (
 	Ethernet NicType = iota
 	Infiniband
+)
+
+var (
+	pollingLoopProcessingDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nic_monitor_polling_loop_processing_duration_milliseconds",
+		Help:    "The processing time for each polling loop in milliseconds (excluding the polling interval wait time)",
+		Buckets: prometheus.LinearBuckets(0, 10, 500),
+	})
 )
 
 type NicMonitorConfig struct {
@@ -87,6 +97,8 @@ func (c *NicErrorMonitor) Run() error {
 
 	func() {
 		for range ticker.C {
+			start := time.Now()
+
 			for _, monitor := range c.Monitors {
 				events, err := monitor.Monitor(c.monitorConfig)
 				if err != nil {
@@ -95,6 +107,9 @@ func (c *NicErrorMonitor) Run() error {
 					c.EventChan <- &events
 				}
 			}
+
+			duration := float64(time.Since(start).Milliseconds())
+			pollingLoopProcessingDuration.Observe(duration)
 		}
 	}()
 

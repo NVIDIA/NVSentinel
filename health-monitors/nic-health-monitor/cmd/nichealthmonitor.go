@@ -4,9 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	nic "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor/pkg/nic-monitor"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor/pkg/protos"
 	"google.golang.org/grpc"
@@ -23,6 +27,19 @@ const (
 
 	ETHERNET_CHECK_NAME      = "EthernetErrorCheck"
 	ETHERNET_COMPONENT_CLASS = "ethernet"
+)
+
+var (
+	healthEventsPublished = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nic_monitor_health_events_published_total",
+		Help: "The total number of health events that the nic monitor has raised",
+	})
+
+	healthEventPublishDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nic_monitor_health_event_publish_duration_milliseconds",
+		Help:    "The time taken by nic monitor to publish health event in milliseconds",
+		Buckets: prometheus.LinearBuckets(0, 10, 500),
+	})
 )
 
 func NicError2HealthEvents(nicErrors *[]nic.NicErrorEvent) *pb.HealthEvents {
@@ -104,6 +121,8 @@ func main() {
 	var configFile = flag.String("config", "/etc/nichealthmonitor/config.ini",
 		"path to the nic health monitor config file")
 
+	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	flag.Parse()
 
 	nicConfig, err := loadConfig(*configFile)
@@ -134,18 +153,36 @@ func main() {
 		errChan <- nicErrorMonitor.Run()
 	}()
 
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+*metricsPort, nil)
+		if err != nil {
+			klog.Fatalf("Failed to start metrics server: %v", err)
+		}
+	}()
+
 	for {
 		select {
 		case err := <-errChan:
 			panic(err)
 		case nicError := <-nicErrorMonitor.EventChan:
 			healthEvents := NicError2HealthEvents(nicError)
+			start := time.Now()
 
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
+
+			duration := float64(time.Since(start).Milliseconds())
+			healthEventPublishDuration.Observe(duration)
+
 			if err != nil {
 				klog.Error(err)
 			} else {
 				klog.Infof("Successfully sent health events: %+v", healthEvents)
+
+				if len(healthEvents.Events) > 0 {
+					healthEventsPublished.Add(float64(len(healthEvents.Events)))
+				}
 			}
 		}
 	}
