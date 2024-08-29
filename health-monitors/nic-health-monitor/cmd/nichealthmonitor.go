@@ -86,18 +86,33 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 	// check if the NicExclusionRegex key exists
 	section := cfg.Section("")
 
+	pollingIntervalKey, err := section.GetKey("PollingIntervalInMilliseconds")
+
+	var pollingInterval int
+
+	if err != nil || pollingIntervalKey.String() == "" {
+		pollingInterval = 1000 // default to 1000 milliseconds
+	} else {
+		pollingInterval, err = pollingIntervalKey.Int()
+		if err != nil {
+			return nil, fmt.Errorf("invalid PollingIntervalInMilliseconds value: %w", err)
+		}
+	}
+
 	key, err := section.GetKey("NicExclusionRegex")
 	if err != nil {
 		// nolint:nilerr
 		return &nic.NicMonitorConfig{
-			ExclusionRegexes: []string{},
+			PollingIntervalInMilliseconds: pollingInterval,
+			ExclusionRegexes:              []string{},
 		}, nil
 	}
 
 	exclusionRegexes := key.String()
 	if exclusionRegexes == "" {
 		return &nic.NicMonitorConfig{
-			ExclusionRegexes: []string{},
+			PollingIntervalInMilliseconds: pollingInterval,
+			ExclusionRegexes:              []string{},
 		}, nil
 	}
 
@@ -111,7 +126,8 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 	}
 
 	return &nic.NicMonitorConfig{
-		ExclusionRegexes: filteredExclusionRegexList,
+		ExclusionRegexes:              filteredExclusionRegexList,
+		PollingIntervalInMilliseconds: pollingInterval,
 	}, nil
 }
 
@@ -131,6 +147,7 @@ func main() {
 	}
 
 	klog.Infof("NIC names matching these regexes will be excluded: %v\n", nicConfig.ExclusionRegexes)
+	klog.Infof("NIC Monitor will poll every %d milliseconds", nicConfig.PollingIntervalInMilliseconds)
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
