@@ -42,7 +42,8 @@ var (
 )
 
 type NicMonitorConfig struct {
-	ExclusionRegexes []string
+	ExclusionRegexes              []string
+	PollingIntervalInMilliseconds int
 }
 
 type NicMonitor interface {
@@ -93,7 +94,7 @@ func (c *NicErrorMonitor) Close() error {
 func (c *NicErrorMonitor) Run() error {
 	klog.Info("Collecting Nic events")
 
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(time.Duration(c.monitorConfig.PollingIntervalInMilliseconds) * time.Millisecond)
 
 	func() {
 		for range ticker.C {
