@@ -2,12 +2,13 @@ package ringbuffer
 
 import (
 	"context"
-	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
-	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/client-go/kubernetes/fake"
 	"os"
 	"testing"
 	"time"
+
+	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 var (
@@ -39,7 +40,7 @@ func TestRingBuffer_Queue(t *testing.T) {
 	healthEventsList := []healthEvents{
 		{
 			healthEvent: &platformconnector.HealthEvent{
-				CheckName:          "XidError",
+				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
 				EntitiesImpacted:   []string{"0"},
@@ -48,7 +49,7 @@ func TestRingBuffer_Queue(t *testing.T) {
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 			},
-			expectedHealthEventOutput: "XidError",
+			expectedHealthEventOutput: "GpuXidError",
 		},
 		{
 			healthEvent: &platformconnector.HealthEvent{

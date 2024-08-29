@@ -29,6 +29,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         xid_errors_batch_processing_interval: int,
         xid_errors_batch_processing_enabled: bool,
         nvml_xid_parser: NvmlXidParser,
+        state_file_path: str,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -43,6 +44,37 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.nvml_xid_parser = nvml_xid_parser
         self.xid_errors_batch_processing_enabled = xid_errors_batch_processing_enabled
         self.nvml_xid_parser.register_xid_processing_done_callback(self.xid_error_batch_processing)
+        self.state_file_path = state_file_path
+        self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
+        self.old_bootid = self.read_old_system_bootid_from_state_file()
+        self.current_bootid = self.fetch_current_bootid_and_clear_xid_errors()
+
+    def read_old_system_bootid_from_state_file(self) -> str:
+        bootid = ""
+        try:
+            with open(self.state_file_path, "r") as f:
+                bootid = f.read().strip()
+        except IOError:
+            log.fatal(f"failed to read the data from file {self.state_file_path}")
+        return bootid
+
+    def fetch_current_bootid_and_clear_xid_errors(self) -> str:
+        bootid = ""
+        try:
+            with open(self.node_bootid_path, "r") as f:
+                bootid = f.read().strip()
+        except IOError:
+            log.fatal(f"failed to read the data from file {self.node_bootid_path}")
+
+        log.info(f"current bootid is {bootid} and old_bootid is {self.old_bootid}")
+        if self.old_bootid != bootid:
+            log.info(f"clearing the xid errors as current_bootId {bootid} is not matching with {self.old_bootid}")
+            self.old_bootid = bootid
+            with open(self.state_file_path, "w") as output_file:
+                output_file.write(bootid)
+            self.clear_all_xid_errors()
+
+        return bootid
 
     def _get_dcgm_watch(self, watch_name: str) -> str:
         watch_names = watch_name.split("_")[3:]
@@ -122,7 +154,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.info("received callback for for clearing of xid errors")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            check_name = "XidError"
+            check_name = "GpuXidError"
             message = "NoXidErrorDetected"
             entities_impacted = []
             error_code = []
@@ -157,7 +189,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-            check_name = "XidError"
+            check_name = "GpuXidError"
             message = "XID error occured"
             entities_impacted = [f"{gpu_id}"]
             error_code = [f"{error_num}"]

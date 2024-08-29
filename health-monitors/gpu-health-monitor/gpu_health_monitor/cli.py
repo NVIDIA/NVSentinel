@@ -21,6 +21,7 @@ def _init_event_processor(
     xid_errors_batch_processing_interval: int,
     xid_errors_batch_processing_enabled: bool,
     nvml_xid_parser,
+    state_file_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -34,6 +35,7 @@ def _init_event_processor(
                 xid_errors_batch_processing_interval=xid_errors_batch_processing_interval,
                 xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
                 nvml_xid_parser=nvml_xid_parser,
+                state_file_path=state_file_path,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -57,7 +59,8 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
 @click.option("--port", type=int, default=8000, help="Port to use for metrics server", required=True)
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
-def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
+@click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
+def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, state_file):
     exit = Event()
     config = configparser.ConfigParser()
     # By default, the Python ConfigParser module reads keys case-insensitively and converts them to lowercase.
@@ -68,6 +71,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
     logging_config = config["logging"]
     dcgm_config = config["dcgm"]
     cli_config = config["cli"]
+    state_file_path = state_file
     node_name = os.getenv("NODE_NAME")
     if node_name == "":
         log.fatal("Failed to fetch nodename from environment variable 'NODE_NAME'")
@@ -119,6 +123,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose):
                 int(xid_errors_batch_processing_interval),
                 xid_errors_batch_processing_enabled,
                 nvml_xid_parser,
+                state_file_path,
             )
         )
 
