@@ -42,6 +42,8 @@ spec:
             - "{{ .Values.metricsPort }}"
             - --verbose
             - "False"
+            - --state-file
+            - {{ .Values.stateFilePath }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"

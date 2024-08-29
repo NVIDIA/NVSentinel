@@ -109,6 +109,7 @@ class TestPlatformConnectors(unittest.TestCase):
             xid_errors_batch_processing_interval,
             xid_errors_batch_processing_enabled,
             DummyNvmlXidParser(),
+            "statefile",
         )
         dcgm_health_events = watcher._get_health_status_dict()
         platform_connector_test.health_event_occurred(dcgm_health_events)
@@ -120,7 +121,7 @@ class TestPlatformConnectors(unittest.TestCase):
         platform_connector_test.xid_event_occurred("0", 64)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
-        assert health_event.checkName == "XidError"
+        assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "64"
         assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted == ["0"]
@@ -129,7 +130,7 @@ class TestPlatformConnectors(unittest.TestCase):
         platform_connector_test.xid_event_occurred("0", 65)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
-        assert health_event.checkName == "XidError"
+        assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "65"
         assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted == ["0"]
@@ -138,7 +139,7 @@ class TestPlatformConnectors(unittest.TestCase):
         platform_connector_test.clear_all_xid_errors()
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
-        assert health_event.checkName == "XidError"
+        assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode == []
         assert health_event.entitiesImpacted == []
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE

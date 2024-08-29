@@ -3,10 +3,11 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"k8s.io/klog/v2"
 	"os"
 	"testing"
 	"time"
+
+	"k8s.io/klog/v2"
 
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -121,7 +122,7 @@ func TestK8sNodeConditions(t *testing.T) {
 		},
 		{
 			healthEvent: &platformconnector.HealthEvent{
-				CheckName:          "XidError",
+				CheckName:          "GpuXidError",
 				IsHealthy:          true,
 				Message:            "",
 				EntitiesImpacted:   []string{},
@@ -133,7 +134,7 @@ func TestK8sNodeConditions(t *testing.T) {
 			},
 			ExpectedOutputMessage:       NoHealthFailureMsg,
 			ExpectedOutputReason:        "NoXidErrorDetected",
-			ExpectedOutputConditionType: "XidError",
+			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "False",
 		},
 		{
@@ -155,7 +156,7 @@ func TestK8sNodeConditions(t *testing.T) {
 		},
 		{
 			healthEvent: &platformconnector.HealthEvent{
-				CheckName:          "XidError",
+				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
 				EntitiesImpacted:   []string{"0"},
@@ -167,12 +168,12 @@ func TestK8sNodeConditions(t *testing.T) {
 			},
 			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE.",
 			ExpectedOutputReason:        "XidErrorDetected",
-			ExpectedOutputConditionType: "XidError",
+			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
 		},
 		{
 			healthEvent: &platformconnector.HealthEvent{
-				CheckName:          "XidError",
+				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
 				EntitiesImpacted:   []string{"0"},
@@ -184,7 +185,7 @@ func TestK8sNodeConditions(t *testing.T) {
 			},
 			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE. XID45 GPU:0 Recommended Action=NONE.",
 			ExpectedOutputReason:        "XidErrorDetected",
-			ExpectedOutputConditionType: "XidError",
+			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
 		},
 		{
@@ -253,7 +254,7 @@ func TestK8sEventsCacheFullScenario(t *testing.T) {
 	for i := 0; i <= EventCacheSizeUpperLimit; i++ {
 		errorCode := fmt.Sprintf("%d", i)
 		healthEvent := &platformconnector.HealthEvent{
-			CheckName:          "XidError",
+			CheckName:          "GpuXidError",
 			IsHealthy:          false,
 			Message:            "",
 			EntitiesImpacted:   []string{"0"},

@@ -43,6 +43,8 @@ exclude = '''
     | dist
   )/
   | gpu_health_monitor/platform_connector/protos
+  | gpu_health_monitor/clear_xid_errors/protos
+
 )
 '''
 

@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	DefaultNamespace   = "default"
-	NoHealthFailureMsg = "No Health Failures"
-	XidErrorCheck      = "XidError"
-	XidBatchErrorCheck = "XidBatchError"
+	DefaultNamespace         = "default"
+	NoHealthFailureMsg       = "No Health Failures"
+	XidErrorCheck            = "GpuXidError"
+	XidBatchErrorCheck       = "XidBatchError"
+	XidErrorDetectedReason   = "XidErrorDetected"
+	NoXidErrorDetectedReason = "NoXidErrorDetected"
 )
 
 func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1.NodeCondition, isHealthy bool) error {
@@ -85,9 +87,9 @@ func (r *K8sConnector) fetchHealthEventReason(healthEvent *platformconnector.Hea
 	if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
 		switch healthEvent.IsHealthy {
 		case true:
-			reason = "NoXidErrorDetected"
+			reason = NoXidErrorDetectedReason
 		default:
-			reason = "XidErrorDetected"
+			reason = XidErrorDetectedReason
 		}
 	} else {
 		if healthEvent.IsHealthy {

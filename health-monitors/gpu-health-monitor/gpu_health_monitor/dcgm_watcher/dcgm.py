@@ -245,7 +245,6 @@ class DCGMWatcher:
 
         with metrics.dcgm_api_latency.labels("system_update_all_fields").time():
             dcgm_system.UpdateAllFields(waitForUpdate=True)
-        self._fire_callback_funcs(types.CallbackInterface.clear_all_xid_errors.__name__, [])
         older_field_values = {}
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():

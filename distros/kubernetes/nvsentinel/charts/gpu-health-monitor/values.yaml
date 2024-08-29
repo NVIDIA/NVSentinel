@@ -39,3 +39,5 @@ affinity: {}
 
 useHostNetworking: true
 metricsPort: 8000
+stateFilePath: "/var/run/statefile"
+

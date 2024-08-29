@@ -27,4 +27,8 @@ COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
 RUN pip install ./gpu_health_monitor*.whl --constraint constraints.txt
 
+# Copy the proto file and the Python script
+COPY gpu_health_monitor/clear_xid_errors/clear_xid_error_health_event.py .
+COPY gpu_health_monitor/clear_xid_errors/protos/ protos/
+
 ENTRYPOINT ["gpu_health_monitor"]
