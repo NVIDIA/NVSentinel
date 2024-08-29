@@ -45,11 +45,16 @@ spec:
           volumeMounts:
             - name: var-run-vol
               mountPath: /var/run/
+            - name: config-vol
+              mountPath: /etc/nvswitchhealthmonitor
       volumes:
         - name: var-run-vol
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
+        - name: config-vol
+          configMap:
+            name: {{ include "nvswitch-health-monitor.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

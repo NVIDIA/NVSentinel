@@ -80,24 +80,31 @@ func loadState(stateFilePath string) (nvSwitchMonitorState, error) {
 	return state, nil
 }
 
-type SxidErrorMonitor struct {
-	EventChan     chan *SXIDErrorEvent
-	lastTimestamp float64
-	lastLogLine   string
-	stateFilePath string
+type SxidErrorMonitorConfig struct {
+	StateFilePath                 string
+	PollingIntervalInMilliseconds int
 }
 
-func NewSxidErrorMonitor(stateFilePath string) (*SxidErrorMonitor, error) {
-	state, err := loadState(stateFilePath)
+type SxidErrorMonitor struct {
+	EventChan                     chan *SXIDErrorEvent
+	lastTimestamp                 float64
+	lastLogLine                   string
+	stateFilePath                 string
+	pollingIntervalInMilliseconds int
+}
+
+func NewSxidErrorMonitor(config *SxidErrorMonitorConfig) (*SxidErrorMonitor, error) {
+	state, err := loadState(config.StateFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
 	return &SxidErrorMonitor{
-		EventChan:     make(chan *SXIDErrorEvent),
-		lastTimestamp: state.LastTimestamp,
-		lastLogLine:   state.LastLogLine,
-		stateFilePath: stateFilePath,
+		EventChan:                     make(chan *SXIDErrorEvent),
+		lastTimestamp:                 state.LastTimestamp,
+		lastLogLine:                   state.LastLogLine,
+		stateFilePath:                 config.StateFilePath,
+		pollingIntervalInMilliseconds: config.PollingIntervalInMilliseconds,
 	}, nil
 }
 
@@ -118,7 +125,7 @@ func (c *SxidErrorMonitor) Run() error {
 
 	buffer := make([]byte, size)
 
-	pollingInterval := 100 * time.Millisecond
+	pollingInterval := time.Duration(c.pollingIntervalInMilliseconds) * time.Millisecond
 
 	for {
 		start := time.Now()
@@ -184,7 +191,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 		}
 
 		if m != nil {
-			klog.Info(m)
+			klog.Infof("Successfully parsed SXID error: %+v", m)
 			c.EventChan <- m
 			sxidLogsProcessingSucceeded.Inc()
 		}
@@ -231,30 +238,36 @@ type SXIDErrorEvent struct {
 func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 	const (
 		// index for each token of the log
-		// PRIORITY,SEQUENCE_NUM,TIMESTAMP,-;MESSAGE
-		// MESSAGE := nvidia-nvswitch1 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04\n"
-		NvswitchX   = 0
-		SXidConst   = 1
-		pciIdx      = 2
-		errorNumIdx = 3
-		fatalIdx    = 4
-		linkStrIdx  = 5
-		linkIdx     = 6
+		// examples of logs:
+		// [38889.018130] nvidia-nvswitch1: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate
+		// [ 1108.858286] nvidia-nvswitch0: SXid (PCI:0000:c3:00.0): 24007, Fatal, Link 28 sourcetrack timeout error (First)
+
+		// old log type with no Link info we want to ignore
+		// [38889.018130] nvidia-nvswitch0: SXid (PCI:0000:07:00.0): 10001, Non-fatal, PRI WRITE SYSB error, instance=3
+		NvswitchX       = 0 // Index for 'nvidia-nvswitchX:'
+		SXidConst       = 1 // Index for 'SXid'
+		pciIdx          = 2 // Index for PCI information
+		errorNumIdx     = 3 // Index for error number
+		fatalIdx        = 4 // Index for Fatal/Non-fatal
+		linkStrIdx      = 5 // Index for 'Link' keyword
+		linkIdx         = 6 // Index for link number
+		messageStartIdx = 7 // Index for error message
 	)
 
 	// remove the kernel log prefix
-	logPrefixPattern := regexp.MustCompile(`^<\d+>\[\d+\.\d+\] `)
-	str = logPrefixPattern.ReplaceAllString(str, "")
+	syslogPrefixPattern := regexp.MustCompile(`^(<\d+>)?\[\s*(\d+\.\d+)\s*\]`)
+	str = syslogPrefixPattern.ReplaceAllString(str, "")
 
 	words := strings.Fields(str)
-
-	if len(words) <= SXidConst {
+	if len(words) <= fatalIdx {
 		// log does not have enough information to check if the log is for SXid, so skip.
 		return nil, nil
 	}
 
-	if !strings.Contains(words[NvswitchX], "nvidia-nvswitch") || words[SXidConst] != "SXid" {
-		// skip for non SXId log
+	// Check for 'nvidia-nvswitchX:' and 'SXid'
+	if !strings.HasPrefix(words[NvswitchX], "nvidia-nvswitch") || !strings.HasSuffix(words[NvswitchX], ":") ||
+		words[SXidConst] != "SXid" {
+		// Not a relevant SXid log, skip
 		return nil, nil
 	}
 
@@ -262,25 +275,24 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 		return nil, fmt.Errorf("log message truncated: %s", str)
 	}
 
-	kmsgMsgIdx := strings.Index(words[NvswitchX], ";")
-
-	nvswitchStr := strings.TrimPrefix(words[NvswitchX][kmsgMsgIdx+1:], "nvidia-nvswitch")
+	// Parse NVSwitch number
+	nvswitchStr := strings.TrimPrefix(strings.TrimSuffix(words[NvswitchX], ":"), "nvidia-nvswitch")
 	nvswitch, err := strconv.Atoi(nvswitchStr)
 	if err != nil {
-		return nil, fmt.Errorf("cannot parse nvidia-nvswitch %s", words[NvswitchX][kmsgMsgIdx:])
+		return nil, fmt.Errorf("cannot parse nvidia-nvswitch number: %s", nvswitchStr)
 	}
 
-	pci := words[pciIdx]
-	pci = strings.TrimPrefix(pci, "(PCI:")
-	pci = strings.TrimSuffix(pci, "):")
+	// Parse PCI address
+	pci := strings.TrimSuffix(strings.TrimPrefix(words[pciIdx], "(PCI:"), "):")
 
-	errorNumStr := words[errorNumIdx]
-	errorNumStr = strings.TrimSuffix(errorNumStr, ",")
+	// Parse error number
+	errorNumStr := strings.TrimSuffix(words[errorNumIdx], ",")
 	errorNum, err := strconv.Atoi(errorNumStr)
 	if err != nil {
-		return nil, fmt.Errorf("wrong errorNum %s", words[errorNumIdx])
+		return nil, fmt.Errorf("cannot parse error number: %s", errorNumStr)
 	}
 
+	// Parse Fatal/Non-fatal
 	var isFatal bool
 	switch {
 	case strings.HasPrefix(words[fatalIdx], "Fatal"):
@@ -292,26 +304,36 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 		return nil, nil
 	}
 
-	// The first log of each SXid incidents must have "Fatal" | "Non-fatal" information
+	// expect the link information to be present, else return error
+	if len(words) < linkStrIdx || words[linkStrIdx] != "Link" {
+		return nil, errors.New("link information is missing")
+	}
 
-	if words[linkStrIdx] != "Link" {
+	var link int
+	// expect the link number to be present, else return error
+	if len(words) > linkIdx {
+		// parse Link number
+		link, err = strconv.Atoi(words[linkIdx])
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse link number: %s", words[linkIdx])
+		}
+	} else {
 		// Some old log has missing Link information - we'd like report this as error and monitor
 		return nil, errors.New("link information is missing")
 	}
 
-	link, err := strconv.Atoi(words[linkIdx])
-	if err != nil {
-		return nil, fmt.Errorf("cannot parse link %s", words[linkIdx])
+	// Extract error message
+	errorMessage := ""
+	if len(words)+1 >= messageStartIdx {
+		errorMessage = strings.Join(words[messageStartIdx:], " ")
 	}
 
-	m := SXIDErrorEvent{
-		NVSwitch: nvswitch,
-		PCI:      pci,
+	return &SXIDErrorEvent{
 		ErrorNum: errorNum,
 		IsFatal:  isFatal,
+		NVSwitch: nvswitch,
+		PCI:      pci,
 		Link:     link,
-		Message:  str[kmsgMsgIdx+1:],
-	}
-
-	return &m, nil
+		Message:  errorMessage,
+	}, nil
 }
