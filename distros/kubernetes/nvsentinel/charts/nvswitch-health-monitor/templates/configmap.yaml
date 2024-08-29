@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nvswitch-health-monitor.fullname" . }}
+  labels:
+    {{- include "nvswitch-health-monitor.labels" . | nindent 4 }}
+data:
+  config.ini: |
+    PollingIntervalInMilliseconds = 100

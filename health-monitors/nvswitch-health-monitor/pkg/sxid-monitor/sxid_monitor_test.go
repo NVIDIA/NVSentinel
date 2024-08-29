@@ -17,6 +17,7 @@
 package sxid_monitor
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -30,8 +31,8 @@ func TestLogCollector(t *testing.T) {
 
 func testParsingSXIDLogline2Metrics(t *testing.T) {
 	// Logs that needed to be parsed correctly
-	logOK1 := "12,6010676,3561654626948,-;nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
-	logOK2 := "12,6010676,3561654626948,-;nvidia-nvswitch1 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04"
+	logOK1 := "<12>[38889.018130] nvidia-nvswitch0: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
+	logOK2 := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 Another example error message"
 
 	metric0 := SXIDErrorEvent{
 		ErrorNum: 20009,
@@ -39,7 +40,7 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 		NVSwitch: 0,
 		PCI:      "0000:06:00.0",
 		Link:     4,
-		Message:  "nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate",
+		Message:  "RX Short Error Rate",
 	}
 
 	metric1 := SXIDErrorEvent{
@@ -48,7 +49,7 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 		NVSwitch: 1,
 		PCI:      "0000:06:00.0",
 		Link:     4,
-		Message:  "nvidia-nvswitch1 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04",
+		Message:  "Another example error message",
 	}
 
 	m, err := ParseSXIDError(logOK1)
@@ -61,9 +62,9 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 	require.NotNil(t, m)
 	require.Equal(t, metric1, *m)
 
-	// Logs that does not return metric
-	logNoSXidContinue := "12,6010676,3561654626948,-;nvidia-nvswitch0 SXid (PCI:0000:c3:00.0): 12033, Severity 1 Engine instance 00 Sub-engine instance 00"
-	logTruncated := "12,6010676,3561654626948,-;nvidia-nvswitch1 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Li"
+	// Logs that do not return metric
+	logNoSXidContinue := "<12>[38889.018130] nvidia-nvswitch0: SXid (PCI:0000:c3:00.0): 12033, Severity 1 Engine instance 00 Sub-engine instance 00"
+	logTruncated := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Li"
 
 	m, err = ParseSXIDError(logNoSXidContinue)
 	require.NoError(t, err)
@@ -73,11 +74,11 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 	require.Error(t, err)
 
 	// Logs that need to return error
-	logMissingLink := "12,6010676,3561654626948,-;nvidia-nvswitch1 SXid (PCI:0000:07:00.0): 10001, Non-fatal, PRI WRITE SYSB error, instance=3, chiplet=1"
+	logMissingLink := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:07:00.0): 10001, Non-fatal, PRI WRITE SYSB error, instance=3, chiplet=1"
 
 	_, err = ParseSXIDError(logMissingLink)
 	require.Error(t, err)
-
+	require.Equal(t, errors.New("link information is missing"), err)
 }
 
 func TestStatePersistence(t *testing.T) {
@@ -98,7 +99,7 @@ func TestStatePersistence(t *testing.T) {
 }
 
 func TestExtractTimestamp(t *testing.T) {
-	log := "<12>[73309.599396] nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
+	log := "<12>[73309.599396] nvidia-nvswitch0: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
 
 	timestamp, err := extractTimestamp(log)
 	require.NoError(t, err)
@@ -113,7 +114,11 @@ func TestSxidErrorMonitorInitialization(t *testing.T) {
 	testDir := t.TempDir()
 	testStateFilePath := filepath.Join(testDir, "state.json")
 
-	monitor, err := NewSxidErrorMonitor(testStateFilePath)
+	config := &SxidErrorMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+	monitor, err := NewSxidErrorMonitor(config)
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
 	defer monitor.Close()
@@ -121,18 +126,23 @@ func TestSxidErrorMonitorInitialization(t *testing.T) {
 	require.Equal(t, float64(0), monitor.lastTimestamp)
 	require.Equal(t, "", monitor.lastLogLine)
 	require.Equal(t, testStateFilePath, monitor.stateFilePath)
+	require.Equal(t, 1000, monitor.pollingIntervalInMilliseconds)
 }
 
 func TestProcessLog(t *testing.T) {
 	testDir := t.TempDir()
 	testStateFilePath := filepath.Join(testDir, "state.json")
 
-	monitor, err := NewSxidErrorMonitor(testStateFilePath)
+	config := &SxidErrorMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+	monitor, err := NewSxidErrorMonitor(config)
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
 	defer monitor.Close()
 
-	log := "<12>[73309.599396] nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
+	log := "<12>[73309.599396] nvidia-nvswitch0: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate"
 
 	expectedEvent := &SXIDErrorEvent{
 		ErrorNum: 20009,
@@ -140,7 +150,7 @@ func TestProcessLog(t *testing.T) {
 		NVSwitch: 0,
 		PCI:      "0000:06:00.0",
 		Link:     4,
-		Message:  "nvidia-nvswitch0 SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link 04 RX Short Error Rate",
+		Message:  "RX Short Error Rate",
 	}
 
 	// start a goroutine to read from the event channel to prevent blocking

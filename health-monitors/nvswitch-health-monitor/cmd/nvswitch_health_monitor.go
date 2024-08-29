@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gopkg.in/ini.v1"
 	"k8s.io/klog"
 )
 
@@ -97,12 +98,52 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 	return &healthEvents
 }
 
+func loadConfig(filePath string) (*sxid.SxidErrorMonitorConfig, error) {
+	cfg, err := ini.Load(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	config := &sxid.SxidErrorMonitorConfig{
+		PollingIntervalInMilliseconds: 100,
+	}
+
+	section := cfg.Section("")
+
+	// load PollingIntervalInMilliseconds key
+	pollingIntervalKey, err := section.GetKey("PollingIntervalInMilliseconds")
+	if err != nil {
+		return nil, fmt.Errorf("PollingIntervalInMilliseconds not found in config file: %w", err)
+	}
+
+	pollingIntervalValue, parseErr := pollingIntervalKey.Int()
+	if parseErr != nil {
+		return nil, fmt.Errorf("invalid PollingIntervalInMilliseconds value: %w", parseErr)
+	}
+
+	config.PollingIntervalInMilliseconds = pollingIntervalValue
+
+	return config, nil
+}
+
 func main() {
 	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+
+	var configFile = flag.String("config", "/etc/nvswitchhealthmonitor/config.ini",
+		"path to the nvswitch health monitor config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
 	flag.Parse()
+
+	nvswitchConfig, err := loadConfig(*configFile)
+	if err != nil {
+		panic(err)
+	}
+
+	klog.Infof("NVSwitch Monitor will poll every %d milliseconds\n", nvswitchConfig.PollingIntervalInMilliseconds)
+
+	nvswitchConfig.StateFilePath = defaultStateFilePath
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -114,7 +155,7 @@ func main() {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	sxidErrorMonitor, err := sxid.NewSxidErrorMonitor(defaultStateFilePath)
+	sxidErrorMonitor, err := sxid.NewSxidErrorMonitor(nvswitchConfig)
 	if err != nil {
 		panic(err)
 	}
