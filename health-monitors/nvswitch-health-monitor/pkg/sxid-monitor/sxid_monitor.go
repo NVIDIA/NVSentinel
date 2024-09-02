@@ -183,11 +183,26 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 	// process log entries with a timestamp greater than the last processed timestamp
 	// or with the same timestamp but a different log line to avoid skipping different logs which
 	// have the same timestamp
+	//nolint
 	if timestamp > c.lastTimestamp || (timestamp == c.lastTimestamp && log != c.lastLogLine) {
 		m, err := ParseSXIDError(log)
 		if err != nil {
 			sxidLogsProcessingFailed.Inc()
-			return fmt.Errorf("failed to parse SXID error: %w", err)
+
+			// We should record the parse error and should mark this log line as processed
+			parseErr := fmt.Errorf("failed to parse SXID error: %w", err)
+
+			c.lastTimestamp = timestamp
+			c.lastLogLine = log
+
+			if err := saveState(c.stateFilePath, nvSwitchMonitorState{
+				LastTimestamp: timestamp,
+				LastLogLine:   log,
+			}); err != nil {
+				return fmt.Errorf("failed to save state: %w", err)
+			}
+
+			return parseErr
 		}
 
 		if m != nil {
