@@ -247,46 +247,6 @@ func TestK8sNodeConditions(t *testing.T) {
 	}
 }
 
-// Insert 1001 healthEvents as nodeEvents. Once 1000 events has been processed, then during the last healthEvent processing,
-// cache should be resetted in order to prevent memory exhaustion
-func TestK8sEventsCacheFullScenario(t *testing.T) {
-	healthEvents := make([]*platformconnector.HealthEvent, 0)
-	for i := 0; i <= EventCacheSizeUpperLimit; i++ {
-		errorCode := fmt.Sprintf("%d", i)
-		healthEvent := &platformconnector.HealthEvent{
-			CheckName:          "GpuXidError",
-			IsHealthy:          false,
-			Message:            "",
-			EntitiesImpacted:   []string{"0"},
-			ErrorCode:          []string{errorCode},
-			IsFatal:            false,
-			GeneratedTimestamp: timestamppb.New(time.Now()),
-			ComponentClass:     "gpu",
-		}
-		healthEvents = append(healthEvents, healthEvent)
-	}
-	fakeNode := getNode()
-	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
-	if err != nil {
-		t.Errorf("Failed to create  node with err %s", err)
-
-	}
-	for _, healthEvent := range healthEvents {
-		err := k8sConnector.processHealthEvents(ctx, healthEvent)
-		if err != nil {
-			t.Errorf("Failed to process healthEvent with err %s", err)
-		}
-	}
-
-	if len(k8sConnector.eventCache) != 1 {
-		t.Errorf("Total events %d is not equal to 1", len(k8sConnector.eventCache))
-	}
-	err = clientSet.CoreV1().Nodes().Delete(ctx, fakeNode.Name, metav1.DeleteOptions{})
-	if err != nil {
-		t.Errorf("Failed to delete  node with err %s", err)
-	}
-}
-
 func TestK8sNodeEvents(t *testing.T) {
 	healthEvents := []*healthConditionList{
 		{
@@ -338,7 +298,6 @@ func TestK8sNodeEvents(t *testing.T) {
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
 	}
-	clear(k8sConnector.eventCache)
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {

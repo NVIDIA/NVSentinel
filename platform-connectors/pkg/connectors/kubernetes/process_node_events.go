@@ -66,14 +66,31 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) error {
-	aggregatedEvent := r.AggregateEvent(event)
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if aggregatedEvent.Count > 1 {
-			_, err := r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, aggregatedEvent, metav1.UpdateOptions{})
+		// Fetch all events for the node
+		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
+			FieldSelector: fmt.Sprintf("involvedObject.name=%s", r.nodeName),
+		})
+		if err != nil {
 			return err
 		}
 
-		_, err := r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+		// Check if any event matches the new event
+		for _, existingEvent := range events.Items {
+			if existingEvent.Type == event.Type && existingEvent.Reason == event.Reason &&
+				existingEvent.Message == event.Message {
+				// Matching event found, update it
+				existingEvent.Count++
+				existingEvent.LastTimestamp = event.LastTimestamp
+				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
+
+				return err
+			}
+		}
+
+		// No matching event found, create a new event with count 1
+		event.Count = 1
+		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
 
 		return err
 	})
@@ -181,23 +198,4 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 	}
 
 	return nil
-}
-
-func (r *K8sConnector) AggregateEvent(event *corev1.Event) *corev1.Event {
-	key := fmt.Sprintf("%s/%s/%s", event.InvolvedObject.Name, event.Reason, event.Message)
-	if cachedEvent, exists := r.eventCache[key]; exists {
-		cachedEvent.Count++
-		cachedEvent.LastTimestamp = event.LastTimestamp
-
-		return cachedEvent
-	}
-
-	if uint32(len(r.eventCache)+1) > r.eventCacheSize {
-		klog.Infof("Resetting  cache  as eventCache size is greater than %d", r.eventCacheSize)
-		clear(r.eventCache)
-	}
-
-	r.eventCache[key] = event
-
-	return event
 }
