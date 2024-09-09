@@ -20,6 +20,8 @@ platformConnector:
     capabilities:
       drop:
       - ALL
+      
+  metricsPort: 2112
 
   kubectlImage: "nvcr.io/nv-ngc-devops/kubectl:1.28.5"
 

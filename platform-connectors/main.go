@@ -4,10 +4,12 @@ import (
 	"context"
 	"flag"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 
 	"k8s.io/apimachinery/pkg/util/json"
@@ -20,9 +22,14 @@ import (
 	"google.golang.org/grpc"
 )
 
+//nolint:cyclop
 func main() {
 	socket := flag.String("socket", "", "unix socket path")
+
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
+
+	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	flag.Parse()
 
 	if *socket == "" {
@@ -53,6 +60,15 @@ func main() {
 	if nodeName == "" {
 		klog.Fatalf("Failed to fetch nodename")
 	}
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+*metricsPort, nil)
+		if err != nil {
+			klog.Fatalf("Failed to start metrics server: %v", err)
+		}
+	}()
 
 	var ringBuffer *ringbuffer.RingBuffer
 	ringBuffer = nil
