@@ -289,6 +289,7 @@ kubernetes distro helm publish:
     - cd distros/kubernetes
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm repo add --force-update shoreline-agent ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
+    - cd nvsentinel && helm dependency update && cd ..
     - helm package nvsentinel --version ${CI_COMMIT_TAG}
     - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
@@ -303,6 +304,7 @@ kubernetes distro helm main branch publish:
     - cd distros/kubernetes
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm repo add --force-update shoreline-agent ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
+    - cd nvsentinel && helm dependency update && cd ..
     - helm package nvsentinel --version 1.0.0
     - helm cm-push -f nvsentinel-1.0.0.tgz ngc
 
