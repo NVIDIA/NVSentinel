@@ -32,6 +32,11 @@ spec:
         {{- toYaml .Values.platformConnector.podSecurityContext | nindent 8 }}
       containers:
         - name: platform-connector
+          args:
+            - "--metrics-port={{ .Values.platformConnector.metricsPort }}"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.platformConnector.metricsPort }}
           securityContext:
             {{- toYaml .Values.platformConnector.securityContext | nindent 12 }}
           image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"

@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"k8s.io/klog/v2"
@@ -18,6 +20,14 @@ PlatformConnectorServer. it will get really complex.Hence, ignoring this file as
 
 var ringBufferQueue []*ringbuffer.RingBuffer
 
+// prometheus metrics
+var (
+	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "platform_connector_health_events_received_total",
+		Help: "The total number of health events that the platform connector has received",
+	})
+)
+
 type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
 }
@@ -25,6 +35,8 @@ type PlatformConnectorServer struct {
 func (p *PlatformConnectorServer) HealthEventOccuredV1(ctx context.Context, he *pb.HealthEvents) (*empty.Empty, error) {
 	klog.Infof("Health events %+v received", he)
 	healthEvents := he.Events
+
+	healthEventsReceived.Add(float64(len(healthEvents)))
 
 	for _, event := range healthEvents {
 		for _, buffer := range ringBufferQueue {

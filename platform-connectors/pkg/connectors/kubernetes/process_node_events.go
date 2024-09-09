@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -82,7 +83,13 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 				// Matching event found, update it
 				existingEvent.Count++
 				existingEvent.LastTimestamp = event.LastTimestamp
+
 				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
+				if err != nil {
+					nodeEventUpdateFailureCounter.Inc()
+				} else {
+					nodeEventUpdateSuccessCounter.Inc()
+				}
 
 				return err
 			}
@@ -90,7 +97,13 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 
 		// No matching event found, create a new event with count 1
 		event.Count = 1
+
 		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
+		if err != nil {
+			nodeEventCreationFailureCounter.Inc()
+		} else {
+			nodeEventCreationSuccessCounter.Inc()
+		}
 
 		return err
 	})
@@ -166,7 +179,21 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 
 		klog.Infof("updating node condition %s", conditionType)
 
-		return r.updateNodeCondition(ctx, newCondition, healthEvent.IsHealthy)
+		start := time.Now()
+
+		err := r.updateNodeCondition(ctx, newCondition, healthEvent.IsHealthy)
+
+		duration := float64(time.Since(start).Milliseconds())
+		nodeConditionUpdateDuration.Observe(duration)
+
+		if err != nil {
+			nodeConditionUpdateFailureCounter.Inc()
+			return err
+		}
+
+		nodeConditionUpdateSuccessCounter.Inc()
+
+		return nil
 	}
 
 	event := &corev1.Event{
@@ -194,7 +221,16 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 	}
 
 	if !healthEvent.IsHealthy {
-		return r.writeNodeEvent(ctx, event)
+		start := time.Now()
+
+		err := r.writeNodeEvent(ctx, event)
+
+		duration := float64(time.Since(start).Milliseconds())
+		nodeEventUpdateCreateDuration.Observe(duration)
+
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
