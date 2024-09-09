@@ -1,6 +1,15 @@
 dependencies:
+- name: gpu-health-monitor
+  repository: ""
+  version: 0.1.0
+- name: nic-health-monitor
+  repository: ""
+  version: 0.1.0
+- name: nvswitch-health-monitor
+  repository: ""
+  version: 0.1.0
 - name: shoreline-agent
   repository: https://helm.ngc.nvidia.com/nv-ngc-devops
   version: v26.1.2
-digest: sha256:386bce0888548e40af2fec82f1fd966d2cce74e123cdae229d12a40fb7f76991
-generated: "2024-09-02T13:26:30.242424035+05:30"
+digest: sha256:6993417b831175739e2b9e0b092ffa8063ea384f14a4358d230c00d335a58ed6
+generated: "2024-09-09T15:47:09.610570844+05:30"

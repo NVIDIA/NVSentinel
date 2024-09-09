@@ -5,9 +5,12 @@ type: application
 version: 0.1.0
 appVersion: "1.0.0"
 dependencies:
-  - name: "gpu-health-monitor"
-  - name: "nic-health-monitor"
-  - name: "nvswitch-health-monitor"
+  - name: gpu-health-monitor
+    version: "0.1.0"
+  - name: nic-health-monitor
+    version: "0.1.0"
+  - name: nvswitch-health-monitor
+    version: "0.1.0"
   - name: shoreline-agent
     version: v26.1.2
     repository: https://helm.ngc.nvidia.com/nv-ngc-devops
