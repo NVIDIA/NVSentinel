@@ -49,3 +49,37 @@ affinity: {}
 
 socketPath: "/var/run/nvsentinel.sock"
 
+shoreline-agent:
+  global:
+    enabled: true
+    name: "shoreline"
+    customer_id: "nvidiadev3"
+    customer_endpoint: "nvidiadev3.agent-gateway.shoreline-prod1.io:443"
+    imagePullSecret: "nvidia-ngcuser-pull-secret"
+
+  agent:
+    serviceaccount:
+      irsa: false
+    resource:
+      kind: "DaemonSet"
+      image: "nvcr.io/nv-ngc-devops/shoreline-agent"
+      tag: "release-24.0.12-multiarch"
+      resources:
+        limits:
+          cpu: "350m"
+          memory: "400Mi"
+        requests:
+          cpu: "350m"
+          memory: "400Mi"
+      environmentVariables:
+        - name: INGESTION_MODE
+          value: "OFF"
+        - name: PUSH_METRICS_ENABLED
+          value: "false"
+      scraperConfig:
+        enable: false
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
