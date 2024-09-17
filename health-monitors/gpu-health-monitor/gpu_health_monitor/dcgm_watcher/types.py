@@ -38,7 +38,3 @@ class CallbackInterface(abc.ABC):
     @abc.abstractmethod
     def clear_all_xid_errors(self):
         pass
-
-    @abc.abstractmethod
-    def field_change_event_occurred(self, fields_changes: dict[str, list[FieldDetails]]):
-        pass

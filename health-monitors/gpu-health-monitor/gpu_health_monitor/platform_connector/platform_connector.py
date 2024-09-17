@@ -219,9 +219,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
 
-    def field_change_event_occurred(self, fields_changes: dict[str, list[dcgmtypes.FieldDetails]]):
-        log.debug(f"received callback for field change event {fields_changes}")
-
     def xid_error_batch_processing(
         self, xid_errors_list: list, gpu_id: str, recommendation_action: platformconnector_pb2.RecommenedAction
     ):

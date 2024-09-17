@@ -23,11 +23,6 @@ class DCGMWatcher:
         self._error_codes = self._get_available_error_codes()
         log.debug(f"Got available error codes {self._error_codes}")
 
-        self._dcgm_fields = self._get_available_fields()
-        log.debug(f"Got available dcgm fields {self._dcgm_fields}")
-        metrics.num_fields.set(len(self._dcgm_fields))
-        self._dcgm_fields_inverse = {y: x for x, y in self._dcgm_fields.items()}
-
         self._callback_thread_pool = ThreadPoolExecutor()
 
     def _get_available_health_watches(self) -> dict[int, str]:
@@ -202,31 +197,6 @@ class DCGMWatcher:
             log.info(f"Unregistering XID callback from {dcgm_group.GetId()}")
             dcgm_group.policy.Unregister(condition=dcgm_structs.DCGM_POLICY_COND_XID)
 
-    def _create_dcgm_field_group(self, dcgm_handle: pydcgm.DcgmHandle, fields: list[str]) -> pydcgm.DcgmFieldGroup:
-        field_ids = []
-        for field in fields:
-            field_ids.append(self._dcgm_fields[field])
-        log.info(f"got dcgm field IDs {field_ids}")
-
-        return pydcgm.DcgmFieldGroup(dcgm_handle, "dcgm-health", field_ids)
-
-    def _fetch_field_values(self, dcgm_field_group: pydcgm.DcgmFieldGroup, dcgm_group: pydcgm.DcgmGroup):
-        with metrics.dcgm_api_latency.labels("group_samples_get_latest").time():
-            samples = dcgm_group.samples.GetLatest(dcgm_field_group)
-
-        field_values = {}
-        for gpu, field in samples.values.items():
-            for field_id, data in field.items():
-                field_details = types.FieldDetails(
-                    field_id=self._dcgm_fields_inverse[field_id],
-                    value=str(data[0].value) if not dcgmvalue.DCGM_INT32_IS_BLANK(data[0].value) else "0",
-                )
-                field_values.setdefault(gpu, [])
-                bisect.insort(field_values[gpu], field_details)
-        log.info(f"field values are {field_values}")
-
-        return field_values
-
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
         dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
         dcgm_system = dcgm_handle.GetSystem()
@@ -236,31 +206,12 @@ class DCGMWatcher:
             dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
 
         dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
-
-        dcgm_field_group = self._create_dcgm_field_group(dcgm_handle, fields_to_monitor)
-        with metrics.dcgm_api_latency.labels("group_samples_watch_fields").time():
-            dcgm_group.samples.WatchFields(
-                dcgm_field_group, int((self._poll_interval_seconds / 2) * 1e6), 2 * self._poll_interval_seconds, 2
-            )
-
-        with metrics.dcgm_api_latency.labels("system_update_all_fields").time():
-            dcgm_system.UpdateAllFields(waitForUpdate=True)
         older_field_values = {}
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
                 log.info("Running health check")
                 health_status = self._perform_health_check(dcgm_group)
                 self._fire_callback_funcs(types.CallbackInterface.health_event_occurred.__name__, [health_status])
-
-                log.info("Fetching field values")
-                field_values = self._fetch_field_values(dcgm_field_group, dcgm_group)
-                if older_field_values != field_values:
-                    self._fire_callback_funcs(
-                        types.CallbackInterface.field_change_event_occurred.__name__, [field_values]
-                    )
-                    older_field_values = field_values
-                else:
-                    log.info("Field values remained the same, skipping callback")
 
             log.info("Waiting till next cycle")
             exit.wait(self._poll_interval_seconds)
