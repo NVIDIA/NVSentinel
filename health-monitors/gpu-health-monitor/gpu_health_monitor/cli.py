@@ -135,13 +135,12 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
     signal.signal(signal.SIGTERM, process_exit_signal)
     signal.signal(signal.SIGINT, process_exit_signal)
 
-    fields_to_monitor = [x for x in dcgm_config["FieldsToMonitor"].split(",")]
     dcgm_watcher = dcgm.DCGMWatcher(
         addr=dcgm_addr,
         poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
         callbacks=enabled_event_processors,
     )
-    dcgm_watcher.start(fields_to_monitor, exit)
+    dcgm_watcher.start([], exit)
 
 
 if __name__ == "__main__":

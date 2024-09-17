@@ -19,9 +19,6 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.gpu_id = gpu_id
         self.error_num = error_num
 
-    def field_change_event_occurred(self, fields_changes: dict[str, list[dcgm.types.FieldDetails]]):
-        self.fields_changes = fields_changes
-
     def clear_all_xid_errors(self):
         pass
 
@@ -191,46 +188,9 @@ class TestDCGMHealthChecks:
 
         assert dcgm_group_mock.policy.Unregister.call_count == len(supported_gpus)
 
-    @patch("pydcgm.DcgmFieldGroup.__new__")
-    def test_create_dcgm_field_group(self, mock_dcgm_field_group):
-        watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])
-        dcgm_handle_mock = MagicMock()
-        field_ids = []
-
-        def CreateFieldGroup_mock(self, dcgmHandle, name="", fieldIds=None, fieldGroupId=None):
-            nonlocal field_ids
-            field_ids = fieldIds
-            return MagicMock()
-
-        mock_dcgm_field_group.side_effect = CreateFieldGroup_mock
-
-        watcher._create_dcgm_field_group(
-            dcgm_handle_mock, ["DCGM_FI_DEV_RETIRED_SBE", "DCGM_FI_DEV_RETIRED_DBE", "DCGM_FI_DEV_RETIRED_PENDING"]
-        )
-
-        assert field_ids == [390, 391, 392]
-
-    def test_fetch_field_values(self):
-        watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])
-        dcgm_field_group = MagicMock()
-        dcgm_group = MagicMock()
-        field_value = dcgm_structs.c_dcgmFieldValue_v1
-        field_value.fieldType = ord(dcgm_fields.DCGM_FT_INT64)
-        field_value.value = dcgm_structs.c_dcgmFieldValue_v1_value
-        field_value.value.i64 = 50
-        expected_response = dcgm_field_helpers.DcgmFieldValueCollection(None, None)
-        field_390_time_series = dcgm_field_helpers.DcgmFieldValueTimeSeries()
-        field_390_time_series.InsertValue(dcgm_field_helpers.DcgmFieldValue(field_value()))
-        expected_response.values = {"0": {390: field_390_time_series}}
-        dcgm_group.samples.GetLatest.return_value = expected_response
-
-        fields = watcher._fetch_field_values(dcgm_field_group, dcgm_group)
-        assert fields == {"0": [dcgm.types.FieldDetails(field_id="DCGM_FI_DEV_RETIRED_SBE", value="50")]}
-
     @patch("pydcgm.DcgmHandle.__new__")
     @patch("pydcgm.DcgmGroup.__new__")
-    @patch("pydcgm.DcgmFieldGroup.__new__")
-    def test_start(self, mock_dcgm_field_group, mock_dcgm_group, mock_dcgm_handle):
+    def test_start(self, mock_dcgm_group, mock_dcgm_handle):
         event_processor_test = FakeEventProcessorInTest()
         watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[event_processor_test])
         exit = Event()
@@ -244,25 +204,14 @@ class TestDCGMHealthChecks:
         mock_response.incidentCount = 0
         mock_response.incidents = dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
         dcgm_group_mock.health.Check.return_value = mock_response()
-        field_value = dcgm_structs.c_dcgmFieldValue_v1
-        field_value.fieldType = ord(dcgm_fields.DCGM_FT_INT64)
-        field_value.value = dcgm_structs.c_dcgmFieldValue_v1_value
-        field_value.value.i64 = 50
-        expected_response = dcgm_field_helpers.DcgmFieldValueCollection(None, None)
-        field_390_time_series = dcgm_field_helpers.DcgmFieldValueTimeSeries()
-        field_390_time_series.InsertValue(dcgm_field_helpers.DcgmFieldValue(field_value()))
-        expected_response.values = {"0": {390: field_390_time_series}}
-        dcgm_group_mock.samples.GetLatest.return_value = expected_response
-        mock_dcgm_group.return_value = dcgm_group_mock
 
-        dcgm_field_group_mock = MagicMock()
-        mock_dcgm_field_group.return_value = dcgm_field_group_mock
+        mock_dcgm_group.return_value = dcgm_group_mock
 
         xid_callback_data = dcgm_structs.c_dcgmPolicyCallbackResponse_v1
         xid_callback_data.xid = dcgm_structs.c_dcgmPolicyConditionXID_t
         xid_callback_data.xid.errnum = 13
 
-        watcher_thread = Thread(target=watcher.start, args=(["DCGM_FI_DEV_RETIRED_SBE"], exit))
+        watcher_thread = Thread(target=watcher.start, args=([], exit))
         expected_response = watcher._get_health_status_dict()
         watcher_thread.start()
         exit.wait(5)  # wait for the watcher to enter the event loop
@@ -276,6 +225,3 @@ class TestDCGMHealthChecks:
         assert event_processor_test.health_details == expected_response
         assert event_processor_test.gpu_id == 0
         assert event_processor_test.error_num == 13
-        assert event_processor_test.fields_changes == {
-            "0": [dcgm.types.FieldDetails(field_id="DCGM_FI_DEV_RETIRED_SBE", value="50")]
-        }
