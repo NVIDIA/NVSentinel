@@ -149,7 +149,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Pcie error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:Pcie error on GPU 0 GPU:0 Recommended Action=UNKNOWN.",
+			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:Pcie error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuPcieWatch",
 			ExpectedHealthFailureStatus: "True",
@@ -166,7 +166,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			},
-			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE.",
+			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE;",
 			ExpectedOutputReason:        "XidErrorDetected",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
@@ -183,7 +183,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
 			},
-			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE. XID45 GPU:0 Recommended Action=NONE.",
+			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE; XID45 GPU:0 Recommended Action=NONE;",
 			ExpectedOutputReason:        "XidErrorDetected",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
@@ -200,7 +200,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal watch error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal watch error on GPU 0 GPU:0 Recommended Action=UNKNOWN.",
+			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal watch error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 			ExpectedHealthFailureStatus: "True",
@@ -261,7 +261,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "PCI Replay Rate error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:PCI Replay Rate error on GPU 0 GPU:0 Recommended Action=UNKNOWN.",
+			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:PCI Replay Rate error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuPcieWatch",
 		},
@@ -277,7 +277,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN.",
+			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
@@ -293,7 +293,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN.",
+			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
@@ -332,5 +332,536 @@ func TestK8sNodeEvents(t *testing.T) {
 	err = clientSet.CoreV1().Nodes().Delete(ctx, fakeNode.Name, metav1.DeleteOptions{})
 	if err != nil {
 		t.Errorf("Failed to delete  node with err %s", err)
+	}
+}
+
+func TestParseMessages(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"", []string{}},
+		{"message1", []string{"message1"}},
+		{"message1;", []string{"message1"}},
+		{"message1;message2", []string{"message1", "message2"}},
+		{"message1;message2;", []string{"message1", "message2"}},
+	}
+
+	for i, test := range tests {
+		result := k8sConnector.parseMessages(test.input)
+		if !equalStringSlices(result, test.expected) {
+			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
+		}
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestAddMessageIfNotExist(t *testing.T) {
+	tests := []struct {
+		messages   []string
+		newMessage string
+		expected   []string
+	}{
+		{[]string{}, "msg1", []string{"msg1"}},
+		{[]string{"msg1"}, "msg2", []string{"msg1", "msg2"}},
+		{[]string{"msg1"}, "msg1", []string{"msg1"}},
+		{[]string{"msg1", "msg2"}, "msg2", []string{"msg1", "msg2"}},
+	}
+
+	for i, test := range tests {
+		result := k8sConnector.addMessageIfNotExist(test.messages, test.newMessage)
+		if !equalStringSlices(result, test.expected) {
+			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
+		}
+	}
+}
+
+func TestRemoveImpactedEntitiesMessages(t *testing.T) {
+	tests := []struct {
+		messages  []string
+		entities  []string
+		checkName string
+		expected  []string
+	}{
+		{
+			messages:  []string{" GPU:0 error", " GPU:1 error"},
+			entities:  []string{"0"},
+			checkName: "GpuErrorCheck",
+			expected:  []string{" GPU:1 error"},
+		},
+		{
+			messages:  []string{"NIC:eth0 error", "NIC:eth1 error"},
+			entities:  []string{"eth0"},
+			checkName: "InfiniBandErrorCheck",
+			expected:  []string{"NIC:eth1 error"},
+		},
+		{
+			messages:  []string{" nvswitch0 error", " nvswitch1 error"},
+			entities:  []string{"nvswitch0"},
+			checkName: "NvswitchErrorFromKmsgWatch",
+			expected:  []string{" nvswitch1 error"},
+		},
+		{
+			messages:  []string{" GPU:0 error", " GPU:1 error"},
+			entities:  []string{"1"},
+			checkName: "SomeOtherCheck",
+			expected:  []string{" GPU:0 error"},
+		},
+
+		{
+			messages:  []string{" GPU:0 error", " GPU:1 error"},
+			entities:  []string{"2"},
+			checkName: "GpuErrorCheck",
+			expected:  []string{" GPU:0 error", " GPU:1 error"},
+		},
+	}
+
+	for i, test := range tests {
+		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, test.entities, test.checkName)
+		if !equalStringSlices(result, test.expected) {
+			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
+		}
+	}
+}
+
+func TestUpdateHealthEventReason(t *testing.T) {
+	tests := []struct {
+		checkName string
+		isHealthy bool
+		expected  string
+	}{
+		{XidErrorCheck, true, NoXidErrorDetectedReason},
+		{XidErrorCheck, false, XidErrorDetectedReason},
+		{XidBatchErrorCheck, true, NoXidErrorDetectedReason},
+		{XidBatchErrorCheck, false, XidErrorDetectedReason},
+		{"GpuPcieWatch", true, "GpuPcieWatchIsHealthy"},
+		{"GpuPcieWatch", false, "GpuPcieWatchIsNotHealthy"},
+	}
+
+	for i, test := range tests {
+		result := k8sConnector.updateHealthEventReason(test.checkName, test.isHealthy)
+		if result != test.expected {
+			t.Errorf("Test %d failed: expected %s, got %s", i, test.expected, result)
+		}
+	}
+}
+
+func TestUpdateNodeCondition_StatusChange(t *testing.T) {
+	healthEvents := []*platformconnector.HealthEvent{
+		{
+			CheckName:          "GpuXidError",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"0"},
+			ErrorCode:          []string{"44"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "gpu",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "XID44 error on GPU 0",
+		},
+		{
+			CheckName:          "InfiniBandErrorCheck",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"mlx5_0"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "network",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "InfiniBand error on mlx5_0",
+		},
+		{
+			CheckName:          "NvswitchErrorFromKmsgWatch",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"nvswitch0"},
+			ErrorCode:          []string{"SWITCH_ERROR"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "nvswitch",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "Nvswitch error on nvswitch0",
+		},
+	}
+
+	for _, healthEvent := range healthEvents {
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+
+		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
+		fakeNode := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "testnode",
+			},
+			Status: v1.NodeStatus{
+				Conditions: []v1.NodeCondition{
+					{
+						Type:               conditionType,
+						Status:             corev1.ConditionFalse,
+						LastHeartbeatTime:  metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+						LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+						Message:            NoHealthFailureMsg,
+					},
+				},
+			},
+		}
+		_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create node: %v", err)
+		}
+
+		newCondition := corev1.NodeCondition{
+			Type:               conditionType,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
+		}
+
+		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		if err != nil {
+			t.Errorf("updateNodeCondition failed: %v", err)
+		}
+
+		node, err := clientSet.CoreV1().Nodes().Get(ctx, "testnode", metav1.GetOptions{})
+		if err != nil {
+			t.Errorf("Failed to get node: %v", err)
+		}
+
+		conditionFound := false
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == conditionType {
+				conditionFound = true
+				if condition.Status != corev1.ConditionTrue {
+					t.Errorf("Expected condition status to be True for %s, got %v", conditionType, condition.Status)
+				}
+				if condition.LastTransitionTime.Time.Before(time.Now().Add(-5 * time.Minute)) {
+					t.Errorf("Expected LastTransitionTime to be updated for %s", conditionType)
+				}
+				break
+			}
+		}
+		if !conditionFound {
+			t.Errorf("Condition %s not found in node status", conditionType)
+		}
+
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+	}
+}
+
+func TestUpdateNodeCondition_NewCondition(t *testing.T) {
+	healthEvents := []*platformconnector.HealthEvent{
+		{
+			CheckName:          "GpuXidError",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"0"},
+			ErrorCode:          []string{"44"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "gpu",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "XID44 error on GPU 0",
+		},
+		{
+			CheckName:          "InfiniBandErrorCheck",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"mlx5_0"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "network",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "InfiniBand error on mlx5_0",
+		},
+		{
+			CheckName:          "NvswitchErrorFromKmsgWatch",
+			IsHealthy:          false,
+			EntitiesImpacted:   []string{"nvswitch0"},
+			ErrorCode:          []string{"SWITCH_ERROR"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			ComponentClass:     "nvswitch",
+			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+			Message:            "Nvswitch error on nvswitch0",
+		},
+	}
+
+	for _, healthEvent := range healthEvents {
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+
+		fakeNode := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "testnode",
+			},
+			Status: v1.NodeStatus{
+				Conditions: []v1.NodeCondition{},
+			},
+		}
+		_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create node: %v", err)
+		}
+
+		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
+		newCondition := corev1.NodeCondition{
+			Type:               conditionType,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
+		}
+
+		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		if err != nil {
+			t.Errorf("updateNodeCondition failed: %v", err)
+		}
+
+		node, err := clientSet.CoreV1().Nodes().Get(ctx, "testnode", metav1.GetOptions{})
+		if err != nil {
+			t.Errorf("Failed to get node: %v", err)
+		}
+
+		conditionFound := false
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == conditionType {
+				conditionFound = true
+				if condition.Status != corev1.ConditionTrue {
+					t.Errorf("Expected condition status to be True for %s, got %v", conditionType, condition.Status)
+				}
+				expectedMessage := k8sConnector.fetchHealthEventMessage(healthEvent)
+				if condition.Message != expectedMessage {
+					t.Errorf("Expected condition message to be %s, got %s", expectedMessage, condition.Message)
+				}
+				expectedReason := k8sConnector.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy)
+				if condition.Reason != expectedReason {
+					t.Errorf("Expected condition reason to be %s, got %s", expectedReason, condition.Reason)
+				}
+				break
+			}
+		}
+		if !conditionFound {
+			t.Errorf("Condition %s not found in node status", conditionType)
+		}
+
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+	}
+}
+
+func TestUpdateNodeCondition_AddMessage(t *testing.T) {
+	healthEvents := []struct {
+		conditionType   corev1.NodeConditionType
+		existingMsg     string
+		healthEvent     *platformconnector.HealthEvent
+		expectedMessage string
+	}{
+		{
+			conditionType: "GpuXidError",
+			existingMsg:   "GPU:0 error",
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "GpuXidError",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"1"},
+				ErrorCode:          []string{"45"},
+				IsFatal:            true,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "gpu",
+				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+				Message:            "XID45 error on GPU 1",
+			},
+			expectedMessage: "GPU:0 error; XID45 GPU:1 Recommended Action=REPORT_ISSUE;",
+		},
+		{
+			conditionType: "EthernetErrorCheck",
+			existingMsg:   "NIC:eth0 error",
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "EthernetErrorCheck",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"eth1"},
+				IsFatal:            true,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "network",
+				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+				Message:            "error on eth1",
+			},
+			expectedMessage: "NIC:eth0 error; NIC:eth1, error on eth1. Recommended Action=REPORT_ISSUE;",
+		},
+		{
+			conditionType: "NvswitchErrorFromKmsgWatch",
+			existingMsg:   " nvswitch0 error",
+			healthEvent: &platformconnector.HealthEvent{
+				CheckName:          "NvswitchErrorFromKmsgWatch",
+				IsHealthy:          false,
+				EntitiesImpacted:   []string{"nvswitch1"},
+				ErrorCode:          []string{"SWITCH_ERROR"},
+				IsFatal:            true,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				ComponentClass:     "nvswitch",
+				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+				Message:            "Nvswitch error on nvswitch1",
+			},
+			expectedMessage: " nvswitch0 error; SWITCH_ERROR:Nvswitch error on nvswitch1 nvswitch1, Recommended Action=REPORT_ISSUE;",
+		},
+	}
+
+	for _, testCase := range healthEvents {
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+
+		fakeNode := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "testnode",
+			},
+			Status: v1.NodeStatus{
+				Conditions: []v1.NodeCondition{
+					{
+						Type:               testCase.conditionType,
+						Status:             corev1.ConditionTrue,
+						LastHeartbeatTime:  metav1.Now(),
+						LastTransitionTime: metav1.Now(),
+						Message:            testCase.existingMsg,
+					},
+				},
+			},
+		}
+		_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create node: %v", err)
+		}
+
+		newCondition := corev1.NodeCondition{
+			Type:               testCase.conditionType,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+			Message:            k8sConnector.fetchHealthEventMessage(testCase.healthEvent),
+		}
+
+		err = k8sConnector.updateNodeCondition(ctx, newCondition, testCase.healthEvent)
+		if err != nil {
+			t.Errorf("updateNodeCondition failed: %v", err)
+		}
+
+		node, err := clientSet.CoreV1().Nodes().Get(ctx, "testnode", metav1.GetOptions{})
+		if err != nil {
+			t.Errorf("Failed to get node: %v", err)
+		}
+
+		conditionFound := false
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == testCase.conditionType {
+				conditionFound = true
+				if condition.Message != testCase.expectedMessage {
+					t.Errorf("Expected condition message to be '%s', got '%s'", testCase.expectedMessage, condition.Message)
+				}
+				if condition.Status != corev1.ConditionTrue {
+					t.Errorf("Expected condition status to be True, got %v", condition.Status)
+				}
+				break
+			}
+		}
+		if !conditionFound {
+			t.Errorf("Condition %s not found in node status", testCase.conditionType)
+		}
+
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+	}
+}
+
+func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
+	testCases := []struct {
+		conditionType    corev1.NodeConditionType
+		existingMsg      string
+		entitiesImpacted []string
+		expectedMessage  string
+	}{
+		{
+			conditionType:    "GpuXidError",
+			existingMsg:      " GPU:0 error; GPU:1 error",
+			entitiesImpacted: []string{"0"},
+			expectedMessage:  " GPU:1 error",
+		},
+		{
+			conditionType:    "InfiniBandErrorCheck",
+			existingMsg:      "NIC:eth0 error;NIC:eth1 error",
+			entitiesImpacted: []string{"eth0"},
+			expectedMessage:  "NIC:eth1 error",
+		},
+		{
+			conditionType:    "NvswitchErrorFromKmsgWatch",
+			existingMsg:      " nvswitch0 error; nvswitch1 error",
+			entitiesImpacted: []string{"nvswitch0"},
+			expectedMessage:  " nvswitch1 error",
+		},
+	}
+
+	for _, testCase := range testCases {
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
+
+		fakeNode := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "testnode",
+			},
+			Status: v1.NodeStatus{
+				Conditions: []v1.NodeCondition{
+					{
+						Type:               testCase.conditionType,
+						Status:             corev1.ConditionTrue,
+						LastHeartbeatTime:  metav1.Now(),
+						LastTransitionTime: metav1.Now(),
+						Message:            testCase.existingMsg,
+					},
+				},
+			},
+		}
+		_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("Failed to create node: %v", err)
+		}
+
+		healthEvent := &platformconnector.HealthEvent{
+			CheckName:          string(testCase.conditionType),
+			IsHealthy:          true,
+			EntitiesImpacted:   testCase.entitiesImpacted,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+		}
+
+		newCondition := corev1.NodeCondition{
+			Type:               testCase.conditionType,
+			LastHeartbeatTime:  metav1.Now(),
+			LastTransitionTime: metav1.Now(),
+		}
+
+		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		if err != nil {
+			t.Errorf("updateNodeCondition failed: %v", err)
+		}
+
+		node, err := clientSet.CoreV1().Nodes().Get(ctx, "testnode", metav1.GetOptions{})
+		if err != nil {
+			t.Errorf("Failed to get node: %v", err)
+		}
+
+		conditionFound := false
+		for _, condition := range node.Status.Conditions {
+			if condition.Type == testCase.conditionType {
+				conditionFound = true
+				if condition.Message != testCase.expectedMessage {
+					t.Errorf("Expected condition message to be '%s', got '%s'", testCase.expectedMessage, condition.Message)
+				}
+
+				if condition.Status != corev1.ConditionTrue {
+					t.Errorf("Expected condition status to be True, got %v", condition.Status)
+				}
+				break
+			}
+		}
+		if !conditionFound {
+			t.Errorf("Condition %s not found in node status", testCase.conditionType)
+		}
+
+		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 	}
 }

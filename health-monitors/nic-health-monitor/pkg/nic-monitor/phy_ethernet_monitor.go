@@ -26,6 +26,12 @@ import (
 
 const (
 	SYS_CLASS_NET_PATH = "/sys/class/net"
+
+	// device healthy message
+	deviceIsHealthy = "Device is healthy"
+
+	// ethernet operstate
+	operstateUp = "up"
 )
 
 type EthernetDevice struct {
@@ -135,36 +141,60 @@ func GetPhyEthernetDevices(exclusionRegexList []string) (map[string]EthernetDevi
 	return deviceList, nil
 }
 
-func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error) {
+func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
 	deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
 	if err != nil {
 		return nil, err
 	}
 
-	events := []NicErrorEvent{}
+	events := []NicHealthEvent{}
 
 	// Check if any nic device is disappear
 	for name := range m.Devices {
 		if _, ok := deviceList[name]; !ok {
-			events = append(events, NicErrorEvent{
-				Ethernet,
-				name,
-				"state: Not Exist",
+			events = append(events, NicHealthEvent{
+				NicType:        Ethernet,
+				Name:           name,
+				Message:        doesNotExistState,
+				IsHealthyEvent: false,
 			})
 		}
 	}
 
 	for name, device := range deviceList {
-		if old, ok := m.Devices[name]; ok && device.Operstate == old.Operstate {
+		oldDevice, oldDeviceExists := m.Devices[name]
+
+		if !oldDeviceExists {
+			// device is new
+			if device.Operstate == operstateUp {
+				events = append(events, NicHealthEvent{
+					NicType:        Ethernet,
+					Name:           device.Name,
+					Message:        deviceIsHealthy,
+					IsHealthyEvent: true,
+				})
+			}
+
 			continue
 		}
 
-		if device.Operstate != "up" {
-			events = append(events, NicErrorEvent{
-				Ethernet,
-				device.Name,
-				"state: " + device.Operstate,
-			})
+		// device existed before and Operstate has changed
+		if device.Operstate != oldDevice.Operstate {
+			if device.Operstate == operstateUp {
+				events = append(events, NicHealthEvent{
+					NicType:        Ethernet,
+					Name:           device.Name,
+					Message:        deviceIsHealthy,
+					IsHealthyEvent: true,
+				})
+			} else {
+				events = append(events, NicHealthEvent{
+					NicType:        Ethernet,
+					Name:           device.Name,
+					Message:        "state: " + device.Operstate,
+					IsHealthyEvent: false,
+				})
+			}
 		}
 	}
 

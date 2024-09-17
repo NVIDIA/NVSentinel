@@ -42,19 +42,22 @@ var (
 	})
 )
 
-func NicError2HealthEvents(nicErrors *[]nic.NicErrorEvent) *pb.HealthEvents {
+func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
-	for _, nicError := range *nicErrors {
+	for _, nicEvent := range *nicEvents {
 		var checkname, componentClass string
 
-		if nicError.NicType == nic.Infiniband {
+		if nicEvent.NicType == nic.Infiniband {
 			checkname = INFINIBAND_CHECK_NAME
 			componentClass = INFINIBAND_COMPONENT_CLASS
-		} else if nicError.NicType == nic.Ethernet {
+		} else if nicEvent.NicType == nic.Ethernet {
 			checkname = ETHERNET_CHECK_NAME
 			componentClass = ETHERNET_COMPONENT_CLASS
 		}
+
+		isHealthy := nicEvent.IsHealthyEvent
+		isFatal := !isHealthy
 
 		event := pb.HealthEvent{
 			Version:            1,
@@ -62,9 +65,10 @@ func NicError2HealthEvents(nicErrors *[]nic.NicErrorEvent) *pb.HealthEvents {
 			CheckName:          checkname,
 			ComponentClass:     componentClass,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
-			EntitiesImpacted:   []string{nicError.Name},
-			Message:            nicError.Message,
-			// IsFatal:            nicError.IsFatal,
+			EntitiesImpacted:   []string{nicEvent.Name},
+			Message:            nicEvent.Message,
+			IsFatal:            isFatal,
+			IsHealthy:          isHealthy,
 			// ErrorCode:          fmt.Sprint(nicError.ErrorNum),
 			// ActionRequired:     false,
 			// RecommendedAction:  pb.RecommenedAction_UNKNOWN,
@@ -160,14 +164,14 @@ func main() {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	nicErrorMonitor, err := nic.NewNicErrorMonitor(nicConfig)
+	nicHealthMonitor, err := nic.NewNicHealthMonitor(nicConfig)
 	if err != nil {
 		panic(err)
 	}
 
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- nicErrorMonitor.Run()
+		errChan <- nicHealthMonitor.Run()
 	}()
 
 	go func() {
@@ -183,8 +187,8 @@ func main() {
 		select {
 		case err := <-errChan:
 			panic(err)
-		case nicError := <-nicErrorMonitor.EventChan:
-			healthEvents := NicError2HealthEvents(nicError)
+		case nicEvent := <-nicHealthMonitor.EventChan:
+			healthEvents := NicEvent2HealthEvents(nicEvent)
 			start := time.Now()
 
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)

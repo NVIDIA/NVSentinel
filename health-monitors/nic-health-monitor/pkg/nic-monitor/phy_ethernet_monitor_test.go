@@ -79,8 +79,8 @@ func TestPhyEthernetMonitor(t *testing.T) {
 
 	mockFS := fileSystem.(MockFileSystem)
 
-	expectedNoError := []NicErrorEvent{}
-	expectedDown := []NicErrorEvent{
+	expectedNoError := []NicHealthEvent{{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true}}
+	expectedDown := []NicHealthEvent{
 		{
 			NicType: Ethernet,
 			Name:    "eth0",
@@ -106,6 +106,7 @@ func TestPhyEthernetMonitor(t *testing.T) {
 	require.Equal(t, expectedDown, actualErrors)
 
 	// eth0 is still down, but it is not a new error, so do not report it
+	expectedNoError = []NicHealthEvent{}
 	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -113,6 +114,8 @@ func TestPhyEthernetMonitor(t *testing.T) {
 
 	// eth0 become up - no error reports
 	mockFS.Fs["sys/class/net/eth0/operstate"].Data = []byte("up")
+
+	expectedNoError = []NicHealthEvent{{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true}}
 	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -146,7 +149,10 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 
 	mockFS := fileSystem.(MockFileSystem)
 
-	expectedNoError := []NicErrorEvent{}
+	expectedNoError := []NicHealthEvent{
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth2", Message: "Device is healthy", IsHealthyEvent: true},
+	}
 
 	ethMonitor := &EthernetDeviceMonitor{}
 
@@ -157,11 +163,12 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	actualErrors, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedNoError, actualErrors)
+	require.True(t, equalSlices(expectedNoError, actualErrors))
 
 	// update eth1 state to "up" and verify it is not detected as it is excluded
 	mockFS.Fs["sys/class/net/eth1/operstate"].Data = []byte("up")
 
+	expectedNoError = []NicHealthEvent{}
 	actualErrors, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -170,7 +177,7 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	// update eth2 to have a state change so it should be detected
 	mockFS.Fs["sys/class/net/eth2/operstate"].Data = []byte("down")
 
-	expectedStateDown := []NicErrorEvent{
+	expectedStateDown := []NicHealthEvent{
 		{
 			NicType: Ethernet,
 			Name:    "eth2",
@@ -190,4 +197,16 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
+}
+
+func equalSlices[T comparable](a, b []T) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

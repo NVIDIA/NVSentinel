@@ -16,15 +16,20 @@ import (
 )
 
 const (
-	DefaultNamespace         = "default"
-	NoHealthFailureMsg       = "No Health Failures"
-	XidErrorCheck            = "GpuXidError"
-	XidBatchErrorCheck       = "XidBatchError"
-	XidErrorDetectedReason   = "XidErrorDetected"
-	NoXidErrorDetectedReason = "NoXidErrorDetected"
+	DefaultNamespace           = "default"
+	NoHealthFailureMsg         = "No Health Failures"
+	XidErrorCheck              = "GpuXidError"
+	XidBatchErrorCheck         = "XidBatchError"
+	XidErrorDetectedReason     = "XidErrorDetected"
+	NoXidErrorDetectedReason   = "NoXidErrorDetected"
+	InfiniBandErrorCheck       = "InfiniBandErrorCheck"
+	EthernetErrorCheck         = "EthernetErrorCheck"
+	NvswitchErrorFromKmsgWatch = "NvswitchErrorFromKmsgWatch"
 )
 
-func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1.NodeCondition, isHealthy bool) error {
+//nolint:cyclop
+func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1.NodeCondition,
+	healthEvent *platformconnector.HealthEvent) error {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		node, err := r.clientset.CoreV1().Nodes().Get(ctx, r.nodeName, metav1.GetOptions{})
 		if err != nil {
@@ -35,23 +40,56 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 		conditionExists := false
 
 		for i, c := range node.Status.Conditions {
+			/// nolint:nestif
 			if c.Type == condition.Type {
+				conditionExists = true
+
 				if condition.Status != c.Status {
 					condition.LastTransitionTime = condition.LastHeartbeatTime
 				}
 
-				if !isHealthy {
-					if c.Message != NoHealthFailureMsg && !strings.Contains(c.Message, condition.Message) {
-						condition.Message = fmt.Sprintf("%s %s", c.Message, condition.Message)
-					}
+				// split meesages by ";" in condition
+				messages := r.parseMessages(c.Message)
+
+				if !healthEvent.IsHealthy {
+					// add the new message if it doesn't exist
+					messages = r.addMessageIfNotExist(messages, condition.Message)
+
+					c.Status = corev1.ConditionTrue
+				} else {
+					// remove messages that include any of the entities in entitiesImpacted
+					messages = r.removeImpactedEntitiesMessages(messages, healthEvent.EntitiesImpacted, healthEvent.CheckName)
 				}
 
-				node.Status.Conditions[i] = condition
-				conditionExists = true
+				if len(messages) > 0 {
+					c.Message = strings.Join(messages, "; ")
+					c.Status = corev1.ConditionTrue
+					c.Reason = r.updateHealthEventReason(healthEvent.CheckName, false)
+				} else {
+					c.Message = NoHealthFailureMsg
+					c.Status = corev1.ConditionFalse
+					c.Reason = r.updateHealthEventReason(healthEvent.CheckName, true)
+				}
+
+				c.LastHeartbeatTime = condition.LastHeartbeatTime
+				c.LastTransitionTime = condition.LastTransitionTime
+
+				node.Status.Conditions[i] = c
+
+				break
 			}
 		}
 
 		if !conditionExists {
+			if !healthEvent.IsHealthy {
+				condition.Status = corev1.ConditionTrue
+			} else {
+				condition.Status = corev1.ConditionFalse
+				condition.Message = NoHealthFailureMsg
+			}
+
+			condition.Reason = r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy)
+
 			node.Status.Conditions = append(node.Status.Conditions, condition)
 		}
 		// Update the node status
@@ -64,6 +102,63 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 	})
 
 	return err
+}
+
+func (r *K8sConnector) parseMessages(message string) []string {
+	var messages []string
+
+	if message != "" && message != NoHealthFailureMsg {
+		elementMessages := strings.Split(message, ";")
+		for _, msg := range elementMessages {
+			if msg != "" {
+				messages = append(messages, msg)
+			}
+		}
+	}
+
+	return messages
+}
+
+func (r *K8sConnector) addMessageIfNotExist(messages []string, newMessage string) []string {
+	for _, msg := range messages {
+		if msg == newMessage {
+			return messages
+		}
+	}
+
+	return append(messages, newMessage)
+}
+
+func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string, entities []string, checkName string) []string {
+	var newMessages []string
+
+	for _, msg := range messages {
+		entityFound := false
+
+		for _, entity := range entities {
+			var entityPrefix string
+
+			switch checkName {
+			case InfiniBandErrorCheck, EthernetErrorCheck:
+				entityPrefix = fmt.Sprintf("NIC:%s", entity)
+			case NvswitchErrorFromKmsgWatch:
+				entityPrefix = fmt.Sprintf(" %s", entity)
+			default:
+				entityPrefix = fmt.Sprintf(" GPU:%s", entity)
+			}
+
+			if strings.Contains(msg, entityPrefix) {
+				entityFound = true
+				break
+			}
+		}
+
+		if !entityFound {
+			newMessages = append(newMessages, msg)
+		}
+	}
+
+	return newMessages
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) error {
@@ -111,25 +206,21 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 	return err
 }
 
-func (r *K8sConnector) fetchHealthEventReason(healthEvent *platformconnector.HealthEvent) string {
-	reason := ""
+func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {
+	if checkName == XidErrorCheck || checkName == XidBatchErrorCheck {
+		if isHealthy {
+			return NoXidErrorDetectedReason
+		}
 
-	if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
-		switch healthEvent.IsHealthy {
-		case true:
-			reason = NoXidErrorDetectedReason
-		default:
-			reason = XidErrorDetectedReason
-		}
-	} else {
-		if healthEvent.IsHealthy {
-			reason = fmt.Sprintf("%sIsHealthy", healthEvent.CheckName)
-		} else {
-			reason = fmt.Sprintf("%sIsNotHealthy", healthEvent.CheckName)
-		}
+		return XidErrorDetectedReason
 	}
 
-	return reason
+	status := "IsNotHealthy"
+	if isHealthy {
+		status = "IsHealthy"
+	}
+
+	return fmt.Sprintf("%s%s", checkName, status)
 }
 
 func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.HealthEvent) string {
@@ -147,10 +238,17 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 		}
 
 		for _, entity := range healthEvent.EntitiesImpacted {
-			message += fmt.Sprintf(" GPU:%s", entity)
+			switch healthEvent.CheckName {
+			case InfiniBandErrorCheck, EthernetErrorCheck:
+				message += fmt.Sprintf("NIC:%s, %s.", entity, healthEvent.Message)
+			case NvswitchErrorFromKmsgWatch:
+				message += fmt.Sprintf(" %s,", entity)
+			default:
+				message += fmt.Sprintf(" GPU:%s", entity)
+			}
 		}
 
-		message += fmt.Sprintf(" Recommended Action=%s.", healthEvent.RecommendedAction.String())
+		message += fmt.Sprintf(" Recommended Action=%s;", healthEvent.RecommendedAction.String())
 	}
 
 	return message
@@ -158,22 +256,14 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 
 func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *platformconnector.HealthEvent) error {
 	conditionType := corev1.NodeConditionType(string(healthEvent.CheckName))
-	healthEventStatus := "True"
 
-	if healthEvent.IsHealthy {
-		healthEventStatus = "False"
-	}
-
-	reason := r.fetchHealthEventReason(healthEvent)
 	message := r.fetchHealthEventMessage(healthEvent)
 
 	if healthEvent.IsHealthy || healthEvent.IsFatal {
 		newCondition := corev1.NodeCondition{
 			Type:               conditionType,
-			Status:             corev1.ConditionStatus(healthEventStatus),
 			LastHeartbeatTime:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
 			LastTransitionTime: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-			Reason:             reason,
 			Message:            message,
 		}
 
@@ -181,7 +271,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 
 		start := time.Now()
 
-		err := r.updateNodeCondition(ctx, newCondition, healthEvent.IsHealthy)
+		err := r.updateNodeCondition(ctx, newCondition, healthEvent)
 
 		duration := float64(time.Since(start).Milliseconds())
 		nodeConditionUpdateDuration.Observe(duration)
@@ -206,7 +296,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvent *pla
 			Name: r.nodeName,
 			UID:  types.UID(r.nodeName),
 		},
-		Reason:              reason,
+		Reason:              r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy),
 		ReportingController: healthEvent.Agent,
 		ReportingInstance:   r.nodeName,
 		Message:             message,

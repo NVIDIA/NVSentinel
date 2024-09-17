@@ -73,7 +73,7 @@ func TestInfinibandMonitor(t *testing.T) {
 
 	mockFS := fileSystem.(MockFileSystem)
 
-	expectedNoError := []NicErrorEvent{}
+	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
 
@@ -88,11 +88,12 @@ func TestInfinibandMonitor(t *testing.T) {
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
 
-	expectedPhyStatePolling := []NicErrorEvent{
+	expectedPhyStatePolling := []NicHealthEvent{
 		{
-			NicType: Infiniband,
-			Name:    "mlx5_0_1",
-			Message: "phys_state: 2: Polling",
+			NicType:        Infiniband,
+			Name:           "mlx5_0_1",
+			Message:        "phys_state: 2: Polling",
+			IsHealthyEvent: false,
 		},
 	}
 
@@ -102,6 +103,7 @@ func TestInfinibandMonitor(t *testing.T) {
 	require.Equal(t, expectedPhyStatePolling, actualErrors)
 
 	// mlx5_0 port 1 is still down, but it is not a new error, so do not report it
+	expectedNoError = []NicHealthEvent{}
 	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -109,6 +111,7 @@ func TestInfinibandMonitor(t *testing.T) {
 
 	// mlx5_0 port 1 become up - no error reports
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("5: LinkUp")
+	expectedNoError = []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
 	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -124,11 +127,12 @@ func TestInfinibandMonitor(t *testing.T) {
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
 
-	expectedStateDown := []NicErrorEvent{
+	expectedStateDown := []NicHealthEvent{
 		{
-			NicType: Infiniband,
-			Name:    "mlx5_0_1",
-			Message: "state: 1: Down",
+			NicType:        Infiniband,
+			Name:           "mlx5_0_1",
+			Message:        "state: 1: Down, phys_state: 2: Polling",
+			IsHealthyEvent: false,
 		},
 	}
 
@@ -158,7 +162,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 
 	mockFS := fileSystem.(MockFileSystem)
 
-	expectedNoError := []NicErrorEvent{}
+	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
 
@@ -173,7 +177,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 
 	// update mlx5_1 state and verify it is not detected as  it is excluded
 	mockFS.Fs["sys/class/infiniband/mlx5_1/ports/1/state"].Data = []byte("1: Down")
-
+	expectedNoError = []NicHealthEvent{}
 	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
@@ -190,7 +194,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	// update mlx5_0 to have a state change, it should be detected
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
 
-	expectedStateDown := []NicErrorEvent{
+	expectedStateDown := []NicHealthEvent{
 		{
 			NicType: Infiniband,
 			Name:    "mlx5_0_1",
