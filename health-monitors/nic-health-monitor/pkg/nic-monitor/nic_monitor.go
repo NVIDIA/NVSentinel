@@ -29,6 +29,12 @@ import (
 type NicType int
 
 const (
+	// states
+	doesNotExistState = "state: Does Not Exist"
+	existsState       = "state: Exists"
+)
+
+const (
 	Ethernet NicType = iota
 	Infiniband
 )
@@ -47,18 +53,18 @@ type NicMonitorConfig struct {
 }
 
 type NicMonitor interface {
-	Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error)
+	Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error)
 }
 
-type NicErrorMonitor struct {
-	EventChan     chan *[]NicErrorEvent
+type NicHealthMonitor struct {
+	EventChan     chan *[]NicHealthEvent
 	Monitors      []NicMonitor
 	monitorConfig *NicMonitorConfig
 }
 
-func NewNicErrorMonitor(config *NicMonitorConfig) (*NicErrorMonitor, error) {
-	collector := &NicErrorMonitor{
-		EventChan:     make(chan *[]NicErrorEvent),
+func NewNicHealthMonitor(config *NicMonitorConfig) (*NicHealthMonitor, error) {
+	collector := &NicHealthMonitor{
+		EventChan:     make(chan *[]NicHealthEvent),
 		monitorConfig: config,
 	}
 
@@ -67,7 +73,7 @@ func NewNicErrorMonitor(config *NicMonitorConfig) (*NicErrorMonitor, error) {
 	return collector, nil
 }
 
-func scanAndRegisterNics(collector *NicErrorMonitor) {
+func scanAndRegisterNics(collector *NicHealthMonitor) {
 	// check if the infiniband directory exists
 	if _, err := os.Stat(SYS_CLASS_INFINIBAND_PATH); err != nil {
 		if !os.IsNotExist(err) {
@@ -87,11 +93,11 @@ func scanAndRegisterNics(collector *NicErrorMonitor) {
 	}
 }
 
-func (c *NicErrorMonitor) Close() error {
+func (c *NicHealthMonitor) Close() error {
 	return nil
 }
 
-func (c *NicErrorMonitor) Run() error {
+func (c *NicHealthMonitor) Run() error {
 	klog.Info("Collecting Nic events")
 
 	ticker := time.NewTicker(time.Duration(c.monitorConfig.PollingIntervalInMilliseconds) * time.Millisecond)
@@ -128,8 +134,9 @@ func isExcluded(name string, exclusionRegexes []string) bool {
 	return false
 }
 
-type NicErrorEvent struct {
-	NicType NicType // e.g., "Ethernet", "Infiniband"
-	Name    string
-	Message string
+type NicHealthEvent struct {
+	NicType        NicType // e.g., "Ethernet", "Infiniband"
+	Name           string
+	Message        string
+	IsHealthyEvent bool
 }

@@ -23,6 +23,13 @@ import (
 
 const (
 	SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
+
+	// port healthy message
+	portIsHealthy = "Port is healthy"
+
+	// infiniband states
+	stateActive    = "4: ACTIVE"
+	phyStateLinkup = "5: LinkUp"
 )
 
 type InfiniBandPort struct {
@@ -109,22 +116,23 @@ func GetPortPhysState(devname, portName string) string {
 }
 
 // nolint: gocognit, cyclop
-func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorEvent, error) {
+func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
 	deviceList, err := GetInfinibandDevices(config.ExclusionRegexes)
 	if err != nil {
 		return nil, err
 	}
 
-	events := []NicErrorEvent{}
+	events := []NicHealthEvent{}
 
 	// Check if any nic device is disappeared
 	for name := range m.Devices {
 		device, ok := deviceList[name]
 		if !ok {
-			events = append(events, NicErrorEvent{
-				Ethernet,
-				name,
-				"state: Not Exist",
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           name,
+				Message:        doesNotExistState,
+				IsHealthyEvent: false,
 			})
 
 			continue
@@ -133,10 +141,11 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorE
 		// Check if any port is disappeared
 		for portName := range m.Devices[name].Ports {
 			if _, ok := device.Ports[portName]; !ok {
-				events = append(events, NicErrorEvent{
-					Ethernet,
-					name + "_" + portName,
-					"state: Not Exist",
+				events = append(events, NicHealthEvent{
+					NicType:        Infiniband,
+					Name:           name + "_" + portName,
+					Message:        doesNotExistState,
+					IsHealthyEvent: false,
 				})
 			}
 		}
@@ -148,30 +157,59 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicErrorE
 		for portName, port := range device.Ports {
 			var oldPort InfiniBandPort
 
-			oldPortExist := oldDeviceExist
+			oldPortExist := false
 
 			if oldDeviceExist {
-				oldPort, oldPortExist = oldDevice.Ports[portName]
+				var exists bool
+				oldPort, exists = oldDevice.Ports[portName]
+				oldPortExist = exists
 			}
 
-			if !oldPortExist || port.State != oldPort.State {
-				if port.State != "4: ACTIVE" {
-					events = append(events, NicErrorEvent{
-						Infiniband,
-						device.Name + "_" + port.Name,
-						"state: " + port.State,
+			// port is new
+			if !oldPortExist {
+				// if port is new and healthy, then create a healthy event
+				if port.State == stateActive && port.PhysState == phyStateLinkup {
+					events = append(events, NicHealthEvent{
+						NicType:        Infiniband,
+						Name:           device.Name + "_" + port.Name,
+						Message:        portIsHealthy,
+						IsHealthyEvent: true,
 					})
 				}
+
+				continue
 			}
 
-			if !oldPortExist || port.PhysState != oldPort.PhysState {
-				if port.PhysState != "5: LinkUp" {
-					events = append(events, NicErrorEvent{
-						Infiniband,
-						device.Name + "_" + port.Name,
-						"phys_state: " + port.PhysState,
+			// old port exists and the state or PhysState have changed
+			if port.State != oldPort.State || port.PhysState != oldPort.PhysState {
+				if port.State == stateActive && port.PhysState == phyStateLinkup {
+					events = append(events, NicHealthEvent{
+						NicType:        Infiniband,
+						Name:           device.Name + "_" + port.Name,
+						Message:        portIsHealthy,
+						IsHealthyEvent: true,
 					})
+
+					continue
 				}
+
+				var msgParts []string
+
+				if port.State != stateActive {
+					msgParts = append(msgParts, "state: "+port.State)
+				}
+
+				if port.PhysState != phyStateLinkup {
+					msgParts = append(msgParts, "phys_state: "+port.PhysState)
+				}
+
+				msg := strings.Join(msgParts, ", ")
+				events = append(events, NicHealthEvent{
+					NicType:        Infiniband,
+					Name:           device.Name + "_" + port.Name,
+					Message:        msg,
+					IsHealthyEvent: false,
+				})
 			}
 		}
 	}
