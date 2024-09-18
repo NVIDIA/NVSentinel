@@ -79,8 +79,6 @@ shoreline-agent:
           value: "OFF"
         - name: PUSH_METRICS_ENABLED
           value: "false"
-      scraperConfig:
-        enable: false
       tolerations:
         - effect: NoSchedule
           operator: Exists

@@ -18,6 +18,7 @@ package nic_monitor
 
 import (
 	"io/fs"
+	"sort"
 	"testing"
 	"testing/fstest"
 
@@ -163,7 +164,10 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	actualErrors, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
-	require.True(t, equalSlices(expectedNoError, actualErrors))
+	// sort for comparison
+	sort.Slice(expectedNoError, func(i, j int) bool { return expectedNoError[i].Name < expectedNoError[j].Name })
+	sort.Slice(actualErrors, func(i, j int) bool { return actualErrors[i].Name < actualErrors[j].Name })
+	require.Equal(t, expectedNoError, actualErrors)
 
 	// update eth1 state to "up" and verify it is not detected as it is excluded
 	mockFS.Fs["sys/class/net/eth1/operstate"].Data = []byte("up")
@@ -197,16 +201,4 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedNoError, actualErrors)
-}
-
-func equalSlices[T comparable](a, b []T) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
