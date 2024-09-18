@@ -43,7 +43,9 @@ spec:
           imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
           args:
           - -socket
-          - {{ .Values.socketPath }} 
+          - {{ .Values.socketPath }}
+          - -devicepluginsocket
+          - {{ .Values.devicePluginSocketPath }}
           resources:
             {{- toYaml .Values.platformConnector.resources | nindent 12 }}
           volumeMounts:

@@ -11,7 +11,7 @@ ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
 
 RUN go install github.com/boumenot/gocover-cobertura@latest && \
     go install gotest.tools/gotestsum@latest && \
-    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.59.1
+    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.61.0
 
 RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v27.1/protoc-27.1-linux-x86_64.zip && \
     unzip protoc-27.1-linux-x86_64.zip -d protoc-27.1-linux-x86_64 && \
