@@ -1,0 +1,39 @@
+syntax = "proto3";
+package devicepluginplatformconnector;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/protos";
+
+service NVIDIADevicePluginConnector {
+  rpc HealthEventStreamV1(google.protobuf.Empty) returns ( stream HealthEvent ) {}
+}
+
+message HealthEvent {
+  uint32 version = 1;
+
+  string checkName = 2;                             // name of the check that was executed
+  bool isFatal = 3;                                 // if the health event is fatal
+  bool isHealthy = 4;                               // is the component healthy
+  string message = 5;                               // user friendly message
+  RecommenedAction recommendedAction = 6;           // recommended action for remediation
+  repeated string errorCode = 7;                    // list of machine readable error code
+  repeated string impactedGPUIndices = 8;           // list of GPUs impacted by the error
+
+  map<string, string> metadata = 9;                 // metadata about the event
+  google.protobuf.Timestamp generatedTimestamp = 10; // timestamp when the event was generated
+}
+
+// These recommened actions will be aligned with NVML's recommended action
+enum RecommenedAction {
+  NONE = 0;
+  NODE_REBOOT = 1;
+  COMPONENT_RESET = 2;
+  COMPONENT_REPLACEMENT = 3;
+  APPLICATION_RESTART = 4;
+  REPORT_ISSUE = 5;
+  RUN_FIELDDIAG = 6;
+
+  UNKNOWN = 99;
+}

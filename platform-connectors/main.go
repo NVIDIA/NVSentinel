@@ -18,6 +18,8 @@ import (
 	"k8s.io/klog/v2"
 
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/devicepluginconnectorserver"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/server"
 	"google.golang.org/grpc"
 )
@@ -25,7 +27,7 @@ import (
 //nolint:cyclop
 func main() {
 	socket := flag.String("socket", "", "unix socket path")
-
+	devicePluginSocket := flag.String("devicepluginsocket", "", "device plugin socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
@@ -55,6 +57,7 @@ func main() {
 	}
 
 	enableK8sPlatformConnector := result["enableK8sPlatformConnector"]
+	enableDevicePluginConnector := result["enableDevicePluginConnector"]
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
@@ -70,15 +73,26 @@ func main() {
 		}
 	}()
 
-	var ringBuffer *ringbuffer.RingBuffer
-	ringBuffer = nil
+	var k8sRingBuffer *ringbuffer.RingBuffer
+	k8sRingBuffer = nil
 
 	if enableK8sPlatformConnector == "true" {
-		ringBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
-		server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
-		k8sConnector := kubernetes.InitializeK8sConnector(ringBuffer, string(nodeName), stopCh, ctx)
+		k8sRingBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
+		server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
+		k8sConnector := kubernetes.InitializeK8sConnector(k8sRingBuffer, string(nodeName), stopCh, ctx)
 
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
+	}
+
+	var devicePluginRingBuffer *ringbuffer.RingBuffer = nil
+
+	var devicePluginListener net.Listener = nil
+
+	if enableDevicePluginConnector == "true" {
+		devicePluginRingBuffer = ringbuffer.NewRingBuffer("devicePlugin", ctx)
+
+		devicepluginconnectorserver.CreateAndStartDevicePluginServer(devicePluginSocket, &devicePluginListener,
+			devicePluginRingBuffer, nodeName, stopCh, ctx)
 	}
 
 	err = os.RemoveAll(*socket)
@@ -88,7 +102,7 @@ func main() {
 
 	lis, err := net.Listen("unix", *socket)
 	if err != nil {
-		klog.Fatalf(err.Error())
+		klog.Fatalf("Error creating platform-connector unixsocket %s", err)
 	}
 
 	var opts []grpc.ServerOption
@@ -108,11 +122,17 @@ func main() {
 
 	close(stopCh)
 
-	if ringBuffer != nil {
-		ringBuffer.ShutDownHealthMetricQueue()
+	if lis != nil {
+		k8sRingBuffer.ShutDownHealthMetricQueue()
+		lis.Close()
+		os.Remove(*socket)
 	}
 
-	lis.Close()
-	os.Remove(*socket)
+	if devicePluginListener != nil {
+		devicePluginRingBuffer.ShutDownHealthMetricQueue()
+		devicePluginListener.Close()
+		os.Remove(*devicePluginSocket)
+	}
+
 	cancel()
 }
