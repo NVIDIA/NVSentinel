@@ -45,7 +45,7 @@ spec:
             - --state-file
             - {{ .Values.stateFilePath }}
             - --dcgm-k8s-service-enabled
-            - {{ .Values.global.dcgm.dcgmK8sServiceEnabled }}
+            - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
