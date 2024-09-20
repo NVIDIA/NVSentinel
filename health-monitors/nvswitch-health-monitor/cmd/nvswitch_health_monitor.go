@@ -31,6 +31,17 @@ const (
 
 const defaultStateFilePath = "/var/run/nvswitch_monitor/state.json"
 
+const (
+	defaultMaxRetriesForHealthyEvent        = 20
+	defaultRetryDelaySecondsForHealthyEvent = 5
+)
+
+type NVSwitchMonitorConfig struct {
+	*sxid.SxidEventMonitorConfig
+	MaxRetriesForHealthyEvent        int
+	RetryDelaySecondsForHealthyEvent int
+}
+
 // prometheus metrics
 var (
 	healthEventsPublished = promauto.NewCounter(prometheus.CounterOpts{
@@ -62,7 +73,7 @@ func GetGPUID(nvswitch, nvlink int) (int, error) {
 	return -1, errors.New("failed to get gpu id associated, dgx type is unknown")
 }
 
-func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
+func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
 	event := pb.HealthEvent{
@@ -71,31 +82,31 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 		CheckName:          CHECK_NAME,
 		ComponentClass:     COMPONENT_CLASS,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
-		IsFatal:            sxidError.IsFatal,
-		Message:            sxidError.Message,
-		IsHealthy:          sxidError.IsHealthy,
+		IsFatal:            sxidEvent.IsFatal,
+		Message:            sxidEvent.Message,
+		IsHealthy:          sxidEvent.IsHealthy,
 	}
 
-	if !sxidError.IsHealthy {
+	if !sxidEvent.IsHealthy {
 		entitiesImpacted := []string{
-			fmt.Sprintf("nvswitch%d", sxidError.NVSwitch),
-			sxidError.PCI,
-			fmt.Sprintf("nvlink%d", sxidError.Link),
+			fmt.Sprintf("nvswitch%d", sxidEvent.NVSwitch),
+			sxidEvent.PCI,
+			fmt.Sprintf("nvlink%d", sxidEvent.Link),
 		}
 		start := time.Now()
 
-		gpuID, err := GetGPUID(sxidError.NVSwitch, sxidError.Link)
+		gpuID, err := GetGPUID(sxidEvent.NVSwitch, sxidEvent.Link)
 
 		duration := float64(time.Since(start).Milliseconds())
-		gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
 
 		if err != nil {
+			gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
 			entitiesImpacted = append(entitiesImpacted, fmt.Sprintf("gpu%d", gpuID))
 		}
 
 		event.EntitiesImpacted = entitiesImpacted
 
-		event.ErrorCode = []string{fmt.Sprint(sxidError.ErrorNum)}
+		event.ErrorCode = []string{fmt.Sprint(sxidEvent.ErrorNum)}
 	}
 
 	healthEvents.Events = append(healthEvents.Events, &event)
@@ -103,13 +114,13 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 	return &healthEvents
 }
 
-func loadConfig(filePath string) (*sxid.SxidErrorMonitorConfig, error) {
+func loadConfig(filePath string) (*NVSwitchMonitorConfig, error) {
 	cfg, err := ini.Load(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	config := &sxid.SxidErrorMonitorConfig{
+	config := &sxid.SxidEventMonitorConfig{
 		PollingIntervalInMilliseconds: 100,
 	}
 
@@ -128,7 +139,41 @@ func loadConfig(filePath string) (*sxid.SxidErrorMonitorConfig, error) {
 
 	config.PollingIntervalInMilliseconds = pollingIntervalValue
 
-	return config, nil
+	maxRetriesForHealthyEvent := defaultMaxRetriesForHealthyEvent
+	maxRetriesKey, err := section.GetKey("MaxRetriesForHealthyEvent")
+	if err == nil {
+		maxRetriesValue, parseErr := maxRetriesKey.Int()
+		if parseErr != nil {
+			klog.Warningf("Invalid MaxRetriesForHealthyEvent value in config file: %v. Using default: %d",
+				parseErr, defaultMaxRetriesForHealthyEvent)
+		} else {
+			maxRetriesForHealthyEvent = maxRetriesValue
+		}
+	} else {
+		klog.Infof("MaxRetriesForHealthyEvent not found in config file. Using default: %d",
+			defaultMaxRetriesForHealthyEvent)
+	}
+
+	retryDelaySecondsForHealthyEvent := defaultRetryDelaySecondsForHealthyEvent
+	retryDelayKey, err := section.GetKey("RetryDelaySecondsForHealthyEvent")
+	if err == nil {
+		retryDelayValue, parseErr := retryDelayKey.Int()
+		if parseErr != nil {
+			klog.Warningf("Invalid RetryDelaySecondsForHealthyEvent value in config file: %v. Using default: %d",
+				parseErr, defaultRetryDelaySecondsForHealthyEvent)
+		} else {
+			retryDelaySecondsForHealthyEvent = retryDelayValue
+		}
+	} else {
+		klog.Infof("RetryDelaySecondsForHealthyEvent not found in config file. Using default: %d",
+			defaultRetryDelaySecondsForHealthyEvent)
+	}
+
+	return &NVSwitchMonitorConfig{
+		SxidEventMonitorConfig:           config,
+		MaxRetriesForHealthyEvent:        maxRetriesForHealthyEvent,
+		RetryDelaySecondsForHealthyEvent: retryDelaySecondsForHealthyEvent,
+	}, nil
 }
 
 // nolint:cyclop
@@ -161,7 +206,7 @@ func main() {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	sxidErrorMonitor, err := sxid.NewSxidErrorMonitor(nvswitchConfig)
+	sxidErrorMonitor, err := sxid.NewSxidEventMonitor(nvswitchConfig.SxidEventMonitorConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -186,11 +231,12 @@ func main() {
 		case err := <-errChan:
 			panic(err)
 		case sxidError := <-sxidErrorMonitor.EventChan:
-			healthEvents := SxidError2HealthEvents(sxidError)
+			healthEvents := SxidEvent2HealthEvents(sxidError)
 
 			// we need to retry here because as the node rebooted the platform connectors may take time to come up
 			if sxidError.IsHealthy {
-				err := sendHealthEventWithRetry(client, healthEvents)
+				err := sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent,
+					time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent)*time.Second)
 				if err != nil {
 					klog.Error(err)
 				} else {
@@ -226,9 +272,8 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents) error {
-	const maxRetries = 20
-	const retryDelay = 5 * time.Second
+func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
+	maxRetries int, retryDelay time.Duration) error {
 	var err error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
