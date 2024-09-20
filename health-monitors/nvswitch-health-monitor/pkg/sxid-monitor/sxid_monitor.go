@@ -35,6 +35,9 @@ import (
 const (
 	SYSLOG_ACTION_READ_ALL    = 3
 	SYSLOG_ACTION_SIZE_BUFFER = 10
+
+	// current state file version
+	stateFileVersion = 1
 )
 
 // kernel log starts with this timestamp format (e.g. <12>[73309.599396])
@@ -43,6 +46,7 @@ var logPrefixPattern = regexp.MustCompile(`^<\d+>\[\s*(\d+\.\d+)\s*\]`)
 var storedBootID string
 
 type nvSwitchMonitorState struct {
+	Version       int     `json:"version"`
 	LastTimestamp float64 `json:"last_timestamp"`
 	LastLogLine   string  `json:"last_log_line"`
 	BootID        string  `json:"boot_id"`
@@ -91,12 +95,12 @@ func fetchCurrentBootID() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-type SxidErrorMonitorConfig struct {
+type SxidEventMonitorConfig struct {
 	StateFilePath                 string
 	PollingIntervalInMilliseconds int
 }
 
-type SxidErrorMonitor struct {
+type SxidEventMonitor struct {
 	EventChan                     chan *SXIDErrorEvent
 	lastTimestamp                 float64
 	lastLogLine                   string
@@ -104,13 +108,13 @@ type SxidErrorMonitor struct {
 	pollingIntervalInMilliseconds int
 }
 
-func NewSxidErrorMonitor(config *SxidErrorMonitorConfig) (*SxidErrorMonitor, error) {
+func NewSxidEventMonitor(config *SxidEventMonitorConfig) (*SxidEventMonitor, error) {
 	state, err := loadState(config.StateFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
-	return &SxidErrorMonitor{
+	return &SxidEventMonitor{
 		EventChan:                     make(chan *SXIDErrorEvent),
 		lastTimestamp:                 state.LastTimestamp,
 		lastLogLine:                   state.LastLogLine,
@@ -119,14 +123,14 @@ func NewSxidErrorMonitor(config *SxidErrorMonitorConfig) (*SxidErrorMonitor, err
 	}, nil
 }
 
-func (c *SxidErrorMonitor) Close() {
+func (c *SxidEventMonitor) Close() {
 	close(c.EventChan)
 }
 
-func (c *SxidErrorMonitor) Run() error {
+func (c *SxidEventMonitor) Run() error {
 	currentBootID, err := fetchCurrentBootID()
 	if err != nil {
-		klog.Errorf("error fetching current bootID: %v", err)
+		klog.Fatalf("error fetching current bootID: %v", err)
 	}
 
 	// store the currentBootID locally so that we can refer to it
@@ -135,11 +139,11 @@ func (c *SxidErrorMonitor) Run() error {
 	// load existing state
 	state, err := loadState(c.stateFilePath)
 	if err != nil {
-		klog.Errorf("error loading state: %v", err)
+		klog.Fatalf("error loading state: %v", err)
 	}
 
 	if err = c.compareBootIDAndEmitHealthyEventIfChanged(state, currentBootID); err != nil {
-		klog.Errorf("error comparing bootID: %v", err)
+		klog.Fatalf("error comparing bootID: %v", err)
 	}
 
 	klog.Infof("Collecting SXid events from syslog")
@@ -184,7 +188,7 @@ func (c *SxidErrorMonitor) Run() error {
 	}
 }
 
-func (c *SxidErrorMonitor) compareBootIDAndEmitHealthyEventIfChanged(state nvSwitchMonitorState,
+func (c *SxidEventMonitor) compareBootIDAndEmitHealthyEventIfChanged(state nvSwitchMonitorState,
 	currentBootID string) error {
 	if state.BootID != currentBootID {
 		klog.Infof("Detected bootID change. Old bootID: %s, New bootID: %s", state.BootID, currentBootID)
@@ -199,6 +203,7 @@ func (c *SxidErrorMonitor) compareBootIDAndEmitHealthyEventIfChanged(state nvSwi
 
 		// update state with new bootID
 		state.BootID = currentBootID
+		state.Version = stateFileVersion
 
 		if err := saveState(c.stateFilePath, state); err != nil {
 			return fmt.Errorf("failed to save state: %w", err)
@@ -222,7 +227,7 @@ func readKernelLog(buffer []byte, size uintptr) (int, error) {
 }
 
 // process a log line from the kernel log buffer
-func (c *SxidErrorMonitor) processLog(log string) error {
+func (c *SxidEventMonitor) processLog(log string) error {
 	if log == "" {
 		return nil
 	}
@@ -249,6 +254,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 			c.lastLogLine = log
 
 			if err := saveState(c.stateFilePath, nvSwitchMonitorState{
+				Version:       stateFileVersion,
 				LastTimestamp: timestamp,
 				LastLogLine:   log,
 				BootID:        storedBootID,
@@ -268,6 +274,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 		c.lastLogLine = log
 		// save state in file after processing each log line
 		if err := saveState(c.stateFilePath, nvSwitchMonitorState{
+			Version:       stateFileVersion,
 			LastTimestamp: timestamp,
 			LastLogLine:   log,
 			BootID:        storedBootID,

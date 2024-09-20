@@ -7,3 +7,5 @@ metadata:
 data:
   config.ini: |
     PollingIntervalInMilliseconds = 100
+    MaxRetriesForHealthyEvent = 20
+    RetryDelaySecondsForHealthyEvent = 5

@@ -115,11 +115,11 @@ func TestSxidErrorMonitorInitialization(t *testing.T) {
 	testDir := t.TempDir()
 	testStateFilePath := filepath.Join(testDir, "state.json")
 
-	config := &SxidErrorMonitorConfig{
+	config := &SxidEventMonitorConfig{
 		StateFilePath:                 testStateFilePath,
 		PollingIntervalInMilliseconds: 1000,
 	}
-	monitor, err := NewSxidErrorMonitor(config)
+	monitor, err := NewSxidEventMonitor(config)
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
 	defer monitor.Close()
@@ -134,11 +134,11 @@ func TestProcessLog(t *testing.T) {
 	testDir := t.TempDir()
 	testStateFilePath := filepath.Join(testDir, "state.json")
 
-	config := &SxidErrorMonitorConfig{
+	config := &SxidEventMonitorConfig{
 		StateFilePath:                 testStateFilePath,
 		PollingIntervalInMilliseconds: 1000,
 	}
-	monitor, err := NewSxidErrorMonitor(config)
+	monitor, err := NewSxidEventMonitor(config)
 	require.NoError(t, err)
 	require.NotNil(t, monitor)
 	defer monitor.Close()
@@ -195,11 +195,11 @@ func TestBootIDChangeEmitsEvent(t *testing.T) {
 	err := saveState(testStateFilePath, initialState)
 	require.NoError(t, err)
 
-	config := &SxidErrorMonitorConfig{
+	config := &SxidEventMonitorConfig{
 		StateFilePath:                 testStateFilePath,
 		PollingIntervalInMilliseconds: 1000,
 	}
-	monitor, err := NewSxidErrorMonitor(config)
+	monitor, err := NewSxidEventMonitor(config)
 	require.NoError(t, err)
 	defer monitor.Close()
 
@@ -248,11 +248,11 @@ func TestBootIDNoChangeDoesNotEmitEvent(t *testing.T) {
 	err := saveState(testStateFilePath, initialState)
 	require.NoError(t, err)
 
-	config := &SxidErrorMonitorConfig{
+	config := &SxidEventMonitorConfig{
 		StateFilePath:                 testStateFilePath,
 		PollingIntervalInMilliseconds: 1000,
 	}
-	monitor, err := NewSxidErrorMonitor(config)
+	monitor, err := NewSxidEventMonitor(config)
 	require.NoError(t, err)
 	defer monitor.Close()
 
@@ -290,11 +290,11 @@ func TestBootIDInitialization(t *testing.T) {
 	err := saveState(testStateFilePath, initialState)
 	require.NoError(t, err)
 
-	config := &SxidErrorMonitorConfig{
+	config := &SxidEventMonitorConfig{
 		StateFilePath:                 testStateFilePath,
 		PollingIntervalInMilliseconds: 1000,
 	}
-	monitor, err := NewSxidErrorMonitor(config)
+	monitor, err := NewSxidEventMonitor(config)
 	require.NoError(t, err)
 	defer monitor.Close()
 
