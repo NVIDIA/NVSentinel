@@ -19,6 +19,7 @@ package sxid_monitor
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,4 +180,149 @@ func TestProcessLog(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for event")
 	}
+}
+
+func TestBootIDChangeEmitsEvent(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	initialState := nvSwitchMonitorState{
+		LastTimestamp: 12345.6789,
+		LastLogLine:   "initial log line",
+		BootID:        "old-boot-id",
+	}
+
+	err := saveState(testStateFilePath, initialState)
+	require.NoError(t, err)
+
+	config := &SxidErrorMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+	monitor, err := NewSxidErrorMonitor(config)
+	require.NoError(t, err)
+	defer monitor.Close()
+
+	// set up a channel to capture the event
+	done := make(chan *SXIDErrorEvent, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		event := <-monitor.EventChan
+		done <- event
+		wg.Done()
+	}()
+
+	err = monitor.compareBootIDAndEmitHealthyEventIfChanged(initialState, "new-boot-id")
+	require.NoError(t, err)
+
+	// wait for the event to be received
+	select {
+	case receivedEvent := <-done:
+		require.NotNil(t, receivedEvent)
+		require.False(t, receivedEvent.IsFatal)
+		require.True(t, receivedEvent.IsHealthy)
+		require.Equal(t, "System reboot detected. BootID changed from old-boot-id to new-boot-id", receivedEvent.Message)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for bootID change event")
+	}
+
+	// verify that the state file has been updated with the new bootID
+	updatedState, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, "new-boot-id", updatedState.BootID)
+
+	wg.Wait()
+}
+
+func TestBootIDNoChangeDoesNotEmitEvent(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	initialState := nvSwitchMonitorState{
+		LastTimestamp: 12345.6789,
+		LastLogLine:   "initial log line",
+		BootID:        "current-boot-id",
+	}
+
+	err := saveState(testStateFilePath, initialState)
+	require.NoError(t, err)
+
+	config := &SxidErrorMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+	monitor, err := NewSxidErrorMonitor(config)
+	require.NoError(t, err)
+	defer monitor.Close()
+
+	eventReceived := make(chan *SXIDErrorEvent, 1)
+	go func() {
+		event := <-monitor.EventChan
+		eventReceived <- event
+	}()
+
+	err = monitor.compareBootIDAndEmitHealthyEventIfChanged(initialState, "current-boot-id")
+	require.NoError(t, err)
+
+	select {
+	case receivedEvent := <-eventReceived:
+		t.Fatalf("Expected no event, but received: %+v", receivedEvent)
+	case <-time.After(100 * time.Millisecond):
+		// success, no event was emitted
+	}
+
+	updatedState, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, "current-boot-id", updatedState.BootID)
+}
+
+func TestBootIDInitialization(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	initialState := nvSwitchMonitorState{
+		LastTimestamp: 0.0,
+		LastLogLine:   "",
+		BootID:        "",
+	}
+
+	err := saveState(testStateFilePath, initialState)
+	require.NoError(t, err)
+
+	config := &SxidErrorMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+	monitor, err := NewSxidErrorMonitor(config)
+	require.NoError(t, err)
+	defer monitor.Close()
+
+	done := make(chan *SXIDErrorEvent, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		event := <-monitor.EventChan
+		done <- event
+		wg.Done()
+	}()
+
+	err = monitor.compareBootIDAndEmitHealthyEventIfChanged(initialState, "new-boot-id")
+	require.NoError(t, err)
+
+	select {
+	case receivedEvent := <-done:
+		require.NotNil(t, receivedEvent)
+		require.False(t, receivedEvent.IsFatal)
+		require.True(t, receivedEvent.IsHealthy)
+		require.Equal(t, "System reboot detected. BootID changed from  to new-boot-id", receivedEvent.Message)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for bootID change event")
+	}
+
+	updatedState, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, "new-boot-id", updatedState.BootID)
+
+	wg.Wait()
 }

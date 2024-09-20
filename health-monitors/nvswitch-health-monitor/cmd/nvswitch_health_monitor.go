@@ -15,7 +15,9 @@ import (
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/protos"
 	sxid "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/sxid-monitor"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/ini.v1"
 	"k8s.io/klog"
@@ -63,22 +65,6 @@ func GetGPUID(nvswitch, nvlink int) (int, error) {
 func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
-	entitiesImpacted := []string{
-		fmt.Sprintf("nvswitch%d", sxidError.NVSwitch),
-		sxidError.PCI,
-		fmt.Sprintf("nvlink%d", sxidError.Link),
-	}
-	start := time.Now()
-
-	gpuID, err := GetGPUID(sxidError.NVSwitch, sxidError.Link)
-
-	duration := float64(time.Since(start).Milliseconds())
-	gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
-
-	if err != nil {
-		entitiesImpacted = append(entitiesImpacted, fmt.Sprintf("gpu%d", gpuID))
-	}
-
 	event := pb.HealthEvent{
 		Version:            1,
 		Agent:              AGENT,
@@ -86,11 +72,30 @@ func SxidError2HealthEvents(sxidError *sxid.SXIDErrorEvent) *pb.HealthEvents {
 		ComponentClass:     COMPONENT_CLASS,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		IsFatal:            sxidError.IsFatal,
-		ErrorCode:          []string{fmt.Sprint(sxidError.ErrorNum)},
-		EntitiesImpacted:   entitiesImpacted,
 		Message:            sxidError.Message,
-		// ActionRequired:     false,
-		// RecommendedAction:  pb.RecommenedAction_UNKNOWN,
+		IsHealthy:          sxidError.IsHealthy,
+	}
+
+	if !sxidError.IsHealthy {
+		entitiesImpacted := []string{
+			fmt.Sprintf("nvswitch%d", sxidError.NVSwitch),
+			sxidError.PCI,
+			fmt.Sprintf("nvlink%d", sxidError.Link),
+		}
+		start := time.Now()
+
+		gpuID, err := GetGPUID(sxidError.NVSwitch, sxidError.Link)
+
+		duration := float64(time.Since(start).Milliseconds())
+		gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
+
+		if err != nil {
+			entitiesImpacted = append(entitiesImpacted, fmt.Sprintf("gpu%d", gpuID))
+		}
+
+		event.EntitiesImpacted = entitiesImpacted
+
+		event.ErrorCode = []string{fmt.Sprint(sxidError.ErrorNum)}
 	}
 
 	healthEvents.Events = append(healthEvents.Events, &event)
@@ -126,6 +131,7 @@ func loadConfig(filePath string) (*sxid.SxidErrorMonitorConfig, error) {
 	return config, nil
 }
 
+// nolint:cyclop
 func main() {
 	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 
@@ -181,6 +187,17 @@ func main() {
 			panic(err)
 		case sxidError := <-sxidErrorMonitor.EventChan:
 			healthEvents := SxidError2HealthEvents(sxidError)
+
+			// we need to retry here because as the node rebooted the platform connectors may take time to come up
+			if sxidError.IsHealthy {
+				err := sendHealthEventWithRetry(client, healthEvents)
+				if err != nil {
+					klog.Error(err)
+				} else {
+					klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
+				}
+				continue
+			}
 			start := time.Now()
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
 			duration := float64(time.Since(start).Milliseconds())
@@ -189,7 +206,57 @@ func main() {
 				klog.Error(err)
 			} else if len(healthEvents.Events) > 0 {
 				healthEventsPublished.Add(float64(len(healthEvents.Events)))
+				klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
 			}
 		}
 	}
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if s, ok := status.FromError(err); ok {
+		if s.Code() == codes.Unavailable {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents) error {
+	const maxRetries = 20
+	const retryDelay = 5 * time.Second
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		start := time.Now()
+
+		_, err = client.HealthEventOccuredV1(context.Background(), healthEvents)
+
+		duration := float64(time.Since(start).Milliseconds())
+		healthEventPublishDuration.Observe(duration)
+
+		if err == nil {
+			healthEventsPublished.Add(float64(len(healthEvents.Events)))
+			return nil
+		}
+
+		if isRetryableError(err) {
+			klog.Errorf("Attempt %d/%d: Failed to send health event due to retryable error: %v", attempt, maxRetries, err)
+
+			if attempt < maxRetries {
+				time.Sleep(retryDelay)
+			}
+		} else {
+			// non-retryable error encountered, log and exit
+			klog.Errorf("Failed to send health event due to non-retryable error: %v", err)
+			break
+		}
+	}
+
+	klog.Error("All retry attempts to send health event failed.")
+	return err
 }
