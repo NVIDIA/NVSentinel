@@ -1,6 +1,8 @@
 global:
   image:
     tag: "main"
+  dcgm:
+    dcgmK8sServiceEnabled: true
 
 platformConnector:
   image:
