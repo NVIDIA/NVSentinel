@@ -53,7 +53,9 @@ class TestPlatformConnectors(unittest.TestCase):
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
         server.add_insecure_port(f"unix://{socket_path}")
         server.start()
-        watcher = dcgm.DCGMWatcher(addr="localhost:5555", poll_interval_seconds=10, callbacks=[])
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555", poll_interval_seconds=10, callbacks=[], dcgm_k8s_service_enabled=False
+        )
         exit = Event()
         xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
         xid_errors_info_dict["1"] = platform_connector.XidErrorsMappingDetails(

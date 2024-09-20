@@ -11,7 +11,13 @@ XID_CALLBACK = CFUNCTYPE(None, c_void_p)
 
 
 class DCGMWatcher:
-    def __init__(self, addr: str, poll_interval_seconds: int, callbacks: list[types.CallbackInterface]) -> None:
+    def __init__(
+        self,
+        addr: str,
+        poll_interval_seconds: int,
+        callbacks: list[types.CallbackInterface],
+        dcgm_k8s_service_enabled: bool,
+    ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
         self._callbacks = callbacks
@@ -24,6 +30,7 @@ class DCGMWatcher:
         log.debug(f"Got available error codes {self._error_codes}")
 
         self._callback_thread_pool = ThreadPoolExecutor()
+        self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -198,7 +205,14 @@ class DCGMWatcher:
             dcgm_group.policy.Unregister(condition=dcgm_structs.DCGM_POLICY_COND_XID)
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
-        dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        if self._dcgm_k8s_service_enabled:
+            log.info("DCGM k8s service enabled. Using nvidia-dcgm.gpu-operator.svc:5555")
+            dcgm_handle = pydcgm.DcgmHandle(
+                ipAddress="nvidia-dcgm.gpu-operator.svc:5555", opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
+            )
+        else:
+            log.info(f"DCGM k8s service disabled. Using {self._addr}")
+            dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
         dcgm_system = dcgm_handle.GetSystem()
 
         dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
