@@ -40,9 +40,12 @@ const (
 // kernel log starts with this timestamp format (e.g. <12>[73309.599396])
 var logPrefixPattern = regexp.MustCompile(`^<\d+>\[\s*(\d+\.\d+)\s*\]`)
 
+var storedBootID string
+
 type nvSwitchMonitorState struct {
 	LastTimestamp float64 `json:"last_timestamp"`
 	LastLogLine   string  `json:"last_log_line"`
+	BootID        string  `json:"boot_id"`
 }
 
 func saveState(stateFilePath string, state nvSwitchMonitorState) error {
@@ -80,6 +83,14 @@ func loadState(stateFilePath string) (nvSwitchMonitorState, error) {
 	return state, nil
 }
 
+func fetchCurrentBootID() (string, error) {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", fmt.Errorf("failed to read boot_id: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 type SxidErrorMonitorConfig struct {
 	StateFilePath                 string
 	PollingIntervalInMilliseconds int
@@ -113,6 +124,24 @@ func (c *SxidErrorMonitor) Close() {
 }
 
 func (c *SxidErrorMonitor) Run() error {
+	currentBootID, err := fetchCurrentBootID()
+	if err != nil {
+		klog.Errorf("error fetching current bootID: %v", err)
+	}
+
+	// store the currentBootID locally so that we can refer to it
+	storedBootID = currentBootID
+
+	// load existing state
+	state, err := loadState(c.stateFilePath)
+	if err != nil {
+		klog.Errorf("error loading state: %v", err)
+	}
+
+	if err = c.compareBootIDAndEmitHealthyEventIfChanged(state, currentBootID); err != nil {
+		klog.Errorf("error comparing bootID: %v", err)
+	}
+
 	klog.Infof("Collecting SXid events from syslog")
 
 	// get the total size of the kernel log buffer
@@ -153,6 +182,30 @@ func (c *SxidErrorMonitor) Run() error {
 		pollingLoopProcessingDuration.Observe(duration)
 		time.Sleep(pollingInterval)
 	}
+}
+
+func (c *SxidErrorMonitor) compareBootIDAndEmitHealthyEventIfChanged(state nvSwitchMonitorState,
+	currentBootID string) error {
+	if state.BootID != currentBootID {
+		klog.Infof("Detected bootID change. Old bootID: %s, New bootID: %s", state.BootID, currentBootID)
+
+		// emit healthy event
+		healthyEvent := &SXIDErrorEvent{
+			IsFatal:   false,
+			IsHealthy: true,
+			Message:   fmt.Sprintf("System reboot detected. BootID changed from %s to %s", state.BootID, currentBootID),
+		}
+		c.EventChan <- healthyEvent
+
+		// update state with new bootID
+		state.BootID = currentBootID
+
+		if err := saveState(c.stateFilePath, state); err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // read the entire kernel log buffer non-destructively
@@ -198,6 +251,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 			if err := saveState(c.stateFilePath, nvSwitchMonitorState{
 				LastTimestamp: timestamp,
 				LastLogLine:   log,
+				BootID:        storedBootID,
 			}); err != nil {
 				return fmt.Errorf("failed to save state: %w", err)
 			}
@@ -206,7 +260,6 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 		}
 
 		if m != nil {
-			klog.Infof("Successfully parsed SXID error: %+v", m)
 			c.EventChan <- m
 			sxidLogsProcessingSucceeded.Inc()
 		}
@@ -217,6 +270,7 @@ func (c *SxidErrorMonitor) processLog(log string) error {
 		if err := saveState(c.stateFilePath, nvSwitchMonitorState{
 			LastTimestamp: timestamp,
 			LastLogLine:   log,
+			BootID:        storedBootID,
 		}); err != nil {
 			return fmt.Errorf("failed to save state: %w", err)
 		}
@@ -240,12 +294,13 @@ func extractTimestamp(log string) (float64, error) {
 }
 
 type SXIDErrorEvent struct {
-	ErrorNum int
-	IsFatal  bool
-	NVSwitch int
-	PCI      string
-	Link     int
-	Message  string
+	ErrorNum  int
+	IsFatal   bool
+	IsHealthy bool
+	NVSwitch  int
+	PCI       string
+	Link      int
+	Message   string
 }
 
 // nolint:cyclop

@@ -27,7 +27,7 @@ const (
 	NvswitchErrorFromKmsgWatch = "NvswitchErrorFromKmsgWatch"
 )
 
-//nolint:cyclop
+//nolint:cyclop, gocognit
 func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1.NodeCondition,
 	healthEvent *platformconnector.HealthEvent) error {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -57,8 +57,12 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 
 					c.Status = corev1.ConditionTrue
 				} else {
-					// remove messages that include any of the entities in entitiesImpacted
-					messages = r.removeImpactedEntitiesMessages(messages, healthEvent.EntitiesImpacted, healthEvent.CheckName)
+					// remove messages that include any of the entities in entitiesImpacted, else if empty then clear the messages
+					if len(healthEvent.EntitiesImpacted) > 0 {
+						messages = r.removeImpactedEntitiesMessages(messages, healthEvent.EntitiesImpacted, healthEvent.CheckName)
+					} else {
+						messages = make([]string, 0)
+					}
 				}
 
 				if len(messages) > 0 {
