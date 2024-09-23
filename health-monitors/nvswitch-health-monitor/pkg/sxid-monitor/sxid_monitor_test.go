@@ -326,3 +326,51 @@ func TestBootIDInitialization(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestStateVersionMismatch(t *testing.T) {
+	testDir := t.TempDir()
+	testStateFilePath := filepath.Join(testDir, "state.json")
+
+	initialState := nvSwitchMonitorState{
+		Version:       -1, // a non-zero initial version for testing
+		LastTimestamp: 12345.6789,
+		LastLogLine:   "old version log line",
+		BootID:        "old-boot-id",
+	}
+
+	err := saveState(testStateFilePath, initialState)
+	require.NoError(t, err)
+
+	config := &SxidEventMonitorConfig{
+		StateFilePath:                 testStateFilePath,
+		PollingIntervalInMilliseconds: 1000,
+	}
+
+	monitor, err := NewSxidEventMonitor(config)
+	require.NoError(t, err)
+	defer monitor.Close()
+
+	// state should be loaded successfully, and version should be updated to the current stateFileVersion
+	loadedState, err := loadState(testStateFilePath)
+	require.NoError(t, err)
+	require.Equal(t, stateFileVersion, loadedState.Version)
+	require.Equal(t, "old-boot-id", loadedState.BootID)
+	require.Equal(t, "old version log line", loadedState.LastLogLine)
+	require.Equal(t, 12345.6789, loadedState.LastTimestamp)
+
+	// case where necessary fields are missing (i.e. incompatible version)
+	incompleteState := nvSwitchMonitorState{
+		Version:       -1,
+		LastTimestamp: 0.0,
+		LastLogLine:   "",
+		BootID:        "",
+	}
+
+	err = saveState(testStateFilePath, incompleteState)
+	require.NoError(t, err)
+
+	// expecting a version mismatch error
+	_, err = loadState(testStateFilePath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "state file version mismatch")
+}

@@ -49,6 +49,11 @@ var (
 		Help: "The total number of health events that the nvswitch monitor has raised",
 	})
 
+	healthEventsPublishFailed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nvswitch_monitor_health_events_publish_failed_total",
+		Help: "The total number of health events that the nvswitch monitor failed to publish",
+	}, []string{"event"})
+
 	gpuIdCalculationDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "nvswitch_monitor_gpu_id_calculation_duration_milliseconds",
 		Help:    "The time taken for calculating GPU ID for each sxid event in milliseconds",
@@ -239,6 +244,7 @@ func main() {
 					time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent)*time.Second)
 				if err != nil {
 					klog.Error(err)
+					healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
 				} else {
 					klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
 				}
@@ -250,6 +256,7 @@ func main() {
 			healthEventPublishDuration.Observe(duration)
 			if err != nil {
 				klog.Error(err)
+				healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
 			} else if len(healthEvents.Events) > 0 {
 				healthEventsPublished.Add(float64(len(healthEvents.Events)))
 				klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
