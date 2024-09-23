@@ -55,7 +55,7 @@ type nvSwitchMonitorState struct {
 func saveState(stateFilePath string, state nvSwitchMonitorState) error {
 	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(stateFilePath), 0755); err != nil {
@@ -84,7 +84,32 @@ func loadState(stateFilePath string) (nvSwitchMonitorState, error) {
 		return state, fmt.Errorf("failed to unmarshal state: %w", err)
 	}
 
+	if state.Version != 0 && state.Version != stateFileVersion {
+		if verifyIfNecessaryFieldsForCurrentStateVersionArePresent(state) {
+			klog.Infof("state file version mismatch: expected %d, got %d, but the old state file version is compatible",
+				stateFileVersion, state.Version)
+			// update the state version to latest current version
+			state.Version = stateFileVersion
+
+			if err := saveState(stateFilePath, state); err != nil {
+				return state, fmt.Errorf("failed to save updated state: %w", err)
+			}
+
+			return state, nil
+		}
+
+		return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
+	}
+
 	return state, nil
+}
+
+func verifyIfNecessaryFieldsForCurrentStateVersionArePresent(state nvSwitchMonitorState) bool {
+	if state.BootID == "" || state.LastLogLine == "" || state.LastTimestamp == 0.0 {
+		return false
+	}
+
+	return true
 }
 
 func fetchCurrentBootID() (string, error) {
