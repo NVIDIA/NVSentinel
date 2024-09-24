@@ -66,9 +66,10 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 				}
 
 				if len(messages) > 0 {
-					c.Message = strings.Join(messages, "; ")
+					c.Message = strings.Join(messages, ";")
 					c.Status = corev1.ConditionTrue
 					c.Reason = r.updateHealthEventReason(healthEvent.CheckName, false)
+					c.Message = fmt.Sprintf("%s;", c.Message)
 				} else {
 					c.Message = NoHealthFailureMsg
 					c.Status = corev1.ConditionFalse
@@ -125,12 +126,12 @@ func (r *K8sConnector) parseMessages(message string) []string {
 
 func (r *K8sConnector) addMessageIfNotExist(messages []string, newMessage string) []string {
 	for _, msg := range messages {
-		if msg == newMessage {
+		if msg+";" == newMessage {
 			return messages
 		}
 	}
 
-	return append(messages, newMessage)
+	return append(messages, newMessage[:len(newMessage)-1])
 }
 
 func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string, entities []string, checkName string) []string {
@@ -146,9 +147,9 @@ func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string, entitie
 			case InfiniBandErrorCheck, EthernetErrorCheck:
 				entityPrefix = fmt.Sprintf("NIC:%s", entity)
 			case NvswitchErrorFromKmsgWatch:
-				entityPrefix = fmt.Sprintf(" %s", entity)
+				entityPrefix = entity
 			default:
-				entityPrefix = fmt.Sprintf(" GPU:%s", entity)
+				entityPrefix = "GPU:" + entity
 			}
 
 			if strings.Contains(msg, entityPrefix) {

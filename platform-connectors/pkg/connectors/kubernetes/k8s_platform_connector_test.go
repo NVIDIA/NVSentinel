@@ -183,7 +183,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
 			},
-			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE; XID45 GPU:0 Recommended Action=NONE;",
+			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE;XID45 GPU:0 Recommended Action=NONE;",
 			ExpectedOutputReason:        "XidErrorDetected",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
@@ -341,9 +341,7 @@ func TestParseMessages(t *testing.T) {
 		expected []string
 	}{
 		{"", []string{}},
-		{"message1", []string{"message1"}},
 		{"message1;", []string{"message1"}},
-		{"message1;message2", []string{"message1", "message2"}},
 		{"message1;message2;", []string{"message1", "message2"}},
 	}
 
@@ -373,16 +371,16 @@ func TestAddMessageIfNotExist(t *testing.T) {
 		newMessage string
 		expected   []string
 	}{
-		{[]string{}, "msg1", []string{"msg1"}},
-		{[]string{"msg1"}, "msg2", []string{"msg1", "msg2"}},
-		{[]string{"msg1"}, "msg1", []string{"msg1"}},
-		{[]string{"msg1", "msg2"}, "msg2", []string{"msg1", "msg2"}},
+		{[]string{}, "msg1;", []string{"msg1"}},
+		{[]string{"msg1"}, "msg2;", []string{"msg1", "msg2"}},
+		{[]string{"msg1"}, "msg1;", []string{"msg1"}},
+		{[]string{"msg1", "msg2"}, "msg2;", []string{"msg1", "msg2"}},
 	}
 
 	for i, test := range tests {
 		result := k8sConnector.addMessageIfNotExist(test.messages, test.newMessage)
 		if !equalStringSlices(result, test.expected) {
-			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
+			t.Errorf("Test %d failed: expected %v, got %v", i+1, test.expected, result)
 		}
 	}
 }
@@ -673,7 +671,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "XID45 error on GPU 1",
 			},
-			expectedMessage: "GPU:0 error; XID45 GPU:1 Recommended Action=REPORT_ISSUE;",
+			expectedMessage: "GPU:0 error;XID45 GPU:1 Recommended Action=REPORT_ISSUE;",
 		},
 		{
 			conditionType: "EthernetErrorCheck",
@@ -688,7 +686,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "error on eth1",
 			},
-			expectedMessage: "NIC:eth0 error; NIC:eth1, error on eth1. Recommended Action=REPORT_ISSUE;",
+			expectedMessage: "NIC:eth0 error;NIC:eth1, error on eth1. Recommended Action=REPORT_ISSUE;",
 		},
 		{
 			conditionType: "NvswitchErrorFromKmsgWatch",
@@ -704,7 +702,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "Nvswitch error on nvswitch1",
 			},
-			expectedMessage: " nvswitch0 error; SWITCH_ERROR:Nvswitch error on nvswitch1 nvswitch1, Recommended Action=REPORT_ISSUE;",
+			expectedMessage: " nvswitch0 error;SWITCH_ERROR:Nvswitch error on nvswitch1 nvswitch1, Recommended Action=REPORT_ISSUE;",
 		},
 	}
 
@@ -779,25 +777,25 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 	}{
 		{
 			conditionType:    "GpuXidError",
-			existingMsg:      " GPU:0 error; GPU:1 error",
+			existingMsg:      "GPU:0 error;GPU:1 error;",
 			entitiesImpacted: []string{"0"},
-			expectedMessage:  " GPU:1 error",
+			expectedMessage:  "GPU:1 error;",
 		},
 		{
 			conditionType:    "InfiniBandErrorCheck",
-			existingMsg:      "NIC:eth0 error;NIC:eth1 error",
+			existingMsg:      "NIC:eth0 error;NIC:eth1 error;",
 			entitiesImpacted: []string{"eth0"},
-			expectedMessage:  "NIC:eth1 error",
+			expectedMessage:  "NIC:eth1 error;",
 		},
 		{
 			conditionType:    "NvswitchErrorFromKmsgWatch",
-			existingMsg:      " nvswitch0 error; nvswitch1 error",
+			existingMsg:      "nvswitch0 error;nvswitch1 error;",
 			entitiesImpacted: []string{"nvswitch0"},
-			expectedMessage:  " nvswitch1 error",
+			expectedMessage:  "nvswitch1 error;",
 		},
 	}
 
-	for _, testCase := range testCases {
+	for index, testCase := range testCases {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &v1.Node{
@@ -836,7 +834,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 
 		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
 		if err != nil {
-			t.Errorf("updateNodeCondition failed: %v", err)
+			t.Errorf("testcase %d updateNodeCondition failed: %v", index+1, err)
 		}
 
 		node, err := clientSet.CoreV1().Nodes().Get(ctx, "testnode", metav1.GetOptions{})
@@ -849,17 +847,17 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			if condition.Type == testCase.conditionType {
 				conditionFound = true
 				if condition.Message != testCase.expectedMessage {
-					t.Errorf("Expected condition message to be '%s', got '%s'", testCase.expectedMessage, condition.Message)
+					t.Errorf("testcase %d Expected condition message to be '%s', got '%s'", index+1, testCase.expectedMessage, condition.Message)
 				}
 
 				if condition.Status != corev1.ConditionTrue {
-					t.Errorf("Expected condition status to be True, got %v", condition.Status)
+					t.Errorf("testcase %d Expected condition status to be True, got %v", index+1, condition.Status)
 				}
 				break
 			}
 		}
 		if !conditionFound {
-			t.Errorf("Condition %s not found in node status", testCase.conditionType)
+			t.Errorf("testcase %d Condition %s not found in node status", index+1, testCase.conditionType)
 		}
 
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})

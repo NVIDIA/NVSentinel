@@ -31,6 +31,7 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
+        self._dcgm_k8s_service_url = "nvidia-dcgm.gpu-operator.svc:5555"
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -159,27 +160,18 @@ class DCGMWatcher:
         # hold a reference to the xid callback functions so that it does not get garbage collected resulting in
         # segmentation fault
         self._xid_callback_funcs = []
-        """
-            TODO:Need to try with python SDK API for this
-            policy = dcgm_structs.c_dcgmPolicy_v1()
-            policy.version = dcgm_structs.dcgmPolicy_version1
-            policy.condition = dcgm_structs.DCGM_POLICY_COND_XID
-            policy.mode = dcgm_structs.DCGM_POLICY_MODE_MANUAL
-            policy.isolation = dcgm_structs.DCGM_POLICY_ISOLATION_NONE
-            policy.action = dcgm_structs.DCGM_POLICY_ACTION_NONE
-            policy.validation = dcgm_structs.DCGM_POLICY_VALID_NONE
-            dcgm_group.policy.Set(policy=policy)
-        """
-        command = "/bin/bash -c 'dcgmi policy --set 0,0 -x'"
-        try:
-            subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        except subprocess.CalledProcessError as e:
-            log.fatal(f"Command failed with exit status {e.returncode} and error {e.stderr}")
+        newPolicy = dcgm_structs.c_dcgmPolicy_v1()
+        newPolicy.version = dcgm_structs.dcgmPolicy_version1
+        newPolicy.condition = dcgm_structs.DCGM_POLICY_COND_XID
+        newPolicy.parms[dcgm_structs.DCGM_POLICY_COND_IDX_XID].tag = 0
+        newPolicy.parms[dcgm_structs.DCGM_POLICY_COND_IDX_XID].val.boolean = True
 
         for gpu in supported_gpus:
             dcgm_group = pydcgm.DcgmGroup(dcgm_handle, groupName="dcgm_health", groupType=dcgm_structs.DCGM_GROUP_EMPTY)
             with metrics.dcgm_api_latency.labels("group_add_gpu").time():
                 dcgm_group.AddGpu(gpu)
+            dcgm_group.policy.Set(newPolicy)
+            log.info("setting the policy")
             log.info(f"Registering XID callback for GPU {gpu}")
             _xid_event_callback_func = XID_CALLBACK(partial(self._xid_event_callback_func, gpu))
             with metrics.dcgm_api_latency.labels("policy_register").time():
@@ -194,8 +186,13 @@ class DCGMWatcher:
         return dcgm_groups
 
     def _unregister_xid_callbacks(self, dcgm_groups: list[pydcgm.DcgmGroup]):
-        # TODO:Need to try with python SDK API for this
-        command = "/bin/bash -c 'dcgmi policy --clear'"
+
+        # Since there is no python SDK API to clear a dcgmi policy, hence directly using the dcgmi policy command to do
+        # that. In case Python SDK API is found, we can move the below command to DCGM Api
+        if self._dcgm_k8s_service_enabled:
+            command = f"/bin/bash -c 'dcgmi policy --host {self._dcgm_k8s_service_url} --clear'"
+        else:
+            command = "/bin/bash -c 'dcgmi policy --clear'"
         try:
             subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except subprocess.CalledProcessError as e:
@@ -206,9 +203,9 @@ class DCGMWatcher:
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
         if self._dcgm_k8s_service_enabled:
-            log.info("DCGM k8s service enabled. Using nvidia-dcgm.gpu-operator.svc:5555")
+            log.info(f"DCGM k8s service enabled. Using {self._dcgm_k8s_service_url}")
             dcgm_handle = pydcgm.DcgmHandle(
-                ipAddress="nvidia-dcgm.gpu-operator.svc:5555", opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
+                ipAddress=self._dcgm_k8s_service_url, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
             )
         else:
             log.info(f"DCGM k8s service disabled. Using {self._addr}")
