@@ -79,10 +79,14 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
         sys.exit(1)
 
     xid_error_recommend_action_mapping_config = config["xiderrorrecommendactiontoplatformconnectormapping"]
-    xid_errors_config = config["xiderrorsconfig"]
     xid_errors_batch_processing_enabled = config.getboolean("xiderrorsconfig", "XidErrorsBatchProcessingEnabled")
     xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
+    log.basicConfig(format=logging_config["LogFormat"], datefmt=logging_config["DateTimeFormat"])
+    if verbose:
+        log.getLogger().setLevel(log.DEBUG)
+    else:
+        log.getLogger().setLevel(log.INFO)
     with open(xid_error_mapping_config_file, mode="r") as file:
         # Create a CSV reader
         csv_reader = csv.reader(file)
@@ -97,12 +101,6 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
     xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction] = {}
     for key, value in xid_error_recommend_action_mapping_config.items():
         xid_error_recommend_action_mapping[key] = int(value)
-
-    log.basicConfig(format=logging_config["LogFormat"], datefmt=logging_config["DateTimeFormat"])
-    if verbose:
-        log.getLogger().setLevel(log.DEBUG)
-    else:
-        log.getLogger().setLevel(log.INFO)
 
     for key, value in xid_error_recommend_action_mapping.items():
         log.debug(f"{key}={value}")

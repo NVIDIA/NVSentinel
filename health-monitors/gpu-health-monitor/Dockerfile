@@ -17,7 +17,7 @@ FROM python:3.10.14-slim-bookworm AS runtime
 RUN apt-get update && apt-get install -y wget && \
     wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb && \
-    apt-get update && apt-get install -y datacenter-gpu-manager=1:3.3.6 && \
+    apt-get update && apt-get install -y datacenter-gpu-manager=1:3.3.7 && \
     apt-get clean
 
 ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
