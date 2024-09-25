@@ -23,7 +23,7 @@ spec:
       labels:
         {{- include "nvswitch-health-monitor.selectorLabels" . | nindent 8 }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -35,8 +35,8 @@ spec:
             - "--metrics-port={{ .Values.metricsPort }}"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.global.nvSwitchHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.nvSwitchHealthMonitor.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:

@@ -23,7 +23,7 @@ spec:
       labels:
         {{- include "gpu-health-monitor.selectorLabels" . | nindent 8 }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+      {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -48,8 +48,8 @@ spec:
             - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.global.gpuHealthMonitor.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.gpuHealthMonitor.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:

@@ -1,12 +1,31 @@
 global:
   image:
     tag: "main"
+
   dcgm:
     dcgmK8sServiceEnabled: true
 
+  gpuHealthMonitor:
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor
+      pullPolicy: IfNotPresent
+
+  nicHealthMonitor:
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor
+      pullPolicy: IfNotPresent
+
+  nvSwitchHealthMonitor:
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor
+      pullPolicy: IfNotPresent
+
+  imagePullSecrets:
+    - name: nvidia-ngcuser-pull-secret
+
 platformConnector:
   image:
-    repository: nvcr.io/nv-ngc-devops/nvsentinel/platform-connectors
+    repository: nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors
     pullPolicy: IfNotPresent
 
   resources: 
@@ -31,9 +50,6 @@ platformConnector:
 
   updateStrategy: RollingUpdate
   maxUnavailable: 1
-
-imagePullSecrets: 
-  - name: nvidia-ngcuser-pull-secret
 
 nameOverride: ""
 fullnameOverride: ""
