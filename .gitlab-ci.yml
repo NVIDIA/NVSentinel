@@ -1,7 +1,6 @@
 variables:
   GIT_TERMINAL_PROMPT: 1
   NGC_ORG: nv-ngc-devops
-  NGC_TEAM: nvsentinel
   NGC_USER_NAME: '$$oauthtoken'
   NVCR_CONTAINER_REPO: nvcr.io
   HELM_URL: https://helm.ngc.nvidia.com
@@ -70,7 +69,7 @@ gpu health monitor container publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/gpu-health-monitor:${CI_COMMIT_TAG}"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${CI_COMMIT_TAG}"
 
 gpu health monitor container main branch publish:
   image:
@@ -87,7 +86,7 @@ gpu health monitor container main branch publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/gpu-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/gpu-health-monitor:main"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:main"
 
 nic health monitor lint:
   stage: lint
@@ -132,7 +131,7 @@ nic health monitor container publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nic-health-monitor:${CI_COMMIT_TAG}"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${CI_COMMIT_TAG}"
 
 nic health monitor container main branch publish:
   image:
@@ -149,7 +148,7 @@ nic health monitor container main branch publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/nic-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nic-health-monitor:main"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:main"
 
 nvswitch health monitor lint:
   stage: lint
@@ -194,7 +193,7 @@ nvswitch health monitor container publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nvswitch-health-monitor:${CI_COMMIT_TAG}"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${CI_COMMIT_TAG}"
 
 nvswitch health monitor container main branch publish:
   image:
@@ -211,7 +210,7 @@ nvswitch health monitor container main branch publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor"
       --dockerfile "${CI_PROJECT_DIR}/health-monitors/nvswitch-health-monitor/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/nvswitch-health-monitor:main"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:main"
 
 platform connectors lint:
   stage: lint
@@ -256,7 +255,7 @@ platform connectors container publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/platform-connectors"
       --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/platform-connectors:${CI_COMMIT_TAG}"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${CI_COMMIT_TAG}"
 
 
 platform connectors container main branch publish:
@@ -274,7 +273,7 @@ platform connectors container main branch publish:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}/platform-connectors"
       --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/${NGC_TEAM}/platform-connectors:main"
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:main"
 
 kubernetes distro lint:
   stage: lint
@@ -288,7 +287,7 @@ kubernetes distro helm publish:
     - if: $CI_COMMIT_TAG
   script:
     - cd distros/kubernetes
-    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
+    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm repo add --force-update shoreline-agent ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - cd nvsentinel && helm dependency update && cd ..
     - helm package nvsentinel --version ${CI_COMMIT_TAG}
@@ -303,7 +302,7 @@ kubernetes distro helm main branch publish:
       when: always
   script:
     - cd distros/kubernetes
-    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG}/${NGC_TEAM} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
+    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm repo add --force-update shoreline-agent ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - cd nvsentinel && helm dependency update && cd ..
     - helm package nvsentinel --version 1.0.0
