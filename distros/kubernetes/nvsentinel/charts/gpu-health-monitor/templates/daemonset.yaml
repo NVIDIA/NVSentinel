@@ -48,7 +48,7 @@ spec:
             - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.global.gpuHealthMonitor.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.global.gpuHealthMonitor.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
