@@ -42,6 +42,10 @@ var (
 	})
 )
 
+// temporarily we want to set this to true for GKE clusters till we fix
+// NIC sys file visibility issue
+var considerNicEventsNonFatal bool
+
 func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
@@ -58,6 +62,15 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 
 		isHealthy := nicEvent.IsHealthyEvent
 		isFatal := !isHealthy
+
+		// we can remove this once the NIC issue with GKE is fixed
+		if considerNicEventsNonFatal {
+			isFatal = false
+			// don't publish healthy events as we don't want healthy events to show up as node events
+			if isHealthy {
+				continue
+			}
+		}
 
 		event := pb.HealthEvent{
 			Version:            1,
@@ -129,12 +142,24 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		}
 	}
 
+	considerNicEventsNonFatalKey, err := section.GetKey("ConsiderNicEventsNonFatal")
+
+	if err != nil || considerNicEventsNonFatalKey.String() == "" {
+		considerNicEventsNonFatal = false
+	} else {
+		considerNicEventsNonFatal, err = considerNicEventsNonFatalKey.Bool()
+		if err != nil {
+			return nil, fmt.Errorf("invalid ConsiderNicEventsNonFatal value: %w", err)
+		}
+	}
+
 	return &nic.NicMonitorConfig{
 		ExclusionRegexes:              filteredExclusionRegexList,
 		PollingIntervalInMilliseconds: pollingInterval,
 	}, nil
 }
 
+// nolint: cyclop
 func main() {
 	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 
@@ -152,6 +177,10 @@ func main() {
 
 	klog.Infof("NIC names matching these regexes will be excluded: %v\n", nicConfig.ExclusionRegexes)
 	klog.Infof("NIC Monitor will poll every %d milliseconds", nicConfig.PollingIntervalInMilliseconds)
+
+	if considerNicEventsNonFatal {
+		klog.Info("NIC Monitor will consider health events to be non-fatal")
+	}
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -189,6 +218,10 @@ func main() {
 			panic(err)
 		case nicEvent := <-nicHealthMonitor.EventChan:
 			healthEvents := NicEvent2HealthEvents(nicEvent)
+			if len(healthEvents.Events) == 0 {
+				continue
+			}
+
 			start := time.Now()
 
 			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
