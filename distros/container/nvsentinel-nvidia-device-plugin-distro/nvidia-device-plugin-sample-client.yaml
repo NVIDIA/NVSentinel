@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvsentinel-device-plugin-connector-client
+  namespace: nvsentinel
+spec:
+  selector:
+    matchLabels:
+      app: nvsentinel-device-plugin-connector-client
+  template:
+    metadata:
+      labels:
+        app: nvsentinel-device-plugin-connector-client
+    spec:
+      containers:
+        - image: nvcr.io/nv-ngc-devops/nvsentinel-device-plugin-connector-client:main
+          imagePullPolicy: IfNotPresent
+          name: device-plugin-connector-client
+          resources:
+            limits:
+              cpu: 200m
+              memory: 512Mi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 0
+          volumeMounts:
+            - mountPath: /var/run
+              name: var-run-vol
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      imagePullSecrets:
+        - name: nvidia-ngcuser-pull-secret
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+        - operator: Exists
+      volumes:
+        - hostPath:
+            path: /var/run/nvsentinel
+            type: DirectoryOrCreate
+          name: var-run-vol
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate

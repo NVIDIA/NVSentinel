@@ -1,11 +1,11 @@
-package devicepluginconnectorclient
+package main
 
 // Sample Client application to connect to nvidiadeviceplugin connector server
 import (
 	"context"
 	"log"
 
-	devicePluginPb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/protos"
+	devicePluginPb "devicepluginconnectorclient/protos"
 
 	"k8s.io/klog"
 
@@ -50,4 +50,11 @@ func ListenClient(ctx context.Context) {
 
 		log.Printf("Received message: %s", healthEvent)
 	}
+}
+
+func main() {
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	ListenClient(ctx)
+	cancel()
 }

@@ -5,7 +5,6 @@ go 1.22.0
 toolchain go1.22.7
 
 require (
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20240923050225-cf2ec8084163
 	google.golang.org/grpc v1.67.0
 	google.golang.org/protobuf v1.34.2
 	k8s.io/klog v1.0.0
