@@ -275,6 +275,39 @@ platform connectors container main branch publish:
       --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
       --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:main"
 
+nvidia-device-plugin connector container publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-nvidia-device-plugin-distro/Dockerfile.nvidia_device_plugin
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-device-plugin-connector-server:${CI_COMMIT_TAG}"
+
+
+nvidia-device-plugin connector container main branch publish:
+  image:
+    name: $KANIKO_IMAGE
+    entrypoint: [""]
+  stage: publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: always
+  script:
+    - cd distros/container/nvsentinel-nvidia-device-plugin-distro
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-nvidia-device-plugin-distro/Dockerfile.nvidia_device_plugin
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-device-plugin-connector-server:main"
+
 kubernetes distro lint:
   stage: lint
   script:

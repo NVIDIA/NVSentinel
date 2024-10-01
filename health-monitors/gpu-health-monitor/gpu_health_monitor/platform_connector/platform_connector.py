@@ -144,7 +144,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             nodeName=self._node_name,
                         )
                     )
-            log.debug(f"xid health event is {health_events}")
+            log.debug(f"dcgm health event is {health_events}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
