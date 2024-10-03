@@ -1,4 +1,4 @@
-ARG TAG=v3.0.5
+ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidian/distroless/go
 
 FROM golang:1.22 AS builder
