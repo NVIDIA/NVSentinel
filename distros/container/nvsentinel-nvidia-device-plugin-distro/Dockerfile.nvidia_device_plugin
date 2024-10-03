@@ -32,7 +32,7 @@ RUN poetry build --format wheel
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
 # Final stage application for gpu_health_monitor and platform-connectors
-FROM nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+FROM nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
 
 WORKDIR /app
 
