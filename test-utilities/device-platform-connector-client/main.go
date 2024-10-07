@@ -39,7 +39,7 @@ func ListenClient(ctx context.Context) {
 	}
 
 	for {
-		klog.Infof("Ready to receive the messages from device pluginserver")
+		klog.Infof("New Message from Nvsentinel")
 
 		healthEvent, err := stream.Recv()
 
