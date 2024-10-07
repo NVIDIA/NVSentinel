@@ -10,6 +10,6 @@ dependencies:
   version: 0.1.0
 - name: shoreline-agent
   repository: https://helm.ngc.nvidia.com/nv-ngc-devops
-  version: v26.1.2
-digest: sha256:6993417b831175739e2b9e0b092ffa8063ea384f14a4358d230c00d335a58ed6
-generated: "2024-09-09T15:47:09.610570844+05:30"
+  version: v27.1.0
+digest: sha256:c12c69fe97665e4e4e5fbad51f4384646667656140e0dc094d3177b1954b82b7
+generated: "2024-10-07T20:36:57.684566755+05:30"
