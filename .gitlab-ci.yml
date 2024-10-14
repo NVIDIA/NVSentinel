@@ -22,7 +22,7 @@ protos lint:
     - protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
     - protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
     - protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
-    - protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/devicepluginconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/devicepluginconnector/protos/ protobufs/devicepluginconnector.proto
+    - protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
     - python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
     - python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
     - sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py # Due to this issue https://github.com/protocolbuffers/protobuf/issues/1491, this needs to be done else it will throw error during execution
@@ -229,7 +229,7 @@ platform connectors test:
   stage: test
   script:
     - cd platform-connectors
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v -e pkg/protos -e pkg/connectors/devicepluginconnector/protos) -coverprofile=coverage.txt -covermode atomic
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
@@ -275,7 +275,7 @@ platform connectors container main branch publish:
       --dockerfile "${CI_PROJECT_DIR}/platform-connectors/Dockerfile"
       --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:main"
 
-nvidia-device-plugin connector container publish:
+node-health-events-uds connector container publish:
   image:
     name: $KANIKO_IMAGE
     entrypoint: [""]
@@ -287,11 +287,11 @@ nvidia-device-plugin connector container publish:
     - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
-      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-nvidia-device-plugin-distro/Dockerfile.nvidia_device_plugin
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-device-plugin-connector-server:${CI_COMMIT_TAG}"
+      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-node-health-events-distro/Dockerfile.node_health_events
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${CI_COMMIT_TAG}"
 
 
-nvidia-device-plugin connector container main branch publish:
+node-health-events-uds connector container main branch publish:
   image:
     name: $KANIKO_IMAGE
     entrypoint: [""]
@@ -300,13 +300,13 @@ nvidia-device-plugin connector container main branch publish:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: always
   script:
-    - cd distros/container/nvsentinel-nvidia-device-plugin-distro
+    - cd distros/container/nvsentinel-node-health-events-distro
     - mkdir -p /kaniko/.docker
     - echo "{\"auths\":{\"${NVCR_CONTAINER_REPO}\":{\"auth\":\"$(printf "%s:%s" "${NGC_USER_NAME}" "${NGC_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
-      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-nvidia-device-plugin-distro/Dockerfile.nvidia_device_plugin
-      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-device-plugin-connector-server:main"
+      --dockerfile ${CI_PROJECT_DIR}/distros/container/nvsentinel-node-health-events-distro/Dockerfile.node_health_events
+      --destination "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:main"
 
 kubernetes distro lint:
   stage: lint

@@ -1,12 +1,12 @@
 syntax = "proto3";
-package devicepluginplatformconnector;
+package nodehealtheventsudsplatformconnector;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
-option go_package = "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/protos";
+option go_package = "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos";
 
-service NVIDIADevicePluginConnector {
+service NodeHealthEventsUDSConnector {
   rpc HealthEventStreamV1(google.protobuf.Empty) returns ( stream HealthEvent ) {}
 }
 

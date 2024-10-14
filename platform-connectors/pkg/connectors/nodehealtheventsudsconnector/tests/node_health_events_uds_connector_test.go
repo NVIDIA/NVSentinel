@@ -18,7 +18,7 @@ package tests
 
 import (
 	"context"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/devicepluginconnectorserver"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/nodehealtheventsudsconnectorserver"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"google.golang.org/grpc"
@@ -32,10 +32,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	devicePluginPb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/protos"
+	nodeHealthEventsPluginPb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos"
 )
 
-const testSocketPath = "/tmp/testdeviceplugin.sock"
+const testSocketPath = "/tmp/nodehealthevents.sock"
 
 func TestHealthEventStreamV1(t *testing.T) {
 	healthEvents := []*pb.HealthEvent{
@@ -110,37 +110,37 @@ func TestHealthEventStreamV1(t *testing.T) {
 			Message:            "Thermal watch error on GPU 0",
 		},
 	}
-	devicePluginSocket := testSocketPath
-	var devicePluginListener net.Listener
-	devicePluginListener = nil
+	nodeHealthEventsSocket := testSocketPath
+	var nodeHealthEventsListener net.Listener
+	nodeHealthEventsListener = nil
 	stopCh := make(chan struct{})
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Setup the server
-	devicePluginRingBuffer := ringbuffer.NewRingBuffer("devicePlugin", ctx)
-	devicePluginConnector := devicepluginconnectorserver.CreateAndStartDevicePluginServer(&devicePluginSocket, &devicePluginListener, devicePluginRingBuffer, "node", stopCh, ctx)
+	nodeHealthEventsRingBuffer := ringbuffer.NewRingBuffer("nodeHealthEventsBuffer", ctx)
+	nodeHealthEventsUDSConnector := nodehealtheventsudsconnectorserver.CreateAndStartNodeHealthEventsUDSServer(&nodeHealthEventsSocket, &nodeHealthEventsListener, nodeHealthEventsRingBuffer, "node", stopCh, ctx)
 	opts := grpc.WithTransportCredentials(insecure.NewCredentials())
 
-	conn, err := grpc.NewClient("unix://"+devicePluginSocket, opts)
+	conn, err := grpc.NewClient("unix://"+nodeHealthEventsSocket, opts)
 	if err != nil {
 		t.Errorf("Failed to create client: %v", err)
 	}
 	defer conn.Close()
 
 	// Setup the client
-	client := devicePluginPb.NewNVIDIADevicePluginConnectorClient(conn)
+	client := nodeHealthEventsPluginPb.NewNodeHealthEventsUDSConnectorClient(conn)
 
 	stream, err := client.HealthEventStreamV1(ctx, &emptypb.Empty{})
 
 	if err != nil {
-		t.Errorf("devicepluginclient Error calling ReceiveMessages: %v", err)
+		t.Errorf("nodehealtheventsclient Error calling ReceiveMessages: %v", err)
 	}
 
 	go func() {
 		for _, healthEvent := range healthEvents {
-			devicePluginConnector.ProcessHealthEvents(ctx, healthEvent)
+			nodeHealthEventsUDSConnector.ProcessHealthEvents(ctx, healthEvent)
 		}
 	}()
 	for index, healthEvent := range healthEvents {

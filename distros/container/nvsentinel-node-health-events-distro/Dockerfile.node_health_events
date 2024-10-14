@@ -65,5 +65,5 @@ RUN mkdir -p /var/log/supervisor
 
 # Copy the built Go application from the builder stage
 COPY --from=builder /app/platform-connectors/platform-connector /app/
-COPY /distros/container/nvsentinel-nvidia-device-plugin-distro/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY /distros/container/nvsentinel-node-health-events-distro/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 ENTRYPOINT ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

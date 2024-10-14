@@ -211,13 +211,13 @@ data:
   config.json: |
     {
       "enableK8sPlatformConnector": "false",
-      "enableDevicePluginConnector": "true"
+      "enableNodeHealthEventsUDSConnector": "true"
     }
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: nvsentinel-device-plugin-connector
+  name: nvsentinel-node-health-events-uds-connector
   namespace: nvsentinel
 spec:
   affinity:
@@ -230,14 +230,14 @@ spec:
                 values:
                   - minikube
   containers:
-  - name: nvsentinel-device-plugin-connector
+  - name: nvsentinel-node-health-events-uds-connector
     env:
     - name: NODE_NAME
       valueFrom:
         fieldRef:
           apiVersion: v1
           fieldPath: spec.nodeName
-    image: nvcr.io/nv-ngc-devops/nvsentinel-device-plugin-connector-server:main
+    image: nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server:main
     imagePullPolicy: IfNotPresent
     ports:
     - containerPort: 2112
