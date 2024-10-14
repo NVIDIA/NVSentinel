@@ -1,4 +1,4 @@
-module devicepluginconnectorclient
+module nodehealtheventsudsconnectorclient
 
 go 1.22.0
 

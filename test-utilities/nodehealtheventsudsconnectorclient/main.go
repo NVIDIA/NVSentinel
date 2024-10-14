@@ -1,27 +1,25 @@
 package main
 
-// Sample Client application to connect to nvidiadeviceplugin connector server
+// Sample Client application to connect to nodeHealthEvents connector server
 import (
 	"context"
 	"log"
 
-	devicePluginPb "devicepluginconnectorclient/protos"
-
-	"k8s.io/klog"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"k8s.io/klog"
+	protos "nodehealtheventsudsconnectorclient/protos"
 )
 
-const devicePluginSocketPath = "/var/run/nvidiadeviceplugin.sock"
+const nodeHealthEventsSocketPath = "/var/run/nodeHealthEvents.sock"
 
 func ListenClient(ctx context.Context) {
 	klog.Infof("Inside ListenClient")
 
 	opts := grpc.WithTransportCredentials(insecure.NewCredentials())
 
-	conn, err := grpc.NewClient("unix://"+devicePluginSocketPath, opts)
+	conn, err := grpc.NewClient("unix://"+nodeHealthEventsSocketPath, opts)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -29,12 +27,12 @@ func ListenClient(ctx context.Context) {
 
 	klog.Info("creating the client")
 
-	client := devicePluginPb.NewNVIDIADevicePluginConnectorClient(conn)
+	client := protos.NewNodeHealthEventsUDSConnectorClient(conn)
 
 	stream, err := client.HealthEventStreamV1(ctx, &emptypb.Empty{})
 
 	if err != nil {
-		klog.Errorf("devicepluginclient Error calling ReceiveMessages: %v", err)
+		klog.Errorf("nodeHealthEventsClient Error calling ReceiveMessages: %v", err)
 		return
 	}
 

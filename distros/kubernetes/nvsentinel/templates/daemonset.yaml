@@ -43,8 +43,8 @@ spec:
           - "--metrics-port={{ .Values.platformConnector.metricsPort }}"
           - -socket
           - {{ .Values.socketPath }}
-          - -devicepluginsocket
-          - {{ .Values.devicePluginSocketPath }}
+          - -nodehealtheventssocket
+          - {{ .Values.nodeHealthEventsSocketPath }}
           resources:
             {{- toYaml .Values.platformConnector.resources | nindent 12 }}
           volumeMounts:

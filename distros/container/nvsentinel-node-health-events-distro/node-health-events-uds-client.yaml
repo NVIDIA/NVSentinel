@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: nvsentinel-device-plugin-connector-client
+  name: nvsentinel-node-health-events-uds-connector-client
   namespace: nvsentinel
 spec:
   affinity:
@@ -14,9 +14,9 @@ spec:
                 values:
                   - minikube
   containers:
-  - image: nvcr.io/nv-ngc-devops/nvsentinel-device-plugin-connector-client:main
+  - image: nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-client:main
     imagePullPolicy: IfNotPresent
-    name: device-plugin-connector-client
+    name: node-health-events-uds-connector-client
     resources:
       limits:
         cpu: 200m

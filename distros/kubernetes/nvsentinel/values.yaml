@@ -68,7 +68,7 @@ tolerations: []
 affinity: {}
 
 socketPath: "/var/run/nvsentinel.sock"
-devicePluginSocketPath: "/var/run/nvidiadeviceplugin.sock"
+nodeHealthEventsSocketPath: "/var/run/nodeHealthEvents.sock"
 
 shoreline-agent:
   global:

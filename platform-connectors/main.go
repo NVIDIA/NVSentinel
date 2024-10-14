@@ -19,7 +19,7 @@ import (
 
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/devicepluginconnector/devicepluginconnectorserver"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/nodehealtheventsudsconnectorserver"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/server"
 	"google.golang.org/grpc"
 )
@@ -27,7 +27,7 @@ import (
 //nolint:cyclop
 func main() {
 	socket := flag.String("socket", "", "unix socket path")
-	devicePluginSocket := flag.String("devicepluginsocket", "", "device plugin socket path")
+	nodeHealthEventsSocket := flag.String("nodehealtheventssocket", "", "device plugin socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	enableK8sPlatformConnector := result["enableK8sPlatformConnector"]
-	enableDevicePluginConnector := result["enableDevicePluginConnector"]
+	enableNodeHealthEventsUDSConnector := result["enableNodeHealthEventsUDSConnector"]
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
@@ -84,15 +84,15 @@ func main() {
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
 	}
 
-	var devicePluginRingBuffer *ringbuffer.RingBuffer = nil
+	var nodeHealthEventsRingBuffer *ringbuffer.RingBuffer = nil
 
-	var devicePluginListener net.Listener = nil
+	var nodeHealthEventsListener net.Listener = nil
 
-	if enableDevicePluginConnector == "true" {
-		devicePluginRingBuffer = ringbuffer.NewRingBuffer("devicePlugin", ctx)
+	if enableNodeHealthEventsUDSConnector == "true" {
+		nodeHealthEventsRingBuffer = ringbuffer.NewRingBuffer("nodeHealthEventsRingBuffer", ctx)
 
-		devicepluginconnectorserver.CreateAndStartDevicePluginServer(devicePluginSocket, &devicePluginListener,
-			devicePluginRingBuffer, nodeName, stopCh, ctx)
+		nodehealtheventsudsconnectorserver.CreateAndStartNodeHealthEventsUDSServer(nodeHealthEventsSocket,
+			&nodeHealthEventsListener, nodeHealthEventsRingBuffer, nodeName, stopCh, ctx)
 	}
 
 	err = os.RemoveAll(*socket)
@@ -128,10 +128,10 @@ func main() {
 		os.Remove(*socket)
 	}
 
-	if devicePluginListener != nil {
-		devicePluginRingBuffer.ShutDownHealthMetricQueue()
-		devicePluginListener.Close()
-		os.Remove(*devicePluginSocket)
+	if nodeHealthEventsListener != nil {
+		nodeHealthEventsRingBuffer.ShutDownHealthMetricQueue()
+		nodeHealthEventsListener.Close()
+		os.Remove(*nodeHealthEventsSocket)
 	}
 
 	cancel()
