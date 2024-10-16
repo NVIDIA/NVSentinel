@@ -2,7 +2,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 updateStrategy: RollingUpdate
-maxUnavailable: 1
+maxUnavailable: 25%
 
 podAnnotations: {}
 
@@ -33,4 +33,3 @@ affinity: {}
 useHostNetworking: true
 metricsPort: 8000
 stateFilePath: "/var/run/statefile"
-

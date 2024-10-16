@@ -9,6 +9,12 @@ global:
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor
       pullPolicy: IfNotPresent
+    
+    busybox:
+      image:
+        repository: nvcr.io/nv-ngc-devops/busybox
+        tag: "1.31.1"
+        pullPolicy: IfNotPresent
 
   nicHealthMonitor:
     image:
