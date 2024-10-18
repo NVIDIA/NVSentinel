@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: nvsentinel-pod-monitor
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchExpressions:
+      - { key: "app.kubernetes.io/instance", operator: In, values: ["nvsentinel"] }
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
