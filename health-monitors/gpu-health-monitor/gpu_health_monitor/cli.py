@@ -57,7 +57,7 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
     "--xid-error-mapping-config-file", type=click.Path(), help="Path to xid errors mapping config file", required=True
 )
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
-@click.option("--port", type=int, default=8000, help="Port to use for metrics server", required=True)
+@click.option("--port", type=int, help="Port to use for metrics server", required=True)
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
