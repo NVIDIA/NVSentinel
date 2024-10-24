@@ -29,6 +29,8 @@ global:
   imagePullSecrets:
     - name: nvidia-ngcuser-pull-secret
 
+  enableSidecarNICMonitoringForGKE: false
+
 platformConnector:
   image:
     repository: nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors
