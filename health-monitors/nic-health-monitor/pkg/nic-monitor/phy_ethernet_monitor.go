@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"k8s.io/klog"
 )
@@ -40,7 +41,7 @@ type EthernetDevice struct {
 }
 
 type EthernetDeviceMonitor struct {
-	Devices map[string]EthernetDevice
+	devices map[string]EthernetDevice
 }
 
 // if this function return err (err != nil), then ignore the bool value
@@ -142,37 +143,67 @@ func GetPhyEthernetDevices(exclusionRegexList []string) (map[string]EthernetDevi
 }
 
 func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
-	deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
-	if err != nil {
-		return nil, err
-	}
+	maxRetryDuration := time.Duration(config.MaxRetryDurationForDownDetectedNICInMilliseconds) * time.Millisecond
+	retryInterval := time.Duration(config.RetryIntervalForDownDetectedNICInMilliseconds) * time.Millisecond
 
-	events := []NicHealthEvent{}
+	var events []NicHealthEvent
 
-	// Check if any nic device is disappear
-	for name := range m.Devices {
-		if _, ok := deviceList[name]; !ok {
-			events = append(events, NicHealthEvent{
-				NicType:        Ethernet,
-				Name:           name,
-				Message:        doesNotExistState,
-				IsHealthyEvent: false,
-			})
+	startTime := time.Now()
+	timeout := time.After(maxRetryDuration)
+	ticker := time.NewTicker(retryInterval)
+
+	defer ticker.Stop()
+
+tickerLoop:
+	for ; true; <-ticker.C {
+		select {
+		case <-timeout:
+			// maxRetryDuration exceeded, perform final check
+			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
+			if err != nil {
+				return nil, err
+			}
+
+			events, _ = m.checkDevices(deviceList, startTime, maxRetryDuration)
+			m.updateStoredDevices(deviceList, true)
+			break tickerLoop
+
+		default:
+			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
+			if err != nil {
+				return nil, err
+			}
+
+			retryNeeded := false
+			events, retryNeeded = m.checkDevices(deviceList, startTime, maxRetryDuration)
+
+			if !retryNeeded {
+				// update stored devices with all devices
+				m.updateStoredDevices(deviceList, true)
+				break tickerLoop
+			}
+
+			// update stored devices, but include only devices that are up
+			m.updateStoredDevices(deviceList, false)
 		}
 	}
 
-	for name, device := range deviceList {
-		oldDevice, oldDeviceExists := m.Devices[name]
+	return events, nil
+}
 
-		if !oldDeviceExists {
+func (m *EthernetDeviceMonitor) checkDevices(deviceList map[string]EthernetDevice, startTime time.Time,
+	maxRetryDuration time.Duration) ([]NicHealthEvent, bool) {
+	var events []NicHealthEvent
+
+	retryNeeded := false
+
+	for name, device := range deviceList {
+		oldDevice, exists := m.devices[name]
+
+		if !exists {
 			// device is new
 			if device.Operstate == operstateUp {
-				events = append(events, NicHealthEvent{
-					NicType:        Ethernet,
-					Name:           device.Name,
-					Message:        deviceIsHealthy,
-					IsHealthyEvent: true,
-				})
+				events = append(events, createNicHealthEvent(device, true, deviceIsHealthy))
 			}
 
 			continue
@@ -181,24 +212,47 @@ func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEv
 		// device existed before and Operstate has changed
 		if device.Operstate != oldDevice.Operstate {
 			if device.Operstate == operstateUp {
-				events = append(events, NicHealthEvent{
-					NicType:        Ethernet,
-					Name:           device.Name,
-					Message:        deviceIsHealthy,
-					IsHealthyEvent: true,
-				})
+				events = append(events, createNicHealthEvent(device, true, deviceIsHealthy))
 			} else {
-				events = append(events, NicHealthEvent{
-					NicType:        Ethernet,
-					Name:           device.Name,
-					Message:        "state: " + device.Operstate,
-					IsHealthyEvent: false,
-				})
+				// device is down
+				if time.Since(startTime) < maxRetryDuration {
+					retryNeeded = true
+					continue
+				}
+
+				events = append(events, createNicHealthEvent(device, false, "state: "+device.Operstate))
 			}
 		}
 	}
 
-	m.Devices = deviceList
+	return events, retryNeeded
+}
 
-	return events, nil
+func createNicHealthEvent(device EthernetDevice, isHealthy bool, message string) NicHealthEvent {
+	return NicHealthEvent{
+		NicType:        Ethernet,
+		Name:           device.Name,
+		Message:        message,
+		IsHealthyEvent: isHealthy,
+	}
+}
+
+func (m *EthernetDeviceMonitor) updateStoredDevices(deviceList map[string]EthernetDevice, includeAllDevices bool) {
+	if m.devices == nil {
+		m.devices = map[string]EthernetDevice{}
+	}
+
+	// delete the devices in old list which are no longer present
+	for name := range m.devices {
+		if _, exists := deviceList[name]; !exists {
+			delete(m.devices, name)
+		}
+	}
+
+	// update m.Devices with devices from deviceList whose state is not down
+	for name, device := range deviceList {
+		if includeAllDevices || device.Operstate == operstateUp {
+			m.devices[name] = device
+		}
+	}
 }

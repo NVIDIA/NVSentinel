@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,6 +31,12 @@ const (
 	ETHERNET_COMPONENT_CLASS = "ethernet"
 )
 
+const (
+	defaultPollingIntervalInMilliseconds                    = 1000
+	defaultMaxRetryDurationForDownDetectedNICInMilliseconds = 500
+	defaultRetryIntervalForDownDetectedNICInMilliseconds    = 100
+)
+
 var (
 	healthEventsPublished = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "nic_monitor_health_events_published_total",
@@ -41,10 +49,6 @@ var (
 		Buckets: prometheus.LinearBuckets(0, 10, 500),
 	})
 )
-
-// temporarily we want to set this to true for GKE clusters till we fix
-// NIC sys file visibility issue
-var considerNicEventsNonFatal bool
 
 func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
@@ -62,15 +66,6 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 
 		isHealthy := nicEvent.IsHealthyEvent
 		isFatal := !isHealthy
-
-		// we can remove this once the NIC issue with GKE is fixed
-		if considerNicEventsNonFatal {
-			isFatal = false
-			// don't publish healthy events as we don't want healthy events to show up as node events
-			if isHealthy {
-				continue
-			}
-		}
 
 		event := pb.HealthEvent{
 			Version:            1,
@@ -100,87 +95,173 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// check if the NicExclusionRegex key exists
 	section := cfg.Section("")
 
-	pollingIntervalKey, err := section.GetKey("PollingIntervalInMilliseconds")
-
-	var pollingInterval int
-
-	if err != nil || pollingIntervalKey.String() == "" {
-		pollingInterval = 1000 // default to 1000 milliseconds
-	} else {
-		pollingInterval, err = pollingIntervalKey.Int()
-		if err != nil {
-			return nil, fmt.Errorf("invalid PollingIntervalInMilliseconds value: %w", err)
+	getIntValue := func(keyName string, defaultVal int) (int, error) {
+		key := section.Key(keyName)
+		if key == nil || key.String() == "" {
+			return defaultVal, nil
 		}
+
+		value, err := key.Int()
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s value: %w", keyName, err)
+		}
+
+		return value, nil
 	}
 
-	key, err := section.GetKey("NicExclusionRegex")
+	pollingInterval, err := getIntValue("PollingIntervalInMilliseconds", defaultPollingIntervalInMilliseconds)
 	if err != nil {
-		// nolint:nilerr
-		return &nic.NicMonitorConfig{
-			PollingIntervalInMilliseconds: pollingInterval,
-			ExclusionRegexes:              []string{},
-		}, nil
+		return nil, err
 	}
 
-	exclusionRegexes := key.String()
-	if exclusionRegexes == "" {
-		return &nic.NicMonitorConfig{
-			PollingIntervalInMilliseconds: pollingInterval,
-			ExclusionRegexes:              []string{},
-		}, nil
-	}
+	var exclusionRegexes []string
 
-	filteredExclusionRegexList := []string{}
-
-	for _, regex := range strings.Split(exclusionRegexes, ",") {
-		regexTrimmed := strings.TrimSpace(regex)
-		if regexTrimmed != "" {
-			filteredExclusionRegexList = append(filteredExclusionRegexList, regexTrimmed)
+	key := section.Key("NicExclusionRegex")
+	if key != nil && key.String() != "" {
+		for _, regex := range strings.Split(key.String(), ",") {
+			trimmedRegex := strings.TrimSpace(regex)
+			if trimmedRegex != "" {
+				exclusionRegexes = append(exclusionRegexes, trimmedRegex)
+			}
 		}
 	}
 
-	considerNicEventsNonFatalKey, err := section.GetKey("ConsiderNicEventsNonFatal")
+	maxRetryDuration, err := getIntValue("MaxRetryDurationForDownDetectedNICInMilliseconds",
+		defaultMaxRetryDurationForDownDetectedNICInMilliseconds)
+	if err != nil {
+		return nil, err
+	}
 
-	if err != nil || considerNicEventsNonFatalKey.String() == "" {
-		considerNicEventsNonFatal = false
-	} else {
-		considerNicEventsNonFatal, err = considerNicEventsNonFatalKey.Bool()
-		if err != nil {
-			return nil, fmt.Errorf("invalid ConsiderNicEventsNonFatal value: %w", err)
-		}
+	retryInterval, err := getIntValue("RetryIntervalForDownDetectedNICInMilliseconds",
+		defaultRetryIntervalForDownDetectedNICInMilliseconds)
+	if err != nil {
+		return nil, err
 	}
 
 	return &nic.NicMonitorConfig{
-		ExclusionRegexes:              filteredExclusionRegexList,
-		PollingIntervalInMilliseconds: pollingInterval,
+		PollingIntervalInMilliseconds:                    pollingInterval,
+		ExclusionRegexes:                                 exclusionRegexes,
+		MaxRetryDurationForDownDetectedNICInMilliseconds: maxRetryDuration,
+		RetryIntervalForDownDetectedNICInMilliseconds:    retryInterval,
 	}, nil
+}
+
+func validateConfig(cfg *nic.NicMonitorConfig) error {
+	if cfg.PollingIntervalInMilliseconds <= 0 {
+		return fmt.Errorf("PollingIntervalInMilliseconds must be a positive integer")
+	}
+
+	if cfg.MaxRetryDurationForDownDetectedNICInMilliseconds <= 0 {
+		return fmt.Errorf("MaxRetryDurationForDownDetectedNICInMilliseconds must be a positive integer")
+	}
+
+	if cfg.MaxRetryDurationForDownDetectedNICInMilliseconds >= cfg.PollingIntervalInMilliseconds {
+		return fmt.Errorf("MaxRetryDurationForDownDetectedNICInMilliseconds should be strictly less than" +
+			"PollingIntervalInMilliseconds")
+	}
+
+	if cfg.RetryIntervalForDownDetectedNICInMilliseconds <= 0 {
+		return fmt.Errorf("RetryIntervalForDownDetectedNICInMilliseconds must be a positive integer")
+	}
+
+	if cfg.RetryIntervalForDownDetectedNICInMilliseconds >= cfg.MaxRetryDurationForDownDetectedNICInMilliseconds {
+		return fmt.Errorf(
+			"RetryIntervalForDownDetectedNICInMilliseconds (%d) must be strictly less than "+
+				"MaxRetryDurationForDownDetectedNICInMilliseconds (%d)",
+			cfg.RetryIntervalForDownDetectedNICInMilliseconds,
+			cfg.MaxRetryDurationForDownDetectedNICInMilliseconds,
+		)
+	}
+
+	for _, regex := range cfg.ExclusionRegexes {
+		if _, err := regexp.Compile(regex); err != nil {
+			return fmt.Errorf("invalid NIC exclusion regex '%s': %w", regex, err)
+		}
+	}
+
+	return nil
 }
 
 // nolint: cyclop
 func main() {
-	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+	var (
+		socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 
-	var configFile = flag.String("config", "/etc/nichealthmonitor/config.ini",
-		"path to the nic health monitor config file")
+		metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+		pollingInterval = flag.Int("polling-interval", defaultPollingIntervalInMilliseconds,
+			"Polling interval in milliseconds")
+
+		nicExclusionRegexes = flag.String("nic-exclusion-regexes", "", "Comma-separated list of NIC exclusion regexes")
+
+		maxRetryDurationForDownDetectedNIC = flag.Int("max-retry-duration-for-down-detected-nic",
+			defaultMaxRetryDurationForDownDetectedNICInMilliseconds,
+			"Maximum retry duration for down-detected NICs in milliseconds")
+
+		retryIntervalForDownDetectedNIC = flag.Int("retry-interval-for-down-detected-nic",
+			defaultRetryIntervalForDownDetectedNICInMilliseconds, "Retry interval for down-detected NICs in milliseconds")
+	)
 
 	flag.Parse()
 
-	nicConfig, err := loadConfig(*configFile)
+	// initialize config with flag values
+	nicConfig := &nic.NicMonitorConfig{
+		PollingIntervalInMilliseconds:                    *pollingInterval,
+		ExclusionRegexes:                                 []string{},
+		MaxRetryDurationForDownDetectedNICInMilliseconds: *maxRetryDurationForDownDetectedNIC,
+		RetryIntervalForDownDetectedNICInMilliseconds:    *retryIntervalForDownDetectedNIC,
+	}
+
+	if *nicExclusionRegexes != "" {
+		for _, regex := range strings.Split(*nicExclusionRegexes, ",") {
+			trimmedRegex := strings.TrimSpace(regex)
+			if trimmedRegex != "" {
+				nicConfig.ExclusionRegexes = append(nicConfig.ExclusionRegexes, trimmedRegex)
+			}
+		}
+	}
+
+	// check if config.ini exists and load it to override flag values
+	configFilePath := "/etc/nichehealthmonitor/config.ini"
+	_, err := os.Stat(configFilePath)
+
 	if err != nil {
-		panic(err)
+		if !os.IsNotExist(err) {
+			klog.Fatalf("failed to read config file path: %v", err)
+		}
+
+		klog.Info("Loaded configuration from command line flags")
+	} else {
+		fileConfig, err := loadConfig(configFilePath)
+		if err != nil {
+			klog.Fatalf("failed to load config from file: %v", err)
+		}
+
+		nicConfig.PollingIntervalInMilliseconds = fileConfig.PollingIntervalInMilliseconds
+
+		nicConfig.ExclusionRegexes = fileConfig.ExclusionRegexes
+
+		nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds =
+			fileConfig.MaxRetryDurationForDownDetectedNICInMilliseconds
+
+		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds =
+			fileConfig.RetryIntervalForDownDetectedNICInMilliseconds
+
+		klog.Info("Loaded configuration from configmap")
 	}
 
-	klog.Infof("NIC names matching these regexes will be excluded: %v\n", nicConfig.ExclusionRegexes)
+	if err := validateConfig(nicConfig); err != nil {
+		klog.Fatalf("configuration validation failed: %v", err)
+	}
+
+	klog.Infof("NIC names matching these regexes will be excluded: %v", nicConfig.ExclusionRegexes)
 	klog.Infof("NIC Monitor will poll every %d milliseconds", nicConfig.PollingIntervalInMilliseconds)
-
-	if considerNicEventsNonFatal {
-		klog.Info("NIC Monitor will consider health events to be non-fatal")
-	}
+	klog.Infof("Max Retry Duration for Down-Detected NIC: %d milliseconds",
+		nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds)
+	klog.Infof("Retry Interval for Down-Detected NIC: %d milliseconds",
+		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds)
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))

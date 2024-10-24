@@ -17,6 +17,7 @@
 package nic_monitor
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"time"
@@ -48,8 +49,10 @@ var (
 )
 
 type NicMonitorConfig struct {
-	ExclusionRegexes              []string
-	PollingIntervalInMilliseconds int
+	ExclusionRegexes                                 []string
+	PollingIntervalInMilliseconds                    int
+	MaxRetryDurationForDownDetectedNICInMilliseconds int
+	RetryIntervalForDownDetectedNICInMilliseconds    int
 }
 
 type NicMonitor interface {
@@ -98,27 +101,29 @@ func (c *NicHealthMonitor) Close() error {
 }
 
 func (c *NicHealthMonitor) Run() error {
-	klog.Info("Collecting Nic events")
+	klog.Info("Collecting NIC events")
 
 	ticker := time.NewTicker(time.Duration(c.monitorConfig.PollingIntervalInMilliseconds) * time.Millisecond)
 
-	func() {
-		for range ticker.C {
-			start := time.Now()
+	defer ticker.Stop()
 
-			for _, monitor := range c.Monitors {
-				events, err := monitor.Monitor(c.monitorConfig)
-				if err != nil {
-					klog.Errorf("error occurred: %v", err)
-				} else if len(events) != 0 {
-					c.EventChan <- &events
-				}
+	for range ticker.C {
+		start := time.Now()
+
+		for _, monitor := range c.Monitors {
+			events, err := monitor.Monitor(c.monitorConfig)
+			if err != nil {
+				return fmt.Errorf("error occurred while monitoring: %w", err)
 			}
 
-			duration := float64(time.Since(start).Milliseconds())
-			pollingLoopProcessingDuration.Observe(duration)
+			if len(events) != 0 {
+				c.EventChan <- &events
+			}
 		}
-	}()
+
+		duration := float64(time.Since(start).Milliseconds())
+		pollingLoopProcessingDuration.Observe(duration)
+	}
 
 	return nil
 }

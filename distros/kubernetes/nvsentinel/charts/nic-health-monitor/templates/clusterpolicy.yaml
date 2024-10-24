@@ -1,0 +1,64 @@
+{{- if .Values.enableSidecarMonitoringForGKE }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: inject-nic-health-monitor-sidecar
+spec:
+  background: false
+  validationFailureAction: Audit
+  rules:
+    - name: inject-nic-health-monitor
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      preconditions:
+        all:
+          - key: "{{`{{ request.object.metadata.annotations.\"networking.gke.io/interfaces\" || '' }}`}}"
+            operator: NotEquals
+            value: ""
+        any:
+          - key: "{{`{{ request.object.metadata.annotations.\"runai-job-id\"  || '' }}`}}"
+            operator: NotEquals
+            value: ""
+          - key: "{{`{{ request.object.metadata.labels.\"training.kubeflow.org/job-name\" || '' }}`}}"
+            operator: NotEquals
+            value: ""
+
+      mutate:
+        patchStrategicMerge:
+          spec:
+            containers:
+              - name: nic-health-monitor
+                image: "{{ .Values.global.nicHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+                imagePullPolicy: IfNotPresent
+                args:
+                  - "--metrics-port={{ .Values.metricsPort }}"
+                  - "--polling-interval={{ .Values.pollingInterval }}"
+                  - "--nic-exclusion-regexes={{ .Values.nicExclusionRegexes }}"
+                  - "--max-retry-duration-for-down-detected-nic={{ .Values.maxRetryDurationForDownDetectedNICInMilliseconds }}"
+                  - "--retry-interval-for-down-detected-nic={{ .Values.retryIntervalForDownDetectedNICInMilliseconds }}"
+                securityContext:
+                  runAsUser: 0
+                resources:
+                  limits:
+                    cpu: "50m"
+                    memory: "50Mi"
+                  requests:
+                    cpu: "50m"
+                    memory: "50Mi"
+                ports:
+                  - name: metrics
+                    containerPort: {{ .Values.metricsPort }}
+                volumeMounts:
+                  - name: var-run-vol
+                    mountPath: /var/run/
+            volumes:
+              - name: var-run-vol
+                hostPath:
+                  path: /var/run/nvsentinel
+                  type: Directory
+
+{{- end }}
