@@ -1,4 +1,4 @@
-{{- if .Values.enableSidecarMonitoringForGKE }}
+{{- if .Values.global.enableSidecarNICMonitoringForGKE }}
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:

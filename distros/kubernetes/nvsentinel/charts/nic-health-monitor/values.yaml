@@ -45,6 +45,5 @@ metricsPort: 2112
 pollingInterval: 1000
 nicExclusionRegexes: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
 
-enableSidecarMonitoringForGKE: true
 maxRetryDurationForDownDetectedNICInMilliseconds: 500
 retryIntervalForDownDetectedNICInMilliseconds: 100
