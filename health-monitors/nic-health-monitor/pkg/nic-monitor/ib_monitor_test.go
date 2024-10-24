@@ -25,7 +25,7 @@ import (
 )
 
 func TestScrapInfinibandDevices(t *testing.T) {
-	fileSystem = MockFileSystem{
+	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
 			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
@@ -62,7 +62,7 @@ func TestScrapInfinibandDevices(t *testing.T) {
 }
 
 func TestInfinibandMonitor(t *testing.T) {
-	fileSystem = MockFileSystem{
+	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
 			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
@@ -71,7 +71,7 @@ func TestInfinibandMonitor(t *testing.T) {
 		},
 	}
 
-	mockFS := fileSystem.(MockFileSystem)
+	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
 
@@ -143,7 +143,7 @@ func TestInfinibandMonitor(t *testing.T) {
 }
 
 func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
-	fileSystem = MockFileSystem{
+	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
 			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
@@ -160,7 +160,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 		},
 	}
 
-	mockFS := fileSystem.(MockFileSystem)
+	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
 

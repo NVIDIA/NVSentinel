@@ -8,4 +8,4 @@ data:
   config.ini: |
     NicExclusionRegex = ^gketmp.*
     PollingIntervalInMilliseconds = 1000
-    ConsiderNicEventsNonFatal = false
+

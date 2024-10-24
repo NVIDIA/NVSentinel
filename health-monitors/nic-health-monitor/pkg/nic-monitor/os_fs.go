@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"sync"
 	"testing/fstest"
 )
 
@@ -41,15 +42,27 @@ func (osFS) ReadDir(name string) ([]fs.DirEntry, error) { return os.ReadDir(name
 // MockFileSystem implements mock fileSystem
 type MockFileSystem struct {
 	Fs fstest.MapFS
+	mu sync.Mutex
 }
 
 // fstest does not support absolute path, so we trim prefixed "/"
-func (m MockFileSystem) Stat(name string) (os.FileInfo, error) {
+func (m *MockFileSystem) Stat(name string) (os.FileInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	return m.Fs.Stat(strings.TrimPrefix(name, "/"))
 }
-func (m MockFileSystem) ReadFile(name string) ([]byte, error) {
+
+func (m *MockFileSystem) ReadFile(name string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	return m.Fs.ReadFile(strings.TrimPrefix(name, "/"))
 }
-func (m MockFileSystem) ReadDir(name string) ([]fs.DirEntry, error) {
+
+func (m *MockFileSystem) ReadDir(name string) ([]fs.DirEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	return m.Fs.ReadDir(strings.TrimPrefix(name, "/"))
 }
