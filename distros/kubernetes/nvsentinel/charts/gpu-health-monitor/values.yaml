@@ -30,6 +30,6 @@ tolerations:
 
 affinity: {}
 
-useHostNetworking: true
+useHostNetworking: false
 metricsPort: 2112
 stateFilePath: "/var/run/statefile"
