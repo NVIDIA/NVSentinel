@@ -12,6 +12,6 @@ dependencies:
   - name: nvswitch-health-monitor
     version: "0.1.0"
   - name: shoreline-agent
-    version: v27.2.0
+    version: v27.5.0
     repository: https://helm.ngc.nvidia.com/nv-ngc-devops
     condition: shoreline-agent.global.enabled
