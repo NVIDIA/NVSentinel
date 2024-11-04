@@ -85,6 +85,7 @@ shoreline-agent:
     customer_id: "nvidiadev3"
     customer_endpoint: "nvidiadev3.agent-gateway.shoreline-prod1.io:443"
     imagePullSecret: "nvidia-ngcuser-pull-secret"
+    caPemstoreVolumeType: "secret"
 
   agent:
     serviceaccount:
