@@ -93,6 +93,7 @@ shoreline-agent:
       kind: "DaemonSet"
       image: "nvcr.io/nv-ngc-devops/shoreline-agent"
       tag: "release-24.0.12-multiarch"
+      imageCredentialK8sSecret: "nvidia-ngcuser-pull-secret"
       resources:
         limits:
           cpu: "350m"
