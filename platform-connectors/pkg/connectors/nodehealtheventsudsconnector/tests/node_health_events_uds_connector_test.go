@@ -43,7 +43,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 		&pb.HealthEvent{
 			CheckName:          "GpuPcieWatch",
 			IsHealthy:          true,
-			EntitiesImpacted:   []string{},
+			EntitiesImpacted:   []*pb.Entity{},
 			ErrorCode:          []string{},
 			IsFatal:            false,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -56,7 +56,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 			CheckName:          "GpuXidError",
 			IsHealthy:          true,
 			Message:            "",
-			EntitiesImpacted:   []string{},
+			EntitiesImpacted:   []*pb.Entity{},
 			ErrorCode:          []string{},
 			IsFatal:            false,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -66,7 +66,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 		&pb.HealthEvent{
 			CheckName:          "GpuPcieWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*pb.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -79,7 +79,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
 			Message:            "",
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*pb.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -91,7 +91,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
 			Message:            "",
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*pb.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"45"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -101,7 +101,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 		&pb.HealthEvent{
 			CheckName:          "GpuThermalWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*pb.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -153,8 +153,18 @@ func TestHealthEventStreamV1(t *testing.T) {
 		assert.Equal(t, receivedHealthEvent.Message, healthEvent.Message)
 		assert.Equal(t, receivedHealthEvent.CheckName, healthEvent.CheckName)
 		assert.Equal(t, receivedHealthEvent.RecommendedAction.String(), healthEvent.RecommendedAction.String())
-		if !slices.Equal(receivedHealthEvent.ImpactedGPUIndices, healthEvent.EntitiesImpacted) {
-			t.Errorf("testcase %d received ImpactedGpuIndices %v not matching with healthEvent Entities %v", index, receivedHealthEvent.ImpactedGPUIndices, healthEvent.EntitiesImpacted)
+		if len(receivedHealthEvent.ImpactedIndices) != len(healthEvent.EntitiesImpacted) {
+			t.Errorf(" testcase %d receivedHealthEvent.ImpactedIndices length %d is not equal to healthEvent.EntitiesImpacted length %d", index, len(receivedHealthEvent.ImpactedIndices), len(healthEvent.EntitiesImpacted))
+		}
+
+		for i, recievedEntity := range receivedHealthEvent.ImpactedIndices {
+			healthEntity := healthEvent.EntitiesImpacted[i]
+			if recievedEntity.EntityType != healthEntity.EntityType {
+				t.Errorf("testcase %d  recievedEntity.EntityType %v not matching with healthEntity.EntityType %v", index, recievedEntity.EntityType, healthEntity.EntityType)
+			}
+			if recievedEntity.EntityValue != healthEntity.EntityValue {
+				t.Errorf("testcase %d  recievedEntity.EntityValue %v not matching with healthEntity.EntityValue %v", index, recievedEntity.EntityValue, healthEntity.EntityValue)
+			}
 		}
 		assert.Equal(t, receivedHealthEvent.IsFatal, healthEvent.IsFatal)
 		if !slices.Equal(receivedHealthEvent.ErrorCode, healthEvent.ErrorCode) {

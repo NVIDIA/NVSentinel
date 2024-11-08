@@ -36,7 +36,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._node_name = node_name
         self._version = 1
         self._agent = "gpu-health-monitor"
-        self._component_class = "gpu"
+        self._component_class = "GPU"
         self.xid_errors_info_dict = xid_errors_info_dict
         self.xid_errors_recommend_action_mapping = xid_errors_recommend_action_mapping
         self.xid_errors_batch_processing_interval = xid_errors_batch_processing_interval
@@ -103,13 +103,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     if details.status == dcgmtypes.HealthStatus.PASS
                     else ""
                 )
-                entities_impacted = []
 
                 error_code = ""
                 for id, failure_details in details.entity_failures.items():
                     message = failure_details.message
                     error_code = [f"{failure_details.code}"]
-                    entities_impacted = [f"{id}"]
+                    entities_impacted = []
+                    entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(id))
+                    entities_impacted.append(entity)
                     health_events.append(
                         platformconnector_pb2.HealthEvent(
                             version=self._version,
@@ -191,7 +192,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             timestamp.GetCurrentTime()
             check_name = "GpuXidError"
             message = "XID error occured"
-            entities_impacted = [f"{gpu_id}"]
+            entities_impacted = []
+            entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+            entities_impacted.append(entity)
             error_code = [f"{error_num}"]
             is_fatal = True
             recommended_action = platformconnector_pb2.UNKNOWN
@@ -228,7 +231,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             timestamp.GetCurrentTime()
             check_name = "XidBatchError"
             message = "XID batch errors occured"
-            entities_impacted = [f"{gpu_id}"]
+            entities_impacted = []
+            entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+            entities_impacted.append(entity)
             error_code = [str(xid_error) for xid_error in xid_errors_list]
             is_fatal = True
             recommended_action = recommendation_action

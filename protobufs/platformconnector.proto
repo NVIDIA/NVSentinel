@@ -27,6 +27,11 @@ enum RecommenedAction {
   UNKNOWN = 99;
 }
 
+message Entity {
+  string entityType = 1;
+  string entityValue = 2;
+}
+
 message HealthEvent {
   uint32 version = 1;
 
@@ -39,7 +44,7 @@ message HealthEvent {
   string message = 7;
   RecommenedAction recommendedAction = 8;
   repeated string errorCode = 9;
-  repeated string entitiesImpacted = 10;
+  repeated Entity entitiesImpacted = 10;
 
   map<string, string> metadata = 11;
   google.protobuf.Timestamp generatedTimestamp = 12;

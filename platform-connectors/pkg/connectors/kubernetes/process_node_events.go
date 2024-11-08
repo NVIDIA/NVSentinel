@@ -16,15 +16,8 @@ import (
 )
 
 const (
-	DefaultNamespace           = "default"
-	NoHealthFailureMsg         = "No Health Failures"
-	XidErrorCheck              = "GpuXidError"
-	XidBatchErrorCheck         = "XidBatchError"
-	XidErrorDetectedReason     = "XidErrorDetected"
-	NoXidErrorDetectedReason   = "NoXidErrorDetected"
-	InfiniBandErrorCheck       = "InfiniBandErrorCheck"
-	EthernetErrorCheck         = "EthernetErrorCheck"
-	NvswitchErrorFromKmsgWatch = "NvswitchErrorFromKmsgWatch"
+	DefaultNamespace   = "default"
+	NoHealthFailureMsg = "No Health Failures"
 )
 
 //nolint:cyclop, gocognit
@@ -59,7 +52,8 @@ func (r *K8sConnector) updateNodeCondition(ctx context.Context, condition corev1
 				} else {
 					// remove messages that include any of the entities in entitiesImpacted, else if empty then clear the messages
 					if len(healthEvent.EntitiesImpacted) > 0 {
-						messages = r.removeImpactedEntitiesMessages(messages, healthEvent.EntitiesImpacted, healthEvent.CheckName)
+						messages = r.removeImpactedEntitiesMessages(messages, healthEvent.EntitiesImpacted,
+							healthEvent.CheckName)
 					} else {
 						messages = make([]string, 0)
 					}
@@ -133,23 +127,15 @@ func (r *K8sConnector) addMessageIfNotExist(messages []string, newMessage string
 	return append(messages, newMessage[:len(newMessage)-1])
 }
 
-func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string, entities []string, checkName string) []string {
+func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string, entities []*platformconnector.Entity,
+	checkName string) []string {
 	var newMessages []string
 
 	for _, msg := range messages {
 		entityFound := false
 
 		for _, entity := range entities {
-			var entityPrefix string
-
-			switch checkName {
-			case InfiniBandErrorCheck, EthernetErrorCheck:
-				entityPrefix = fmt.Sprintf("NIC:%s", entity)
-			case NvswitchErrorFromKmsgWatch:
-				entityPrefix = entity
-			default:
-				entityPrefix = "GPU:" + entity
-			}
+			entityPrefix := fmt.Sprintf("%s:%s", entity.EntityType, entity.EntityValue)
 
 			if strings.Contains(msg, entityPrefix) {
 				entityFound = true
@@ -211,14 +197,6 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 }
 
 func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool) string {
-	if checkName == XidErrorCheck || checkName == XidBatchErrorCheck {
-		if isHealthy {
-			return NoXidErrorDetectedReason
-		}
-
-		return XidErrorDetectedReason
-	}
-
 	status := "IsNotHealthy"
 	if isHealthy {
 		status = "IsHealthy"
@@ -234,25 +212,18 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 		message = NoHealthFailureMsg
 	} else {
 		for _, errorCode := range healthEvent.ErrorCode {
-			if healthEvent.CheckName == XidErrorCheck || healthEvent.CheckName == XidBatchErrorCheck {
-				message += fmt.Sprintf("XID%s", errorCode)
-			} else {
-				message += fmt.Sprintf("%s:%s", errorCode, healthEvent.Message)
-			}
+			message += fmt.Sprintf("ErrorCode:%s ", errorCode)
 		}
 
 		for _, entity := range healthEvent.EntitiesImpacted {
-			switch healthEvent.CheckName {
-			case InfiniBandErrorCheck, EthernetErrorCheck:
-				message += fmt.Sprintf("NIC:%s, %s.", entity, healthEvent.Message)
-			case NvswitchErrorFromKmsgWatch:
-				message += fmt.Sprintf(" %s,", entity)
-			default:
-				message += fmt.Sprintf(" GPU:%s", entity)
-			}
+			message += fmt.Sprintf("%s:%s ", entity.EntityType, entity.EntityValue)
 		}
 
-		message += fmt.Sprintf(" Recommended Action=%s;", healthEvent.RecommendedAction.String())
+		if healthEvent.Message != "" {
+			message += fmt.Sprintf("%s ", healthEvent.Message)
+		}
+
+		message += fmt.Sprintf("Recommended Action=%s;", healthEvent.RecommendedAction.String())
 	}
 
 	return message

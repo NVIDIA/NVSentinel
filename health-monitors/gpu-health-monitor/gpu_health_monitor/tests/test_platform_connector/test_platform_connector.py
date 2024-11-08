@@ -126,7 +126,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "64"
         assert health_event.nodeName == "node1"
-        assert health_event.entitiesImpacted == ["0"]
+        assert health_event.entitiesImpacted[0].entityValue == "0"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.RUN_FIELDDIAG
 
         platform_connector_test.xid_event_occurred("0", 65)
@@ -135,7 +135,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "65"
         assert health_event.nodeName == "node1"
-        assert health_event.entitiesImpacted == ["0"]
+        assert health_event.entitiesImpacted[0].entityValue == "0"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
         platform_connector_test.clear_all_xid_errors()

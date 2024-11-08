@@ -107,7 +107,7 @@ func TestK8sNodeConditions(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          true,
-				EntitiesImpacted:   []string{},
+				EntitiesImpacted:   []*platformconnector.Entity{},
 				ErrorCode:          []string{},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -125,7 +125,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				CheckName:          "GpuXidError",
 				IsHealthy:          true,
 				Message:            "",
-				EntitiesImpacted:   []string{},
+				EntitiesImpacted:   []*platformconnector.Entity{},
 				ErrorCode:          []string{},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -133,7 +133,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
 			},
 			ExpectedOutputMessage:       NoHealthFailureMsg,
-			ExpectedOutputReason:        "NoXidErrorDetected",
+			ExpectedOutputReason:        "GpuXidErrorIsHealthy",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "False",
 		},
@@ -141,7 +141,7 @@ func TestK8sNodeConditions(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -149,7 +149,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Pcie error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:Pcie error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
+			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_PCI_REPLAY_RATE GPU:0 Pcie error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuPcieWatch",
 			ExpectedHealthFailureStatus: "True",
@@ -159,15 +159,15 @@ func TestK8sNodeConditions(t *testing.T) {
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"44"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			},
-			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE;",
-			ExpectedOutputReason:        "XidErrorDetected",
+			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=REPORT_ISSUE;",
+			ExpectedOutputReason:        "GpuXidErrorIsNotHealthy",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
 		},
@@ -176,15 +176,15 @@ func TestK8sNodeConditions(t *testing.T) {
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"45"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
 			},
-			ExpectedOutputMessage:       "XID44 GPU:0 Recommended Action=REPORT_ISSUE;XID45 GPU:0 Recommended Action=NONE;",
-			ExpectedOutputReason:        "XidErrorDetected",
+			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=REPORT_ISSUE;ErrorCode:45 GPU:0 Recommended Action=NONE;",
+			ExpectedOutputReason:        "GpuXidErrorIsNotHealthy",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "True",
 		},
@@ -192,7 +192,7 @@ func TestK8sNodeConditions(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -200,7 +200,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal watch error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal watch error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
+			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal watch error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 			ExpectedHealthFailureStatus: "True",
@@ -253,7 +253,7 @@ func TestK8sNodeEvents(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -261,7 +261,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "PCI Replay Rate error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_PCI_REPLAY_RATE:PCI Replay Rate error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
+			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_PCI_REPLAY_RATE GPU:0 PCI Replay Rate error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuPcieWatch",
 		},
@@ -269,7 +269,7 @@ func TestK8sNodeEvents(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -277,7 +277,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
+			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
@@ -285,7 +285,7 @@ func TestK8sNodeEvents(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"0"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -293,7 +293,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 			},
-			ExpectedOutputMessage:       "DCGM_FR_CLOCK_THROTTLE_THERMAL:Thermal error on GPU 0 GPU:0 Recommended Action=UNKNOWN;",
+			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
@@ -385,48 +385,62 @@ func TestAddMessageIfNotExist(t *testing.T) {
 	}
 }
 
+func convertToEntityPointers(entities []platformconnector.Entity) []*platformconnector.Entity {
+	entityPointers := make([]*platformconnector.Entity, len(entities))
+	for i := range entities {
+		entityPointers[i] = &entities[i]
+	}
+	return entityPointers
+}
+
 func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 	tests := []struct {
-		messages  []string
-		entities  []string
-		checkName string
-		expected  []string
+		messages         []string
+		EntitiesImpacted []platformconnector.Entity
+		checkName        string
+		expected         []string
+		componentClass   string
 	}{
 		{
-			messages:  []string{" GPU:0 error", " GPU:1 error"},
-			entities:  []string{"0"},
-			checkName: "GpuErrorCheck",
-			expected:  []string{" GPU:1 error"},
+			messages:         []string{" GPU:0 error", " GPU:1 error"},
+			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			checkName:        "GpuErrorCheck",
+			expected:         []string{" GPU:1 error"},
+			componentClass:   "GPU",
 		},
 		{
-			messages:  []string{"NIC:eth0 error", "NIC:eth1 error"},
-			entities:  []string{"eth0"},
-			checkName: "InfiniBandErrorCheck",
-			expected:  []string{"NIC:eth1 error"},
+			messages:         []string{"NIC:eth0 error", "NIC:eth1 error"},
+			EntitiesImpacted: []platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
+			checkName:        "InfiniBandErrorCheck",
+			expected:         []string{"NIC:eth1 error"},
+			componentClass:   "NIC",
 		},
 		{
-			messages:  []string{" nvswitch0 error", " nvswitch1 error"},
-			entities:  []string{"nvswitch0"},
-			checkName: "NvswitchErrorFromKmsgWatch",
-			expected:  []string{" nvswitch1 error"},
+			messages:         []string{" NVSWITCH:0 error", " NVSWITCH:1 error"},
+			EntitiesImpacted: []platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			checkName:        "NvswitchErrorFromKmsgWatch",
+			expected:         []string{" NVSWITCH:1 error"},
+			componentClass:   "NVSWITCH",
 		},
 		{
-			messages:  []string{" GPU:0 error", " GPU:1 error"},
-			entities:  []string{"1"},
-			checkName: "SomeOtherCheck",
-			expected:  []string{" GPU:0 error"},
+			messages:         []string{" GPU:0 error", " GPU:1 error"},
+			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+			checkName:        "SomeOtherCheck",
+			expected:         []string{" GPU:0 error"},
+			componentClass:   "GPU",
 		},
 
 		{
-			messages:  []string{" GPU:0 error", " GPU:1 error"},
-			entities:  []string{"2"},
-			checkName: "GpuErrorCheck",
-			expected:  []string{" GPU:0 error", " GPU:1 error"},
+			messages:         []string{" GPU:0 error", " GPU:1 error"},
+			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "2"}},
+			checkName:        "GpuErrorCheck",
+			expected:         []string{" GPU:0 error", " GPU:1 error"},
+			componentClass:   "GPU",
 		},
 	}
 
 	for i, test := range tests {
-		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, test.entities, test.checkName)
+		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, convertToEntityPointers(test.EntitiesImpacted), test.checkName)
 		if !equalStringSlices(result, test.expected) {
 			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
 		}
@@ -439,10 +453,10 @@ func TestUpdateHealthEventReason(t *testing.T) {
 		isHealthy bool
 		expected  string
 	}{
-		{XidErrorCheck, true, NoXidErrorDetectedReason},
-		{XidErrorCheck, false, XidErrorDetectedReason},
-		{XidBatchErrorCheck, true, NoXidErrorDetectedReason},
-		{XidBatchErrorCheck, false, XidErrorDetectedReason},
+		{"GpuXidError", true, "GpuXidErrorIsHealthy"},
+		{"GpuXidError", false, "GpuXidErrorIsNotHealthy"},
+		{"XidBatchError", true, "XidBatchErrorIsHealthy"},
+		{"XidBatchError", false, "XidBatchErrorIsNotHealthy"},
 		{"GpuPcieWatch", true, "GpuPcieWatchIsHealthy"},
 		{"GpuPcieWatch", false, "GpuPcieWatchIsNotHealthy"},
 	}
@@ -456,11 +470,11 @@ func TestUpdateHealthEventReason(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_StatusChange(t *testing.T) {
-	healthEvents := []*platformconnector.HealthEvent{
+	healthEvents := []platformconnector.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -471,7 +485,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 		{
 			CheckName:          "InfiniBandErrorCheck",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"mlx5_0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "network",
@@ -481,7 +495,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"nvswitch0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			ErrorCode:          []string{"SWITCH_ERROR"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -491,7 +505,8 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 		},
 	}
 
-	for _, healthEvent := range healthEvents {
+	for i := range healthEvents {
+		healthEvent := &(healthEvents)[i]
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
@@ -559,7 +574,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -570,7 +585,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		{
 			CheckName:          "InfiniBandErrorCheck",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"mlx5_0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "network",
@@ -580,7 +595,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []string{"nvswitch0"},
+			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			ErrorCode:          []string{"SWITCH_ERROR"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -663,7 +678,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"1"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				ErrorCode:          []string{"45"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -671,7 +686,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "XID45 error on GPU 1",
 			},
-			expectedMessage: "GPU:0 error;XID45 GPU:1 Recommended Action=REPORT_ISSUE;",
+			expectedMessage: "GPU:0 error;ErrorCode:45 GPU:1 XID45 error on GPU 1 Recommended Action=REPORT_ISSUE;",
 		},
 		{
 			conditionType: "EthernetErrorCheck",
@@ -679,14 +694,14 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "EthernetErrorCheck",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"eth1"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth1"}},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "network",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "error on eth1",
 			},
-			expectedMessage: "NIC:eth0 error;NIC:eth1, error on eth1. Recommended Action=REPORT_ISSUE;",
+			expectedMessage: "NIC:eth0 error;NIC:eth1 error on eth1 Recommended Action=REPORT_ISSUE;",
 		},
 		{
 			conditionType: "NvswitchErrorFromKmsgWatch",
@@ -694,7 +709,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "NvswitchErrorFromKmsgWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []string{"nvswitch1"},
+				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "1"}},
 				ErrorCode:          []string{"SWITCH_ERROR"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -702,7 +717,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "Nvswitch error on nvswitch1",
 			},
-			expectedMessage: " nvswitch0 error;SWITCH_ERROR:Nvswitch error on nvswitch1 nvswitch1, Recommended Action=REPORT_ISSUE;",
+			expectedMessage: " nvswitch0 error;ErrorCode:SWITCH_ERROR NVSWITCH:1 Nvswitch error on nvswitch1 Recommended Action=REPORT_ISSUE;",
 		},
 	}
 
@@ -772,26 +787,26 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 	testCases := []struct {
 		conditionType    corev1.NodeConditionType
 		existingMsg      string
-		entitiesImpacted []string
+		entitiesImpacted []*platformconnector.Entity
 		expectedMessage  string
 	}{
 		{
 			conditionType:    "GpuXidError",
 			existingMsg:      "GPU:0 error;GPU:1 error;",
-			entitiesImpacted: []string{"0"},
+			entitiesImpacted: []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			expectedMessage:  "GPU:1 error;",
 		},
 		{
 			conditionType:    "InfiniBandErrorCheck",
 			existingMsg:      "NIC:eth0 error;NIC:eth1 error;",
-			entitiesImpacted: []string{"eth0"},
+			entitiesImpacted: []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
 			expectedMessage:  "NIC:eth1 error;",
 		},
 		{
 			conditionType:    "NvswitchErrorFromKmsgWatch",
-			existingMsg:      "nvswitch0 error;nvswitch1 error;",
-			entitiesImpacted: []string{"nvswitch0"},
-			expectedMessage:  "nvswitch1 error;",
+			existingMsg:      "NVSWITCH:0 error;NVSWITCH:1 error;",
+			entitiesImpacted: []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			expectedMessage:  "NVSWITCH:1 error;",
 		},
 	}
 
