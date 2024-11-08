@@ -10,6 +10,11 @@ service NodeHealthEventsUDSConnector {
   rpc HealthEventStreamV1(google.protobuf.Empty) returns ( stream HealthEvent ) {}
 }
 
+message Entity {
+  string entityType = 1;
+  string entityValue = 2;
+}
+
 message HealthEvent {
   uint32 version = 1;
 
@@ -19,7 +24,7 @@ message HealthEvent {
   string message = 5;                               // user friendly message
   RecommenedAction recommendedAction = 6;           // recommended action for remediation
   repeated string errorCode = 7;                    // list of machine readable error code
-  repeated string impactedGPUIndices = 8;           // list of GPUs impacted by the error
+  repeated Entity impactedIndices = 8;           // list of GPUs impacted by the error
 
   map<string, string> metadata = 9;                 // metadata about the event
   google.protobuf.Timestamp generatedTimestamp = 10; // timestamp when the event was generated

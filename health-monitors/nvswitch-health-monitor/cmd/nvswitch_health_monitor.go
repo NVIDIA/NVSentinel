@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -93,10 +94,10 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
 	}
 
 	if !sxidEvent.IsHealthy {
-		entitiesImpacted := []string{
-			fmt.Sprintf("nvswitch%d", sxidEvent.NVSwitch),
-			sxidEvent.PCI,
-			fmt.Sprintf("nvlink%d", sxidEvent.Link),
+		entitiesImpacted := []*pb.Entity{
+			{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidEvent.NVSwitch)},
+			{EntityType: "PCI", EntityValue: sxidEvent.PCI},
+			{EntityType: "NVLINK", EntityValue: strconv.Itoa(sxidEvent.Link)},
 		}
 		start := time.Now()
 
@@ -106,7 +107,7 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
 
 		if err != nil {
 			gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
-			entitiesImpacted = append(entitiesImpacted, fmt.Sprintf("gpu%d", gpuID))
+			entitiesImpacted = append(entitiesImpacted, &pb.Entity{EntityType: "GPU", EntityValue: strconv.Itoa(gpuID)})
 		}
 
 		event.EntitiesImpacted = entitiesImpacted

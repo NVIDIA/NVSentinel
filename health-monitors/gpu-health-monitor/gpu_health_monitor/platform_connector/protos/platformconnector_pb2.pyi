@@ -35,6 +35,14 @@ class HealthEvents(_message.Message):
     events: _containers.RepeatedCompositeFieldContainer[HealthEvent]
     def __init__(self, version: _Optional[int] = ..., events: _Optional[_Iterable[_Union[HealthEvent, _Mapping]]] = ...) -> None: ...
 
+class Entity(_message.Message):
+    __slots__ = ("entityType", "entityValue")
+    ENTITYTYPE_FIELD_NUMBER: _ClassVar[int]
+    ENTITYVALUE_FIELD_NUMBER: _ClassVar[int]
+    entityType: str
+    entityValue: str
+    def __init__(self, entityType: _Optional[str] = ..., entityValue: _Optional[str] = ...) -> None: ...
+
 class HealthEvent(_message.Message):
     __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName")
     class MetadataEntry(_message.Message):
@@ -66,8 +74,8 @@ class HealthEvent(_message.Message):
     message: str
     recommendedAction: RecommenedAction
     errorCode: _containers.RepeatedScalarFieldContainer[str]
-    entitiesImpacted: _containers.RepeatedScalarFieldContainer[str]
+    entitiesImpacted: _containers.RepeatedCompositeFieldContainer[Entity]
     metadata: _containers.ScalarMap[str, str]
     generatedTimestamp: _timestamp_pb2.Timestamp
     nodeName: str
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ...) -> None: ...
+    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ...) -> None: ...

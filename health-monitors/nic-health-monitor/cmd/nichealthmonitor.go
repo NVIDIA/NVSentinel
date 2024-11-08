@@ -23,12 +23,11 @@ import (
 )
 
 const (
-	AGENT                      = "nic-health-monitor"
-	INFINIBAND_CHECK_NAME      = "InfiniBandErrorCheck"
-	INFINIBAND_COMPONENT_CLASS = "infiniBand"
+	AGENT                 = "nic-health-monitor"
+	INFINIBAND_CHECK_NAME = "InfiniBandErrorCheck"
 
-	ETHERNET_CHECK_NAME      = "EthernetErrorCheck"
-	ETHERNET_COMPONENT_CLASS = "ethernet"
+	ETHERNET_CHECK_NAME = "EthernetErrorCheck"
+	COMPONENT_CLASS     = "NIC"
 )
 
 const (
@@ -55,13 +54,12 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 
 	for _, nicEvent := range *nicEvents {
 		var checkname, componentClass string
+		componentClass = COMPONENT_CLASS
 
 		if nicEvent.NicType == nic.Infiniband {
 			checkname = INFINIBAND_CHECK_NAME
-			componentClass = INFINIBAND_COMPONENT_CLASS
 		} else if nicEvent.NicType == nic.Ethernet {
 			checkname = ETHERNET_CHECK_NAME
-			componentClass = ETHERNET_COMPONENT_CLASS
 		}
 
 		isHealthy := nicEvent.IsHealthyEvent
@@ -73,7 +71,7 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 			CheckName:          checkname,
 			ComponentClass:     componentClass,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
-			EntitiesImpacted:   []string{nicEvent.Name},
+			EntitiesImpacted:   []*pb.Entity{{EntityType: "NIC", EntityValue: nicEvent.Name}},
 			Message:            nicEvent.Message,
 			IsFatal:            isFatal,
 			IsHealthy:          isHealthy,
