@@ -93,8 +93,11 @@ shoreline-agent:
     resource:
       kind: "DaemonSet"
       image: "nvcr.io/nv-ngc-devops/shoreline-agent"
-      tag: "release-24.0.12-multiarch"
+      tag: "release-27.0.43-multiarch"
       imageCredentialK8sSecret: "nvidia-ngcuser-pull-secret"
+      hostAction: "enable"
+      volumeMounts:
+        caPemstoreReadOnly: true
       resources:
         limits:
           cpu: "350m"
