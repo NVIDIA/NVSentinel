@@ -7,10 +7,13 @@ appVersion: "1.0.0"
 dependencies:
   - name: gpu-health-monitor
     version: "0.1.0"
+    condition: global.gpuHealthMonitor.enabled
   - name: nic-health-monitor
     version: "0.1.0"
+    condition: global.nicHealthMonitor.enabled
   - name: nvswitch-health-monitor
     version: "0.1.0"
+    condition: global.nvSwitchHealthMonitor.enabled
   - name: shoreline-agent
     version: v27.5.0
     repository: https://helm.ngc.nvidia.com/nv-ngc-devops

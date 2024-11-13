@@ -6,6 +6,8 @@ global:
     dcgmK8sServiceEnabled: true
 
   gpuHealthMonitor:
+    enabled: true
+
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor
       pullPolicy: IfNotPresent
@@ -17,11 +19,15 @@ global:
         pullPolicy: IfNotPresent
 
   nicHealthMonitor:
+    enabled: true
+
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor
       pullPolicy: IfNotPresent
 
   nvSwitchHealthMonitor:
+    enabled: true
+
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor
       pullPolicy: IfNotPresent
