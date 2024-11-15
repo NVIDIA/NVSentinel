@@ -65,6 +65,11 @@ platformConnector:
   updateStrategy: RollingUpdate
   maxUnavailable: 1
 
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+
 nameOverride: ""
 fullnameOverride: ""
 

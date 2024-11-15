@@ -40,13 +40,17 @@ func NewK8sConnector(
 	}
 }
 
-func InitializeK8sConnector(ringbuffer *ringbuffer.RingBuffer, nodeName string,
-	stopCh <-chan struct{}, ctx context.Context) *K8sConnector {
+func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
+	nodeName string, qps float32, burst int, stopCh <-chan struct{},
+) *K8sConnector {
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		klog.Fatalf("Error creating Kubernetes client: %s", err.Error())
 	}
+
+	config.Burst = burst
+	config.QPS = qps
 
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
