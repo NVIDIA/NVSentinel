@@ -5,6 +5,8 @@ metadata:
 data:
   config.json: |
     {
-      "enableK8sPlatformConnector": "true",
+      "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
+      "K8sConnectorQps": {{ .Values.platformConnector.k8sConnector.qps }},
+      "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
       "enableNodeHealthEventsUDSConnector": "true"
     }
