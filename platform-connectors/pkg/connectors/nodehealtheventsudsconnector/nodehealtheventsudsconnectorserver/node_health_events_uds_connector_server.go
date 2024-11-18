@@ -18,7 +18,7 @@ import (
 
 type NodeHealthEventsUDSConnectorServer struct {
 	nodeHealthEventsPluginPb.UnimplementedNodeHealthEventsUDSConnectorServer
-	healthEventChan chan *nodeHealthEventsPluginPb.HealthEvent
+	healthEventChan chan *nodeHealthEventsPluginPb.HealthEvents
 }
 
 // HealthEventStreamV1 streams HealthEvents to the client
@@ -41,7 +41,7 @@ func (s *NodeHealthEventsUDSConnectorServer) HealthEventStreamV1(empty *emptypb.
 	}
 }
 
-func NewNodeHealthEventsUDSConnectorServer(healthEventChan chan *nodeHealthEventsPluginPb.HealthEvent) *NodeHealthEventsUDSConnectorServer { //nolint:lll
+func NewNodeHealthEventsUDSConnectorServer(healthEventChan chan *nodeHealthEventsPluginPb.HealthEvents) *NodeHealthEventsUDSConnectorServer { //nolint:lll
 	return &NodeHealthEventsUDSConnectorServer{
 		healthEventChan: healthEventChan,
 	}
@@ -69,7 +69,7 @@ func CreateAndStartNodeHealthEventsUDSServer(nodeHealthEventsSocket *string, nod
 
 	server.InitializeAndAttachRingBufferForConnectors(nodeHealthEventsRingBuffer)
 
-	healthEventChan := make(chan *nodeHealthEventsPluginPb.HealthEvent, 1000)
+	healthEventChan := make(chan *nodeHealthEventsPluginPb.HealthEvents, 1000)
 	nodeHealthEventsUDSConnector := nodehealtheventsudscore.InitializeNodeHealthEventsUDSConnector(
 		nodeHealthEventsRingBuffer, *nodeHealthEventsListener, string(nodeName), stopCh, ctx, healthEventChan)
 

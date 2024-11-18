@@ -102,7 +102,7 @@ func getNode() *v1.Node {
 }
 
 func TestK8sNodeConditions(t *testing.T) {
-	healthEvents := []*healthConditionList{
+	healthEventsList := []*healthConditionList{
 		{
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
@@ -212,8 +212,10 @@ func TestK8sNodeConditions(t *testing.T) {
 		klog.Errorf("Failed to create  node with err %s", err)
 		os.Exit(1)
 	}
-	for testCase, healthEvent := range healthEvents {
-		err := k8sConnector.processHealthEvents(ctx, healthEvent.healthEvent)
+	for testCase, healthEvent := range healthEventsList {
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
+		err := k8sConnector.processHealthEvents(ctx, &healthEvents)
 		if err != nil {
 			t.Errorf("Failed to process healthEvent for testCase %d with err %s", testCase, err)
 		}
@@ -221,6 +223,7 @@ func TestK8sNodeConditions(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to get node for testCase %d with err %s", testCase, err)
 		}
+
 		conditions := node.Status.Conditions
 		conditionFound := false
 		for _, condition := range conditions {
@@ -235,6 +238,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				if healthEvent.ExpectedOutputReason != string(condition.Reason) {
 					t.Errorf("Testcase %d. Node Condition Reason %s is not matching with expectedConditionReason %s", testCase, string(condition.Reason), healthEvent.ExpectedOutputReason)
 				}
+				break
 			}
 		}
 		if conditionFound == false {
@@ -248,7 +252,7 @@ func TestK8sNodeConditions(t *testing.T) {
 }
 
 func TestK8sNodeEvents(t *testing.T) {
-	healthEvents := []*healthConditionList{
+	healthEventsList := []*healthConditionList{
 		{
 			healthEvent: &platformconnector.HealthEvent{
 				CheckName:          "GpuPcieWatch",
@@ -304,14 +308,20 @@ func TestK8sNodeEvents(t *testing.T) {
 		klog.Errorf("Failed to create  node with err %s", err)
 		os.Exit(1)
 	}
-	for testCase, healthEvent := range healthEvents {
-		err := k8sConnector.processHealthEvents(ctx, healthEvent.healthEvent)
-		if err != nil {
-			t.Errorf("Failed to process healthEvent for testCase %d with err %s", testCase, err)
-		}
-		events, err := clientSet.CoreV1().Events("").List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.kind=Node,involvedObject.name=%s", fakeNode.Name),
-		})
+
+	healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+	for _, event := range healthEventsList {
+		healthEvents.Events = append(healthEvents.Events, event.healthEvent)
+	}
+	err = k8sConnector.processHealthEvents(ctx, &healthEvents)
+	if err != nil {
+		t.Errorf("Failed to process healthEvents with err %s", err)
+	}
+	events, err := clientSet.CoreV1().Events("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.kind=Node,involvedObject.name=%s", fakeNode.Name),
+	})
+
+	for testCase, healthEvent := range healthEventsList {
 		conditionFound := false
 		for _, event := range events.Items {
 			if event.Type == healthEvent.ExpectedOutputConditionType {
@@ -470,7 +480,7 @@ func TestUpdateHealthEventReason(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_StatusChange(t *testing.T) {
-	healthEvents := []platformconnector.HealthEvent{
+	healthEventsList := []platformconnector.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
@@ -505,8 +515,8 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 		},
 	}
 
-	for i := range healthEvents {
-		healthEvent := &(healthEvents)[i]
+	for i := range healthEventsList {
+		healthEvent := &(healthEventsList)[i]
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
@@ -538,7 +548,11 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
 		}
 
-		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		var conditions []v1.NodeCondition
+		conditions = append(conditions, newCondition)
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, healthEvent)
+		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -570,7 +584,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_NewCondition(t *testing.T) {
-	healthEvents := []*platformconnector.HealthEvent{
+	healthEventsList := []*platformconnector.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
@@ -605,7 +619,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		},
 	}
 
-	for _, healthEvent := range healthEvents {
+	for _, healthEvent := range healthEventsList {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &v1.Node{
@@ -629,7 +643,11 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
 		}
 
-		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		var conditions []v1.NodeCondition
+		conditions = append(conditions, newCondition)
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, healthEvent)
+		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -666,7 +684,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_AddMessage(t *testing.T) {
-	healthEvents := []struct {
+	healthEventsList := []struct {
 		conditionType   corev1.NodeConditionType
 		existingMsg     string
 		healthEvent     *platformconnector.HealthEvent
@@ -721,7 +739,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 		},
 	}
 
-	for _, testCase := range healthEvents {
+	for _, testCase := range healthEventsList {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		fakeNode := &v1.Node{
@@ -751,8 +769,11 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			LastTransitionTime: metav1.Now(),
 			Message:            k8sConnector.fetchHealthEventMessage(testCase.healthEvent),
 		}
-
-		err = k8sConnector.updateNodeCondition(ctx, newCondition, testCase.healthEvent)
+		var conditions []v1.NodeCondition
+		conditions = append(conditions, newCondition)
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, testCase.healthEvent)
+		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -846,8 +867,12 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			LastHeartbeatTime:  metav1.Now(),
 			LastTransitionTime: metav1.Now(),
 		}
+		var conditions []v1.NodeCondition
+		conditions = append(conditions, newCondition)
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, healthEvent)
 
-		err = k8sConnector.updateNodeCondition(ctx, newCondition, healthEvent)
+		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
 		if err != nil {
 			t.Errorf("testcase %d updateNodeCondition failed: %v", index+1, err)
 		}

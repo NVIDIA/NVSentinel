@@ -79,20 +79,23 @@ func TestRingBuffer_Queue(t *testing.T) {
 		},
 	}
 	for _, healthEvent := range healthEventsList {
-		ringBuffer.Enqueue(healthEvent.healthEvent)
+		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
+		ringBuffer.Enqueue(&healthEvents)
 	}
 
 	for testCase, healthEvent := range healthEventsList {
 		item := ringBuffer.Dequeue()
+		for _, healthEventItem := range item.Events {
+			if healthEventItem.CheckName != healthEvent.expectedHealthEventOutput {
+				t.Errorf("Testcase %d. The expected healthEvent %s is not matching with the currentEvent %s from the queue", testCase, healthEvent.expectedHealthEventOutput, healthEventItem.CheckName)
+			}
 
-		if item.CheckName != healthEvent.expectedHealthEventOutput {
-			t.Errorf("Testcase %d. The expected healthEvent %s is not matching with the currentEvent %s from the queue", testCase, healthEvent.expectedHealthEventOutput, item.CheckName)
+			queueSize := ringBuffer.healthMetricQueue.Len()
+			if queueSize != len(healthEventsList)-testCase-1 {
+				t.Errorf("queueSize %d is not matching with expectedQueueSize %d ", queueSize, len(healthEventsList)-testCase)
+			}
+			ringBuffer.HealthMetricEleProcessingCompleted(item)
 		}
-
-		queueSize := ringBuffer.healthMetricQueue.Len()
-		if queueSize != len(healthEventsList)-testCase-1 {
-			t.Errorf("queueSize %d is not matching with expectedQueueSize %d ", queueSize, len(healthEventsList)-testCase)
-		}
-		ringBuffer.HealthMetricEleProcessingCompleted(item)
 	}
 }

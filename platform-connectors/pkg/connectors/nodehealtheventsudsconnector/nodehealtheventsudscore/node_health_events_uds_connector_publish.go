@@ -19,16 +19,22 @@ func mapEntitiesToCorrectType(entities []*pb.Entity) []*nodeHealthEventsPluginPb
 	return result
 }
 
-func (r *NodeHealthEventsUDSConnector) ProcessHealthEvents(ctx context.Context, healthEvent *pb.HealthEvent) {
-	nodeHealthEvent := nodeHealthEventsPluginPb.HealthEvent{
-		CheckName:          healthEvent.CheckName,
-		IsHealthy:          healthEvent.IsHealthy,
-		Message:            healthEvent.Message,
-		ImpactedIndices:    mapEntitiesToCorrectType(healthEvent.EntitiesImpacted),
-		ErrorCode:          healthEvent.ErrorCode,
-		IsFatal:            healthEvent.IsFatal,
-		GeneratedTimestamp: healthEvent.GeneratedTimestamp,
-		RecommendedAction:  nodeHealthEventsPluginPb.RecommenedAction(healthEvent.RecommendedAction),
+func (r *NodeHealthEventsUDSConnector) ProcessHealthEvents(ctx context.Context, healthEvents *pb.HealthEvents) {
+	nodeHealthEvents := nodeHealthEventsPluginPb.HealthEvents{Version: 1,
+		Events: make([]*nodeHealthEventsPluginPb.HealthEvent, 0)}
+
+	for _, healthEvent := range healthEvents.Events {
+		nodeHealthEvent := nodeHealthEventsPluginPb.HealthEvent{
+			CheckName:          healthEvent.CheckName,
+			IsHealthy:          healthEvent.IsHealthy,
+			Message:            healthEvent.Message,
+			ImpactedIndices:    mapEntitiesToCorrectType(healthEvent.EntitiesImpacted),
+			ErrorCode:          healthEvent.ErrorCode,
+			IsFatal:            healthEvent.IsFatal,
+			GeneratedTimestamp: healthEvent.GeneratedTimestamp,
+			RecommendedAction:  nodeHealthEventsPluginPb.RecommenedAction(healthEvent.RecommendedAction),
+		}
+		nodeHealthEvents.Events = append(nodeHealthEvents.Events, &nodeHealthEvent)
 	}
-	r.healthEventChan <- &nodeHealthEvent
+	r.healthEventChan <- &nodeHealthEvents
 }

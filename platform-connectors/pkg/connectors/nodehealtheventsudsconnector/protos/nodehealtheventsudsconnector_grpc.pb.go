@@ -50,7 +50,7 @@ func (c *nodeHealthEventsUDSConnectorClient) HealthEventStreamV1(ctx context.Con
 }
 
 type NodeHealthEventsUDSConnector_HealthEventStreamV1Client interface {
-	Recv() (*HealthEvent, error)
+	Recv() (*HealthEvents, error)
 	grpc.ClientStream
 }
 
@@ -58,8 +58,8 @@ type nodeHealthEventsUDSConnectorHealthEventStreamV1Client struct {
 	grpc.ClientStream
 }
 
-func (x *nodeHealthEventsUDSConnectorHealthEventStreamV1Client) Recv() (*HealthEvent, error) {
-	m := new(HealthEvent)
+func (x *nodeHealthEventsUDSConnectorHealthEventStreamV1Client) Recv() (*HealthEvents, error) {
+	m := new(HealthEvents)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func _NodeHealthEventsUDSConnector_HealthEventStreamV1_Handler(srv interface{}, 
 }
 
 type NodeHealthEventsUDSConnector_HealthEventStreamV1Server interface {
-	Send(*HealthEvent) error
+	Send(*HealthEvents) error
 	grpc.ServerStream
 }
 
@@ -112,7 +112,7 @@ type nodeHealthEventsUDSConnectorHealthEventStreamV1Server struct {
 	grpc.ServerStream
 }
 
-func (x *nodeHealthEventsUDSConnectorHealthEventStreamV1Server) Send(m *HealthEvent) error {
+func (x *nodeHealthEventsUDSConnectorHealthEventStreamV1Server) Send(m *HealthEvents) error {
 	return x.ServerStream.SendMsg(m)
 }
 

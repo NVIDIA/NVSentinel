@@ -16,14 +16,14 @@ type NodeHealthEventsUDSConnector struct {
 	stopCh          <-chan struct{}
 	ctx             context.Context
 	listener        net.Listener
-	healthEventChan chan *pb.HealthEvent
+	healthEventChan chan *pb.HealthEvents
 }
 
 func NewNodeHealthEventsUDSConnector(
 	ringBuffer *ringbuffer.RingBuffer,
 	listener net.Listener,
 	nodeName string,
-	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvent) *NodeHealthEventsUDSConnector {
+	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvents) *NodeHealthEventsUDSConnector {
 	return &NodeHealthEventsUDSConnector{
 		ringBuffer:      ringBuffer,
 		nodeName:        nodeName,
@@ -35,7 +35,7 @@ func NewNodeHealthEventsUDSConnector(
 }
 
 func InitializeNodeHealthEventsUDSConnector(ringbuffer *ringbuffer.RingBuffer, listener net.Listener, nodeName string,
-	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvent) *NodeHealthEventsUDSConnector {
+	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvents) *NodeHealthEventsUDSConnector {
 	nodeHealthEventsUDSConnector := NewNodeHealthEventsUDSConnector(ringbuffer, listener, nodeName,
 		stopCh, ctx, healthEventChan)
 	return nodeHealthEventsUDSConnector
@@ -48,8 +48,8 @@ func (r *NodeHealthEventsUDSConnector) FetchAndProcessHealthMetric(ctx context.C
 			klog.Infof("k8sConnector queue received stop signal")
 			return
 		default:
-			healthEvent := r.ringBuffer.Dequeue()
-			r.ProcessHealthEvents(ctx, healthEvent)
+			healthEvents := r.ringBuffer.Dequeue()
+			r.ProcessHealthEvents(ctx, healthEvents)
 		}
 	}
 }
