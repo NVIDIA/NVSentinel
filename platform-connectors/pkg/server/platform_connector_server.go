@@ -34,14 +34,11 @@ type PlatformConnectorServer struct {
 
 func (p *PlatformConnectorServer) HealthEventOccuredV1(ctx context.Context, he *pb.HealthEvents) (*empty.Empty, error) {
 	klog.Infof("Health events %+v received", he)
-	healthEvents := he.Events
 
-	healthEventsReceived.Add(float64(len(healthEvents)))
+	healthEventsReceived.Add(float64(len(he.Events)))
 
-	for _, event := range healthEvents {
-		for _, buffer := range ringBufferQueue {
-			buffer.Enqueue(event)
-		}
+	for _, buffer := range ringBufferQueue {
+		buffer.Enqueue(he)
 	}
 
 	return nil, nil

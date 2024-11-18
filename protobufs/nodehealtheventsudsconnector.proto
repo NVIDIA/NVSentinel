@@ -7,12 +7,16 @@ import "google/protobuf/empty.proto";
 option go_package = "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos";
 
 service NodeHealthEventsUDSConnector {
-  rpc HealthEventStreamV1(google.protobuf.Empty) returns ( stream HealthEvent ) {}
+  rpc HealthEventStreamV1(google.protobuf.Empty) returns ( stream HealthEvents ) {}
 }
 
 message Entity {
   string entityType = 1;
   string entityValue = 2;
+}
+message HealthEvents {
+  uint32 version = 1;
+  repeated HealthEvent events = 2;
 }
 
 message HealthEvent {

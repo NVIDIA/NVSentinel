@@ -30,32 +30,32 @@ func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
 	}
 }
 
-func (rb *RingBuffer) Enqueue(data *platformconnector.HealthEvent) {
+func (rb *RingBuffer) Enqueue(data *platformconnector.HealthEvents) {
 	rb.healthMetricQueue.Add(data)
 }
 
-func (rb *RingBuffer) Dequeue() *platformconnector.HealthEvent {
-	healthEvent, quit := rb.healthMetricQueue.Get()
+func (rb *RingBuffer) Dequeue() *platformconnector.HealthEvents {
+	healthEvents, quit := rb.healthMetricQueue.Get()
 	if quit {
 		klog.Infof("quitting from queue processing")
 		return nil
 	}
 
-	klog.Infof("Successfully got item %v ", healthEvent)
+	klog.Infof("Successfully got item %v ", healthEvents)
 
 	if errors.Is(rb.ctx.Err(), context.Canceled) {
 		klog.Info("Processing cancelled")
 		return nil
 	}
 
-	return healthEvent.(*platformconnector.HealthEvent)
+	return healthEvents.(*platformconnector.HealthEvents)
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *platformconnector.HealthEvent) {
+func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *platformconnector.HealthEvents) {
 	rb.healthMetricQueue.Done(data)
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *platformconnector.HealthEvent) {
+func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *platformconnector.HealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 }
 

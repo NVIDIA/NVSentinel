@@ -140,37 +140,40 @@ func TestHealthEventStreamV1(t *testing.T) {
 
 	go func() {
 		for _, healthEvent := range healthEvents {
-			nodeHealthEventsUDSConnector.ProcessHealthEvents(ctx, healthEvent)
+			healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
+			healthEvents.Events = append(healthEvents.Events, healthEvent)
+			nodeHealthEventsUDSConnector.ProcessHealthEvents(ctx, &healthEvents)
 		}
 	}()
 	for index, healthEvent := range healthEvents {
 
-		receivedHealthEvent, err := stream.Recv()
-
-		if err != nil {
-			t.Errorf("Error receiving message: %v", err)
-		}
-		assert.Equal(t, receivedHealthEvent.Message, healthEvent.Message)
-		assert.Equal(t, receivedHealthEvent.CheckName, healthEvent.CheckName)
-		assert.Equal(t, receivedHealthEvent.RecommendedAction.String(), healthEvent.RecommendedAction.String())
-		if len(receivedHealthEvent.ImpactedIndices) != len(healthEvent.EntitiesImpacted) {
-			t.Errorf(" testcase %d receivedHealthEvent.ImpactedIndices length %d is not equal to healthEvent.EntitiesImpacted length %d", index, len(receivedHealthEvent.ImpactedIndices), len(healthEvent.EntitiesImpacted))
-		}
-
-		for i, recievedEntity := range receivedHealthEvent.ImpactedIndices {
-			healthEntity := healthEvent.EntitiesImpacted[i]
-			if recievedEntity.EntityType != healthEntity.EntityType {
-				t.Errorf("testcase %d  recievedEntity.EntityType %v not matching with healthEntity.EntityType %v", index, recievedEntity.EntityType, healthEntity.EntityType)
+		receivedHealthEvents, err := stream.Recv()
+		for _, receivedHealthEvent := range receivedHealthEvents.Events {
+			if err != nil {
+				t.Errorf("Error receiving message: %v", err)
 			}
-			if recievedEntity.EntityValue != healthEntity.EntityValue {
-				t.Errorf("testcase %d  recievedEntity.EntityValue %v not matching with healthEntity.EntityValue %v", index, recievedEntity.EntityValue, healthEntity.EntityValue)
+			assert.Equal(t, receivedHealthEvent.Message, healthEvent.Message)
+			assert.Equal(t, receivedHealthEvent.CheckName, healthEvent.CheckName)
+			assert.Equal(t, receivedHealthEvent.RecommendedAction.String(), healthEvent.RecommendedAction.String())
+			if len(receivedHealthEvent.ImpactedIndices) != len(healthEvent.EntitiesImpacted) {
+				t.Errorf(" testcase %d receivedHealthEvent.ImpactedIndices length %d is not equal to healthEvent.EntitiesImpacted length %d", index, len(receivedHealthEvent.ImpactedIndices), len(healthEvent.EntitiesImpacted))
 			}
+
+			for i, recievedEntity := range receivedHealthEvent.ImpactedIndices {
+				healthEntity := healthEvent.EntitiesImpacted[i]
+				if recievedEntity.EntityType != healthEntity.EntityType {
+					t.Errorf("testcase %d  recievedEntity.EntityType %v not matching with healthEntity.EntityType %v", index, recievedEntity.EntityType, healthEntity.EntityType)
+				}
+				if recievedEntity.EntityValue != healthEntity.EntityValue {
+					t.Errorf("testcase %d  recievedEntity.EntityValue %v not matching with healthEntity.EntityValue %v", index, recievedEntity.EntityValue, healthEntity.EntityValue)
+				}
+			}
+			assert.Equal(t, receivedHealthEvent.IsFatal, healthEvent.IsFatal)
+			if !slices.Equal(receivedHealthEvent.ErrorCode, healthEvent.ErrorCode) {
+				t.Errorf("index %d deepak. receivedHealthEvent.ErrorCode is %v and healthEvent.ErrorCode is %v", index, receivedHealthEvent.ErrorCode, healthEvent.ErrorCode)
+			}
+			assert.Equal(t, receivedHealthEvent.IsHealthy, healthEvent.IsHealthy)
 		}
-		assert.Equal(t, receivedHealthEvent.IsFatal, healthEvent.IsFatal)
-		if !slices.Equal(receivedHealthEvent.ErrorCode, healthEvent.ErrorCode) {
-			t.Errorf("index %d deepak. receivedHealthEvent.ErrorCode is %v and healthEvent.ErrorCode is %v", index, receivedHealthEvent.ErrorCode, healthEvent.ErrorCode)
-		}
-		assert.Equal(t, receivedHealthEvent.IsHealthy, healthEvent.IsHealthy)
 	}
 	// Assert the received event
 	cancel()
