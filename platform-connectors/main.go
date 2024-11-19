@@ -80,17 +80,19 @@ func main() {
 		k8sRingBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
 		server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
-		qps, ok := result["K8sConnectorQps"].(float32)
+		qpsTemp, ok := result["K8sConnectorQps"].(float64)
 		if !ok {
 			klog.Fatalf("failed to convert K8sConnectorQps to float: %v", err)
 		}
 
-		burst, ok := result["K8sConnectorBurst"].(int)
+		qps := float32(qpsTemp)
+
+		burst, ok := result["K8sConnectorBurst"].(int64)
 		if !ok {
 			klog.Fatalf("failed to convert K8sConnectorBurst to int: %v", err)
 		}
 
-		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, string(nodeName), qps, burst, stopCh)
+		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, string(nodeName), qps, int(burst), stopCh)
 
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
 	}
