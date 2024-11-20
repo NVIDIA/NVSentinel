@@ -2,9 +2,11 @@ package nodehealtheventsudscore
 
 import (
 	"context"
+	"time"
 
 	nodeHealthEventsPluginPb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"k8s.io/klog"
 )
 
 func mapEntitiesToCorrectType(entities []*pb.Entity) []*nodeHealthEventsPluginPb.Entity {
@@ -36,5 +38,14 @@ func (r *NodeHealthEventsUDSConnector) ProcessHealthEvents(ctx context.Context, 
 		}
 		nodeHealthEvents.Events = append(nodeHealthEvents.Events, &nodeHealthEvent)
 	}
-	r.healthEventChan <- &nodeHealthEvents
+	select {
+	case r.healthEventChan <- &nodeHealthEvents:
+	case <-time.After(100 * time.Millisecond):
+		for len(r.healthEventChan) > 0 {
+			<-r.healthEventChan
+		}
+
+		klog.Infof("Sending the healthEvents again after clearing the channel")
+		r.healthEventChan <- &nodeHealthEvents
+	}
 }
