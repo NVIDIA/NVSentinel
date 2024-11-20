@@ -50,6 +50,7 @@ func (r *NodeHealthEventsUDSConnector) FetchAndProcessHealthMetric(ctx context.C
 		default:
 			healthEvents := r.ringBuffer.Dequeue()
 			r.ProcessHealthEvents(ctx, healthEvents)
+			r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
 		}
 	}
 }
