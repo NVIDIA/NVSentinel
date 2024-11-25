@@ -111,7 +111,7 @@ resource "google_container_node_pool" "system_node_pool" {
   max_pods_per_node = 50
 
   node_config {
-    machine_type = "e2-medium"
+    machine_type = "n2-standard-16"
     disk_size_gb = 50
   }
 }
