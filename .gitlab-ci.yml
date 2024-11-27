@@ -1,8 +1,3 @@
-include:
-  - project: dgxcloud/mk8s/gitlab-templates
-    ref: main
-    file: mr-cop-template.yml
-
 variables:
   GIT_TERMINAL_PROMPT: 1
   NGC_ORG: nv-ngc-devops
@@ -20,8 +15,6 @@ stages:
   - publish
   - deploy
 
-mrcop:
-  stage: lint
 
 protos lint:
   stage: lint
