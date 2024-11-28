@@ -13,12 +13,11 @@ COPY . .
 RUN poetry build --format wheel 
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
-FROM python:3.10.14-slim-bookworm AS runtime
-RUN apt-get update && apt-get install -y wget && \
-    wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb && \
-    dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb && \
-    apt-get update && apt-get install -y datacenter-gpu-manager=1:3.3.7 && \
-    apt-get clean
+FROM nvcr.io/nvidia/cloud-native/dcgm:3.3.7-1-ubuntu22.04 AS runtime
+
+RUN apt-get update && \
+    apt-get install -y python3-pip && \
+    rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
     PYTHONUNBUFFERED=1
