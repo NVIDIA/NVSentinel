@@ -8,8 +8,11 @@ dependencies:
 - name: nvswitch-health-monitor
   repository: ""
   version: 0.1.0
+- name: mongodb-store
+  repository: ""
+  version: 0.1.0
 - name: shoreline-agent
   repository: https://helm.ngc.nvidia.com/nv-ngc-devops
   version: 27.5.0
-digest: sha256:9ba6751651e86e944c56c82cb5ca545f663074b1cb9875a8017318823026602e
-generated: "2024-10-31T13:39:05.578407-04:00"
+digest: sha256:a299dcde6b236b5bf27b1d2e50be7ccf51467fbb31d99b5ff3b535bd4a41eaa4
+generated: "2024-11-15T16:42:40.059524263+05:30"

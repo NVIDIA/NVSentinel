@@ -8,5 +8,6 @@ data:
       "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
-      "enableNodeHealthEventsUDSConnector": "true"
+      "enableNodeHealthEventsUDSConnector": "true",
+      "enableMongoDBStorePlatformConnector": "{{ .Values.platformConnector.mongodbStore.enabled }}"
     }

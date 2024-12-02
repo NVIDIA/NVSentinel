@@ -58,6 +58,10 @@ platformConnector:
       
   metricsPort: 2112
 
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+
   kubectlImage: "nvcr.io/nv-ngc-devops/kubectl:1.28.5"
 
   podSecurityContext: {}

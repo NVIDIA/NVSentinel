@@ -1,0 +1,6 @@
+dependencies:
+- name: mongodb
+  repository: https://helm.ngc.nvidia.com/nv-ngc-devops
+  version: 16.2.2
+digest: sha256:1d490fae995a8f27b9a34fac188a735592901e6cc8f6b69ed762d6dbb1e4e34b
+generated: "2024-11-19T00:04:28.119492978+05:30"
