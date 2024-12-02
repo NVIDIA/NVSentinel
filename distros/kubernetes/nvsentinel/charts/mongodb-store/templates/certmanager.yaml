@@ -1,0 +1,114 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-ca-issuer
+  namespace: {{ .Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep # As the cert-manager is not configured to delete secrets associated with the certificates, we need to retain the certs
+spec:
+  selfSigned: {}
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-root-ca
+  namespace: {{ .Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  isCA: true
+  commonName: mongo-root-ca
+  secretName: mongo-root-ca-secret
+  duration: 87600h   # 10 years
+  renewBefore: 720h  # 30 days before expiration
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  issuerRef:
+    name: selfsigned-ca-issuer
+    kind: Issuer
+
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mongo-ca-issuer
+  namespace: {{ .Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  ca:
+    secretName: mongo-root-ca-secret
+
+---
+{{- $replicaCount := int .Values.mongodb.replicaCount }}
+{{- range $i := until $replicaCount }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-server-cert-{{ $i }}
+  namespace: {{ $.Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  secretName: mongo-server-cert-{{ $i }}
+  duration: 8760h   # 1 year
+  renewBefore: 360h # 15 days before expiration
+  commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
+  dnsNames:
+    - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $i $.Release.Namespace $.Release.Namespace }}
+    - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $.Release.Namespace }}
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+
+---
+{{- end }}
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-arbiter-cert
+  namespace: {{ .Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  secretName: mongo-arbiter-cert-secret
+  duration: 8760h
+  renewBefore: 360h
+  commonName: {{ printf "%s-mongo-arbiter" .Release.Namespace }}
+  dnsNames:
+    - {{ printf "%s-mongodb-arbiter-0.%s-mongodb-arbiter-headless.%s.svc.cluster.local" .Release.Namespace .Release.Namespace .Release.Namespace }}
+    - {{ printf "%s-mongodb-arbiter-headless.%s.svc.cluster.local" .Release.Namespace .Release.Namespace }}
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-app-client-cert
+  namespace: {{ .Release.Namespace }}
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  secretName: mongo-app-client-cert-secret
+  duration: 8760h
+  renewBefore: 360h
+  commonName: mongo-user-client
+  subject:
+    organizations:
+      - Nvidia
+    organizationalUnits:
+      - DGXC
+    localities:
+      - SantaClara
+    provinces:
+      - California
+    countries:
+      - US
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer

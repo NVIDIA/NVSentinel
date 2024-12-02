@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 
 	"k8s.io/apimachinery/pkg/util/json"
 
@@ -24,6 +25,10 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	True = "true"
+)
+
 //nolint:cyclop
 func main() {
 	socket := flag.String("socket", "", "unix socket path")
@@ -31,6 +36,9 @@ func main() {
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
+	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+		"path where the mongodb client cert is mounted")
 
 	flag.Parse()
 
@@ -57,6 +65,7 @@ func main() {
 	}
 
 	enableK8sPlatformConnector := result["enableK8sPlatformConnector"]
+	enableMongoDBStorePlatformConnector := result["enableMongoDBStorePlatformConnector"]
 	enableNodeHealthEventsUDSConnector := result["enableNodeHealthEventsUDSConnector"]
 
 	nodeName := os.Getenv("NODE_NAME")
@@ -76,7 +85,7 @@ func main() {
 	var k8sRingBuffer *ringbuffer.RingBuffer
 	k8sRingBuffer = nil
 
-	if enableK8sPlatformConnector == "true" {
+	if enableK8sPlatformConnector == True {
 		k8sRingBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
 		server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
@@ -95,6 +104,14 @@ func main() {
 		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, string(nodeName), qps, int(burst), stopCh)
 
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
+	}
+
+	if enableMongoDBStorePlatformConnector == True {
+		ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
+		server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
+		storeConnector := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, string(nodeName), *mongoClientCertMountPath)
+
+		go storeConnector.FetchAndProcessHealthMetric(ctx)
 	}
 
 	var nodeHealthEventsRingBuffer *ringbuffer.RingBuffer = nil

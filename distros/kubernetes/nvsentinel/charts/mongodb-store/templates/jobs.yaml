@@ -1,0 +1,97 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mongodb-database
+  namespace: nvsentinel
+spec:
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: mongo-client
+        image: nvcr.io/nv-ngc-devops/rtsp-mongosh:2.3.3
+        imagePullPolicy: IfNotPresent
+        command:
+          - sh
+          - -c
+          - |
+            set -e
+
+            echo "=============================="
+            echo "Starting mongodb client job..."
+            echo "=============================="
+
+            echo "MONGODB_URI: $MONGODB_URI"
+            echo "MONGODB_APPLICATION_USER_DN: $MONGODB_APPLICATION_USER_DN"
+            echo "MONGODB_DATABASE_NAME: $MONGODB_DATABASE_NAME"
+            echo "MONGODB_COLLECTION_NAME: $MONGODB_COLLECTION_NAME"
+            echo "MONGODB_TOKEN_COLLECTION_NAME: $MONGODB_TOKEN_COLLECTION_NAME"
+
+            cat /certs/tls.crt /certs/tls.key > /tmp/tls.pem
+
+            echo "=============================="
+            echo "Connecting to mongodb and creating X.509 user..."
+            echo "=============================="
+
+            until mongosh "$MONGODB_URI" \
+              --authenticationMechanism SCRAM-SHA-256 \
+              --username root --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              --tls \
+              --tlsCAFile /certs/ca.crt \
+              --tlsCertificateKeyFile /tmp/tls.pem \
+              --eval "
+                db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
+                db.createCollection('$MONGODB_COLLECTION_NAME');
+                db.createCollection('$MONGODB_TOKEN_COLLECTION_NAME');
+                db.getSiblingDB('\$external').runCommand({
+                  createUser: '$MONGODB_APPLICATION_USER_DN',
+                  roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                });"
+            do
+              echo "Waiting for mongodb to be ready...";
+              sleep 5;
+            done
+
+            echo "=============================="
+            echo "mongodb user creation completed."
+            echo "=============================="
+        env:
+          - name: MONGODB_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-mongodb
+                key: mongodb-root-password
+          - name: MONGODB_APPLICATION_USER_DN
+            value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
+        envFrom:
+          - configMapRef:
+              name: mongodb-config
+        volumeMounts:
+          - name: mongo-certificates
+            mountPath: /certs
+            readOnly: true
+      volumes:
+        - name: mongo-certificates
+          secret:
+            secretName: mongo-app-client-cert-secret
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+      {{- with .Values.mongodb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      restartPolicy: OnFailure

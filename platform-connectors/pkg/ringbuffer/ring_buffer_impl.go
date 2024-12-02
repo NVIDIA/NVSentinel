@@ -62,3 +62,7 @@ func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *platformconnector.He
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
 	rb.healthMetricQueue.ShutDown()
 }
+
+func (rb *RingBuffer) CurrentLength() int {
+	return rb.healthMetricQueue.Len()
+}

@@ -1,0 +1,11 @@
+apiVersion: v2
+name: mongodb-store
+description: A Helm chart for mongodb store
+type: application
+version: 0.1.0
+appVersion: "1.16.0"
+
+dependencies:
+  - name: mongodb
+    version: 16.2.2
+    repository: https://helm.ngc.nvidia.com/nv-ngc-devops

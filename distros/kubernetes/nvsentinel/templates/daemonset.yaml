@@ -41,6 +41,7 @@ spec:
           imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
           args:
           - "--metrics-port={{ .Values.platformConnector.metricsPort }}"
+          - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
           - -socket
           - {{ .Values.socketPath }}
           - -nodehealtheventssocket
@@ -52,12 +53,19 @@ spec:
               mountPath: /var/run
             - name: platform-connector-configmap
               mountPath: /etc/config/
+            - name: mongo-app-client-cert
+              mountPath: {{ .Values.platformConnector.mongodbStore.clientCertMountPath }}
+              readOnly: true
           env: 
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+          envFrom:
+            - configMapRef:
+                name: mongodb-config
+                optional: true
       volumes:
         - name: var-run-vol
           hostPath:
@@ -66,6 +74,10 @@ spec:
         - name: platform-connector-configmap
           configMap:
             name: platform-connector-configmap
+        - name: mongo-app-client-cert
+          secret:
+            secretName: mongo-app-client-cert-secret
+            optional: true
       tolerations:
         - operator: Exists
 
