@@ -243,6 +243,35 @@ node-health-events-uds connector container publish:
   tags:
     - dind
 
+store client sdk lint:
+  stage: lint
+  script:
+    - cd store-client-sdk
+    - go vet ./...
+    - golangci-lint run
+  artifacts:
+    when: always
+    reports:
+      codequality: store-client-sdk/code-quality-report.json
+    paths:
+      - store-client-sdk/code-quality-report.json
+
+store client sdk test:
+  stage: test
+  script:
+    - cd store-client-sdk
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: store-client-sdk/coverage.xml
+      junit: store-client-sdk/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
 kubernetes distro lint:
   stage: lint
   script:
