@@ -44,7 +44,7 @@ spec:
       mutate:
         patchStrategicMerge:
           spec:
-            containers:
+            initContainers:
               - name: nic-health-monitor
                 image: "{{ .Values.global.nicHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
                 imagePullPolicy: IfNotPresent
@@ -69,6 +69,7 @@ spec:
                 volumeMounts:
                   - name: var-run-vol
                     mountPath: /var/run/
+                restartPolicy: Always 
             volumes:
               - name: var-run-vol
                 hostPath:
