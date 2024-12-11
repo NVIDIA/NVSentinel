@@ -34,7 +34,8 @@ global:
 
   nicHealthMonitor:
     enabled: true
-
+    nicExclusionRegexesForInjectedContainer: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
+    nicExclusionRegexes: "^gketmp.*" 
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor
       pullPolicy: IfNotPresent

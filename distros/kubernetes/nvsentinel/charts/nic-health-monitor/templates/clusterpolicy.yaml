@@ -51,7 +51,7 @@ spec:
                 args:
                   - "--metrics-port={{ .Values.metricsPort }}"
                   - "--polling-interval={{ .Values.pollingInterval }}"
-                  - "--nic-exclusion-regexes={{ .Values.nicExclusionRegexes }}"
+                  - "--nic-exclusion-regexes={{ .Values.global.nicHealthMonitor.nicExclusionRegexesForInjectedContainer | default .Values.nicExclusionRegexesForInjectedContainer }}"
                   - "--max-retry-duration-for-down-detected-nic={{ .Values.maxRetryDurationForDownDetectedNICInMilliseconds }}"
                   - "--retry-interval-for-down-detected-nic={{ .Values.retryIntervalForDownDetectedNICInMilliseconds }}"
                 securityContext:
