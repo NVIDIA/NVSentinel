@@ -236,7 +236,7 @@ func main() {
 	}
 
 	// check if config.ini exists and load it to override flag values
-	configFilePath := "/etc/nichehealthmonitor/config.ini"
+	configFilePath := "/etc/nichealthmonitor/config.ini"
 	_, err := os.Stat(configFilePath)
 
 	if err != nil {

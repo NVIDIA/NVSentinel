@@ -20,6 +20,6 @@ metadata:
     {{- include "nic-health-monitor.labels" . | nindent 4 }}
 data:
   config.ini: |
-    NicExclusionRegex = ^gketmp.*
+    NicExclusionRegex = {{ .Values.global.nicHealthMonitor.nicExclusionRegexes | default .Values.nicExclusionRegexes }}
     PollingIntervalInMilliseconds = 1000
 
