@@ -40,7 +40,14 @@ variables:
 
 image: $CI_REGISTRY_IMAGE/ci:latest
 
+include:
+  - project: dgxcloud/mk8s/gitlab-templates
+    ref: main
+    file: mr-cop-template.yml
+
 stages:
+  - .pre
+  - check
   - lint
   - test
   - publish
@@ -51,6 +58,20 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+prepare-vars:
+  stage: .pre  # or stage: init
+  script:
+    - SAFE_REF_NAME=$(echo $CI_COMMIT_REF_NAME | sed 's/\//-/g')
+    - echo "SAFE_REF_NAME=$SAFE_REF_NAME" >> variables.env
+  artifacts:
+    reports:
+      dotenv: variables.env
+
+mrcop:
+  stage: check
+  extends:
+    .mrcop
 
 protos lint:
   stage: lint
@@ -108,7 +129,7 @@ gpu health monitor container publish:
     - cd health-monitors/gpu-health-monitor
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME} .
   tags:
     - dind
 
@@ -153,7 +174,7 @@ nic health monitor container publish:
     - cd health-monitors/nic-health-monitor
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${SAFE_REF_NAME} .
   tags:
     - dind
 
@@ -198,7 +219,7 @@ nvswitch health monitor container publish:
     - cd health-monitors/nvswitch-health-monitor
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${SAFE_REF_NAME} .
   tags:
     - dind
 
@@ -243,7 +264,7 @@ platform connectors container publish:
     - cd platform-connectors
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME} .
   tags:
     - dind
 
@@ -300,7 +321,7 @@ fault quarantine module container publish:
     - cd fault-quarantine-module
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} .
   tags:
     - dind
 
@@ -315,7 +336,7 @@ node-health-events-uds connector container publish:
   script:
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -f distros/container/nvsentinel-node-health-events-distro/Dockerfile -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${CI_COMMIT_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -f distros/container/nvsentinel-node-health-events-distro/Dockerfile -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${SAFE_REF_NAME} .
   tags:
     - dind
 
