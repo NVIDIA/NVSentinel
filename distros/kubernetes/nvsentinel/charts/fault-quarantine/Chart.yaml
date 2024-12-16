@@ -12,42 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ include "nvsentinel.fullname" . }}
-  labels:
-    {{- include "nvsentinel.labels" . | nindent 4 }}
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  - nodes/status
-  verbs:
-  - get
-  - patch
-  - update
-  - list
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - update
-  - list
-- apiGroups:
-  - ""
-  resources:
-  - pods/eviction
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
+apiVersion: v2
+name: fault-quarantine
+description: A Helm chart for Fault quarantine module
+type: application
+version: 0.1.0
+appVersion: "1.16.0"

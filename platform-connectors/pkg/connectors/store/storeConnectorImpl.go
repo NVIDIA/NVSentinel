@@ -180,6 +180,10 @@ func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context)
 				continue
 			}
 
+			for _, healthEvent := range healthEvents.GetEvents() {
+				healthEvent.NodeName = r.nodeName
+			}
+
 			err := r.insertHealthEvents(ctx, healthEvents)
 			if err != nil {
 				klog.Errorf("Error inserting health events: %v", err)
@@ -241,8 +245,9 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 			return nil, fmt.Errorf("retrying reading CA cert from %s timed out with error: %w", certPath, err)
 		}
 
+		var caCert []byte
 		// load CA certificate
-		caCert, err := os.ReadFile(certPath)
+		caCert, err = os.ReadFile(certPath)
 		if err == nil {
 			klog.Infof("Successfully read CA cert.")
 			return caCert, nil

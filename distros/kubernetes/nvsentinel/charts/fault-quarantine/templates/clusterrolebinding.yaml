@@ -13,41 +13,16 @@
 # limitations under the License.
 
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: ClusterRoleBinding
 metadata:
-  name: {{ include "nvsentinel.fullname" . }}
+  name: {{ include "fault-quarantine-module.fullname" . }}
   labels:
-    {{- include "nvsentinel.labels" . | nindent 4 }}
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  - nodes/status
-  verbs:
-  - get
-  - patch
-  - update
-  - list
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - update
-  - list
-- apiGroups:
-  - ""
-  resources:
-  - pods/eviction
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
+    {{- include "fault-quarantine-module.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "fault-quarantine-module.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "fault-quarantine-module.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}

@@ -41,12 +41,14 @@ type MongoDBClientTLSCertConfig struct {
 
 // MongoDBConfig holds the MongoDB connection configuration.
 type MongoDBConfig struct {
-	URI                      string
-	Database                 string
-	Collection               string
-	ClientTLSCertConfig      MongoDBClientTLSCertConfig
-	TotalPingTimeoutSeconds  int
-	TotalPingIntervalSeconds int
+	URI                        string
+	Database                   string
+	Collection                 string
+	ClientTLSCertConfig        MongoDBClientTLSCertConfig
+	TotalPingTimeoutSeconds    int
+	TotalPingIntervalSeconds   int
+	TotalCACertTimeoutSeconds  int
+	TotalCACertIntervalSeconds int
 }
 
 // TokenConfig holds the token-specific configuration.
@@ -297,8 +299,23 @@ func GetCollectionClient(
 func constructMongoClientOptions(
 	mongoConfig MongoDBConfig,
 ) (*options.ClientOptions, error) {
+	timeout := mongoConfig.TotalCACertTimeoutSeconds
+	if timeout == 0 {
+		timeout = 600 // 10 minutes by default
+	}
+
+	totalCertTimeout := time.Duration(timeout) * time.Second
+
+	interval := mongoConfig.TotalCACertIntervalSeconds
+	if interval == 0 {
+		interval = 5 // 5 seconds by default
+	}
+
+	intervalCert := time.Duration(interval) * time.Second
+
 	// load CA certificate
-	caCert, err := os.ReadFile(mongoConfig.ClientTLSCertConfig.CaCertPath)
+	caCert, err := pollTillCACertIsMountedSuccessfully(mongoConfig.ClientTLSCertConfig.CaCertPath,
+		totalCertTimeout, intervalCert)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CA certificate with error: %w", err)
 	}

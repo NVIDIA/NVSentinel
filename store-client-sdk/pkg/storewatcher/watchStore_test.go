@@ -100,8 +100,10 @@ func TestNewChangeStreamWatcher(t *testing.T) {
 				TlsKeyPath:  "/invalid/path/key.pem",
 				CaCertPath:  "/invalid/path/ca.pem",
 			},
-			TotalPingTimeoutSeconds:  10,
-			TotalPingIntervalSeconds: 1,
+			TotalPingTimeoutSeconds:    10,
+			TotalPingIntervalSeconds:   1,
+			TotalCACertTimeoutSeconds:  5,
+			TotalCACertIntervalSeconds: 1,
 		}
 
 		tokenConfig := TokenConfig{

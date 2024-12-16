@@ -40,6 +40,13 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor
       pullPolicy: IfNotPresent
 
+  faultQuarantineModule:
+    enabled: false
+
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module
+      pullPolicy: IfNotPresent
+
   nvSwitchHealthMonitor:
     enabled: true
 
