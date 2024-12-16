@@ -22,11 +22,11 @@ data:
   config.toml: |
     [[rule-sets]]
       version = "1"
-      name = "Rule 1"                  # an admin friendly name for the rule set, used only for logging
+      name = "NIC fatal error ruleset"                  # an admin friendly name for the rule set, used only for logging
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"                   # the kind of rule (the evaluator to use)
-        expression = "event.agent == 'nic-health-monitor' && event.checkName == 'EthernetErrorCheck'"
+        expression = "event.agent == 'nic-health-monitor' && event.componentClass == 'NIC'"
 
       [[rule-sets.match.all]]
         kind = "HealthEvent" 
@@ -42,7 +42,7 @@ data:
 
     [[rule-sets]]
       version = "1"
-      name = "Rule 2"              
+      name = "GPU fatal error ruleset"              
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"                 
@@ -50,7 +50,7 @@ data:
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"
-        expression = "event.agent == 'GPU'"
+        expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU'"
 
       [rule-sets.taint]
         key = "AggregatedNodeHealth"
@@ -62,7 +62,7 @@ data:
 
     [[rule-sets]]
       version = "1"
-      name = "Rule 3"    
+      name = "NVSwitch fatal error ruleset"    
 
       [[rule-sets.match.all]]
         kind = "HealthEvent" 
