@@ -28,6 +28,9 @@ mongodb:
   serviceAccount: 
     name: "mongodb-sa"
 
+  networkPolicy:
+    enabled: false
+
   persistentVolumeClaimRetentionPolicy:
     enabled: true
     whenDeleted: Delete
