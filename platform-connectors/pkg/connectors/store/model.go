@@ -15,6 +15,8 @@
 package store
 
 import (
+	"time"
+
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
@@ -25,6 +27,7 @@ type HealthEventStatus struct {
 }
 
 type HealthEventWithStatus struct {
+	CreatedAt         time.Time                      `bson:"createdAt"`
 	HealthEvent       *platformconnector.HealthEvent `bson:"healthevent,omitempty"`
 	HealthEventStatus HealthEventStatus              `bson:"healtheventstatus"`
 }

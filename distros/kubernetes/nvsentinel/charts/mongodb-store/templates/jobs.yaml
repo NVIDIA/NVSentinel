@@ -61,6 +61,10 @@ spec:
                 db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
                 db.createCollection('$MONGODB_COLLECTION_NAME');
                 db.createCollection('$MONGODB_TOKEN_COLLECTION_NAME');
+                db.$MONGODB_COLLECTION_NAME.createIndex(
+                  { 'createdAt': 1 },                 
+                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }      
+                );
                 db.getSiblingDB('\$external').runCommand({
                   createUser: '$MONGODB_APPLICATION_USER_DN',
                   roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
