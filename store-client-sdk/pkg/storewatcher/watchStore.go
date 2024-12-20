@@ -400,7 +400,7 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 			klog.Infof("Successfully read CA cert.")
 			return caCert, nil
 		} else {
-			klog.Errorf("Failed to read CA certificate with error: %v, retrying...", err)
+			klog.Infof("Failed to read CA certificate with error: %v, retrying...", err)
 		}
 
 		time.Sleep(pingInterval)
