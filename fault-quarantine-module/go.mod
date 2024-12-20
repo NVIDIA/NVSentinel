@@ -10,7 +10,7 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/prometheus/client_golang v1.20.2
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20241203050918-c17c1cf085a7
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20241216175227-62d97aca3bbc
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20241220114330-a75da3e9a641
 	go.mongodb.org/mongo-driver v1.17.0
 	google.golang.org/protobuf v1.34.2
 	k8s.io/api v0.30.2
