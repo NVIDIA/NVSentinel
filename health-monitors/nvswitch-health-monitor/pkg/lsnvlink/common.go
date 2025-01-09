@@ -15,7 +15,10 @@
 package lsnvlink
 
 import (
+	"bufio"
+	"bytes"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"k8s.io/klog"
@@ -49,8 +52,25 @@ const (
 	DGX_TYPE_H100
 )
 
+// We need to mock exec.Cmd for unit tests, so we need an interface
+type command interface {
+	Output() ([]byte, error)
+}
+
+type commandImpl struct {
+	cmd *exec.Cmd
+}
+
+func (r *commandImpl) Output() ([]byte, error) {
+	return r.cmd.Output()
+}
+
+var commandExec = func(name string, arg ...string) command {
+	return &commandImpl{cmd: exec.Command(name, arg...)}
+}
+
 func GetDGXType() DGXHardwareType {
-	cmd := exec.Command("lspci")
+	cmd := commandExec("lspci")
 	out, err := cmd.Output()
 	if err != nil {
 		klog.Errorf("failed to query lspci: %s\n", err)
@@ -69,4 +89,48 @@ func GetDGXType() DGXHardwareType {
 	}
 
 	return DGX_TYPE_UNKNOWN
+}
+
+func GetNVSwitchPCIAddresses() []string {
+	cmd := commandExec("lspci", "-D", "-k")
+	out, err := cmd.Output()
+	if err != nil {
+		klog.Errorf("failed to execute lspci: %v", err)
+		return nil
+	}
+
+	// matches lines starting with a PCI address like '0000:04:00.0'
+	pciRegex := regexp.MustCompile(`^([0-9a-fA-F]{4}):[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]{1,2}`)
+
+	// matches lines like 'Kernel driver in use: nvidia-nvswitch' and captures the driver name
+	driverRegex := regexp.MustCompile(`^\s*Kernel driver in use:\s*(\S+)`)
+
+	var pciAddresses []string
+	currentPCI := ""
+
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if matches := pciRegex.FindStringSubmatch(line); matches != nil {
+			currentPCI = matches[0]
+			continue
+		}
+
+		if matches := driverRegex.FindStringSubmatch(line); matches != nil {
+			driver := matches[1]
+			// check if the driver is 'nvidia-nvswitch' and a PCI address has been captured
+			if driver == "nvidia-nvswitch" && currentPCI != "" {
+				pciAddresses = append(pciAddresses, currentPCI)
+				currentPCI = ""
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		klog.Errorf("Error reading lspci output: %v", err)
+		return nil
+	}
+
+	return pciAddresses
 }

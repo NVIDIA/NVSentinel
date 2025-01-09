@@ -90,7 +90,23 @@ func GetGPUID(nvswitch, nvlink int) (int, error) {
 	} else if dgxType == lsnvlink.DGX_TYPE_H100 {
 		return lsnvlink.DGX_H100{}.GetGpuFromNVSwitchNVLink(nvswitch, nvlink)
 	}
+
 	return -1, errors.New("failed to get gpu id associated, dgx type is unknown")
+}
+
+func GetEntityIDsForDGXType() (nvswitchIds, nvlinkIds, gpuIds []int, err error) {
+	dgxType := lsnvlink.GetDGXType()
+
+	if dgxType == lsnvlink.DGX_TYPE_A100 {
+		dgx := lsnvlink.DGX_A100{}
+		return dgx.GetAllNVSwitchIds(), dgx.GetAllNVLinkIds(), dgx.GetAllGPUIds(), nil
+	} else if dgxType == lsnvlink.DGX_TYPE_H100 {
+		dgx := lsnvlink.DGX_H100{}
+		return dgx.GetAllNVSwitchIds(), dgx.GetAllNVLinkIds(), dgx.GetAllGPUIds(), nil
+	}
+
+	return nil, nil, nil,
+		errors.New("failed to get entity ids associated, dgx type is unknown")
 }
 
 func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
@@ -119,14 +135,56 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
 
 		duration := float64(time.Since(start).Milliseconds())
 
-		if err != nil {
+		if err == nil {
 			gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
 			entitiesImpacted = append(entitiesImpacted, &pb.Entity{EntityType: "GPU", EntityValue: strconv.Itoa(gpuID)})
+		} else {
+			klog.Errorf("Error occurred while computing GPU ID for NVSwitch ID %d and NVLINK ID %d: %v",
+				sxidEvent.NVSwitch, sxidEvent.Link, err)
 		}
 
 		event.EntitiesImpacted = entitiesImpacted
 
 		event.ErrorCode = []string{fmt.Sprint(sxidEvent.ErrorNum)}
+	} else {
+		// if this is a healthy event then the node has rebooted, so all
+		// entities need to be broadcasted as being healthy initially
+		nvswitchIds, nvlinkIds, gpuIds, err := GetEntityIDsForDGXType()
+		if err != nil {
+			klog.Fatalf("Error occurred while getting entity IDs for DGX type: %v", err)
+		}
+
+		entitiesImpacted := []*pb.Entity{}
+
+		for _, id := range nvswitchIds {
+			entitiesImpacted = append(
+				entitiesImpacted,
+				&pb.Entity{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(id)},
+			)
+		}
+
+		for _, id := range nvlinkIds {
+			entitiesImpacted = append(
+				entitiesImpacted,
+				&pb.Entity{EntityType: "NVLINK", EntityValue: strconv.Itoa(id)},
+			)
+		}
+
+		for _, id := range gpuIds {
+			entitiesImpacted = append(
+				entitiesImpacted,
+				&pb.Entity{EntityType: "GPU", EntityValue: strconv.Itoa(id)},
+			)
+		}
+
+		for _, pciAddress := range lsnvlink.GetNVSwitchPCIAddresses() {
+			entitiesImpacted = append(
+				entitiesImpacted,
+				&pb.Entity{EntityType: "PCI", EntityValue: pciAddress},
+			)
+		}
+
+		event.EntitiesImpacted = entitiesImpacted
 	}
 
 	healthEvents.Events = append(healthEvents.Events, &event)

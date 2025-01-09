@@ -501,7 +501,7 @@ func compareHealthEventWithAnnotationEventToCheckUnQuarantine(
 		event.CheckName != annotationEvent.CheckName ||
 		event.ComponentClass != annotationEvent.ComponentClass ||
 		event.NodeName != annotationEvent.NodeName ||
-		!compareEntities(event.EntitiesImpacted, annotationEvent.EntitiesImpacted) ||
+		!areAnnotationEntitiesSubsetOfEventEntities(event.EntitiesImpacted, annotationEvent.EntitiesImpacted) ||
 		event.Version != annotationEvent.Version {
 		return false
 	}
@@ -509,12 +509,11 @@ func compareHealthEventWithAnnotationEventToCheckUnQuarantine(
 	return event.IsHealthy
 }
 
-// checks if two slices of Entity are equal regardless of order
-func compareEntities(a, b []*platformconnectorprotos.Entity) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
+// checks if all Entity objects in annotation event are present in passed event regardless of order
+func areAnnotationEntitiesSubsetOfEventEntities(
+	eventEntities,
+	annotationEventEntities []*platformconnectorprotos.Entity,
+) bool {
 	type key struct {
 		EntityType  string
 		EntityValue string
@@ -522,24 +521,18 @@ func compareEntities(a, b []*platformconnectorprotos.Entity) bool {
 
 	counts := make(map[key]int)
 
-	for _, entity := range a {
+	for _, entity := range eventEntities {
 		k := key{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
 		counts[k]++
 	}
 
-	for _, entity := range b {
+	for _, entity := range annotationEventEntities {
 		k := key{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
 		if counts[k] == 0 {
 			return false
 		}
 
 		counts[k]--
-	}
-
-	for _, count := range counts {
-		if count != 0 {
-			return false
-		}
 	}
 
 	return true

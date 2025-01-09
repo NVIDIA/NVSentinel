@@ -80,6 +80,16 @@ func main() {
 		klog.Fatalf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
 	}
 
+	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
+	if err != nil {
+		klog.Fatalf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+	}
+
+	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
+	if err != nil {
+		klog.Fatalf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+	}
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
@@ -98,8 +108,10 @@ func main() {
 			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
 			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
 		},
-		TotalPingTimeoutSeconds:  totalTimeoutSeconds,
-		TotalPingIntervalSeconds: intervalSeconds,
+		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
+		TotalPingIntervalSeconds:   intervalSeconds,
+		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
+		TotalCACertIntervalSeconds: intervalCACertSeconds,
 	}
 
 	tokenConfig := storewatcher.TokenConfig{

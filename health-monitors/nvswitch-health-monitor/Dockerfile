@@ -28,7 +28,9 @@ RUN go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
 FROM debian:bullseye-slim
 
-RUN apt-get update && apt-get install -y pciutils
+RUN apt-get update && apt-get install -y pciutils curl
+
+RUN update-pciids
 
 RUN apt-get install -y --no-install-recommends \
     e2fsprogs=1.46.2-2+deb11u1 && \

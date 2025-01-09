@@ -193,3 +193,25 @@ func (DGX_H100) GetGpuFromNVSwitchNVLink(nvswitch, nvlink int) (int, error) {
 
 	return -1, fmt.Errorf("not valid input: NVSwitch %d, NVLink %d", nvswitch, nvlink)
 }
+
+func (DGX_H100) GetAllGPUIds() []int {
+	return []int{0, 1, 2, 3, 4, 5, 6, 7}
+}
+
+func (DGX_H100) GetAllNVSwitchIds() []int {
+	return []int{0, 1, 2, 3}
+}
+
+func (DGX_H100) GetAllNVLinkIds() []int {
+	return []int{
+		// 0 to 19
+		0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+		10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+
+		// 32 to 63
+		32, 33, 34, 35, 36, 37, 38, 39,
+		40, 41, 42, 43, 44, 45, 46, 47,
+		48, 49, 50, 51, 52, 53, 54, 55,
+		56, 57, 58, 59, 60, 61, 62, 63,
+	}
+}
