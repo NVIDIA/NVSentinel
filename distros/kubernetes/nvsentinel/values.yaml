@@ -26,6 +26,8 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor
       pullPolicy: IfNotPresent
     
+    useHostNetworking: false
+    
     busybox:
       image:
         repository: nvcr.io/nv-ngc-devops/busybox

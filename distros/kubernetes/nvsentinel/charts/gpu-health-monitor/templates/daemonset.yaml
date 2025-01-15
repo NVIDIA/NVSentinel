@@ -95,7 +95,7 @@ spec:
             - --xid-error-mapping-config-file
             - "/etc/dcgmhealth/xiderrorsmapping.csv"
             - --dcgm-addr
-            - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.useHostNetworking }}"
+            - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.global.gpuHealthMonitor.useHostNetworking }}"
             - --port
             - "{{ .Values.metricsPort }}"
             - --verbose
@@ -138,7 +138,7 @@ spec:
         {{- if .Values.global.gpuHealthMonitorAdditionalHostVolumes }}
         {{ toYaml .Values.global.gpuHealthMonitorAdditionalHostVolumes | nindent 8 }}
         {{- end }}
-      {{- if .Values.useHostNetworking }}
+      {{- if .Values.global.gpuHealthMonitor.useHostNetworking }}
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
