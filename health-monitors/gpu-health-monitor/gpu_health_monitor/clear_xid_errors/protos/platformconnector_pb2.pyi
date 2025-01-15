@@ -17,6 +17,15 @@ class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     APPLICATION_RESTART: _ClassVar[RecommenedAction]
     REPORT_ISSUE: _ClassVar[RecommenedAction]
     RUN_FIELDDIAG: _ClassVar[RecommenedAction]
+    WORKFLOW_XID_13_31: _ClassVar[RecommenedAction]
+    WORKFLOW_ECC_DBE_SRAM: _ClassVar[RecommenedAction]
+    WORKFLOW_NVLINK5_ERR: _ClassVar[RecommenedAction]
+    WORKFLOW_XID_45: _ClassVar[RecommenedAction]
+    WORKFLOW_XID_48: _ClassVar[RecommenedAction]
+    CHECK_MECHANICALS: _ClassVar[RecommenedAction]
+    WORKFLOW_NVLINK_ERR: _ClassVar[RecommenedAction]
+    UPDATE_SWFW: _ClassVar[RecommenedAction]
+    RESTART_VM: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
 NONE: RecommenedAction
 NODE_REBOOT: RecommenedAction
@@ -25,6 +34,15 @@ COMPONENT_REPLACEMENT: RecommenedAction
 APPLICATION_RESTART: RecommenedAction
 REPORT_ISSUE: RecommenedAction
 RUN_FIELDDIAG: RecommenedAction
+WORKFLOW_XID_13_31: RecommenedAction
+WORKFLOW_ECC_DBE_SRAM: RecommenedAction
+WORKFLOW_NVLINK5_ERR: RecommenedAction
+WORKFLOW_XID_45: RecommenedAction
+WORKFLOW_XID_48: RecommenedAction
+CHECK_MECHANICALS: RecommenedAction
+WORKFLOW_NVLINK_ERR: RecommenedAction
+UPDATE_SWFW: RecommenedAction
+RESTART_VM: RecommenedAction
 UNKNOWN: RecommenedAction
 
 class HealthEvents(_message.Message):
