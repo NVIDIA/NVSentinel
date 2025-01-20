@@ -26,7 +26,7 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.error_num = None
         self.fields_changes = None
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails]):
+    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
         self.health_details = health_details
 
     def xid_event_occurred(self, gpu_id: str, error_num: int):

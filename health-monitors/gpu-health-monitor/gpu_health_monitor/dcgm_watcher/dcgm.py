@@ -230,13 +230,17 @@ class DCGMWatcher:
         with metrics.dcgm_api_latency.labels("group_health_set").time():
             dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
 
+        gpu_ids = dcgm_group.GetGpuIds()
+        log.info(f"dcgm gpu_id are {gpu_ids}")
         dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
         older_field_values = {}
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
                 log.info("Running health check")
                 health_status = self._perform_health_check(dcgm_group)
-                self._fire_callback_funcs(types.CallbackInterface.health_event_occurred.__name__, [health_status])
+                self._fire_callback_funcs(
+                    types.CallbackInterface.health_event_occurred.__name__, [health_status, gpu_ids]
+                )
 
             log.info("Waiting till next cycle")
             exit.wait(self._poll_interval_seconds)

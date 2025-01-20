@@ -128,12 +128,27 @@ class TestPlatformConnectors(unittest.TestCase):
             "statefile",
         )
         dcgm_health_events = watcher._get_health_status_dict()
-        platform_connector_test.health_event_occurred(dcgm_health_events)
+        dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CORRUPT_INFOROM",
+                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                )
+            },
+        )
+        gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         for event in health_events:
-            assert event.isHealthy == True
-            assert event.checkName != ""
-            assert len(dcgm_health_events) == len(health_events)
+            if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
+                assert event.errorCode[0] == "DCGM_FR_CORRUPT_INFOROM"
+                assert event.entitiesImpacted[0].entityValue == "0"
+                assert event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
+            else:
+                assert event.isHealthy == True
+                assert event.checkName != ""
+                assert len(dcgm_health_events) * len(gpu_ids) == len(health_events)
         platform_connector_test.xid_event_occurred("0", 64)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]

@@ -101,7 +101,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         ## DCGM_HEALTH_WATCH_PCIE ==> GpuPcieWatch; DCGM_HEALTH_WATCH_SM ==> GpuSmWatch
         return f"Gpu{self._get_dcgm_watch(watch_name)}Watch"
 
-    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails]):
+    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list):
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():
@@ -119,46 +119,51 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 )
 
                 error_code = ""
-                for id, failure_details in details.entity_failures.items():
-                    message = failure_details.message
-                    error_code = [f"{failure_details.code}"]
-                    entities_impacted = []
-                    entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(id))
-                    entities_impacted.append(entity)
-                    health_events.append(
-                        platformconnector_pb2.HealthEvent(
-                            version=self._version,
-                            agent=self._agent,
-                            componentClass=self._component_class,
-                            checkName=check_name,
-                            generatedTimestamp=timestamp,
-                            isFatal=False if details.status == dcgmtypes.HealthStatus.PASS else True,
-                            isHealthy=True if details.status == dcgmtypes.HealthStatus.PASS else False,
-                            errorCode=error_code,
-                            entitiesImpacted=entities_impacted,
-                            message=message,
-                            recommendedAction=platformconnector_pb2.UNKNOWN,
-                            nodeName=self._node_name,
+                log.debug(f"length of entity_failures are {len(details.entity_failures)}")
+                for gpu_id in gpu_ids:
+                    if details.entity_failures.get(gpu_id):
+                        failure_details = details.entity_failures.get(gpu_id)
+                        message = failure_details.message
+                        error_code = [f"{failure_details.code}"]
+                        entities_impacted = []
+                        entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+                        entities_impacted.append(entity)
+                        health_events.append(
+                            platformconnector_pb2.HealthEvent(
+                                version=self._version,
+                                agent=self._agent,
+                                componentClass=self._component_class,
+                                checkName=check_name,
+                                generatedTimestamp=timestamp,
+                                isFatal=False if details.status == dcgmtypes.HealthStatus.PASS else True,
+                                isHealthy=True if details.status == dcgmtypes.HealthStatus.PASS else False,
+                                errorCode=error_code,
+                                entitiesImpacted=entities_impacted,
+                                message=message,
+                                recommendedAction=platformconnector_pb2.REPORT_ISSUE,
+                                nodeName=self._node_name,
+                            )
                         )
-                    )
-                    break
-                else:
-                    health_events.append(
-                        platformconnector_pb2.HealthEvent(
-                            version=self._version,
-                            agent=self._agent,
-                            componentClass=self._component_class,
-                            checkName=check_name,
-                            generatedTimestamp=timestamp,
-                            isFatal=False if details.status == dcgmtypes.HealthStatus.PASS else True,
-                            isHealthy=True if details.status == dcgmtypes.HealthStatus.PASS else False,
-                            errorCode=[],
-                            entitiesImpacted=[],
-                            message=message,
-                            recommendedAction=platformconnector_pb2.UNKNOWN,
-                            nodeName=self._node_name,
+                    else:
+                        entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+                        entities_impacted = []
+                        entities_impacted.append(entity)
+                        health_events.append(
+                            platformconnector_pb2.HealthEvent(
+                                version=self._version,
+                                agent=self._agent,
+                                componentClass=self._component_class,
+                                checkName=check_name,
+                                generatedTimestamp=timestamp,
+                                isFatal=False,
+                                isHealthy=True,
+                                errorCode=[],
+                                entitiesImpacted=entities_impacted,
+                                message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                                recommendedAction=platformconnector_pb2.NONE,
+                                nodeName=self._node_name,
+                            )
                         )
-                    )
             log.debug(f"dcgm health event is {health_events}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
