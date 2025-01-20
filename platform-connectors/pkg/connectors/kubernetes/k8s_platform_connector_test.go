@@ -391,20 +391,65 @@ func equalStringSlices(a, b []string) bool {
 
 func TestAddMessageIfNotExist(t *testing.T) {
 	tests := []struct {
-		messages   []string
-		newMessage string
-		expected   []string
+		messages []string
+		event    *platformconnector.HealthEvent
+		expected []string
 	}{
-		{[]string{}, "msg1;", []string{"msg1"}},
-		{[]string{"msg1"}, "msg2;", []string{"msg1", "msg2"}},
-		{[]string{"msg1"}, "msg1;", []string{"msg1"}},
-		{[]string{"msg1", "msg2"}, "msg2;", []string{"msg1", "msg2"}},
+		{
+			messages: []string{},
+			event: &platformconnector.HealthEvent{
+				ErrorCode:         []string{"E001"},
+				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				Message:           "msg1",
+				RecommendedAction: platformconnector.RecommenedAction_APPLICATION_RESTART,
+			},
+			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
+		},
+		{
+			messages: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
+			event: &platformconnector.HealthEvent{
+				ErrorCode:         []string{"E002"},
+				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				Message:           "msg2",
+				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			},
+			expected: []string{
+				"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART",
+				"ErrorCode:E002 GPU:1 msg2 Recommended Action=NODE_REBOOT",
+			},
+		},
+		{
+			messages: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
+			event: &platformconnector.HealthEvent{
+				ErrorCode:         []string{"E001"},
+				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				Message:           "msg1",
+				RecommendedAction: platformconnector.RecommenedAction_APPLICATION_RESTART,
+			},
+			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
+		},
+		{
+			messages: []string{
+				"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART",
+				"ErrorCode:E002 GPU:1 msg2 Recommended Action=NODE_REBOOT",
+			},
+			event: &platformconnector.HealthEvent{
+				ErrorCode:         []string{"E002"},
+				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				Message:           "msg2",
+				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			},
+			expected: []string{
+				"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART",
+				"ErrorCode:E002 GPU:1 msg2 Recommended Action=NODE_REBOOT",
+			},
+		},
 	}
 
 	for i, test := range tests {
-		result := k8sConnector.addMessageIfNotExist(test.messages, test.newMessage)
+		result := k8sConnector.addMessageIfNotExist(test.messages, test.event)
 		if !equalStringSlices(result, test.expected) {
-			t.Errorf("Test %d failed: expected %v, got %v", i+1, test.expected, result)
+			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
 		}
 	}
 }
@@ -464,7 +509,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 	}
 
 	for i, test := range tests {
-		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, convertToEntityPointers(test.EntitiesImpacted), test.checkName)
+		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, convertToEntityPointers(test.EntitiesImpacted))
 		if !equalStringSlices(result, test.expected) {
 			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
 		}
@@ -494,6 +539,8 @@ func TestUpdateHealthEventReason(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_StatusChange(t *testing.T) {
+	fixedTime := time.Date(2025, 1, 16, 5, 13, 23, 0, time.UTC)
+
 	healthEventsList := []platformconnector.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
@@ -501,7 +548,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
-			GeneratedTimestamp: timestamppb.New(time.Now()),
+			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "gpu",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "XID44 error on GPU 0",
@@ -511,7 +558,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			IsHealthy:          false,
 			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
 			IsFatal:            true,
-			GeneratedTimestamp: timestamppb.New(time.Now()),
+			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "network",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "InfiniBand error on mlx5_0",
@@ -522,7 +569,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			ErrorCode:          []string{"SWITCH_ERROR"},
 			IsFatal:            true,
-			GeneratedTimestamp: timestamppb.New(time.Now()),
+			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "nvswitch",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "Nvswitch error on nvswitch0",
@@ -543,8 +590,8 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 					{
 						Type:               conditionType,
 						Status:             corev1.ConditionFalse,
-						LastHeartbeatTime:  metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
-						LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+						LastHeartbeatTime:  metav1.Time{Time: fixedTime.Add(-10 * time.Minute)},
+						LastTransitionTime: metav1.Time{Time: fixedTime.Add(-10 * time.Minute)},
 						Message:            NoHealthFailureMsg,
 					},
 				},
@@ -555,18 +602,9 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 
-		newCondition := corev1.NodeCondition{
-			Type:               conditionType,
-			LastHeartbeatTime:  metav1.Now(),
-			LastTransitionTime: metav1.Now(),
-			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
-		}
-
-		var conditions []v1.NodeCondition
-		conditions = append(conditions, newCondition)
 		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
+		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -583,8 +621,10 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 				if condition.Status != corev1.ConditionTrue {
 					t.Errorf("Expected condition status to be True for %s, got %v", conditionType, condition.Status)
 				}
-				if condition.LastTransitionTime.Time.Before(time.Now().Add(-5 * time.Minute)) {
-					t.Errorf("Expected LastTransitionTime to be updated for %s", conditionType)
+				expectedTime := fixedTime
+				actualTime := condition.LastTransitionTime.Time.UTC()
+				if !actualTime.Equal(expectedTime) {
+					t.Errorf("Expected LastTransitionTime to be updated to %v, got %v", expectedTime, actualTime)
 				}
 				break
 			}
@@ -650,18 +690,9 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		}
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
-		newCondition := corev1.NodeCondition{
-			Type:               conditionType,
-			LastHeartbeatTime:  metav1.Now(),
-			LastTransitionTime: metav1.Now(),
-			Message:            k8sConnector.fetchHealthEventMessage(healthEvent),
-		}
-
-		var conditions []v1.NodeCondition
-		conditions = append(conditions, newCondition)
 		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
+		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -777,17 +808,9 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 
-		newCondition := corev1.NodeCondition{
-			Type:               testCase.conditionType,
-			LastHeartbeatTime:  metav1.Now(),
-			LastTransitionTime: metav1.Now(),
-			Message:            k8sConnector.fetchHealthEventMessage(testCase.healthEvent),
-		}
-		var conditions []v1.NodeCondition
-		conditions = append(conditions, newCondition)
 		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, testCase.healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
+		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -876,17 +899,10 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 		}
 
-		newCondition := corev1.NodeCondition{
-			Type:               testCase.conditionType,
-			LastHeartbeatTime:  metav1.Now(),
-			LastTransitionTime: metav1.Now(),
-		}
-		var conditions []v1.NodeCondition
-		conditions = append(conditions, newCondition)
 		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
 
-		err = k8sConnector.updateNodeConditions(ctx, conditions, healthEvents.Events)
+		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("testcase %d updateNodeCondition failed: %v", index+1, err)
 		}

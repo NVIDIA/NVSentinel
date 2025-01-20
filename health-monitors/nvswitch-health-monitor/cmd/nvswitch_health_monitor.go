@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/ini.v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog"
 )
 
@@ -47,7 +48,7 @@ const (
 const defaultStateFilePath = "/var/run/nvswitch_monitor/state.json"
 
 const (
-	defaultMaxRetriesForHealthyEvent        = 20
+	defaultMaxRetriesForHealthyEvent        = 10
 	defaultRetryDelaySecondsForHealthyEvent = 5
 )
 
@@ -311,29 +312,8 @@ func main() {
 		case sxidError := <-sxidErrorMonitor.EventChan:
 			healthEvents := SxidEvent2HealthEvents(sxidError)
 
-			// we need to retry here because as the node rebooted the platform connectors may take time to come up
-			if sxidError.IsHealthy {
-				err := sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent,
-					time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent)*time.Second)
-				if err != nil {
-					klog.Error(err)
-					healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
-				} else {
-					klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
-				}
-				continue
-			}
-			start := time.Now()
-			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
-			duration := float64(time.Since(start).Milliseconds())
-			healthEventPublishDuration.Observe(duration)
-			if err != nil {
-				klog.Error(err)
-				healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
-			} else if len(healthEvents.Events) > 0 {
-				healthEventsPublished.Add(float64(len(healthEvents.Events)))
-				klog.Infof("Successfully sent health event: %+v", healthEvents.Events)
-			}
+			retryDelay := time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent) * time.Second
+			sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent, retryDelay)
 		}
 	}
 }
@@ -353,35 +333,44 @@ func isRetryableError(err error) bool {
 }
 
 func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
-	maxRetries int, retryDelay time.Duration) error {
-	var err error
+	maxRetries int, retryDelay time.Duration) {
+	backoff := wait.Backoff{
+		Steps:    maxRetries,
+		Duration: retryDelay,
+		Factor:   2,
+		Jitter:   0.1,
+	}
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
 		start := time.Now()
 
-		_, err = client.HealthEventOccuredV1(context.Background(), healthEvents)
+		_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
 
 		duration := float64(time.Since(start).Milliseconds())
 		healthEventPublishDuration.Observe(duration)
 
 		if err == nil {
-			healthEventsPublished.Add(float64(len(healthEvents.Events)))
-			return nil
+			klog.Infof("Successfully sent health event: %+v", healthEvents)
+
+			if len(healthEvents.Events) > 0 {
+				healthEventsPublished.Add(float64(len(healthEvents.Events)))
+			}
+
+			return true, nil
 		}
 
 		if isRetryableError(err) {
-			klog.Errorf("Attempt %d/%d: Failed to send health event due to retryable error: %v", attempt, maxRetries, err)
-
-			if attempt < maxRetries {
-				time.Sleep(retryDelay)
-			}
-		} else {
-			// non-retryable error encountered, log and exit
-			klog.Errorf("Failed to send health event due to non-retryable error: %v", err)
-			break
+			klog.Errorf("Retryable error occurred: %v", err)
+			return false, nil
 		}
-	}
 
-	klog.Error("All retry attempts to send health event failed.")
-	return err
+		klog.Errorf("Non-retryable error occurred: %v", err)
+
+		return false, err
+	})
+
+	if err != nil {
+		healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
+		klog.Errorf("All retry attempts to send health event failed: %v", err)
+	}
 }

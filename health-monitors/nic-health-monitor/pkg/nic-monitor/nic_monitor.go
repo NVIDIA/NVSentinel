@@ -53,6 +53,8 @@ type NicMonitorConfig struct {
 	PollingIntervalInMilliseconds                    int
 	MaxRetryDurationForDownDetectedNICInMilliseconds int
 	RetryIntervalForDownDetectedNICInMilliseconds    int
+	MaxRetriesForRetryableError                      int
+	RetryDelaySecondsForRetryableError               int
 }
 
 type NicMonitor interface {

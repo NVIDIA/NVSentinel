@@ -15,7 +15,7 @@
 ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidian/distroless/go
 
-FROM golang:1.22 AS builder
+FROM golang:1.23 AS builder
 
 ENV CGO_ENABLED=0
 

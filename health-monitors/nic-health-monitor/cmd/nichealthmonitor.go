@@ -30,9 +30,12 @@ import (
 	nic "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor/pkg/nic-monitor"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor/pkg/protos"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/ini.v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog"
 )
 
@@ -48,6 +51,8 @@ const (
 	defaultPollingIntervalInMilliseconds                    = 1000
 	defaultMaxRetryDurationForDownDetectedNICInMilliseconds = 500
 	defaultRetryIntervalForDownDetectedNICInMilliseconds    = 100
+	defaultMaxRetriesForRetryableError                      = 10
+	defaultRetryDelaySecondsForRetryableError               = 5
 )
 
 var (
@@ -152,11 +157,25 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		return nil, err
 	}
 
+	maxRetriesForRetryableError, err := getIntValue("MaxRetriesForRetryableError",
+		defaultMaxRetriesForRetryableError)
+	if err != nil {
+		return nil, err
+	}
+
+	retryDelaySecondsForRetryableError, err := getIntValue("RetryDelaySecondsForRetryableError",
+		defaultRetryDelaySecondsForRetryableError)
+	if err != nil {
+		return nil, err
+	}
+
 	return &nic.NicMonitorConfig{
 		PollingIntervalInMilliseconds:                    pollingInterval,
 		ExclusionRegexes:                                 exclusionRegexes,
 		MaxRetryDurationForDownDetectedNICInMilliseconds: maxRetryDuration,
 		RetryIntervalForDownDetectedNICInMilliseconds:    retryInterval,
+		MaxRetriesForRetryableError:                      maxRetriesForRetryableError,
+		RetryDelaySecondsForRetryableError:               retryDelaySecondsForRetryableError,
 	}, nil
 }
 
@@ -185,6 +204,14 @@ func validateConfig(cfg *nic.NicMonitorConfig) error {
 			cfg.RetryIntervalForDownDetectedNICInMilliseconds,
 			cfg.MaxRetryDurationForDownDetectedNICInMilliseconds,
 		)
+	}
+
+	if cfg.MaxRetriesForRetryableError < 1 {
+		return fmt.Errorf("MaxRetriesForRetryableError must not be less than 1")
+	}
+
+	if cfg.RetryDelaySecondsForRetryableError <= 0 {
+		return fmt.Errorf("RetryDelaySecondsForRetryableError must be a positive integer")
 	}
 
 	for _, regex := range cfg.ExclusionRegexes {
@@ -224,6 +251,8 @@ func main() {
 		ExclusionRegexes:                                 []string{},
 		MaxRetryDurationForDownDetectedNICInMilliseconds: *maxRetryDurationForDownDetectedNIC,
 		RetryIntervalForDownDetectedNICInMilliseconds:    *retryIntervalForDownDetectedNIC,
+		MaxRetriesForRetryableError:                      defaultMaxRetriesForRetryableError,
+		RetryDelaySecondsForRetryableError:               defaultRetryDelaySecondsForRetryableError,
 	}
 
 	if *nicExclusionRegexes != "" {
@@ -260,6 +289,10 @@ func main() {
 
 		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds =
 			fileConfig.RetryIntervalForDownDetectedNICInMilliseconds
+
+		nicConfig.MaxRetriesForRetryableError = fileConfig.MaxRetriesForRetryableError
+
+		nicConfig.RetryDelaySecondsForRetryableError = fileConfig.RetryDelaySecondsForRetryableError
 
 		klog.Info("Loaded configuration from configmap")
 	}
@@ -315,22 +348,64 @@ func main() {
 				continue
 			}
 
-			start := time.Now()
-
-			_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
-
-			duration := float64(time.Since(start).Milliseconds())
-			healthEventPublishDuration.Observe(duration)
-
-			if err != nil {
-				klog.Error(err)
-			} else {
-				klog.Infof("Successfully sent health events: %+v", healthEvents)
-
-				if len(healthEvents.Events) > 0 {
-					healthEventsPublished.Add(float64(len(healthEvents.Events)))
-				}
-			}
+			sendHealthEventWithRetry(client, healthEvents, nicConfig.MaxRetriesForRetryableError,
+				time.Duration(nicConfig.RetryDelaySecondsForRetryableError)*time.Second)
 		}
+	}
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if s, ok := status.FromError(err); ok {
+		if s.Code() == codes.Unavailable {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
+	maxRetries int, retryDelay time.Duration) {
+	backoff := wait.Backoff{
+		Steps:    maxRetries,
+		Duration: retryDelay,
+		Factor:   2,
+		Jitter:   0.1,
+	}
+
+	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		start := time.Now()
+
+		_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
+
+		duration := float64(time.Since(start).Milliseconds())
+		healthEventPublishDuration.Observe(duration)
+
+		if err == nil {
+			klog.Infof("Successfully sent health events: %+v", healthEvents)
+
+			if len(healthEvents.Events) > 0 {
+				healthEventsPublished.Add(float64(len(healthEvents.Events)))
+			}
+
+			return true, nil
+		}
+
+		if isRetryableError(err) {
+			klog.Errorf("Retryable error occurred: %v", err)
+			return false, nil
+		}
+
+		klog.Errorf("Non-retryable error occurred: %v", err)
+
+		return false, err
+	})
+
+	if err != nil {
+		klog.Errorf("All retry attempts to send health event failed: %v", err)
 	}
 }

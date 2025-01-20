@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.22 AS builder
+FROM golang:1.23 AS builder
 
 ENV CGO_ENABLED=0
 

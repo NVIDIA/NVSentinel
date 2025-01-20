@@ -27,6 +27,9 @@ const (
 	// port healthy message
 	portIsHealthy = "Port is healthy"
 
+	// NIC is detected
+	nicIsDetected = "IB NIC is detected"
+
 	// infiniband states
 	stateActive    = "4: ACTIVE"
 	phyStateLinkup = "5: LinkUp"
@@ -153,6 +156,15 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 
 	for deviceName, device := range deviceList {
 		oldDevice, oldDeviceExist := m.Devices[deviceName]
+
+		if !oldDeviceExist {
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           device.Name,
+				Message:        nicIsDetected,
+				IsHealthyEvent: true,
+			})
+		}
 
 		for portName, port := range device.Ports {
 			var oldPort InfiniBandPort

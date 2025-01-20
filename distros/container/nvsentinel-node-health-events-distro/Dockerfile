@@ -14,7 +14,7 @@
 
 
 #Platform connector build
-FROM golang:1.22 AS builder
+FROM golang:1.23 AS builder
 
 RUN mkdir -p /app
 COPY platform-connectors /app/platform-connectors

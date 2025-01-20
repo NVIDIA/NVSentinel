@@ -1,6 +1,6 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module
 
-go 1.22.1
+go 1.23.0
 
 toolchain go1.23.3
 

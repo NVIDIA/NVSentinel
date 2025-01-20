@@ -73,7 +73,10 @@ func TestInfinibandMonitor(t *testing.T) {
 
 	mockFS := fileSystem.(*MockFileSystem)
 
-	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
+	expectedNoError := []NicHealthEvent{
+		{NicType: Infiniband, Name: "mlx5_0", Message: nicIsDetected, IsHealthyEvent: true},
+		{NicType: Infiniband, Name: "mlx5_0_1", Message: portIsHealthy, IsHealthyEvent: true},
+	}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
 
@@ -162,7 +165,10 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 
 	mockFS := fileSystem.(*MockFileSystem)
 
-	expectedNoError := []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
+	expectedNoError := []NicHealthEvent{
+		{NicType: Infiniband, Name: "mlx5_0", Message: nicIsDetected, IsHealthyEvent: true},
+		{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true},
+	}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
 
