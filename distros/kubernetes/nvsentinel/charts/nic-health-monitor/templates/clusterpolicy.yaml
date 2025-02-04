@@ -33,14 +33,6 @@ spec:
           - key: "{{`{{ request.object.metadata.annotations.\"networking.gke.io/interfaces\" || '' }}`}}"
             operator: NotEquals
             value: ""
-        any:
-          - key: "{{`{{ request.object.metadata.annotations.\"runai-job-id\"  || '' }}`}}"
-            operator: NotEquals
-            value: ""
-          - key: "{{`{{ request.object.metadata.labels.\"training.kubeflow.org/job-name\" || '' }}`}}"
-            operator: NotEquals
-            value: ""
-
       mutate:
         patchStrategicMerge:
           spec:
