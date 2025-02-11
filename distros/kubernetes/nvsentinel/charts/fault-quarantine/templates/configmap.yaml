@@ -20,6 +20,8 @@ metadata:
     {{- include "fault-quarantine-module.labels" . | nindent 4 }}
 data:
   config.toml: |
+    label-prefix = "k8saas.nvidia.com/"
+    
     [[rule-sets]]
       version = "1"
       name = "NIC fatal error ruleset"                  # an admin friendly name for the rule set, used only for logging
@@ -31,11 +33,6 @@ data:
       [[rule-sets.match.all]]
         kind = "HealthEvent" 
         expression = "event.isFatal == true"
-
-      [rule-sets.taint]
-        key = "AggregatedNodeHealth"
-        value = "NICErrOccurred"
-        effect = "NoSchedule"
 
       [rule-sets.cordon]
         shouldCordon = true
@@ -52,11 +49,6 @@ data:
         kind = "HealthEvent"
         expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU'"
 
-      [rule-sets.taint]
-        key = "AggregatedNodeHealth"
-        value = "GPUErrOccurred"
-        effect = "NoSchedule"
-
       [rule-sets.cordon]
         shouldCordon = true
 
@@ -71,11 +63,6 @@ data:
       [[rule-sets.match.all]]
         kind = "HealthEvent" 
         expression = "event.isFatal == true"
-
-      [rule-sets.taint]
-        key = "AggregatedNodeHealth"
-        value = "NVSwitchErrOccurred"
-        effect = "NoSchedule"
 
       [rule-sets.cordon]
         shouldCordon = true

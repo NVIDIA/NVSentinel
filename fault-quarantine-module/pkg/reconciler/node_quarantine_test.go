@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"testing"
+	"time"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	v1 "k8s.io/api/core/v1"
@@ -32,7 +33,8 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 	// Create a test node
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: nodeName,
+			Name:   nodeName,
+			Labels: map[string]string{},
 		},
 		Spec: v1.NodeSpec{},
 	}
@@ -56,7 +58,16 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 		"test-annotation": "test-value",
 	}
 
-	err = k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, true, annotations)
+	cordonedByLabelKey = "cordon-by"
+	cordonedReasonLabelKey = "cordon-reason"
+	cordonedTimestampLabelKey = "cordon-timestamp"
+
+	labelsMap := map[string]string{
+		cordonedByLabelKey:        serviceName,
+		cordonedReasonLabelKey:    "gpu-error",
+		cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
+	}
+	err = k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, true, annotations, labelsMap)
 	if err != nil {
 		t.Fatalf("TaintAndCordonNodeAndSetAnnotations failed: %v", err)
 	}
@@ -78,6 +89,9 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 	if !updatedNode.Spec.Unschedulable {
 		t.Errorf("Node should be cordoned")
 	}
+	if len(updatedNode.Labels) != 3 || updatedNode.Labels[cordonedByLabelKey] != serviceName || updatedNode.Labels[cordonedReasonLabelKey] != "gpu-error" || updatedNode.Labels[cordonedTimestampLabelKey] == "" {
+		t.Errorf("Cordoned labels are not applied on node")
+	}
 
 	// Check annotations
 	if val, ok := updatedNode.Annotations["test-annotation"]; !ok || val != "test-value" {
@@ -90,12 +104,24 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	nodeName := "test-node"
 
+	cordonedByLabelKey = "cordon-by"
+	cordonedReasonLabelKey = "cordon-reason"
+	cordonedTimestampLabelKey = "cordon-timestamp"
+	uncordonedByLabelKey = "uncordon-by"
+	uncordonedReasonLabelkey = "uncordon-reason"
+	uncordonedTimestampLabelKey = "uncordon-timestamp"
+
 	// Create a test node with taints, cordon, and annotations
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: nodeName,
 			Annotations: map[string]string{
 				"test-annotation": "test-value",
+			},
+			Labels: map[string]string{
+				cordonedByLabelKey:        serviceName,
+				cordonedReasonLabelKey:    "gpu-error",
+				cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 			},
 		},
 		Spec: v1.NodeSpec{
@@ -127,7 +153,12 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 	}
 	annotationKeys := []string{"test-annotation"}
 
-	err = k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taints, true, annotationKeys)
+	labelsMap := map[string]string{
+		uncordonedByLabelKey:        serviceName,
+		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
+	}
+
+	err = k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taints, true, annotationKeys, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
 	if err != nil {
 		t.Fatalf("UnTaintAndUnCordonNodeAndRemoveAnnotations failed: %v", err)
 	}
@@ -147,6 +178,18 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 
 	if _, ok := updatedNode.Annotations["test-annotation"]; ok {
 		t.Errorf("Annotation should be removed")
+	}
+
+	_, exists1 := updatedNode.Labels[cordonedByLabelKey]
+	_, exists2 := updatedNode.Labels[cordonedReasonLabelKey]
+	_, exists3 := updatedNode.Labels[cordonedTimestampLabelKey]
+
+	if exists1 || exists2 || exists3 {
+		t.Errorf("Expected cordoned labels to be removed from node")
+	}
+
+	if len(updatedNode.Labels) != 3 || updatedNode.Labels[uncordonedByLabelKey] != serviceName || updatedNode.Labels[uncordonedReasonLabelkey] != "gpu-error-removed" || updatedNode.Labels[uncordonedTimestampLabelKey] == "" {
+		t.Errorf("Expected uncordoned lables to be applied on node")
 	}
 }
 
@@ -261,7 +304,7 @@ func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	k8sClient := &k8sClient{clientset: clientset}
 
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "non-existent-node", nil, false, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "non-existent-node", nil, false, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error when node does not exist, got nil")
 	}
@@ -279,7 +322,7 @@ func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 
 	k8sClient := &k8sClient{clientset: clientset}
 
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -309,7 +352,7 @@ func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	// No taints to remove, node is already uncordoned, and no annotations to remove
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, false, nil)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, false, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -346,7 +389,7 @@ func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	taintsToRemove := []config.Taint{{Key: "taint1", Value: "val1", Effect: "NoSchedule"}}
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -364,6 +407,13 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
 
+	cordonedByLabelKey = "cordon-by"
+	cordonedReasonLabelKey = "cordon-reason"
+	cordonedTimestampLabelKey = "cordon-timestamp"
+	uncordonedByLabelKey = "uncordon-by"
+	uncordonedReasonLabelkey = "uncordon-reason"
+	uncordonedTimestampLabelKey = "uncordon-timestamp"
+
 	nodeName := "partial-annotation-removal-node"
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -371,6 +421,11 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 			Annotations: map[string]string{
 				"annotation1": "val1",
 				"annotation2": "val2",
+			},
+			Labels: map[string]string{
+				cordonedByLabelKey:        serviceName,
+				cordonedReasonLabelKey:    "gpu-error",
+				cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 			},
 		},
 		Spec: v1.NodeSpec{
@@ -382,7 +437,11 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	annotationsToRemove := []string{"annotation1"}
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, annotationsToRemove)
+	labelsMap := map[string]string{
+		uncordonedByLabelKey:        serviceName,
+		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
+	}
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, annotationsToRemove, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -417,7 +476,7 @@ func TestTaintAndCordonNode_AlreadyTaintedCOrdonned(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	taints := []config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}}
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, true, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, true, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -444,7 +503,7 @@ func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	k8sClient := &k8sClient{clientset: clientset}
 
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, nil)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -471,7 +530,7 @@ func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 
 	// Provide an invalid effect
 	taints := []config.Taint{{Key: "weird-key", Value: "weird-value", Effect: "SomeInvalidEffect"}}
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, false, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error adding invalid effect taint, got %v", err)
 	}
@@ -500,7 +559,7 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	annotations := map[string]string{"existing-key": "new-value"}
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -529,7 +588,7 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 
 	// Attempt to remove a taint that doesn't exist
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -560,7 +619,7 @@ func TestUnTaintAndUnCordonNode_NonExistentAnnotationRemoval(t *testing.T) {
 
 	// Attempt to remove an annotation that doesn't exist
 	annotationsToRemove := []string{"nonexistent-annotation"}
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, false, annotationsToRemove)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, false, annotationsToRemove, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -585,7 +644,7 @@ func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 	taints := []config.Taint{
 		{Key: "", Value: "", Effect: "NoSchedule"},
 	}
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, false, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, false, nil, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -611,7 +670,7 @@ func TestTaintAndCordonNode_EmptyAnnotationKey(t *testing.T) {
 	annotations := map[string]string{
 		"": "empty-key-value",
 	}
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -678,7 +737,7 @@ func TestTaintAndCordonNode_NonExistentNode(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	// Attempt to taint a node that doesn't exist
-	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "no-such-node", nil, true, nil)
+	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "no-such-node", nil, true, nil, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for non-existent node, got nil")
 	}
@@ -690,7 +749,7 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	k8sClient := &k8sClient{clientset: clientset}
 
 	// Attempt to untaint a node that doesn't exist
-	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, "no-such-node", nil, true, nil)
+	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, "no-such-node", nil, true, nil, []string{}, map[string]string{})
 	if err == nil {
 		t.Errorf("Expected error for non-existent node, got nil")
 	}

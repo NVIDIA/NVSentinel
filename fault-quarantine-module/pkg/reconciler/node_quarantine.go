@@ -73,6 +73,7 @@ func (c *k8sClient) TaintAndCordonNodeAndSetAnnotations(
 	taints []config.Taint,
 	isCordon bool,
 	annotations map[string]string,
+	labels map[string]string,
 ) error {
 	return retry.OnError(customBackoff, errors.IsConflict, func() error {
 		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
@@ -133,6 +134,13 @@ func (c *k8sClient) TaintAndCordonNodeAndSetAnnotations(
 			}
 		}
 
+		// Labels check
+		klog.Infof("Adding labels on node %s", nodename)
+
+		for k, v := range labels {
+			node.Labels[k] = v
+		}
+
 		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to taint node: %w", err)
@@ -149,6 +157,8 @@ func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 	taints []config.Taint,
 	isUnCordon bool,
 	annotationKeys []string,
+	labelsToRemove []string,
+	labels map[string]string,
 ) error {
 	return retry.OnError(customBackoff, errors.IsConflict, func() error {
 		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
@@ -211,6 +221,20 @@ func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 			klog.Infof("Uncordoning node %s", nodename)
 
 			node.Spec.Unschedulable = false
+
+			klog.Infof("Adding labels on node %s", nodename)
+
+			for k, v := range labels {
+				node.Labels[k] = v
+			}
+
+			uncordonReason := node.Labels[cordonedReasonLabelKey]
+
+			if len(uncordonReason) > 55 {
+				uncordonReason = uncordonReason[:55]
+			}
+
+			node.Labels[uncordonedReasonLabelkey] = uncordonReason + "-removed"
 		}
 
 		// Annotation check
@@ -219,6 +243,14 @@ func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 			for _, annotationKey := range annotationKeys {
 				klog.Infof("Removing annotation key %s from node %s", annotationKey, nodename)
 				delete(node.Annotations, annotationKey)
+			}
+		}
+
+		// Label check
+		if len(labelsToRemove) > 0 {
+			for _, labelKey := range labelsToRemove {
+				klog.Infof("Removing label key %s from node %s", labelKey, nodename)
+				delete(node.Labels, labelKey)
 			}
 		}
 

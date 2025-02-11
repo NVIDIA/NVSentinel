@@ -27,8 +27,8 @@ import (
 type mockK8sClient struct {
 	getNodeAnnotationsFn     func(ctx context.Context, nodeName string) (map[string]string, error)
 	getNodesWithAnnotationFn func(ctx context.Context, annotationKey string) ([]string, error)
-	taintAndCordonNodeFn     func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string) error
-	unTaintAndUnCordonNodeFn func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string) error
+	taintAndCordonNodeFn     func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error
+	unTaintAndUnCordonNodeFn func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error
 }
 
 func (m *mockK8sClient) GetNodeAnnotations(ctx context.Context, nodeName string) (map[string]string, error) {
@@ -37,11 +37,11 @@ func (m *mockK8sClient) GetNodeAnnotations(ctx context.Context, nodeName string)
 func (m *mockK8sClient) GetNodesWithAnnotation(ctx context.Context, annotationKey string) ([]string, error) {
 	return m.getNodesWithAnnotationFn(ctx, annotationKey)
 }
-func (m *mockK8sClient) TaintAndCordonNodeAndSetAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string) error {
-	return m.taintAndCordonNodeFn(ctx, nodeName, taints, isCordon, annotations)
+func (m *mockK8sClient) TaintAndCordonNodeAndSetAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+	return m.taintAndCordonNodeFn(ctx, nodeName, taints, isCordon, annotations, labelMap)
 }
-func (m *mockK8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isUnCordon bool, annotationKeys []string) error {
-	return m.unTaintAndUnCordonNodeFn(ctx, nodeName, taints, isUnCordon, annotationKeys)
+func (m *mockK8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isUnCordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+	return m.unTaintAndUnCordonNodeFn(ctx, nodeName, taints, isUnCordon, annotationKeys, labelsToRemove, labelMap)
 }
 
 type mockEvaluator struct {
@@ -72,6 +72,7 @@ func TestHandleEvent(t *testing.T) {
 	ctx := context.Background()
 
 	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k88s.nvidia.com/",
 		RuleSets: []config.RuleSet{
 			{
 				Name: "ruleset1",
@@ -104,7 +105,7 @@ func TestHandleEvent(t *testing.T) {
 				// Initially no quarantined nodes
 				return []string{}, nil
 			},
-			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string) error {
+			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
 				// ensure it is called with correct parameters
 				if nodeName != "node1" {
 					t.Errorf("Expected node name node1, got %s", nodeName)
@@ -118,6 +119,9 @@ func TestHandleEvent(t *testing.T) {
 				}
 				if _, ok := annotations[quarantineHealthEventAnnotationKey]; !ok {
 					t.Errorf("Expected quarantineHealthEvent annotation to be set")
+				}
+				if len(labelsMap) != 3 {
+					t.Errorf("Expected cordon labels to be applied on node %s", nodeName)
 				}
 				return nil
 			},
@@ -176,7 +180,7 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 				return []string{}, nil
 			},
 			// Should not be called in this scenario
-			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string) error {
+			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
 				t.Errorf("TaintAndCordonNodeAndSetAnnotations should not be called when no rules triggered.")
 				return nil
 			},
@@ -220,7 +224,7 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
 			return annotationsMap, nil
 		},
-		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string) error {
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
 			// Check that correct taints and annotations are removed
 			if nodeName != "node1" {
 				t.Errorf("Expected node name node1, got %s", nodeName)
@@ -240,6 +244,9 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 				if !expectedKeys[k] {
 					t.Errorf("Unexpected annotation key removed: %s", k)
 				}
+			}
+			if len(labelMap) != 2 {
+				t.Errorf("Expected uncordon labels to be applied on node %s", nodeName)
 			}
 			return nil
 		},
@@ -289,7 +296,7 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
 			return annotationsMap, nil
 		},
-		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string) error {
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
 			t.Errorf("Should not be called if no unquarantine needed")
 			return nil
 		},

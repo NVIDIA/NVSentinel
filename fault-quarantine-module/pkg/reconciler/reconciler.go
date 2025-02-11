@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +59,19 @@ const (
 	quarantineHealthEventAppliedTaintsAnnotationKey    = "quarantineHealthEventAppliedTaints"
 	quarantineHealthEventIsCordonedAnnotationKey       = "quarantineHealthEventIsCordoned"
 	quarantineHealthEventIsCordonedAnnotationValueTrue = "True"
+
+	serviceName = "NVSentinel"
+)
+
+var (
+	// Label keys
+	cordonedByLabelKey        string
+	cordonedReasonLabelKey    string
+	cordonedTimestampLabelKey string
+
+	uncordonedByLabelKey        string
+	uncordonedReasonLabelkey    string
+	uncordonedTimestampLabelKey string
 )
 
 func NewReconciler(cfg ReconcilerConfig) *Reconciler {
@@ -69,6 +84,16 @@ func (r *Reconciler) Start(ctx context.Context) {
 	if err != nil {
 		klog.Fatalf("failed to initialize all rule set evaluators: %+v", err)
 	}
+
+	labelKeyPrefix := r.config.TomlConfig.LabelPrefix
+
+	cordonedByLabelKey = labelKeyPrefix + "cordon-by"
+	cordonedReasonLabelKey = labelKeyPrefix + "cordon-reason"
+	cordonedTimestampLabelKey = labelKeyPrefix + "cordon-timestamp"
+
+	uncordonedByLabelKey = labelKeyPrefix + "uncordon-by"
+	uncordonedReasonLabelkey = labelKeyPrefix + "uncordon-reason"
+	uncordonedTimestampLabelKey = labelKeyPrefix + "uncordon-timestamp"
 
 	taintConfigMap := make(map[string]*config.Taint)
 	cordonConfigMap := make(map[string]bool)
@@ -215,6 +240,8 @@ func (r *Reconciler) handleEvent(
 
 	var taintAppliedMap sync.Map
 
+	var labelsMap sync.Map
+
 	var isCordoned atomic.Bool
 
 	var taintEffectPriorityMap sync.Map
@@ -251,6 +278,15 @@ func (r *Reconciler) handleEvent(
 
 				if shouldCordon := rulesetsConfig.CordonConfigMap[eval.GetName()]; shouldCordon {
 					isCordoned.Store(true)
+
+					newCordonReason := eval.GetName()
+
+					if _, exist := labelsMap.Load(cordonedReasonLabelKey); exist {
+						oldCordonReason, _ := labelsMap.Load(cordonedReasonLabelKey)
+						newCordonReason = oldCordonReason.(string) + "-" + newCordonReason
+					}
+
+					labelsMap.Store(cordonedReasonLabelKey, formatCordonOrUncordonReasonValue(newCordonReason, 63))
 				}
 
 				taintConfig := rulesetsConfig.TaintConfigMap[eval.GetName()]
@@ -319,6 +355,9 @@ func (r *Reconciler) handleEvent(
 	if isCordoned.Load() {
 		// store cordon as an annotation
 		annotationsMap[quarantineHealthEventIsCordonedAnnotationKey] = quarantineHealthEventIsCordonedAnnotationValueTrue
+
+		labelsMap.Store(cordonedByLabelKey, serviceName)
+		labelsMap.Store(cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
 	}
 
 	isNodeQuarantined := (len(taintsToBeApplied) > 0 || isCordoned.Load())
@@ -332,12 +371,23 @@ func (r *Reconciler) handleEvent(
 			annotationsMap[quarantineHealthEventAnnotationKey] = string(eventJsonStr)
 		}
 
+		labels := map[string]string{}
+		labelsMap.Range(func(key, value any) bool {
+			strKey, okKey := key.(string)
+			strValue, okValue := value.(string)
+			if okKey && okValue {
+				labels[strKey] = strValue
+			}
+			return true
+		})
+
 		if err := r.config.K8sClient.TaintAndCordonNodeAndSetAnnotations(
 			ctx,
 			event.NodeName,
 			taintsToBeApplied,
 			isCordoned.Load(),
 			annotationsMap,
+			labels,
 		); err != nil {
 			klog.Errorf("error while updating node for event: %+v: %+v", event, err)
 
@@ -378,6 +428,8 @@ func (r *Reconciler) handleQuarantinedNode(
 		return true
 	}
 
+	labelsMap := map[string]string{}
+
 	quarantineAnnotationEvent, exists := annotations[quarantineHealthEventAnnotationKey]
 	if !exists || quarantineAnnotationEvent == "" {
 		// No quarantine annotation found, node is not considered quarantined
@@ -417,6 +469,8 @@ func (r *Reconciler) handleQuarantinedNode(
 			isUnCordon = true
 
 			annotationsToBeRemoved = append(annotationsToBeRemoved, quarantineHealthEventIsCordonedAnnotationKey)
+			labelsMap[uncordonedByLabelKey] = serviceName
+			labelsMap[uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
 		}
 
 		if len(taintsToBeRemoved) > 0 || isUnCordon {
@@ -428,6 +482,7 @@ func (r *Reconciler) handleQuarantinedNode(
 				taintsToBeRemoved,
 				isUnCordon,
 				annotationsToBeRemoved,
+				[]string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap,
 			); err != nil {
 				klog.Errorf("error while updating node for event: %+v: %+v", event, err)
 				processingErrors.WithLabelValues("untaint_and_uncordon_error").Inc()
@@ -536,4 +591,19 @@ func areAnnotationEntitiesSubsetOfEventEntities(
 	}
 
 	return true
+}
+
+func formatCordonOrUncordonReasonValue(input string, length int) string {
+	re := regexp.MustCompile(`[^a-zA-Z0-9_.-]`)
+
+	formatted := re.ReplaceAllString(input, "-")
+
+	if len(formatted) > length {
+		formatted = formatted[:length]
+	}
+
+	// Ensure it starts and ends with an alphanumeric character
+	formatted = strings.Trim(formatted, "-")
+
+	return formatted
 }

@@ -48,7 +48,8 @@ type RuleSet struct {
 }
 
 type TomlConfig struct {
-	RuleSets []RuleSet `toml:"rule-sets"`
+	LabelPrefix string    `toml:"label-prefix"`
+	RuleSets    []RuleSet `toml:"rule-sets"`
 }
 
 func LoadTomlConfig(path string) (*TomlConfig, error) {
