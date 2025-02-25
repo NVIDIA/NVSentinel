@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -142,8 +141,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	watcher.Start(ctx)
 
-	bsonTaggedStructType := storewatcher.CreateBsonTaggedStructType(reflect.TypeOf(storeconnector.HealthEventWithStatus{}))
-
 	quarantinedNodesMap := make(map[string]bool)
 
 	quarantinedNodesList, err := r.config.K8sClient.GetNodesWithAnnotation(ctx, quarantineHealthEventAnnotationKey)
@@ -163,11 +160,10 @@ func (r *Reconciler) Start(ctx context.Context) {
 		totalEventsReceived.Inc()
 
 		startTime := time.Now()
-
 		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
-		if err := storewatcher.UnmarshalFullDocumentToJsonTaggedStructFromEvent(
+
+		if err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
-			bsonTaggedStructType,
 			&healthEventWithStatus,
 		); err != nil {
 			klog.Errorf("Failed to unmarshal event: %+v", err)
@@ -193,14 +189,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 		errFlag := false
 
-		if isNodeQuarantined != healthEventWithStatus.HealthEventStatus.NodeQuarantined {
-			if err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, event, isNodeQuarantined); err != nil {
-				klog.Errorf("Error updating Node quarantine status: %+v", err)
+		if err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, event, isNodeQuarantined); err != nil {
+			klog.Errorf("Error updating Node quarantine status: %+v", err)
 
-				processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
+			processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
 
-				errFlag = true
-			}
+			errFlag = true
 		}
 
 		if err := watcher.MarkProcessed(ctx); err != nil {
@@ -535,7 +529,7 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 		return fmt.Errorf("error updating document with _id: %v, error: %w", document["_id"], err)
 	}
 
-	klog.Infof("Document with _id: %v has been updated.", document["_id"])
+	klog.Infof("Document with _id: %v has been updated with status %t", document["_id"], isQuarantined)
 
 	return nil
 }

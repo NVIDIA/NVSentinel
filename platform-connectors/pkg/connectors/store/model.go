@@ -20,10 +20,24 @@ import (
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
+type Status string
+
+const (
+	StatusNotStarted Status = "NotStarted"
+	StatusInProgress Status = "InProgress"
+	StatusFailed     Status = "Failed"
+	StatusSucceeded  Status = "Succeeded"
+)
+
+type OperationStatus struct {
+	Status  Status `bson:"status"`
+	Message string `bson:"message,omitempty"`
+}
+
 type HealthEventStatus struct {
-	NodeQuarantined         bool `bson:"nodequarantined"`
-	UserPodsEvictedFromNode bool `bson:"userpodsevictedfromnode"`
-	FaultRemediated         bool `bson:"faultremediated"`
+	NodeQuarantined        *bool           `bson:"nodequarantined"`
+	UserPodsEvictionStatus OperationStatus `bson:"userpodsevictionstatus"`
+	FaultRemediated        *bool           `bson:"faultremediated"`
 }
 
 type HealthEventWithStatus struct {

@@ -11,8 +11,14 @@ dependencies:
 - name: mongodb-store
   repository: ""
   version: 0.1.0
+- name: fault-quarantine
+  repository: ""
+  version: 0.1.0
+- name: fault-notification
+  repository: ""
+  version: 0.1.0
 - name: shoreline-agent
   repository: https://helm.ngc.nvidia.com/nv-ngc-devops
   version: 27.5.0
-digest: sha256:a299dcde6b236b5bf27b1d2e50be7ccf51467fbb31d99b5ff3b535bd4a41eaa4
-generated: "2024-11-15T16:42:40.059524263+05:30"
+digest: sha256:60ae883090f79f2badc21f94fec9fb57da2cad1826efefa302a06ab85c177e6e
+generated: "2025-01-28T14:46:36.20244+05:30"

@@ -49,6 +49,13 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module
       pullPolicy: IfNotPresent
 
+  faultNotificationModule:
+    enabled: false
+
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-notification-module
+      pullPolicy: IfNotPresent
+
   nvSwitchHealthMonitor:
     enabled: true
 
@@ -97,7 +104,6 @@ platformConnector:
     enabled: true
     qps: 5.0
     burst: 10
-
 nameOverride: ""
 fullnameOverride: ""
 

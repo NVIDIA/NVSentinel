@@ -34,6 +34,9 @@ dependencies:
   - name: fault-quarantine
     version: "0.1.0"
     condition: global.faultQuarantineModule.enabled
+  - name: fault-notification
+    version: "0.1.0"
+    condition: global.faultNotificationModule.enabled
   - name: shoreline-agent
     version: v27.5.0
     repository: https://helm.ngc.nvidia.com/nv-ngc-devops
