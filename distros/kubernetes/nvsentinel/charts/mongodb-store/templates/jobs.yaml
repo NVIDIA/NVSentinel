@@ -27,8 +27,8 @@ spec:
       {{- end }}
       containers:
       - name: mongo-client
-        image: nvcr.io/nv-ngc-devops/rtsp-mongosh:2.3.3
-        imagePullPolicy: IfNotPresent
+        image: "{{ .Values.global.mongodbStore.images.mongosh.repository }}:{{ .Values.global.mongodbStore.images.mongosh.tag }}"
+        imagePullPolicy: {{ .Values.global.mongodbStore.images.mongosh.pullPolicy }}
         command:
           - sh
           - -c

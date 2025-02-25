@@ -68,6 +68,14 @@ global:
 
   enableSidecarNICMonitoringForGKE: false
 
+  mongodbStore:
+    images:
+      mongosh:
+        repository: nvcr.io/nv-ngc-devops/rtsp-mongosh
+        tag: "2.3.3"
+        pullPolicy: IfNotPresent
+
+
 platformConnector:
   image:
     repository: nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors
