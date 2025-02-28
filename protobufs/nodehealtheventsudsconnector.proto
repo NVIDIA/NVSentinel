@@ -43,9 +43,9 @@ message HealthEvent {
   RecommenedAction recommendedAction = 6;           // recommended action for remediation
   repeated string errorCode = 7;                    // list of machine readable error code
   repeated Entity impactedIndices = 8;           // list of GPUs impacted by the error
-
   map<string, string> metadata = 9;                 // metadata about the event
   google.protobuf.Timestamp generatedTimestamp = 10; // timestamp when the event was generated
+  string nodeName = 11;
 }
 
 // These recommened actions will be aligned with NVML's recommended action

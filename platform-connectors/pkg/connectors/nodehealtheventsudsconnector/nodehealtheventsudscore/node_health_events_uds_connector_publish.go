@@ -49,6 +49,7 @@ func (r *NodeHealthEventsUDSConnector) ProcessHealthEvents(ctx context.Context, 
 			IsFatal:            healthEvent.IsFatal,
 			GeneratedTimestamp: healthEvent.GeneratedTimestamp,
 			RecommendedAction:  nodeHealthEventsPluginPb.RecommenedAction(healthEvent.RecommendedAction),
+			NodeName:           healthEvent.NodeName,
 		}
 		nodeHealthEvents.Events = append(nodeHealthEvents.Events, &nodeHealthEvent)
 	}

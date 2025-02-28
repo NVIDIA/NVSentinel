@@ -68,7 +68,7 @@ func serveNodeHealthEventsOverUDS(s *grpc.Server, nodeHealthEventsListener net.L
 }
 
 func CreateAndStartNodeHealthEventsUDSServer(nodeHealthEventsSocket *string, nodeHealthEventsListener *net.Listener,
-	nodeHealthEventsRingBuffer *ringbuffer.RingBuffer, nodeName string, stopCh chan struct{},
+	nodeHealthEventsRingBuffer *ringbuffer.RingBuffer, stopCh chan struct{},
 	ctx context.Context) *nodehealtheventsudscore.NodeHealthEventsUDSConnector {
 	os.Remove(*nodeHealthEventsSocket)
 
@@ -85,7 +85,7 @@ func CreateAndStartNodeHealthEventsUDSServer(nodeHealthEventsSocket *string, nod
 
 	healthEventChan := make(chan *nodeHealthEventsPluginPb.HealthEvents, 1000)
 	nodeHealthEventsUDSConnector := nodehealtheventsudscore.InitializeNodeHealthEventsUDSConnector(
-		nodeHealthEventsRingBuffer, *nodeHealthEventsListener, string(nodeName), stopCh, ctx, healthEventChan)
+		nodeHealthEventsRingBuffer, *nodeHealthEventsListener, stopCh, ctx, healthEventChan)
 
 	var opts []grpc.ServerOption
 	s := grpc.NewServer(opts...)

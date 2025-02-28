@@ -26,7 +26,6 @@ import (
 type NodeHealthEventsUDSConnector struct {
 	// ringBuffer are client for pushing data to the resource count sink
 	ringBuffer      *ringbuffer.RingBuffer
-	nodeName        string
 	stopCh          <-chan struct{}
 	ctx             context.Context
 	listener        net.Listener
@@ -36,11 +35,9 @@ type NodeHealthEventsUDSConnector struct {
 func NewNodeHealthEventsUDSConnector(
 	ringBuffer *ringbuffer.RingBuffer,
 	listener net.Listener,
-	nodeName string,
 	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvents) *NodeHealthEventsUDSConnector {
 	return &NodeHealthEventsUDSConnector{
 		ringBuffer:      ringBuffer,
-		nodeName:        nodeName,
 		stopCh:          stopCh,
 		ctx:             ctx,
 		listener:        listener,
@@ -48,9 +45,9 @@ func NewNodeHealthEventsUDSConnector(
 	}
 }
 
-func InitializeNodeHealthEventsUDSConnector(ringbuffer *ringbuffer.RingBuffer, listener net.Listener, nodeName string,
+func InitializeNodeHealthEventsUDSConnector(ringbuffer *ringbuffer.RingBuffer, listener net.Listener,
 	stopCh <-chan struct{}, ctx context.Context, healthEventChan chan *pb.HealthEvents) *NodeHealthEventsUDSConnector {
-	nodeHealthEventsUDSConnector := NewNodeHealthEventsUDSConnector(ringbuffer, listener, nodeName,
+	nodeHealthEventsUDSConnector := NewNodeHealthEventsUDSConnector(ringbuffer, listener,
 		stopCh, ctx, healthEventChan)
 	return nodeHealthEventsUDSConnector
 }

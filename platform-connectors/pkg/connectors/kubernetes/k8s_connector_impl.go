@@ -35,7 +35,6 @@ type K8sConnector struct {
 	clientset kubernetes.Interface
 	// ringBuffer are client for pushing data to the resource count sink
 	ringBuffer *ringbuffer.RingBuffer
-	nodeName   string
 	stopCh     <-chan struct{}
 	ctx        context.Context
 }
@@ -43,19 +42,17 @@ type K8sConnector struct {
 func NewK8sConnector(
 	client kubernetes.Interface,
 	ringBuffer *ringbuffer.RingBuffer,
-	nodeName string,
 	stopCh <-chan struct{}, ctx context.Context) *K8sConnector {
 	return &K8sConnector{
 		clientset:  client,
 		ringBuffer: ringBuffer,
-		nodeName:   nodeName,
 		stopCh:     stopCh,
 		ctx:        ctx,
 	}
 }
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	nodeName string, qps float32, burst int, stopCh <-chan struct{},
+	qps float32, burst int, stopCh <-chan struct{},
 ) *K8sConnector {
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
@@ -71,7 +68,7 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 		klog.Fatalf("error creating clientset with err %s", err.Error())
 	}
 
-	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, nodeName, stopCh, ctx)
+	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx)
 
 	return kubernetesConnector
 }

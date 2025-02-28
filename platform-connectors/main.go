@@ -82,11 +82,6 @@ func main() {
 	enableMongoDBStorePlatformConnector := result["enableMongoDBStorePlatformConnector"]
 	enableNodeHealthEventsUDSConnector := result["enableNodeHealthEventsUDSConnector"]
 
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		klog.Fatalf("Failed to fetch nodename")
-	}
-
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
@@ -115,7 +110,7 @@ func main() {
 			klog.Fatalf("failed to convert K8sConnectorBurst to int: %v", err)
 		}
 
-		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, string(nodeName), qps, int(burst), stopCh)
+		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
 
 		go k8sConnector.FetchAndProcessHealthMetric(ctx)
 	}
@@ -123,7 +118,7 @@ func main() {
 	if enableMongoDBStorePlatformConnector == True {
 		ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
 		server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
-		storeConnector := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, string(nodeName), *mongoClientCertMountPath)
+		storeConnector := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, *mongoClientCertMountPath)
 
 		go storeConnector.FetchAndProcessHealthMetric(ctx)
 	}
@@ -136,7 +131,7 @@ func main() {
 		nodeHealthEventsRingBuffer = ringbuffer.NewRingBuffer("nodeHealthEventsRingBuffer", ctx)
 
 		nodehealtheventsudsconnectorserver.CreateAndStartNodeHealthEventsUDSServer(nodeHealthEventsSocket,
-			&nodeHealthEventsListener, nodeHealthEventsRingBuffer, nodeName, stopCh, ctx)
+			&nodeHealthEventsListener, nodeHealthEventsRingBuffer, stopCh, ctx)
 	}
 
 	err = os.RemoveAll(*socket)

@@ -18,6 +18,8 @@ package tests
 
 import (
 	"context"
+	"time"
+
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/nodehealtheventsudsconnector/nodehealtheventsudsconnectorserver"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -26,7 +28,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/utils/strings/slices"
-	"time"
 
 	"net"
 	"testing"
@@ -120,7 +121,7 @@ func TestHealthEventStreamV1(t *testing.T) {
 
 	// Setup the server
 	nodeHealthEventsRingBuffer := ringbuffer.NewRingBuffer("nodeHealthEventsBuffer", ctx)
-	nodeHealthEventsUDSConnector := nodehealtheventsudsconnectorserver.CreateAndStartNodeHealthEventsUDSServer(&nodeHealthEventsSocket, &nodeHealthEventsListener, nodeHealthEventsRingBuffer, "node", stopCh, ctx)
+	nodeHealthEventsUDSConnector := nodehealtheventsudsconnectorserver.CreateAndStartNodeHealthEventsUDSServer(&nodeHealthEventsSocket, &nodeHealthEventsListener, nodeHealthEventsRingBuffer, stopCh, ctx)
 	opts := grpc.WithTransportCredentials(insecure.NewCredentials())
 
 	conn, err := grpc.NewClient("unix://"+nodeHealthEventsSocket, opts)

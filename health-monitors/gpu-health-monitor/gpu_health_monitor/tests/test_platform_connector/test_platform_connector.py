@@ -113,7 +113,6 @@ class TestPlatformConnectors(unittest.TestCase):
             name="SEC_FAULT_ERROR", recommended_action="RESOLUTION_BUCKET_TBD", fatal="FATAL"
         )
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
-        xid_errors_sliding_window_size = 3
         xid_errors_batch_processing_interval = 4
         xid_errors_batch_processing_enabled = True
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
@@ -149,6 +148,53 @@ class TestPlatformConnectors(unittest.TestCase):
                 assert event.isHealthy == True
                 assert event.checkName != ""
                 assert len(dcgm_health_events) * len(gpu_ids) == len(health_events)
+
+        # check if cache is not updated with change no in event
+        dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_CORRUPT_INFOROM",
+                    message="A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption.",
+                )
+            },
+        )
+
+        check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
+        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
+        before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
+        cache_length = len(platform_connector_test.entity_cache)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        health_events = healthEventProcessor.health_events
+        assert len(platform_connector_test.entity_cache) == cache_length
+        assert (
+            platform_connector_test.entity_cache[dcgm_health_event_key].isFatal == before_insertion_cache_value.isFatal
+        )
+        assert (
+            platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy
+            == before_insertion_cache_value.isHealthy
+        )
+
+        # check if cache is updated with change in event
+        dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.PASS, entity_failures={}
+        )
+
+        check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
+        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
+        before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
+        cache_length = len(platform_connector_test.entity_cache)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        health_events = healthEventProcessor.health_events
+        assert len(platform_connector_test.entity_cache) == cache_length
+        assert (
+            platform_connector_test.entity_cache[dcgm_health_event_key].isFatal != before_insertion_cache_value.isFatal
+        )
+        assert (
+            platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy
+            != before_insertion_cache_value.isHealthy
+        )
+
         platform_connector_test.xid_event_occurred("0", 64)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]

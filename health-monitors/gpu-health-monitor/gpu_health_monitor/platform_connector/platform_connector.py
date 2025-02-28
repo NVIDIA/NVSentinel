@@ -32,6 +32,12 @@ class XidErrorsMappingDetails:
     fatal: str
 
 
+@dataclasses.dataclass
+class CachedEntityState:
+    isFatal: bool
+    isHealthy: bool
+
+
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def __init__(
         self,
@@ -62,6 +68,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.current_bootid = self.fetch_current_bootid_and_clear_xid_errors()
+        self.entity_cache: dict[str, CachedEntityState] = {}
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -101,6 +108,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         ## DCGM_HEALTH_WATCH_PCIE ==> GpuPcieWatch; DCGM_HEALTH_WATCH_SM ==> GpuSmWatch
         return f"Gpu{self._get_dcgm_watch(watch_name)}Watch"
 
+    def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
+        return f"{check_name}|{entity_type}|{entity_value}"
+
     def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list):
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
@@ -128,46 +138,63 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entities_impacted = []
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted.append(entity)
-                        health_events.append(
-                            platformconnector_pb2.HealthEvent(
-                                version=self._version,
-                                agent=self._agent,
-                                componentClass=self._component_class,
-                                checkName=check_name,
-                                generatedTimestamp=timestamp,
-                                isFatal=False if details.status == dcgmtypes.HealthStatus.PASS else True,
-                                isHealthy=True if details.status == dcgmtypes.HealthStatus.PASS else False,
-                                errorCode=error_code,
-                                entitiesImpacted=entities_impacted,
-                                message=message,
-                                recommendedAction=platformconnector_pb2.REPORT_ISSUE,
-                                nodeName=self._node_name,
+                        key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+                        isFatal = False if details.status == dcgmtypes.HealthStatus.PASS else True
+                        isHealthy = True if details.status == dcgmtypes.HealthStatus.PASS else False
+                        if (
+                            key not in self.entity_cache
+                            or self.entity_cache[key].isFatal != isFatal
+                            or self.entity_cache[key].isHealthy != isHealthy
+                        ):
+                            self.entity_cache[key] = CachedEntityState(isFatal=isFatal, isHealthy=isHealthy)
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass=self._component_class,
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=isFatal,
+                                    isHealthy=isHealthy,
+                                    errorCode=error_code,
+                                    entitiesImpacted=entities_impacted,
+                                    message=message,
+                                    recommendedAction=platformconnector_pb2.REPORT_ISSUE,
+                                    nodeName=self._node_name,
+                                )
                             )
-                        )
                     else:
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
                         entities_impacted.append(entity)
-                        health_events.append(
-                            platformconnector_pb2.HealthEvent(
-                                version=self._version,
-                                agent=self._agent,
-                                componentClass=self._component_class,
-                                checkName=check_name,
-                                generatedTimestamp=timestamp,
-                                isFatal=False,
-                                isHealthy=True,
-                                errorCode=[],
-                                entitiesImpacted=entities_impacted,
-                                message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
-                                recommendedAction=platformconnector_pb2.NONE,
-                                nodeName=self._node_name,
+                        key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
+                        if (
+                            key not in self.entity_cache
+                            or self.entity_cache[key].isFatal != False
+                            or self.entity_cache[key].isHealthy != True
+                        ):
+                            self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass=self._component_class,
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=False,
+                                    isHealthy=True,
+                                    errorCode=[],
+                                    entitiesImpacted=entities_impacted,
+                                    message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                                    recommendedAction=platformconnector_pb2.NONE,
+                                    nodeName=self._node_name,
+                                )
                             )
-                        )
             log.debug(f"dcgm health event is {health_events}")
-            with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
-                stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+            if len(health_events):
+                with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
+                    stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
+                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
 
     def clear_all_xid_errors(self):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
@@ -268,6 +295,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 entitiesImpacted=entities_impacted,
                 message=message,
                 recommendedAction=recommended_action,
+                nodeName=self._node_name,
             )
             log.info(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:

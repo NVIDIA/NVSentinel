@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 	ctx = context.Background()
 	stopCh := make(chan struct{})
 	ringBuffer := ringbuffer.NewRingBuffer("k8sRingBuffer", ctx)
-	k8sConnector = NewK8sConnector(clientSet, ringBuffer, "testnode", stopCh, ctx)
+	k8sConnector = NewK8sConnector(clientSet, ringBuffer, stopCh, ctx)
 	exitVal := m.Run()
 	os.Exit(exitVal)
 }
@@ -128,6 +128,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Pcie watch error on GPU 0",
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "No Health Failures",
 			ExpectedOutputReason:        "GpuPcieWatchIsHealthy",
@@ -145,8 +146,9 @@ func TestK8sNodeConditions(t *testing.T) {
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
+				NodeName:           "testnode",
 			},
-			ExpectedOutputMessage:       NoHealthFailureMsg,
+			ExpectedOutputMessage:       "No Health Failures",
 			ExpectedOutputReason:        "GpuXidErrorIsHealthy",
 			ExpectedOutputConditionType: "GpuXidError",
 			ExpectedHealthFailureStatus: "False",
@@ -162,6 +164,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Pcie error on GPU 0",
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_PCI_REPLAY_RATE GPU:0 Pcie error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuPcieWatchIsNotHealthy",
@@ -179,6 +182,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=REPORT_ISSUE;",
 			ExpectedOutputReason:        "GpuXidErrorIsNotHealthy",
@@ -196,6 +200,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_NONE,
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=REPORT_ISSUE;ErrorCode:45 GPU:0 Recommended Action=NONE;",
 			ExpectedOutputReason:        "GpuXidErrorIsNotHealthy",
@@ -213,6 +218,7 @@ func TestK8sNodeConditions(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal watch error on GPU 0",
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal watch error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
@@ -294,6 +300,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
@@ -310,6 +317,7 @@ func TestK8sNodeEvents(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
+				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0 Thermal error on GPU 0 Recommended Action=UNKNOWN;",
 			ExpectedOutputReason:        "GpuThermalWatchIsNotHealthy",
@@ -402,6 +410,7 @@ func TestAddMessageIfNotExist(t *testing.T) {
 				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				Message:           "msg1",
 				RecommendedAction: platformconnector.RecommenedAction_APPLICATION_RESTART,
+				NodeName:          "testnode",
 			},
 			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
 		},
@@ -412,6 +421,7 @@ func TestAddMessageIfNotExist(t *testing.T) {
 				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				Message:           "msg2",
 				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+				NodeName:          "testnode",
 			},
 			expected: []string{
 				"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART",
@@ -425,6 +435,7 @@ func TestAddMessageIfNotExist(t *testing.T) {
 				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				Message:           "msg1",
 				RecommendedAction: platformconnector.RecommenedAction_APPLICATION_RESTART,
+				NodeName:          "testnode",
 			},
 			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART"},
 		},
@@ -438,6 +449,7 @@ func TestAddMessageIfNotExist(t *testing.T) {
 				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				Message:           "msg2",
 				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+				NodeName:          "testnode",
 			},
 			expected: []string{
 				"ErrorCode:E001 GPU:0 msg1 Recommended Action=APPLICATION_RESTART",
@@ -469,6 +481,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 		checkName        string
 		expected         []string
 		componentClass   string
+		NodeName         string
 	}{
 		{
 			messages:         []string{" GPU:0 error", " GPU:1 error"},
@@ -476,6 +489,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 			checkName:        "GpuErrorCheck",
 			expected:         []string{" GPU:1 error"},
 			componentClass:   "GPU",
+			NodeName:         "testnode",
 		},
 		{
 			messages:         []string{"NIC:eth0 error", "NIC:eth1 error"},
@@ -483,6 +497,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 			checkName:        "InfiniBandErrorCheck",
 			expected:         []string{"NIC:eth1 error"},
 			componentClass:   "NIC",
+			NodeName:         "testnode",
 		},
 		{
 			messages:         []string{" NVSWITCH:0 error", " NVSWITCH:1 error"},
@@ -490,6 +505,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 			checkName:        "NvswitchErrorFromKmsgWatch",
 			expected:         []string{" NVSWITCH:1 error"},
 			componentClass:   "NVSWITCH",
+			NodeName:         "testnode",
 		},
 		{
 			messages:         []string{" GPU:0 error", " GPU:1 error"},
@@ -497,6 +513,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 			checkName:        "SomeOtherCheck",
 			expected:         []string{" GPU:0 error"},
 			componentClass:   "GPU",
+			NodeName:         "testnode",
 		},
 
 		{
@@ -505,6 +522,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 			checkName:        "GpuErrorCheck",
 			expected:         []string{" GPU:0 error", " GPU:1 error"},
 			componentClass:   "GPU",
+			NodeName:         "testnode",
 		},
 	}
 
@@ -552,6 +570,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			ComponentClass:     "gpu",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "XID44 error on GPU 0",
+			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "InfiniBandErrorCheck",
@@ -562,6 +581,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			ComponentClass:     "network",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "InfiniBand error on mlx5_0",
+			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
@@ -573,6 +593,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			ComponentClass:     "nvswitch",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "Nvswitch error on nvswitch0",
+			NodeName:           "testnode",
 		},
 	}
 
@@ -649,6 +670,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 			ComponentClass:     "gpu",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "XID44 error on GPU 0",
+			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "InfiniBandErrorCheck",
@@ -659,6 +681,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 			ComponentClass:     "network",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "InfiniBand error on mlx5_0",
+			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
@@ -670,6 +693,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 			ComponentClass:     "nvswitch",
 			RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 			Message:            "Nvswitch error on nvswitch0",
+			NodeName:           "testnode",
 		},
 	}
 
@@ -748,6 +772,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				ComponentClass:     "gpu",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "XID45 error on GPU 1",
+				NodeName:           "testnode",
 			},
 			expectedMessage: "GPU:0 error;ErrorCode:45 GPU:1 XID45 error on GPU 1 Recommended Action=REPORT_ISSUE;",
 		},
@@ -763,6 +788,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				ComponentClass:     "network",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "error on eth1",
+				NodeName:           "testnode",
 			},
 			expectedMessage: "NIC:eth0 error;NIC:eth1 error on eth1 Recommended Action=REPORT_ISSUE;",
 		},
@@ -779,6 +805,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 				ComponentClass:     "nvswitch",
 				RecommendedAction:  platformconnector.RecommenedAction_REPORT_ISSUE,
 				Message:            "Nvswitch error on nvswitch1",
+				NodeName:           "testnode",
 			},
 			expectedMessage: " nvswitch0 error;ErrorCode:SWITCH_ERROR NVSWITCH:1 Nvswitch error on nvswitch1 Recommended Action=REPORT_ISSUE;",
 		},
@@ -897,6 +924,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			IsHealthy:          true,
 			EntitiesImpacted:   testCase.entitiesImpacted,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
+			NodeName:           "testnode",
 		}
 
 		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}

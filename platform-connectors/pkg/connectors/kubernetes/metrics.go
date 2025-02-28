@@ -30,25 +30,25 @@ var (
 		Help: "The total number of failed node condition updates",
 	})
 
-	nodeEventCreationSuccessCounter = promauto.NewCounter(prometheus.CounterOpts{
+	nodeEventCreationSuccessCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_event_creation_success_total",
 		Help: "The total number of successful node event creations",
-	})
+	}, []string{"node_name"})
 
-	nodeEventCreationFailureCounter = promauto.NewCounter(prometheus.CounterOpts{
+	nodeEventCreationFailureCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_event_creation_failed_total",
 		Help: "The total number of failed node event creations",
-	})
+	}, []string{"node_name"})
 
-	nodeEventUpdateSuccessCounter = promauto.NewCounter(prometheus.CounterOpts{
+	nodeEventUpdateSuccessCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_event_update_success_total",
 		Help: "The total number of successful node event updates",
-	})
+	}, []string{"node_name"})
 
-	nodeEventUpdateFailureCounter = promauto.NewCounter(prometheus.CounterOpts{
+	nodeEventUpdateFailureCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "k8s_platform_connector_node_event_update_failed_total",
 		Help: "The total number of failed node event updates",
-	})
+	}, []string{"node_name"})
 
 	nodeConditionUpdateDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "k8s_platform_connector_node_condition_update_duration_milliseconds",

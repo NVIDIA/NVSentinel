@@ -68,7 +68,7 @@ var (
 	})
 )
 
-func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
+func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent, nodeName string) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
 	for _, nicEvent := range *nicEvents {
@@ -94,6 +94,7 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent) *pb.HealthEvents {
 			Message:            nicEvent.Message,
 			IsFatal:            isFatal,
 			IsHealthy:          isHealthy,
+			NodeName:           nodeName,
 			// ErrorCode:          fmt.Sprint(nicError.ErrorNum),
 			// ActionRequired:     false,
 			// RecommendedAction:  pb.RecommenedAction_UNKNOWN,
@@ -301,6 +302,11 @@ func main() {
 		klog.Fatalf("configuration validation failed: %v", err)
 	}
 
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		klog.Fatalf("Failed to fetch nodename")
+	}
+
 	klog.Infof("NIC names matching these regexes will be excluded: %v", nicConfig.ExclusionRegexes)
 	klog.Infof("NIC Monitor will poll every %d milliseconds", nicConfig.PollingIntervalInMilliseconds)
 	klog.Infof("Max Retry Duration for Down-Detected NIC: %d milliseconds",
@@ -343,7 +349,7 @@ func main() {
 		case err := <-errChan:
 			panic(err)
 		case nicEvent := <-nicHealthMonitor.EventChan:
-			healthEvents := NicEvent2HealthEvents(nicEvent)
+			healthEvents := NicEvent2HealthEvents(nicEvent, nodeName)
 			if len(healthEvents.Events) == 0 {
 				continue
 			}

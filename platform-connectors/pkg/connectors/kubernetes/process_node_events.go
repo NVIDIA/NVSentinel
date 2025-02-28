@@ -80,7 +80,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := r.clientset.CoreV1().Nodes().Get(ctx, r.nodeName, metav1.GetOptions{})
+		node, err := r.clientset.CoreV1().Nodes().Get(ctx, healthEvents[0].NodeName, metav1.GetOptions{})
 		if err != nil {
 			klog.Errorf("Error getting node: %s", err)
 			return err
@@ -221,11 +221,11 @@ func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
 	return newMessages
 }
 
-func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) error {
+func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Fetch all events for the node
 		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s", r.nodeName),
+			FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
 		})
 		if err != nil {
 			return err
@@ -242,9 +242,9 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 
 				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
 				if err != nil {
-					nodeEventUpdateFailureCounter.Inc()
+					nodeEventUpdateFailureCounter.WithLabelValues(nodeName).Inc()
 				} else {
-					nodeEventUpdateSuccessCounter.Inc()
+					nodeEventUpdateSuccessCounter.WithLabelValues(nodeName).Inc()
 				}
 
 				return err
@@ -256,9 +256,9 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event) 
 
 		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
 		if err != nil {
-			nodeEventCreationFailureCounter.Inc()
+			nodeEventCreationFailureCounter.WithLabelValues(nodeName).Inc()
 		} else {
-			nodeEventCreationSuccessCounter.Inc()
+			nodeEventCreationSuccessCounter.WithLabelValues(nodeName).Inc()
 		}
 
 		return err
@@ -346,22 +346,22 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pl
 		if !healthEvent.IsHealthy && !healthEvent.IsFatal {
 			event := &corev1.Event{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s.%x", r.nodeName, metav1.Now().UnixNano()),
+					Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
 					Namespace: DefaultNamespace,
 				},
 				InvolvedObject: corev1.ObjectReference{
 					Kind: "Node",
-					Name: r.nodeName,
-					UID:  types.UID(r.nodeName),
+					Name: healthEvent.NodeName,
+					UID:  types.UID(healthEvent.NodeName),
 				},
 				Reason:              r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy),
 				ReportingController: healthEvent.Agent,
-				ReportingInstance:   r.nodeName,
+				ReportingInstance:   healthEvent.NodeName,
 				Message:             r.fetchHealthEventMessage(healthEvent),
 				Count:               1,
 				Source: corev1.EventSource{
 					Component: healthEvent.Agent,
-					Host:      r.nodeName,
+					Host:      healthEvent.NodeName,
 				},
 				FirstTimestamp: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
 				LastTimestamp:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
@@ -369,7 +369,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pl
 			}
 			start := time.Now()
 
-			err := r.writeNodeEvent(ctx, event)
+			err := r.writeNodeEvent(ctx, event, healthEvent.NodeName)
 			duration := float64(time.Since(start).Milliseconds())
 			nodeEventUpdateCreateDuration.Observe(duration)
 

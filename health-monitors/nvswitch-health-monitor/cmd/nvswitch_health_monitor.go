@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -110,7 +111,7 @@ func GetEntityIDsForDGXType() (nvswitchIds, nvlinkIds, gpuIds []int, err error) 
 		errors.New("failed to get entity ids associated, dgx type is unknown")
 }
 
-func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
+func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
 	event := pb.HealthEvent{
@@ -122,6 +123,7 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent) *pb.HealthEvents {
 		IsFatal:            sxidEvent.IsFatal,
 		Message:            sxidEvent.Message,
 		IsHealthy:          sxidEvent.IsHealthy,
+		NodeName:           nodeName,
 	}
 
 	if !sxidEvent.IsHealthy {
@@ -291,6 +293,11 @@ func main() {
 	}
 	defer sxidErrorMonitor.Close()
 
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		klog.Fatalf("Failed to fetch nodename")
+	}
+
 	errChan := make(chan error, 1)
 	go func() {
 		errChan <- sxidErrorMonitor.Run()
@@ -310,7 +317,7 @@ func main() {
 		case err := <-errChan:
 			panic(err)
 		case sxidError := <-sxidErrorMonitor.EventChan:
-			healthEvents := SxidEvent2HealthEvents(sxidError)
+			healthEvents := SxidEvent2HealthEvents(sxidError, nodeName)
 
 			retryDelay := time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent) * time.Second
 			sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent, retryDelay)
