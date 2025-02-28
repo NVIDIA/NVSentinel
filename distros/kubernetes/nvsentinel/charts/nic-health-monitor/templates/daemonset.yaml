@@ -66,6 +66,12 @@ spec:
             - name: sys
               mountPath: /sys
               readOnly: true
+          env: 
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
       volumes:
         - name: var-run-vol
           hostPath:
