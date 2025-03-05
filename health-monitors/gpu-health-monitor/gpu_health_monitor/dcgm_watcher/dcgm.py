@@ -20,8 +20,10 @@ from ctypes import *
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
+import time
 
 XID_CALLBACK = CFUNCTYPE(None, c_void_p)
+DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 
 
 class DCGMWatcher:
@@ -126,6 +128,7 @@ class DCGMWatcher:
 
         with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
             supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+
         log.info(f"supported gpus are {supported_gpus}")
         with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
             supported_switches = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_SWITCH, True)
@@ -216,14 +219,23 @@ class DCGMWatcher:
             dcgm_group.policy.Unregister(condition=dcgm_structs.DCGM_POLICY_COND_XID)
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
-        if self._dcgm_k8s_service_enabled:
-            log.info(f"DCGM k8s service enabled. Using {self._dcgm_k8s_service_url}")
-            dcgm_handle = pydcgm.DcgmHandle(
-                ipAddress=self._dcgm_k8s_service_url, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
-            )
-        else:
-            log.info(f"DCGM k8s service disabled. Using {self._addr}")
-            dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        dcgm_handle = None
+        delay = DELAY
+        while dcgm_handle is None:
+            try:
+                if self._dcgm_k8s_service_enabled:
+                    log.info(f"DCGM k8s service enabled. Using {self._dcgm_k8s_service_url}")
+                    dcgm_handle = pydcgm.DcgmHandle(
+                        ipAddress=self._dcgm_k8s_service_url, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
+                    )
+                else:
+                    log.info(f"DCGM k8s service disabled. Using {self._addr}")
+                    dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+            except Exception as e:
+                log.error(f"Error creating DCGM handle: {e}")
+                metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
+                time.sleep(delay)
+                delay = min(delay * MULTIPLIER, MAX_DELAY)
         dcgm_system = dcgm_handle.GetSystem()
 
         dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)

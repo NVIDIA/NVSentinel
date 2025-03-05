@@ -30,3 +30,8 @@ callback_success = Counter(
     "Number of times a callback function has successfully completed",
     labelnames=["class_name", "func_name"],
 )
+dcgm_api_failures = Counter(
+    "dcgm_api_failures",
+    "Number of times an error has occurred",
+    labelnames=["error_name"],
+)
