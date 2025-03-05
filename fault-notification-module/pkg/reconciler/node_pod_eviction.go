@@ -31,14 +31,16 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 )
 
 type FaultNotificationClient struct {
-	clientset kubernetes.Interface
-	eviction  policyv1client.PolicyV1Interface
+	clientset  kubernetes.Interface
+	eviction   policyv1client.PolicyV1Interface
+	dryRunMode []string
 }
 
-func NewFaultNotificationClient(kubeconfig string) (*FaultNotificationClient, error) {
+func NewFaultNotificationClient(kubeconfig string, dryRun bool) (*FaultNotificationClient, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
@@ -56,7 +58,13 @@ func NewFaultNotificationClient(kubeconfig string) (*FaultNotificationClient, er
 	if err != nil {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
-	return &FaultNotificationClient{clientset: clientset, eviction: clientset.PolicyV1()}, nil
+	client := &FaultNotificationClient{clientset: clientset, eviction: clientset.PolicyV1()}
+	if dryRun {
+		client.dryRunMode = []string{metav1.DryRunAll}
+	} else {
+		client.dryRunMode = []string{}
+	}
+	return client, nil
 }
 
 func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) (*v1.PodList, error) {
@@ -138,9 +146,10 @@ func (c *FaultNotificationClient) sendEvictionRequestForPod(ctx context.Context,
 			Name:      podName,
 			Namespace: namespace,
 		},
-		DeleteOptions: metav1.NewDeleteOptions(
-			int64(timeout.Seconds()),
-		),
+		DeleteOptions: &metav1.DeleteOptions{
+			GracePeriodSeconds: ptr.To(int64(timeout.Seconds())),
+			DryRun:             c.dryRunMode,
+		},
 	}
 
 	for i := 1; i <= maxRetries; i++ {
@@ -316,6 +325,7 @@ func (c *FaultNotificationClient) forceDeletePods(ctx context.Context, pods []v1
 			defer wg.Done()
 			err := c.clientset.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &gracePeriod,
+				DryRun:             c.dryRunMode,
 			})
 			if err != nil {
 				if !errors.IsNotFound(err) {

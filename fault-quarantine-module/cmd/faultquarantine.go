@@ -43,6 +43,8 @@ func main() {
 
 	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
+	var dryRun = flag.Bool("dry-run", false, "flag to run fault notification module in dry-run mode")
+
 	flag.Parse()
 
 	mongoURI := os.Getenv("MONGODB_URI")
@@ -129,8 +131,12 @@ func main() {
 		klog.Fatalf("error while loading the toml config: %v", err)
 	}
 
+	if *dryRun {
+		klog.Info("Running in dry-run mode")
+	}
+
 	// Initialize the k8s client
-	k8sClient, err := reconciler.NewK8sClient(*kubeconfigPath)
+	k8sClient, err := reconciler.NewFaultQuarantineClient(*kubeconfigPath, *dryRun)
 	if err != nil {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}

@@ -19,6 +19,8 @@ global:
   dcgm:
     dcgmK8sServiceEnabled: true
 
+  dryRun: false
+
   gpuHealthMonitor:
     enabled: true
 

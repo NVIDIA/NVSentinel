@@ -45,14 +45,15 @@ type ReconcilerConfig struct {
 type Reconciler struct {
 	Config              ReconcilerConfig
 	NodeEvictionContext sync.Map
+	DryRun              bool
 }
 
 type EvictionContext struct {
 	cancel context.CancelFunc
 }
 
-func NewReconciler(cfg ReconcilerConfig) *Reconciler {
-	return &Reconciler{Config: cfg, NodeEvictionContext: sync.Map{}}
+func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
+	return &Reconciler{Config: cfg, NodeEvictionContext: sync.Map{}, DryRun: dryRunEnabled}
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -241,7 +242,7 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 
 func (r *Reconciler) verifyEvictionCompleted(ctx context.Context, healthEventWithStatus *storeconnector.HealthEventWithStatus, nodeName string, nsWithImmediateMode []string) error {
 
-	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
+	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined && !r.DryRun {
 		klog.Infof("Verifying if all pods have been successfully evicted, if not, forcefully deleting them")
 		allEvicted := r.Config.K8sClient.CheckIfAllPodsAreEvictedInImmediateMode(ctx, nsWithImmediateMode, nodeName, r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration)
 		if !allEvicted {

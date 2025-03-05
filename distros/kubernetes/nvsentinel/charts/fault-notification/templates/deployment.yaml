@@ -47,6 +47,7 @@ spec:
           - "--metrics-port={{ .Values.metricsPort }}"
           - "--config-path={{ .Values.configPath }}"
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          - "--dry-run={{ .Values.global.dryRun }}"
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/config.toml

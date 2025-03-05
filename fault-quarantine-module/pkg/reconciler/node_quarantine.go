@@ -39,12 +39,13 @@ var customBackoff = wait.Backoff{
 	Jitter:   0.1,
 }
 
-type k8sClient struct {
+type FaultQuarantineClient struct {
 	// client is the Kubernetes client
-	clientset kubernetes.Interface
+	clientset  kubernetes.Interface
+	dryRunMode []string
 }
 
-func NewK8sClient(kubeconfig string) (*k8sClient, error) {
+func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineClient, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
@@ -63,11 +64,18 @@ func NewK8sClient(kubeconfig string) (*k8sClient, error) {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
-	return &k8sClient{clientset: clientset}, nil
+	client := &FaultQuarantineClient{clientset: clientset}
+	if dryRun {
+		client.dryRunMode = []string{metav1.DryRunAll}
+	} else {
+		client.dryRunMode = []string{}
+	}
+
+	return client, nil
 }
 
 // nolint: cyclop,gocognit //fix this as part of NGCC-21793
-func (c *k8sClient) TaintAndCordonNodeAndSetAnnotations(
+func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 	ctx context.Context,
 	nodename string,
 	taints []config.Taint,
@@ -141,7 +149,10 @@ func (c *k8sClient) TaintAndCordonNodeAndSetAnnotations(
 			node.Labels[k] = v
 		}
 
-		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{
+			DryRun: c.dryRunMode,
+		})
+
 		if err != nil {
 			return fmt.Errorf("failed to taint node: %w", err)
 		}
@@ -151,7 +162,7 @@ func (c *k8sClient) TaintAndCordonNodeAndSetAnnotations(
 }
 
 // nolint: cyclop,gocognit //fix this as part of NGCC-21793
-func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
+func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 	ctx context.Context,
 	nodename string,
 	taints []config.Taint,
@@ -254,7 +265,9 @@ func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 			}
 		}
 
-		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{
+			DryRun: c.dryRunMode,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to remove taint from node: %w", err)
 		}
@@ -263,7 +276,7 @@ func (c *k8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 	})
 }
 
-func (c *k8sClient) GetNodeAnnotations(ctx context.Context, nodename string) (map[string]string, error) {
+func (c *FaultQuarantineClient) GetNodeAnnotations(ctx context.Context, nodename string) (map[string]string, error) {
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node: %w", err)
@@ -282,7 +295,7 @@ func (c *k8sClient) GetNodeAnnotations(ctx context.Context, nodename string) (ma
 	return annotations, nil
 }
 
-func (c *k8sClient) GetNodesWithAnnotation(ctx context.Context, annotationKey string) ([]string, error) {
+func (c *FaultQuarantineClient) GetNodesWithAnnotation(ctx context.Context, annotationKey string) ([]string, error) {
 	nodes, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)

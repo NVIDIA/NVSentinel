@@ -102,7 +102,7 @@ func TestHandleEvent(t *testing.T) {
 			FaultRemediated:        nil,
 		},
 	}
-	r := NewReconciler(cfg)
+	r := NewReconciler(cfg, false)
 	err = r.handleEvent(ctx, "123", "node1", healthEvent)
 
 	if err != nil {
@@ -167,7 +167,7 @@ func TestHandleEventWithError(t *testing.T) {
 			FaultRemediated:        nil,
 		},
 	}
-	r := NewReconciler(cfg)
+	r := NewReconciler(cfg, false)
 
 	err = r.handleEvent(ctx, "123", "node1", healthEvent)
 
@@ -252,7 +252,7 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(cfg)
+	r := NewReconciler(cfg, false)
 	_, cancel := context.WithCancel(context.TODO())
 	r.NodeEvictionContext = sync.Map{}
 	r.NodeEvictionContext.Store("node1-nvsentinel", &EvictionContext{

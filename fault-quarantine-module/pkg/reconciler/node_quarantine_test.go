@@ -43,7 +43,7 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 		t.Fatalf("Failed to create test node: %v", err)
 	}
 
-	k8sClient := &k8sClient{
+	k8sClient := &FaultQuarantineClient{
 		clientset: clientset,
 	}
 
@@ -140,7 +140,7 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 		t.Fatalf("Failed to create test node: %v", err)
 	}
 
-	k8sClient := &k8sClient{
+	k8sClient := &FaultQuarantineClient{
 		clientset: clientset,
 	}
 
@@ -212,7 +212,7 @@ func TestGetNodeAnnotations(t *testing.T) {
 		t.Fatalf("Failed to create test node: %v", err)
 	}
 
-	k8sClient := &k8sClient{
+	k8sClient := &FaultQuarantineClient{
 		clientset: clientset,
 	}
 
@@ -277,7 +277,7 @@ func TestGetNodesWithAnnotation(t *testing.T) {
 	clientset.CoreV1().Nodes().Create(ctx, node2, metav1.CreateOptions{})
 	clientset.CoreV1().Nodes().Create(ctx, node3, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{
+	k8sClient := &FaultQuarantineClient{
 		clientset: clientset,
 	}
 
@@ -302,7 +302,7 @@ func TestGetNodesWithAnnotation(t *testing.T) {
 func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "non-existent-node", nil, false, nil, map[string]string{})
 	if err == nil {
@@ -320,7 +320,7 @@ func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, nil, map[string]string{})
 	if err != nil {
@@ -349,7 +349,7 @@ func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// No taints to remove, node is already uncordoned, and no annotations to remove
 	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, false, nil, []string{}, map[string]string{})
@@ -386,7 +386,7 @@ func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	taintsToRemove := []config.Taint{{Key: "taint1", Value: "val1", Effect: "NoSchedule"}}
 	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, false, nil, []string{}, map[string]string{})
@@ -434,7 +434,7 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	annotationsToRemove := []string{"annotation1"}
 	labelsMap := map[string]string{
@@ -473,7 +473,7 @@ func TestTaintAndCordonNode_AlreadyTaintedCOrdonned(t *testing.T) {
 		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	taints := []config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}}
 	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, taints, true, nil, map[string]string{})
@@ -501,7 +501,7 @@ func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 		Spec:       v1.NodeSpec{Unschedulable: false},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, nil, []string{}, map[string]string{})
 	if err != nil {
@@ -526,7 +526,7 @@ func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Provide an invalid effect
 	taints := []config.Taint{{Key: "weird-key", Value: "weird-value", Effect: "SomeInvalidEffect"}}
@@ -556,7 +556,7 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	annotations := map[string]string{"existing-key": "new-value"}
 	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, nodeName, nil, false, annotations, map[string]string{})
@@ -584,7 +584,7 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Attempt to remove a taint that doesn't exist
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
@@ -615,7 +615,7 @@ func TestUnTaintAndUnCordonNode_NonExistentAnnotationRemoval(t *testing.T) {
 		Spec: v1.NodeSpec{},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Attempt to remove an annotation that doesn't exist
 	annotationsToRemove := []string{"nonexistent-annotation"}
@@ -638,7 +638,7 @@ func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 
 	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Taint with empty key and value
 	taints := []config.Taint{
@@ -665,7 +665,7 @@ func TestTaintAndCordonNode_EmptyAnnotationKey(t *testing.T) {
 
 	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	annotations := map[string]string{
 		"": "empty-key-value",
@@ -694,7 +694,7 @@ func TestGetNodesWithAnnotation_NoMatches(t *testing.T) {
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	nodes, err := k8sClient.GetNodesWithAnnotation(ctx, "non-existent-annotation")
 	if err != nil {
@@ -717,7 +717,7 @@ func TestGetNodesWithAnnotation_EmptyAnnotationKey(t *testing.T) {
 		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	nodes, err := k8sClient.GetNodesWithAnnotation(ctx, "")
 	if err != nil {
@@ -734,7 +734,7 @@ func TestGetNodesWithAnnotation_EmptyAnnotationKey(t *testing.T) {
 func TestTaintAndCordonNode_NonExistentNode(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Attempt to taint a node that doesn't exist
 	err := k8sClient.TaintAndCordonNodeAndSetAnnotations(ctx, "no-such-node", nil, true, nil, map[string]string{})
@@ -746,7 +746,7 @@ func TestTaintAndCordonNode_NonExistentNode(t *testing.T) {
 func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	// Attempt to untaint a node that doesn't exist
 	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, "no-such-node", nil, true, nil, []string{}, map[string]string{})
@@ -758,7 +758,7 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 func TestGetNodeAnnotations_NonExistentNode(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
-	k8sClient := &k8sClient{clientset: clientset}
+	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
 	_, err := k8sClient.GetNodeAnnotations(ctx, "no-such-node")
 	if err == nil {

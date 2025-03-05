@@ -147,6 +147,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             or self.entity_cache[key].isHealthy != isHealthy
                         ):
                             self.entity_cache[key] = CachedEntityState(isFatal=isFatal, isHealthy=isHealthy)
+                            log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
                             health_events.append(
                                 platformconnector_pb2.HealthEvent(
                                     version=self._version,
@@ -174,6 +175,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             or self.entity_cache[key].isHealthy != True
                         ):
                             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
+                            log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
                             health_events.append(
                                 platformconnector_pb2.HealthEvent(
                                     version=self._version,

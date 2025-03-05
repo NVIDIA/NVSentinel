@@ -46,6 +46,8 @@ func main() {
 	var tomlConfigPath = flag.String("config-path", "/etc/config/config.toml",
 		"path where the fault notification config file is present")
 
+	var dryRun = flag.Bool("dry-run", false, "flag to run fault notification module in dry-run mode")
+
 	flag.Parse()
 
 	klog.Infof("Mongo client cert path taken is: %s", *mongoClientCertMountPath)
@@ -142,8 +144,12 @@ func main() {
 		klog.Fatalf("error while loading the toml config: %v", err)
 	}
 
+	if *dryRun {
+		klog.Info("Running in dry-run mode")
+	}
+
 	// Initialize the k8s client
-	k8sClient, err := reconciler.NewFaultNotificationClient(*kubeconfigPath)
+	k8sClient, err := reconciler.NewFaultNotificationClient(*kubeconfigPath, *dryRun)
 	if err != nil {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}
@@ -158,7 +164,7 @@ func main() {
 		K8sClient:     k8sClient,
 	}
 
-	reconciler := reconciler.NewReconciler(reconcilerCfg)
+	reconciler := reconciler.NewReconciler(reconcilerCfg, *dryRun)
 	reconciler.Start(ctx)
 }
 
