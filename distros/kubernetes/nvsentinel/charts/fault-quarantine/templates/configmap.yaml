@@ -43,11 +43,11 @@ data:
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"                 
-        expression = "event.isFatal == true"
+        expression = "event.isFatal == true && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"
 
       [[rule-sets.match.all]]
         kind = "HealthEvent"
-        expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU'"
+        expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"
 
       [rule-sets.cordon]
         shouldCordon = true
