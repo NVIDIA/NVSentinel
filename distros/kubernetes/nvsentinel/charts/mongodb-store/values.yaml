@@ -25,6 +25,20 @@ mongodb:
   architecture: replicaset
   replicaCount: 3
 
+  readinessProbe:
+    timeoutSeconds: 10
+    initialDelaySeconds: 30
+
+  replicaSetName: rs0
+
+  resources:
+    requests:
+      cpu: 1
+      memory: 1.5Gi
+    limits:
+      cpu: 1.5
+      memory: 2Gi
+
   serviceAccount: 
     name: "mongodb-sa"
 
@@ -35,6 +49,51 @@ mongodb:
     enabled: true
     whenDeleted: Delete
     whenScaled: Delete
+  
+  automountServiceAccountToken: true
+
+  initContainers:
+    - name: create-certmanager-resources
+      image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
+      imagePullPolicy: IfNotPresent
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          secret=$(kubectl get secret mongo-ca-secret -n {{ .Release.Namespace }} --ignore-not-found)
+          if [ -z "$secret" ]; then
+            echo "Secret mongo-ca-secret does not exist, creating it..."
+            SKIP_SECRET_CREATION=false
+          else
+            echo "Secret mongo-ca-secret already exists, skipping creation..."
+            SKIP_SECRET_CREATION=true
+          fi
+
+          if [ "$SKIP_SECRET_CREATION" = "false" ]; then
+            echo "Waiting for CA certificate to be ready..."
+            kubectl wait --for=condition=Ready certificate/mongo-root-ca -n {{ .Release.Namespace }} --timeout=300s
+
+            echo "Extracting CA certificate and key..."
+            kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} \
+              -o jsonpath="{.data.tls\.crt}" | base64 -d > /tmp/mongodb-ca-cert
+            kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} \
+              -o jsonpath="{.data.tls\.key}" | base64 -d > /tmp/mongodb-ca-key
+
+            echo "Creating mongo-ca-secret..."
+            kubectl create secret generic mongo-ca-secret -n {{ .Release.Namespace }} \
+              --from-file=mongodb-ca-cert=/tmp/mongodb-ca-cert \
+              --from-file=mongodb-ca-key=/tmp/mongodb-ca-key \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "Secret mongo-ca-secret created."
+          fi
+          
+          echo "Waiting for mongo client cert to be ready..."
+          kubectl wait --for=condition=Ready certificate/mongo-app-client-cert -n {{ .Release.Namespace }} --timeout=300s
+
+          echo "=============================="
+          echo "cert-manager resources creation completed."
+          echo "=============================="
 
   auth:
     enabled: true
@@ -52,8 +111,6 @@ mongodb:
         - "mongo-server-cert-0"
         - "mongo-server-cert-1"
         - "mongo-server-cert-2"
-    arbiter:
-      existingSecret: "mongo-arbiter-cert-secret"
     
     image:
       registry: nvcr.io
@@ -77,47 +134,4 @@ mongodb:
       operator: Exists
 
   arbiter:
-    automountServiceAccountToken: true
-
-    initContainers:
-        - name: create-certmanager-resources
-          image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -c
-            - |
-              set -e
-
-              echo "Waiting for CA certificate to be ready..."
-              kubectl wait --for=condition=Ready certificate/mongo-root-ca -n {{ .Release.Namespace }} --timeout=300s
-
-              echo "extracting CA certificate and key..."
-              kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} -o jsonpath="{.data.tls\.crt}" | base64 -d > /tmp/mongodb-ca-cert
-              kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} -o jsonpath="{.data.tls\.key}" | base64 -d > /tmp/mongodb-ca-key
-
-              echo "creating mongo-ca-secret..."
-              kubectl create secret generic mongo-ca-secret -n {{ .Release.Namespace }} \
-                --from-file=mongodb-ca-cert=/tmp/mongodb-ca-cert \
-                --from-file=mongodb-ca-key=/tmp/mongodb-ca-key \
-                --dry-run=client -o yaml | kubectl apply -f -
-              
-              echo "waiting for mongo client cert to be ready..."
-              kubectl wait --for=condition=Ready certificate/mongo-app-client-cert -n {{ .Release.Namespace }} --timeout=300s
-
-              echo "=============================="
-              echo "cert-manager resources creation completed."
-              echo "=============================="
-
-    extraFlags:
-      - "--setParameter"
-      - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
-
-    nodeSelector:
-      nodeGroup: "system-cpu"
-
-    tolerations:
-      - effect: NoSchedule
-        operator: Exists
-      - effect: NoExecute
-        operator: Exists
+    enabled: false

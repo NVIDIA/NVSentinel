@@ -83,26 +83,6 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: mongo-arbiter-cert
-  namespace: {{ .Release.Namespace }}
-  # annotations:
-  #   helm.sh/resource-policy: keep
-spec:
-  secretName: mongo-arbiter-cert-secret
-  duration: 8760h
-  renewBefore: 360h
-  commonName: {{ printf "%s-mongo-arbiter" .Release.Namespace }}
-  dnsNames:
-    - {{ printf "%s-mongodb-arbiter-0.%s-mongodb-arbiter-headless.%s.svc.cluster.local" .Release.Namespace .Release.Namespace .Release.Namespace }}
-    - {{ printf "%s-mongodb-arbiter-headless.%s.svc.cluster.local" .Release.Namespace .Release.Namespace }}
-  issuerRef:
-    name: mongo-ca-issuer
-    kind: Issuer
-
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
   name: mongo-app-client-cert
   namespace: {{ .Release.Namespace }}
   # annotations:
