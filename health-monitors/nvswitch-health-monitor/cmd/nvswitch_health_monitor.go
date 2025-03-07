@@ -82,6 +82,15 @@ var (
 		Help:    "The time taken by nvswitch monitor to publish health event in milliseconds",
 		Buckets: prometheus.LinearBuckets(0, 10, 500),
 	})
+	health_events_insertion_to_uds_succeed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "health_events_insertion_to_uds_succeed",
+		Help: "Total number of successful insertion of health events to UDS",
+	})
+
+	health_events_insertion_to_uds_failed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "health_events_insertion_to_uds_failed",
+		Help: "Total number of failed insertion of health events to UDS",
+	})
 )
 
 func GetGPUID(nvswitch, nvlink int) (int, error) {
@@ -358,6 +367,7 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 
 		if err == nil {
 			klog.Infof("Successfully sent health event: %+v", healthEvents)
+			health_events_insertion_to_uds_succeed.Inc()
 
 			if len(healthEvents.Events) > 0 {
 				healthEventsPublished.Add(float64(len(healthEvents.Events)))
@@ -366,6 +376,7 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 			return true, nil
 		}
 
+		health_events_insertion_to_uds_failed.Inc()
 		if isRetryableError(err) {
 			klog.Errorf("Retryable error occurred: %v", err)
 			return false, nil

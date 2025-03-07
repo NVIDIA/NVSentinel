@@ -196,7 +196,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if len(health_events):
                 with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                     stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+                    try:
+                        stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+                        metrics.health_events_insertion_to_uds_succeed.inc()
+                    except grpc.RpcError as e:
+                        metrics.health_events_insertion_to_uds_failed.inc()
 
     def clear_all_xid_errors(self):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():

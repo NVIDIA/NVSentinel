@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from prometheus_client import Histogram
+from prometheus_client import Counter
 
 dcgm_health_events_publish_time_to_grpc_channel = Histogram(
     "dcgm_health_events_publish_time_to_grpc_channel",
@@ -27,4 +28,11 @@ xid_events_publish_time_to_grpc_channel = Histogram(
 overall_reconcile_loop_time = Histogram(
     "xid_errors_batch_processing_reconcile_time",
     "Amount of time spent running a single reconcile loop for batch processing of xid errors",
+)
+health_events_insertion_to_uds_succeed = Counter(
+    "health_events_insertion_to_uds_succeed", "Total number of successful insertion of health events to UDS"
+)
+
+health_events_insertion_to_uds_failed = Counter(
+    "health_events_insertion_to_uds_failed", "Total number of failed insertions of health events to UDS"
 )
