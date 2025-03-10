@@ -54,8 +54,8 @@ clientCertMountPath: "/etc/ssl/mongo-client"
 
 configPath: "/etc/config/config.toml"
 
-config:
-  timeout: 60
-  userNamespaces:
-  - name: "runai-*"
-    mode: "AllowCompletion"
+config: |
+  evictionTimeoutInSeconds = "60"
+  [[userNamespaces]]
+  name = "runai-*"
+  mode = "AllowCompletion"

@@ -20,13 +20,4 @@ metadata:
     {{- include "fault-notification-module.labels" . | nindent 4 }}
 data:
   config.toml: |
-
-    evictionTimeoutInSeconds = "{{ .Values.config.timeout }}"
-
-    {{- if .Values.config.userNamespaces }}
-    {{- range .Values.config.userNamespaces }}
-    [[userNamespaces]]
-    name = "{{ .name }}"
-    mode = "{{ .mode }}"
-    {{- end }}
-    {{- end }}
+    {{ .Values.config | nindent 6 }}
