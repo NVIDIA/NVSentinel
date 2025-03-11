@@ -17,8 +17,5 @@ dependencies:
 - name: fault-notification
   repository: ""
   version: 0.1.0
-- name: shoreline-agent
-  repository: https://helm.ngc.nvidia.com/nv-ngc-devops
-  version: 27.5.0
-digest: sha256:60ae883090f79f2badc21f94fec9fb57da2cad1826efefa302a06ab85c177e6e
-generated: "2025-01-28T14:46:36.20244+05:30"
+digest: sha256:ecebc34f79fb2e15ae503228abc2ffd142372d0cb9c1226347efc5ac7cae6a9c
+generated: "2025-03-11T10:38:55.47391324+05:30"

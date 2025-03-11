@@ -441,7 +441,6 @@ kubernetes distro helm publish:
   script:
     - cd distros/kubernetes
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
-    - helm repo add --force-update shoreline-agent ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm repo add --force-update mongodb ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - cd nvsentinel/charts/mongodb-store && helm dependency update && cd ../../..
     - cd nvsentinel && helm dependency update && cd ..

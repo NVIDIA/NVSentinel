@@ -71,7 +71,7 @@ config: |
 
     [[rule-sets.match.all]]
       kind = "HealthEvent"                 
-      expression = "event.isFatal == true && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"
+      expression = "event.isFatal == true && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"  # We need to exclude DCGM error DCGM_FR_CLOCK_THROTTLE_POWER due to a bug in driver R550: https://nvbugspro.nvidia.com/bug/4838367
 
     [[rule-sets.match.all]]
       kind = "HealthEvent"
