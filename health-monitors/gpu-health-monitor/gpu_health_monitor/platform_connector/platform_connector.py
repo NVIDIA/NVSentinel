@@ -15,13 +15,11 @@
 import dataclasses
 import logging as log
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
-import threading
 from threading import Event
 from .protos import platformconnector_pb2, platformconnector_pb2_grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics
-from collections import defaultdict
 from gpu_health_monitor.nvml_parser.nvml_parser import NvmlXidParser
 
 
@@ -199,7 +197,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     try:
                         stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
                         metrics.health_events_insertion_to_uds_succeed.inc()
-                    except grpc.RpcError as e:
+                    except grpc.RpcError:
                         metrics.health_events_insertion_to_uds_failed.inc()
 
     def clear_all_xid_errors(self):
@@ -228,7 +226,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                try:
+                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                    metrics.health_events_insertion_to_uds_succeed.inc()
+                except grpc.RpcError:
+                    metrics.health_events_insertion_to_uds_failed.inc()
 
     def get_recommended_action_from_xid_error_map(self, error_code):
         recommended_action = self.xid_errors_info_dict[error_code].recommended_action
@@ -272,7 +274,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.debug(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                try:
+                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                    metrics.health_events_insertion_to_uds_succeed.inc()
+                except grpc.RpcError:
+                    metrics.health_events_insertion_to_uds_failed.inc()
 
     def xid_error_batch_processing(
         self, xid_errors_list: list, gpu_id: str, recommendation_action: platformconnector_pb2.RecommenedAction
@@ -306,4 +312,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.info(f"xid health event is {health_event}")
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                try:
+                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                    metrics.health_events_insertion_to_uds_succeed.inc()
+                except grpc.RpcError:
+                    metrics.health_events_insertion_to_uds_failed.inc()
