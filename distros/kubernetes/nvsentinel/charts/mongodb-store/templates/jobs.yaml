@@ -16,7 +16,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: create-mongodb-database
-  namespace: nvsentinel
+  namespace: {{ .Release.Namespace }}
 spec:
   activeDeadlineSeconds: 600
   template:

@@ -16,7 +16,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: nvsentinel-node-health-events-uds-connector-client
-  namespace: nvsentinel
+  namespace: {{ .Release.Namespace }}
 spec:
   affinity:
     nodeAffinity:
