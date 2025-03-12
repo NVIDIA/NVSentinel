@@ -21,6 +21,10 @@ from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics
 from gpu_health_monitor.nvml_parser.nvml_parser import NvmlXidParser
+from time import sleep
+
+MAX_RETRIES = 10
+INITIAL_DELAY = 5
 
 
 @dataclasses.dataclass
@@ -169,8 +173,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
                         if (
                             key not in self.entity_cache
-                            or self.entity_cache[key].isFatal != False
-                            or self.entity_cache[key].isHealthy != True
+                            or self.entity_cache[key].isFatal
+                            or not self.entity_cache[key].isHealthy
                         ):
                             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
@@ -192,13 +196,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             )
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
-                with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
-                    stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                    try:
-                        stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
-                        metrics.health_events_insertion_to_uds_succeed.inc()
-                    except grpc.RpcError:
-                        metrics.health_events_insertion_to_uds_failed.inc()
+                self.send_health_event_with_retries(health_events)
 
     def clear_all_xid_errors(self):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
@@ -224,13 +222,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 nodeName=self._node_name,
             )
             log.debug(f"xid health event is {health_event}")
-            with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
-                stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                try:
-                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
-                    metrics.health_events_insertion_to_uds_succeed.inc()
-                except grpc.RpcError:
-                    metrics.health_events_insertion_to_uds_failed.inc()
+            self.send_health_event_with_retries([health_event])
 
     def get_recommended_action_from_xid_error_map(self, error_code):
         recommended_action = self.xid_errors_info_dict[error_code].recommended_action
@@ -272,13 +264,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 nodeName=self._node_name,
             )
             log.debug(f"xid health event is {health_event}")
-            with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
-                stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
-                try:
-                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
-                    metrics.health_events_insertion_to_uds_succeed.inc()
-                except grpc.RpcError:
-                    metrics.health_events_insertion_to_uds_failed.inc()
+            self.send_health_event_with_retries([health_event])
 
     def xid_error_batch_processing(
         self, xid_errors_list: list, gpu_id: str, recommendation_action: platformconnector_pb2.RecommenedAction
@@ -310,10 +296,22 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 nodeName=self._node_name,
             )
             log.info(f"xid health event is {health_event}")
+            self.send_health_event_with_retries([health_event])
+
+    def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]):
+        delay = INITIAL_DELAY
+        for _ in range(MAX_RETRIES):
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:
-                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=[health_event], version=1))
+                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
                     metrics.health_events_insertion_to_uds_succeed.inc()
-                except grpc.RpcError:
-                    metrics.health_events_insertion_to_uds_failed.inc()
+                    metrics.health_events_insertion_to_uds_error.set(0.0)
+                    return True
+                except grpc.RpcError as e:
+                    log.error(f"Failed to send health event {health_events} to UDS: {e}")
+                    sleep(delay)
+                    delay *= 2
+                    continue
+        metrics.health_events_insertion_to_uds_error.set(1.0)
+        return False

@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from prometheus_client import Histogram
-from prometheus_client import Counter
+from prometheus_client import Histogram, Counter, Gauge
 
 dcgm_health_events_publish_time_to_grpc_channel = Histogram(
     "dcgm_health_events_publish_time_to_grpc_channel",
@@ -33,6 +32,6 @@ health_events_insertion_to_uds_succeed = Counter(
     "health_events_insertion_to_uds_succeed", "Total number of successful insertion of health events to UDS"
 )
 
-health_events_insertion_to_uds_failed = Counter(
-    "health_events_insertion_to_uds_failed", "Total number of failed insertions of health events to UDS"
+health_events_insertion_to_uds_error = Gauge(
+    "health_events_insertion_to_uds_error", "Error in insertions of health events to UDS"
 )

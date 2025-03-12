@@ -66,14 +66,15 @@ var (
 		Help:    "The time taken by nic monitor to publish health event in milliseconds",
 		Buckets: prometheus.LinearBuckets(0, 10, 500),
 	})
-	health_events_insertion_to_uds_succeed = promauto.NewCounter(prometheus.CounterOpts{
+
+	healthEventsInsertionToUDSSucceed = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "health_events_insertion_to_uds_succeed",
 		Help: "Total number of successful insertion of health events to UDS",
 	})
 
-	health_events_insertion_to_uds_failed = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "health_events_insertion_to_uds_failed",
-		Help: "Total number of failed insertion of health events to UDS",
+	healthEventsInsertionToUDSError = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "health_events_insertion_to_uds_error",
+		Help: "Error in insertions of health events to UDS",
 	})
 )
 
@@ -402,7 +403,8 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 
 		if err == nil {
 			klog.Infof("Successfully sent health events: %+v", healthEvents)
-			health_events_insertion_to_uds_succeed.Inc()
+			healthEventsInsertionToUDSSucceed.Inc()
+			healthEventsInsertionToUDSError.Set(0.0)
 
 			if len(healthEvents.Events) > 0 {
 				healthEventsPublished.Add(float64(len(healthEvents.Events)))
@@ -410,8 +412,6 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 
 			return true, nil
 		}
-
-		health_events_insertion_to_uds_failed.Inc()
 
 		if isRetryableError(err) {
 			klog.Errorf("Retryable error occurred: %v", err)
@@ -424,6 +424,7 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 	})
 
 	if err != nil {
+		healthEventsInsertionToUDSError.Set(1.0)
 		klog.Errorf("All retry attempts to send health event failed: %v", err)
 	}
 }
