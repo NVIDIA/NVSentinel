@@ -26,6 +26,13 @@ class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WORKFLOW_NVLINK_ERR: _ClassVar[RecommenedAction]
     UPDATE_SWFW: _ClassVar[RecommenedAction]
     RESTART_VM: _ClassVar[RecommenedAction]
+    RESET_FABRIC: _ClassVar[RecommenedAction]
+    WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR: _ClassVar[RecommenedAction]
+    CHECK_FM_CONFIG: _ClassVar[RecommenedAction]
+    CHECK_THERMALS: _ClassVar[RecommenedAction]
+    RESET_GPU: _ClassVar[RecommenedAction]
+    CHECK_LINK_MECHANICAL_CONNECTIONS: _ClassVar[RecommenedAction]
+    INVESTIGATE_LINK_SI: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
 NONE: RecommenedAction
 NODE_REBOOT: RecommenedAction
@@ -43,6 +50,13 @@ CHECK_MECHANICALS: RecommenedAction
 WORKFLOW_NVLINK_ERR: RecommenedAction
 UPDATE_SWFW: RecommenedAction
 RESTART_VM: RecommenedAction
+RESET_FABRIC: RecommenedAction
+WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR: RecommenedAction
+CHECK_FM_CONFIG: RecommenedAction
+CHECK_THERMALS: RecommenedAction
+RESET_GPU: RecommenedAction
+CHECK_LINK_MECHANICAL_CONNECTIONS: RecommenedAction
+INVESTIGATE_LINK_SI: RecommenedAction
 UNKNOWN: RecommenedAction
 
 class HealthEvents(_message.Message):

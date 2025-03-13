@@ -46,7 +46,12 @@ spec:
       containers:
         - name: nvswitch-health-monitor
           args:
-            - "--metrics-port={{ .Values.metricsPort }}"
+            - --metrics-port
+            - "{{ .Values.metricsPort }}"
+            - --sxid-error-mapping-config-file
+            - "/etc/nvswitchhealthmonitor/sxiderrorsmapping.csv"
+            - --config
+            - "/etc/nvswitchhealthmonitor/config.ini"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.global.nvSwitchHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"

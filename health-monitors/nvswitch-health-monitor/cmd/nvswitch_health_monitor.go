@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"flag"
 	"fmt"
@@ -120,7 +121,8 @@ func GetEntityIDsForDGXType() (nvswitchIds, nvlinkIds, gpuIds []int, err error) 
 		errors.New("failed to get entity ids associated, dgx type is unknown")
 }
 
-func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string) *pb.HealthEvents {
+func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string,
+	recommendationAction pb.RecommenedAction, xidErrorMapping XIDErrorMapping) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
 	event := pb.HealthEvent{
@@ -129,12 +131,13 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string) *pb
 		CheckName:          CHECK_NAME,
 		ComponentClass:     COMPONENT_CLASS,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
-		IsFatal:            sxidEvent.IsFatal,
+		IsFatal:            xidErrorMapping.Fatality == "FATAL",
 		Message:            sxidEvent.Message,
 		IsHealthy:          sxidEvent.IsHealthy,
 		NodeName:           nodeName,
+		RecommendedAction:  recommendationAction,
 	}
-
+	klog.Infoln("Recommended action: ", event.RecommendedAction)
 	if !sxidEvent.IsHealthy {
 		entitiesImpacted := []*pb.Entity{
 			{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidEvent.NVSwitch)},
@@ -274,6 +277,9 @@ func main() {
 		"path to the nvswitch health monitor config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	var sxidErrorMappingConfigFile = flag.String("sxid-error-mapping-config-file",
+		"/etc/nvswitchhealthmonitor/sxiderrorsmapping.csv",
+		"path to the sxid error mapping config file")
 
 	flag.Parse()
 
@@ -293,6 +299,13 @@ func main() {
 		panic(err)
 	}
 	defer conn.Close()
+
+	recommendationActionMapping := createRecommendationActionMapping(*configFile)
+
+	xidErrorMapping, err := getXIDErrorMapping(*sxidErrorMappingConfigFile)
+	if err != nil {
+		klog.Fatalf("failed to get xid error mapping: %v", err)
+	}
 
 	client := pb.NewPlatformConnectorClient(conn)
 
@@ -326,7 +339,9 @@ func main() {
 		case err := <-errChan:
 			panic(err)
 		case sxidError := <-sxidErrorMonitor.EventChan:
-			healthEvents := SxidEvent2HealthEvents(sxidError, nodeName)
+			xidErrorMapping := xidErrorMapping[sxidError.ErrorNum]
+			recommendationAction := recommendationActionMapping[xidErrorMapping.RecommendedAction]
+			healthEvents := SxidEvent2HealthEvents(sxidError, nodeName, recommendationAction, xidErrorMapping)
 
 			retryDelay := time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent) * time.Second
 			sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent, retryDelay)
@@ -392,4 +407,71 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 		healthEventsPublishFailed.With(prometheus.Labels{"event": fmt.Sprintf("%+v", healthEvents.Events[0])}).Inc()
 		klog.Errorf("All retry attempts to send health event failed: %v", err)
 	}
+}
+
+type XIDErrorMapping struct {
+	XIDError          string
+	Name              string
+	RecommendedAction string
+	Fatality          string
+}
+
+func getXIDErrorMapping(filePath string) (map[int]XIDErrorMapping, error) {
+	errorMappings := make(map[int]XIDErrorMapping)
+
+	csvFile, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open sxid error mapping config file: %w", err)
+	}
+
+	csvReader := csv.NewReader(csvFile)
+	csvReader.FieldsPerRecord = -1
+	csvReader.TrimLeadingSpace = true
+
+	records, err := csvReader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read sxid error mapping config file: %w", err)
+	}
+
+	for _, record := range records {
+		if len(record) != 4 {
+			return nil, fmt.Errorf("invalid number of fields in sxid error mapping config file: %w", err)
+		}
+
+		xidError, err := strconv.Atoi(record[0])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert sxid error to int: %w", err)
+		}
+
+		errorMappings[xidError] = XIDErrorMapping{
+			XIDError:          record[0],
+			Name:              record[1],
+			RecommendedAction: record[2],
+			Fatality:          record[3],
+		}
+	}
+
+	return errorMappings, nil
+}
+
+func createRecommendationActionMapping(configFile string) map[string]pb.RecommenedAction {
+	recommendationActionMapping := make(map[string]pb.RecommenedAction)
+
+	cfg, err := ini.Load(configFile)
+	if err != nil {
+		klog.Fatalf("failed to load config file: %v", err)
+	}
+
+	section := cfg.Section("sxiderrorrecommendactiontoplatformconnectormapping")
+	for key, value := range section.KeysHash() {
+		valueInt, err := strconv.ParseInt(value, 10, 32)
+		if err != nil {
+			klog.Errorf("failed to convert value to int32: %v", err)
+			continue
+		}
+
+		recommendationActionMapping[key] = pb.RecommenedAction(valueInt)
+	}
+
+	return recommendationActionMapping
 }

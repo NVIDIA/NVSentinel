@@ -91,7 +91,7 @@ protos lint:
 license headers lint:
   stage: lint
   script:
-    - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py .
+    - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv .
 
 gpu health monitor lint:
   stage: lint
