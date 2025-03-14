@@ -94,6 +94,8 @@ spec:
             - "/etc/dcgmhealth/config.ini"
             - --xid-error-mapping-config-file
             - "/etc/dcgmhealth/xiderrorsmapping.csv"
+            - --dcgm-error-mapping-config-file
+            - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
             - --dcgm-addr
             - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.global.gpuHealthMonitor.useHostNetworking }}"
             - --port

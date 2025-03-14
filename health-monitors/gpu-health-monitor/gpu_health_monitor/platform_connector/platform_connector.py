@@ -22,6 +22,7 @@ import grpc
 from . import metrics
 from gpu_health_monitor.nvml_parser.nvml_parser import NvmlXidParser
 from time import sleep
+import re
 
 MAX_RETRIES = 10
 INITIAL_DELAY = 5
@@ -48,6 +49,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         exit: Event,
         xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
         xid_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
+        dcgm_errors_info_dict: dict[str, str],
         xid_errors_batch_processing_interval: int,
         xid_errors_batch_processing_enabled: bool,
         nvml_xid_parser: NvmlXidParser,
@@ -59,6 +61,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._version = 1
         self._agent = "gpu-health-monitor"
         self._component_class = "GPU"
+        self.dcgm_errors_info_dict = dcgm_errors_info_dict
         self.xid_errors_info_dict = xid_errors_info_dict
         self.xid_errors_recommend_action_mapping = xid_errors_recommend_action_mapping
         self.xid_errors_batch_processing_interval = xid_errors_batch_processing_interval
@@ -150,6 +153,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         ):
                             self.entity_cache[key] = CachedEntityState(isFatal=isFatal, isHealthy=isHealthy)
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
+                            if failure_details.code == "DCGM_FR_XID_ERROR":
+                                xid = self.get_xid_from_dcgm_message(message)
+                                recommended_action = self.get_recommended_action_from_xid_error_map(xid)
+                            else:
+                                recommended_action = self.get_recommended_action_from_dcgm_error_map(
+                                    failure_details.code
+                                )
+
                             health_events.append(
                                 platformconnector_pb2.HealthEvent(
                                     version=self._version,
@@ -162,7 +173,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     errorCode=error_code,
                                     entitiesImpacted=entities_impacted,
                                     message=message,
-                                    recommendedAction=platformconnector_pb2.REPORT_ISSUE,
+                                    recommendedAction=recommended_action,
                                     nodeName=self._node_name,
                                 )
                             )
@@ -227,6 +238,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def get_recommended_action_from_xid_error_map(self, error_code):
         recommended_action = self.xid_errors_info_dict[error_code].recommended_action
         return self.xid_errors_recommend_action_mapping[recommended_action]
+
+    def get_recommended_action_from_dcgm_error_map(self, error_code):
+        if error_code in self.dcgm_errors_info_dict:
+            recommended_action = self.dcgm_errors_info_dict[error_code]
+            return self.xid_errors_recommend_action_mapping[recommended_action]
+        return platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
     def xid_event_occurred(self, gpu_id: str, error_num: int):
         # The below if flag xid_errors_batch_processing_enabled is disabled for now as the NVML XID parser library is
@@ -315,3 +332,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     continue
         metrics.health_events_insertion_to_uds_error.set(1.0)
         return False
+
+    def get_xid_from_dcgm_message(self, message: str) -> str:
+        xid_pattern = r"XID (\d+)"
+        match = re.search(xid_pattern, message)
+        if match:
+            return match.group(1)
+        return None

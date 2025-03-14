@@ -112,6 +112,18 @@ class TestPlatformConnectors(unittest.TestCase):
         xid_errors_info_dict["110"] = platform_connector.XidErrorsMappingDetails(
             name="SEC_FAULT_ERROR", recommended_action="RESOLUTION_BUCKET_TBD", fatal="FATAL"
         )
+
+        dcgm_errors_info_dict = {}
+        dcgm_errors_info_dict["DCGM_FR_UNKNOWN"] = "REPORT_ISSUE"
+        dcgm_errors_info_dict["DCGM_FR_UNRECOGNIZED"] = "REPORT_ISSUE"
+        dcgm_errors_info_dict["DCGM_FR_PCI_REPLAY_RATE"] = "REPORT_ISSUE"
+        dcgm_errors_info_dict["DCGM_FR_VOLATILE_DBE_DETECTED"] = "RESET_GPU"
+        dcgm_errors_info_dict["DCGM_FR_VOLATILE_SBE_DETECTED"] = "IGNORE"
+        dcgm_errors_info_dict["DCGM_FR_PENDING_PAGE_RETIREMENTS"] = "IGNORE"
+        dcgm_errors_info_dict["DCGM_FR_RETIRED_PAGES_LIMIT"] = "RUN_FIELDDIAG"
+        dcgm_errors_info_dict["DCGM_FR_CORRUPT_INFOROM"] = "RESET_GPU"
+        dcgm_errors_info_dict["DCGM_HEALTH_WATCH_INFOROM"] = "IGNORE"
+
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
         xid_errors_batch_processing_interval = 4
         xid_errors_batch_processing_enabled = True
@@ -121,6 +133,7 @@ class TestPlatformConnectors(unittest.TestCase):
             exit,
             xid_errors_info_dict,
             xid_error_recommend_action_mapping,
+            dcgm_errors_info_dict,
             xid_errors_batch_processing_interval,
             xid_errors_batch_processing_enabled,
             DummyNvmlXidParser(),
@@ -143,7 +156,7 @@ class TestPlatformConnectors(unittest.TestCase):
             if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
                 assert event.errorCode[0] == "DCGM_FR_CORRUPT_INFOROM"
                 assert event.entitiesImpacted[0].entityValue == "0"
-                assert event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
+                assert event.recommendedAction == platformconnector_pb2.RecommenedAction.COMPONENT_RESET
             else:
                 assert event.isHealthy == True
                 assert event.checkName != ""

@@ -30,6 +30,7 @@ def _init_event_processor(
     config: configparser.ConfigParser,
     node_name: str,
     exit: Event,
+    dcgm_errors_info_dict: dict[str, str],
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails],
     xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
     xid_errors_batch_processing_interval: int,
@@ -45,6 +46,7 @@ def _init_event_processor(
                 node_name=node_name,
                 exit=exit,
                 xid_errors_info_dict=xid_errors_info_dict,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
                 xid_errors_recommend_action_mapping=xid_error_recommend_action_mapping,
                 xid_errors_batch_processing_interval=xid_errors_batch_processing_interval,
                 xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
@@ -70,12 +72,24 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
 @click.option(
     "--xid-error-mapping-config-file", type=click.Path(), help="Path to xid errors mapping config file", required=True
 )
+@click.option(
+    "--dcgm-error-mapping-config-file", type=click.Path(), help="Path to dcgm errors mapping config file", required=True
+)
 @click.option("--config-file", type=click.Path(), help="Path to config file", required=True)
 @click.option("--port", type=int, help="Port to use for metrics server", required=True)
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
-def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, state_file, dcgm_k8s_service_enabled):
+def cli(
+    dcgm_addr,
+    xid_error_mapping_config_file,
+    dcgm_error_mapping_config_file,
+    config_file,
+    port,
+    verbose,
+    state_file,
+    dcgm_k8s_service_enabled,
+):
     exit = Event()
     config = configparser.ConfigParser()
     # By default, the Python ConfigParser module reads keys case-insensitively and converts them to lowercase.
@@ -96,6 +110,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
     xid_errors_batch_processing_enabled = config.getboolean("xiderrorsconfig", "XidErrorsBatchProcessingEnabled")
     xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
+    dcgm_errors_info_dict: dict[str, str] = {}
     log.basicConfig(format=logging_config["LogFormat"], datefmt=logging_config["DateTimeFormat"])
     if verbose:
         log.getLogger().setLevel(log.DEBUG)
@@ -110,6 +125,14 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
             )
             log.debug(
                 f"xid error {row[0]} xid_error_name {xid_errors_info_dict[row[0]].name} xid_error_recommendation {xid_errors_info_dict[row[0]].recommended_action} xid_error_fatal {xid_errors_info_dict[row[0]].fatal}"
+            )
+
+    with open(dcgm_error_mapping_config_file, mode="r") as file:
+        csv_reader = csv.reader(file)
+        for row in csv_reader:
+            dcgm_errors_info_dict[row[0]] = row[1]
+            log.debug(
+                f"dcgm error {row[0]} dcgm_error_name {dcgm_errors_info_dict[row[0]]} dcgm_error_recommended_action {row[1]}"
             )
 
     xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction] = {}
@@ -131,6 +154,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
                 config,
                 node_name,
                 exit,
+                dcgm_errors_info_dict,
                 xid_errors_info_dict,
                 xid_error_recommend_action_mapping,
                 int(xid_errors_batch_processing_interval),
@@ -140,7 +164,7 @@ def cli(dcgm_addr, xid_error_mapping_config_file, config_file, port, verbose, st
             )
         )
 
-    def process_exit_signal(signum, frame):
+    def process_exit_signal():
         exit.set()
         prom_server.shutdown()
         t.join()

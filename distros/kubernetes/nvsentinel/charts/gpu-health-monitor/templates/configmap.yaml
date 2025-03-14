@@ -65,3 +65,4 @@ data:
 {{ (.Files.Glob "xiderrorsmapping.csv").AsConfig | indent 2 }}
 
 
+{{ (.Files.Glob "dcgmerrorsmapping.csv").AsConfig | indent 2 }}
