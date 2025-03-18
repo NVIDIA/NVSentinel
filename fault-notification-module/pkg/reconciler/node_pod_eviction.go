@@ -67,7 +67,7 @@ func NewFaultNotificationClient(kubeconfig string, dryRun bool) (*FaultNotificat
 	return client, nil
 }
 
-func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) (*v1.PodList, error) {
+func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) ([]v1.Pod, error) {
 	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
 	})
@@ -78,7 +78,22 @@ func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Cont
 	if len(pods.Items) == 0 {
 		klog.Infof("No pods present in namespace %s on node %s\n", namespace, nodeName)
 	}
-	return pods, nil
+
+	// ignore daemonset pods
+	filteredPods := []v1.Pod{}
+	for _, pod := range pods.Items {
+		isDaemonSet := false
+		for _, owner := range pod.OwnerReferences {
+			if owner.Kind == "DaemonSet" {
+				isDaemonSet = true
+				break
+			}
+		}
+		if !isDaemonSet {
+			filteredPods = append(filteredPods, pod)
+		}
+	}
+	return filteredPods, nil
 }
 
 // gracefully evicts all pods in a namespace
@@ -89,7 +104,7 @@ func (c *FaultNotificationClient) EvictAllPodsInImmediateMode(ctx context.Contex
 		return fmt.Errorf("error while fetching pods in namespace %s on node %s : %w", namespace, nodeName, err)
 	}
 
-	if len(pods.Items) == 0 {
+	if len(pods) == 0 {
 		return nil
 	}
 
@@ -102,12 +117,12 @@ func (c *FaultNotificationClient) EvictAllPodsInImmediateMode(ctx context.Contex
 	return nil
 }
 
-func (c *FaultNotificationClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string, timeout time.Duration, pods *v1.PodList) error {
+func (c *FaultNotificationClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string, timeout time.Duration, pods []v1.Pod) error {
 	var wg sync.WaitGroup
 	var mErr *multierror.Error
-	errChan := make(chan error, len(pods.Items))
+	errChan := make(chan error, len(pods))
 
-	for _, pod := range pods.Items {
+	for _, pod := range pods {
 		wg.Add(1)
 		go func(ctx context.Context, namespace, podName string, timeout time.Duration) {
 			defer wg.Done()
@@ -229,8 +244,17 @@ func (c *FaultNotificationClient) checkIfPodsPresentInNamespaceAndNode(ctx conte
 		if len(pods.Items) > 0 {
 			var remainingPods []v1.Pod
 			for _, pod := range pods.Items {
-				klog.InfoS("Pod not evicted", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
-				remainingPods = append(remainingPods, pod)
+				isDaemonSet := false
+				for _, owner := range pod.OwnerReferences {
+					if owner.Kind == "DaemonSet" {
+						isDaemonSet = true
+						break
+					}
+				}
+				if !isDaemonSet {
+					klog.InfoS("Pod not evicted", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
+					remainingPods = append(remainingPods, pod)
+				}
 			}
 			resultChan <- result{namespace: namespace, pods: remainingPods, err: nil}
 			return
@@ -361,7 +385,7 @@ func (c *FaultNotificationClient) MonitorPodCompletion(ctx context.Context, name
 			}
 
 			allCompleted := true
-			for _, pod := range podsList.Items {
+			for _, pod := range podsList {
 				allCompleted = false
 				klog.InfoS("Still waiting for this pod to finish", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
 			}

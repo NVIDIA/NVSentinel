@@ -172,6 +172,9 @@ func TestMain(m *testing.M) {
 		log.Fatalf("Failed to update pod status: %v", err)
 	}
 
+	createDaemonSet(ctx, "nvsentinel", "daemonset1")
+	createDaemonSet(ctx, "runai", "daemonset2")
+
 	exitCode := m.Run()
 
 	TearDownResources()
@@ -196,7 +199,7 @@ func TestFindAllPodsInNamespaceAndNode(t *testing.T) {
 			assert.NoError(t, err, "Error retrieving pods")
 
 			actualPodNames := []string{}
-			for _, pod := range podList.Items {
+			for _, pod := range podList {
 				actualPodNames = append(actualPodNames, pod.Name)
 			}
 
@@ -221,6 +224,9 @@ func TestEvictAllPodsImmediately(t *testing.T) {
 	if _, exist := mockEvictionClient.EvictedPods.Load("runai/pod2"); !exist {
 		t.Errorf("Expected Pod2 in namespace runai to be evicted from node1")
 	}
+
+	// daemonset pods should not be evicted
+	assertPodNotDeleted(ctx, t, "runai", "daemonset2")
 }
 
 func TestMonitorPodCompletionWithContextCancelled(t *testing.T) {
@@ -241,6 +247,8 @@ func TestMonitorPodCompletionWithContextCancelled(t *testing.T) {
 	}
 
 	assertPodNotDeleted(ctx, t, namespace, "job-pod2")
+	// daemonset pods should not be terminated
+	assertPodNotDeleted(ctx, t, "nvsentinel", "daemonset1")
 }
 
 func TestMonitorPodCompletion(t *testing.T) {
@@ -277,6 +285,8 @@ func TestMonitorPodCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error is not expected while eviction of pods in namespace %s in Allow completion mode", namespace)
 	}
+	// daemonset pods should not be terminated
+	assertPodNotDeleted(ctx, t, "nvsentinel", "daemonset1")
 }
 
 func TestCheckIfAllPodsAreEvictedInImmediateMode(t *testing.T) {
@@ -321,6 +331,35 @@ func createTestPod(ctx context.Context, namespace, name, node string) *v1.Pod {
 		log.Fatalf("error occured while creating pod %s in namespace %s on node %s: %v", name, namespace, node, err)
 	}
 	return createdPod
+}
+
+func createDaemonSet(ctx context.Context, namespace, name string) {
+	daemonSetPod := &v1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			OwnerReferences: []metaV1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "DaemonSet",
+					Name:       "test-daemonset",
+					UID:        "87654321-4321-4321-4321-abcdefabcdef",
+					Controller: ptr.To(true),
+				},
+			},
+		},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+			Containers: []v1.Container{
+				{Name: "pause", Image: "k8s.gcr.io/pause:3.1"},
+			},
+		},
+	}
+
+	_, err := Client.CoreV1().Pods(namespace).Create(ctx, daemonSetPod, metaV1.CreateOptions{})
+	if err != nil {
+		log.Fatalf("Failed to create DaemonSet pod %s: %v", name, err)
+	}
 }
 
 func TearDownResources() {
