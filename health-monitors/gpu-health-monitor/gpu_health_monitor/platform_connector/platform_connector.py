@@ -116,7 +116,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
-    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list):
+    def health_event_occurred(
+        self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list, serials: dict[int, str]
+    ):
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():
@@ -175,6 +177,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     message=message,
                                     recommendedAction=recommended_action,
                                     nodeName=self._node_name,
+                                    metadata={"SerialNumber": serials[gpu_id]},
                                 )
                             )
                     else:
@@ -203,6 +206,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
                                     recommendedAction=platformconnector_pb2.NONE,
                                     nodeName=self._node_name,
+                                    metadata={"SerialNumber": serials[gpu_id]},
                                 )
                             )
             log.debug(f"dcgm health event is {health_events}")
@@ -245,7 +249,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             return self.xid_errors_recommend_action_mapping[recommended_action]
         return platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
-    def xid_event_occurred(self, gpu_id: str, error_num: int):
+    def xid_event_occurred(self, gpu_id: str, error_num: int, serial: str):
         # The below if flag xid_errors_batch_processing_enabled is disabled for now as the NVML XID parser library is
         # not available yet. Once that is available, then this flag will be enabled.
         if self.xid_errors_batch_processing_enabled:
@@ -279,6 +283,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 message=message,
                 recommendedAction=recommended_action,
                 nodeName=self._node_name,
+                metadata={"SerialNumber": serial},
             )
             log.debug(f"xid health event is {health_event}")
             self.send_health_event_with_retries([health_event])

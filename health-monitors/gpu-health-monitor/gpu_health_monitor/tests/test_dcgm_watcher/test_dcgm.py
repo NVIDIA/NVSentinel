@@ -24,14 +24,19 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.health_details = None
         self.gpu_id = None
         self.error_num = None
+        self.serial = None
         self.fields_changes = None
 
-    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
+    def health_event_occurred(
+        self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int], serials: dict[int, str]
+    ):
         self.health_details = health_details
+        self.serials = serials
 
-    def xid_event_occurred(self, gpu_id: str, error_num: int):
+    def xid_event_occurred(self, gpu_id: str, error_num: int, serial: str):
         self.gpu_id = gpu_id
         self.error_num = error_num
+        self.serial = serial
 
     def clear_all_xid_errors(self):
         pass
@@ -182,6 +187,7 @@ class TestDCGMHealthChecks:
                 ),
             },
         )
+
         assert response == expected_response
 
     @patch("pydcgm.DcgmGroup.__new__")
@@ -254,7 +260,7 @@ class TestDCGMHealthChecks:
         expected_response = watcher._get_health_status_dict()
         watcher_thread.start()
         exit.wait(5)  # wait for the watcher to enter the event loop
-        watcher._xid_event_callback_func(0, pointer(xid_callback_data()))
+        watcher._xid_event_callback_func(0, pointer(xid_callback_data()), "1650924060039")
         exit.wait(4)
         exit.wait(3)
         exit.wait(2)

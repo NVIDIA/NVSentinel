@@ -70,6 +70,16 @@ class TestPlatformConnectors(unittest.TestCase):
         watcher = dcgm.DCGMWatcher(
             addr="localhost:5555", poll_interval_seconds=10, callbacks=[], dcgm_k8s_service_enabled=False
         )
+        gpu_serials = {
+            0: "1650924060039",
+            1: "1650924060040",
+            2: "1650924060041",
+            3: "1650924060042",
+            4: "1650924060043",
+            5: "1650924060044",
+            6: "1650924060045",
+            7: "1650924060046",
+        }
         exit = Event()
         xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
         xid_errors_info_dict["1"] = platform_connector.XidErrorsMappingDetails(
@@ -150,7 +160,7 @@ class TestPlatformConnectors(unittest.TestCase):
             },
         )
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
         health_events = healthEventProcessor.health_events
         for event in health_events:
             if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
@@ -177,7 +187,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
         health_events = healthEventProcessor.health_events
         assert len(platform_connector_test.entity_cache) == cache_length
         assert (
@@ -197,7 +207,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
         health_events = healthEventProcessor.health_events
         assert len(platform_connector_test.entity_cache) == cache_length
         assert (
@@ -208,22 +218,24 @@ class TestPlatformConnectors(unittest.TestCase):
             != before_insertion_cache_value.isHealthy
         )
 
-        platform_connector_test.xid_event_occurred("0", 64)
+        platform_connector_test.xid_event_occurred("0", 64, gpu_serials[0])
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "64"
         assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted[0].entityValue == "0"
+        assert health_event.metadata["SerialNumber"] == "1650924060039"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.RUN_FIELDDIAG
 
-        platform_connector_test.xid_event_occurred("0", 65)
+        platform_connector_test.xid_event_occurred("0", 65, gpu_serials[0])
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode[0] == "65"
         assert health_event.nodeName == "node1"
         assert health_event.entitiesImpacted[0].entityValue == "0"
+        assert health_event.metadata["SerialNumber"] == "1650924060039"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
         platform_connector_test.clear_all_xid_errors()

@@ -144,6 +144,21 @@ class DCGMWatcher:
 
         return dcgm_group
 
+    def _get_gpu_serial_numbers(self, dcgm_handle: pydcgm.DcgmHandle) -> dict[int, str]:
+        dcgm_system = dcgm_handle.GetSystem()
+        gpu_serials = {}
+
+        with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
+            supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+
+        # Get serial numbers for each GPU
+        for gpu in supported_gpus:
+            with metrics.dcgm_api_latency.labels("get_latest_values").time():
+                serial = dcgm_system.discovery.GetGpuAttributes(gpu).identifiers.serial
+                gpu_serials[gpu] = serial
+
+        return gpu_serials
+
     def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> dict[str, types.HealthDetails]:
         with metrics.dcgm_api_latency.labels("health_check").time():
             health_details = dcgm_group.health.Check()
@@ -153,25 +168,31 @@ class DCGMWatcher:
         for i in range(health_details.incidentCount):
             incident = health_details.incidents[i]
             health_status[self._health_watches[incident.system]].status = types.HealthStatus(int(incident.health))
-            health_status[self._health_watches[incident.system]].entity_failures[incident.entityInfo.entityId] = (
-                types.ErrorDetails(message=incident.error.msg, code=self._error_codes[incident.error.code])
+            gpu_id = incident.entityInfo.entityId
+            health_status[self._health_watches[incident.system]].entity_failures[gpu_id] = types.ErrorDetails(
+                message=incident.error.msg, code=self._error_codes[incident.error.code]
             )
             log.debug(f"incident.error.code is {incident.error.code} and error msg is {incident.error.msg}")
         log.debug(f"filled in health details is {health_status}")
         return health_status
 
-    def _xid_event_callback_func(self, gpu_id, data):
+    def _xid_event_callback_func(self, gpu_id, data, serial_number):
         callbackData = dcgm_structs.c_dcgmPolicyCallbackResponse_v1()
         memmove(addressof(callbackData), data, callbackData.FieldsSizeof())
         xid_error = int(callbackData.val.xid.errnum)
-        log.info(f"detected xid error {xid_error} on {gpu_id}")
-        self._fire_callback_funcs(types.CallbackInterface.xid_event_occurred.__name__, [gpu_id, xid_error])
+        log.info(f"detected xid error {xid_error} on {gpu_id} (Serial Number: {serial_number})")
+        self._fire_callback_funcs(
+            types.CallbackInterface.xid_event_occurred.__name__, [gpu_id, xid_error, serial_number]
+        )
 
     def _register_xid_callbacks_on_all_gpus(self, dcgm_handle: pydcgm.DcgmHandle) -> list[pydcgm.DcgmGroup]:
         dcgm_system = dcgm_handle.GetSystem()
 
         with metrics.dcgm_api_latency.labels("discovery_get_entity_group_entities").time():
             supported_gpus = dcgm_system.discovery.GetEntityGroupEntities(dcgm_fields.DCGM_FE_GPU, True)
+
+        # Get GPU serial numbers
+        gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
 
         dcgm_groups = []
         # hold a reference to the xid callback functions so that it does not get garbage collected resulting in
@@ -190,12 +211,13 @@ class DCGMWatcher:
             dcgm_group.policy.Set(newPolicy)
             log.info("setting the policy")
             log.info(f"Registering XID callback for GPU {gpu}")
-            _xid_event_callback_func = XID_CALLBACK(partial(self._xid_event_callback_func, gpu))
+            serial = gpu_serials.get(gpu, "")
+            _xid_event_callback_func = XID_CALLBACK(partial(self._xid_event_callback_func, gpu, serial_number=serial))
             with metrics.dcgm_api_latency.labels("policy_register").time():
                 returnVal = dcgm_group.policy.Register(
                     condition=dcgm_structs.DCGM_POLICY_COND_XID, beginCallback=_xid_event_callback_func
                 )
-                log.info(f"dcgm XID error  notification register with returnValue {returnVal}")
+                log.info(f"dcgm XID error notification register with returnValue {returnVal}")
             self._xid_callback_funcs.append(_xid_event_callback_func)
 
             dcgm_groups.append(dcgm_group)
@@ -243,15 +265,15 @@ class DCGMWatcher:
             dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
 
         gpu_ids = dcgm_group.GetGpuIds()
+        gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
         log.info(f"dcgm gpu_id are {gpu_ids}")
         dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
-        older_field_values = {}
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
                 log.info("Running health check")
                 health_status = self._perform_health_check(dcgm_group)
                 self._fire_callback_funcs(
-                    types.CallbackInterface.health_event_occurred.__name__, [health_status, gpu_ids]
+                    types.CallbackInterface.health_event_occurred.__name__, [health_status, gpu_ids, gpu_serials]
                 )
 
             log.info("Waiting till next cycle")
