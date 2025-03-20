@@ -129,7 +129,8 @@ gpu health monitor container publish:
     - cd health-monitors/gpu-health-monitor
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME} .
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x --build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 --build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 . -f Dockerfile
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x . -f Dockerfile
   tags:
     - dind
 

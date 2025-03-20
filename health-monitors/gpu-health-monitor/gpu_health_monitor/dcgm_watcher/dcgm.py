@@ -21,9 +21,11 @@ from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import time
+import os
 
 XID_CALLBACK = CFUNCTYPE(None, c_void_p)
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
+DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
 
 
 class DCGMWatcher:
@@ -65,7 +67,6 @@ class DCGMWatcher:
 
     def _get_available_error_codes(self) -> dict[int, str]:
         error_codes = {}
-        lines = []
         for var in dir(dcgm_errors):
             if (
                 var.startswith("DCGM_FR")
@@ -177,9 +178,12 @@ class DCGMWatcher:
         return health_status
 
     def _xid_event_callback_func(self, gpu_id, data, serial_number):
-        callbackData = dcgm_structs.c_dcgmPolicyCallbackResponse_v1()
-        memmove(addressof(callbackData), data, callbackData.FieldsSizeof())
-        xid_error = int(callbackData.val.xid.errnum)
+        if os.getenv("PYTHONPATH") == DCGM_4_PYTHON_PATH:
+            callback_data = dcgm_structs.c_dcgmPolicyCallbackResponse_v2()
+        else:
+            callback_data = dcgm_structs.c_dcgmPolicyCallbackResponse_v1()
+        memmove(addressof(callback_data), data, callback_data.FieldsSizeof())
+        xid_error = int(callback_data.val.xid.errnum)
         log.info(f"detected xid error {xid_error} on {gpu_id} (Serial Number: {serial_number})")
         self._fire_callback_funcs(
             types.CallbackInterface.xid_event_occurred.__name__, [gpu_id, xid_error, serial_number]
@@ -214,10 +218,15 @@ class DCGMWatcher:
             serial = gpu_serials.get(gpu, "")
             _xid_event_callback_func = XID_CALLBACK(partial(self._xid_event_callback_func, gpu, serial_number=serial))
             with metrics.dcgm_api_latency.labels("policy_register").time():
-                returnVal = dcgm_group.policy.Register(
-                    condition=dcgm_structs.DCGM_POLICY_COND_XID, beginCallback=_xid_event_callback_func
-                )
-                log.info(f"dcgm XID error notification register with returnValue {returnVal}")
+                if os.getenv("PYTHONPATH") == DCGM_4_PYTHON_PATH:
+                    return_val = dcgm_group.policy.Register(
+                        condition=dcgm_structs.DCGM_POLICY_COND_XID, callback=_xid_event_callback_func
+                    )
+                else:
+                    return_val = dcgm_group.policy.Register(
+                        condition=dcgm_structs.DCGM_POLICY_COND_XID, beginCallback=_xid_event_callback_func
+                    )
+                log.info(f"dcgm XID error notification register with returnValue {return_val}")
             self._xid_callback_funcs.append(_xid_event_callback_func)
 
             dcgm_groups.append(dcgm_group)

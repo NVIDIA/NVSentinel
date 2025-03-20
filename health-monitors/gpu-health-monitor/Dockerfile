@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+ARG DCGM_VERSION="4.1.1-1-ubuntu22.04"
 FROM python:3.10-bookworm AS build
 
 RUN pip install poetry==1.8.2
@@ -27,13 +28,15 @@ COPY . .
 RUN poetry build --format wheel 
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
-FROM nvcr.io/nvidia/cloud-native/dcgm:3.3.7-1-ubuntu22.04 AS runtime
+
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
 RUN apt-get update && \
     apt-get install -y python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
-ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
+ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"
+ENV PYTHONPATH=${PYTHONPATH} \
     PYTHONUNBUFFERED=1
 
 COPY --from=build /app/dist/*.whl ./
@@ -43,5 +46,5 @@ RUN pip install ./gpu_health_monitor*.whl --constraint constraints.txt
 # Copy the proto file and the Python script
 COPY gpu_health_monitor/clear_xid_errors/clear_xid_error_health_event.py .
 COPY gpu_health_monitor/clear_xid_errors/protos/ protos/
-
-ENTRYPOINT ["gpu_health_monitor"]
+RUN pip install kubernetes==28.1.0
+COPY gpu_health_monitor/node_watcher/src.py node_watcher.py

@@ -1,0 +1,98 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - patch
+      - get
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gpu-health-monitor.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}-node-labeler
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gpu-health-monitor.selectorLabels" . | nindent 6 }}-node-labeler
+  template:
+    metadata:
+      labels:
+        {{- include "gpu-health-monitor.selectorLabels" . | nindent 8 }}-node-labeler
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "gpu-health-monitor.fullname" . }}
+      containers:
+        - name: gpu-health-monitor
+          image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-4.x"
+          command: ["python3", "node_watcher.py"]
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

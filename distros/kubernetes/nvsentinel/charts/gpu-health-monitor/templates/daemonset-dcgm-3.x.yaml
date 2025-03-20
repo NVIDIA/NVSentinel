@@ -15,7 +15,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "gpu-health-monitor.fullname" . }}
+  name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-3.x
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
 spec:
@@ -47,48 +47,13 @@ spec:
         - name: wait-for-dcgm-pod-to-run
           image: {{ .Values.global.gpuHealthMonitor.busybox.image.repository }}:{{ .Values.global.gpuHealthMonitor.busybox.image.tag }}
           imagePullPolicy: {{ .Values.global.gpuHealthMonitor.busybox.image.pullPolicy }}
-          command: ["/bin/sh", "-c"]
-          args:
-          - |
-            DCGM_HOST="nvidia-dcgm.gpu-operator.svc"
-            DCGM_PORT=5555
-            MAX_ATTEMPTS=60
-            INTERVAL=60
-
-            check_dcgm() {
-              output=$(nc -zv $DCGM_HOST $DCGM_PORT 2>&1)
-              if [ $? -eq 0 ]; then
-                if echo "$output" | grep -q "open"; then
-                  echo "DCGM service is reachable"
-                  echo "Details: $output"
-                  return 0
-                else
-                  echo "Unexpected output from netcat: $output"
-                  return 1
-                fi
-              else
-                echo "Unable to connect to DCGM service"
-                echo "Error: $output"
-                return 1
-              fi
-            }
-
-            for attempt in $(seq 1 $MAX_ATTEMPTS); do
-              echo "Attempt $attempt of $MAX_ATTEMPTS"
-              if check_dcgm; then
-                echo "DCGM service is reachable. Exiting successfully."
-                exit 0
-              fi
-              if [ $attempt -lt $MAX_ATTEMPTS ]; then
-                echo "Waiting $INTERVAL seconds before next attempt."
-                sleep $INTERVAL
-              fi
-            done
-
-            echo "Max attempts reached. DCGM service is not reachable."
-            exit 1
+          command: ["/bin/sh", "/etc/dcgmhealth/is-dcgm-reachable.sh"]
+          volumeMounts:
+            - name: config-vol
+              mountPath: /etc/dcgmhealth
       containers:
         - name: {{ .Chart.Name }}
+          command: ["gpu_health_monitor"]
           args:
             - --config-file
             - "/etc/dcgmhealth/config.ini"
@@ -108,7 +73,7 @@ spec:
             - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-3.x"
           imagePullPolicy: {{ .Values.global.gpuHealthMonitor.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -133,6 +98,7 @@ spec:
         - name: config-vol
           configMap:
             name: {{ include "gpu-health-monitor.fullname" . }}
+            defaultMode: 0777
         - name: var-run-vol
           hostPath:
             path: /var/run/nvsentinel
@@ -146,6 +112,7 @@ spec:
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
+        dcgm.version: "3.x"
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
