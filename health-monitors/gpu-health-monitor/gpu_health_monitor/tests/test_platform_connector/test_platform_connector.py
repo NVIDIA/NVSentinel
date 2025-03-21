@@ -238,11 +238,11 @@ class TestPlatformConnectors(unittest.TestCase):
         assert health_event.metadata["SerialNumber"] == "1650924060039"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
-        platform_connector_test.clear_all_xid_errors()
+        platform_connector_test.clear_all_xid_errors([0])
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode == []
-        assert health_event.entitiesImpacted == []
+        assert health_event.entitiesImpacted == [platformconnector_pb2.Entity(entityType="GPU", entityValue="0")]
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE
         server.stop(0)

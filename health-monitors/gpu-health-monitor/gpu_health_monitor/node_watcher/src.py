@@ -17,6 +17,8 @@ import re
 
 import logging
 import time
+import urllib3
+import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,13 +83,22 @@ def main():
     config.load_incluster_config()
     v1 = client.CoreV1Api()
     w = watch.Watch()
-    for event in w.stream(
-        v1.list_namespaced_pod,
-        namespace="gpu-operator",
-        timeout_seconds=0,
-        label_selector="app=nvidia-dcgm",
-    ):
-        pod_event_callback(event)
+
+    while True:
+        try:
+            for event in w.stream(
+                v1.list_namespaced_pod,
+                namespace="gpu-operator",
+                timeout_seconds=0,
+                label_selector="app=nvidia-dcgm",
+            ):
+                pod_event_callback(event)
+        except urllib3.exceptions.ProtocolError:
+            logger.error("Protocol error")
+            time.sleep(RETRY_DELAY)
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

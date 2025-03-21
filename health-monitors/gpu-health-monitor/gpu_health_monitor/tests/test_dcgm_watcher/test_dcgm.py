@@ -38,7 +38,7 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.error_num = error_num
         self.serial = serial
 
-    def clear_all_xid_errors(self):
+    def clear_all_xid_errors(self, gpu_ids: list):
         pass
 
 

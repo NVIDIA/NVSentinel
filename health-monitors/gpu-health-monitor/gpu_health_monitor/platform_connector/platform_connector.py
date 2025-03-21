@@ -72,7 +72,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.state_file_path = state_file_path
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
-        self.current_bootid = self.fetch_current_bootid_and_clear_xid_errors()
         self.entity_cache: dict[str, CachedEntityState] = {}
 
     def read_old_system_bootid_from_state_file(self) -> str:
@@ -84,7 +83,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.fatal(f"failed to read the data from file {self.state_file_path}")
         return bootid
 
-    def fetch_current_bootid_and_clear_xid_errors(self) -> str:
+    def clear_all_xid_errors(self, gpu_ids: list) -> str:
         bootid = ""
         try:
             with open(self.node_bootid_path, "r") as f:
@@ -98,7 +97,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             self.old_bootid = bootid
             with open(self.state_file_path, "w") as output_file:
                 output_file.write(bootid)
-            self.clear_all_xid_errors()
+            self.clear_xid_errors(gpu_ids)
 
         return bootid
 
@@ -213,14 +212,17 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if len(health_events):
                 self.send_health_event_with_retries(health_events)
 
-    def clear_all_xid_errors(self):
+    def clear_xid_errors(self, gpu_ids: list):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             log.info("received callback for for clearing of xid errors")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             check_name = "GpuXidError"
             message = "NoXidErrorDetected"
-            entities_impacted = []
+            entities_impacted = [
+                platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+                for gpu_id in gpu_ids
+            ]
             error_code = []
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,

@@ -277,6 +277,11 @@ class DCGMWatcher:
         gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
         log.info(f"dcgm gpu_id are {gpu_ids}")
         dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
+
+        for callback in self._callbacks:
+            if hasattr(callback, "clear_all_xid_errors"):
+                callback.clear_all_xid_errors(gpu_ids)
+
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
                 log.info("Running health check")
