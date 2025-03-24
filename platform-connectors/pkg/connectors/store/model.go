@@ -41,7 +41,7 @@ type OperationStatus struct {
 }
 
 type HealthEventStatus struct {
-	NodeQuarantined        *bool           `bson:"nodequarantined"`
+	NodeQuarantined        *Status         `bson:"nodequarantined"`
 	UserPodsEvictionStatus OperationStatus `bson:"userpodsevictionstatus"`
 	FaultRemediated        *bool           `bson:"faultremediated"`
 }
