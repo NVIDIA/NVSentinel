@@ -29,6 +29,12 @@ const (
 	StatusSucceeded  Status = "Succeeded"
 )
 
+const (
+	UnQuarantined      Status = "UnQuarantined"
+	Quarantined        Status = "Quarantined"
+	AlreadyQuarantined Status = "AlreadyQuarantined"
+)
+
 type OperationStatus struct {
 	Status  Status `bson:"status"`
 	Message string `bson:"message,omitempty"`
