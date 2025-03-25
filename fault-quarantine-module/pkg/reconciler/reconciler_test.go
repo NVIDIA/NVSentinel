@@ -21,6 +21,7 @@ import (
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/client-go/kubernetes"
 )
@@ -165,7 +166,11 @@ func TestHandleEvent(t *testing.T) {
 		quarantinedNodesMap,
 	)
 
-	if !isQuarantined {
+	if isQuarantined == nil {
+		t.Errorf("Expected isQuarantined to be non-nil")
+	}
+
+	if *isQuarantined == store.UnQuarantined {
 		t.Errorf("Node should be quarantined due to rules")
 	}
 
@@ -205,7 +210,11 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 		RuleSetPriorityMap: map[string]int{},
 	}, map[string]bool{})
 
-	if isQuarantined {
+	if isQuarantined == nil {
+		t.Errorf("Expected isQuarantined to be non-nil")
+	}
+
+	if *isQuarantined == store.Quarantined {
 		t.Errorf("Expected node not to be quarantined when no rules triggered")
 	}
 }

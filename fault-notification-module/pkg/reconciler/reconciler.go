@@ -99,9 +99,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 			podsEvictionStatus.Status = storeconnector.StatusInProgress
 
 			switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
-			case true:
+			case storeconnector.Quarantined:
 				unhealthyEvent.Inc()
-			case false:
+			case storeconnector.UnQuarantined:
 				healthyEvent.Inc()
 			}
 
@@ -158,7 +158,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 
 	for ns, mode := range namespaceMap {
 		nsWithNode := fmt.Sprintf("%s-%s", nodeName, ns)
-		if !(*healthEventWithStatus.HealthEventStatus.NodeQuarantined) {
+		if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
 			if _, ok := r.NodeEvictionContext.Load(nsWithNode); ok {
 				if mode == config.ModeAllowCompletion {
 					healthyEventWithContextCancellation.Inc()
@@ -242,7 +242,7 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 
 func (r *Reconciler) verifyEvictionCompleted(ctx context.Context, healthEventWithStatus *storeconnector.HealthEventWithStatus, nodeName string, nsWithImmediateMode []string) error {
 
-	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined && !r.DryRun {
+	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined && !r.DryRun {
 		klog.Infof("Verifying if all pods have been successfully evicted, if not, forcefully deleting them")
 		allEvicted := r.Config.K8sClient.CheckIfAllPodsAreEvictedInImmediateMode(ctx, nsWithImmediateMode, nodeName, r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration)
 		if !allEvicted {

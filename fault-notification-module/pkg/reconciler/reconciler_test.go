@@ -97,7 +97,7 @@ func TestHandleEvent(t *testing.T) {
 		CreatedAt:   time.Now(),
 		HealthEvent: &platform_connectors.HealthEvent{},
 		HealthEventStatus: storeconnector.HealthEventStatus{
-			NodeQuarantined:        ptr.To(true),
+			NodeQuarantined:        ptr.To(storeconnector.Quarantined),
 			UserPodsEvictionStatus: storeconnector.OperationStatus{},
 			FaultRemediated:        nil,
 		},
@@ -162,7 +162,7 @@ func TestHandleEventWithError(t *testing.T) {
 		CreatedAt:   time.Now(),
 		HealthEvent: &platform_connectors.HealthEvent{},
 		HealthEventStatus: storeconnector.HealthEventStatus{
-			NodeQuarantined:        ptr.To(true),
+			NodeQuarantined:        ptr.To(storeconnector.Quarantined),
 			UserPodsEvictionStatus: storeconnector.OperationStatus{},
 			FaultRemediated:        nil,
 		},
@@ -246,7 +246,7 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 		CreatedAt:   time.Now(),
 		HealthEvent: &platform_connectors.HealthEvent{},
 		HealthEventStatus: storeconnector.HealthEventStatus{
-			NodeQuarantined:        ptr.To(false),
+			NodeQuarantined:        ptr.To(storeconnector.UnQuarantined),
 			UserPodsEvictionStatus: storeconnector.OperationStatus{},
 			FaultRemediated:        nil,
 		},

@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/reconciler"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -132,8 +133,8 @@ func main() {
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "update"},
 				{Key: "$or", Value: bson.A{
-					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: true}}}},
-					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: false}}}},
+					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
+					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
 				}},
 			}},
 		},

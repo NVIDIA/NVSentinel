@@ -223,9 +223,17 @@ func (r *Reconciler) handleEvent(
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	quarantinedNodesMap map[string]bool,
-) bool {
+) *storeconnector.Status {
+	var status storeconnector.Status
+
 	if quarantinedNodesMap[event.NodeName] {
-		return r.handleQuarantinedNode(ctx, event, quarantinedNodesMap)
+		if r.handleQuarantinedNode(ctx, event, quarantinedNodesMap) {
+			status = storeconnector.AlreadyQuarantined
+		} else {
+			status = storeconnector.UnQuarantined
+		}
+
+		return &status
 	}
 
 	type keyValTaint struct {
@@ -406,7 +414,13 @@ func (r *Reconciler) handleEvent(
 	// update the map here so that later we can refer to it and update the quarantined nodes
 	quarantinedNodesMap[event.NodeName] = isNodeQuarantined
 
-	return isNodeQuarantined
+	if isNodeQuarantined {
+		status = storeconnector.Quarantined
+	} else {
+		status = storeconnector.UnQuarantined
+	}
+
+	return &status
 }
 
 // nolint: cyclop //fix this as part of NGCC-21793
@@ -511,8 +525,12 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 	ctx context.Context,
 	healthEventCollection *mongo.Collection,
 	event bson.M,
-	isQuarantined bool,
+	nodeQuarantinedStatus *storeconnector.Status,
 ) error {
+	if nodeQuarantinedStatus == nil {
+		return fmt.Errorf("nodeQuarantinedStatus is nil")
+	}
+
 	document, ok := event["fullDocument"].(bson.M)
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
@@ -522,7 +540,7 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 
 	update := bson.M{
 		"$set": bson.M{
-			"healtheventstatus.nodequarantined": isQuarantined,
+			"healtheventstatus.nodequarantined": *nodeQuarantinedStatus,
 		},
 	}
 
@@ -530,7 +548,7 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 		return fmt.Errorf("error updating document with _id: %v, error: %w", document["_id"], err)
 	}
 
-	klog.Infof("Document with _id: %v has been updated with status %t", document["_id"], isQuarantined)
+	klog.Infof("Document with _id: %v has been updated with status %s", document["_id"], *nodeQuarantinedStatus)
 
 	return nil
 }
@@ -564,6 +582,10 @@ func areAnnotationEntitiesSubsetOfEventEntities(
 	eventEntities,
 	annotationEventEntities []*platformconnectorprotos.Entity,
 ) bool {
+	if len(eventEntities) == 0 {
+		return true
+	}
+
 	type key struct {
 		EntityType  string
 		EntityValue string
