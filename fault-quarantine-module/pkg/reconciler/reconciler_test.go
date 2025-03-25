@@ -22,6 +22,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"k8s.io/client-go/kubernetes"
 )
 
 type mockK8sClient struct {
@@ -29,6 +30,7 @@ type mockK8sClient struct {
 	getNodesWithAnnotationFn func(ctx context.Context, annotationKey string) ([]string, error)
 	taintAndCordonNodeFn     func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error
 	unTaintAndUnCordonNodeFn func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error
+	getK8sClientFn           func() kubernetes.Interface
 }
 
 func (m *mockK8sClient) GetNodeAnnotations(ctx context.Context, nodeName string) (map[string]string, error) {
@@ -42,6 +44,10 @@ func (m *mockK8sClient) TaintAndCordonNodeAndSetAnnotations(ctx context.Context,
 }
 func (m *mockK8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isUnCordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
 	return m.unTaintAndUnCordonNodeFn(ctx, nodeName, taints, isUnCordon, annotationKeys, labelsToRemove, labelMap)
+}
+
+func (m *mockK8sClient) GetK8sClient() kubernetes.Interface {
+	return m.getK8sClientFn()
 }
 
 type mockEvaluator struct {

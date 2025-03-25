@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
+	"k8s.io/client-go/kubernetes"
 )
 
 // K8sClientInterface defines the methods used by Reconciler from k8sClient
@@ -29,4 +30,5 @@ type K8sClientInterface interface {
 	UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string,
 		taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string,
 		labelMap map[string]string) error
+	GetK8sClient() kubernetes.Interface
 }

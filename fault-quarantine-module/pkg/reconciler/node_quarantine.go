@@ -64,7 +64,9 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineC
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
-	client := &FaultQuarantineClient{clientset: clientset}
+	client := &FaultQuarantineClient{
+		clientset: clientset,
+	}
 	if dryRun {
 		client.dryRunMode = []string{metav1.DryRunAll}
 	} else {
@@ -72,6 +74,10 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineC
 	}
 
 	return client, nil
+}
+
+func (c *FaultQuarantineClient) GetK8sClient() kubernetes.Interface {
+	return c.clientset
 }
 
 // nolint: cyclop,gocognit //fix this as part of NGCC-21793

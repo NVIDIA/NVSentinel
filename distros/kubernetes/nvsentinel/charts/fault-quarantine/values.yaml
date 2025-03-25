@@ -62,6 +62,12 @@ config: |
       kind = "HealthEvent" 
       expression = "event.isFatal == true"
 
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+  
     [rule-sets.cordon]
       shouldCordon = true
 
@@ -77,6 +83,13 @@ config: |
       kind = "HealthEvent"
       expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"
 
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
     [rule-sets.cordon]
       shouldCordon = true
 
@@ -91,6 +104,13 @@ config: |
     [[rule-sets.match.all]]
       kind = "HealthEvent" 
       expression = "event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
 
     [rule-sets.cordon]
       shouldCordon = true

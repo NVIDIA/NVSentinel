@@ -79,7 +79,8 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 
 // nolint: cyclop, gocognit //fix this as part of NGCC-21793
 func (r *Reconciler) Start(ctx context.Context) {
-	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets)
+	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
+		r.config.K8sClient.GetK8sClient())
 	if err != nil {
 		klog.Fatalf("failed to initialize all rule set evaluators: %+v", err)
 	}

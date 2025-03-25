@@ -19,10 +19,12 @@ import (
 
 	multierror "github.com/hashicorp/go-multierror"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 )
 
-func InitializeRuleSetEvaluators(ruleSets []config.RuleSet) ([]RuleSetEvaluatorIface, error) {
+func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
+	client kubernetes.Interface) ([]RuleSetEvaluatorIface, error) {
 	var (
 		ruleSetEvals []RuleSetEvaluatorIface
 		errs         *multierror.Error
@@ -31,7 +33,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet) ([]RuleSetEvaluatorI
 	for _, ruleSet := range ruleSets {
 		// We can extend this to add different types of match based rules
 		if len(ruleSet.Match.Any) > 0 {
-			evaluators, err := createEvaluators(ruleSet.Match.Any)
+			evaluators, err := createEvaluators(ruleSet.Match.Any, client)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			} else {
@@ -43,7 +45,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet) ([]RuleSetEvaluatorI
 		}
 
 		if len(ruleSet.Match.All) > 0 {
-			evaluators, err := createEvaluators(ruleSet.Match.All)
+			evaluators, err := createEvaluators(ruleSet.Match.All, client)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			} else {
@@ -58,7 +60,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet) ([]RuleSetEvaluatorI
 	return ruleSetEvals, errs.ErrorOrNil()
 }
 
-func createEvaluators(rules []config.Rule) ([]RuleEvaluator, error) {
+func createEvaluators(rules []config.Rule, client kubernetes.Interface) ([]RuleEvaluator, error) {
 	evaluators := []RuleEvaluator{}
 
 	var errs *multierror.Error
@@ -72,6 +74,9 @@ func createEvaluators(rules []config.Rule) ([]RuleEvaluator, error) {
 		// Add cases for other kinds of evaluators as needed
 		case "HealthEvent":
 			eval, err = NewHealthEventRuleEvaluator(rule.Expression)
+
+		case "Node":
+			eval, err = NewNodeRuleEvaluator(rule.Expression, client)
 
 		default:
 			err = fmt.Errorf("unknown evaluator kind: %s", rule.Kind)

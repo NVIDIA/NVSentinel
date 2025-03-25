@@ -22,6 +22,7 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 type MockRuleEvaluator struct {
@@ -284,9 +285,11 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 		},
 	}
 
+	clientset := fake.NewSimpleClientset()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluators, err := InitializeRuleSetEvaluators(tt.ruleSets)
+			evaluators, err := InitializeRuleSetEvaluators(tt.ruleSets, clientset)
 			if len(evaluators) != tt.expectedCount {
 				t.Errorf("Expected %d evaluators, got %d", tt.expectedCount, len(evaluators))
 			}
@@ -358,9 +361,10 @@ func TestCreateEvaluators(t *testing.T) {
 		},
 	}
 
+	clientset := fake.NewSimpleClientset()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluators, err := createEvaluators(tt.rules)
+			evaluators, err := createEvaluators(tt.rules, clientset)
 			if len(evaluators) != tt.expectedCount {
 				t.Errorf("Expected %d evaluators, got %d", tt.expectedCount, len(evaluators))
 			}

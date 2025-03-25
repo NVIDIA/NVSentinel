@@ -20,6 +20,9 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
@@ -59,6 +62,83 @@ func TestEvaluate(t *testing.T) {
 
 	if result {
 		t.Errorf("Expected evaluation result to be false, got true")
+	}
+}
+
+func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
+	tests := []struct {
+		name           string
+		expression     string
+		nodeLabels     map[string]string
+		expectEvaluate bool
+		expectError    bool
+	}{
+		{
+			name:       "Node should not be skipped - label present with value true",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "true",
+			},
+			expectEvaluate: true,
+			expectError:    false,
+		},
+		{
+			name:           "Node should not be skipped - label not present",
+			expression:     `!(has(node.metadata.labels) && 'k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: true,
+			expectError:    false,
+		},
+		{
+			name:       "Node should be skipped - label present with value false",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+			expectEvaluate: false,
+			expectError:    false,
+		},
+		{
+			name:           "Invalid expression",
+			expression:     "invalid.expression",
+			nodeLabels:     map[string]string{},
+			expectEvaluate: false,
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			// Create mock node
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: tt.nodeLabels,
+				},
+				Spec: corev1.NodeSpec{},
+			}
+
+			clientset := fake.NewSimpleClientset(node)
+
+			// Create evaluator with mocked client
+			evaluator, err := NewNodeRuleEvaluator(tt.expression, clientset)
+			if err != nil && !tt.expectError {
+				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
+			}
+			if evaluator != nil {
+				isEvaluated, err := evaluator.Evaluate(&platformconnectorprotos.HealthEvent{
+					NodeName: "test-node",
+				})
+				if (err != nil) != tt.expectError {
+					t.Errorf("Failed to evaluate expression: %s: %+v", tt.name, err)
+					return
+				}
+				if isEvaluated != tt.expectEvaluate {
+					t.Errorf("Expected evaluator %s to return %t but got %t", tt.name, tt.expectEvaluate, isEvaluated)
+				}
+			}
+		})
 	}
 }
 

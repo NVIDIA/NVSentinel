@@ -15,6 +15,7 @@
 package evaluator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -23,9 +24,16 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog"
 )
 
-const objKey = "event"
+const (
+	eventObjKey = "event"
+	nodeObjKey  = "node"
+)
 
 type RuleEvaluator interface {
 	Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (bool, error)
@@ -36,12 +44,21 @@ type HealthEventRuleEvaluator struct {
 	program    cel.Program
 }
 
+type NodeRuleEvaluator struct {
+	expression string
+	program    cel.Program
+	client     kubernetes.Interface
+}
+
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
 func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, error) {
+	klog.Infof("Creating HealthEventRuleEvaluator with expression: %s", expression)
+
 	env, err := cel.NewEnv(
-		cel.Variable(objKey, cel.AnyType),
+		cel.Variable(eventObjKey, cel.AnyType),
 		ext.Strings(),
 	)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
@@ -75,7 +92,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(event *platformconnectorprotos.Heal
 	}
 
 	out, _, err := he.program.Eval(map[string]interface{}{
-		objKey: obj,
+		eventObjKey: obj,
 	})
 	if err != nil {
 		return false, fmt.Errorf("failed to evaluate expression: %w", err)
@@ -87,6 +104,85 @@ func (he *HealthEventRuleEvaluator) Evaluate(event *platformconnectorprotos.Heal
 	}
 
 	return result, nil
+}
+
+// NewNodeRuleEvaluator creates a new NodeRuleEvaluator
+func NewNodeRuleEvaluator(expression string, client kubernetes.Interface) (*NodeRuleEvaluator, error) {
+	klog.Infof("Creating NodeRuleEvaluator with expression: %s", expression)
+
+	// Create a CEL environment with declarations for node.labels and node.annotations
+	env, err := cel.NewEnv(
+		cel.Variable(nodeObjKey, cel.AnyType),
+		ext.Strings(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
+	ast, issues := env.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("failed to parse expression: %w", issues.Err())
+	}
+
+	checkedAst, issues := env.Check(ast)
+
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("failed to check expression: %w", issues.Err())
+	}
+
+	program, err := env.Program(checkedAst)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile expression: %w", err)
+	}
+
+	return &NodeRuleEvaluator{
+		expression: expression,
+		program:    program,
+		client:     client,
+	}, nil
+}
+
+// Evaluate the CEL expression against node metadata (labels and annotations)
+func (nm *NodeRuleEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (bool, error) {
+	klog.Infof("Evaluating NodeRuleEvaluator for node %s", event.NodeName)
+
+	// Get node metadata
+	nodeInfo, err := nm.getNode(event.NodeName)
+	if err != nil {
+		return false, fmt.Errorf("failed to get node metadata: %w", err)
+	}
+
+	// Evaluate the expression
+	out, _, err := nm.program.Eval(nodeInfo)
+	if err != nil {
+		return false, fmt.Errorf("failed to evaluate expression: %w", err)
+	}
+
+	result, ok := out.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("expression did not return a boolean: %v", out)
+	}
+
+	return result, nil
+}
+
+// getNode gets both labels and annotations from a node
+func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, error) {
+	// Get node using kubernetes client
+	node, err := nm.client.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unstructured the node %s: %w", nodeName, err)
+	}
+
+	return map[string]interface{}{
+		"node": unstructuredObj,
+	}, nil
 }
 
 // recursively converts any Go value into a JSON-compatible structure
