@@ -228,6 +228,8 @@ func (r *Reconciler) handleEvent(
 
 	if quarantinedNodesMap[event.NodeName] {
 		if r.handleQuarantinedNode(ctx, event, quarantinedNodesMap) {
+			totalEventsSkipped.Inc()
+
 			status = storeconnector.AlreadyQuarantined
 		} else {
 			status = storeconnector.UnQuarantined
