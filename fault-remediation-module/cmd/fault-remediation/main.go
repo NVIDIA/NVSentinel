@@ -1,0 +1,254 @@
+// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/reconciler"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"k8s.io/klog"
+)
+
+type config struct {
+	namespace                string
+	version                  string
+	apiGroup                 string
+	templateMountPath        string
+	templateFileName         string
+	metricsPort              string
+	mongoClientCertMountPath string
+	kubeconfigPath           string
+	dryRun                   bool
+}
+
+func parseFlags() *config {
+	cfg := &config{}
+
+	flag.StringVar(&cfg.metricsPort, "metrics-port", "2112", "port to expose Prometheus metrics on")
+	flag.StringVar(&cfg.mongoClientCertMountPath, "mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+		"path where the mongodb client cert is mounted")
+	flag.StringVar(&cfg.kubeconfigPath, "kubeconfig-path", "", "path to kubeconfig file")
+	flag.BoolVar(&cfg.dryRun, "dry-run", false, "flag to run fault notification module in dry-run mode")
+	flag.Parse()
+
+	return cfg
+}
+
+func getRequiredEnvVars() (*config, error) {
+	cfg := &config{}
+
+	requiredVars := map[string]*string{
+		"MAINTENANCE_NAMESPACE": &cfg.namespace,
+		"MAINTENANCE_VERSION":   &cfg.version,
+		"MAINTENANCE_API_GROUP": &cfg.apiGroup,
+		"TEMPLATE_MOUNT_PATH":   &cfg.templateMountPath,
+		"TEMPLATE_FILE_NAME":    &cfg.templateFileName,
+	}
+
+	for envVar, ptr := range requiredVars {
+		*ptr = os.Getenv(envVar)
+		if *ptr == "" {
+			return nil, fmt.Errorf("%s is not provided", envVar)
+		}
+	}
+
+	log.Printf("namespace: %s, version: %s, apigroup: %s, templateMountPath: %s, templateFileName: %s",
+		cfg.namespace, cfg.version, cfg.apiGroup, cfg.templateMountPath, cfg.templateFileName)
+
+	return cfg, nil
+}
+
+func getMongoDBConfig(mongoClientCertMountPath string) (*storewatcher.MongoDBConfig, error) {
+	requiredEnvVars := map[string]string{
+		"MONGODB_URI":                   "MongoDB URI",
+		"MONGODB_DATABASE_NAME":         "MongoDB Database name",
+		"MONGODB_COLLECTION_NAME":       "MongoDB collection name",
+		"MONGODB_TOKEN_COLLECTION_NAME": "MongoDB token collection name",
+	}
+
+	envVars := make(map[string]string)
+	for envVar, description := range requiredEnvVars {
+		value := os.Getenv(envVar)
+		if value == "" {
+			return nil, fmt.Errorf("%s is not provided", description)
+		}
+		envVars[envVar] = value
+	}
+
+	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+	}
+
+	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+	}
+
+	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+	}
+
+	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+	}
+
+	return &storewatcher.MongoDBConfig{
+		URI:        envVars["MONGODB_URI"],
+		Database:   envVars["MONGODB_DATABASE_NAME"],
+		Collection: envVars["MONGODB_COLLECTION_NAME"],
+		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
+			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
+			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
+			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
+		},
+		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
+		TotalPingIntervalSeconds:   intervalSeconds,
+		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
+		TotalCACertIntervalSeconds: intervalCACertSeconds,
+	}, nil
+}
+
+func getTokenConfig() (*storewatcher.TokenConfig, error) {
+	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	if tokenDatabase == "" {
+		return nil, fmt.Errorf("MongoDB token database name is not provided")
+	}
+
+	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
+	if tokenCollection == "" {
+		return nil, fmt.Errorf("MongoDB token collection name is not provided")
+	}
+
+	return &storewatcher.TokenConfig{
+		ClientName:      "fault-notification-module",
+		TokenDatabase:   tokenDatabase,
+		TokenCollection: tokenCollection,
+	}, nil
+}
+
+func startMetricsServer(metricsPort string) {
+	klog.Infof("Starting a metrics port on : %s", metricsPort)
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+metricsPort, nil)
+		if err != nil {
+			klog.Fatalf("Failed to start metrics server: %v", err)
+		}
+	}()
+}
+
+func getMongoPipeline() mongo.Pipeline {
+	return mongo.Pipeline{
+		bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "operationType", Value: "update"},
+				{Key: "$and", Value: bson.A{
+					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.userpodsevictionstatus", Value: bson.D{
+						{Key: "status", Value: "Succeeded"},
+					}}}}},
+					bson.D{{Key: "fullDocument.healtheventstatus.nodequarantined", Value: store.Quarantined}},
+				}},
+			}},
+		},
+	}
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Parse flags and get configuration
+	cfg := parseFlags()
+
+	// Get required environment variables
+	envCfg, err := getRequiredEnvVars()
+	if err != nil {
+		log.Fatalf("Failed to get required environment variables: %v", err)
+	}
+
+	// Start metrics server
+	startMetricsServer(cfg.metricsPort)
+
+	// Get MongoDB configuration
+	mongoConfig, err := getMongoDBConfig(cfg.mongoClientCertMountPath)
+	if err != nil {
+		log.Fatalf("Failed to get MongoDB configuration: %v", err)
+	}
+
+	// Get token configuration
+	tokenConfig, err := getTokenConfig()
+	if err != nil {
+		log.Fatalf("Failed to get token configuration: %v", err)
+	}
+
+	// Get MongoDB pipeline
+	pipeline := getMongoPipeline()
+
+	// Initialize k8s client
+	k8sClient, err := reconciler.NewK8sClient(cfg.kubeconfigPath, cfg.dryRun, reconciler.TemplateData{
+		Namespace:         envCfg.namespace,
+		Version:           envCfg.version,
+		ApiGroup:          envCfg.apiGroup,
+		TemplateMountPath: envCfg.templateMountPath,
+		TemplateFileName:  envCfg.templateFileName,
+	})
+	if err != nil {
+		log.Fatalf("error while initializing kubernetes client: %v", err)
+	}
+	log.Println("Successfully initialized k8sclient")
+
+	// Initialize and start reconciler
+	reconcilerCfg := reconciler.ReconcilerConfig{
+		MongoConfig:   *mongoConfig,
+		TokenConfig:   *tokenConfig,
+		MongoPipeline: pipeline,
+		K8sClient:     k8sClient,
+	}
+
+	reconciler := reconciler.NewReconciler(reconcilerCfg, cfg.dryRun)
+	reconciler.Start(ctx)
+}
+
+func getEnvAsInt(name string, defaultValue int) (int, error) {
+	valueStr, exists := os.LookupEnv(name)
+	if !exists {
+		return defaultValue, nil
+	}
+
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return 0, fmt.Errorf("error converting %s to integer: %w", name, err)
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("value of %s must be a positive integer", name)
+	}
+
+	return value, nil
+}

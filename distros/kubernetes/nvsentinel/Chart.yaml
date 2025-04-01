@@ -37,3 +37,6 @@ dependencies:
   - name: fault-notification
     version: "0.1.0"
     condition: global.faultNotificationModule.enabled
+  - name: fault-remediation
+    version: "0.1.0"
+    condition: global.faultRemediationModule.enabled

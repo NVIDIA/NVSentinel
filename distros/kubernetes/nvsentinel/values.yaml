@@ -58,6 +58,13 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-notification-module
       pullPolicy: IfNotPresent
 
+  faultRemediationModule:
+    enabled: false
+
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module
+      pullPolicy: IfNotPresent
+
   nvSwitchHealthMonitor:
     enabled: true
 
