@@ -84,7 +84,7 @@ spec:
         - name: gpu-health-monitor
           image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-4.x"
           command: ["python3", "node_watcher.py"]
-      {{- with .Values.nodeSelector }}
+      {{- with .Values.systemNodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}

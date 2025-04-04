@@ -46,3 +46,6 @@ affinity: {}
 
 metricsPort: 2112
 stateFilePath: "/var/run/statefile"
+
+systemNodeSelector:
+  nodeGroup: "system-cpu"
