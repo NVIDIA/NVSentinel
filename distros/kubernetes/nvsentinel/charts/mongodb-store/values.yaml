@@ -138,6 +138,12 @@ mongodb:
 
   metrics:
     enabled: true
+    image:
+      registry: nvcr.io
+      repository: nv-ngc-devops/mongodb_exporter
+      tag: 0.41.2-debian-12-r1
+      pullSecrets:
+      - nvidia-ngcuser-pull-secret
     args:
       - "/bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus
       --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address
