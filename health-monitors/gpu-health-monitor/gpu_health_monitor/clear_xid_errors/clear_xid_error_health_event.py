@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import socket
 import argparse
 import grpc
 import time
 from protos import platformconnector_pb2, platformconnector_pb2_grpc
+import os
 
 
 # Function to send the HealthEvent message
@@ -32,10 +32,18 @@ def send_health_event(health_event: platformconnector_pb2.HealthEvent):
 
 if __name__ == "__main__":
     # clear all xid errors on the node
+    argparse.ArgumentParser(description="Clear XID errors on the node.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--gpu_count", type=int, help="Number of GPUs to clear XID errors for (default: 8)", default=8, required=False
+    )
+    args = parser.parse_args()
+    gpu_count = args.gpu_count
     health_event = platformconnector_pb2.HealthEvent()
+    health_event.nodeName = os.environ["NODE_NAME"]
     health_event.version = 1
     health_event.agent = "gpu-health-monitor"
-    health_event.componentClass = "gpu"
+    health_event.componentClass = "GPU"
     health_event.checkName = "GpuXidError"
     health_event.isFatal = False
     health_event.isHealthy = True
@@ -43,5 +51,10 @@ if __name__ == "__main__":
     health_event.recommendedAction = platformconnector_pb2.NONE
     health_event.generatedTimestamp.seconds = int(time.time())
     health_event.generatedTimestamp.nanos = 0
+    health_event.entitiesImpacted.extend(
+        [platformconnector_pb2.Entity(entityType="GPU", entityValue=str(x)) for x in range(gpu_count)]
+    )
+    health_event.metadata["SerialNumber"] = "12435553"
+
     # Send the HealthEvent message with the provided arguments
     send_health_event(health_event)
