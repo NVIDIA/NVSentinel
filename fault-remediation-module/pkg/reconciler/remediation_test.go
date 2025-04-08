@@ -22,6 +22,7 @@ import (
 	"text/template"
 
 	"github.com/stretchr/testify/assert"
+	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -177,8 +178,13 @@ func TestCreateMaintenanceResource(t *testing.T) {
 				client.dryRunMode = []string{metav1.DryRunAll}
 			}
 
+			// Create a HealthEvent object
+			healthEvent := &platformconnector.HealthEvent{
+				NodeName: tt.nodeName,
+			}
+
 			// Test CreateMaintenanceResource
-			result := client.CreateMaintenanceResource(context.Background(), tt.nodeName)
+			result := client.CreateMaintenanceResource(context.Background(), healthEvent)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}

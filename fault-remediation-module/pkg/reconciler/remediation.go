@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"text/template"
 
+	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -47,6 +48,7 @@ type TemplateData struct {
 	ApiGroup          string
 	TemplateMountPath string
 	TemplateFileName  string
+	RecommendedAction platformconnector.RecommenedAction
 }
 
 func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient, error) {
@@ -71,15 +73,19 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	// Construct full template path
 	templatePath := filepath.Join(templateData.TemplateMountPath, templateData.TemplateFileName)
 
+	// Check if the template file exists
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	}
+
 	// Read and parse the template
 	templateContent, err := os.ReadFile(templatePath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading template file: %w", err)
 	}
 
-	tmpl := template.New("maintenance").Delims("[[", "]]")
+	tmpl := template.New("maintenance")
 	tmpl, err = tmpl.Parse(string(templateContent))
-
 	if err != nil {
 		return nil, fmt.Errorf("error parsing template: %w", err)
 	}
@@ -99,10 +105,10 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	return client, nil
 }
 
-func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, nodeName string) bool {
-	log.Printf("Creating CR for node: %s", nodeName)
-
-	c.templateData.NodeName = nodeName
+func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+	log.Printf("Creating CR for node: %s", healthEvent.NodeName)
+	c.templateData.NodeName = healthEvent.NodeName
+	c.templateData.RecommendedAction = healthEvent.RecommendedAction
 
 	// Execute the template
 	var buf bytes.Buffer
@@ -111,8 +117,10 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return false
 	}
 
+	log.Printf("Generated YAML: %s", buf.String())
+
 	// Convert YAML to unstructured
-	var obj map[string]interface{}
+	var obj map[string]any
 	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
 		log.Fatalf("Failed to unmarshal YAML: %v", err)
 		return false
@@ -135,6 +143,6 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return false
 	}
 
-	log.Printf("Created Maintenance CR successfully for node %s", nodeName)
+	log.Printf("Created Maintenance CR successfully for node %s", healthEvent.NodeName)
 	return true
 }

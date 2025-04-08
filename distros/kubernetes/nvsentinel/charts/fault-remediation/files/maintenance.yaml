@@ -12,18 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+apiVersion: {{ .ApiGroup }}/{{ .Version }}
+kind: Maintenance
 metadata:
-  name: {{ include "fault-remediation-module.fullname" . }}
-  labels:
-    {{- include "fault-remediation-module.labels" . | nindent 4 }}
-rules:
-- apiGroups:
-  - {{ .Values.maintenanceResource.apiGroup }}
-  resources:
-  - {{ .Values.maintenanceResource.name }}
-  verbs:
-  - get
-  - list
-  - create
+  generateName: maintenance-{{ .NodeName }}-
+  namespace: {{ .Namespace }}
+spec:
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/hostname: {{ .NodeName }}
+  type: {{ if eq .RecommendedAction 2 }}reboot{{ else }}reboot{{ end }}

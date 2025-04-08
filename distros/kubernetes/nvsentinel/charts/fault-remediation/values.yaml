@@ -53,6 +53,7 @@ metricsPort: 2112
 clientCertMountPath: "/etc/ssl/mongo-client"
 
 maintenanceResource:
+  name: maintenances
   namespace: dgxc-janitor
   apiGroup: janitor.dgxc.nvidia.com
   version: v1alpha1

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -27,11 +28,11 @@ import (
 
 // MockK8sClient is a mock implementation of K8sClient interface
 type MockK8sClient struct {
-	createMaintenanceResourceFn func(ctx context.Context, nodeName string) bool
+	createMaintenanceResourceFn func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool
 }
 
-func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, nodeName string) bool {
-	return m.createMaintenanceResourceFn(ctx, nodeName)
+func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+	return m.createMaintenanceResourceFn(ctx, healthEvent)
 }
 
 // MockCollection is a mock implementation of mongo.Collection
@@ -44,7 +45,6 @@ func (m *MockCollection) UpdateOne(ctx context.Context, filter interface{}, upda
 }
 
 func TestNewReconciler(t *testing.T) {
-
 	tests := []struct {
 		name             string
 		nodeName         string
@@ -73,8 +73,8 @@ func TestNewReconciler(t *testing.T) {
 					Database: "test",
 				},
 				K8sClient: &MockK8sClient{
-					createMaintenanceResourceFn: func(ctx context.Context, nodeName string) bool {
-						assert.Equal(t, tt.nodeName, nodeName)
+					createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+						assert.Equal(t, tt.nodeName, healthEvent.NodeName)
 						return tt.crCreationResult
 					},
 				},
@@ -113,8 +113,8 @@ func TestHandleEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, nodeName string) bool {
-					assert.Equal(t, tt.nodeName, nodeName)
+				createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+					assert.Equal(t, tt.nodeName, healthEvent.NodeName)
 					return tt.shouldSucceed
 				},
 			}
@@ -124,7 +124,10 @@ func TestHandleEvent(t *testing.T) {
 			}
 
 			r := NewReconciler(cfg, false)
-			result := r.handleEvent(ctx, tt.nodeName)
+			healthEvent := &platformconnector.HealthEvent{
+				NodeName: tt.nodeName,
+			}
+			result := r.handleEvent(ctx, healthEvent)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}

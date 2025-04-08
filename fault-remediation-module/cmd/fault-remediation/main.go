@@ -147,7 +147,7 @@ func getTokenConfig() (*storewatcher.TokenConfig, error) {
 	}
 
 	return &storewatcher.TokenConfig{
-		ClientName:      "fault-notification-module",
+		ClientName:      "fault-remediation-module",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
 	}, nil

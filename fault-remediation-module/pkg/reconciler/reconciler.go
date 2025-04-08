@@ -22,6 +22,7 @@ import (
 	"time"
 
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -92,7 +93,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		nodeRemediatedStatus := false
 		for i := 1; i <= maxRetries; i++ {
 			klog.Infof("Attempt %d, handle event for node: %s", i, healthEventWithStatus.HealthEvent.NodeName)
-			if r.handleEvent(ctx, healthEventWithStatus.HealthEvent.NodeName) {
+			if r.handleEvent(ctx, healthEventWithStatus.HealthEvent) {
 				nodeRemediatedStatus = true
 				break
 			}
@@ -109,8 +110,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 	}
 }
 
-func (r *Reconciler) handleEvent(ctx context.Context, nodeName string) bool {
-	return r.Config.K8sClient.CreateMaintenanceResource(ctx, nodeName)
+func (r *Reconciler) handleEvent(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+	return r.Config.K8sClient.CreateMaintenanceResource(ctx, healthEvent)
 }
 
 func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection MongoInterface, event bson.M, nodeRemediatedStatus bool) error {

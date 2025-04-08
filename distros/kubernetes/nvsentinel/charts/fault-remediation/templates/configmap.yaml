@@ -20,13 +20,4 @@ metadata:
     {{- include "fault-remediation-module.labels" . | nindent 4 }}
 data:
   {{ .Values.maintenanceResource.template.fileName }}: |
-    apiVersion: {{ .Values.maintenanceResource.apiGroup }}/{{ .Values.maintenanceResource.version }}
-    kind: Maintenance
-    metadata:
-      generateName: maintenance-[[.NodeName]]-
-      namespace: {{ .Values.maintenanceResource.namespace }}
-    spec:
-      nodeSelector:
-        matchLabels:
-          kubernetes.io/hostname: [[.NodeName]]
-      type: reboot
+    {{- .Files.Get "files/maintenance.yaml" | nindent 4 }}
