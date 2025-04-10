@@ -18,6 +18,7 @@ package sxid_monitor
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -373,4 +374,38 @@ func TestStateVersionMismatch(t *testing.T) {
 	_, err = loadState(testStateFilePath)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "state file version mismatch")
+}
+
+func TestStateFileEmptyOrCorrupted(t *testing.T) {
+	testDir := t.TempDir()
+	emptyStateFilePath := filepath.Join(testDir, "empty_state.json")
+	corruptedStateFilePath := filepath.Join(testDir, "corrupted_state.json")
+	nonExistentStateFilePath := filepath.Join(testDir, "non_existent_state.json")
+
+	// case 1: Empty state file
+	err := os.WriteFile(emptyStateFilePath, []byte{}, 0600)
+	require.NoError(t, err)
+
+	state, err := loadState(emptyStateFilePath)
+	require.NoError(t, err, "loadState should not error on empty file")
+	require.Equal(t, nvSwitchMonitorState{}, state, "loadState should return zero state for empty file")
+
+	// case 2: Corrupted state file (invalid JSON)
+	err = os.WriteFile(corruptedStateFilePath, []byte("this is not json"), 0600)
+	require.NoError(t, err)
+
+	state, err = loadState(corruptedStateFilePath)
+	require.NoError(t, err, "loadState should not error on corrupted file")
+	expectedState := nvSwitchMonitorState{
+		Version:       stateFileVersion,
+		BootID:        "",
+		LastTimestamp: 0.0,
+		LastLogLine:   "",
+	}
+	require.Equal(t, expectedState, state, "loadState should return default state for corrupted file")
+
+	// case 3: Non-existent state file
+	state, err = loadState(nonExistentStateFilePath)
+	require.NoError(t, err, "loadState should not error on non-existent file")
+	require.Equal(t, nvSwitchMonitorState{}, state, "loadState should return zero state for non-existent file")
 }

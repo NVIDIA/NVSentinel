@@ -80,8 +80,23 @@ func loadState(stateFilePath string) (nvSwitchMonitorState, error) {
 		return state, fmt.Errorf("failed to read state from file: %w", err)
 	}
 
+	// Check if file is empty
+	if len(data) == 0 {
+		klog.Warningf("State file %s exists but is empty, treating as non-existent", stateFilePath)
+		return state, nil
+	}
+
 	if err := json.Unmarshal(data, &state); err != nil {
-		return state, fmt.Errorf("failed to unmarshal state: %w", err)
+		klog.Warningf("State file %s is corrupted: %v, resetting to default state", stateFilePath, err)
+
+		defaultState := nvSwitchMonitorState{
+			Version:       stateFileVersion,
+			BootID:        "",
+			LastTimestamp: 0.0, // In case of corruption, we start from beginning of the log
+			LastLogLine:   "",
+		}
+
+		return defaultState, nil
 	}
 
 	if state.Version != 0 && state.Version != stateFileVersion {

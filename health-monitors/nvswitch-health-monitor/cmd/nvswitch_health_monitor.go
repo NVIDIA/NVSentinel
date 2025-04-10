@@ -137,7 +137,7 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string,
 		NodeName:           nodeName,
 		RecommendedAction:  recommendationAction,
 	}
-	klog.Infoln("Recommended action: ", event.RecommendedAction)
+
 	if !sxidEvent.IsHealthy {
 		entitiesImpacted := []*pb.Entity{
 			{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidEvent.NVSwitch)},
