@@ -16,8 +16,11 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "nvswitch-health-monitor.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvswitch-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 data:
   config.ini: |
     PollingIntervalInMilliseconds = 100

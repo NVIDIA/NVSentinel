@@ -17,6 +17,8 @@ kind: Issuer
 metadata:
   name: selfsigned-ca-issuer
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
   # annotations:
   #   helm.sh/resource-policy: keep # As the cert-manager is not configured to delete secrets associated with the certificates, we need to retain the certs
 spec:
@@ -28,6 +30,8 @@ kind: Certificate
 metadata:
   name: mongo-root-ca
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
   # annotations:
   #   helm.sh/resource-policy: keep
 spec:
@@ -49,6 +53,8 @@ kind: Issuer
 metadata:
   name: mongo-ca-issuer
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
   # annotations:
   #   helm.sh/resource-policy: keep
 spec:
@@ -63,6 +69,8 @@ kind: Certificate
 metadata:
   name: mongo-server-cert-{{ $i }}
   namespace: {{ $.Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
   # annotations:
   #   helm.sh/resource-policy: keep
 spec:
@@ -72,7 +80,9 @@ spec:
   commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
   dnsNames:
     - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $i $.Release.Namespace $.Release.Namespace }}
+    - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $i $.Release.Name $.Release.Namespace }}
     - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $.Release.Namespace }}
+    - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $.Release.Namespace }}
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
@@ -85,6 +95,8 @@ kind: Certificate
 metadata:
   name: mongo-app-client-cert
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
   # annotations:
   #   helm.sh/resource-policy: keep
 spec:

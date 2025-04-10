@@ -17,6 +17,8 @@ kind: PodMonitor
 metadata:
   name: nvsentinel-pod-monitor
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant,management
 spec:
   selector:
     matchExpressions:

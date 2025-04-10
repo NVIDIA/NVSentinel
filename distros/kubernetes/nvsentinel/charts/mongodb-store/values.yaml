@@ -21,6 +21,9 @@ mongodb:
     repository: nv-ngc-devops/bitnami-mongodb
     tag: 8.0.3-debian-12-r0
     pullPolicy: IfNotPresent
+  
+  commonAnnotations:
+    dgxc.nvidia.com/resource-category: management
 
   architecture: replicaset
   replicaCount: 3

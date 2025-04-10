@@ -16,8 +16,11 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "gpu-health-monitor.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 data:
   config.ini: |
     [logging]

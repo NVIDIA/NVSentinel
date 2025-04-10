@@ -18,6 +18,8 @@ metadata:
   name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-4.x
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 spec:
   updateStrategy:
     type: {{ .Values.updateStrategy }}

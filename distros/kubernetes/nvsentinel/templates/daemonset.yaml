@@ -16,8 +16,11 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "nvsentinel.fullname" . }}-platform-connector
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 spec:
   updateStrategy:
     type: {{ .Values.platformConnector.updateStrategy }}

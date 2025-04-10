@@ -17,6 +17,9 @@ apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: inject-nic-health-monitor-sidecar
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 spec:
   background: false
   validationFailureAction: Audit

@@ -16,8 +16,11 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-3.x
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: tenant
 spec:
   updateStrategy:
     type: {{ .Values.updateStrategy }}

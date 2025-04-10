@@ -19,6 +19,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
 rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]

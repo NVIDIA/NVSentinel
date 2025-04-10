@@ -16,8 +16,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: {{ include "fault-remediation-module.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fault-remediation-module.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

@@ -17,6 +17,8 @@ kind: Job
 metadata:
   name: create-mongodb-database
   namespace: {{ .Release.Namespace }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
 spec:
   activeDeadlineSeconds: 600
   template:
