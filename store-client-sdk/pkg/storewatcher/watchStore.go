@@ -181,9 +181,7 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 }
 
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
-	w.mu.Lock()
 	token := w.changeStream.ResumeToken()
-	w.mu.Unlock()
 	// Update the resume token in the database
 	_, err := w.resumeTokenCol.UpdateOne(
 		ctx,

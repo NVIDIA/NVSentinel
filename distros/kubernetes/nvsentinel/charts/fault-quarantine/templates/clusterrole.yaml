@@ -32,3 +32,4 @@ rules:
   - patch
   - update
   - list
+  - watch

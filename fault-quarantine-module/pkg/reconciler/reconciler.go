@@ -24,8 +24,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
@@ -49,7 +51,10 @@ type rulesetsConfig struct {
 }
 
 type Reconciler struct {
-	config ReconcilerConfig
+	config            ReconcilerConfig
+	healthEventBuffer *common.HealthEventBuffer
+	// workSignal acts as a semaphore to wake up the reconcile loop
+	workSignal chan struct{}
 }
 
 const (
@@ -73,20 +78,15 @@ var (
 	uncordonedTimestampLabelKey string
 )
 
-func NewReconciler(cfg ReconcilerConfig) *Reconciler {
-	return &Reconciler{config: cfg}
+func NewReconciler(ctx context.Context, cfg ReconcilerConfig, workSignal chan struct{}) *Reconciler {
+	return &Reconciler{
+		config:            cfg,
+		healthEventBuffer: common.NewHealthEventBuffer(ctx),
+		workSignal:        workSignal, // Store the signal channel
+	}
 }
 
-// nolint: cyclop, gocognit //fix this as part of NGCC-21793
-func (r *Reconciler) Start(ctx context.Context) {
-	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
-		r.config.K8sClient.GetK8sClient())
-	if err != nil {
-		klog.Fatalf("failed to initialize all rule set evaluators: %+v", err)
-	}
-
-	labelKeyPrefix := r.config.TomlConfig.LabelPrefix
-
+func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
 	cordonedByLabelKey = labelKeyPrefix + "cordon-by"
 	cordonedReasonLabelKey = labelKeyPrefix + "cordon-reason"
 	cordonedTimestampLabelKey = labelKeyPrefix + "cordon-timestamp"
@@ -94,6 +94,22 @@ func (r *Reconciler) Start(ctx context.Context) {
 	uncordonedByLabelKey = labelKeyPrefix + "uncordon-by"
 	uncordonedReasonLabelkey = labelKeyPrefix + "uncordon-reason"
 	uncordonedTimestampLabelKey = labelKeyPrefix + "uncordon-timestamp"
+}
+
+// nolint: cyclop, gocognit //fix this as part of NGCC-21793
+func (r *Reconciler) Start(ctx context.Context) {
+	nodeInformer, err := informer.NewNodeInformer(r.config.K8sClient.GetK8sClient(), 30*time.Minute, r.workSignal)
+	if err != nil {
+		klog.Fatalf("failed to initialize node informer: %+v", err)
+	}
+
+	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
+		r.config.K8sClient.GetK8sClient(), nodeInformer)
+	if err != nil {
+		klog.Fatalf("failed to initialize all rule set evaluators: %+v", err)
+	}
+
+	r.SetLabelKeys(r.config.TomlConfig.LabelPrefix)
 
 	taintConfigMap := make(map[string]*config.Taint)
 	cordonConfigMap := make(map[string]bool)
@@ -140,8 +156,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 		)
 	}
 
-	watcher.Start(ctx)
-
 	quarantinedNodesMap := make(map[string]bool)
 
 	quarantinedNodesList, err := r.config.K8sClient.GetNodesWithAnnotation(ctx, quarantineHealthEventAnnotationKey)
@@ -154,80 +168,163 @@ func (r *Reconciler) Start(ctx context.Context) {
 	}
 
 	klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
+	watcher.Start(ctx)
 
 	klog.Info("Listening for events on the channel...")
 
+	go r.watchEvents(watcher)
+
+	err = nodeInformer.Run(ctx.Done())
+	if err != nil {
+		klog.Fatalf("failed to run node informer: %+v", err)
+	}
+
+	// Wait for NodeInformer cache to sync before processing any events
+	klog.Info("Waiting for NodeInformer cache to sync before starting event processing...")
+
+	for !nodeInformer.HasSynced() {
+		select {
+		case <-ctx.Done():
+			klog.Warning("Context cancelled while waiting for node informer sync")
+			return // Exit if context is cancelled during wait
+		case <-time.After(5 * time.Second): // Check periodically
+			klog.Infof("NodeInformer cache is not synced yet, waiting for 5 seconds")
+		}
+	}
+
+	klog.Info("NodeInformer cache synced. Starting event processing loop.")
+
+	// Process events in the main goroutine
+	for {
+		select {
+		case <-ctx.Done():
+			klog.Info("Context canceled. Exiting fault-quarantine event consumer.")
+			return
+		case <-r.workSignal: // Wait for a signal (semaphore acquired)
+			// Get current queue length
+			healthEventBufferLength := r.healthEventBuffer.Length()
+			if healthEventBufferLength == 0 {
+				klog.V(4).Infof("No events to process, skipping")
+				continue
+			}
+
+			klog.Infof("Processing batch of %d events", healthEventBufferLength)
+
+			// Process up to the current queue length
+			for healthEventIndex := 0; healthEventIndex < healthEventBufferLength; {
+				klog.V(3).Infof("healthEventIndex is %d", healthEventIndex)
+
+				startTime := time.Now()
+				currentEventInfo, _ := r.healthEventBuffer.Get(healthEventIndex)
+
+				if currentEventInfo == nil {
+					break
+				}
+
+				healthEventWithStatus := currentEventInfo.HealthEventWithStatus
+				eventBson := currentEventInfo.EventBson
+
+				// Check if event was already processed
+				if healthEventIndex == 0 && currentEventInfo.HasProcessed {
+					err := r.healthEventBuffer.RemoveAt(healthEventIndex)
+					if err != nil {
+						klog.Errorf("Error removing event %s with error: %+v", healthEventWithStatus.HealthEvent.CheckName, err)
+						continue
+					}
+
+					if err := watcher.MarkProcessed(ctx); err != nil {
+						klog.Errorf("Error updating resume token: %+v", err)
+						processingErrors.WithLabelValues("mark_processed_error").Inc()
+					} else {
+						klog.Infof("Successfully marked event %s as processed", healthEventWithStatus.HealthEvent.NodeName)
+						/*
+							Reason to reset healthEventIndex to 0 is that the current zeroth event is already processed and is deleted from
+							the array so we need to start from the beginning of the array again hence healthEventIndex is reset to 0 and
+							healthEventBufferLength is decremented by 1 because the element got deleted from the array on line number 226
+						*/
+						healthEventIndex = 0
+						healthEventBufferLength--
+
+						continue
+					}
+				}
+
+				klog.V(3).Infof("Processing event %s at index %d", healthEventWithStatus.HealthEvent.CheckName, healthEventIndex)
+				// Reason to increment healthEventIndex is that we want to process the next event in the next iteration
+				healthEventIndex++
+
+				isNodeQuarantined, ruleEvaluationResult := r.handleEvent(
+					ctx,
+					healthEventWithStatus,
+					ruleSetEvals,
+					rulesetsConfig,
+					quarantinedNodesMap,
+				)
+
+				if ruleEvaluationResult == common.RuleEvaluationRetryAgainInFuture {
+					klog.Infof(" Rule evaluation failed, will revaluate it in next iteration \n%+v", healthEventWithStatus)
+					continue
+				}
+
+				if isNodeQuarantined != nil {
+					currentEventInfo.HasProcessed = true
+				}
+
+				errFlag := false
+
+				if err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, eventBson, isNodeQuarantined); err != nil {
+					klog.Errorf("Error updating Node quarantine status: %+v", err)
+					processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
+
+					errFlag = true
+				}
+
+				if !errFlag {
+					totalEventsSuccessfullyProcessed.Inc()
+				}
+
+				duration := time.Since(startTime).Seconds()
+				eventHandlingDuration.Observe(duration)
+			}
+		}
+	}
+}
+
+func (r *Reconciler) watchEvents(watcher *storewatcher.ChangeStreamWatcher) {
 	for event := range watcher.Events() {
 		totalEventsReceived.Inc()
 
-		startTime := time.Now()
 		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
-
-		if err := storewatcher.UnmarshalFullDocumentFromEvent(
+		err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
 			&healthEventWithStatus,
-		); err != nil {
+		)
+
+		if err != nil {
 			klog.Errorf("Failed to unmarshal event: %+v", err)
-
 			processingErrors.WithLabelValues("unmarshal_error").Inc()
-
-			if err := watcher.MarkProcessed(ctx); err != nil {
-				klog.Errorf("Error updating resume token: %+v", err)
-
-				processingErrors.WithLabelValues("mark_processed_error").Inc()
-			}
 
 			continue
 		}
 
-		isNodeQuarantined := r.handleEvent(
-			ctx,
-			healthEventWithStatus.HealthEvent,
-			ruleSetEvals,
-			rulesetsConfig,
-			quarantinedNodesMap,
-		)
-
-		errFlag := false
-
-		if err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, event, isNodeQuarantined); err != nil {
-			klog.Errorf("Error updating Node quarantine status: %+v", err)
-
-			processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
-
-			errFlag = true
-		}
-
-		if err := watcher.MarkProcessed(ctx); err != nil {
-			klog.Errorf("Error updating resume token: %+v", err)
-
-			processingErrors.WithLabelValues("mark_processed_error").Inc()
-
-			errFlag = true
-		}
-
-		if !errFlag {
-			totalEventsSuccessfullyProcessed.Inc()
-		}
-
-		duration := time.Since(startTime).Seconds()
-
-		eventHandlingDuration.Observe(duration)
+		klog.V(3).Infof("Enqueuing event: %+v", healthEventWithStatus)
+		r.healthEventBuffer.Add(&healthEventWithStatus, event)
+		r.workSignal <- struct{}{}
 	}
 }
 
 // nolint: cyclop, gocognit //fix this as part of NGCC-21793
 func (r *Reconciler) handleEvent(
 	ctx context.Context,
-	event *platformconnectorprotos.HealthEvent,
+	event *storeconnector.HealthEventWithStatus,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
 	quarantinedNodesMap map[string]bool,
-) *storeconnector.Status {
+) (*storeconnector.Status, common.RuleEvaluationResult) {
 	var status storeconnector.Status
 
-	if quarantinedNodesMap[event.NodeName] {
-		if r.handleQuarantinedNode(ctx, event, quarantinedNodesMap) {
+	if quarantinedNodesMap[event.HealthEvent.NodeName] {
+		if r.handleQuarantinedNode(ctx, event.HealthEvent, quarantinedNodesMap) {
 			totalEventsSkipped.Inc()
 
 			status = storeconnector.AlreadyQuarantined
@@ -235,7 +332,7 @@ func (r *Reconciler) handleEvent(
 			status = storeconnector.UnQuarantined
 		}
 
-		return &status
+		return &status, common.RuleEvaluationNotApplicable
 	}
 
 	type keyValTaint struct {
@@ -250,6 +347,8 @@ func (r *Reconciler) handleEvent(
 	var isCordoned atomic.Bool
 
 	var taintEffectPriorityMap sync.Map
+
+	ruleEvaluationRetryInFuture := false
 
 	for _, eval := range ruleSetEvals {
 		taintConfig := rulesetsConfig.TaintConfigMap[eval.GetName()]
@@ -276,9 +375,9 @@ func (r *Reconciler) handleEvent(
 
 			rulesetEvaluations.WithLabelValues(eval.GetName()).Inc()
 
-			ok, err := eval.Evaluate(event)
+			ruleEvaluatedResult, err := eval.Evaluate(event.HealthEvent)
 			//nolint //ignore complex nesting blocks //fix this as part of NGCC-21793
-			if ok {
+			if ruleEvaluatedResult == common.RuleEvaluationSuccess {
 				rulesetPassed.WithLabelValues(eval.GetName()).Inc()
 
 				if shouldCordon := rulesetsConfig.CordonConfigMap[eval.GetName()]; shouldCordon {
@@ -314,11 +413,16 @@ func (r *Reconciler) handleEvent(
 					}
 				}
 			} else if err != nil {
-				klog.Errorf("error while evaluating for event: %+v for ruleset: %+v: %+v", event, eval.GetName(), err)
+				klog.Errorf("error while evaluating for event: %+v for ruleset: %+v: %+v", event.HealthEvent, eval.GetName(), err)
 
 				processingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
 
 				rulesetFailed.WithLabelValues(eval.GetName()).Inc()
+			} else if ruleEvaluatedResult == common.RuleEvaluationRetryAgainInFuture {
+
+				klog.V(2).Infof("RuleEvaluation not succeeded , will revaluate it in next iteration \n%+v", event.HealthEvent)
+				ruleEvaluationRetryInFuture = true
+
 			} else {
 				rulesetFailed.WithLabelValues(eval.GetName()).Inc()
 			}
@@ -326,6 +430,10 @@ func (r *Reconciler) handleEvent(
 	}
 
 	wg.Wait()
+
+	if ruleEvaluationRetryInFuture {
+		return nil, common.RuleEvaluationRetryAgainInFuture
+	}
 
 	taintsToBeApplied := []config.Taint{}
 	// Check the taint map and collect the taints which are to be applied
@@ -369,9 +477,9 @@ func (r *Reconciler) handleEvent(
 
 	//nolint //ignore complex nested block //fix this as part of NGCC-21793
 	if isNodeQuarantined {
-		eventJsonStr, err := json.Marshal(event)
+		eventJsonStr, err := json.Marshal(event.HealthEvent)
 		if err != nil {
-			klog.Errorf("error while marshalling event %+v: %+v", event, err)
+			klog.Errorf("error while marshalling event %+v: %+v", event.HealthEvent, err)
 		} else {
 			annotationsMap[quarantineHealthEventAnnotationKey] = string(eventJsonStr)
 		}
@@ -388,13 +496,13 @@ func (r *Reconciler) handleEvent(
 
 		if err := r.config.K8sClient.TaintAndCordonNodeAndSetAnnotations(
 			ctx,
-			event.NodeName,
+			event.HealthEvent.NodeName,
 			taintsToBeApplied,
 			isCordoned.Load(),
 			annotationsMap,
 			labels,
 		); err != nil {
-			klog.Errorf("error while updating node for event: %+v: %+v", event, err)
+			klog.Errorf("error while updating node for event: %+v: %+v", event.HealthEvent, err)
 
 			processingErrors.WithLabelValues("taint_and_cordon_error").Inc()
 
@@ -414,7 +522,7 @@ func (r *Reconciler) handleEvent(
 	}
 
 	// update the map here so that later we can refer to it and update the quarantined nodes
-	quarantinedNodesMap[event.NodeName] = isNodeQuarantined
+	quarantinedNodesMap[event.HealthEvent.NodeName] = isNodeQuarantined
 
 	if isNodeQuarantined {
 		status = storeconnector.Quarantined
@@ -422,7 +530,7 @@ func (r *Reconciler) handleEvent(
 		status = storeconnector.UnQuarantined
 	}
 
-	return &status
+	return &status, common.RuleEvaluationNotApplicable
 }
 
 // nolint: cyclop //fix this as part of NGCC-21793
@@ -440,11 +548,12 @@ func (r *Reconciler) handleQuarantinedNode(
 	}
 
 	labelsMap := map[string]string{}
-
 	quarantineAnnotationEvent, exists := annotations[quarantineHealthEventAnnotationKey]
+
 	if !exists || quarantineAnnotationEvent == "" {
 		// No quarantine annotation found, node is not considered quarantined
 		quarantinedNodesMap[event.NodeName] = false
+
 		return false
 	}
 
@@ -478,7 +587,6 @@ func (r *Reconciler) handleQuarantinedNode(
 
 		if cordonExists && quarantineAnnotationEventIsCordonStr == quarantineHealthEventIsCordonedAnnotationValueTrue {
 			isUnCordon = true
-
 			annotationsToBeRemoved = append(annotationsToBeRemoved, quarantineHealthEventIsCordonedAnnotationKey)
 			labelsMap[uncordonedByLabelKey] = serviceName
 			labelsMap[uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
@@ -515,7 +623,6 @@ func (r *Reconciler) handleQuarantinedNode(
 
 		// Update the quarantinedNodesMap to reflect the node is no longer quarantined
 		quarantinedNodesMap[event.NodeName] = false
-
 		return false
 	}
 
@@ -602,6 +709,7 @@ func areAnnotationEntitiesSubsetOfEventEntities(
 
 	for _, entity := range annotationEventEntities {
 		k := key{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
+
 		if counts[k] == 0 {
 			return false
 		}

@@ -16,6 +16,7 @@ package evaluator
 
 import (
 	multierror "github.com/hashicorp/go-multierror"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
@@ -25,21 +26,22 @@ type AllRuleSetEvaluator struct {
 	baseRuleSetEvaluator
 }
 
-func (allEval *AllRuleSetEvaluator) Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (bool, error) {
+func (allEval *AllRuleSetEvaluator) Evaluate(
+	healthEvent *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
 	var errs *multierror.Error
 
 	for _, evaluator := range allEval.evaluators {
-		eval, err := evaluator.Evaluate(healthEvent)
+		ruleEvaluatedResult, err := evaluator.Evaluate(healthEvent)
 		if err != nil {
 			errs = multierror.Append(errs, err)
 		}
 
-		if !eval {
-			return false, errs.ErrorOrNil()
+		if ruleEvaluatedResult != common.RuleEvaluationSuccess {
+			return ruleEvaluatedResult, errs.ErrorOrNil()
 		}
 	}
 
-	return true, errs.ErrorOrNil()
+	return common.RuleEvaluationSuccess, errs.ErrorOrNil()
 }
 
 func NewAllRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSet) *AllRuleSetEvaluator {

@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	multierror "github.com/hashicorp/go-multierror"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/client-go/kubernetes/fake"
@@ -30,8 +31,11 @@ type MockRuleEvaluator struct {
 	err    error
 }
 
-func (m *MockRuleEvaluator) Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (bool, error) {
-	return m.result, m.err
+func (m *MockRuleEvaluator) Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
+	if m.result {
+		return common.RuleEvaluationSuccess, m.err
+	}
+	return common.RuleEvaluationFailed, m.err
 }
 
 func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
@@ -39,7 +43,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		name       string
 		evaluators []RuleEvaluator
 		event      *platformconnectorprotos.HealthEvent
-		expected   bool
+		expected   common.RuleEvaluationResult
 		expectErr  bool
 	}{
 		{
@@ -50,7 +54,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  true,
+			expected:  common.RuleEvaluationSuccess,
 			expectErr: false,
 		},
 		{
@@ -60,7 +64,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationFailed,
 			expectErr: false,
 		},
 		{
@@ -69,7 +73,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: errors.New("evaluation error")},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationErroredOut,
 			expectErr: true,
 		},
 		{
@@ -79,7 +83,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: true, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  true,
+			expected:  common.RuleEvaluationSuccess,
 			expectErr: false,
 		},
 		{
@@ -89,7 +93,7 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: errors.New("error 2")},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationErroredOut,
 			expectErr: true,
 		},
 	}
@@ -128,7 +132,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		name       string
 		evaluators []RuleEvaluator
 		event      *platformconnectorprotos.HealthEvent
-		expected   bool
+		expected   common.RuleEvaluationResult
 		expectErr  bool
 	}{
 		{
@@ -138,7 +142,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: true, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  true,
+			expected:  common.RuleEvaluationSuccess,
 			expectErr: false,
 		},
 		{
@@ -148,7 +152,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationFailed,
 			expectErr: false,
 		},
 		{
@@ -158,7 +162,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: errors.New("evaluation error")},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationFailed,
 			expectErr: true,
 		},
 		{
@@ -168,7 +172,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: false, err: errors.New("error 2")},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  false,
+			expected:  common.RuleEvaluationFailed,
 			expectErr: true,
 		},
 		{
@@ -178,7 +182,7 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 				&MockRuleEvaluator{result: true, err: nil},
 			},
 			event:     &platformconnectorprotos.HealthEvent{},
-			expected:  true,
+			expected:  common.RuleEvaluationSuccess,
 			expectErr: true,
 		},
 	}
@@ -289,7 +293,7 @@ func TestInitializeRuleSetEvaluators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluators, err := InitializeRuleSetEvaluators(tt.ruleSets, clientset)
+			evaluators, err := InitializeRuleSetEvaluators(tt.ruleSets, clientset, nil)
 			if len(evaluators) != tt.expectedCount {
 				t.Errorf("Expected %d evaluators, got %d", tt.expectedCount, len(evaluators))
 			}
@@ -364,7 +368,7 @@ func TestCreateEvaluators(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluators, err := createEvaluators(tt.rules, clientset)
+			evaluators, err := createEvaluators(tt.rules, clientset, nil)
 			if len(evaluators) != tt.expectedCount {
 				t.Errorf("Expected %d evaluators, got %d", tt.expectedCount, len(evaluators))
 			}

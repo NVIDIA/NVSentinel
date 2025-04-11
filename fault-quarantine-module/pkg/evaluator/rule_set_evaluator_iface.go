@@ -14,11 +14,14 @@
 
 package evaluator
 
-import platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+import (
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
+	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+)
 
 // Interfaces and base structs
 type RuleSetEvaluatorIface interface {
-	Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (bool, error)
+	Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error)
 	GetName() string
 	GetVersion() string
 	GetPriority() int

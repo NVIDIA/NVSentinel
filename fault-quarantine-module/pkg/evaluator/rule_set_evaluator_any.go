@@ -16,6 +16,7 @@ package evaluator
 
 import (
 	multierror "github.com/hashicorp/go-multierror"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
@@ -26,13 +27,15 @@ type AnyRuleSetEvaluator struct {
 	baseRuleSetEvaluator
 }
 
-func (anyEval *AnyRuleSetEvaluator) Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (bool, error) {
+func (anyEval *AnyRuleSetEvaluator) Evaluate(
+	healthEvent *platformconnectorprotos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	var errs *multierror.Error
 
 	for _, evaluator := range anyEval.evaluators {
-		eval, err := evaluator.Evaluate(healthEvent)
-		if eval {
-			return true, nil
+		ruleEvaluatedResult, err := evaluator.Evaluate(healthEvent)
+		if ruleEvaluatedResult == common.RuleEvaluationSuccess {
+			return common.RuleEvaluationSuccess, nil
 		}
 
 		if err != nil {
@@ -41,10 +44,10 @@ func (anyEval *AnyRuleSetEvaluator) Evaluate(healthEvent *platformconnectorproto
 	}
 
 	if errs.ErrorOrNil() != nil {
-		return false, errs
+		return common.RuleEvaluationErroredOut, errs
 	}
 
-	return false, nil
+	return common.RuleEvaluationFailed, nil
 }
 
 func NewAnyRuleSetEvaluator(evaluators []RuleEvaluator, ruleset config.RuleSet) *AnyRuleSetEvaluator {

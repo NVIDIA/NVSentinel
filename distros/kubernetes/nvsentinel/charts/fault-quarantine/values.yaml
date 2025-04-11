@@ -45,6 +45,9 @@ tolerations:
 
 metricsPort: 2112
 
+# Log level for the fault quarantine module (klog verbosity)
+logLevel: 1
+
 clientCertMountPath: "/etc/ssl/mongo-client"
 
 config: |
@@ -67,6 +70,9 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
+    [[rule-sets.match.all]]
+      kind = "MaxPercentageOfNodesToCordon"
+      expression = "maxPercentageOfNodesToCordon <= 30"
   
     [rule-sets.cordon]
       shouldCordon = true
@@ -90,6 +96,10 @@ config: |
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
 
+    [[rule-sets.match.all]]
+      kind = "MaxPercentageOfNodesToCordon"
+      expression = "maxPercentageOfNodesToCordon <= 30"
+
     [rule-sets.cordon]
       shouldCordon = true
 
@@ -110,7 +120,10 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
-
+      
+    [[rule-sets.match.all]]
+      kind = "MaxPercentageOfNodesToCordon"
+      expression = "maxPercentageOfNodesToCordon <= 30"
 
     [rule-sets.cordon]
       shouldCordon = true

@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
@@ -29,12 +31,14 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // nolint: cyclop //fix this as part of NGCC-21793
 func main() {
-	ctx := context.Background()
+	// Create a context that gets cancelled on OS interrupt signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop() // Ensure the signal listener is cleaned up
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
@@ -45,6 +49,10 @@ func main() {
 
 	var dryRun = flag.Bool("dry-run", false, "flag to run fault notification module in dry-run mode")
 
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	defer klog.Flush()
 	flag.Parse()
 
 	mongoURI := os.Getenv("MONGODB_URI")
@@ -151,7 +159,11 @@ func main() {
 		K8sClient:                        k8sClient,
 	}
 
-	reconciler := reconciler.NewReconciler(reconcilerCfg)
+	// Create the work signal channel (buffered channel acting as semaphore)
+	workSignal := make(chan struct{}, 1) // Buffer size 1 is usually sufficient
+
+	// Pass the workSignal channel to the Reconciler
+	reconciler := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 	reconciler.Start(ctx)
 }
 

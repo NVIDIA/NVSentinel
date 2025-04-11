@@ -15,15 +15,18 @@
 package evaluator
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
@@ -45,7 +48,7 @@ func TestEvaluate(t *testing.T) {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
 
-	if !result {
+	if result != common.RuleEvaluationSuccess {
 		t.Errorf("Expected evaluation result to be true, got false")
 	}
 
@@ -60,7 +63,7 @@ func TestEvaluate(t *testing.T) {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
 
-	if result {
+	if result != common.RuleEvaluationFailed {
 		t.Errorf("Expected evaluation result to be false, got true")
 	}
 }
@@ -70,7 +73,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 		name           string
 		expression     string
 		nodeLabels     map[string]string
-		expectEvaluate bool
+		expectEvaluate common.RuleEvaluationResult
 		expectError    bool
 	}{
 		{
@@ -79,14 +82,14 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			nodeLabels: map[string]string{
 				"k8saas.nvidia.com/ManagedByNVSentinel": "true",
 			},
-			expectEvaluate: true,
+			expectEvaluate: common.RuleEvaluationSuccess,
 			expectError:    false,
 		},
 		{
 			name:           "Node should not be skipped - label not present",
 			expression:     `!(has(node.metadata.labels) && 'k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")`,
 			nodeLabels:     map[string]string{},
-			expectEvaluate: true,
+			expectEvaluate: common.RuleEvaluationSuccess,
 			expectError:    false,
 		},
 		{
@@ -95,14 +98,14 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			nodeLabels: map[string]string{
 				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
 			},
-			expectEvaluate: false,
+			expectEvaluate: common.RuleEvaluationFailed,
 			expectError:    false,
 		},
 		{
 			name:           "Invalid expression",
 			expression:     "invalid.expression",
 			nodeLabels:     map[string]string{},
-			expectEvaluate: false,
+			expectEvaluate: common.RuleEvaluationFailed,
 			expectError:    true,
 		},
 	}
@@ -135,7 +138,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 					return
 				}
 				if isEvaluated != tt.expectEvaluate {
-					t.Errorf("Expected evaluator %s to return %t but got %t", tt.name, tt.expectEvaluate, isEvaluated)
+					t.Errorf("Expected evaluator %s to return %d but got %d", tt.name, tt.expectEvaluate, isEvaluated)
 				}
 			}
 		})
@@ -191,5 +194,168 @@ func TestRoundTrip(t *testing.T) {
 
 	if !reflect.DeepEqual(result, expectedMap) {
 		t.Errorf("Expected map %v, got %v", expectedMap, result)
+	}
+}
+
+// Mock NodeInfoProvider for testing MaxPercentage rule
+type mockNodeInfoProvider struct {
+	TotalNodes     int
+	CordonedNodes  int
+	Err            error
+	InformerSynced bool
+}
+
+func (m *mockNodeInfoProvider) GetGpuNodeCounts() (int, int, error) {
+	if !m.InformerSynced {
+		return 0, 0, fmt.Errorf("informer not synced") // Simulate not synced error
+	}
+	return m.TotalNodes, m.CordonedNodes, m.Err
+}
+
+func (m *mockNodeInfoProvider) HasSynced() bool {
+	return m.InformerSynced
+}
+
+func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
+	// Define the expression to be used by the constructor
+	expression := "maxPercentageOfNodesToCordon <= 50" // Example: Allow cordon if resulting percentage is <= 50%
+
+	// Dummy health event (content doesn't matter for this rule)
+	event := &platformconnectorprotos.HealthEvent{NodeName: "node-1"}
+
+	testCases := []struct {
+		name                string
+		mockProvider        *mockNodeInfoProvider
+		expectedResult      common.RuleEvaluationResult
+		expectError         bool
+		expectedErrorSubstr string // Optional: check for specific error messages
+	}{
+		{
+			name: "Informer Not Synced",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: false, // Simulate not synced
+			},
+			expectedResult:      common.RuleEvaluationErroredOut, // Should error out if informer isn't ready
+			expectError:         true,
+			expectedErrorSubstr: "informer not synced",
+		},
+		{
+			name: "GetGpuNodeCounts Error",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				Err:            fmt.Errorf("internal informer error"), // Simulate error from GetGpuNodeCounts
+			},
+			expectedResult:      common.RuleEvaluationErroredOut,
+			expectError:         true,
+			expectedErrorSubstr: "internal informer error",
+		},
+		{
+			name: "Zero Total Nodes",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     0,
+				CordonedNodes:  0,
+			},
+			expectedResult:      common.RuleEvaluationFailed, // As per current logic
+			expectError:         true,                        // Error is returned in this case too
+			expectedErrorSubstr: "no GPU nodes found",
+		},
+		{
+			name: "Cordon Allowed (0/10 nodes -> 10% <= 50%)",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     10,
+				CordonedNodes:  0, // (0+1)/10 = 10%
+			},
+			expectedResult: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name: "Cordon Allowed (4/10 nodes -> 50% <= 50%)",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     10,
+				CordonedNodes:  4, // (4+1)/10 = 50%
+			},
+			expectedResult: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name: "Cordon Disallowed (5/10 nodes -> 60% > 50%)",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     10,
+				CordonedNodes:  5, // (5+1)/10 = 60%
+			},
+			// Current logic returns RetryAgainInFuture when disallowed
+			expectedResult: common.RuleEvaluationRetryAgainInFuture,
+			expectError:    false, // No error, just disallowed
+		},
+		{
+			name: "Cordon Disallowed (1/1 node -> 200% > 50%)", // Note: potentialPercentage calculation (1+1)/1 = 200%
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     1,
+				CordonedNodes:  1,
+			},
+			expectedResult: common.RuleEvaluationRetryAgainInFuture,
+			expectError:    false,
+		},
+		{
+			name: "Cordon Allowed (0/1 node -> 100% - But rule uses <= 50%, so this case should retry)",
+			// This case tests if the rule correctly prevents cordon even if it's the first one, if total nodes is low.
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     1,
+				CordonedNodes:  0, // (0+1)/1 = 100%
+			},
+			expectedResult: common.RuleEvaluationRetryAgainInFuture,
+			expectError:    false,
+		},
+		{
+			name: "Cordon Allowed (0/2 nodes -> 50% <= 50%)",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     2,
+				CordonedNodes:  0, // (0+1)/2 = 50%
+			},
+			expectedResult: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name: "Cordon Disallowed (1/2 nodes -> 100% > 50%)",
+			mockProvider: &mockNodeInfoProvider{
+				InformerSynced: true,
+				TotalNodes:     2,
+				CordonedNodes:  1, // (1+1)/2 = 100%
+			},
+			expectedResult: common.RuleEvaluationRetryAgainInFuture,
+			expectError:    false,
+		},
+		// Note: CEL evaluation errors and non-boolean results are hard to trigger
+		// with a simple expression and mock setup, but could be added if needed.
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Use the constructor to create the evaluator
+			evaluator, err := NewMaxPercentageOfNodesToCordonRuleEvaluator(expression, tc.mockProvider)
+			// We expect the constructor to succeed for a valid expression
+			assert.NoError(t, err, "NewMaxPercentageOfNodesToCordonRuleEvaluator failed for a valid expression")
+			assert.NotNil(t, evaluator, "Evaluator should not be nil after successful construction")
+
+			result, err := evaluator.Evaluate(event)
+
+			assert.Equal(t, tc.expectedResult, result, "Unexpected RuleEvaluationResult")
+
+			if tc.expectError {
+				assert.Error(t, err, "Expected an error, but got nil")
+				if tc.expectedErrorSubstr != "" && err != nil {
+					assert.Contains(t, err.Error(), tc.expectedErrorSubstr, "Error message mismatch")
+				}
+			} else {
+				assert.NoError(t, err, "Expected no error, but got one: %v", err)
+			}
+		})
 	}
 }

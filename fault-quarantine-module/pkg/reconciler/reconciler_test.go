@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
@@ -40,8 +41,8 @@ func (m *mockK8sClient) GetNodeAnnotations(ctx context.Context, nodeName string)
 func (m *mockK8sClient) GetNodesWithAnnotation(ctx context.Context, annotationKey string) ([]string, error) {
 	return m.getNodesWithAnnotationFn(ctx, annotationKey)
 }
-func (m *mockK8sClient) TaintAndCordonNodeAndSetAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
-	return m.taintAndCordonNodeFn(ctx, nodeName, taints, isCordon, annotations, labelMap)
+func (m *mockK8sClient) TaintAndCordonNodeAndSetAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
+	return m.taintAndCordonNodeFn(ctx, nodeName, taints, isCordon, annotations, labelsMap)
 }
 func (m *mockK8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string, taints []config.Taint, isUnCordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
 	return m.unTaintAndUnCordonNodeFn(ctx, nodeName, taints, isUnCordon, annotationKeys, labelsToRemove, labelMap)
@@ -52,19 +53,20 @@ func (m *mockK8sClient) GetK8sClient() kubernetes.Interface {
 }
 
 type mockEvaluator struct {
-	name     string
-	ok       bool
-	evalErr  error
-	priority int
-	version  string
+	name           string
+	ok             bool
+	evalErr        error
+	priority       int
+	version        string
+	ruleEvalResult common.RuleEvaluationResult
 }
 
 func (m *mockEvaluator) GetName() string {
 	return m.name
 }
 
-func (m *mockEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (bool, error) {
-	return m.ok, m.evalErr
+func (m *mockEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
+	return m.ruleEvalResult, m.evalErr
 }
 
 func (m *mockEvaluator) GetPriority() int {
@@ -135,7 +137,8 @@ func TestHandleEvent(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(cfg)
+	r := NewReconciler(ctx, cfg, nil)
+	r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
 
 	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
 		&mockEvaluator{name: "ruleset1", ok: true}, // applies taint key1=val1
@@ -148,7 +151,12 @@ func TestHandleEvent(t *testing.T) {
 		NodeName: "node1",
 	}
 
-	isQuarantined := r.handleEvent(ctx, event, ruleSetEvals,
+	// Create a wrapper around the health event
+	healthEventWithStatus := &store.HealthEventWithStatus{
+		HealthEvent: event,
+	}
+
+	isQuarantined, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, ruleSetEvals,
 		rulesetsConfig{
 			TaintConfigMap: map[string]*config.Taint{
 				"ruleset1": &tomlConfig.RuleSets[0].Taint,
@@ -170,8 +178,13 @@ func TestHandleEvent(t *testing.T) {
 		t.Errorf("Expected isQuarantined to be non-nil")
 	}
 
-	if *isQuarantined == store.UnQuarantined {
+	if isQuarantined != nil && *isQuarantined == store.UnQuarantined {
 		t.Errorf("Node should be quarantined due to rules")
+	}
+
+	// Check the rule evaluation results
+	if ruleEvalResult == common.RuleEvaluationRetryAgainInFuture {
+		t.Errorf("Unexpected rule kind result: %v", ruleEvalResult)
 	}
 
 	if !quarantinedNodesMap["node1"] {
@@ -198,13 +211,21 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(cfg)
+	r := NewReconciler(ctx, cfg, nil)
+
+	// Initialize label keys
+	r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
 
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName: "node1",
 	}
 
-	isQuarantined := r.handleEvent(ctx, event, []evaluator.RuleSetEvaluatorIface{}, rulesetsConfig{
+	// Create a wrapper around the health event
+	healthEventWithStatus := &store.HealthEventWithStatus{
+		HealthEvent: event,
+	}
+
+	isQuarantined, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, []evaluator.RuleSetEvaluatorIface{}, rulesetsConfig{
 		TaintConfigMap:     map[string]*config.Taint{},
 		CordonConfigMap:    map[string]bool{},
 		RuleSetPriorityMap: map[string]int{},
@@ -214,8 +235,12 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 		t.Errorf("Expected isQuarantined to be non-nil")
 	}
 
-	if *isQuarantined == store.Quarantined {
+	if isQuarantined != nil && *isQuarantined == store.Quarantined {
 		t.Errorf("Expected node not to be quarantined when no rules triggered")
+	}
+
+	if ruleEvalResult != common.RuleEvaluationNotApplicable {
+		t.Errorf("Expected HealthEventRuleNotApplicable rule kind, got %v", ruleEvalResult)
 	}
 }
 
@@ -267,9 +292,12 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(ReconcilerConfig{
+	r := NewReconciler(ctx, ReconcilerConfig{
 		K8sClient: k8sMock,
-	})
+	}, nil)
+
+	// Initialize label keys
+	r.SetLabelKeys("k88s.nvidia.com/")
 
 	quarantinedNodesMap := map[string]bool{"node1": true}
 	event := &platformconnectorprotos.HealthEvent{
@@ -317,9 +345,12 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(ReconcilerConfig{
+	r := NewReconciler(ctx, ReconcilerConfig{
 		K8sClient: k8sMock,
-	})
+	}, nil)
+
+	// Initialize label keys
+	r.SetLabelKeys("k88s.nvidia.com/")
 
 	quarantinedNodesMap := map[string]bool{"node1": true}
 	event := &platformconnectorprotos.HealthEvent{
@@ -372,8 +403,152 @@ func TestCompareHealthEventWithAnnotationEventToCheckUnQuarantine(t *testing.T) 
 	}
 	// Modify one field
 	modEvent.Agent = "anotherAgent"
-	modEventStr, _ := json.Marshal(&modEvent)
+
+	modEventStr, _ := json.Marshal(modEvent)
+
 	if compareHealthEventWithAnnotationEventToCheckUnQuarantine(event, string(modEventStr)) {
 		t.Errorf("Expected unquarantine check to fail when agent differs")
 	}
+}
+
+// TestHandleEventRuleEvaluationRetry tests handleEvent when an evaluator returns RuleEvaluationRetryAgainInFuture
+func TestHandleEventRuleEvaluationRetry(t *testing.T) {
+	ctx := context.Background()
+
+	// Create base configuration
+	cfg := ReconcilerConfig{
+		TomlConfig: config.TomlConfig{
+			LabelPrefix: "k88s.nvidia.com/",
+			RuleSets: []config.RuleSet{
+				{
+					Name: "maxPercentageRule",
+					Taint: config.Taint{
+						Key:    "key1",
+						Value:  "val1",
+						Effect: "NoSchedule",
+					},
+					Cordon:   config.Cordon{ShouldCordon: true},
+					Priority: 10,
+				},
+			},
+		},
+		K8sClient: &mockK8sClient{
+			getNodesWithAnnotationFn: func(ctx context.Context, annotationKey string) ([]string, error) {
+				return []string{}, nil
+			},
+			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
+				return nil
+			},
+		},
+	}
+
+	// Test Case 1: Evaluator returns RetryAgainInFuture (no error)
+	t.Run("Evaluator returns RetryAgainInFuture (no error)", func(t *testing.T) {
+		r := NewReconciler(ctx, cfg, nil)
+		r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
+
+		// Create evaluator that returns RuleEvaluationRetryAgainInFuture without error
+		ruleSetEval := &mockEvaluator{
+			name:           "RuleEvaluationRetryAgainInFuture",
+			ok:             true, // ok=true likely means no error returned by mock
+			ruleEvalResult: common.RuleEvaluationRetryAgainInFuture,
+		}
+
+		event := &platformconnectorprotos.HealthEvent{
+			NodeName: "node1",
+		}
+
+		// Create a wrapper around the health event
+		healthEventWithStatus := &store.HealthEventWithStatus{
+			HealthEvent: event,
+		}
+
+		quarantinedNodesMap := make(map[string]bool)
+
+		// Call handleEvent with the MaxPercentageRule evaluator
+		status, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, []evaluator.RuleSetEvaluatorIface{ruleSetEval},
+			rulesetsConfig{
+				TaintConfigMap: map[string]*config.Taint{
+					"RuleEvaluationRetryAgainInFuture": &cfg.TomlConfig.RuleSets[0].Taint,
+				},
+				CordonConfigMap: map[string]bool{
+					"RuleEvaluationRetryAgainInFuture": true,
+				},
+				RuleSetPriorityMap: map[string]int{
+					"RuleEvaluationRetryAgainInFuture": 10,
+				},
+			},
+			quarantinedNodesMap,
+		)
+
+		// When RuleEvaluationRetryAgainInFuture is returned, the node should NOT be quarantined immediately
+		if status != nil {
+			t.Errorf("Expected status to be nil when rule evaluation is RetryAgainInFuture, got %v", *status)
+		}
+
+		// The ruleEvalResult should be RuleEvaluationRetryAgainInFuture
+		if ruleEvalResult != common.RuleEvaluationRetryAgainInFuture {
+			t.Errorf("Expected ruleEvalResult to be RuleEvaluationRetryAgainInFuture, got %v", ruleEvalResult)
+		}
+
+		// Node should NOT be in quarantined map
+		if quarantinedNodesMap["node1"] {
+			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture")
+		}
+	})
+
+	// Test Case 2: Evaluator returns RetryAgainInFuture (with error)
+	t.Run("Evaluator returns RetryAgainInFuture (with error)", func(t *testing.T) {
+		r := NewReconciler(ctx, cfg, nil)
+		r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
+
+		// Create evaluator that returns RuleEvaluationRetryAgainInFuture with an error
+		ruleSetEval := &mockEvaluator{
+			name:           "RuleEvaluationRetryAgainInFuture",
+			ok:             false, // ok=false likely means an error is returned by mock
+			ruleEvalResult: common.RuleEvaluationRetryAgainInFuture,
+		}
+
+		event := &platformconnectorprotos.HealthEvent{
+			NodeName: "node1",
+		}
+
+		// Create a wrapper around the health event
+		healthEventWithStatus := &store.HealthEventWithStatus{
+			HealthEvent: event,
+		}
+
+		quarantinedNodesMap := make(map[string]bool)
+
+		// Call handleEvent with the MaxPercentageRule evaluator
+		status, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, []evaluator.RuleSetEvaluatorIface{ruleSetEval},
+			rulesetsConfig{
+				TaintConfigMap: map[string]*config.Taint{
+					"RuleEvaluationRetryAgainInFuture": &cfg.TomlConfig.RuleSets[0].Taint,
+				},
+				CordonConfigMap: map[string]bool{
+					"RuleEvaluationRetryAgainInFuture": true,
+				},
+				RuleSetPriorityMap: map[string]int{
+					"RuleEvaluationRetryAgainInFuture": 10,
+				},
+			},
+			quarantinedNodesMap,
+		)
+
+		// When RuleEvaluationRetryAgainInFuture is returned (even with error), the node should NOT be quarantined immediately
+		if status != nil {
+			t.Errorf("Expected status to be nil when rule evaluation is RetryAgainInFuture (with error), got %v", *status)
+		}
+
+		// The ruleEvalResult should still be RuleEvaluationRetryAgainInFuture
+		if ruleEvalResult != common.RuleEvaluationRetryAgainInFuture {
+			t.Errorf("Expected ruleEvalResult to be RuleEvaluationRetryAgainInFuture (with error), got %v", ruleEvalResult)
+		}
+
+		// Node should NOT be in quarantined map
+		if quarantinedNodesMap["node1"] {
+			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture (with error)")
+		}
+	})
 }
