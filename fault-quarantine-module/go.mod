@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.20.2
 	github.com/stretchr/testify v1.10.0
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250325062339-8eabcfa82aa9
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250402075205-0f543dca0e21
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250411074405-3273a6c9db15
 	go.mongodb.org/mongo-driver v1.17.0
 	google.golang.org/protobuf v1.34.2
 	k8s.io/api v0.30.2
