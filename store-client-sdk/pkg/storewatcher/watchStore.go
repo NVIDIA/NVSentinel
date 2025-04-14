@@ -59,12 +59,14 @@ type TokenConfig struct {
 }
 
 type ChangeStreamWatcher struct {
-	client         *mongo.Client
-	changeStream   *mongo.ChangeStream
-	eventChannel   chan bson.M
-	resumeTokenCol *mongo.Collection
-	clientName     string
-	mu             sync.Mutex
+	client                    *mongo.Client
+	changeStream              *mongo.ChangeStream
+	eventChannel              chan bson.M
+	resumeTokenCol            *mongo.Collection
+	clientName                string
+	mu                        sync.Mutex
+	resumeTokenUpdateTimeout  time.Duration
+	resumeTokenUpdateInterval time.Duration
 }
 
 // nolint: cyclop
@@ -141,11 +143,13 @@ func NewChangeStreamWatcher(
 	}
 
 	watcher := &ChangeStreamWatcher{
-		client:         client,
-		changeStream:   cs,
-		eventChannel:   make(chan bson.M),
-		resumeTokenCol: tokenColl,
-		clientName:     tokenConfig.ClientName,
+		client:                    client,
+		changeStream:              cs,
+		eventChannel:              make(chan bson.M),
+		resumeTokenCol:            tokenColl,
+		clientName:                tokenConfig.ClientName,
+		resumeTokenUpdateTimeout:  totalTimeout,
+		resumeTokenUpdateInterval: interval,
 	}
 
 	return watcher, nil
@@ -182,18 +186,31 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
 	token := w.changeStream.ResumeToken()
-	// Update the resume token in the database
-	_, err := w.resumeTokenCol.UpdateOne(
-		ctx,
-		bson.M{"clientName": w.clientName},
-		bson.M{"$set": bson.M{"resumeToken": token}},
-		options.Update().SetUpsert(true),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to store resume token: %w", err)
-	}
 
-	return nil
+	timeout := time.Now().Add(w.resumeTokenUpdateTimeout)
+
+	var err error
+
+	klog.Infof("Attempting to store resume token for client %s.", w.clientName)
+
+	for {
+		if time.Now().After(timeout) {
+			return fmt.Errorf("retrying storing resume token for client %s timed out with error: %w", w.clientName, err)
+		}
+
+		_, err = w.resumeTokenCol.UpdateOne(
+			ctx,
+			bson.M{"clientName": w.clientName},
+			bson.M{"$set": bson.M{"resumeToken": token}},
+			options.Update().SetUpsert(true),
+		)
+		if err == nil {
+			return nil
+		}
+
+		klog.Warningf("Failed to store resume token for client %s: %v. Retrying...", w.clientName, err)
+		time.Sleep(w.resumeTokenUpdateInterval)
+	}
 }
 
 func (w *ChangeStreamWatcher) Events() <-chan bson.M {

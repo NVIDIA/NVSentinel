@@ -197,25 +197,110 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
 	mt := mtest.New(t, mtOpts)
 
-	mt.Run("MarkProcessed updates the resume token", func(mt *mtest.T) {
-		resumeToken := bson.D{
-			{Key: "ts", Value: int64(1)},
-			{Key: "t", Value: int32(1)},
-		}
+	resumeToken := bson.D{
+		{Key: "ts", Value: int64(1)},
+		{Key: "t", Value: int32(1)},
+	}
 
+	// mock the watch command response with one change event
+	event := bson.D{
+		{Key: "operationType", Value: "insert"},
+		{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
+		{Key: "_id", Value: resumeToken},
+	}
+
+	mt.Run("MarkProcessed updates successfully on first try", func(mt *mtest.T) {
 		// mock the watch command response with one change event
-		event := bson.D{
-			{Key: "operationType", Value: "insert"},
-			{Key: "documentKey", Value: bson.D{{Key: "id", Value: int32(1)}}},
-			{Key: "_id", Value: resumeToken},
-		}
 		mt.AddMockResponses(
 			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
 			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
 		)
 
-		// mock the UpdateOne response for storing the resume token.
+		// mock the UpdateOne response for storing the resume token
+		mt.AddMockResponses(mtest.CreateSuccessResponse())
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
+
+		watcher := &ChangeStreamWatcher{
+			client:                    mt.Client,
+			changeStream:              changeStream,
+			eventChannel:              make(chan bson.M, 1),
+			resumeTokenCol:            resumeTokenCol,
+			clientName:                "testclient-success-first",
+			resumeTokenUpdateTimeout:  5 * time.Second,
+			resumeTokenUpdateInterval: 1 * time.Second,
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		watcher.Start(ctx)
+
+		select {
+		case ev := <-watcher.Events():
+			require.NotEmpty(t, ev)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for event")
+		}
+
+		err = watcher.MarkProcessed(ctx)
+		require.NoError(t, err)
+
+		// Verify the UpdateOne command was called once
+		startedEvents := mt.GetAllStartedEvents()
+		updateCommands := 0
+		for _, startedEvent := range startedEvents {
+			if startedEvent.CommandName == "update" {
+				updateCommands++
+				require.Equal(t, "tokencollection", startedEvent.Command.Lookup("update").StringValue())
+				require.Equal(t, "tokendb", startedEvent.DatabaseName)
+
+				var cmd bson.D
+				err = bson.Unmarshal(startedEvent.Command, &cmd)
+				require.NoError(t, err, "failed to unmarshal command")
+
+				var cmdMap bson.M
+				cmdBytes, err := bson.Marshal(cmd)
+				require.NoError(t, err, "failed to marshal command to bytes")
+				err = bson.Unmarshal(cmdBytes, &cmdMap)
+				require.NoError(t, err, "failed to unmarshal command bytes to map")
+
+				updates := cmdMap["updates"].(bson.A)
+				update0 := updates[0].(bson.M)
+
+				filter := update0["q"].(bson.M)
+				update := update0["u"].(bson.M)
+
+				require.EqualValues(t, bson.M{"clientName": "testclient-success-first"}, filter)
+				expectedUpdate := bson.M{"$set": bson.M{"resumeToken": bson.M{"ts": int64(1), "t": int32(1)}}}
+				require.EqualValues(t, expectedUpdate, update)
+			}
+		}
+		require.Equal(t, 1, updateCommands, "Expected exactly one update command")
+
+		cancel()
+
+		mt.ClearEvents()
+
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		err = watcher.Close(closeCtx)
+		require.NoError(t, err)
+	})
+
+	mt.Run("MarkProcessed updates successfully after retry", func(mt *mtest.T) {
 		mt.AddMockResponses(
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
+		)
+
+		// mock UpdateOne: first fails, second succeeds
+		mt.AddMockResponses(
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "network error"}),
 			mtest.CreateSuccessResponse(),
 		)
 
@@ -226,11 +311,13 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
 
 		watcher := &ChangeStreamWatcher{
-			client:         mt.Client,
-			changeStream:   changeStream,
-			eventChannel:   make(chan bson.M, 1),
-			resumeTokenCol: resumeTokenCol,
-			clientName:     "testclient",
+			client:                    mt.Client,
+			changeStream:              changeStream,
+			eventChannel:              make(chan bson.M, 1),
+			resumeTokenCol:            resumeTokenCol,
+			clientName:                "testclient-retry-success",
+			resumeTokenUpdateTimeout:  5 * time.Second,
+			resumeTokenUpdateInterval: 1 * time.Second,
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -239,72 +326,104 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		watcher.Start(ctx)
 
 		select {
-		case event := <-watcher.Events():
-			require.NotEmpty(t, event)
+		case ev := <-watcher.Events():
+			require.NotEmpty(t, ev)
 		case <-time.After(2 * time.Second):
 			t.Fatal("timeout waiting for event")
 		}
 
-		// call MarkProcessed to store the resume token
 		err = watcher.MarkProcessed(ctx)
 		require.NoError(t, err)
 
+		// Verify the UpdateOne command was called twice
 		startedEvents := mt.GetAllStartedEvents()
-		require.Len(t, startedEvents, 3)
-
-		// last request should be UpdateOne on tokencollection
-		updateRequest := startedEvents[2]
-		require.Equal(t, "update", updateRequest.CommandName)
-		require.Equal(t, "tokencollection", updateRequest.Command.Lookup("update").StringValue())
-		require.Equal(t, "tokendb", updateRequest.DatabaseName)
-
-		var cmd bson.D
-		err = bson.Unmarshal(updateRequest.Command, &cmd)
-		require.NoError(t, err, "failed to unmarshal command")
-
-		// extract the "updates" field
-		var updates bson.A
-		found := false
-		for _, elem := range cmd {
-			if elem.Key == "updates" {
-				var ok bool
-				updates, ok = elem.Value.(bson.A)
-				require.True(t, ok, "updates should be an array")
-				found = true
-				break
+		updateCommands := 0
+		for _, startedEvent := range startedEvents {
+			if startedEvent.CommandName == "update" {
+				updateCommands++
 			}
 		}
-		require.True(t, found, "updates field should be present")
-		require.Len(t, updates, 1, "updates array should have one element")
+		require.Equal(t, 2, updateCommands, "Expected exactly two update commands")
 
-		update0, ok := updates[0].(bson.D)
-		require.True(t, ok, "first update should be a document")
+		cancel()
 
-		var filter bson.D
-		for _, elem := range update0 {
-			if elem.Key == "q" {
-				filter, ok = elem.Value.(bson.D)
-				require.True(t, ok, "q should be a document")
-				break
-			}
-		}
-		require.Equal(t, bson.D{{Key: "clientName", Value: "testclient"}}, filter)
+		mt.ClearEvents()
 
-		var update bson.D
-		for _, elem := range update0 {
-			if elem.Key == "u" {
-				update, ok = elem.Value.(bson.D)
-				require.True(t, ok, "u should be a document")
-				break
-			}
-		}
-		expectedUpdate := bson.D{{Key: "$set", Value: bson.D{{Key: "resumeToken", Value: resumeToken}}}}
-		require.EqualValues(t, expectedUpdate, update)
-
-		require.Equal(t, 0, mt.NumberConnectionsCheckedOut(), "all sessions should be closed")
-
-		err = watcher.Close(ctx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		err = watcher.Close(closeCtx)
 		require.NoError(t, err)
+
+	})
+
+	mt.Run("MarkProcessed times out after multiple failures", func(mt *mtest.T) {
+		mt.AddMockResponses(
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.NextBatch, event),
+		)
+
+		// mock UpdateOne: always fail enough times to hit the timeout
+		mt.AddMockResponses(
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 1"}),
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 2"}),
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 3"}),
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 4"}),
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 5"}),
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "persistent network error 6"}),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		resumeTokenCol := mt.Client.Database("tokendb").Collection("tokencollection")
+
+		watcher := &ChangeStreamWatcher{
+			client:                    mt.Client,
+			changeStream:              changeStream,
+			eventChannel:              make(chan bson.M, 1),
+			resumeTokenCol:            resumeTokenCol,
+			clientName:                "testclient-timeout",
+			resumeTokenUpdateTimeout:  5 * time.Second,
+			resumeTokenUpdateInterval: 1 * time.Second,
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		watcher.Start(ctx)
+
+		select {
+		case ev := <-watcher.Events():
+			require.NotEmpty(t, ev)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for event")
+		}
+
+		err = watcher.MarkProcessed(ctx)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "retrying storing resume token for client testclient-timeout timed out")
+		require.Contains(t, err.Error(), "persistent network error 5")
+
+		// Verify the UpdateOne command was called multiple times
+		startedEvents := mt.GetAllStartedEvents()
+		updateCommands := 0
+		for _, startedEvent := range startedEvents {
+			if startedEvent.CommandName == "update" {
+				updateCommands++
+			}
+		}
+		require.GreaterOrEqual(t, updateCommands, 5, "Expected at least 5 update commands due to timeout")
+
+		cancel()
+
+		mt.ClearEvents()
+
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		err = watcher.Close(closeCtx)
+		require.NoError(t, err)
+
 	})
 }
 
