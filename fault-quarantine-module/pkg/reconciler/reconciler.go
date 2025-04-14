@@ -551,7 +551,7 @@ func (r *Reconciler) handleQuarantinedNode(
 	quarantineAnnotationEvent, exists := annotations[quarantineHealthEventAnnotationKey]
 
 	if !exists || quarantineAnnotationEvent == "" {
-		// No quarantine annotation found, node is not considered quarantined
+		// No quarantine annotation found, node is unquarantined
 		quarantinedNodesMap[event.NodeName] = false
 
 		return false

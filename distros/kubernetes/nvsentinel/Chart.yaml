@@ -40,3 +40,6 @@ dependencies:
   - name: fault-remediation
     version: "0.1.0"
     condition: global.faultRemediationModule.enabled
+  - name: health-events-analyzer
+    version: "0.1.0"
+    condition: global.healthEventsAnalyzer.enabled

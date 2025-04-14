@@ -270,6 +270,63 @@ platform connectors container publish:
   tags:
     - dind
 
+health event analyzer lint:
+  stage: lint
+  variables:
+    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
+  script:
+    - cd health-events-analyzer
+    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
+    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
+    - go vet ./...
+    - golangci-lint run
+  after_script:
+    - rm -f ~/.netrc
+  artifacts:
+    when: always
+    reports:
+      codequality: health-events-analyzer/code-quality-report.json
+    paths:
+      - health-events-analyzer/code-quality-report.json
+
+health event analyzer test:
+  stage: test
+  variables:
+    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
+  script:
+    - cd health-events-analyzer
+    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
+    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
+  after_script:
+    - rm -f ~/.netrc
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: health-evens-analyzer/coverage.xml
+      junit: health-events-analyzer/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+health event analyzer container publish:
+  stage: publish
+  image: docker:27.3.1
+  services:
+    - docker:27.3.1-dind
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+  script:
+    - cd health-events-analyzer
+    - docker context create builder
+    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME} .
+  tags:
+    - dind
+
 fault quarantine module lint:
   stage: lint
   variables:
