@@ -1,4 +1,4 @@
-module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module
+module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module
 
 go 1.23.1
 

@@ -24,8 +24,8 @@ import (
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/config"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/reconciler"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/reconciler"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 
@@ -45,9 +45,9 @@ func main() {
 	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
 	var tomlConfigPath = flag.String("config-path", "/etc/config/config.toml",
-		"path where the fault notification config file is present")
+		"path where the node drainer config file is present")
 
-	var dryRun = flag.Bool("dry-run", false, "flag to run fault notification module in dry-run mode")
+	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
 	flag.Parse()
 
@@ -123,7 +123,7 @@ func main() {
 	}
 
 	tokenConfig := storewatcher.TokenConfig{
-		ClientName:      "fault-notification-module",
+		ClientName:      "node-draining-module",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
 	}
@@ -150,7 +150,7 @@ func main() {
 	}
 
 	// Initialize the k8s client
-	k8sClient, err := reconciler.NewFaultNotificationClient(*kubeconfigPath, *dryRun)
+	k8sClient, err := reconciler.NewNodeDrainerClient(*kubeconfigPath, *dryRun)
 	if err != nil {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}

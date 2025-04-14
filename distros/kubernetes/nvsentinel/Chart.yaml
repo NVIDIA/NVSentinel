@@ -34,9 +34,9 @@ dependencies:
   - name: fault-quarantine
     version: "0.1.0"
     condition: global.faultQuarantineModule.enabled
-  - name: fault-notification
+  - name: node-drainer
     version: "0.1.0"
-    condition: global.faultNotificationModule.enabled
+    condition: global.nodeDrainerModule.enabled
   - name: fault-remediation
     version: "0.1.0"
     condition: global.faultRemediationModule.enabled

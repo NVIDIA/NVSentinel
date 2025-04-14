@@ -12,12 +12,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: v2
-name: fault-notification
-description: A Helm chart for Kubernetes
-
-type: application
-
-version: 0.1.0
-
-appVersion: "1.16.0"
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "node-drainer-module.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-drainer-module.labels" . | nindent 4 }}
+  annotations:
+    dgxc.nvidia.com/resource-category: management
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+  - delete
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - list

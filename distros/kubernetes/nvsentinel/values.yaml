@@ -51,11 +51,11 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module
       pullPolicy: IfNotPresent
 
-  faultNotificationModule:
+  nodeDrainerModule:
     enabled: false
 
     image:
-      repository: nvcr.io/nv-ngc-devops/nvsentinel-fault-notification-module
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module
       pullPolicy: IfNotPresent
 
   faultRemediationModule:

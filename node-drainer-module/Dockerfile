@@ -28,7 +28,7 @@ RUN if [ -z "$GITLAB_HOST" ] || [ -z "$GITLAB_LOGIN" ]; then \
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
 
-WORKDIR /go/src/fault-notification
+WORKDIR /go/src/node-drainer-module
 
 COPY go.mod go.sum ./
 
@@ -43,12 +43,12 @@ RUN --mount=type=secret,id=gitlab_token \
     
 COPY . .
     
-RUN go build -trimpath -o faultnotification cmd/faultnotification.go
+RUN go build -trimpath -o nodedrainer cmd/nodedrainer.go
 
 FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-COPY --from=builder /go/src/fault-notification/faultnotification .
+COPY --from=builder /go/src/node-drainer-module/nodedrainer .
 
-ENTRYPOINT ["/app/faultnotification"]
+ENTRYPOINT ["/app/nodedrainer"]

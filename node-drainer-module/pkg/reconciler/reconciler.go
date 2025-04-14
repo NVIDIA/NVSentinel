@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/config"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
@@ -39,7 +39,7 @@ type ReconcilerConfig struct {
 	MongoConfig   storewatcher.MongoDBConfig
 	TokenConfig   storewatcher.TokenConfig
 	MongoPipeline mongo.Pipeline
-	K8sClient     FaultNotificationClientInterface
+	K8sClient     NodeDrainerClientInterface
 }
 
 type Reconciler struct {

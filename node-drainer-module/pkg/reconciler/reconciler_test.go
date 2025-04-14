@@ -22,29 +22,29 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-notification-module/pkg/config"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platform_connectors "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/utils/ptr"
 )
 
-type MockFaultNotificationClient struct {
+type MockNodeDrainerClient struct {
 	getNamespacesMatchingPatternFn func(ctx context.Context, pattern string) ([]string, error)
 	monitorPodCompletionFn         func(ctx context.Context, namespace string, nodename string) error
 	evictAllPodsImmediatelyFn      func(ctx context.Context, namespace string, nodename string, timeout time.Duration) error
 	checkIfAllPodsAreEvictedFn     func(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool
 }
 
-func (c *MockFaultNotificationClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
+func (c *MockNodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
 	return c.getNamespacesMatchingPatternFn(ctx, pattern)
 }
-func (c *MockFaultNotificationClient) MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error {
+func (c *MockNodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error {
 	return c.monitorPodCompletionFn(ctx, namespace, nodename)
 }
-func (c *MockFaultNotificationClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timeout time.Duration) error {
+func (c *MockNodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timeout time.Duration) error {
 	return c.evictAllPodsImmediatelyFn(ctx, namespace, nodename, timeout)
 }
-func (c *MockFaultNotificationClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
+func (c *MockNodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
 	return c.checkIfAllPodsAreEvictedFn(ctx, namespaces, nodeName, timeout)
 }
 
@@ -63,7 +63,7 @@ func TestHandleEvent(t *testing.T) {
 				Mode: "AllowCompletion",
 			}},
 	}
-	k8sClient := &MockFaultNotificationClient{
+	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
 			if pattern == "*ai" {
 				return []string{"runai"}, nil
@@ -127,7 +127,7 @@ func TestHandleEventWithError(t *testing.T) {
 	}
 
 	// eviction of pods in immediate mode with error
-	k8sClient := &MockFaultNotificationClient{
+	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
 			if pattern == "*ai" {
 				return []string{"runai"}, nil
@@ -213,7 +213,7 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 				Mode: "AllowCompletion",
 			}},
 	}
-	k8sClient := &MockFaultNotificationClient{
+	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
 			if pattern == "*ai" {
 				return []string{"runai"}, nil

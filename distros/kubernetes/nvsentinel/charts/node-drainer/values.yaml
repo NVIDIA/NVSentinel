@@ -31,8 +31,8 @@ resources:
     memory: "300Mi"
 
 image:
-  repository: faultnotification
-  tag: latest
+  repository: nodedrainer
+  tag: main
 
 serviceAccount:
   create: true

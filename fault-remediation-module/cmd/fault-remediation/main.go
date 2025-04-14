@@ -52,7 +52,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.mongoClientCertMountPath, "mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 	flag.StringVar(&cfg.kubeconfigPath, "kubeconfig-path", "", "path to kubeconfig file")
-	flag.BoolVar(&cfg.dryRun, "dry-run", false, "flag to run fault notification module in dry-run mode")
+	flag.BoolVar(&cfg.dryRun, "dry-run", false, "flag to run node drainer module in dry-run mode")
 	flag.Parse()
 
 	return cfg

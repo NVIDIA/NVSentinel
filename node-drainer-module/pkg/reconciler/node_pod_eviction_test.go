@@ -39,7 +39,7 @@ var (
 	Context   context.Context
 	StopFunc  context.CancelFunc
 	TestEnv   *envtest.Environment
-	k8sClient *FaultNotificationClient
+	k8sClient *NodeDrainerClient
 )
 
 type MockEvictionClient struct {
@@ -84,7 +84,7 @@ func TestMain(m *testing.M) {
 		EvictedPods:       sync.Map{},
 	}
 
-	k8sClient = &FaultNotificationClient{
+	k8sClient = &NodeDrainerClient{
 		clientset: Client,
 		eviction:  mockEvictionClient,
 	}

@@ -15,17 +15,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "fault-notification-module.fullname" . }}
+  name: {{ include "node-drainer-module.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "fault-notification-module.labels" . | nindent 4}}
+    {{- include "node-drainer-module.labels" . | nindent 4}}
   annotations:
     dgxc.nvidia.com/resource-category: management
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "fault-notification-module.selectorLabels" . | nindent 6 }}
+      {{- include "node-drainer-module.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -33,7 +33,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "fault-notification-module.selectorLabels" . | nindent 8 }}
+        {{- include "node-drainer-module.selectorLabels" . | nindent 8 }}
     spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
@@ -41,9 +41,9 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
       containers:
-        - name: fault-notification
-          image: "{{ .Values.global.faultNotificationModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.global.faultNotificationModule.image.pullPolicy }}
+        - name: node-drainer
+          image: "{{ .Values.global.nodeDrainerModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.nodeDrainerModule.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           args:
@@ -65,7 +65,7 @@ spec:
       volumes:
       - name: config-volume
         configMap:
-          name: fault-notification-config
+          name: node-drainer-config
           items:
           - key: config.toml
             path: config.toml

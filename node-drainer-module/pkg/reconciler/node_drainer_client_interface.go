@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-type FaultNotificationClientInterface interface {
+type NodeDrainerClientInterface interface {
 	GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error)
 	MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error
 	EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timout time.Duration) error

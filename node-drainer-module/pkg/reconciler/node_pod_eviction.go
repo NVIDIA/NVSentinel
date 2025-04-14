@@ -34,13 +34,13 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-type FaultNotificationClient struct {
+type NodeDrainerClient struct {
 	clientset  kubernetes.Interface
 	eviction   policyv1client.PolicyV1Interface
 	dryRunMode []string
 }
 
-func NewFaultNotificationClient(kubeconfig string, dryRun bool) (*FaultNotificationClient, error) {
+func NewNodeDrainerClient(kubeconfig string, dryRun bool) (*NodeDrainerClient, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
@@ -58,7 +58,7 @@ func NewFaultNotificationClient(kubeconfig string, dryRun bool) (*FaultNotificat
 	if err != nil {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
-	client := &FaultNotificationClient{clientset: clientset, eviction: clientset.PolicyV1()}
+	client := &NodeDrainerClient{clientset: clientset, eviction: clientset.PolicyV1()}
 	if dryRun {
 		client.dryRunMode = []string{metav1.DryRunAll}
 	} else {
@@ -67,7 +67,7 @@ func NewFaultNotificationClient(kubeconfig string, dryRun bool) (*FaultNotificat
 	return client, nil
 }
 
-func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) ([]v1.Pod, error) {
+func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) ([]v1.Pod, error) {
 	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
 	})
@@ -97,7 +97,7 @@ func (c *FaultNotificationClient) findAllPodsInNamespaceAndNode(ctx context.Cont
 }
 
 // gracefully evicts all pods in a namespace
-func (c *FaultNotificationClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodeName string, timeout time.Duration) error {
+func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodeName string, timeout time.Duration) error {
 	pods, err := c.findAllPodsInNamespaceAndNode(ctx, namespace, nodeName)
 	if err != nil {
 		nodeDrainError.WithLabelValues("listing_pods_error").Inc()
@@ -117,7 +117,7 @@ func (c *FaultNotificationClient) EvictAllPodsInImmediateMode(ctx context.Contex
 	return nil
 }
 
-func (c *FaultNotificationClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string, timeout time.Duration, pods []v1.Pod) error {
+func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string, timeout time.Duration, pods []v1.Pod) error {
 	var wg sync.WaitGroup
 	var mErr *multierror.Error
 	errChan := make(chan error, len(pods))
@@ -154,7 +154,7 @@ func (c *FaultNotificationClient) evictPodsInNamespaceAndNode(ctx context.Contex
 }
 
 // evicts a pod
-func (c *FaultNotificationClient) sendEvictionRequestForPod(ctx context.Context, namespace string, timeout time.Duration, podName string) error {
+func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, namespace string, timeout time.Duration, podName string) error {
 	var err error
 	eviction := &policyv1.Eviction{
 		ObjectMeta: metav1.ObjectMeta{
@@ -186,7 +186,7 @@ func (c *FaultNotificationClient) sendEvictionRequestForPod(ctx context.Context,
 }
 
 // poll to check if all pods are successfully evicted from namespaces on a node
-func (c *FaultNotificationClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
+func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
 
 	allEvicted, remainingPods := c.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName)
 
@@ -224,7 +224,7 @@ func (c *FaultNotificationClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx co
 }
 
 // check if pods are present in given namespace
-func (c *FaultNotificationClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string) (bool, []v1.Pod) {
+func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string) (bool, []v1.Pod) {
 
 	type result struct {
 		namespace string
@@ -290,7 +290,7 @@ func (c *FaultNotificationClient) checkIfPodsPresentInNamespaceAndNode(ctx conte
 }
 
 // verify if all pods are deleted after force deletion
-func (c *FaultNotificationClient) verifyPodsDeletion(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
+func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
 	startTime := time.Now()
 
 	for {
@@ -316,7 +316,7 @@ func (c *FaultNotificationClient) verifyPodsDeletion(ctx context.Context, namesp
 }
 
 // get namespaces that matches the given pattern
-func (c *FaultNotificationClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
+func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
 	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w", err)
@@ -335,7 +335,7 @@ func (c *FaultNotificationClient) GetNamespacesMatchingPattern(ctx context.Conte
 }
 
 // force delete pods by removing their entries from etcd
-func (c *FaultNotificationClient) forceDeletePods(ctx context.Context, pods []v1.Pod) error {
+func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) error {
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -368,7 +368,7 @@ func (c *FaultNotificationClient) forceDeletePods(ctx context.Context, pods []v1
 }
 
 // monitor the pods to complete their execution in allow completion mode
-func (c *FaultNotificationClient) MonitorPodCompletion(ctx context.Context, namespace string, nodeName string) error {
+func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodeName string) error {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
