@@ -368,7 +368,7 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 	backoff := wait.Backoff{
 		Steps:    maxRetries,
 		Duration: retryDelay,
-		Factor:   2,
+		Factor:   1.5,
 		Jitter:   0.1,
 	}
 

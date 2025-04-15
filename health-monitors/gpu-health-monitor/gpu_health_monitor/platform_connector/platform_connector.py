@@ -335,7 +335,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
                     sleep(delay)
-                    delay *= 2
+                    delay *= 1.5
                     continue
         metrics.health_events_insertion_to_uds_error.set(1.0)
         return False
