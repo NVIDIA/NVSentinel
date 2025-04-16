@@ -233,8 +233,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 					}
 
 					if err := watcher.MarkProcessed(ctx); err != nil {
-						klog.Errorf("Error updating resume token: %+v", err)
 						processingErrors.WithLabelValues("mark_processed_error").Inc()
+
+						klog.Fatalf("Error updating resume token: %+v", err)
 					} else {
 						klog.Infof("Successfully marked event %s as processed", healthEventWithStatus.HealthEvent.NodeName)
 						/*
