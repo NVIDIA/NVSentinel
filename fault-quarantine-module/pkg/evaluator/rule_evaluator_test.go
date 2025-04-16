@@ -25,8 +25,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/cache"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
@@ -113,19 +115,41 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			// Create mock node
+			// Create mock node object with labels from test case
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   "test-node",
-					Labels: tt.nodeLabels,
+					Labels: tt.nodeLabels, // Keep original labels from test case
 				},
 				Spec: corev1.NodeSpec{},
 			}
 
+			// Ensure the required label for the informer exists.
+			// The NodeInformer specifically looks for GpuNodeLabel ("nvidia.com/gpu.present").
+			if node.Labels == nil {
+				node.Labels = make(map[string]string)
+			}
+			// Add the label the informer expects, preserving existing labels
+			node.Labels[informer.GpuNodeLabel] = "true"
+
 			clientset := fake.NewSimpleClientset(node)
 
+			// Use 0 resync period for tests unless specific timing is needed
+			nodeInformer, err := informer.NewNodeInformer(clientset, 0, nil)
+			if err != nil {
+				t.Fatalf("Failed to create NodeInformer: %v", err)
+			}
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+
+			go nodeInformer.Run(stopCh)
+
+			// Wait for the cache to sync
+			if ok := cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced); !ok {
+				t.Fatalf("failed to wait for caches to sync")
+			}
 			// Create evaluator with mocked client
-			evaluator, err := NewNodeRuleEvaluator(tt.expression, clientset)
+			evaluator, err := NewNodeRuleEvaluator(tt.expression, nodeInformer.Lister())
 			if err != nil && !tt.expectError {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}

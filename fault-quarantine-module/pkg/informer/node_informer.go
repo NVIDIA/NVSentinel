@@ -60,6 +60,11 @@ type NodeInformer struct {
 	workSignal chan struct{}
 }
 
+// Lister returns the informer's node lister.
+func (ni *NodeInformer) Lister() corelisters.NodeLister {
+	return ni.lister
+}
+
 // NewNodeInformer creates a new NodeInformer focused on nodes with the GpuNodeLabel.
 func NewNodeInformer(clientset kubernetes.Interface,
 	resyncPeriod time.Duration, workSignal chan struct{}) (*NodeInformer, error) {

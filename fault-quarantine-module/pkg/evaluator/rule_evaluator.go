@@ -15,7 +15,6 @@
 package evaluator
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -26,9 +25,8 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog"
 )
 
@@ -49,7 +47,7 @@ type HealthEventRuleEvaluator struct {
 type NodeRuleEvaluator struct {
 	expression string
 	program    cel.Program
-	client     kubernetes.Interface
+	nodeLister corelisters.NodeLister
 }
 
 type MaxPercentageOfNodesToCordonRuleEvaluator struct {
@@ -156,7 +154,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 }
 
 // NewNodeRuleEvaluator creates a new NodeRuleEvaluator
-func NewNodeRuleEvaluator(expression string, client kubernetes.Interface) (*NodeRuleEvaluator, error) {
+func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
 	klog.Infof("Creating NodeRuleEvaluator with expression: %s", expression)
 
 	// Create a CEL environment with declarations for node.labels and node.annotations
@@ -188,7 +186,7 @@ func NewNodeRuleEvaluator(expression string, client kubernetes.Interface) (*Node
 	return &NodeRuleEvaluator{
 		expression: expression,
 		program:    program,
-		client:     client,
+		nodeLister: nodeLister,
 	}, nil
 }
 
@@ -270,17 +268,16 @@ func (nm *NodeRuleEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent
 	return common.RuleEvaluationFailed, nil
 }
 
-// getNode gets both labels and annotations from a node
+// getNode gets both labels and annotations from a node using the informer lister
 func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, error) {
-	// Get node using kubernetes client
-	node, err := nm.client.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	node, err := nm.nodeLister.Get(nodeName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to get node %s from informer cache: %w", nodeName, err)
 	}
 
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unstructured the node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("failed to convert node %s to unstructured: %w", nodeName, err)
 	}
 
 	return map[string]interface{}{

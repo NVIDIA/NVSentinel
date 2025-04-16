@@ -16,6 +16,7 @@ import socket
 import argparse
 import grpc
 import time
+import os
 from protos import platformconnector_pb2, platformconnector_pb2_grpc
 
 
@@ -34,16 +35,17 @@ if __name__ == "__main__":
     health_event = platformconnector_pb2.HealthEvent()
     health_event.version = 1
     health_event.agent = "gpu-health-monitor"
-    health_event.componentClass = "gpu"
-    health_event.checkName = "XidError"
+    health_event.componentClass = "GPU"
+    health_event.checkName = "GpuXidError"
+    health_event.isHealthy = False
     health_event.isFatal = True
     health_event.message = "XID error occured"
     health_event.recommendedAction = platformconnector_pb2.REPORT_ISSUE
     health_event.errorCode.extend(["46"])
-    health_event.entitiesImpacted.extend(["1"])
+    health_event.entitiesImpacted.extend([platformconnector_pb2.Entity(entityType="GPU", entityValue="1")])
     health_event.generatedTimestamp.seconds = int(time.time())
     health_event.generatedTimestamp.nanos = int(10 ** 9 * (time.time() - int(time.time())))
-    health_event.nodeName = "gke-dgxc-runai-us-east5--customer-gpu-42cf53ce-09nn"
+    health_event.nodeName = os.environ["NODE_NAME"]
     health_event.metadata["SerialNumber"] = "12435553"
     # Send the HealthEvent message with the provided arguments
     send_health_event(health_event)
@@ -52,16 +54,17 @@ if __name__ == "__main__":
     health_event = platformconnector_pb2.HealthEvent()
     health_event.version = 1
     health_event.agent = "gpu-health-monitor"
-    health_event.componentClass = "gpu"
-    health_event.checkName = "XidError"
+    health_event.componentClass = "GPU"
+    health_event.checkName = "GpuXidError"
     health_event.isFatal = False
+    health_event.isHealthy = True
     health_event.message = "XID error occured"
     health_event.recommendedAction = platformconnector_pb2.REPORT_ISSUE
     health_event.errorCode.extend(["43"])
-    health_event.entitiesImpacted.extend(["1"])
+    health_event.entitiesImpacted.extend([platformconnector_pb2.Entity(entityType="GPU", entityValue="1")])
     health_event.generatedTimestamp.seconds = int(time.time())
     health_event.generatedTimestamp.nanos = int(10 ** 9 * (time.time() - int(time.time())))
-    health_event.nodeName = "gke-dgxc-runai-us-east5--customer-gpu-42cf53ce-09nn"
+    health_event.nodeName = os.environ["NODE_NAME"]
     health_event.metadata["SerialNumber"] = "12435553"
     # Send the HealthEvent message with the provided arguments
     send_health_event(health_event)
