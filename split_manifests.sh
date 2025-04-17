@@ -15,49 +15,82 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ "$#" -ne 4 ]; then
-    echo "Usage: $0 <helm-chart-path> <release-name> <namespace> <override-values-file>"
+if [ "$#" -ne 5 ]; then
+    echo "Usage: $0 <helm-chart-path> <release-name> <namespace> <mgmt-override-file> <tenant-override-file>"
     exit 1
 fi
 
 HELM_CHART_PATH="$1"
 RELEASE_NAME="$2"
 NAMESPACE="$3"
-OVERRIDE_VALUES_FILE="$4"
-OUTPUT_FILE="all-manifests.yaml" # Temporary file for all manifests
-MGMT_TEMP_FILE="mgmt-temp.yaml" # Temporary file for mgmt resources
+MGMT_OVERRIDE_FILE="$4"
+TENANT_OVERRIDE_FILE="$5"
+OUTPUT_MGMT_TMP="all-manifests-mgmt.yaml"
+OUTPUT_TENANT_TMP="all-manifests-tenant.yaml"
+MGMT_RESOURCES_TMP="mgmt-temp.yaml"
+TENANT_RESOURCES_TMP="tenant-temp.yaml"
+
+# Export RELEASE_NAME for yq and envsubst
+export RELEASE_NAME
 
 # Ensure mgmt and tenant directories exist
 mkdir -p mgmt tenant
 
-# Check if override values file exists
-if [ ! -f "$OVERRIDE_VALUES_FILE" ]; then
-    echo "Error: Override values file '$OVERRIDE_VALUES_FILE' does not exist."
-    exit 1
-fi
+# Check if override files exist (basic check, generate_manifests.sh does detailed check)
+if [ ! -f "$MGMT_OVERRIDE_FILE" ]; then echo "Error: Mgmt override file '$MGMT_OVERRIDE_FILE' not found."; exit 1; fi
+if [ ! -f "$TENANT_OVERRIDE_FILE" ]; then echo "Error: Tenant override file '$TENANT_OVERRIDE_FILE' not found."; exit 1; fi
 
-echo "Using override values from $OVERRIDE_VALUES_FILE"
-# Render all manifests using the override values file
+# --- Management Resources --- 
+
+echo "Rendering manifests for Management resources..."
+
+# Render ALL manifests using MGMT override values
 helm template "$RELEASE_NAME" "$HELM_CHART_PATH" --namespace "$NAMESPACE" \
-    --set mongodb.global.namespaceOverride="$NAMESPACE" \
-    -f "$OVERRIDE_VALUES_FILE" > "$OUTPUT_FILE"
+    -f "$MGMT_OVERRIDE_FILE" > "$OUTPUT_MGMT_TMP"
 
+# Select only mgmt resources
+yq eval-all 'select(.metadata.annotations."dgxc.nvidia.com/resource-category"? | test("(^|,)\\s*management\\s*(,|$)"))' "$OUTPUT_MGMT_TMP" > "$MGMT_RESOURCES_TMP"
 
-# Step 1: Select only mgmt resources into a temporary file
-# Check the annotation for "management" (allowing comma separation)
-yq eval-all 'select(.metadata.annotations."dgxc.nvidia.com/resource-category"? | test("(^|,)\\s*management\\s*(,|$)"))' "$OUTPUT_FILE" > "$MGMT_TEMP_FILE"
+# Process mgmt resources step 1: Add SAN entry
+MGMT_RESOURCES_TMP_SAN=$(mktemp)
+yq eval-all '
+  select(.kind == "Certificate" and .metadata.name | test("mongo-server-cert-.*")) |=
+  (
+    .spec.dnsNames += [strenv(RELEASE_NAME) + "-mongodb-" + (.metadata.name | sub("mongo-server-cert-"; "")) + ".psc.gcp.internal"]
+  )
+' "$MGMT_RESOURCES_TMP" > "$MGMT_RESOURCES_TMP_SAN"
 
-# Step 2: Process the temporary file to remove the specific nodeSelector
-# Find any object (..) that has a nodeSelector field containing nodeGroup: system-cpu.
-# Update the parent object by deleting (.nodeSelector) its nodeSelector field.
-# Then remove comments and save
-yq eval-all '(.. | select(has("nodeSelector") and .nodeSelector.nodeGroup? == "system-cpu")) |= del(.nodeSelector)' "$MGMT_TEMP_FILE" | sed '/^[[:space:]]*#!/b; /^[[:space:]]*#/d' > mgmt/resources.yaml
+# Process mgmt resources step 2: Remove nodeSelector
+MGMT_RESOURCES_TMP_FINAL=$(mktemp)
+yq eval-all '
+  (.. | select(has("nodeSelector") and .nodeSelector.nodeGroup? == "system-cpu")) |= del(.nodeSelector)
+' "$MGMT_RESOURCES_TMP_SAN" > "$MGMT_RESOURCES_TMP_FINAL"
 
-rm "$MGMT_TEMP_FILE"
+# Process mgmt resources step 3: Remove comments
+sed '/^[[:space:]]*#!/b; /^[[:space:]]*#/d' "$MGMT_RESOURCES_TMP_FINAL" > mgmt/resources.yaml
 
-# Select tenant resources from the original full output, remove comments and save
-yq eval-all 'select(.metadata.annotations."dgxc.nvidia.com/resource-category"? | test("(^|,)\\s*tenant\\s*(,|$)"))' "$OUTPUT_FILE" | sed '/^[[:space:]]*#!/b; /^[[:space:]]*#/d' > tenant/resources.yaml
+rm "$MGMT_RESOURCES_TMP"
+rm "$MGMT_RESOURCES_TMP_SAN"
+rm "$MGMT_RESOURCES_TMP_FINAL"
+rm "$OUTPUT_MGMT_TMP"
+echo "Management resources generated."
 
-rm "$OUTPUT_FILE"
+# --- Tenant Resources --- 
 
-echo "Manifests have been split into mgmt/ and tenant/ directories."
+echo "Rendering manifests for Tenant resources..."
+
+# Render ALL manifests using the TENANT override values
+helm template "$RELEASE_NAME" "$HELM_CHART_PATH" --namespace "$NAMESPACE" \
+    -f "$TENANT_OVERRIDE_FILE" > "$OUTPUT_TENANT_TMP"
+
+# Select only tenant resources
+yq eval-all 'select(.metadata.annotations."dgxc.nvidia.com/resource-category"? | test("(^|,)\\s*tenant\\s*(,|$)"))' "$OUTPUT_TENANT_TMP" > "$TENANT_RESOURCES_TMP"
+
+# Process tenant resources: remove comments
+sed '/^[[:space:]]*#!/b; /^[[:space:]]*#/d' "$TENANT_RESOURCES_TMP" > tenant/resources.yaml
+
+rm "$TENANT_RESOURCES_TMP"
+rm "$OUTPUT_TENANT_TMP"
+echo "Tenant resources generated."
+
+echo "Manifests have been split into mgmt/ and tenant/ directories using separate override files."

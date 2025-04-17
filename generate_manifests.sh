@@ -41,15 +41,32 @@ cd ..
 CHART_PATH="$CI_PROJECT_DIR/distros/kubernetes/nvsentinel"
 RELEASE_NAME="nvsentinel"
 NAMESPACE="dgxc-system"
-OVERRIDE_VALUES_TMP_FILE="override-values.yaml"
+MGMT_OVERRIDE_VALUES_SRC="$CI_PROJECT_DIR/mcp-mgmt-override-values.yaml"
+TENANT_OVERRIDE_VALUES_SRC="$CI_PROJECT_DIR/mcp-tenant-override-values.yaml"
+MGMT_OVERRIDE_TMP_FILE=$(mktemp)
+TENANT_OVERRIDE_TMP_FILE=$(mktemp)
 
-# Create override values file
-echo "Creating override values file ($OVERRIDE_VALUES_TMP_FILE)..."
-envsubst < "$CI_PROJECT_DIR/mcp-override-values.yaml" > "$OVERRIDE_VALUES_TMP_FILE"
+# Export RELEASE_NAME for envsubst
+export RELEASE_NAME
+
+# Create temporary override value files with substitutions
+echo "Creating temporary override value files..."
+if [ ! -f "$MGMT_OVERRIDE_VALUES_SRC" ]; then echo "Error: Mgmt override file not found: $MGMT_OVERRIDE_VALUES_SRC"; exit 1; fi
+envsubst < "$MGMT_OVERRIDE_VALUES_SRC" > "$MGMT_OVERRIDE_TMP_FILE"
+echo "Mgmt overrides processed into $MGMT_OVERRIDE_TMP_FILE"
+
+if [ ! -f "$TENANT_OVERRIDE_VALUES_SRC" ]; then echo "Error: Tenant override file not found: $TENANT_OVERRIDE_VALUES_SRC"; exit 1; fi
+RELEASE_NAME="$RELEASE_NAME" envsubst < "$TENANT_OVERRIDE_VALUES_SRC" > "$TENANT_OVERRIDE_TMP_FILE"
+echo "Tenant overrides processed into $TENANT_OVERRIDE_TMP_FILE"
 
 # Run the split manifests script
 echo "Running manifest split script..."
-"$CI_PROJECT_DIR/split_manifests.sh" "${CHART_PATH}" "${RELEASE_NAME}" "${NAMESPACE}" "$OVERRIDE_VALUES_TMP_FILE"
+"$CI_PROJECT_DIR/split_manifests.sh" \
+  "${CHART_PATH}" \
+  "${RELEASE_NAME}" \
+  "${NAMESPACE}" \
+  "$MGMT_OVERRIDE_TMP_FILE" \
+  "$TENANT_OVERRIDE_TMP_FILE"
 
 # Validate generated manifests with kubeconform
 DATREE_SCHEMA_LOCATION="https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
@@ -78,7 +95,7 @@ cp tenant/resources.yaml "$ARTIFACT_DIR/tenant/"
 echo "Listing contents of generated manifests:"
 ls -la "$ARTIFACT_DIR/mgmt/" "$ARTIFACT_DIR/tenant/"
 
-rm "$OVERRIDE_VALUES_TMP_FILE"
+rm "$MGMT_OVERRIDE_TMP_FILE" "$TENANT_OVERRIDE_TMP_FILE"
 
 echo "--- Starting Package Registry Upload ---"
 

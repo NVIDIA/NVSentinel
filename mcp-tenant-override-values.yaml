@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+# This file contains overrides applied ONLY when generating TENANT resources.
 mongodb-store:
   mongodb:
     global:
-      namespaceOverride: "${NAMESPACE}"
+      namespaceOverride: "${NAMESPACE}" # Duplicated from mgmt overrides
+    configMapValues:
+      mongodbUri: "mongodb://${RELEASE_NAME}-mongodb-0.psc.gcp.internal:27017,${RELEASE_NAME}-mongodb-1.psc.gcp.internal:27017,${RELEASE_NAME}-mongodb-2.psc.gcp.internal:27017/?replicaSet=rs0&tls=true" 

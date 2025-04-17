@@ -17,8 +17,6 @@ kind: NetworkPolicy
 metadata:
   name: mongodb-networkpolicy
   namespace: {{ .Release.Namespace }}
-  annotations:
-    dgxc.nvidia.com/resource-category: management
 spec:
   # Select the MongoDB pods in nvsentinel
   podSelector:
