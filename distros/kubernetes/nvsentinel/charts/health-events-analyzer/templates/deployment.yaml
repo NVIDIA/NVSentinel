@@ -39,7 +39,7 @@ spec:
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
       containers:
         - name: health-events-analyzer
-          image: "{{ .Values.global.faultNotificationModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.global.healthEventsAnalyzer.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.global.healthEventsAnalyzer.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

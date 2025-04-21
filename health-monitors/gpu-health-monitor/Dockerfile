@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG DCGM_VERSION="4.1.1-1-ubuntu22.04"
+ARG DCGM_VERSION="4.2.0-1-ubuntu22.04"
 FROM python:3.10-bookworm AS build
 
 RUN pip install poetry==1.8.2

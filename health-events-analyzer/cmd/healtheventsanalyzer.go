@@ -46,9 +46,11 @@ func main() {
 	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
-	flag.Parse()
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
 
 	defer klog.Flush()
+	flag.Parse()
 
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {

@@ -33,7 +33,7 @@ global:
     busybox:
       image:
         repository: nvcr.io/nv-ngc-devops/busybox
-        tag: "1.31.1"
+        tag: "1.37.0"
         pullPolicy: IfNotPresent
 
   nicHealthMonitor:
