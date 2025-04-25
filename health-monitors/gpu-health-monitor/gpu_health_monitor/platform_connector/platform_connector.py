@@ -83,7 +83,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.fatal(f"failed to read the data from file {self.state_file_path}")
         return bootid
 
-    def clear_all_xid_errors(self, gpu_ids: list) -> str:
+    def clear_all_xid_errors(self, gpu_ids: list, gpu_serials: dict[int, str]) -> str:
         bootid = ""
         try:
             with open(self.node_bootid_path, "r") as f:
@@ -97,7 +97,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             self.old_bootid = bootid
             with open(self.state_file_path, "w") as output_file:
                 output_file.write(bootid)
-            self.clear_xid_errors(gpu_ids)
+            self.clear_xid_errors(gpu_ids, gpu_serials)
 
         return bootid
 
@@ -212,34 +212,41 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if len(health_events):
                 self.send_health_event_with_retries(health_events)
 
-    def clear_xid_errors(self, gpu_ids: list):
+    def clear_xid_errors(self, gpu_ids: list, gpu_serials: dict[int, str]):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
-            log.info("received callback for for clearing of xid errors")
-            timestamp = Timestamp()
-            timestamp.GetCurrentTime()
-            check_name = "GpuXidError"
-            message = "NoXidErrorDetected"
-            entities_impacted = [
-                platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
-                for gpu_id in gpu_ids
-            ]
-            error_code = []
-            health_event = platformconnector_pb2.HealthEvent(
-                version=self._version,
-                agent=self._agent,
-                componentClass=self._component_class,
-                checkName=check_name,
-                generatedTimestamp=timestamp,
-                isFatal=False,
-                isHealthy=True,
-                errorCode=error_code,
-                entitiesImpacted=entities_impacted,
-                message=message,
-                recommendedAction=platformconnector_pb2.NONE,
-                nodeName=self._node_name,
-            )
-            log.debug(f"xid health event is {health_event}")
-            self.send_health_event_with_retries([health_event])
+            for gpu_id in gpu_ids:
+                serial = gpu_serials[gpu_id]
+                log.info("received callback for for clearing of xid errors")
+                timestamp = Timestamp()
+                timestamp.GetCurrentTime()
+                check_name = "GpuXidError"
+                message = "NoXidErrorDetected"
+                entities_impacted = [
+                    platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
+                ]
+                error_code = []
+                health_event = platformconnector_pb2.HealthEvent(
+                    version=self._version,
+                    agent=self._agent,
+                    componentClass=self._component_class,
+                    checkName=check_name,
+                    generatedTimestamp=timestamp,
+                    isFatal=False,
+                    isHealthy=True,
+                    errorCode=error_code,
+                    entitiesImpacted=entities_impacted,
+                    message=message,
+                    recommendedAction=platformconnector_pb2.NONE,
+                    nodeName=self._node_name,
+                    metadata={"SerialNumber": serial},
+                )
+
+                metrics.gpu_health_monitor_xid_errors.labels(
+                    node_name=self._node_name,
+                    serial_number=serial,
+                ).set(0)
+                log.debug(f"xid health event is {health_event}")
+                self.send_health_event_with_retries([health_event])
 
     def get_recommended_action_from_xid_error_map(self, error_code):
         recommended_action = self.xid_errors_info_dict[error_code].recommended_action
@@ -287,6 +294,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 nodeName=self._node_name,
                 metadata={"SerialNumber": serial},
             )
+            metrics.gpu_health_monitor_xid_errors.labels(
+                node_name=self._node_name,
+                serial_number=serial,
+            ).set(error_num)
+
             log.debug(f"xid health event is {health_event}")
             self.send_health_event_with_retries([health_event])
 

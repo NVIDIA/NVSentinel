@@ -280,7 +280,7 @@ class DCGMWatcher:
 
         for callback in self._callbacks:
             if hasattr(callback, "clear_all_xid_errors"):
-                callback.clear_all_xid_errors(gpu_ids)
+                callback.clear_all_xid_errors(gpu_ids, gpu_serials)
 
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():

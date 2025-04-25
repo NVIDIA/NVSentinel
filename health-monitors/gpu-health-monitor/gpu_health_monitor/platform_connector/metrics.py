@@ -35,3 +35,9 @@ health_events_insertion_to_uds_succeed = Counter(
 health_events_insertion_to_uds_error = Gauge(
     "health_events_insertion_to_uds_error", "Error in insertions of health events to UDS"
 )
+
+gpu_health_monitor_xid_errors = Gauge(
+    "gpu_health_monitor_xid_errors",
+    "XID observed on the GPU by node_name,serial_number",
+    labelnames=["node_name", "serial_number"],  # Labels
+)

@@ -46,9 +46,9 @@ class CallbackInterface(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def xid_event_occurred(self, gpu_id: str, error_num: int):
+    def xid_event_occurred(self, gpu_id: str, error_num: int, serial: str):
         pass
 
     @abc.abstractmethod
-    def clear_all_xid_errors(self):
+    def clear_all_xid_errors(self, gpu_ids: list[int], gpu_serials: dict[int, str]):
         pass
