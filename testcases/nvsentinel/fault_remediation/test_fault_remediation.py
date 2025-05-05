@@ -1,0 +1,275 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+"""
+Module for class of NVsentinel Fault Remediation integration tests
+"""
+
+import time
+import pytest
+import logging
+from testcases.nvsentinel.base import TestNVSentinelCaseBase
+import os
+import yaml
+import subprocess
+from kubernetes import client, config
+from kubernetes.client import CustomObjectsApi, ApiextensionsV1Api, CoreV1Api
+from kubernetes.client.rest import ApiException
+import json
+import tempfile
+
+class TestFaultRemediation(TestNVSentinelCaseBase):
+    """
+    Class for test cases of NVsentinel Fault Remediation
+    """
+    
+    # Constants
+    MAINTENANCE_CRD_NAME = "maintenances.janitor.dgxc.nvidia.com"
+    MAINTENANCE_CRD_GROUP = "janitor.dgxc.nvidia.com"
+    MAINTENANCE_CRD_VERSION = "v1alpha1"
+    MAINTENANCE_CRD_PLURAL = "maintenances"
+    JANITOR_NAMESPACE = "dgxc-janitor"
+    REMEDIATION_WAIT_TIME = 30  # seconds
+
+    @pytest.fixture
+    def setup_fault_remediation(self, setup_runai_test):
+        """
+        Setup method to create CRD and namespace before test
+        """
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
+
+        # Initialize Kubernetes clients
+        self.api_extensions = ApiextensionsV1Api(self.client.apiClient)
+        self.core_v1 = CoreV1Api(self.client.apiClient)
+        self.custom_api = CustomObjectsApi(self.client.apiClient)
+        
+        # Setup required resources
+        self._ensure_maintenance_crd_exists()
+        self._ensure_janitor_namespace_exists()
+
+    def _ensure_maintenance_crd_exists(self):
+        """Ensure the maintenance CRD exists, create it if it doesn't"""
+        self.logger.info("Checking maintenance CRD")
+        try:
+            self.api_extensions.read_custom_resource_definition(name=self.MAINTENANCE_CRD_NAME)
+            self.logger.info("Maintenance CRD already exists")
+        except ApiException as e:
+            if e.status == 404:
+                self.logger.info("Maintenance CRD not found, creating it")
+                crd_file = os.path.join(
+                    os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "janitor.dgxc.nvidia.com_maintenance.yaml"
+                )
+                try:
+                    subprocess.run(["kubectl", "apply", "-f", crd_file], check=True)
+                    self.logger.info("Successfully created maintenance CRD")
+                except subprocess.CalledProcessError as e:
+                    self.logger.error(f"Failed to create maintenance CRD: {e}")
+                    raise
+            else:
+                self.logger.error(f"Error checking maintenance CRD: {e}")
+                raise
+
+    def _ensure_janitor_namespace_exists(self):
+        """Ensure the janitor namespace exists, create it if it doesn't"""
+        self.logger.info("Checking dgxc-janitor namespace")
+        try:
+            self.core_v1.read_namespace(name=self.JANITOR_NAMESPACE)
+            self.logger.info("Namespace dgxc-janitor already exists")
+        except ApiException as e:
+            if e.status == 404:
+                self.logger.info("Namespace dgxc-janitor not found, creating it")
+                try:
+                    subprocess.run(["kubectl", "create", "namespace", self.JANITOR_NAMESPACE], check=True)
+                    self.logger.info("Successfully created dgxc-janitor namespace")
+                except subprocess.CalledProcessError as e:
+                    self.logger.error(f"Failed to create janitor namespace: {e}")
+                    raise
+            else:
+                self.logger.error(f"Error checking janitor namespace: {e}")
+                raise
+
+    def _cleanup_maintenance_crs(self):
+        """Clean up existing maintenance CRs"""
+        self.step_manager.print_header("Clean up existing maintenance CRs")
+        try:
+            maintenance_crs = self.custom_api.list_namespaced_custom_object(
+                group=self.MAINTENANCE_CRD_GROUP,
+                version=self.MAINTENANCE_CRD_VERSION,
+                namespace=self.JANITOR_NAMESPACE,
+                plural=self.MAINTENANCE_CRD_PLURAL
+            )
+            
+            if "items" in maintenance_crs and len(maintenance_crs["items"]) > 0:
+                self.logger.info(f"Found {len(maintenance_crs['items'])} existing maintenance CRs. Deleting...")
+                for cr in maintenance_crs["items"]:
+                    cr_name = cr["metadata"]["name"]
+                    self.logger.info(f"Deleting maintenance CR: {cr_name}")
+                    try:
+                        self.custom_api.delete_namespaced_custom_object(
+                            group=self.MAINTENANCE_CRD_GROUP,
+                            version=self.MAINTENANCE_CRD_VERSION,
+                            namespace=self.JANITOR_NAMESPACE,
+                            plural=self.MAINTENANCE_CRD_PLURAL,
+                            name=cr_name
+                        )
+                    except ApiException as e:
+                        self.logger.warning(f"Failed to delete maintenance CR {cr_name}: {e}")
+                self.logger.info("Successfully deleted all existing maintenance CRs")
+            else:
+                self.logger.info("No existing maintenance CRs found")
+        except ApiException as e:
+            self.logger.warning(f"Error while listing maintenance CRs: {e}")
+
+    def _verify_maintenance_cr(self):
+        """Verify that a maintenance CR was created with the correct specifications"""
+        self.step_manager.print_header("Verify maintenance CR was created")
+        
+        try:
+            # Use kubectl to get maintenance CR
+            kubectl_command = [
+                "kubectl",
+                "get",
+                "maintenance",
+                "-n",
+                self.JANITOR_NAMESPACE,
+                "-o",
+                "yaml"
+            ]
+            result = subprocess.run(kubectl_command, capture_output=True, text=True, check=True)
+            actual_cr = yaml.safe_load(result.stdout)
+            
+            if not actual_cr.get("items") or len(actual_cr["items"]) == 0:
+                self.logger.error("No maintenance CR was created")
+                raise AssertionError("No maintenance CR was created")
+            
+            # Get the first maintenance CR
+            maintenance_cr = actual_cr["items"][0]
+            
+            # Remove metadata fields
+            maintenance_cr.pop('metadata', None)
+            maintenance_cr.pop('status', None)
+            
+            # Load expected YAML
+            expected_yaml_path = os.path.join(
+                os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "expected_maintenance_cr.yaml"
+            )
+            with open(expected_yaml_path, 'r') as f:
+                expected_cr = yaml.safe_load(f)
+            
+            # Remove metadata from expected CR
+            expected_cr.pop('metadata', None)
+            
+            # Update expected CR with actual node name for comparison
+            expected_cr['spec']['nodeSelector']['matchLabels']['kubernetes.io/hostname'] = self.node_name
+            
+            # Compare the CRs
+            if maintenance_cr != expected_cr:
+                self.logger.error("Maintenance CR does not match expected structure")
+                self.logger.error("Expected CR:")
+                self.logger.error(yaml.dump(expected_cr))
+                self.logger.error("Actual CR:")
+                self.logger.error(yaml.dump(maintenance_cr))
+                raise AssertionError("Maintenance CR does not match expected structure")
+            
+            self.logger.info("Successfully verified maintenance CR creation")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to get maintenance CRs: {e.stderr}")
+            raise AssertionError(f"Failed to get maintenance CRs: {e.stderr}")
+        except yaml.YAMLError as e:
+            self.logger.error(f"Failed to parse YAML: {e}")
+            raise AssertionError(f"Failed to parse YAML: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error verifying maintenance CR: {e}")
+            raise AssertionError(f"Unexpected error verifying maintenance CR: {e}")
+
+    @pytest.mark.faultremediation
+    def test_fault_remediation_pod_exists(self, request):
+        """
+        Test case to verify that the nvsentinel-fault-remediation pod exists and is running
+        """
+        self.step_manager.print_header("Check if nvsentinel-fault-remediation pod exists")
+        
+        # List pods with the fault-remediation pattern
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-fault-remediation*"
+        )
+        
+        # Verify at least one pod exists
+        assert pods, "No nvsentinel-fault-remediation pod found"
+        
+        # Get the first pod (there should only be one)
+        fault_remediation_pod = pods[0]
+        
+        # Log pod details
+        self.logger.info(f"Found pod: {fault_remediation_pod.metadata.name}")
+        self.logger.info(f"Pod status: {fault_remediation_pod.status.phase}")
+        
+        # Verify pod is in Running state
+        assert fault_remediation_pod.status.phase == "Running", \
+            f"Pod {fault_remediation_pod.metadata.name} is not in Running state. Current state: {fault_remediation_pod.status.phase}"
+
+    @pytest.mark.faultremediation
+    @pytest.mark.dependency(name="fault_remediation_pod_exists")
+    def test_maintenance_cr_creation(self, request, setup_fault_remediation):
+        """
+        Test case of NVsentinel Fault Remediation: Inject XID error triggering maintenance CR creation
+        """
+        self.logger.info("Inject XID error triggers maintenance CR test")
+        
+        try:
+            # Setup required resources
+            self._ensure_maintenance_crd_exists()
+            self._ensure_janitor_namespace_exists()
+
+            # Step 1: Clean up existing maintenance CRs
+            self._cleanup_maintenance_crs()
+
+            # Step 2: Get GPU health monitor pod and node
+            self.step_manager.print_header("Inject XID error")
+            pods, _ = self.client.list_pods(
+                self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor-dcgm*"
+            )
+            self.gpu_healthy_pod = pods[-1]
+            self.node_name = self.gpu_healthy_pod.spec.node_name
+            self.logger.info(f"POD Name: {self.gpu_healthy_pod.metadata.name}")
+            self.logger.info(f"Node Name: {self.node_name}")
+
+            # Step 3: Inject GPU error
+            command = [
+                "/bin/sh",
+                "-c",
+                f"dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 95",
+            ]
+
+            output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+            assert "Successfully injected" in output, "Failed to inject GPU error"
+
+            # Step 4: Wait for remediation
+            time.sleep(self.REMEDIATION_WAIT_TIME)
+
+            # Step 5: Verify maintenance CR was created
+            self._verify_maintenance_cr()
+                
+        except Exception as e:
+            self.logger.error(f"Test failed with unexpected error: {e}")
+            raise
+
+        
+
+        

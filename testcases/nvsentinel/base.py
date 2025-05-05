@@ -27,12 +27,11 @@ from testcases.utils.kubernetes_utils import KubernetesClient
 from kubernetes.client import CustomObjectsApi
 import psutil
 
-MONGO_URI = "mongodb://CN%3Dmongo-user-client%2COU%3DDGXC%2CO%3DNvidia%2CL%3DSantaClara%2CST%3DCalifornia%2CC%3DUS@nvsentinel-mongodb-0.nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/HealthEventsDatabase?authMechanism=MONGODB-X509&authSource=$external&tls=true"
-
 
 class TestNVSentinelCaseBase(Base):
     daemonset_name = ""
     node_name = ""
+    MONGO_URI = "mongodb://CN%3Dmongo-user-client%2COU%3DDGXC%2CO%3DNvidia%2CL%3DSantaClara%2CST%3DCalifornia%2CC%3DUS@nvsentinel-mongodb-0.nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/HealthEventsDatabase?authMechanism=MONGODB-X509&authSource=$external&tls=true"
 
     @pytest.fixture(autouse=True)
     def setup_runai_test(self):
