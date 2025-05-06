@@ -45,6 +45,10 @@ This directory contains test cases for validating NVSentinel functionality. The 
     - Tests exclusion of power watch errors from node cordoning
     - Validates node conditions and health monitoring
 
+### Fault Remediation Tests
+- Fault remediation module tests
+    - Verifies creation maintainence CR upon injection of fatal XID error
+
 ### Metrics tests
 
 Contains tests that around verifying metrics that are based on certain events like failure of reach DCGM

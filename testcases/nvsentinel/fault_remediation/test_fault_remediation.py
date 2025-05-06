@@ -61,6 +61,66 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         self._ensure_maintenance_crd_exists()
         self._ensure_janitor_namespace_exists()
 
+        self._cleanup_maintenance_crs()
+
+
+    @pytest.mark.author(email="nitijain@nvidia.com")
+    @pytest.mark.faultremediation
+    def test_maintenance_cr_creation(self, request, setup_fault_remediation):
+        """
+        Test case of NVsentinel Fault Remediation: Inject XID error triggering maintenance CR creation
+        """
+        self.logger.info("Inject XID error triggers maintenance CR test")
+        
+        self.step_manager.print_header("Check the fault remediation pod is running")
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-fault-remediation*"
+        )
+        assert pods, "No nvsentinel-fault-remediation pod found"
+
+        fault_remediation_pod = pods[-1]
+        assert fault_remediation_pod.status.phase == "Running", \
+        f"Pod {fault_remediation_pod.metadata.name} is not in Running state. Current state: {fault_remediation_pod.status.phase}"
+
+        self.step_manager.print_header("Inject fatal XID error on the node")
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor-dcgm*"
+        )
+        self.gpu_healthy_pod = pods[-1]
+        self.node_name = self.gpu_healthy_pod.spec.node_name
+        self.logger.info(f"POD Name: {self.gpu_healthy_pod.metadata.name}")
+        self.logger.info(f"Node Name: {self.node_name}")
+
+        command = [
+            "/bin/sh",
+            "-c",
+            f"dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 95",
+        ]
+
+        output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+        assert "Successfully injected" in output, "Failed to inject GPU error"
+
+        self.step_manager.print_header("Check the node is cordoned")
+        success, err = self.client.check_node_cordoned(self.node_name)
+        assert success, f"FAIL: Node {self.node_name} is not cordoned"
+
+        self.step_manager.print_header("Wait for remediation")
+        time.sleep(self.REMEDIATION_WAIT_TIME)
+
+        self.step_manager.print_header("Verify maintenance CR was created")
+        self._verify_maintenance_cr()
+
+
+        self.step_manager.print_header("Clear the injected error")
+        command = ["/bin/sh", "-c", "python3 clear_xid_error_health_event.py"]
+        result = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+
+        time.sleep(30)
+        self.step_manager.print_header("Check the node is uncordoned")
+        node_info, _ = self.client.get_node_by_name(self.node_name)
+        assert node_info.spec.unschedulable is None, f"FAIL: Node {self.node_name} is not uncordoned"
+
+
     def _ensure_maintenance_crd_exists(self):
         """Ensure the maintenance CRD exists, create it if it doesn't"""
         self.logger.info("Checking maintenance CRD")
@@ -198,78 +258,3 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
             self.logger.error(f"Unexpected error verifying maintenance CR: {e}")
             raise AssertionError(f"Unexpected error verifying maintenance CR: {e}")
 
-    @pytest.mark.faultremediation
-    def test_fault_remediation_pod_exists(self, request):
-        """
-        Test case to verify that the nvsentinel-fault-remediation pod exists and is running
-        """
-        self.step_manager.print_header("Check if nvsentinel-fault-remediation pod exists")
-        
-        # List pods with the fault-remediation pattern
-        pods, _ = self.client.list_pods(
-            self.nv_namespace, name_pattern="nvsentinel-fault-remediation*"
-        )
-        
-        # Verify at least one pod exists
-        assert pods, "No nvsentinel-fault-remediation pod found"
-        
-        # Get the first pod (there should only be one)
-        fault_remediation_pod = pods[0]
-        
-        # Log pod details
-        self.logger.info(f"Found pod: {fault_remediation_pod.metadata.name}")
-        self.logger.info(f"Pod status: {fault_remediation_pod.status.phase}")
-        
-        # Verify pod is in Running state
-        assert fault_remediation_pod.status.phase == "Running", \
-            f"Pod {fault_remediation_pod.metadata.name} is not in Running state. Current state: {fault_remediation_pod.status.phase}"
-
-    @pytest.mark.faultremediation
-    @pytest.mark.dependency(name="fault_remediation_pod_exists")
-    def test_maintenance_cr_creation(self, request, setup_fault_remediation):
-        """
-        Test case of NVsentinel Fault Remediation: Inject XID error triggering maintenance CR creation
-        """
-        self.logger.info("Inject XID error triggers maintenance CR test")
-        
-        try:
-            # Setup required resources
-            self._ensure_maintenance_crd_exists()
-            self._ensure_janitor_namespace_exists()
-
-            # Step 1: Clean up existing maintenance CRs
-            self._cleanup_maintenance_crs()
-
-            # Step 2: Get GPU health monitor pod and node
-            self.step_manager.print_header("Inject XID error")
-            pods, _ = self.client.list_pods(
-                self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor-dcgm*"
-            )
-            self.gpu_healthy_pod = pods[-1]
-            self.node_name = self.gpu_healthy_pod.spec.node_name
-            self.logger.info(f"POD Name: {self.gpu_healthy_pod.metadata.name}")
-            self.logger.info(f"Node Name: {self.node_name}")
-
-            # Step 3: Inject GPU error
-            command = [
-                "/bin/sh",
-                "-c",
-                f"dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 95",
-            ]
-
-            output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
-            assert "Successfully injected" in output, "Failed to inject GPU error"
-
-            # Step 4: Wait for remediation
-            time.sleep(self.REMEDIATION_WAIT_TIME)
-
-            # Step 5: Verify maintenance CR was created
-            self._verify_maintenance_cr()
-                
-        except Exception as e:
-            self.logger.error(f"Test failed with unexpected error: {e}")
-            raise
-
-        
-
-        
