@@ -1,0 +1,119 @@
+{
+    "id": "prodsec-approved-release-policy-bundle",
+    "mappings": [
+        {
+            "id": "70a60b83-ba8f-45b7-970a-c811be088a8c",
+            "image": {
+                "type": "tag",
+                "value": "*"
+            },
+            "name": "default",
+            "registry": "*",
+            "repository": "*",
+            "allowlist_ids": [
+                "false-positives-development-headers"
+            ],
+            "rule_set_ids": [
+                "prodsec-base-policy"
+            ]
+        }
+    ],
+    "name": "ProdSec Approved Release Policy",
+    "version": "2",
+    "denylisted_images": [],
+    "allowlisted_images": [],
+    "description": "Approved policies based on ProdSec guidance",
+    "allowlists": [
+        {
+            "id": "false-positives-development-headers",
+            "items": [
+                {
+                    "gate": "vulnerabilities",
+                    "id": "1409ebfd-7aec-44e8-bb27-73a3b97ba16b",
+                    "trigger_id": "*+linux-headers-*"
+                },
+                {
+                    "gate": "vulnerabilities",
+                    "id": "40d95b5e-f7e9-46ee-8d51-59996529ce29",
+                    "trigger_id": "*kernel-debug*"
+                },
+                {
+                    "gate": "vulnerabilities",
+                    "id": "8DC93FE4-871A-4904-9BB5-2CE37CDD44B7",
+                    "trigger_id": "*kernel-headers*"
+                },
+                {
+                    "gate": "vulnerabilities",
+                    "id": "45925fb3-c7ac-4ceb-9e9f-a6402f798f1f",
+                    "trigger_id": "*+*-dev"
+                },
+                {
+                    "gate": "vulnerabilities",
+                    "id": "7f8a9d30-192c-4d04-80d4-f7597c7e86d0",
+                    "trigger_id": "*dbus*"
+                }
+            ],
+            "name": "Development OS Packages",
+            "version": "1_0",
+            "description": "Anchore example of allowlisting known derived packages that contain only development headers but may trigger as vulnerable as they are associated with the packages that contain the software itself"
+        }
+    ],
+    "rule_sets": [
+        {
+            "id": "prodsec-base-policy",
+            "name": "Base Policy",
+            "rules": [
+                {
+                    "action": "WARN",
+                    "gate": "vulnerabilities",
+                    "id": "6063fdde-b1c5-46af-973a-915739451ac4",
+                    "params": [
+                        {
+                            "name": "package_type",
+                            "value": "all"
+                        },
+                        {
+                            "name": "severity_comparison",
+                            "value": "="
+                        },
+                        {
+                            "name": "severity",
+                            "value": "medium"
+                        }
+                    ],
+                    "trigger": "package"
+                },
+                {
+                    "action": "STOP",
+                    "gate": "vulnerabilities",
+                    "id": "b30e8abc-444f-45b1-8a37-55be1b8c8bb5",
+                    "params": [
+                        {
+                            "name": "package_type",
+                            "value": "all"
+                        },
+                        {
+                            "name": "severity_comparison",
+                            "value": ">"
+                        },
+                        {
+                            "name": "severity",
+                            "value": "medium"
+                        }
+                    ],
+                    "trigger": "package"
+                },
+                {
+                    "action": "WARN",
+                    "gate": "vulnerabilities",
+                    "id": "b7f55db3-a3ab-49f9-830a-c77baa38399c",
+                    "params": [],
+                    "trigger": "kev_list"
+                }
+
+            ],
+            "version": "1_0",
+            "description": "Base policy for a basic severity check in vulns."
+        }
+    ]
+}
