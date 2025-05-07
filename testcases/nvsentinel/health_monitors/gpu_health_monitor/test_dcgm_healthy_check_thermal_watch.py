@@ -71,6 +71,6 @@ class TestDGCMHealthyCheckThermalWatch(GPUHealthMonitorBase):
             "Condition Reason": "GpuThermalWatchIsNotHealthy",
             "Condition Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0.*thermal violation.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )

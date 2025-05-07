@@ -200,7 +200,7 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
             "Event Reason": "GpuXidErrorIsNotHealthy",
             "Event Message": "ErrorCode:43 GPU:0 XID error occured Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(conditions=events, expected_result=expected_result)
+        self.verify_health_monitor_info(conditions=events, expected_result=expected_result)
 
     def is_wait_for_dcgm(self, pod):
         """Pod Init Status is not supported in Kubernetes API, need to check container status instead"""

@@ -90,7 +90,7 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Message": "20034.*LTSSM Fault Up.*Recommended Action=RESET_GPU",
         }
 
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
         self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
@@ -122,7 +122,7 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": "10003.*unhandled interrupt.*Recommended Action=RESET_FABRIC",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
         self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
@@ -157,7 +157,7 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": "12020.*Seq ID error.*Recommended Action=RESET_FABRIC",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
         self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
@@ -192,7 +192,7 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": "23017.*Egress CDT Parity error.*Recommended Action=WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
         self.logger.info(f"Clear nvswitch error on {self.node_name}")

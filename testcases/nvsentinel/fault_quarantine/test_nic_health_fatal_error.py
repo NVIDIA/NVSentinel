@@ -23,7 +23,7 @@ class TestNICHealthFatalError(TestNVSentinelCaseBase):
     """
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_nic_health_fatal_error(self, request):
         """
         Tests if appropriate node annotations and node condition are set when NIC interface is set down

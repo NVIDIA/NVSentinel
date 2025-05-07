@@ -23,7 +23,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.smoke
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_exclude_gpupowerwatch_error_cordon_node(self, request):
         """
         Tests if the GPUPowerWatch error is excluded from the node quarantine rule and the node is not cordoned
@@ -61,7 +61,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
             "Condition Reason": "GpuPowerWatchIsNotHealthy",
             "Condition Message": "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU.* This GPU can still perform workload. Recommended Action=NONE;",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=self.conditions, expected_result=expected_result
         )
 

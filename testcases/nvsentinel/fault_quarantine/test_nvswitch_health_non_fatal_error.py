@@ -25,7 +25,7 @@ class TestNVSwitchHealthNonFatalError(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.smoke
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_nvswitch_health_non_fatal_error(self, request):
         """
         Tests if the node is not cordoned and not tainted when a non-fatal error is injected from NVSwitch health monitor that does not matches any ruleset

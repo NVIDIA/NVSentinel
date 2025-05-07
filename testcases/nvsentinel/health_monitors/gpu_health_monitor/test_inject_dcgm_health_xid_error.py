@@ -151,7 +151,7 @@ from testcases.nvsentinel.health_monitors.gpu_health_monitor.base import (
 #             "Condition Message": "ErrorCode:46 GPU:1 XID error "
 #             "occured Recommended Action=REPORT_ISSUE",
 #         }
-#         self.verfiy_health_monitor_info(
+#         self.verify_health_monitor_info(
 #             conditions=y_node_conditions, expected_result=expected_result
 #         )
 #         request.addfinalizer(

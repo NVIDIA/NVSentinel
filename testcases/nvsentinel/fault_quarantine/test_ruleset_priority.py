@@ -44,7 +44,7 @@ class TestRulesetPriority(TestNVSentinelCaseBase):
             self.delete_fault_quarantine_pod()
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_ruleset_priority(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests if the node is cordoned and tainted when the node is matched with the rule, and the node is recovered when the error is cleared

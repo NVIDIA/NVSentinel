@@ -112,7 +112,7 @@ class TestMultiNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": ".*19077.*Nvltlc Tx Lnk An1 Timeout Vc5.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(conditions=events, expected_result=expected_result)
+        self.verify_health_monitor_info(conditions=events, expected_result=expected_result)
         event_count_2 = self.get_count_of_node_events(
             self.node_name, "NvswitchErrorFromKmsgWatchIsNotHealthy"
         )

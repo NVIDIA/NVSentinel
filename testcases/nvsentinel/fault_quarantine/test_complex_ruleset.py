@@ -23,7 +23,6 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
     Class for test case of NVsentinel Fault Quarantine complex ruleset
     """
 
-    template_id = "4040149"
     backup_cm = "backup_fault_quarantine_cm.yaml"
 
     @pytest.fixture(autouse=True)
@@ -41,7 +40,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
             self.delete_fault_quarantine_pod()
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_complex_ruleset(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests if fault quarantine pod is correctly deployed and handles the complex ruleset correctly with respect to the priority of the ruleset

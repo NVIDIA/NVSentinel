@@ -72,7 +72,7 @@ class TestNVSentinelCaseBase(Base):
                     self.node_name, "NvswitchErrorFromKmsgWatch"
                 )
 
-    def verfiy_health_monitor_info(self, conditions, expected_result, assert_on_fail=True):
+    def verify_health_monitor_info(self, conditions, expected_result, assert_on_fail=True):
         ret = True
         condition_info = []
         for condition in conditions:
@@ -940,3 +940,30 @@ class TestNVSentinelCaseBase(Base):
             )
             time.sleep(check_interval)
         return conditions, conditions_found
+
+    def verify_gpu_inforom_watch_condition(self, node_name):
+        node_info, _ = self.client.get_node_by_name(node_name)
+        expected_result = {
+            "Condition Type": "GpuInforomWatch",
+            "Condition Reason": "GpuInforomWatchIsNotHealthy",
+            "Condition Message": "ErrorCode:DCGM_FR_CORRUPT_INFOROM GPU:0 A corrupt InfoROM has been detected in GPU 0. Flash the InfoROM to clear this corruption. Recommended Action=COMPONENT_RESET;",
+        }
+        self.verify_health_monitor_info(conditions=node_info.status.conditions, expected_result=expected_result)
+
+    def inject_gpu_inforom_watch_error(self, pod):
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
+        ]
+        output, _ = self.client.exec_command_in_pod(pod, command)
+        assert "Successfully injected" in output
+    
+    def clear_gpu_inforom_watch_error(self, pod):
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+        ]
+        output, _ = self.client.exec_command_in_pod(pod, command)
+        assert "Successfully injected" in output

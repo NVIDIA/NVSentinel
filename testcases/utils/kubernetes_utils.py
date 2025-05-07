@@ -2842,6 +2842,68 @@ class KubernetesClient(object):
             return CommonResult(True)
         return CommonResult(False, f"FAIL to remove annotation {annotation} on {node_name}")
 
+    def remove_label_from_node(self, node_name, label) -> CommonResult[bool, str]:
+        """
+        Remove a specific label from a node.
+
+        Args:
+            node_name: Name of the node to modify
+            label: Label key to remove
+
+        Returns:
+        """
+        body = {"metadata": {"labels": {label: None}}}
+        retval = self.coreV1Api.patch_node(name=node_name, body=body)
+        if retval.metadata.labels.get(label) is None:
+            LOGGER.info(f"Label {label} removed from node {node_name}.")
+            return CommonResult(True)
+        return CommonResult(False, f"FAIL to remove label {label} on {node_name}")
+
+    def add_label_to_node(self, node_name, label_key, label_value) -> CommonResult[bool, str]:
+        """
+        Add a specific label to a node.
+
+        Args:
+            node_name: Name of the node to modify
+            label_key: Key of the label to add
+            label_value: Value of the label to add
+
+        Returns:
+            CommonResult containing:
+                - bool: True if label was added successfully
+                - str: Error message if an exception occurred
+        """
+        body = {"metadata": {"labels": {label_key: label_value}}}
+        retval = self.coreV1Api.patch_node(name=node_name, body=body)
+        if retval.metadata.labels.get(label_key) == label_value:
+            LOGGER.info(f"Label {label_key} added to node {node_name}.")
+            return CommonResult(True)
+        return CommonResult(False, f"FAIL to add label {label_key} to {node_name}")
+
+    def get_label_on_node(self, node_name, label_key) -> CommonResult[str, str]:
+        """
+        Get the value of a specific label from a node.
+
+        Args:
+            node_name: Name of the node to check
+            label_key: Key of the label to get
+
+        Returns:
+            CommonResult containing:
+                - str: Label value if found, None if not found
+
+        Example:
+            value, err_msg = client.get_label_on_node("worker-1", "k8saas.nvidia.com/ManagedByNVSentinel")
+            if err_msg:
+                print(f"Failed to get label: {err_msg}")
+            elif value is not None:
+                print(f"Label value: {value}")
+        """
+        node_info, err_msg = self.get_node_by_name(node_name)
+        if err_msg:
+            return CommonResult(None, err_msg)
+        return CommonResult(node_info.metadata.labels.get(label_key))
+
     def remove_taint_on_node(self, node_name, taint_key) -> CommonResult[bool, str]:
         """
         Remove a specific taint from a node.

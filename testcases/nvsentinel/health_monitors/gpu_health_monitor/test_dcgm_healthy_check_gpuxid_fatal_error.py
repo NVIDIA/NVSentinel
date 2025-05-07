@@ -66,6 +66,6 @@ class TestDGCMHealthyCheckGpuXidFatalError(GPUHealthMonitorBase):
             "Condition Message": "ErrorCode:46 GPU:0 XID error "
             "occured Recommended Action=COMPONENT_RESET",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )

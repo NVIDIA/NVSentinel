@@ -40,7 +40,7 @@ class TestGPUHealthFatalErrorRecover(TestNVSentinelCaseBase):
             output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
             assert "Successfully injected" in output
 
-    @pytest.mark.faultquarantine
+    #@pytest.mark.faultquarantine
     def test_gpu_health_fatal_error_recover(self, request):
         """
         Tests if the node is cordoned and tainted when the node is matched with the rule, and the node is recovered when the error is cleared

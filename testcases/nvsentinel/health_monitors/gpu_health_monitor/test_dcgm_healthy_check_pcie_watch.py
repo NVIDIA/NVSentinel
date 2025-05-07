@@ -70,6 +70,6 @@ class TestDGCMHealthyCheckPcieWatch(GPUHealthMonitorBase):
             "Condition Message": ".*DCGM_FR_PCI_REPLAY_RATE.*GPU:1.*PCIe replays.*Recommended Action=REPORT_ISSUE",
         }
         print(node_info.status.conditions)
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )

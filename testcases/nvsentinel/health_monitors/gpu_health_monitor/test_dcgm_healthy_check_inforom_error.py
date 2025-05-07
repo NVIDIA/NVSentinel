@@ -71,6 +71,6 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
             "Condition Reason": "GpuInforomWatchIsNotHealthy",
             "Condition Message": ".*DCGM_FR_CORRUPT_INFOROM.*GPU:1.*corrupt InfoROM.*Recommended Action=COMPONENT_RESET",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )

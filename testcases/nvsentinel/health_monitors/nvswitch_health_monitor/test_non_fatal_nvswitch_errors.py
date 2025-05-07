@@ -84,7 +84,7 @@ class TestNonFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": ".*28002.*Therm Warn Deactivated.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(conditions=events, expected_result=expected_result)
+        self.verify_health_monitor_info(conditions=events, expected_result=expected_result)
 
         self.step_manager.print_header(
             "Simulate another SXID non-fatal error by injecting the error info to /dev/kmsg"
@@ -114,7 +114,7 @@ class TestNonFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": ".*30005.*Crumbstore Buf Overwrite.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(conditions=events, expected_result=expected_result)
+        self.verify_health_monitor_info(conditions=events, expected_result=expected_result)
 
         self.step_manager.print_header(
             "Simulate third SXID non-fatal error by injecting the error info to /dev/kmsg"
@@ -143,4 +143,4 @@ class TestNonFatalNvswitchErrors(NVSwitchHealthMonitorBase):
             "Condition Reason": "NvswitchErrorFromKmsgWatchIsNotHealthy",
             "Condition Message": ".*19077.*Nvltlc Tx Lnk An1 Timeout Vc5.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(conditions=events, expected_result=expected_result)
+        self.verify_health_monitor_info(conditions=events, expected_result=expected_result)

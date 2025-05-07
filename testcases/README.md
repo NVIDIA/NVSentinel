@@ -45,6 +45,12 @@ This directory contains test cases for validating NVSentinel functionality. The 
     - Tests exclusion of power watch errors from node cordoning
     - Validates node conditions and health monitoring
 
+- K8s Label ManagedByNVsentinel testing
+    - Tests if the label k8saas.nvidia.com/ManagedByNVSentinel is set to false on the node, then node is not cordoned
+
+- maxPercentageOfNodesToCordon Testing
+    - Test whether the maxPercentageOfNodesToCordon parameters in fault quarantine configmap is respected or not
+
 ### Node Drainer Module Tests
 - Eviction timeout mode test
     - Tests whether the pods are evicted after eviction timeout

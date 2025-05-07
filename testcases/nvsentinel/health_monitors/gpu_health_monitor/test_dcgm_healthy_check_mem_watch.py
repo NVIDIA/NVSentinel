@@ -66,6 +66,6 @@ class TestDGCMHealthyCheckMemWatch(GPUHealthMonitorBase):
             "Condition Reason": "GpuMemWatchIsNotHealthy",
             "Condition Message": ".*DCGM_FR_ROW_REMAP_FAILURE.*GPU:0.*uncorrectable memory errors.*row remapping failed.*Recommended Action=RUN_FIELDDIAG",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )

@@ -45,11 +45,12 @@ def nvsentinel_autosync_disabled_enabled():
                 logger.warning(f"Failed to disable auto-sync for {app}: {result.values[1]}")
             else:
                 logger.info(f"Successfully disabled auto-sync for {app}")
-        time.sleep(180)
+        time.sleep(60)
         yield  # Run nvsentinel package tests
 
     finally:
         # Cleanup - enable auto-sync and trigger sync
+        client = KubernetesClient()
         logger.info("Enabling auto-sync for mk8s, nvsentinel, and gpu-operator")
         for app in apps:
             try:

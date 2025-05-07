@@ -67,7 +67,7 @@ class TestDGCMHealthyCheckNvlinkWatch(GPUHealthMonitorBase):
             "Condition Reason": "GpuNvlinkWatchIsNotHealthy",
             "Condition Message": "ErrorCode:DCGM_FR_NVLINK_CRC_ERROR_THRESHOLD GPU:0.*nvlink_flit_crc_error_count_total.*Recommended Action=RUN_FIELDDIAG;",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=self.conditions, expected_result=expected_result
         )
 

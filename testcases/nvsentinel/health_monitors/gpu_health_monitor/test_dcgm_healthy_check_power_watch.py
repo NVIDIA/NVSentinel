@@ -65,6 +65,6 @@ class TestDGCMHealthyCheckPowerWatch(GPUHealthMonitorBase):
             "Condition Reason": "GpuPowerWatchIsNotHealthy",
             "Condition Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*power violation.*Recommended Action=NONE",
         }
-        self.verfiy_health_monitor_info(
+        self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
