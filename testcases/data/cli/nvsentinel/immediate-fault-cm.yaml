@@ -22,25 +22,19 @@ data:
 
     evictionTimeoutInSeconds = "60"
     [[userNamespaces]]
-    name = "runai-qa-automation-test"
+    name = "default"
     mode = "Immediate"
     [[userNamespaces]]
     name = "busybox"
     mode = "Immediate"
 kind: ConfigMap
 metadata:
-  annotations:
-    kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"v1","data":{"config.toml":"\nevictionTimeoutInSeconds = \"60\"\n[[userNamespaces]]\nname = \"runai-*\"\nmode = \"AllowCompletion\"\n"},"kind":"ConfigMap","metadata":{"annotations":{},"labels":{"app.kubernetes.io/instance":"nvsentinel","app.kubernetes.io/managed-by":"Helm","app.kubernetes.io/name":"fault-notification","app.kubernetes.io/version":"1.16.0","argocd.argoproj.io/instance":"nvsentinel","helm.sh/chart":"fault-notification-0.1.0"},"name":"fault-notification-config","namespace":"nvsentinel"}}
-  creationTimestamp: "2025-04-01T10:52:35Z"
   labels:
     app.kubernetes.io/instance: nvsentinel
     app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/name: fault-notification
+    app.kubernetes.io/name: node-drainer
     app.kubernetes.io/version: 1.16.0
     argocd.argoproj.io/instance: nvsentinel
-    helm.sh/chart: fault-notification-0.1.0
-  name: fault-notification-config
+    helm.sh/chart: node-drainer-0.1.0
+  name: node-drainer-config
   namespace: nvsentinel
-  resourceVersion: "58890457"
-  uid: 6c06e197-f719-4880-a078-c1ea963bdb97

@@ -643,6 +643,19 @@ class TestNVSentinelCaseBase(Base):
         self.client.delete_pod(self.get_node_drainer_pod())
         time.sleep(10)
 
+    def wait_for_node_drainer_pod_to_start(self):
+        timeout = 300   # some times it takes longer than 120 seconds to start the pod
+        start_time = time.time()
+        while True:
+            node_drainer_pod = self.get_node_drainer_pod()
+            if node_drainer_pod.status.phase == "Running":
+                break
+            if time.time() - start_time > timeout:
+                raise Exception("Timeout waiting for node drainer pod to start")
+            time.sleep(10)
+            self.logger.info(f"Node drainer pod {node_drainer_pod.metadata.name} is not running, waiting for it to start")
+        self.logger.info(f"Node drainer pod {node_drainer_pod.metadata.name} is running")
+
     def get_node_drainer_pod_log(self):
         node_drainer_pod = self.get_node_drainer_pod()
         logs, _ = self.client.get_pod_logs(

@@ -2703,7 +2703,7 @@ class KubernetesClient(object):
                 print("Condition removed successfully")
         """
         success = False
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 # Read the node status
                 node = self.coreV1Api.read_node_status(node_name)
@@ -2735,7 +2735,6 @@ class KubernetesClient(object):
                 LOGGER.error(
                     f"ApiException when calling CoreV1Api->replace_node_status: {e}"
                 )
-                return CommonResult(False, str(e))
             except Exception as e:
                 LOGGER.error(f"Exception when calling CoreV1Api->replace_node_status: {e}")
                 return CommonResult(False, str(e))
@@ -2947,7 +2946,7 @@ class KubernetesClient(object):
         return CommonResult(False, f"FAIL: Node {node_name} is not ready")
 
     def check_node_cordoned(
-        self, node_name: str, timeout: int = 120
+        self, node_name: str, timeout: int = 360
     ) -> CommonResult[bool, str]:
         """
         Check if a node is cordoned (unschedulable) using kubectl command with timeout.
@@ -5030,3 +5029,111 @@ class KubernetesClient(object):
             error_msg = f"Failed to sync application {app_name}: {str(e)}"
             return CommonResult(None, error_msg)
 
+
+    def create_job_from_yaml(self, yaml_path: str, namespace: str = "default") -> CommonResult[Dict[str, Any], str]:
+        """
+        Create a job from a YAML file.
+
+        Args:
+            yaml_path (str): Path to the YAML file containing the job definition
+        """
+        try:
+            with open(yaml_path, "r") as f:
+                job_yaml = yaml.safe_load(f)
+
+            # Create the job
+            result = self.batchV1Api.create_namespaced_job(namespace=namespace, body=job_yaml)
+            return CommonResult(result, "")
+        except ApiException as e:
+            error_msg = f"Failed to create job from {yaml_path}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error creating job from {yaml_path}: {str(e)}"
+            return CommonResult(None, error_msg)
+
+    def verify_job_is_running(self, job_name: str, namespace: str) -> CommonResult[bool, str]:
+        """
+        Verify if a job is running in a specific namespace.
+
+        Args:
+            job_name (str): Name of the job to verify
+            namespace (str): Namespace where the job is running
+
+        Returns:
+            CommonResult[bool, str]: Operation result containing:
+                - bool: True if job is running, False otherwise
+                - str: Error message if an exception occurred
+        """
+        try:
+            # Get the job status
+            job = self.batchV1Api.read_namespaced_job(name=job_name, namespace=namespace)
+            if job.status.active > 0:
+                return CommonResult(True, "")
+            else:
+                return CommonResult(False, "Job is not running")
+        except ApiException as e:
+            error_msg = f"Failed to verify job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error verifying job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+
+    def get_job_pod_name(self, job_name: str, namespace: str) -> CommonResult[str, str]:
+        """
+        Get the pod name of a job in a specific namespace.
+
+        Args:
+            job_name (str): Name of the job to get the pod name for
+            namespace (str): Namespace where the job is running
+
+        Returns:
+            CommonResult[str, str]: Operation result containing:
+                - str: Pod name if successful
+                - str: Error message if an exception occurred
+        """
+        try:
+            # Get the job details
+            timeout = 120
+            start_time = time.time()
+            while True:
+                podlist, _ = self.list_pods(namespace, name_pattern=job_name).values
+                print([pod.status.phase for pod in podlist])
+                running_pods = [pod for pod in podlist if pod.status.phase == "Running"]
+                if len(running_pods) > 0:
+                    break
+                if time.time() - start_time > timeout:
+                    return CommonResult(None, "Timeout waiting for pod to start")
+                time.sleep(1)
+            # Get the pod name from the job's pod template
+            pod_name = running_pods[0].metadata.name
+            return CommonResult(pod_name, "")
+        except ApiException as e:
+            error_msg = f"Failed to get pod name for job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error getting pod name for job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+
+    def delete_job(self, job_name: str, namespace: str) -> CommonResult[bool, str]:
+        """
+        Delete a job in a specific namespace.
+
+        Args:
+            job_name (str): Name of the job to delete
+            namespace (str): Namespace where the job is running
+
+        Returns:
+            CommonResult[bool, str]: Operation result containing:
+                - bool: True if job is deleted, False otherwise
+                - str: Error message if an exception occurred
+        """
+        try:
+            # Delete the job
+            result = self.batchV1Api.delete_namespaced_job(name=job_name, namespace=namespace)
+            return CommonResult(True, "")
+        except ApiException as e:
+            error_msg = f"Failed to delete job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error deleting job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)

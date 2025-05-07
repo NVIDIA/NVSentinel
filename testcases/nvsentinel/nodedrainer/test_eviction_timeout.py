@@ -1,228 +1,234 @@
-# # Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
-# #
-# # Licensed under the Apache License, Version 2.0 (the "License");
-# # you may not use this file except in compliance with the License.
-# # You may obtain a copy of the License at
-# #
-# #     http://www.apache.org/licenses/LICENSE-2.0
-# #
-# # Unless required by applicable law or agreed to in writing, software
-# # distributed under the License is distributed on an "AS IS" BASIS,
-# # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# # See the License for the specific language governing permissions and
-# # limitations under the License.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-# import pytest
-# from testcases.nvsentinel.base import TestNVSentinelCaseBase
-# import time
-# import os
-# import yaml
+import pytest
+from testcases.nvsentinel.base import TestNVSentinelCaseBase
+import time
+import os
+import yaml
 
 
-# class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
-#     """
-#     Class for test case of NVsentinel Fault Notification: Eviction timeout
-#     """
+class TestEvictionTimeout(TestNVSentinelCaseBase):
+    """
+    Class for test case of NVsentinel Fault Notification: Eviction timeout
+    """
 
-#     template_id = "4998191"
-#     backup_cm_path = "fault-notification-config-backup.yaml"
+    template_id = "4998191"
+    backup_cm_path = "fault-notification-config-backup.yaml"
 
-#     @pytest.fixture(autouse=True)
-#     def setup_fault_notification(self, setup_runai_test):
-#         self.logger.info("[Setup] Fault Notification Pod")
-#         try:
-#             yield
-#         finally:
-#             self.logger.info("[Teardown] Fault Notification Pod")
-#             self.logger.info("Cleaning up resources if any created during the test.")
-#             success, error = self.client.apply_configmap(self.backup_cm_path)
-#             if error:
-#                 self.logger.error(
-#                     f"Failed to restore fault-notification configmap: {error}"
-#                 )
+    @pytest.fixture(autouse=True)
+    def setup_fault_notification(self, setup_runai_test):
+        self.logger.info("[Setup] Fault Notification Pod")
+        try:
+            yield
+        finally:
+            self.logger.info("[Teardown] Fault Notification Pod")
+            self.logger.info("Cleaning up resources if any created during the test.")
+            success, error = self.client.apply_configmap(self.backup_cm_path)
+            self.clear_gpu_fatal_error(self.node_name, "GpuInforomWatch")
+            if error:
+                self.logger.error(
+                    f"Failed to restore fault-notification configmap: {error}"
+                )
 
-#     @pytest.mark.author(email="ajmishra@nvidia.com")
-#     @pytest.mark.nodedrainer
-#     def test_eviction_timeout(self, request, nvsentinel_autosync_disabled_enabled):
-#         """
-#         Test case of NVsentinel Fault Notification: Eviction timeout
-#         """
-#         self.step_manager.print_header("Check the node-drainer pod is running")
-#         # Get node drainer pod
-#         node_drainer_pod = self.get_node_drainer_pod()
-#         self.logger.info(
-#             f"Node Drainer Pod Name: {node_drainer_pod.metadata.name}"
-#         )
-#         # Verify pod is running
-#         assert self.client.verify_pod_are_running([node_drainer_pod.metadata.name], self.nv_namespace), "Node drainer pod is not running"
+    @pytest.mark.author(email="ajmishra@nvidia.com")
+    @pytest.mark.nodedrainer
+    def test_eviction_timeout(self, request, nvsentinel_autosync_disabled_enabled):
+        """
+        Tests eviction timeout mode: verifies that:
+            1. The node is cordoned on injection of gpu fatal error
+            2. busybox pods are evicted after the eviction timeout
+            3. The node is recovered when the error is cleared
+        """
+        self.step_manager.print_header("Check the node-drainer pod is running")
+        # Get node drainer pod
+        node_drainer_pod = self.get_node_drainer_pod()
+        self.logger.info(
+            f"Node Drainer Pod Name: {node_drainer_pod.metadata.name}"
+        )
+        # Verify pod is running
+        assert self.client.verify_pod_are_running([node_drainer_pod.metadata.name], self.nv_namespace), "Node drainer pod is not running"
 
-#         self.step_manager.print_header("Backup default node-drainer configmap")
-#         self.client.backup_configmap(
-#             self.nv_namespace, "node-drainer-config", self.backup_cm_path
-#         )
+        self.step_manager.print_header("Backup default node-drainer configmap")
+        self.client.backup_configmap(
+            self.nv_namespace, "node-drainer-config", self.backup_cm_path
+        )
 
-#         self.step_manager.print_header("Edit default node-drainer configmap")
-#         # Read the original configmap yaml
-#         cm_yaml = os.path.join(
-#             os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "evcition-timout.yaml"
-#         )
-#         with open(cm_yaml, "r") as f:
-#             cm_content = yaml.safe_load(f)
-#         # Replace the namespace name
-#         cm_content["data"]["config.toml"] = cm_content["data"]["config.toml"].replace(
-#             "runai-qa-automation-test", self.default_namespace
-#         )
-#         # Save to a temporary file
-#         temp_cm_path = "/tmp/immediate_fault_cm_temp.yaml"
-#         with open(temp_cm_path, "w") as f:
-#             yaml.dump(cm_content, f, default_flow_style=False)
-#         self.logger.info(f"Modified configmap saved to {temp_cm_path}")
-#         self.client.apply_configmap(temp_cm_path)
+        self.step_manager.print_header("Edit default node-drainer configmap")
+        # Read the original configmap yaml
+        cm_yaml = os.path.join(
+            os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "evcition-timout.yaml"
+        )
+        with open(cm_yaml, "r") as f:
+            cm_content = yaml.safe_load(f)
+        # Replace the namespace name
+        cm_content["data"]["config.toml"] = cm_content["data"]["config.toml"].replace(
+            "runai-qa-automation-test", self.default_namespace
+        )
+        # Save to a temporary file
+        temp_cm_path = "/tmp/immediate_fault_cm_temp.yaml"
+        with open(temp_cm_path, "w") as f:
+            yaml.dump(cm_content, f, default_flow_style=False)
+        self.logger.info(f"Modified configmap saved to {temp_cm_path}")
+        self.client.apply_configmap(temp_cm_path)
 
-#         self.step_manager.print_header("Restart the node-drainer pod")
-#         self.delete_node_drainer_pod()
-#         time.sleep(15)
+        self.step_manager.print_header("Restart the node-drainer pod")
+        self.delete_node_drainer_pod()
+        self.wait_for_node_drainer_pod_to_start()
+        time.sleep(60) # wait for the node drainer pod to connect to mongodb
 
-#         self.step_manager.print_header(
-#             "Running 3 busybox pods under namespace busybox on 2 nodes"
-#         )
-#         success, error = self.client.create_namespace("busybox")
-#         request.addfinalizer(lambda: self.client.delete_namespace("busybox"))
-#         # Get GPU nodes
-#         self.step_manager.print_header("Get GPU nodes from cluster")
-#         gpu_node_names, _ = self.client.get_node_names_by_label("nodeGroup=customer-gpu")
-#         if len(gpu_node_names) < 2:
-#             self.logger.error(
-#                 f"Not enough GPU nodes found. Found {len(gpu_node_names)}, need at least 2"
-#             )
-#             assert False, "Not enough GPU nodes found"
-#         self.logger.info(f"Found GPU nodes: {gpu_node_names}")
+        self.step_manager.print_header(
+            "Running 3 busybox pods under namespace busybox on 2 nodes"
+        )
+        success, error = self.client.create_namespace("busybox")
+        request.addfinalizer(lambda: self.client.delete_namespace("busybox"))
+        # Get GPU nodes
+        self.step_manager.print_header("Get GPU nodes from cluster")
+        gpu_node_names, _ = self.client.get_node_names_by_label("nodeGroup=customer-gpu")
+        if len(gpu_node_names) < 2:
+            self.logger.error(
+                f"Not enough GPU nodes found. Found {len(gpu_node_names)}, need at least 2"
+            )
+            assert False, "Not enough GPU nodes found"
+        self.logger.info(f"Found GPU nodes: {gpu_node_names}")
 
-#         self.node_name = gpu_node_names[1]
-#         target_busybox_pod_name = "busybox-1"
+        self.node_name = gpu_node_names[1]
+        target_busybox_pod_name = "busybox-1"
 
-#         other_gpu_node = next(
-#             (node for node in gpu_node_names if node != self.node_name), None
-#         )
-#         if not other_gpu_node:
-#             self.logger.error("Could not find a GPU node different from the job node")
-#             assert False, "Could not find a GPU node different from the job node"
+        other_gpu_node = next(
+            (node for node in gpu_node_names if node != self.node_name), None
+        )
+        if not other_gpu_node:
+            self.logger.error("Could not find a GPU node different from the job node")
+            assert False, "Could not find a GPU node different from the job node"
 
-#         # Update busybox yaml with GPU node names
-#         yamlfile_path = os.path.join(os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel")
-#         busybox_yaml = os.path.join(yamlfile_path, "busybox-pod-creation.yaml")
-#         with open(busybox_yaml, "r", encoding="utf-8") as f:
-#             yaml_content = self.load_yaml(
-#                 f,
-#                 {
-#                     "NODE_NAME_1": self.node_name,
-#                     "NODE_NAME_2": other_gpu_node,
-#                     "NODE_NAME_3": other_gpu_node,
-#                 },
-#             )
+        # Update busybox yaml with GPU node names
+        yamlfile_path = os.path.join(os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel")
+        busybox_yaml = os.path.join(yamlfile_path, "busybox-pod-creation.yaml")
+        with open(busybox_yaml, "r", encoding="utf-8") as f:
+            yaml_content = self.load_yaml(
+                f,
+                {
+                    "NODE_NAME_1": self.node_name,
+                    "NODE_NAME_2": other_gpu_node,
+                    "NODE_NAME_3": other_gpu_node,
+                },
+            )
 
-#         self.logger.info(
-#             f"Updated busybox yaml with nodes: job_node={self.node_name}, other_node={other_gpu_node}"
-#         )
-#         self.logger.info(f"Target busybox pod name: {target_busybox_pod_name}")
-#         # Create a temporary file for the updated yaml
-#         temp_yaml = "/tmp/busybox-pod-creation.yaml"
-#         with open(temp_yaml, "w", encoding="utf-8") as tmp_file:
-#             yaml.dump(yaml_content, tmp_file)
+        self.logger.info(
+            f"Updated busybox yaml with nodes: job_node={self.node_name}, other_node={other_gpu_node}"
+        )
+        self.logger.info(f"Target busybox pod name: {target_busybox_pod_name}")
+        # Create a temporary file for the updated yaml
+        temp_yaml = "/tmp/busybox-pod-creation.yaml"
+        with open(temp_yaml, "w", encoding="utf-8") as tmp_file:
+            yaml.dump(yaml_content, tmp_file)
 
-#         # Apply busybox pods using the Python SDK
-#         with open(temp_yaml, "r") as f:
-#             pod_body = yaml.safe_load(f)
-#             for pod in pod_body["items"]:
-#                 success, error = self.client.create_pod(pod, wait=60)
-#                 if error:
-#                     self.logger.error(f"Failed to create pod: {error}")
-#                     assert False, f"Failed to create pod: {error}"
+        # Apply busybox pods using the Python SDK
+        with open(temp_yaml, "r") as f:
+            pod_body = yaml.safe_load(f)
+            for pod in pod_body["items"]:
+                success, error = self.client.create_pod(pod, wait=60)
+                if error:
+                    self.logger.error(f"Failed to create pod: {error}")
+                    assert False, f"Failed to create pod: {error}"
 
-#         self.step_manager.print_header("Verify busybox pods are running")
-#         # Get all busybox pod names
-#         pods, error = self.client.list_pods(namespace="busybox", name_pattern="busybox-*")
-#         # Get pod names
-#         busybox_pod_names = [pod.metadata.name for pod in pods]
-#         self.logger.info(f"Found busybox pods: {busybox_pod_names}")
-#         # Verify all busybox pods are running
-#         assert self.client.verify_pod_are_running(busybox_pod_names, "busybox"), "Busybox pods are not running"
+        self.step_manager.print_header("Verify busybox pods are running")
+        # Get all busybox pod names
+        pods, error = self.client.list_pods(namespace="busybox", name_pattern="busybox-*")
+        # Get pod names
+        busybox_pod_names = [pod.metadata.name for pod in pods]
+        self.logger.info(f"Found busybox pods: {busybox_pod_names}")
+        # Verify all busybox pods are running
+        assert self.client.verify_pod_are_running(busybox_pod_names, "busybox"), "Busybox pods are not running"
 
-#         self.step_manager.print_header(
-#             "Get the node where are the pods are runnning. Pick one node and inject a gpu fatal error on the node"
-#         )
-#         pods, _ = self.client.list_pods(
-#             self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor.*"
-#         )
-#         gpu_monitor_pod_name = None
-#         for pod in pods:
-#             if pod.spec.node_name == self.node_name:
-#                 gpu_monitor_pod_name = pod.metadata.name
-#                 self.logger.info(f"POD   Name: {gpu_monitor_pod_name}")
-#                 self.logger.info(f"Node  Name: {self.node_name}")
-#                 break
-#         assert (
-#             gpu_monitor_pod_name
-#         ), f"Cannot find the nvsentinel-gpu-health-monitor pod of the node {self.node_name}"
+        self.step_manager.print_header(
+            "Get the node where are the pods are runnning. Pick one node and inject a gpu fatal error on the node"
+        )
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor.*"
+        )
+        gpu_monitor_pod_name = None
+        for pod in pods:
+            if pod.spec.node_name == self.node_name:
+                gpu_monitor_pod_name = pod.metadata.name
+                self.logger.info(f"POD   Name: {gpu_monitor_pod_name}")
+                self.logger.info(f"Node  Name: {self.node_name}")
+                break
+        assert (
+            gpu_monitor_pod_name
+        ), f"Cannot find the nvsentinel-gpu-health-monitor pod of the node {self.node_name}"
 
-#         self.step_manager.print_header("Inject a gpu fatal error on the node")
-#         pods, _ = self.client.list_pods(
-#             namespace=self.nv_namespace, name_pattern=gpu_monitor_pod_name
-#         )
-#         assert len(pods) > 0, "GPU health monitor pod not found"
-#         gpu_health_monitor_pod = pods[0]
-#         command = [
-#             "/bin/sh",
-#             "-c",
-#             "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 2 -f 84 -v 0",
-#         ]
-#         output, error = self.client.exec_command_in_pod(
-#             gpu_health_monitor_pod, command=command
-#         )
-#         assert "Successfully injected" in output, "Failed to inject error"
-#         self.step_manager.print_header("Check the node is cordoned")
-#         success, err = self.client.check_node_cordoned(self.node_name)
-#         if err:
-#             self.logger.error(f"Failed to check node cordon status: {err}")
-#             assert False, f"Failed to check node cordon status: {err}"
-#         assert success, f"FAIL: Node {self.node_name} is not cordoned"
+        self.step_manager.print_header("Inject a gpu fatal error on the node")
+        pods, _ = self.client.list_pods(
+            namespace=self.nv_namespace, name_pattern=gpu_monitor_pod_name
+        )
+        assert len(pods) > 0, "GPU health monitor pod not found"
+        gpu_health_monitor_pod = pods[0]
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 2 -f 84 -v 0",
+        ]
+        output, error = self.client.exec_command_in_pod(
+            gpu_health_monitor_pod, command=command
+        )
+        assert "Successfully injected" in output, "Failed to inject error"
+        self.step_manager.print_header("Check the node is cordoned")
+        success, err = self.client.check_node_cordoned(self.node_name)
+        if err:
+            self.logger.error(f"Failed to check node cordon status: {err}")
+            assert False, f"Failed to check node cordon status: {err}"
+        assert success, f"FAIL: Node {self.node_name} is not cordoned"
 
-#         self.step_manager.print_header(
-#             "Check the pod status and the pods shoule be running."
-#         )
-#         assert self.client.verify_pod_are_running(busybox_pod_names, "busybox"), "Busybox pods are not running"
+        self.step_manager.print_header(
+            "Check the pod status and the pods should be running."
+        )
+        assert self.client.verify_pod_are_running(busybox_pod_names, "busybox"), "Busybox pods are not running"
 
-#         time.sleep(20)
-#         self.step_manager.print_header(
-#             f"Check the pod {target_busybox_pod_name} is removed"
-#         )
-#         pods, _ = self.client.list_pods(
-#             namespace="busybox", name_pattern=target_busybox_pod_name
-#         )
-#         assert len(pods) == 0, "The target busybox pod is not terminated"
+        time.sleep(70)
+        self.step_manager.print_header(
+            f"Check the pod {target_busybox_pod_name} is removed"
+        )
+        pods, _ = self.client.list_pods(
+            namespace="busybox", name_pattern=target_busybox_pod_name
+        )
+        assert len(pods) == 0, "The target busybox pod is not terminated"
 
-#         self.step_manager.print_header(
-#             "Clear the inject error in step 5 and check the node is uncordoned"
-#         )
-#         command = [
-#             "/bin/sh",
-#             "-c",
-#             "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
-#         ]
-#         output, error = self.client.exec_command_in_pod(
-#             gpu_health_monitor_pod, command=command
-#         )
-#         success, error = self.client.check_node_ready(self.node_name)
-#         assert (
-#             success
-#         ), f"Node '{self.node_name}' is not ready after clearing injected error."
+        self.step_manager.print_header(
+            "Clear the inject error in step 5 and check the node is uncordoned"
+        )
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 2 -f 84 -v 1",
+        ]
+        output, error = self.client.exec_command_in_pod(
+            gpu_health_monitor_pod, command=command
+        )
+        assert "Successfully injected" in output, "Failed to inject error"
+        success, error = self.client.check_node_ready(self.node_name)
+        assert (
+            success
+        ), f"Node '{self.node_name}' is not ready after clearing injected error."
 
-#         self.step_manager.print_header("Delete all the running pods and jobs")
-#         for pod in busybox_pod_names:
-#             self.client.delete_pod_by_name(pod, "busybox")
+        self.step_manager.print_header("Delete all the running pods and jobs")
+        for pod in busybox_pod_names:
+            self.client.delete_pod_by_name(pod, "busybox")
 
-#         self.step_manager.print_header("Restore the change of node-drainer configmap")
-#         node_drainer_pod = self.get_node_drainer_pod()
-#         self.client.delete_pod_by_name(
-#             node_drainer_pod.metadata.name, self.nv_namespace
-#         )
+        self.step_manager.print_header("Restore the change of node-drainer configmap")
+        node_drainer_pod = self.get_node_drainer_pod()
+        self.client.delete_pod_by_name(
+            node_drainer_pod.metadata.name, self.nv_namespace
+        )

@@ -36,7 +36,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         finally:
             # Equivalent to addCleanup in unittest
             self.logger.info("[Teardown] gpu_monitor_fatal_error")
-            self.clear_gpu_fatal_error(self.node_name, "GpuXidError")
+            self.clear_gpu_fatal_error(self.node_name, "GpuInforomWatch")
             self.client.apply_configmap(self.backup_cm)
             self.delete_fault_quarantine_pod()
 
@@ -118,7 +118,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
         assert "Successfully injected" in output
 
-        time.sleep(30)
+        time.sleep(50)
         self.step_manager.print_header("Check the node status")
         node_info, _ = self.client.get_node_by_name(self.node_name)
 

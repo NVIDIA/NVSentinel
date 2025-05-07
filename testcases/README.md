@@ -45,6 +45,16 @@ This directory contains test cases for validating NVSentinel functionality. The 
     - Tests exclusion of power watch errors from node cordoning
     - Validates node conditions and health monitoring
 
+### Node Drainer Module Tests
+- Eviction timeout mode test
+    - Tests whether the pods are evicted after eviction timeout
+
+- Immedidate eviction mode test
+    - Tests whether the pods are moved to another node when the eviction mode is set to Immedidate
+
+- AllowCompletion eviction mode test
+    - Verifies that the pod in namespace with eviction mode set to AllowCompletion are not evicted after injecting a fatal error, but pods in the namespace with Immediate mode of eviction are evicted.
+
 ### Fault Remediation Tests
 - Fault remediation module tests
     - Verifies creation maintainence CR upon injection of fatal XID error
