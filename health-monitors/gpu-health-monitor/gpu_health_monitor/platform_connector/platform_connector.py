@@ -48,7 +48,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         node_name: str,
         exit: Event,
         xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
-        xid_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
+        gpu_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
         dcgm_errors_info_dict: dict[str, str],
         xid_errors_batch_processing_interval: int,
         xid_errors_batch_processing_enabled: bool,
@@ -63,7 +63,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self._component_class = "GPU"
         self.dcgm_errors_info_dict = dcgm_errors_info_dict
         self.xid_errors_info_dict = xid_errors_info_dict
-        self.xid_errors_recommend_action_mapping = xid_errors_recommend_action_mapping
+        self.gpu_errors_recommend_action_mapping = gpu_errors_recommend_action_mapping
         self.xid_errors_batch_processing_interval = xid_errors_batch_processing_interval
         self.xid_errors_sliding_window_index = 0
         self.nvml_xid_parser = nvml_xid_parser
@@ -250,12 +250,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
     def get_recommended_action_from_xid_error_map(self, error_code):
         recommended_action = self.xid_errors_info_dict[error_code].recommended_action
-        return self.xid_errors_recommend_action_mapping[recommended_action]
+        return self.gpu_errors_recommend_action_mapping[recommended_action]
 
     def get_recommended_action_from_dcgm_error_map(self, error_code):
         if error_code in self.dcgm_errors_info_dict:
             recommended_action = self.dcgm_errors_info_dict[error_code]
-            return self.xid_errors_recommend_action_mapping[recommended_action]
+            return self.gpu_errors_recommend_action_mapping[recommended_action]
         return platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
     def xid_event_occurred(self, gpu_id: str, error_num: int, serial: str):

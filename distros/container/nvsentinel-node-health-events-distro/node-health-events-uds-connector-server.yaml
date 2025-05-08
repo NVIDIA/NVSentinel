@@ -41,7 +41,8 @@ data:
     XidErrorsSlidingWindowSize = 3
     XidErrorsBatchProcessingInterval = 10
 
-    [xiderrorrecommendactiontoplatformconnectormapping]
+    [gpuerrorrecommendactiontoplatformconnectormapping]
+    NODE_REBOOT = 1
     UNEXPECTED_ERR_REPORT_ISSUE = 5
     WORKFLOW_XID_13_31 = 7
     IGNORE = 0

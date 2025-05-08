@@ -5102,6 +5102,12 @@ class KubernetesClient(object):
         try:
             with open(yaml_path, "r") as f:
                 job_yaml = yaml.safe_load(f)
+            
+            job_name = job_yaml["metadata"]["name"]
+            result = self.batchV1Api.read_namespaced_job(name=job_name, namespace=namespace)
+            if result:
+                _ = self.batchV1Api.delete_namespaced_job(name=job_name, namespace=namespace)
+                time.sleep(10)
 
             # Create the job
             result = self.batchV1Api.create_namespaced_job(namespace=namespace, body=job_yaml)

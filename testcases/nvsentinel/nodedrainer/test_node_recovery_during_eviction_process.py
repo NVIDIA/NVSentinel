@@ -42,6 +42,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
                     f"Failed to restore node-drainer configmap: {error}"
                 )
 
+    @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nodedrainer
     def test_node_recovery_during_eviction_process(self, request, nvsentinel_autosync_disabled_enabled):
         """

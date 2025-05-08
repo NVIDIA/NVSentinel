@@ -23,7 +23,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.smoke
-    #@pytest.mark.faultquarantine
+    @pytest.mark.faultquarantine
     def test_exclude_gpupowerwatch_error_cordon_node(self, request):
         """
         Tests if the GPUPowerWatch error is excluded from the node quarantine rule and the node is not cordoned

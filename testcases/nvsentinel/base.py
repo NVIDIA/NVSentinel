@@ -318,7 +318,7 @@ class TestNVSentinelCaseBase(Base):
                 ]
                 output, _ = self.client.exec_command_in_pod(debug_pod, command)
                 self.logger.info(f"Up output: {output}")
-                assert "mq state UP" in output
+                assert output and "mq state UP" in output
 
         finally:
             self.client.delete_pod(debug_pod)
@@ -759,7 +759,7 @@ class TestNVSentinelCaseBase(Base):
         )
         mongo_command = [
             "mongosh",
-            MONGO_URI,
+            self.MONGO_URI,
             "--tls",
             "--tlsAllowInvalidCertificates",
             "--tlsCertificateKeyFile",

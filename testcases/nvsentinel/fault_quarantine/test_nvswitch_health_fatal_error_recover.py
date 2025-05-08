@@ -42,7 +42,7 @@ class TestNVSwitchHealthFatalErrorRecover(TestNVSentinelCaseBase):
             self.client.delete_pod(platform_connector)
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
-    #@pytest.mark.faultquarantine
+    @pytest.mark.faultquarantine
     def test_nvswitch_health_fatal_error_recover(self, request):
         """
         Tests if the node is cordoned and tainted when the node is matched with the rule, and the node is recovered when the error is cleared

@@ -32,7 +32,7 @@ def _init_event_processor(
     exit: Event,
     dcgm_errors_info_dict: dict[str, str],
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails],
-    xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
+    gpu_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
     xid_errors_batch_processing_interval: int,
     xid_errors_batch_processing_enabled: bool,
     nvml_xid_parser,
@@ -47,7 +47,7 @@ def _init_event_processor(
                 exit=exit,
                 xid_errors_info_dict=xid_errors_info_dict,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
-                xid_errors_recommend_action_mapping=xid_error_recommend_action_mapping,
+                gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
                 xid_errors_batch_processing_interval=xid_errors_batch_processing_interval,
                 xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
                 nvml_xid_parser=nvml_xid_parser,
@@ -106,7 +106,7 @@ def cli(
         log.fatal("Failed to fetch nodename from environment variable 'NODE_NAME'")
         sys.exit(1)
 
-    xid_error_recommend_action_mapping_config = config["xiderrorrecommendactiontoplatformconnectormapping"]
+    gpu_error_recommend_action_mapping_config = config["gpuerrorrecommendactiontoplatformconnectormapping"]
     xid_errors_batch_processing_enabled = config.getboolean("xiderrorsconfig", "XidErrorsBatchProcessingEnabled")
     xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
@@ -135,11 +135,11 @@ def cli(
                 f"dcgm error {row[0]} dcgm_error_name {dcgm_errors_info_dict[row[0]]} dcgm_error_recommended_action {row[1]}"
             )
 
-    xid_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction] = {}
-    for key, value in xid_error_recommend_action_mapping_config.items():
-        xid_error_recommend_action_mapping[key] = int(value)
+    gpu_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction] = {}
+    for key, value in gpu_error_recommend_action_mapping_config.items():
+        gpu_error_recommend_action_mapping[key] = int(value)
 
-    for key, value in xid_error_recommend_action_mapping.items():
+    for key, value in gpu_error_recommend_action_mapping.items():
         log.debug(f"{key}={value}")
 
     prom_server, t = start_http_server(port)
@@ -156,7 +156,7 @@ def cli(
                 exit,
                 dcgm_errors_info_dict,
                 xid_errors_info_dict,
-                xid_error_recommend_action_mapping,
+                gpu_error_recommend_action_mapping,
                 int(xid_errors_batch_processing_interval),
                 xid_errors_batch_processing_enabled,
                 nvml_xid_parser,

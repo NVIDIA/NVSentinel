@@ -39,7 +39,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
 
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
-    #@pytest.mark.faultquarantine
+    @pytest.mark.faultquarantine
     def test_max_cordon(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests:

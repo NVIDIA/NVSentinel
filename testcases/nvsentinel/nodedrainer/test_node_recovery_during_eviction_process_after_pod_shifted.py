@@ -34,13 +34,13 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         finally:
             self.logger.info("[Teardown] Node drainer Pod")
             self.logger.info("Cleaning up resources if any created during the test.")
-            self.client.delete_job(self.job_name, default_namespace)
             success, error = self.client.apply_configmap(self.backup_cm_path)
             if error:
                 self.logger.error(
                     f"Failed to restore node-drainer configmap: {error}"
                 )
 
+    @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nodedrainer
     def test_node_recovery_during_eviction_process_after_pod_shifted(
         self, request, nvsentinel_autosync_disabled_enabled
