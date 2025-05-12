@@ -104,6 +104,7 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
         self.logger.info(f"Found GPU nodes: {gpu_node_names}")
 
         self.node_name = gpu_node_names[1]
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         target_busybox_pod_name = "busybox-1"
 
         other_gpu_node = next(
@@ -232,3 +233,4 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
         self.client.delete_pod_by_name(
             node_drainer_pod.metadata.name, self.nv_namespace
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

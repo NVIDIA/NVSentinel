@@ -35,6 +35,7 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
         )
         gpu_monitor_pod = pods[-1]
         self.node_name = gpu_monitor_pod.spec.node_name
+        self.set_managed_by_nvsentinel_label_to_false(self.node_name)
         self.logger.info(f"POD  Name: {gpu_monitor_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
 
@@ -53,7 +54,7 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 84 -v 1",
         ]
         request.addfinalizer(
             partial(self.client.exec_command_in_pod, gpu_monitor_pod, command)
@@ -74,3 +75,4 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
         self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

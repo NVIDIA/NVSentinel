@@ -69,6 +69,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         )
         self.gpu_healthy_pod = pods[-1]
         self.node_name = self.gpu_healthy_pod.spec.node_name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD  Name: {self.gpu_healthy_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
 
@@ -86,7 +87,6 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
             output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
             assert "Successfully injected" in output
 
-            self.step_manager.print_header("Check the fault-quarantine pod log")
             time.sleep(30)
 
             self.step_manager.print_header("Check the node taints and annotations")
@@ -141,3 +141,5 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
             is None
         )
         assert node_info.spec.unschedulable is None
+
+        self.restore_managed_by_nvsentinel_label(self.node_name)

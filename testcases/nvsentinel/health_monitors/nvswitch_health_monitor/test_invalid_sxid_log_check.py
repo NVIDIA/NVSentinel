@@ -44,6 +44,7 @@ class TestInvalidSxidLogCheck(NVSwitchHealthMonitorBase):
         job_pod = pods[-1]
         pod_name = job_pod.metadata.name
         node_name = job_pod.spec.node_name
+        self.set_managed_by_nvsentinel_label_to_false(node_name)
         self.logger.info(f"POD   Name: {pod_name}")
         self.logger.info(f"Node  Name: {node_name}")
 
@@ -89,3 +90,9 @@ class TestInvalidSxidLogCheck(NVSwitchHealthMonitorBase):
             message_to_check in self.pod_logs[-1]
         ), f"Find no expected message in console log:{self.pod_logs}"
         self.logger.info(self.pod_logs)
+
+        
+        self.client.remove_node_condition(
+            node_name, "NvswitchErrorFromKmsgWatch"
+        )
+        self.restore_managed_by_nvsentinel_label(node_name)

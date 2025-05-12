@@ -237,8 +237,9 @@ class TestNVSentinelCaseBase(Base):
             f'chroot /host bash -c "ip link set {interface} up"',
         ]
         debug_pod = self.create_debug_pod(node_name)
+        self.logger.info(f"debug_pod = {debug_pod}")
         output, _ = self.client.exec_command_in_pod(debug_pod, command)
-        time.sleep(5)
+        time.sleep(10)
         command = [
             "/bin/sh",
             "-c",
@@ -421,6 +422,7 @@ class TestNVSentinelCaseBase(Base):
         try:
             if pods:  # clean up existing debug pod before testing
                 _, err_msg = self.client.delete_pod_by_name("debug-pod", "default")
+                time.sleep(10)
                 if err_msg:
                     self.logger.warning(
                         f"cannot delete debug pod with error message: {err_msg}"
@@ -431,7 +433,11 @@ class TestNVSentinelCaseBase(Base):
         retries = 0
         while retries < max_retries:
             try:
-                debug_pod, _ = self.client.create_pod(pod_body=pod_body, wait=60)
+                debug_pod, err_msg = self.client.create_pod(pod_body=pod_body, wait=60)
+                if err_msg:
+                    self.logger.info(f"Attempt {retries + 1} failed: {err_msg}")
+                    retries += 1
+                    continue
                 return debug_pod
             except AssertionError as e:
                 self.logger.warning(f"Attempt {retries + 1} failed: {e}")
@@ -967,3 +973,20 @@ class TestNVSentinelCaseBase(Base):
         ]
         output, _ = self.client.exec_command_in_pod(pod, command)
         assert "Successfully injected" in output
+
+    def set_managed_by_nvsentinel_label_to_false(self, node_name):
+        self.backup_label_value, _ = self.client.get_label_on_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")
+        success, err = self.client.add_label_to_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel", "false")
+        assert success, f"Failed to set the label k8saas.nvidia.com/ManagedByNVSentinel to false on the node: {err}"
+
+    def remove_managed_by_nvsentinel_label(self, node_name):
+        self.logger.info(f"Remove the label k8saas.nvidia.com/ManagedByNVSentinel from the node: {node_name}")
+        self.backup_label_value, _ = self.client.get_label_on_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")
+        self.client.remove_label_from_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")
+        self.logger.info(f"Backup label value: {self.backup_label_value}")
+
+    def restore_managed_by_nvsentinel_label(self, node_name):
+        if self.backup_label_value:
+            self.client.add_label_to_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel", self.backup_label_value)
+        else:
+            self.client.remove_label_from_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")

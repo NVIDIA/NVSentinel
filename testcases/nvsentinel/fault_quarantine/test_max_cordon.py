@@ -70,6 +70,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
 
         self.step_manager.print_header("Check if the node is uncordoned")
         nodes, _ = self.client.get_nodes(ready=False)
+        self.remove_managed_by_nvsentinel_label_from_all_nodes(nodes)
         assert all(node.spec.unschedulable is None for node in nodes), f"FAIL: Node is cordoned"
 
         self.step_manager.print_header("Inject a fatal error on all of the GPU nodes")
@@ -124,7 +125,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
         self.clear_gpu_inforom_on_all_nodes(gpu_health_monitor_pods)
 
         time.sleep(30)
-        
+        self.restore_managed_by_nvsentinel_label_to_all_nodes(nodes)
 
 
 
@@ -153,3 +154,14 @@ class TestMaxCordon(TestNVSentinelCaseBase):
             assert pod.status.phase == "Running", f"FAIL: Pod {pod.metadata.name} is not running"
 
             self.clear_gpu_inforom_watch_error(pod)
+
+    def remove_managed_by_nvsentinel_label_from_all_nodes(self, nodes):
+        self.node_to_label_map = {}
+        for node in nodes:
+            self.node_to_label_map[node.metadata.name] = self.client.get_label_on_node(node.metadata.name, "k8saas.nvidia.com/ManagedByNVSentinel")
+            self.remove_managed_by_nvsentinel_label(node.metadata.name)
+
+    def restore_managed_by_nvsentinel_label_to_all_nodes(self, nodes):
+        for node in nodes:
+            self.backup_label_value = self.node_to_label_map[node.metadata.name]
+            self.restore_managed_by_nvsentinel_label(node.metadata.name)

@@ -34,6 +34,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         )
         gpu_health_monitor_pod = pods[0]
         self.node_name = gpu_health_monitor_pod.spec.node_name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD Name: {gpu_health_monitor_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
         command = [
@@ -80,3 +81,4 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         output, _ = self.client.exec_command_in_pod(
             pod=gpu_health_monitor_pod, command=command
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

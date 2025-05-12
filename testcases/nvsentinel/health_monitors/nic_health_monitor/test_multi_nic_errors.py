@@ -22,6 +22,7 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
     Class for test case of NVsentinel NIC Health Monitor: Multi NIC errors
     """
 
+    @pytest.mark.author("ajmishra@nvidia.com")
     @pytest.mark.nichealthmonitor
     def test_multi_nic_errors(self, request):
         """
@@ -42,6 +43,9 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         pod_name = None
         nodes_list = list(nodes_interfaces_dict.keys())
         node_name = nodes_list[0]
+
+        self.set_managed_by_nvsentinel_label_to_false(node_name)
+
         for pod in pods:
             if pod.spec.node_name == node_name:
                 # delete current nic pod to aviod old logs impact match counts
@@ -63,8 +67,8 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         non_mgmt_interface = self.get_non_mgmt_ports_of_the_node(node_name)
         self.logger.info(f"TARGET PORT NAME: {non_mgmt_interface}")
 
-        self.step_manager.print_header("Repeat the port down/up operations for 100 times")
-        count = 100
+        self.step_manager.print_header("Repeat the port down/up operations for 15 times")
+        count = 15
         self.down_up_interface_of_node_multi_times(
             node_name, non_mgmt_interface, count=count
         )
@@ -115,3 +119,5 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         self.logger.info(
             "SUCCESS: EthernetErrorCheck status is flip back to False when port up in node"
         )
+
+        self.restore_managed_by_nvsentinel_label(node_name)

@@ -36,6 +36,7 @@ class TestDGCMHealthyCheckPowerWatch(GPUHealthMonitorBase):
         )
         job_pod = pods[-1]
         self.node_name = job_pod.spec.node_name
+        self.set_managed_by_nvsentinel_label_to_false(self.node_name)
         self.logger.info(f"POD  Name: {job_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
 
@@ -68,3 +69,4 @@ class TestDGCMHealthyCheckPowerWatch(GPUHealthMonitorBase):
         self.verify_health_monitor_info(
             conditions=node_info.status.conditions, expected_result=expected_result
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

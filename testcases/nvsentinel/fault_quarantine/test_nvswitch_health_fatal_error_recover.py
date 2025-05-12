@@ -51,6 +51,7 @@ class TestNVSwitchHealthFatalErrorRecover(TestNVSentinelCaseBase):
         self.delete_fault_quarantine_pod()
         nodes, _ = self.client.get_nodes()
         self.node_name = nodes[0].metadata.name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"Node Name: {self.node_name}")
 
         self.step_manager.print_header("Login the node where the monitor pod is running on")
@@ -137,3 +138,5 @@ class TestNVSwitchHealthFatalErrorRecover(TestNVSentinelCaseBase):
             is None
         )
         assert node_info.spec.unschedulable is None
+        self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
+        self.restore_managed_by_nvsentinel_label(self.node_name)

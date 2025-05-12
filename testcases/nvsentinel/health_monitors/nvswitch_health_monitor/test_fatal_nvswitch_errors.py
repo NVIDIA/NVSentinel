@@ -45,7 +45,8 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
         self.node_name = job_pod.spec.node_name
         self.logger.info(f"POD   Name: {pod_name}")
         self.logger.info(f"Node  Name: {self.node_name}")
-        request.addfinalizer(partial(self.clear_nvswitch_error, self.node_name))
+  
+        self.set_managed_by_nvsentinel_label_to_false(self.node_name)
 
         self.step_manager.print_header(
             "Open one console to check the logs from the pod, do not close this console"
@@ -198,3 +199,4 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
         self.logger.info(f"Clear nvswitch error on {self.node_name}")
         self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
         self.clear_nvswitch_error(self.node_name)
+        self.restore_managed_by_nvsentinel_label(self.node_name)

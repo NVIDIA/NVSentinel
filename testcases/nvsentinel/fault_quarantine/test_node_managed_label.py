@@ -57,7 +57,7 @@ class TestNodeManagedByLabel(TestNVSentinelCaseBase):
 
         # Inject a fatal error on a GPU node with label set to false
         self.step_manager.print_header("Set the label k8saas.nvidia.com/ManagedByNVSentinel to false on the node")
-        success, _ = self.client.add_label_to_node(self.node_name, "k8saas.nvidia.com/ManagedByNVSentinel", "false")
+        success, err = self.client.add_label_to_node(self.node_name, "k8saas.nvidia.com/ManagedByNVSentinel", "false")
         assert success, f"Failed to set the label k8saas.nvidia.com/ManagedByNVSentinel to false on the node: {err}"
         time.sleep(30)
 

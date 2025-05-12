@@ -36,7 +36,7 @@ class TestNVSwitchHealthNonFatalError(TestNVSentinelCaseBase):
         nodes, _ = self.client.get_nodes()
         self.node_name = nodes[0].metadata.name
         self.logger.info(f"Node Name: {self.node_name}")
-
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.step_manager.print_header("Login the node where the monitor pod is running on")
         yaml_file = os.path.join(os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "debug-pod.yaml")
         self.logger.info(f"yaml_file = {yaml_file}")
@@ -85,3 +85,4 @@ class TestNVSwitchHealthNonFatalError(TestNVSentinelCaseBase):
             is None
         )
         assert node_info.spec.unschedulable is None
+        self.restore_managed_by_nvsentinel_label(self.node_name)

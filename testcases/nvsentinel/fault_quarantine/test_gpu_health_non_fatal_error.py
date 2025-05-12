@@ -37,6 +37,7 @@ class TestGPUHealthNonFatalError(TestNVSentinelCaseBase):
         )
         gpu_healthy_pod = pods[-1]
         self.node_name = gpu_healthy_pod.spec.node_name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD  Name: {gpu_healthy_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
         command = [
@@ -80,3 +81,4 @@ class TestGPUHealthNonFatalError(TestNVSentinelCaseBase):
         self.step_manager.print_header("Clear the injected error")
         command = ["python3 clear_xid_error_health_event.py"]
         self.client.exec_command_in_pod(gpu_healthy_pod, command)
+        self.restore_managed_by_nvsentinel_label(self.node_name)

@@ -19,7 +19,7 @@ import os
 import yaml
 
 default_namespace = "default"
-class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
+class TestNodeRecoveryDuringEvictionProcessAfterPodShifted(TestNVSentinelCaseBase):
     """
     Class for test case of NVsentinel Fault Notification: Node recovery during pod eviction process after the pod is shifted to another node
     """
@@ -97,6 +97,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         assert job, f"Failed to create job: {error}"
 
         self.job_name = job.metadata.name
+        time.sleep(10)
         success, error = self.client.verify_job_is_running(self.job_name, default_namespace)
         assert success, f"Job {self.job_name} is not running: {error}"
 
@@ -107,7 +108,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
             job_pod_name, default_namespace
         ).values
         self.logger.info(f"Training job pod is running on node: {self.node_name}")
-
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.step_manager.print_header(
             "Running 3 busybox pods under namespace busybox on 2 nodes, set one of the nodes to be the nodename  where the job pod is running on"
         )
@@ -277,3 +278,4 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         self.client.delete_pod_by_name(
             node_drainer_pod.metadata.name, self.nv_namespace
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

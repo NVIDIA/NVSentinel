@@ -89,12 +89,13 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         time.sleep(15)
 
         self.step_manager.print_header(
-            "Submit a training job under the project and wait unitil it's running"
+            "Submit a training job under the project and wait until it's running"
         )
         job_yaml_path = os.path.join(os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "gpu-job.yaml")
         job, error = self.client.create_job_from_yaml(job_yaml_path, default_namespace).values
         assert job, f"Failed to create job: {error}"
         self.job_name = job.metadata.name
+        time.sleep(10)
         success, error = self.client.verify_job_is_running(self.job_name, default_namespace)
         assert success, f"Job {self.job_name} is not running: {error}"
 
@@ -104,6 +105,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         self.node_name, _ = self.client.get_pod_running_node_name(
             job_pod_name, default_namespace
         ).values
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"Training job pod is running on node: {self.node_name}")
 
         self.step_manager.print_header(
@@ -260,3 +262,4 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         self.client.delete_pod_by_name(
             node_drainer_pod.metadata.name, self.nv_namespace
         )
+        self.restore_managed_by_nvsentinel_label(self.node_name)

@@ -71,6 +71,7 @@ class TestRulesetPriority(TestNVSentinelCaseBase):
         )
         self.gpu_healthy_pod = pods[-1]
         self.node_name = self.gpu_healthy_pod.spec.node_name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD  Name: {self.gpu_healthy_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
 
@@ -129,3 +130,15 @@ class TestRulesetPriority(TestNVSentinelCaseBase):
             )[0]
             == "True"
         )
+
+        self.step_manager.print_header("Clear the fatal error on the GPU node")
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+        ]
+        output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+        assert "Successfully injected" in output
+
+        time.sleep(20)
+        self.restore_managed_by_nvsentinel_label(self.node_name)

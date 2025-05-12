@@ -88,13 +88,14 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         )
         self.gpu_healthy_pod = pods[-1]
         self.node_name = self.gpu_healthy_pod.spec.node_name
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD Name: {self.gpu_healthy_pod.metadata.name}")
         self.logger.info(f"Node Name: {self.node_name}")
 
         command = [
             "/bin/sh",
             "-c",
-            f"dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 95",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
         ]
 
         output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
@@ -112,13 +113,20 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
 
 
         self.step_manager.print_header("Clear the injected error")
-        command = ["/bin/sh", "-c", "python3 clear_xid_error_health_event.py"]
-        result = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+        
+        command = [
+            "/bin/sh",
+            "-c",
+            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+        ]
+        output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
+        assert "Successfully injected" in output, "Failed to inject GPU error"
 
         time.sleep(30)
         self.step_manager.print_header("Check the node is uncordoned")
         node_info, _ = self.client.get_node_by_name(self.node_name)
         assert node_info.spec.unschedulable is None, f"FAIL: Node {self.node_name} is not uncordoned"
+        self.restore_managed_by_nvsentinel_label(self.node_name)
 
 
     def _ensure_maintenance_crd_exists(self):

@@ -866,8 +866,14 @@ class KubernetesClient(object):
             else:
                 print(f"Pod is {'healthy' if is_healthy else 'unhealthy'}")
         """
+        if not pod:
+            LOGGER.error("Pod is not found")
+            return CommonResult(False, "Pod is not found")
         retval = True
         pod_name = pod.metadata.name
+        if pod.status.phase == "Terminating" or pod.metadata.deletion_timestamp:
+            LOGGER.debug("Pod %s is terminating", pod_name)
+            return CommonResult(False)
         if pod.status.phase != "Running":
             if pod.status.phase == "Succeeded":
                 return CommonResult(True)
@@ -2873,8 +2879,7 @@ class KubernetesClient(object):
                 - bool: True if label was added successfully
                 - str: Error message if an exception occurred
         """
-        body = {"metadata": {"labels": {label_key: label_value}}}
-        retval = self.coreV1Api.patch_node(name=node_name, body=body)
+        retval = self.coreV1Api.patch_node(name=node_name, body={"metadata": {"labels": {label_key: str(label_value)}}})
         if retval.metadata.labels.get(label_key) == label_value:
             LOGGER.info(f"Label {label_key} added to node {node_name}.")
             return CommonResult(True)
@@ -2958,7 +2963,7 @@ class KubernetesClient(object):
             elif success:
                 print("Node uncordoned successfully")
         """
-        LOGGER.info("Uncondoning node: %s", node_name)
+        LOGGER.info("Uncondorning node: %s", node_name)
         try:
             retval = self.coreV1Api.patch_node(node_name, {"spec": {"unschedulable": None}})
             LOGGER.debug(
@@ -5102,12 +5107,9 @@ class KubernetesClient(object):
         try:
             with open(yaml_path, "r") as f:
                 job_yaml = yaml.safe_load(f)
-            
-            job_name = job_yaml["metadata"]["name"]
-            result = self.batchV1Api.read_namespaced_job(name=job_name, namespace=namespace)
-            if result:
-                _ = self.batchV1Api.delete_namespaced_job(name=job_name, namespace=namespace)
-                time.sleep(10)
+
+            # Delete the job if it exists
+            self.delete_job_if_exists(job_yaml["metadata"]["name"], namespace)
 
             # Create the job
             result = self.batchV1Api.create_namespaced_job(namespace=namespace, body=job_yaml)
@@ -5119,6 +5121,26 @@ class KubernetesClient(object):
             error_msg = f"Unexpected error creating job from {yaml_path}: {str(e)}"
             return CommonResult(None, error_msg)
 
+    def delete_job_if_exists(self, job_name: str, namespace: str) -> CommonResult[bool, str]:
+        """
+        Delete a job if it exists in a specific namespace.
+        """
+        try:
+            # Check if the job exists
+            result = self.batchV1Api.read_namespaced_job(name=job_name, namespace=namespace)
+            if result:
+                _ = self.batchV1Api.delete_namespaced_job(name=job_name, namespace=namespace)
+                time.sleep(10)
+                return CommonResult(True, "")
+            else:
+                return CommonResult(False, "Job does not exist")
+        except ApiException as e:
+            error_msg = f"Failed to delete job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error deleting job {job_name} in namespace {namespace}: {str(e)}"
+            return CommonResult(None, error_msg)
+    
     def verify_job_is_running(self, job_name: str, namespace: str) -> CommonResult[bool, str]:
         """
         Verify if a job is running in a specific namespace.
@@ -5135,10 +5157,10 @@ class KubernetesClient(object):
         try:
             # Get the job status
             job = self.batchV1Api.read_namespaced_job(name=job_name, namespace=namespace)
-            if job.status.active > 0:
+            if job.status.active is not None and job.status.active > 0:
                 return CommonResult(True, "")
             else:
-                return CommonResult(False, "Job is not running")
+                return CommonResult(False, "Job is not running" + str(job.status))
         except ApiException as e:
             error_msg = f"Failed to verify job {job_name} in namespace {namespace}: {str(e)}"
             return CommonResult(None, error_msg)

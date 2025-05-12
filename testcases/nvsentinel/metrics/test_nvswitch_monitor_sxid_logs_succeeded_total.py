@@ -130,4 +130,5 @@ class TestNvswitchMonitorSxidLogsSucceededTotal(TestNVSentinelCaseBase):
             value_after - value_before == 1
         ), "[FAIL] value of the metric is NOT increased by 1"
         self.logger.info("[PASS] value of the metric is increased by 1")
+        self.client.remove_node_condition(node_name, "NvswitchErrorFromKmsgWatch")
         request.addfinalizer(partial(self.clear_nvswitch_error, node_name))

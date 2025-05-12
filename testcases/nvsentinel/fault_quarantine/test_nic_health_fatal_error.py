@@ -43,6 +43,7 @@ class TestNICHealthFatalError(TestNVSentinelCaseBase):
         pod_name = None
         nodes_list = list(nodes_interfaces_dict.keys())
         self.node_name = nodes_list[0]
+        self.remove_managed_by_nvsentinel_label(self.node_name)
         for pod in pods:
             if pod.spec.node_name == self.node_name:
                 pod_name = pod.metadata.name
@@ -113,3 +114,4 @@ class TestNICHealthFatalError(TestNVSentinelCaseBase):
             is None
         )
         assert node_info.spec.unschedulable is None
+        self.restore_managed_by_nvsentinel_label(self.node_name)
