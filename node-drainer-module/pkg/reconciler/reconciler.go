@@ -174,9 +174,9 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 			r.NodeEvictionContext.Store(nsWithNode, &EvictionContext{cancel: cancel})
 			go func(ctx1 context.Context, mode config.EvictMode, nodeName string, ns string, nsWithNode string) {
 				defer wg.Done()
-				klog.Infof("Evicting pods from namespace %s in %s mode", ns, mode)
 				switch mode {
 				case config.ModeImmediateEvict:
+					klog.Infof("Evicting pods from namespace %s in %s mode", ns, mode)
 					mu.Lock()
 					nsWithImmediateMode = append(nsWithImmediateMode, ns)
 					mu.Unlock()
@@ -186,6 +186,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 						errChan <- err
 					}
 				case config.ModeAllowCompletion:
+					klog.Infof("Monitoring pods for completion in namespace %s in %s mode", ns, mode)
 					if err := r.Config.K8sClient.MonitorPodCompletion(ctx1, ns, nodeName); err != nil {
 						klog.Infof("error while monitoring pods to complete in namespace %s on node %s: %+v\n", ns, nodeName, err)
 						errChan <- err
@@ -194,7 +195,8 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 					r.NodeEvictionContext.Delete(nsWithNode)
 
 				default:
-					errChan <- fmt.Errorf("invalid mode of eviction for namespace %s", ns)
+					klog.Errorf("Invalid mode of eviction: %s", mode)
+					errChan <- fmt.Errorf("invalid mode of eviction: %s", mode)
 				}
 
 				select {

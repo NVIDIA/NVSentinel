@@ -264,3 +264,67 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 		t.Errorf("Expected nil but found error %s", err)
 	}
 }
+
+func TestHandleEventWithInvalidMode(t *testing.T) {
+	ctx := context.Background()
+
+	tomlCfg := config.TomlConfig{
+		EvictionTimeoutInSeconds: config.Duration{Duration: 40 * time.Second},
+		UserNamespaces: []config.UserNamespace{{
+			Name: "test-ns",
+			Mode: "Immiediate", // This is the invalid mode
+		},
+			{
+				Name: "test-ns-actual",
+				Mode: "AllowCompletion",
+			},
+		},
+	}
+
+	k8sClient := &MockNodeDrainerClient{
+		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
+			if pattern == "test-ns" || pattern == "test-ns-actual" {
+				return []string{"test-ns-actual"}, nil
+			}
+			return []string{}, fmt.Errorf("Unexpected pattern %s passed", pattern)
+		},
+		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
+			// This should not be called
+			t.Errorf("MonitorPodCompletion should not be called for invalid mode")
+			return nil
+		},
+		evictAllPodsImmediatelyFn: func(ctx context.Context, namespace, nodename string, timeout time.Duration) error {
+			// This should not be called
+			t.Errorf("EvictAllPodsInImmediateMode should not be called for invalid mode")
+			return nil
+		},
+		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
+			// This should not be called
+			t.Errorf("CheckIfAllPodsAreEvictedInImmediateMode should not be called for invalid mode")
+			return false
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		TomlConfig: tomlCfg,
+		K8sClient:  k8sClient,
+	}
+
+	healthEvent := &storeconnector.HealthEventWithStatus{
+		CreatedAt:   time.Now(),
+		HealthEvent: &platform_connectors.HealthEvent{}, // Minimal HealthEvent
+		HealthEventStatus: storeconnector.HealthEventStatus{
+			NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+			UserPodsEvictionStatus: storeconnector.OperationStatus{},
+			FaultRemediated:        nil,
+		},
+	}
+
+	r := NewReconciler(cfg, false) // DryRun is false
+	err := r.handleEvent(ctx, "event-id-invalid-mode", "node-for-invalid-mode", healthEvent)
+
+	assert.Error(t, err, "Expected an error for invalid eviction mode")
+	if err != nil {
+		assert.Contains(t, err.Error(), "invalid mode of eviction: Immiediate", "Error message mismatch")
+	}
+}
