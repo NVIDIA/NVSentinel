@@ -163,7 +163,7 @@ class DCGMWatcher:
     def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> dict[str, types.HealthDetails]:
         with metrics.dcgm_api_latency.labels("health_check").time():
             health_details = dcgm_group.health.Check()
-        log.info(f"initial health status is {health_details}")
+        log.debug(f"initial health status is {health_details}")
 
         health_status = self._get_health_status_dict()
         for i in range(health_details.incidentCount):
@@ -284,13 +284,13 @@ class DCGMWatcher:
 
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
-                log.info("Running health check")
+                log.debug("Running health check")
                 health_status = self._perform_health_check(dcgm_group)
                 self._fire_callback_funcs(
                     types.CallbackInterface.health_event_occurred.__name__, [health_status, gpu_ids, gpu_serials]
                 )
 
-            log.info("Waiting till next cycle")
+            log.debug("Waiting till next cycle")
             exit.wait(self._poll_interval_seconds)
 
         self._unregister_xid_callbacks(dcgm_groups_with_xid_policy)

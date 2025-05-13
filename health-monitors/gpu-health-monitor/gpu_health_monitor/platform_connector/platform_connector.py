@@ -350,6 +350,12 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     delay *= 1.5
                     continue
         metrics.health_events_insertion_to_uds_error.set(1.0)
+        # Remove failed health events from entity cache
+        for health_event in health_events:
+            for entity in health_event.entitiesImpacted:
+                cache_key = self._build_cache_key(health_event.checkName, entity.entityType, entity.entityValue)
+                if cache_key in self.entity_cache:
+                    del self.entity_cache[cache_key]
         return False
 
     def get_xid_from_dcgm_message(self, message: str) -> str:
