@@ -55,7 +55,7 @@ config: |
   name = "Rule1"
   description = "Detect occurrence of XID13 -> XID31 within 30 minutes"
   time_window = "30m"
-  recommendation_action = "RESET_GPU"
+  recommended_action = "RESET_GPU"
   
   [[rules.sequence]]
   criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }
@@ -69,7 +69,7 @@ config: |
   name = "Rule2"
   description = "Detect occurrence of XID13 3 times within 30 minutes"
   time_window = "30m"
-  recommendation_action = "REPORT_ERROR"
+  recommended_action = "REPORT_ISSUE"
 
   [[rules.sequence]]
   criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }

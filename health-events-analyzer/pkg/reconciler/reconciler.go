@@ -151,7 +151,14 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 		// Check if current event matches any sequence criteria in the rule
 		if matchesAnySequenceCriteria(rule, *event) && r.evaluateRule(ctx, rule, *event) {
 			klog.Infof("Rule '%s' matched for event: %+v", rule.Name, event)
-			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommenedAction(platform_connectors.RecommenedAction_value[rule.RecommendedAction]))
+
+			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
+			if !ok {
+				klog.Warningf("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
+				actionVal = int32(platform_connectors.RecommenedAction_NONE)
+			}
+
+			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommenedAction(actionVal))
 			if err != nil {
 				klog.Errorf("Error in publishing the new fatal event: %+v", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
