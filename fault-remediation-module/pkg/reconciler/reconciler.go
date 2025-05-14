@@ -51,6 +51,14 @@ func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
 	return &Reconciler{Config: cfg, NodeEvictionContext: sync.Map{}, DryRun: dryRunEnabled}
 }
 
+func (r *Reconciler) shouldSkipEvent(healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+	if healthEventWithStatus.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE {
+		klog.Infof("Skipping event for node: %s, recommended action is NONE", healthEventWithStatus.HealthEvent.NodeName)
+		return true
+	}
+	return false
+}
+
 func (r *Reconciler) Start(ctx context.Context) {
 
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, r.Config.MongoConfig, r.Config.TokenConfig, r.Config.MongoPipeline)
@@ -87,6 +95,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 				totalEventProcessingError.WithLabelValues("mark_processed_error", healthEventWithStatus.HealthEvent.NodeName).Inc()
 				klog.Errorf("Error updating resume token: %+v", err)
 			}
+			continue
+		}
+		if r.shouldSkipEvent(healthEventWithStatus) {
 			continue
 		}
 

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
@@ -131,6 +132,31 @@ func TestHandleEvent(t *testing.T) {
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
+}
+
+func TestSkipEventWithNoneRecommendedAction(t *testing.T) {
+	// Create a health event with NONE recommended action
+	healthEvent := &platformconnector.HealthEvent{
+		NodeName:          "test-node",
+		RecommendedAction: platformconnector.RecommenedAction_NONE,
+	}
+
+	// Create a health event with status
+	healthEventWithStatus := storeconnector.HealthEventWithStatus{
+		HealthEvent: healthEvent,
+	}
+
+	// Create a reconciler
+	r := NewReconciler(ReconcilerConfig{}, false)
+
+	t.Logf("Testing event with NONE recommended action")
+	// Test that the event should be skipped
+	assert.True(t, r.shouldSkipEvent(healthEventWithStatus), "Event with NONE recommended action should be skipped")
+
+	t.Logf("Testing event with NODE_REBOOT recommended action")
+	// Test with a non-NONE recommended action
+	healthEvent.RecommendedAction = platformconnector.RecommenedAction_NODE_REBOOT
+	assert.False(t, r.shouldSkipEvent(healthEventWithStatus), "Event with non-NONE recommended action should not be skipped")
 }
 
 func TestUpdateNodeRemediatedStatus(t *testing.T) {
