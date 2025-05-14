@@ -54,6 +54,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         xid_errors_batch_processing_enabled: bool,
         nvml_xid_parser: NvmlXidParser,
         state_file_path: str,
+        dcgm_health_conditions_categorization_mapping_config: dict[str, str],
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -73,6 +74,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, CachedEntityState] = {}
+        self.dcgm_health_conditions_categorization_mapping_config = dcgm_health_conditions_categorization_mapping_config
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -145,8 +147,18 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted.append(entity)
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-                        isFatal = False if details.status == dcgmtypes.HealthStatus.PASS else True
-                        isHealthy = True if details.status == dcgmtypes.HealthStatus.PASS else False
+                        isFatal = False
+                        isHealthy = True
+                        if details.status == dcgmtypes.HealthStatus.PASS:
+                            isFatal = False
+                            isHealthy = True
+                        else:
+                            isFatal = (
+                                False
+                                if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal"
+                                else True
+                            )
+                            isHealthy = False
                         if (
                             key not in self.entity_cache
                             or self.entity_cache[key].isFatal != isFatal
@@ -179,6 +191,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     metadata={"SerialNumber": serials[gpu_id]},
                                 )
                             )
+                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
+                                metrics.dcgm_health_events_non_fatal_health_events.labels(
+                                    event_type=check_name, gpu_id=gpu_id
+                                ).set(1)
+                            else:
+                                metrics.dcgm_health_events_fatal_health_events.labels(
+                                    event_type=check_name, gpu_id=gpu_id
+                                ).set(1)
                     else:
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
@@ -189,6 +209,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             or self.entity_cache[key].isFatal
                             or not self.entity_cache[key].isHealthy
                         ):
+
                             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
                             health_events.append(
@@ -208,6 +229,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     metadata={"SerialNumber": serials[gpu_id]},
                                 )
                             )
+                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
+                                metrics.dcgm_health_events_non_fatal_health_events.labels(
+                                    event_type=check_name, gpu_id=gpu_id
+                                ).set(0)
+                            else:
+                                metrics.dcgm_health_events_fatal_health_events.labels(
+                                    event_type=check_name, gpu_id=gpu_id
+                                ).set(0)
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 self.send_health_event_with_retries(health_events)

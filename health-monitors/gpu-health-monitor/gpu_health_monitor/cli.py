@@ -37,6 +37,7 @@ def _init_event_processor(
     xid_errors_batch_processing_enabled: bool,
     nvml_xid_parser,
     state_file_path: str,
+    dcgm_health_conditions_categorization_mapping_config: dict[str, str],
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -52,6 +53,7 @@ def _init_event_processor(
                 xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
                 nvml_xid_parser=nvml_xid_parser,
                 state_file_path=state_file_path,
+                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -111,6 +113,7 @@ def cli(
     xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
     dcgm_errors_info_dict: dict[str, str] = {}
+    dcgm_health_conditions_categorization_mapping_config = config["DCGMHealthConditionsCategorizationMapping"]
     log.basicConfig(format=logging_config["LogFormat"], datefmt=logging_config["DateTimeFormat"])
     if verbose:
         log.getLogger().setLevel(log.DEBUG)
@@ -161,6 +164,7 @@ def cli(
                 xid_errors_batch_processing_enabled,
                 nvml_xid_parser,
                 state_file_path,
+                dcgm_health_conditions_categorization_mapping_config,
             )
         )
 

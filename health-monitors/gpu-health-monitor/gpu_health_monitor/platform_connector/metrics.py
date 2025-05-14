@@ -41,3 +41,15 @@ gpu_health_monitor_xid_errors = Gauge(
     "XID observed on the GPU by node_name,serial_number",
     labelnames=["node_name", "serial_number"],  # Labels
 )
+
+dcgm_health_events_non_fatal_health_events = Gauge(
+    "dcgm_health_events_non_fatal_count",
+    "Total number of non-fatal health events",
+    labelnames=["event_type", "gpu_id"],
+)
+
+dcgm_health_events_fatal_health_events = Gauge(
+    "dcgm_health_events_fatal_count",
+    "Total number of fatal health events",
+    labelnames=["event_type", "gpu_id"],
+)

@@ -134,6 +134,20 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict["DCGM_FR_CORRUPT_INFOROM"] = "RESET_GPU"
         dcgm_errors_info_dict["DCGM_HEALTH_WATCH_INFOROM"] = "IGNORE"
 
+        dcgm_health_conditions_categorization_mapping_config = {}
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
         xid_errors_batch_processing_interval = 4
         xid_errors_batch_processing_enabled = True
@@ -148,6 +162,7 @@ class TestPlatformConnectors(unittest.TestCase):
             xid_errors_batch_processing_enabled,
             DummyNvmlXidParser(),
             "statefile",
+            dcgm_health_conditions_categorization_mapping_config,
         )
         dcgm_health_events = watcher._get_health_status_dict()
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(

@@ -64,6 +64,23 @@ data:
     UPDATE_SWFW = 14
     RESTART_VM = 15
 
+    [DCGMHealthConditionsCategorizationMapping]
+    DCGM_HEALTH_WATCH_THERMAL=NonFatal
+    DCGM_HEALTH_WATCH_POWER=NonFatal
+    DCGM_HEALTH_WATCH_NVLINK=Fatal
+    DCGM_HEALTH_WATCH_SM=Fatal
+    DCGM_HEALTH_WATCH_MEM=Fatal
+    DCGM_HEALTH_WATCH_INFOROM=Fatal
+    DCGM_HEALTH_WATCH_MCU=Fatal
+    DCGM_HEALTH_WATCH_DRIVER=Fatal
+    DCGM_HEALTH_WATCH_NVSWITCH_FATAL=Fatal
+    DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL=NonFatal
+    DCGM_HEALTH_WATCH_PCIE=Fatal
+    DCGM_HEALTH_WATCH_PMU=Fatal
+    
+    
+    
+
   # The below tables should map to the xid error spreadsheet https://docs.google.com/spreadsheets/d/1t6PpsC5TXiNl4JMBuHlFIjmSbjLZ2ik0Sz3DLw8cLmE/edit?gid=121017179#gid=121017179
   # ordering of below columns => xiderrorno,xiderrorname,xiderrorrecommendedaction,FATAL/NONFATAL errors
 {{ (.Files.Glob "xiderrorsmapping.csv").AsConfig | indent 2 }}
