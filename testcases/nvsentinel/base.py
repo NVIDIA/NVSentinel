@@ -990,3 +990,23 @@ class TestNVSentinelCaseBase(Base):
             self.client.add_label_to_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel", self.backup_label_value)
         else:
             self.client.remove_label_from_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")
+
+
+    def skip_if_node_drainer_deployment_not_found(self):
+        node_drainer_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-node-drainer")
+        if not node_drainer_deployment:
+            self.logger.error("Node drainer deployment not found")
+            pytest.skip("Node drainer deployment not found")
+
+    def skip_if_fault_quarantine_deployment_not_found(self):
+        fault_quarantine_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-quarantine")
+        if not fault_quarantine_deployment:
+            self.logger.error("Fault quarantine deployment not found")
+            pytest.skip("Fault quarantine deployment not found")
+            
+    def skip_if_fault_remediation_deployment_not_found(self):
+        fault_remediation_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-remediation")
+        if not fault_remediation_deployment:
+            self.logger.error("Fault remediation deployment not found")
+            pytest.skip("Fault remediation deployment not found")
+            

@@ -28,6 +28,7 @@ class TestNICHealthFatalError(TestNVSentinelCaseBase):
         """
         Tests if appropriate node annotations and node condition are set when NIC interface is set down
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )

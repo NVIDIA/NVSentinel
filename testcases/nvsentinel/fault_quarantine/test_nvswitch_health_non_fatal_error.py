@@ -30,6 +30,7 @@ class TestNVSwitchHealthNonFatalError(TestNVSentinelCaseBase):
         """
         Tests if the node is not cordoned and not tainted when a non-fatal error is injected from NVSwitch health monitor that does not matches any ruleset
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.logger.info("Restart the fault-quarantine pod")
         self.delete_fault_quarantine_pod()
 

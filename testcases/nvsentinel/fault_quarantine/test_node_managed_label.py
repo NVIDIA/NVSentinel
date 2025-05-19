@@ -41,7 +41,7 @@ class TestNodeManagedByLabel(TestNVSentinelCaseBase):
         """
         Tests if the node that do not have the label "k8saas.nvidia.com/ManagedByNVSentinel" set to false are not cordoned
         """
-        
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.logger.info("Restart the fault-quarantine pod")
         self.delete_fault_quarantine_pod()
 

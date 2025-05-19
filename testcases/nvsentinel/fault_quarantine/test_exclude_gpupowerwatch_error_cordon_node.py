@@ -28,6 +28,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         """
         Tests if the GPUPowerWatch error is excluded from the node quarantine rule and the node is not cordoned
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Inject a GPUPowerWatch error on a GPU node")
         pods, _ = self.client.list_pods(
             namespace=self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor*"

@@ -48,6 +48,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
             - Upon clearing the fatal error from one of the cordoned node, the node is uncordoned,
               and the other node which was not cordoned before but has the same fatal error, is cordoned
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Backup the default fault quarantine config map")
         self.client.backup_configmap(
             "nvsentinel", "fault-quarantine-config", self.backup_cm

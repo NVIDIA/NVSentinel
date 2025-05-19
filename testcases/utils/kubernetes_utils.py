@@ -2438,11 +2438,9 @@ class KubernetesClient(object):
         node_list = []
         selector = None
         if node_type.lower() == "cpu":
-            selector = "nodeGroup=customer-cpu"
+            selector = "nvidia.com/gpu.present!=true"
         elif node_type.lower() == "gpu":
-            selector = "nodeGroup=customer-gpu"
-        elif node_type.lower() == "system":
-            selector = "nodeGroup=system-cpu"
+            selector = "nvidia.com/gpu.present=true"
 
         if selector:
             v1NodeList = self.coreV1Api.list_node(label_selector=selector)

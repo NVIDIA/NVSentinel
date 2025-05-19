@@ -46,6 +46,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         Tests if fault quarantine pod is correctly deployed and handles the complex ruleset correctly with respect to the priority of the ruleset
         Also tests if the node is cordoned and tainted when the node is matched with the rule
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Backup the default fault quarantine config map")
         self.client.backup_configmap(
             "nvsentinel", "fault-quarantine-config", self.backup_cm

@@ -49,6 +49,7 @@ class TestRulesetPriority(TestNVSentinelCaseBase):
         """
         Tests if the node is cordoned and tainted when the node is matched with the rule, and the node is recovered when the error is cleared
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Backup the default fault quarantine config map")
         self.client.backup_configmap(
             "nvsentinel", "fault-quarantine-config", self.backup_cm

@@ -52,6 +52,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
             3. busybox pods are evicted due to immediate mode
             4. The node is recovered when the error is cleared
         """
+        self.skip_if_node_drainer_deployment_not_found()
         self.step_manager.print_header("Check the node-drainer pod is running")
         # Get node-drainer pod
         node_drainer_pod = self.get_node_drainer_pod()
@@ -115,7 +116,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         request.addfinalizer(lambda: self.client.delete_namespace("busybox"))
 
         self.step_manager.print_header("Get GPU nodes from cluster")
-        gpu_node_names, _ = self.client.get_node_names_by_label("nodeGroup=customer-gpu")
+        gpu_node_names, _ = self.client.get_node_names_by_label("nvidia.com/gpu.present=true")
         if len(gpu_node_names) < 2:
             self.logger.error(
                 f"Not enough GPU nodes found. Found {len(gpu_node_names)}, need at least 2"

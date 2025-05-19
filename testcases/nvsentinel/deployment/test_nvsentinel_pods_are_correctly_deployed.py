@@ -53,9 +53,8 @@ class TestPodsAreCorrectlyDeployed(TestNVSentinelCaseBase):
         daemonsets, _ = self.client.list_daemonset(namespace=self.nv_namespace)
         gpu_nodes, _ = self.client.get_nodes(node_type="gpu")
         cpu_nodes, _ = self.client.get_nodes(node_type="cpu")
-        sys_nodes, _ = self.client.get_nodes(node_type="system")
         gpu_nodes_number = len(gpu_nodes)
-        total_nodes_number = len(gpu_nodes) + len(cpu_nodes) + len(sys_nodes)
+        total_nodes_number = len(gpu_nodes) + len(cpu_nodes)
         self.logger.info(f"gpu_nodes_number : {gpu_nodes_number}")
         self.logger.info(f"total_nodes_number : {total_nodes_number}")
 

@@ -71,7 +71,7 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         Test case of NVsentinel Fault Remediation: Inject XID error triggering maintenance CR creation
         """
         self.logger.info("Inject XID error triggers maintenance CR test")
-        
+        self.skip_if_fault_remediation_deployment_not_found()
         self.step_manager.print_header("Check the fault remediation pod is running")
         pods, _ = self.client.list_pods(
             self.nv_namespace, name_pattern="nvsentinel-fault-remediation*"

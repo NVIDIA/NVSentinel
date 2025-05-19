@@ -47,6 +47,7 @@ class TestNVSwitchHealthFatalErrorRecover(TestNVSentinelCaseBase):
         """
         Tests if the node is cordoned and tainted when the node is matched with the rule, and the node is recovered when the error is cleared
         """
+        self.skip_if_fault_quarantine_deployment_not_found()
         self.logger.info("Restart the fault-quarantine pod")
         self.delete_fault_quarantine_pod()
         nodes, _ = self.client.get_nodes()
