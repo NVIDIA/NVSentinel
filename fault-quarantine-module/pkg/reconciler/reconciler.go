@@ -165,6 +165,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	for _, node := range quarantinedNodesList {
 		quarantinedNodesMap[node] = true
+
+		currentQuarantinedNodes.Inc()
+		totalNodesQuarantined.Inc()
 	}
 
 	klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
