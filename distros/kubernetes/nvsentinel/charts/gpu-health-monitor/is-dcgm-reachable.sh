@@ -37,9 +37,32 @@ check_dcgm() {
     fi
 }
 
+check_local_dcgm() {
+    output=$(nc -zv localhost $DCGM_PORT 2>&1)
+    if [ $? -eq 0 ]; then
+    if echo "$output" | grep -q "open"; then
+        echo "DCGM service is reachable"
+        echo "Details: $output"
+        return 0
+    else
+        echo "Unexpected output from netcat: $output"
+        return 1
+    fi
+    else
+    echo "Unable to connect to DCGM service"
+    echo "Error: $output"
+    return 1
+    fi
+}
+
 for attempt in $(seq 1 $MAX_ATTEMPTS); do
     echo "Attempt $attempt of $MAX_ATTEMPTS"
     if check_dcgm; then
+    echo "DCGM service is reachable. Exiting successfully."
+    exit 0
+    fi
+
+    if check_local_dcgm; then
     echo "DCGM service is reachable. Exiting successfully."
     exit 0
     fi
