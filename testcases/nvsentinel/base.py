@@ -560,13 +560,19 @@ class TestNVSentinelCaseBase(Base):
         self.logger.info(f"url = {url}")
         params = {"query": query_params}
         self.logger.info(f"params = {params}")
-        response = requests.get(url, params=params)
-        self.logger.info(f"response.status_code = {response.status_code}")
-        if fail_message == "":
-            fail_message = f"[FAIL] Cannot get {query_params}"
-        assert response.status_code == 200, fail_message
-        self.logger.info(f"response.json() = \n{response.json()}")
-        return response
+        for _ in range(5):
+            try:
+                response = requests.get(url, params=params)
+                self.logger.info(f"response.status_code = {response.status_code}")
+                if fail_message == "":
+                    fail_message = f"[FAIL] Cannot get {query_params}"
+                assert response.status_code == 200, fail_message
+                self.logger.info(f"response.json() = \n{response.json()}")
+                return response
+            except Exception as e:
+                self.logger.info(f"Error: {e}")
+                time.sleep(10)
+        raise Exception(f"Failed to get {query_params} after 5 times")
 
     def get_expected_value(self, query_params, value_before, expected_increase=1):
         """

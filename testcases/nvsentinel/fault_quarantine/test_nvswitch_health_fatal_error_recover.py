@@ -35,6 +35,9 @@ class TestNVSwitchHealthFatalErrorRecover(TestNVSentinelCaseBase):
         finally:
             # Equivalent to addCleanup in unittest
             self.logger.info("[Teardown] nvswitch_fatal_error")
+            fault_quarantine_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-quarantine")
+            if not fault_quarantine_deployment:
+                return
             platform_connector = self.get_platform_connector_by_node_name(self.node_name)
             assert (
                 platform_connector

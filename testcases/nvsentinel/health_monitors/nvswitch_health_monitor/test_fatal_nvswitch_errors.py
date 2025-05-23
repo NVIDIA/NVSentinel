@@ -198,5 +198,4 @@ class TestFatalNvswitchErrors(NVSwitchHealthMonitorBase):
         )
         self.logger.info(f"Clear nvswitch error on {self.node_name}")
         self.client.remove_node_condition(self.node_name, "NvswitchErrorFromKmsgWatch")
-        self.clear_nvswitch_error(self.node_name)
         self.restore_managed_by_nvsentinel_label(self.node_name)

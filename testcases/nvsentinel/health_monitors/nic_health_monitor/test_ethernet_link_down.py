@@ -12,6 +12,7 @@ import pytest
 import threading
 import random
 from functools import partial
+import os
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 
 
@@ -26,6 +27,11 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         """
         Tests if the EthernetErrorCheck condition is set correctly when the ethernet link is down
         """
+        if os.getenv("CLOUD_PROVIDER") == "aws":
+            # Setting non-management interface down turn off kubernetes connectivity for some reason
+            # Jira: https://jirasw.nvidia.com/browse/NGCC-25441
+            pytest.skip("This test case is not supported on AWS. Skipping this test case.")
+
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )

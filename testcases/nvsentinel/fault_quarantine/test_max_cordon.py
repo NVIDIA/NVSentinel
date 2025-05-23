@@ -33,6 +33,9 @@ class TestMaxCordon(TestNVSentinelCaseBase):
             yield
         finally:
             # Equivalent to addCleanup in unittest
+            fault_quarantine_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-quarantine")
+            if not fault_quarantine_deployment:
+                return
             self.logger.info("[Teardown] max_cordon")
             self.client.apply_configmap(self.backup_cm)
             self.delete_fault_quarantine_pod()

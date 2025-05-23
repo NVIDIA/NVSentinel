@@ -47,6 +47,7 @@ class TestMultiNvswitchErrors(NVSwitchHealthMonitorBase):
         job_pod = pods[-1]
         pod_name = job_pod.metadata.name
         self.node_name = job_pod.spec.node_name
+        self.set_managed_by_nvsentinel_label_to_false(self.node_name)
         self.logger.info(f"POD   Name: {pod_name}")
         self.logger.info(f"Node  Name: {self.node_name}")
 
@@ -69,7 +70,7 @@ class TestMultiNvswitchErrors(NVSwitchHealthMonitorBase):
         )
         self.step_manager.print_header("Check 100 error info From the pod log console")
         self.step_manager.print_header("Check 100 error info from node condition")
-        request.addfinalizer(partial(self.clear_nvswitch_error, self.node_name))
+
         count = 100
         for i in range(count):
             index = i + 1
@@ -130,3 +131,4 @@ class TestMultiNvswitchErrors(NVSwitchHealthMonitorBase):
             assert (
                 event_count_2 == event_count_1 + count
             ), f"Expected count to be {event_count_1 + count}, got {event_count_2}"
+        self.restore_managed_by_nvsentinel_label(self.node_name)

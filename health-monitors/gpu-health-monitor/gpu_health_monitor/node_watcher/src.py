@@ -38,6 +38,7 @@ def pod_event_callback(event):
     node_name = pod.spec.node_name
 
     if event_type == "ADDED":
+        time.sleep(30)  # wait for the pod to be ready
         dcgm_version = [x.image for x in pod.spec.containers if re.match(r".+?dcgm:.*", x.image)]
         if dcgm_version:
             if re.match(r".+?dcgm:4.*", dcgm_version[0]):
@@ -75,6 +76,9 @@ def update_node_label(node_name, label_value):
                 logger.error(f"Failed to update node {node_name}: {e}")
                 time.sleep(inital_delay)
                 inital_delay *= 2
+            elif e.status == 404:
+                logger.error(f"Node {node_name} not found")
+                return
             else:
                 raise e
 

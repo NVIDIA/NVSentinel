@@ -14,6 +14,7 @@ Module for class of NVsentinel Metrics: NIC health monitor metric: nic_monitor_h
 import pytest
 import time
 from functools import partial
+import os
 
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 
@@ -31,6 +32,9 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
         """
         Test case of NVsentinel Metrics: NIC health monitor metric: nic_monitor_health_events_published_total
         """
+        if os.getenv("CLOUD_PROVIDER") == "aws":
+            pytest.skip("This test case is not supported on AWS. Skipping this test case.")
+
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )

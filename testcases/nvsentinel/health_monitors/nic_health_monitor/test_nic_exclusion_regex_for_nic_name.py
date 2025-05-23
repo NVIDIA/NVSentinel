@@ -15,7 +15,7 @@ import re
 import pytest
 from functools import partial
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
-
+import os
 
 class TestNicExclusionRegex(TestNVSentinelCaseBase):
     """
@@ -28,6 +28,10 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
         """
         Tests if the regex exclusion for NIC name is working correctly
         """
+        if os.getenv("CLOUD_PROVIDER") == "aws":
+            # Jira: https://jirasw.nvidia.com/browse/NGCC-25436
+            # ibdev2netdev not found on nodes, need to figure out how to map ib interface to nic interface
+            pytest.skip("This test case is not supported on AWS. Skipping this test case.")
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )

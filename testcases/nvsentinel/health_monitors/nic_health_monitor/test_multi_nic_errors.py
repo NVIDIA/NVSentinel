@@ -14,6 +14,7 @@ Module for class of NVsentinel NIC Health Monitor: Multi NIC errors
 import pytest
 import re
 import time
+import os
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 
 
@@ -28,6 +29,10 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         """
         Tests if the EthernetErrorCheck condition and related events are set correctly when multiple NICs are down
         """
+        if os.getenv("CLOUD_PROVIDER") == "aws":
+            # Jira: https://jirasw.nvidia.com/browse/NGCC-25441
+            pytest.skip("This test case is not supported on AWS. Skipping this test case.")
+
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )

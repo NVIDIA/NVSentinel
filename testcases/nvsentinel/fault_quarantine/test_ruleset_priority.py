@@ -33,6 +33,9 @@ class TestRulesetPriority(TestNVSentinelCaseBase):
         finally:
             # Equivalent to addCleanup in unittest
             self.logger.info("[Teardown] gpu_monitor_fatal_error")
+            fault_quarantine_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-quarantine")
+            if not fault_quarantine_deployment:
+                return
             command = [
                 "/bin/sh",
                 "-c",

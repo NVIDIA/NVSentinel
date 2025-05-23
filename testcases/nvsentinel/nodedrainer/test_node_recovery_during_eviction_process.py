@@ -36,6 +36,9 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         finally:
             self.logger.info("[Teardown] Node Drainer Pod")
             self.logger.info("Cleaning up resources if any created during the test.")
+            node_drainer_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-node-drainer")
+            if not node_drainer_deployment:
+                return
             success, error = self.client.apply_configmap(self.backup_cm_path)
             if error:
                 self.logger.error(

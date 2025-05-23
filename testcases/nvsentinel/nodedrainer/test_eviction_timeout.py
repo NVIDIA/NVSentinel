@@ -34,6 +34,9 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
             yield
         finally:
             self.logger.info("[Teardown] Fault Notification Pod")
+            node_drainer_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-node-drainer")
+            if not node_drainer_deployment:
+                return
             self.logger.info("Cleaning up resources if any created during the test.")
             success, error = self.client.apply_configmap(self.backup_cm_path)
             self.clear_gpu_fatal_error(self.node_name, "GpuInforomWatch")

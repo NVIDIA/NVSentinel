@@ -32,6 +32,9 @@ class TestNodeManagedByLabel(TestNVSentinelCaseBase):
         finally:
             # Equivalent to addCleanup in unittest
             self.logger.info("[Teardown] gpu_monitor_fatal_error")
+            fault_quarantine_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-fault-quarantine")
+            if not fault_quarantine_deployment:
+                return
             self.clear_gpu_fatal_error(self.node_name, "GpuXidError")
             self.delete_fault_quarantine_pod()
     
