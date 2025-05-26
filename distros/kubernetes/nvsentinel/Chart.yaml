@@ -43,3 +43,6 @@ dependencies:
   - name: health-events-analyzer
     version: "0.1.0"
     condition: global.healthEventsAnalyzer.enabled
+  - name: csp-health-monitor
+    version: "0.1.0"
+    condition: global.cspHealthMonitor.enabled

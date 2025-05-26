@@ -20,5 +20,11 @@ dependencies:
 - name: fault-remediation
   repository: ""
   version: 0.1.0
-digest: sha256:293f440c6a0d354d0d2d046b3914adf110e9837406b2fb716820cf3ae72abf8a
-generated: "2025-04-11T15:25:14.948964+05:30"
+- name: health-events-analyzer
+  repository: ""
+  version: 0.1.0
+- name: csp-health-monitor
+  repository: ""
+  version: 0.1.0
+digest: sha256:c9ff287278546039cd6d390f886c93de7cf954ce903383855fe8229fd547a134
+generated: "2025-05-08T15:03:07.431706854+05:30"

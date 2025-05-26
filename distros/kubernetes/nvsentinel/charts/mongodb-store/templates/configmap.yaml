@@ -23,6 +23,7 @@ data:
   MONGODB_URI: {{ $uri := "" }}{{ if .Values.mongodb.configMapValues }}{{ $uri = .Values.mongodb.configMapValues.mongodbUri }}{{ end }}{{ default (printf "mongodb://%s-mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Name .Release.Namespace) $uri | quote }}
   MONGODB_DATABASE_NAME: "HealthEventsDatabase"
   MONGODB_COLLECTION_NAME: "HealthEvents"
+  MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: "MaintenanceEvents"
   MONGODB_TOKEN_COLLECTION_NAME: "ResumeTokens"
   MONGODB_PING_TIMEOUT_TOTAL_SECONDS: "300"
   MONGODB_PING_INTERVAL_SECONDS: "5"

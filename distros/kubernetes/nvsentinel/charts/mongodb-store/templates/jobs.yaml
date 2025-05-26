@@ -67,6 +67,14 @@ spec:
                   { 'createdAt': 1 },                 
                   { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }      
                 );
+                db.createCollection('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'actualEndTime': 1 },    
+                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }                  
+                );
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'scheduledStartTime': 1 },
+                );
                 db.getSiblingDB('\$external').runCommand({
                   createUser: '$MONGODB_APPLICATION_USER_DN',
                   roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]

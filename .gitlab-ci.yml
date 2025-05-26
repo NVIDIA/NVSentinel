@@ -313,6 +313,63 @@ nvswitch-health-monitor-container-publish:
   tags:
     - dind
 
+csp-health-monitor-lint:
+  stage: lint
+  variables:
+    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
+  script:
+    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
+    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
+    - cd health-monitors/csp-health-monitor
+    - go vet ./...
+    - golangci-lint run
+  after_script:
+    - rm -f ~/.netrc
+  artifacts:
+    when: always
+    reports:
+      codequality: health-monitors/csp-health-monitor/code-quality-report.json
+    paths:
+      - health-monitors/csp-health-monitor/code-quality-report.json
+
+csp-health-monitor-test:
+  stage: test
+  variables:
+    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
+  script:
+    - cd health-monitors/csp-health-monitor
+    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
+    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: csp-health-monitor/coverage.xml
+      junit: csp-health-monitor/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+csp-health-monitor-container-publish:
+  stage: publish
+  image: docker:27.3.1
+  services:
+    - docker:27.3.1-dind
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+  script:
+    - cd health-monitors/csp-health-monitor
+    - docker context create builder
+    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} . 
+  tags:
+    - dind
+
+
+
 platform-connectors-lint:
   stage: lint
   script:

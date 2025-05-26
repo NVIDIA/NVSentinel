@@ -78,6 +78,13 @@ global:
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor
       pullPolicy: IfNotPresent
+  
+  cspHealthMonitor:
+    enabled: true
+
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-csp-health-monitor
+      pullPolicy: IfNotPresent
 
   imagePullSecrets:
     - name: nvidia-ngcuser-pull-secret
