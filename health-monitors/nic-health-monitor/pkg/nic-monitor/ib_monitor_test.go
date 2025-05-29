@@ -68,25 +68,28 @@ func TestInfinibandMonitor(t *testing.T) {
 			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
 			"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
 			"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
+			"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("InfiniBand")}, // Default link layer
 		},
 	}
 
 	mockFS := fileSystem.(*MockFileSystem)
 
-	expectedNoError := []NicHealthEvent{
+	expectedHealthyDeviceAndPort := []NicHealthEvent{
 		{NicType: Infiniband, Name: "mlx5_0", Message: nicIsDetected, IsHealthyEvent: true},
 		{NicType: Infiniband, Name: "mlx5_0_1", Message: portIsHealthy, IsHealthyEvent: true},
 	}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
+	// Initialize Devices map for the monitor
+	ibMonitor.Devices = make(map[string]InfiniBandDevice)
 
-	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil}
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil, MonitorNetworkType: MonitorNetworkTypeAll}
 
 	// mlx5_0 port 1 is up, so no error expected
-	actualErrors, err := ibMonitor.Monitor(nicConfig)
+	actualEvents, err := ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedNoError, actualErrors)
+	require.NotNil(t, actualEvents)
+	require.ElementsMatch(t, expectedHealthyDeviceAndPort, actualEvents)
 
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
@@ -100,37 +103,39 @@ func TestInfinibandMonitor(t *testing.T) {
 		},
 	}
 
-	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedPhyStatePolling, actualErrors)
+	require.NotNil(t, actualEvents)
+	require.ElementsMatch(t, expectedPhyStatePolling, actualEvents)
 
 	// mlx5_0 port 1 is still down, but it is not a new error, so do not report it
-	expectedNoError = []NicHealthEvent{}
-	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	expectedNoEvents := []NicHealthEvent{}
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedNoError, actualErrors)
+	// require.NotNil(t, actualEvents) // An empty slice is not nil
+	require.ElementsMatch(t, expectedNoEvents, actualEvents)
 
 	// mlx5_0 port 1 become up - no error reports
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("5: LinkUp")
-	expectedNoError = []NicHealthEvent{{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true}}
-	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	expectedPortBecomesHealthy := []NicHealthEvent{
+		{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true},
+	}
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedNoError, actualErrors)
+	require.NotNil(t, actualEvents)
+	require.ElementsMatch(t, expectedPortBecomesHealthy, actualEvents)
 
-	// // eth0 become down again, so report nic down event
+	// eth0 become down again, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
-	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedPhyStatePolling, actualErrors)
+	require.NotNil(t, actualEvents)
+	require.ElementsMatch(t, expectedPhyStatePolling, actualEvents)
 
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
 	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
 
-	expectedStateDown := []NicHealthEvent{
+	expectedStateDownAndPhyPolling := []NicHealthEvent{
 		{
 			NicType:        Infiniband,
 			Name:           "mlx5_0_1",
@@ -139,10 +144,37 @@ func TestInfinibandMonitor(t *testing.T) {
 		},
 	}
 
-	actualErrors, err = ibMonitor.Monitor(nicConfig)
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
-	require.NotNil(t, actualErrors)
-	require.Equal(t, expectedStateDown, actualErrors)
+	require.NotNil(t, actualEvents)
+	require.ElementsMatch(t, expectedStateDownAndPhyPolling, actualEvents)
+
+	// Test for newly discovered unhealthy port
+	ibMonitor = &InfinibandDeviceMonitor{} // Reset monitor state
+	ibMonitor.Devices = make(map[string]InfiniBandDevice)
+	mockFS.Fs = fstest.MapFS{ // Reset FS to only one device, initially unhealthy
+		"sys/class/infiniband/mlx5_new/ports/1":            {Mode: fs.ModeDir},
+		"sys/class/infiniband/mlx5_new/ports/1/phys_state": {Data: []byte("1: Disabled")},
+		"sys/class/infiniband/mlx5_new/ports/1/state":      {Data: []byte("1: Down")},
+		"sys/class/infiniband/mlx5_new/ports/1/link_layer": {Data: []byte("InfiniBand")},
+	}
+	expectedNewUnhealthyPortEvents := []NicHealthEvent{
+		{NicType: Infiniband, Name: "mlx5_new", Message: nicIsDetected, IsHealthyEvent: true},
+		{
+			NicType:        Infiniband,
+			Name:           "mlx5_new_1",
+			Message:        "state: 1: Down, phys_state: 1: Disabled",
+			IsHealthyEvent: false,
+		},
+	}
+	actualEvents, err = ibMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t,
+		expectedNewUnhealthyPortEvents,
+		actualEvents,
+		"Newly discovered unhealthy port events mismatch",
+	)
 }
 
 func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
@@ -212,4 +244,149 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, actualErrors)
 	require.Equal(t, expectedStateDown, actualErrors)
+}
+
+func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
+	tests := []struct {
+		name                 string
+		monitorNetworkType   MonitorNetworkType
+		linkLayer            string // Content of the link_layer file for the port
+		initialPortState     string
+		initialPortPhysState string
+		expectedEvents       []NicHealthEvent
+	}{
+		{
+			name:                 "MonitorTypeAll_LinkLayerIB_Healthy",
+			monitorNetworkType:   MonitorNetworkTypeAll,
+			linkLayer:            "InfiniBand",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeAll_LinkLayerEth_Healthy",
+			monitorNetworkType:   MonitorNetworkTypeAll,
+			linkLayer:            "Ethernet",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeRoCE_LinkLayerEth_Healthy",
+			monitorNetworkType:   MonitorNetworkTypeRoCE,
+			linkLayer:            "Ethernet",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeRoCE_LinkLayerIB_Healthy_ShouldBeSkipped",
+			monitorNetworkType:   MonitorNetworkTypeRoCE,
+			linkLayer:            "InfiniBand",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeInfiniBand_LinkLayerIB_Healthy",
+			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
+			linkLayer:            "InfiniBand",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeInfiniBand_LinkLayerEth_Healthy_ShouldBeSkipped",
+			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
+			linkLayer:            "Ethernet",
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+			},
+		},
+		{
+			name:                 "MonitorTypeRoCE_LinkLayerEth_NewUnhealthyPort",
+			monitorNetworkType:   MonitorNetworkTypeRoCE,
+			linkLayer:            "Ethernet",
+			initialPortState:     "1: DOWN",
+			initialPortPhysState: "2: Polling",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{
+					Name:           "mlx5_test_1",
+					NicType:        Infiniband,
+					Message:        "state: 1: DOWN, phys_state: 2: Polling",
+					IsHealthyEvent: false,
+				},
+			},
+		},
+		{
+			name:                 "MonitorTypeInfiniBand_LinkLayerIB_NewUnhealthyPort",
+			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
+			linkLayer:            "InfiniBand",
+			initialPortState:     "1: DOWN",
+			initialPortPhysState: "2: Polling",
+			expectedEvents: []NicHealthEvent{
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+				{
+					Name:           "mlx5_test_1",
+					NicType:        Infiniband,
+					Message:        "state: 1: DOWN, phys_state: 2: Polling",
+					IsHealthyEvent: false,
+				},
+			},
+		},
+		{
+			name:                 "MonitorTypeRoCE_LinkLayerMissing_ShouldSkipPort",
+			monitorNetworkType:   MonitorNetworkTypeRoCE,
+			linkLayer:            "MISSING", // Special value to indicate file should not be created
+			initialPortState:     "4: ACTIVE",
+			initialPortPhysState: "5: LinkUp",
+			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped due to missing link_layer
+				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fsMap := fstest.MapFS{
+				"sys/class/infiniband/mlx5_test/ports/1":            {Mode: fs.ModeDir},
+				"sys/class/infiniband/mlx5_test/ports/1/state":      {Data: []byte(tc.initialPortState)},
+				"sys/class/infiniband/mlx5_test/ports/1/phys_state": {Data: []byte(tc.initialPortPhysState)},
+			}
+			if tc.linkLayer != "MISSING" {
+				fsMap["sys/class/infiniband/mlx5_test/ports/1/link_layer"] = &fstest.MapFile{Data: []byte(tc.linkLayer)}
+			}
+
+			fileSystem = &MockFileSystem{Fs: fsMap}
+
+			ibMonitor := &InfinibandDeviceMonitor{}
+			ibMonitor.Devices = make(map[string]InfiniBandDevice)
+
+			nicConfig := &NicMonitorConfig{
+				ExclusionRegexes:   nil,
+				MonitorNetworkType: tc.monitorNetworkType,
+			}
+
+			actualEvents, err := ibMonitor.Monitor(nicConfig)
+			require.NoError(t, err)
+			require.ElementsMatch(t, tc.expectedEvents, actualEvents)
+		})
+	}
 }

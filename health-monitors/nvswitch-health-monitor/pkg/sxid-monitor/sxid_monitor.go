@@ -18,7 +18,6 @@ package sxid_monitor
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -388,8 +387,18 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 		return nil, nil
 	}
 
+	// If there are not enough tokens to include the link index, that is only an
+	// error when we *do* detect the "Link" keyword (meaning a link number
+	// should follow).  If the "Link" keyword itself is absent we treat this
+	// message as a non-link-specific SXid event and skip it.
 	if len(words) <= linkIdx {
-		return nil, fmt.Errorf("log message truncated: %s", str)
+		if len(words) > linkStrIdx && words[linkStrIdx] == "Link" {
+			// "Link" keyword present but link number missing -> malformed, return error.
+			return nil, fmt.Errorf("log message truncated: %s", str)
+		}
+
+		// No "Link" token, skip.
+		return nil, nil
 	}
 
 	// Parse NVSwitch number
@@ -421,13 +430,16 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 		return nil, nil
 	}
 
-	// expect the link information to be present, else return error
+	// For SXid logs that do not include link information (e.g. SOE watchdog/halting
+	// events) we simply skip processing. These logs are valid but the parser only
+	// cares about per-link errors which always contain the "Link <id>" tokens.
+	// Treat missing link information as a signal to ignore rather than error.
 	if len(words) < linkStrIdx || words[linkStrIdx] != "Link" {
-		return nil, errors.New("link information is missing")
+		return nil, nil
 	}
 
 	var link int
-	// expect the link number to be present, else return error
+	// If the "Link" token exists but the link number is missing, skip the log.
 	if len(words) > linkIdx {
 		// parse Link number
 		link, err = strconv.Atoi(words[linkIdx])
@@ -435,8 +447,8 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 			return nil, fmt.Errorf("cannot parse link number: %s", words[linkIdx])
 		}
 	} else {
-		// Some old log has missing Link information - we'd like report this as error and monitor
-		return nil, errors.New("link information is missing")
+		// If the "Link" token exists but the link number is missing, skip the log.
+		return nil, nil
 	}
 
 	// Extract error message

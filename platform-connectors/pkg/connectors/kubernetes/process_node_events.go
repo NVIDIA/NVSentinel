@@ -16,10 +16,15 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -79,7 +84,9 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 		conditionToHealthEventsMap[conditionType] = append(conditionToHealthEventsMap[conditionType], event)
 	}
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return apierrors.IsConflict(err) || isTemporaryError(err)
+	}, func() error {
 		node, err := r.clientset.CoreV1().Nodes().Get(ctx, healthEvents[0].NodeName, metav1.GetOptions{})
 		if err != nil {
 			klog.Errorf("Error getting node: %s", err)
@@ -222,7 +229,9 @@ func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
 }
 
 func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, nodeName string) error {
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return apierrors.IsConflict(err) || isTemporaryError(err)
+	}, func() error {
 		// Fetch all events for the node
 		events, err := r.clientset.CoreV1().Events(DefaultNamespace).List(ctx, metav1.ListOptions{
 			FieldSelector: fmt.Sprintf("involvedObject.name=%s", nodeName),
@@ -380,4 +389,30 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pl
 	}
 
 	return nil
+}
+
+// isTemporaryError checks if the error is a temporary network error
+func isTemporaryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Treat context deadline exceeded as retryable
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// Check for network-related errors
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		// Retry on timeouts
+		if netErr.Timeout() {
+			return true
+		}
+		// Retry on common temporary connection issues like refused/reset
+		if errors.Is(netErr, syscall.ECONNREFUSED) || errors.Is(netErr, syscall.ECONNRESET) {
+			return true
+		}
+	}
+
+	return apierrors.IsTimeout(err)
 }

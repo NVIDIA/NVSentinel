@@ -89,11 +89,13 @@ func TestPhyEthernetMonitor(t *testing.T) {
 	}
 
 	ethMonitor := &EthernetDeviceMonitor{}
+	ethMonitor.devices = make(map[string]EthernetDevice)
 
 	nicConfig := &NicMonitorConfig{
 		ExclusionRegexes: nil,
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		MonitorNetworkType: MonitorNetworkTypeAll,
 	}
 
 	// eth0 is up, so expect a healthy event
@@ -127,6 +129,26 @@ func TestPhyEthernetMonitor(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, actualEvents)
 	require.Equal(t, expectedDownEvent, actualEvents)
+
+	// Test for newly discovered unhealthy Ethernet device
+	ethMonitor = &EthernetDeviceMonitor{}
+	ethMonitor.devices = make(map[string]EthernetDevice)
+	mockFS.Fs = fstest.MapFS{
+		"sys/class/net/eth_new/device":    {Mode: fs.ModeDir},
+		"sys/class/net/eth_new/operstate": {Data: []byte("lowerlayerdown")},
+		"sys/class/net/eth_new/type":      {Data: []byte("1")},
+	}
+	expectedNewUnhealthyEthDeviceEvents := []NicHealthEvent{
+		{NicType: Ethernet, Name: "eth_new", Message: "state: lowerlayerdown", IsHealthyEvent: false},
+	}
+	actualEvents, err = ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.ElementsMatch(
+		t,
+		expectedNewUnhealthyEthDeviceEvents,
+		actualEvents,
+		"Newly discovered unhealthy Ethernet device events mismatch",
+	)
 }
 
 func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
@@ -168,7 +190,10 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, actualEvents)
 	// sort for comparison
-	sort.Slice(expectedHealthyEvents, func(i, j int) bool { return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name })
+	sort.Slice(
+		expectedHealthyEvents,
+		func(i, j int) bool { return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name },
+	)
 	sort.Slice(actualEvents, func(i, j int) bool { return actualEvents[i].Name < actualEvents[j].Name })
 	require.Equal(t, expectedHealthyEvents, actualEvents)
 
@@ -231,7 +256,11 @@ func TestMonitorDeviceGoesDownAndStaysDown(t *testing.T) {
 		{NicType: Ethernet, Name: "eth0", Message: "state: down"},
 	}, actualEvents)
 	// ensure that it retried for at least MaxRetryDuration
-	require.GreaterOrEqual(t, elapsedTime.Milliseconds(), int64(nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds))
+	require.GreaterOrEqual(
+		t,
+		elapsedTime.Milliseconds(),
+		int64(nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds),
+	)
 }
 
 func TestMonitorDeviceRecoversBeforeMaxRetryDuration(t *testing.T) {

@@ -17,8 +17,11 @@
 package nic_monitor
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
+
+	"k8s.io/klog"
 )
 
 const (
@@ -118,6 +121,17 @@ func GetPortPhysState(devname, portName string) string {
 	return strings.TrimSpace(string(state))
 }
 
+func getLinkLayer(ibDeviceName string, portName string) (string, error) {
+	linkLayerPath := filepath.Join(SYS_CLASS_INFINIBAND_PATH, ibDeviceName, "ports", portName, "link_layer")
+
+	content, err := fileSystem.ReadFile(linkLayerPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read link_layer for %s port %s: %w", ibDeviceName, portName, err)
+	}
+
+	return strings.TrimSpace(string(content)), nil
+}
+
 // nolint: gocognit, cyclop
 func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
 	deviceList, err := GetInfinibandDevices(config.ExclusionRegexes)
@@ -167,6 +181,30 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 		}
 
 		for portName, port := range device.Ports {
+			// Filter based on MonitorNetworkType and link_layer
+			if config.MonitorNetworkType == MonitorNetworkTypeRoCE ||
+				config.MonitorNetworkType == MonitorNetworkTypeInfiniBand {
+				linkLayer, err := getLinkLayer(device.Name, portName)
+				if err != nil {
+					klog.Warningf(
+						"Could not determine link_layer for IB port %s on device %s, skipping: %v",
+						portName,
+						device.Name,
+						err,
+					)
+
+					continue // Skip this port if link_layer cannot be determined
+				}
+
+				if config.MonitorNetworkType == MonitorNetworkTypeRoCE && linkLayer != "Ethernet" {
+					continue
+				}
+
+				if config.MonitorNetworkType == MonitorNetworkTypeInfiniBand && linkLayer != "InfiniBand" {
+					continue
+				}
+			}
+
 			var oldPort InfiniBandPort
 
 			oldPortExist := false
@@ -178,6 +216,7 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 			}
 
 			// port is new
+			//nolint
 			if !oldPortExist {
 				// if port is new and healthy, then create a healthy event
 				if port.State == stateActive && port.PhysState == phyStateLinkup {
@@ -186,6 +225,25 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 						Name:           device.Name + "_" + port.Name,
 						Message:        portIsHealthy,
 						IsHealthyEvent: true,
+					})
+				} else {
+					// Port is new and not healthy, create an unhealthy event
+					var msgParts []string
+					if port.State != stateActive {
+						msgParts = append(msgParts, "state: "+port.State)
+					}
+
+					if port.PhysState != phyStateLinkup {
+						msgParts = append(msgParts, "phys_state: "+port.PhysState)
+					}
+
+					msg := strings.Join(msgParts, ", ")
+
+					events = append(events, NicHealthEvent{
+						NicType:        Infiniband,
+						Name:           device.Name + "_" + port.Name,
+						Message:        msg,
+						IsHealthyEvent: false,
 					})
 				}
 

@@ -17,7 +17,6 @@
 package sxid_monitor
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,15 +71,37 @@ func testParsingSXIDLogline2Metrics(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, m)
 
-	_, err = ParseSXIDError(logTruncated)
+	// truncated log without full "Link" keyword should now be skipped without error
+	m, err = ParseSXIDError(logTruncated)
+	require.NoError(t, err)
+	require.Nil(t, m)
+
+	// malformed log that contains "Link" keyword but no link number should result in error
+	logMissingLinkNumber := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:06:00.0): 20009, Non-fatal, Link"
+
+	_, err = ParseSXIDError(logMissingLinkNumber)
 	require.Error(t, err)
 
-	// Logs that need to return error
-	logMissingLink := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:07:00.0): 10001, Non-fatal, PRI WRITE SYSB error, instance=3, chiplet=1"
+	// Log missing "Link" token should now be skipped without error
+	logMissingLink := "<12>[38889.018130] nvidia-nvswitch1: SXid (PCI:0000:07:00.0): 10001, Non-fatal, PRI WRITE SYSB error, instance=3"
 
-	_, err = ParseSXIDError(logMissingLink)
-	require.Error(t, err)
-	require.Equal(t, errors.New("link information is missing"), err)
+	m, err = ParseSXIDError(logMissingLink)
+	require.NoError(t, err)
+	require.Nil(t, m)
+
+	// Additional SOE logs (without "Link" and with SOE keywords) should be skipped without error
+	soeLogs := []string{
+		"nvidia-nvswitch0: SXid (PCI:0004:00:00.0): 26008, SOE Watchdog error",
+		"nvidia-nvswitch0: SXid (PCI:0004:00:00.0): 26006, SOE HALTED",
+		"nvidia-nvswitch0: SXid (PCI:0004:00:00.0): 26007, SOE EXTERR",
+		"nvidia-nvswitch0: SXid (PCI:0004:00:00.0): 26006, SOE HALT data[0] = 0x               0",
+	}
+
+	for _, l := range soeLogs {
+		m, err := ParseSXIDError(l)
+		require.NoError(t, err)
+		require.Nil(t, m)
+	}
 }
 
 func TestStatePersistence(t *testing.T) {

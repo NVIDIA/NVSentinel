@@ -47,12 +47,15 @@ const (
 	COMPONENT_CLASS     = "NIC"
 )
 
+const defaultStateFilePath = "/var/run/nic_monitor/state.json"
+
 const (
 	defaultPollingIntervalInMilliseconds                    = 1000
 	defaultMaxRetryDurationForDownDetectedNICInMilliseconds = 500
 	defaultRetryIntervalForDownDetectedNICInMilliseconds    = 100
 	defaultMaxRetriesForRetryableError                      = 10
 	defaultRetryDelaySecondsForRetryableError               = 5
+	defaultMonitorNetworkType                               = string(nic.MonitorNetworkTypeAll)
 )
 
 var (
@@ -100,14 +103,15 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent, nodeName string) *pb
 			CheckName:          checkname,
 			ComponentClass:     componentClass,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
-			EntitiesImpacted:   []*pb.Entity{{EntityType: "NIC", EntityValue: nicEvent.Name}},
 			Message:            nicEvent.Message,
 			IsFatal:            isFatal,
 			IsHealthy:          isHealthy,
 			NodeName:           nodeName,
-			// ErrorCode:          fmt.Sprint(nicError.ErrorNum),
-			// ActionRequired:     false,
-			// RecommendedAction:  pb.RecommenedAction_UNKNOWN,
+			RecommendedAction:  pb.RecommenedAction_NONE,
+		}
+
+		if nicEvent.Name != "" {
+			event.EntitiesImpacted = []*pb.Entity{{EntityType: "NIC", EntityValue: nicEvent.Name}}
 		}
 
 		healthEvents.Events = append(healthEvents.Events, &event)
@@ -137,6 +141,15 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		}
 
 		return value, nil
+	}
+
+	getStringValue := func(keyName string, defaultVal string) string {
+		key := section.Key(keyName)
+		if key == nil || key.String() == "" {
+			return defaultVal
+		}
+
+		return key.String()
 	}
 
 	pollingInterval, err := getIntValue("PollingIntervalInMilliseconds", defaultPollingIntervalInMilliseconds)
@@ -180,6 +193,8 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		return nil, err
 	}
 
+	monitorNetworkType := getStringValue("MonitorNetworkType", defaultMonitorNetworkType)
+
 	return &nic.NicMonitorConfig{
 		PollingIntervalInMilliseconds:                    pollingInterval,
 		ExclusionRegexes:                                 exclusionRegexes,
@@ -187,9 +202,11 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		RetryIntervalForDownDetectedNICInMilliseconds:    retryInterval,
 		MaxRetriesForRetryableError:                      maxRetriesForRetryableError,
 		RetryDelaySecondsForRetryableError:               retryDelaySecondsForRetryableError,
+		MonitorNetworkType:                               nic.MonitorNetworkType(monitorNetworkType),
 	}, nil
 }
 
+//nolint:cyclop
 func validateConfig(cfg *nic.NicMonitorConfig) error {
 	if cfg.PollingIntervalInMilliseconds <= 0 {
 		return fmt.Errorf("PollingIntervalInMilliseconds must be a positive integer")
@@ -225,6 +242,17 @@ func validateConfig(cfg *nic.NicMonitorConfig) error {
 		return fmt.Errorf("RetryDelaySecondsForRetryableError must be a positive integer")
 	}
 
+	if cfg.MonitorNetworkType != nic.MonitorNetworkTypeAll && cfg.MonitorNetworkType != nic.MonitorNetworkTypeRoCE &&
+		cfg.MonitorNetworkType != nic.MonitorNetworkTypeInfiniBand {
+		return fmt.Errorf(
+			"invalid MonitorNetworkType: %s. Must be one of '%s', '%s', or '%s'",
+			cfg.MonitorNetworkType,
+			nic.MonitorNetworkTypeAll,
+			nic.MonitorNetworkTypeRoCE,
+			nic.MonitorNetworkTypeInfiniBand,
+		)
+	}
+
 	for _, regex := range cfg.ExclusionRegexes {
 		if _, err := regexp.Compile(regex); err != nil {
 			return fmt.Errorf("invalid NIC exclusion regex '%s': %w", regex, err)
@@ -250,8 +278,15 @@ func main() {
 			defaultMaxRetryDurationForDownDetectedNICInMilliseconds,
 			"Maximum retry duration for down-detected NICs in milliseconds")
 
-		retryIntervalForDownDetectedNIC = flag.Int("retry-interval-for-down-detected-nic",
-			defaultRetryIntervalForDownDetectedNICInMilliseconds, "Retry interval for down-detected NICs in milliseconds")
+		retryIntervalForDownDetectedNIC = flag.Int(
+			"retry-interval-for-down-detected-nic",
+			defaultRetryIntervalForDownDetectedNICInMilliseconds,
+			"Retry interval for down-detected NICs in milliseconds",
+		)
+
+		monitorNetworkTypeFlag = flag.String("monitor-network-type", defaultMonitorNetworkType,
+			fmt.Sprintf("Type of network to monitor. Options: %s, %s, %s",
+				nic.MonitorNetworkTypeAll, nic.MonitorNetworkTypeRoCE, nic.MonitorNetworkTypeInfiniBand))
 	)
 
 	flag.Parse()
@@ -264,6 +299,8 @@ func main() {
 		RetryIntervalForDownDetectedNICInMilliseconds:    *retryIntervalForDownDetectedNIC,
 		MaxRetriesForRetryableError:                      defaultMaxRetriesForRetryableError,
 		RetryDelaySecondsForRetryableError:               defaultRetryDelaySecondsForRetryableError,
+		StateFilePath:                                    defaultStateFilePath,
+		MonitorNetworkType:                               nic.MonitorNetworkType(*monitorNetworkTypeFlag),
 	}
 
 	if *nicExclusionRegexes != "" {
@@ -295,15 +332,19 @@ func main() {
 
 		nicConfig.ExclusionRegexes = fileConfig.ExclusionRegexes
 
-		nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds =
-			fileConfig.MaxRetryDurationForDownDetectedNICInMilliseconds
+		//nolint
+		nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds = fileConfig.MaxRetryDurationForDownDetectedNICInMilliseconds
 
-		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds =
-			fileConfig.RetryIntervalForDownDetectedNICInMilliseconds
+		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds = fileConfig.RetryIntervalForDownDetectedNICInMilliseconds
 
 		nicConfig.MaxRetriesForRetryableError = fileConfig.MaxRetriesForRetryableError
 
 		nicConfig.RetryDelaySecondsForRetryableError = fileConfig.RetryDelaySecondsForRetryableError
+
+		// MonitorNetworkType from config file takes precedence
+		if fileConfig.MonitorNetworkType != "" {
+			nicConfig.MonitorNetworkType = fileConfig.MonitorNetworkType
+		}
 
 		klog.Info("Loaded configuration from configmap")
 	}
@@ -323,6 +364,7 @@ func main() {
 		nicConfig.MaxRetryDurationForDownDetectedNICInMilliseconds)
 	klog.Infof("Retry Interval for Down-Detected NIC: %d milliseconds",
 		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds)
+	klog.Infof("Monitor Network Type: %s", nicConfig.MonitorNetworkType)
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -385,7 +427,8 @@ func isRetryableError(err error) bool {
 }
 
 func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
-	maxRetries int, retryDelay time.Duration) {
+	maxRetries int, retryDelay time.Duration,
+) {
 	backoff := wait.Backoff{
 		Steps:    maxRetries,
 		Duration: retryDelay,
@@ -422,7 +465,6 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 
 		return false, err
 	})
-
 	if err != nil {
 		healthEventsInsertionToUDSError.Set(1.0)
 		klog.Errorf("All retry attempts to send health event failed: %v", err)

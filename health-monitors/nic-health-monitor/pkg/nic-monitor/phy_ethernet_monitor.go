@@ -192,7 +192,8 @@ tickerLoop:
 }
 
 func (m *EthernetDeviceMonitor) checkDevices(deviceList map[string]EthernetDevice, startTime time.Time,
-	maxRetryDuration time.Duration) ([]NicHealthEvent, bool) {
+	maxRetryDuration time.Duration,
+) ([]NicHealthEvent, bool) {
 	var events []NicHealthEvent
 
 	retryNeeded := false
@@ -204,6 +205,9 @@ func (m *EthernetDeviceMonitor) checkDevices(deviceList map[string]EthernetDevic
 			// device is new
 			if device.Operstate == operstateUp {
 				events = append(events, createNicHealthEvent(device, true, deviceIsHealthy))
+			} else {
+				// Device is new and not healthy, create an unhealthy event
+				events = append(events, createNicHealthEvent(device, false, "state: "+device.Operstate))
 			}
 
 			continue
