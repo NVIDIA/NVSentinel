@@ -15,7 +15,7 @@
 ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23 AS builder
+FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ARG GITLAB_HOST
 ARG GITLAB_LOGIN

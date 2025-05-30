@@ -14,7 +14,7 @@
 
 
 #Platform connector build
-FROM golang:1.23 AS builder
+FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 RUN mkdir -p /app
 COPY platform-connectors /app/platform-connectors

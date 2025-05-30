@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.23 AS builder
+FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ENV CGO_ENABLED=0
 
