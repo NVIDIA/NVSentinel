@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
+
 FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /go/src/nvswitch-health-monitor
 
@@ -23,7 +27,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
 
 FROM debian:bullseye-slim

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 variables:
   GIT_TERMINAL_PROMPT: 1
   NGC_ORG: nv-ngc-devops
@@ -45,12 +46,6 @@ variables:
 default:
   tags:
     - mk8s
-
-# Global cache configuration
-cache:
-  key: ${CI_COMMIT_REF_SLUG}
-  paths:
-    - .go-cache
 
 image: $CI_REGISTRY_IMAGE/ci:latest
 
@@ -222,9 +217,15 @@ gpu-health-monitor-test:
 
 gpu-health-monitor-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -268,9 +269,15 @@ nic-health-monitor-test:
 
 nic-health-monitor-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -314,9 +321,15 @@ nvswitch-health-monitor-test:
 
 nvswitch-health-monitor-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -369,9 +382,15 @@ csp-health-monitor-test:
 
 csp-health-monitor-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -416,9 +435,15 @@ platform-connectors-test:
 
 platform-connectors-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -473,9 +498,15 @@ health-event-analyzer-test:
 
 health-event-analyzer-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -530,9 +561,15 @@ fault-quarantine-module-test:
 
 fault-quarantine-module-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -590,9 +627,15 @@ node-drainer-module-test:
 
 node-drainer-module-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -649,9 +692,15 @@ fault-remediation-module-test:
 
 fault-remediation-module-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
@@ -665,9 +714,15 @@ fault-remediation-module-container-publish:
 
 node-health-events-uds-connector-container-publish:
   stage: publish
-  image: docker:27.3.1
+  image: docker:28.1.1
   services:
-    - docker:27.3.1-dind
+    - docker:28.1.1-dind
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}

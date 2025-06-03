@@ -31,8 +31,14 @@ RUN poetry export --format requirements.txt --output constraints.txt --without-h
 
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
+RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99disable-cert-check
+
 RUN apt-get update && \
-    apt-get install -y python3-pip && \
+    apt-get install -y --no-install-recommends \
+        apt-transport-https \
+        ca-certificates \
+        gnupg \
+        python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
 ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"

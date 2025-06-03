@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM python:3.10-bookworm
+FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0
 
 # Install protobuf compiler and related tools
 RUN apt-get update && apt-get install -y \

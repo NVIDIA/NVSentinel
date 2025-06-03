@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
 
 #Platform connector build
 FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
@@ -21,16 +22,18 @@ COPY platform-connectors /app/platform-connectors
 WORKDIR /app/platform-connectors
 
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN mkdir -p /etc/config
 
 RUN go mod download
 RUN go mod tidy
 
-RUN go build -o platform-connector main.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o platform-connector main.go
 
 # gpu-health-monitor build dependencies requirements
-FROM python:3.10-bookworm AS build
+FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0 AS build
 
 RUN mkdir -p /app
 COPY health-monitors/gpu-health-monitor /app/gpu-health-monitor

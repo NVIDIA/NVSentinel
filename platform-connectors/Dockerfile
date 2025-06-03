@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
+
 ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidia/distroless/go
 
 FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN mkdir -p /etc/config
 WORKDIR /go/src/platform-connectors
@@ -27,7 +31,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o platform-connectors main.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o platform-connectors main.go
 
 FROM $IMG:$TAG
 

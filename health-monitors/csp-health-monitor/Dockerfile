@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
+
 ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23 AS builder
+FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 # Set necessary environment variables for Go modules
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 # Arguments for GitLab authentication
 ARG GITLAB_HOST
@@ -50,10 +54,10 @@ RUN --mount=type=secret,id=gitlab_token \
 COPY . .
 
 # Build the main monitor application binary
-RUN go build -trimpath -o csp-health-monitor ./cmd/csp-health-monitor/main.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o csp-health-monitor ./cmd/csp-health-monitor/main.go
 
 # Build the quarantine trigger engine sidecar binary
-RUN go build -trimpath -o maintenance-notifier ./cmd/maintenance-notifier/main.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o maintenance-notifier ./cmd/maintenance-notifier/main.go
 
 # --- Final Stage ---
 FROM ${IMG}:${TAG}

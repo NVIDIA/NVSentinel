@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
+
 ARG TAG=v3.1.2
 ARG IMG=nvcr.io/nvidia/distroless/go
 
@@ -27,6 +29,8 @@ RUN if [ -z "$GITLAB_HOST" ] || [ -z "$GITLAB_LOGIN" ]; then \
 
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /go/src/node-drainer-module
 
@@ -43,7 +47,7 @@ RUN --mount=type=secret,id=gitlab_token \
     
 COPY . .
     
-RUN go build -trimpath -o nodedrainer cmd/nodedrainer.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o nodedrainer cmd/nodedrainer.go
 
 FROM ${IMG}:${TAG}
 

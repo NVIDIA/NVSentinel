@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# syntax=docker/dockerfile:1.6
+
 ARG TAG=v3.1.5
 ARG IMG=nvcr.io/nvidian/distroless/go
 
@@ -27,6 +29,8 @@ RUN if [ -z "$GITLAB_HOST" ] || [ -z "$GITLAB_LOGIN" ]; then \
 
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /go/src/health-events-analyzer
 
@@ -42,7 +46,7 @@ RUN --mount=type=secret,id=gitlab_token \
 
 COPY . .
 
-RUN go build -trimpath -o healtheventsanalyzer cmd/healtheventsanalyzer.go
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o healtheventsanalyzer cmd/healtheventsanalyzer.go
 
 FROM ${IMG}:${TAG}
 
