@@ -24,7 +24,14 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+
 	"k8s.io/client-go/kubernetes"
+)
+
+var (
+	quarantineHealthEventAnnotationKey              = common.QuarantineHealthEventAnnotationKey
+	quarantineHealthEventAppliedTaintsAnnotationKey = common.QuarantineHealthEventAppliedTaintsAnnotationKey
+	quarantineHealthEventIsCordonedAnnotationKey    = common.QuarantineHealthEventIsCordonedAnnotationKey
 )
 
 type mockK8sClient struct {
@@ -126,7 +133,7 @@ func TestHandleEvent(t *testing.T) {
 				if !isCordon {
 					t.Errorf("Expected node to be cordoned")
 				}
-				if _, ok := annotations[quarantineHealthEventAnnotationKey]; !ok {
+				if _, ok := annotations[common.QuarantineHealthEventAnnotationKey]; !ok {
 					t.Errorf("Expected quarantineHealthEvent annotation to be set")
 				}
 				if len(labelsMap) != 3 {
@@ -144,8 +151,6 @@ func TestHandleEvent(t *testing.T) {
 		&mockEvaluator{name: "ruleset1", ok: true}, // applies taint key1=val1
 		&mockEvaluator{name: "ruleset2", ok: true}, // applies taint key2=val2 and cordon
 	}
-
-	quarantinedNodesMap := make(map[string]bool)
 
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName: "node1",
@@ -171,7 +176,6 @@ func TestHandleEvent(t *testing.T) {
 				"ruleset2": 5,
 			},
 		},
-		quarantinedNodesMap,
 	)
 
 	if isQuarantined == nil {
@@ -187,7 +191,7 @@ func TestHandleEvent(t *testing.T) {
 		t.Errorf("Unexpected rule kind result: %v", ruleEvalResult)
 	}
 
-	if !quarantinedNodesMap["node1"] {
+	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 		t.Errorf("Expected quarantinedNodesMap[node1] to be true")
 	}
 }
@@ -229,7 +233,7 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 		TaintConfigMap:     map[string]*config.Taint{},
 		CordonConfigMap:    map[string]bool{},
 		RuleSetPriorityMap: map[string]int{},
-	}, map[string]bool{})
+	})
 
 	if isQuarantined == nil {
 		t.Errorf("Expected isQuarantined to be non-nil")
@@ -299,7 +303,8 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 	// Initialize label keys
 	r.SetLabelKeys("k88s.nvidia.com/")
 
-	quarantinedNodesMap := map[string]bool{"node1": true}
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName:         "node1",
 		Agent:            "agent1",
@@ -310,11 +315,11 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 		EntitiesImpacted: []*platformconnectorprotos.Entity{{EntityType: "GPU", EntityValue: "gpu0"}},
 	}
 
-	isQuarantined := r.handleQuarantinedNode(ctx, event, quarantinedNodesMap)
+	isQuarantined := r.handleQuarantinedNode(ctx, event)
 	if isQuarantined {
 		t.Errorf("Expected node to be unquarantined")
 	}
-	if quarantinedNodesMap["node1"] {
+	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 		t.Errorf("quarantinedNodesMap[node1] should be false after unquarantine")
 	}
 }
@@ -352,7 +357,8 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 	// Initialize label keys
 	r.SetLabelKeys("k88s.nvidia.com/")
 
-	quarantinedNodesMap := map[string]bool{"node1": true}
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName:  "node1",
 		Agent:     "differentAgent",
@@ -361,11 +367,11 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 		IsHealthy: true,
 	}
 
-	isQuarantined := r.handleQuarantinedNode(ctx, event, quarantinedNodesMap)
+	isQuarantined := r.handleQuarantinedNode(ctx, event)
 	if !isQuarantined {
 		t.Errorf("Expected node to remain quarantined")
 	}
-	if !quarantinedNodesMap["node1"] {
+	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 		t.Errorf("quarantinedNodesMap[node1] should still be true")
 	}
 }
@@ -463,8 +469,6 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 			HealthEvent: event,
 		}
 
-		quarantinedNodesMap := make(map[string]bool)
-
 		// Call handleEvent with the MaxPercentageRule evaluator
 		status, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, []evaluator.RuleSetEvaluatorIface{ruleSetEval},
 			rulesetsConfig{
@@ -478,7 +482,6 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 					"RuleEvaluationRetryAgainInFuture": 10,
 				},
 			},
-			quarantinedNodesMap,
 		)
 
 		// When RuleEvaluationRetryAgainInFuture is returned, the node should NOT be quarantined immediately
@@ -492,7 +495,7 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Node should NOT be in quarantined map
-		if quarantinedNodesMap["node1"] {
+		if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture")
 		}
 	})
@@ -518,8 +521,6 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 			HealthEvent: event,
 		}
 
-		quarantinedNodesMap := make(map[string]bool)
-
 		// Call handleEvent with the MaxPercentageRule evaluator
 		status, ruleEvalResult := r.handleEvent(ctx, healthEventWithStatus, []evaluator.RuleSetEvaluatorIface{ruleSetEval},
 			rulesetsConfig{
@@ -533,7 +534,6 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 					"RuleEvaluationRetryAgainInFuture": 10,
 				},
 			},
-			quarantinedNodesMap,
 		)
 
 		// When RuleEvaluationRetryAgainInFuture is returned (even with error), the node should NOT be quarantined immediately
@@ -547,7 +547,7 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Node should NOT be in quarantined map
-		if quarantinedNodesMap["node1"] {
+		if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture (with error)")
 		}
 	})

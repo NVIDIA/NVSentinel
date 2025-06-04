@@ -28,6 +28,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
@@ -53,19 +54,10 @@ type rulesetsConfig struct {
 type Reconciler struct {
 	config            ReconcilerConfig
 	healthEventBuffer *common.HealthEventBuffer
+	nodeInfo          *nodeinfo.NodeInfo
 	// workSignal acts as a semaphore to wake up the reconcile loop
 	workSignal chan struct{}
 }
-
-const (
-	// Annotation keys for storing event on node which causes node to be cordoned or tainted
-	quarantineHealthEventAnnotationKey                 = "quarantineHealthEvent"
-	quarantineHealthEventAppliedTaintsAnnotationKey    = "quarantineHealthEventAppliedTaints"
-	quarantineHealthEventIsCordonedAnnotationKey       = "quarantineHealthEventIsCordoned"
-	quarantineHealthEventIsCordonedAnnotationValueTrue = "True"
-
-	serviceName = "NVSentinel"
-)
 
 var (
 	// Label keys
@@ -82,6 +74,7 @@ func NewReconciler(ctx context.Context, cfg ReconcilerConfig, workSignal chan st
 	return &Reconciler{
 		config:            cfg,
 		healthEventBuffer: common.NewHealthEventBuffer(ctx),
+		nodeInfo:          nodeinfo.NewNodeInfo(workSignal),
 		workSignal:        workSignal, // Store the signal channel
 	}
 }
@@ -98,7 +91,8 @@ func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
 
 // nolint: cyclop, gocognit //fix this as part of NGCC-21793
 func (r *Reconciler) Start(ctx context.Context) {
-	nodeInformer, err := informer.NewNodeInformer(r.config.K8sClient.GetK8sClient(), 30*time.Minute, r.workSignal)
+	nodeInformer, err := informer.NewNodeInformer(r.config.K8sClient.GetK8sClient(),
+		30*time.Minute, r.workSignal, r.nodeInfo)
 	if err != nil {
 		klog.Fatalf("failed to initialize node informer: %+v", err)
 	}
@@ -156,21 +150,22 @@ func (r *Reconciler) Start(ctx context.Context) {
 		)
 	}
 
-	quarantinedNodesMap := make(map[string]bool)
-
-	quarantinedNodesList, err := r.config.K8sClient.GetNodesWithAnnotation(ctx, quarantineHealthEventAnnotationKey)
+	err = r.nodeInfo.BuildQuarantinedNodesMap(r.config.K8sClient.GetK8sClient())
 	if err != nil {
 		klog.Fatalf("error fetching quarantined nodes: %+v", err)
+	} else {
+		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesMap()
+		nodesCount := len(*quarantinedNodesMap)
+
+		// Increment metrics based on the count of quarantined nodes
+		for i := 0; i < nodesCount; i++ {
+			currentQuarantinedNodes.Inc()
+			totalNodesQuarantined.Inc()
+		}
+
+		klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
 	}
 
-	for _, node := range quarantinedNodesList {
-		quarantinedNodesMap[node] = true
-
-		currentQuarantinedNodes.Inc()
-		totalNodesQuarantined.Inc()
-	}
-
-	klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
 	watcher.Start(ctx)
 
 	klog.Info("Listening for events on the channel...")
@@ -262,7 +257,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 					healthEventWithStatus,
 					ruleSetEvals,
 					rulesetsConfig,
-					quarantinedNodesMap,
 				)
 
 				if ruleEvaluationResult == common.RuleEvaluationRetryAgainInFuture {
@@ -323,12 +317,11 @@ func (r *Reconciler) handleEvent(
 	event *storeconnector.HealthEventWithStatus,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-	quarantinedNodesMap map[string]bool,
 ) (*storeconnector.Status, common.RuleEvaluationResult) {
 	var status storeconnector.Status
 
-	if quarantinedNodesMap[event.HealthEvent.NodeName] {
-		if r.handleQuarantinedNode(ctx, event.HealthEvent, quarantinedNodesMap) {
+	if r.nodeInfo.GetNodeQuarantineStatusCache(event.HealthEvent.NodeName) {
+		if r.handleQuarantinedNode(ctx, event.HealthEvent) {
 			totalEventsSkipped.Inc()
 
 			status = storeconnector.AlreadyQuarantined
@@ -465,15 +458,16 @@ func (r *Reconciler) handleEvent(
 		if err != nil {
 			klog.Errorf("error while marshalling taints %+v for event: %+v: %+v", taintsToBeApplied, event, err)
 		} else {
-			annotationsMap[quarantineHealthEventAppliedTaintsAnnotationKey] = string(taintsJsonStr)
+			annotationsMap[common.QuarantineHealthEventAppliedTaintsAnnotationKey] = string(taintsJsonStr)
 		}
 	}
 
 	if isCordoned.Load() {
 		// store cordon as an annotation
-		annotationsMap[quarantineHealthEventIsCordonedAnnotationKey] = quarantineHealthEventIsCordonedAnnotationValueTrue
+		annotationsMap[common.QuarantineHealthEventIsCordonedAnnotationKey] =
+			common.QuarantineHealthEventIsCordonedAnnotationValueTrue
 
-		labelsMap.Store(cordonedByLabelKey, serviceName)
+		labelsMap.Store(cordonedByLabelKey, common.ServiceName)
 		labelsMap.Store(cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
 	}
 
@@ -485,7 +479,7 @@ func (r *Reconciler) handleEvent(
 		if err != nil {
 			klog.Errorf("error while marshalling event %+v: %+v", event.HealthEvent, err)
 		} else {
-			annotationsMap[quarantineHealthEventAnnotationKey] = string(eventJsonStr)
+			annotationsMap[common.QuarantineHealthEventAnnotationKey] = string(eventJsonStr)
 		}
 
 		labels := map[string]string{}
@@ -515,6 +509,9 @@ func (r *Reconciler) handleEvent(
 			totalNodesQuarantined.Inc()
 			currentQuarantinedNodes.Inc()
 
+			// update the map here so that later we can refer to it and update the quarantined nodes
+			r.nodeInfo.MarkNodeQuarantineStatusCache(event.HealthEvent.NodeName, isNodeQuarantined)
+
 			for _, taint := range taintsToBeApplied {
 				taintsApplied.WithLabelValues(taint.Key, taint.Effect).Inc()
 			}
@@ -524,9 +521,6 @@ func (r *Reconciler) handleEvent(
 			}
 		}
 	}
-
-	// update the map here so that later we can refer to it and update the quarantined nodes
-	quarantinedNodesMap[event.HealthEvent.NodeName] = isNodeQuarantined
 
 	if isNodeQuarantined {
 		status = storeconnector.Quarantined
@@ -541,7 +535,6 @@ func (r *Reconciler) handleEvent(
 func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *platformconnectorprotos.HealthEvent,
-	quarantinedNodesMap map[string]bool,
 ) bool {
 	annotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, event.NodeName)
 	if err != nil {
@@ -552,12 +545,9 @@ func (r *Reconciler) handleQuarantinedNode(
 	}
 
 	labelsMap := map[string]string{}
-	quarantineAnnotationEvent, exists := annotations[quarantineHealthEventAnnotationKey]
+	quarantineAnnotationEvent, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
 	if !exists || quarantineAnnotationEvent == "" {
-		// No quarantine annotation found, node is unquarantined
-		quarantinedNodesMap[event.NodeName] = false
-
 		return false
 	}
 
@@ -565,10 +555,10 @@ func (r *Reconciler) handleQuarantinedNode(
 	if compareHealthEventWithAnnotationEventToCheckUnQuarantine(event, quarantineAnnotationEvent) {
 		// Check if we need to remove taints and remove them
 		quarantineAnnotationEventTaintsAppliedStr, taintsExists :=
-			annotations[quarantineHealthEventAppliedTaintsAnnotationKey]
+			annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
 
 		// Check if we need to uncordon
-		quarantineAnnotationEventIsCordonStr, cordonExists := annotations[quarantineHealthEventIsCordonedAnnotationKey]
+		quarantineAnnotationEventIsCordonStr, cordonExists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
 
 		var taintsToBeRemoved []config.Taint
 
@@ -577,7 +567,7 @@ func (r *Reconciler) handleQuarantinedNode(
 		isUnCordon := false
 
 		if taintsExists && quarantineAnnotationEventTaintsAppliedStr != "" {
-			annotationsToBeRemoved = append(annotationsToBeRemoved, quarantineHealthEventAppliedTaintsAnnotationKey)
+			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
 
 			err = json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &taintsToBeRemoved)
 			if err != nil {
@@ -589,15 +579,15 @@ func (r *Reconciler) handleQuarantinedNode(
 			}
 		}
 
-		if cordonExists && quarantineAnnotationEventIsCordonStr == quarantineHealthEventIsCordonedAnnotationValueTrue {
+		if cordonExists && quarantineAnnotationEventIsCordonStr == common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
 			isUnCordon = true
-			annotationsToBeRemoved = append(annotationsToBeRemoved, quarantineHealthEventIsCordonedAnnotationKey)
-			labelsMap[uncordonedByLabelKey] = serviceName
+			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventIsCordonedAnnotationKey)
+			labelsMap[uncordonedByLabelKey] = common.ServiceName
 			labelsMap[uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
 		}
 
 		if len(taintsToBeRemoved) > 0 || isUnCordon {
-			annotationsToBeRemoved = append(annotationsToBeRemoved, quarantineHealthEventAnnotationKey)
+			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAnnotationKey)
 
 			if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
 				ctx,
@@ -616,6 +606,8 @@ func (r *Reconciler) handleQuarantinedNode(
 			totalNodesUnquarantined.Inc()
 			currentQuarantinedNodes.Dec()
 
+			// Update the quarantinedNodesMap to reflect the node is no longer quarantined
+			r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false)
 			for _, taint := range taintsToBeRemoved {
 				taintsRemoved.WithLabelValues(taint.Key, taint.Effect).Inc()
 			}
@@ -624,9 +616,6 @@ func (r *Reconciler) handleQuarantinedNode(
 				cordonsRemoved.Inc()
 			}
 		}
-
-		// Update the quarantinedNodesMap to reflect the node is no longer quarantined
-		quarantinedNodesMap[event.NodeName] = false
 		return false
 	}
 

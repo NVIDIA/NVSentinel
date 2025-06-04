@@ -29,6 +29,7 @@ import (
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
@@ -133,9 +134,10 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			node.Labels[informer.GpuNodeLabel] = "true"
 
 			clientset := fake.NewSimpleClientset(node)
-
+			workSignal := make(chan struct{}, 1)
 			// Use 0 resync period for tests unless specific timing is needed
-			nodeInformer, err := informer.NewNodeInformer(clientset, 0, nil)
+			nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+			nodeInformer, err := informer.NewNodeInformer(clientset, 0, workSignal, nodeInfo)
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}

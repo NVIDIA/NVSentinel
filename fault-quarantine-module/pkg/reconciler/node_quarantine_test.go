@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,7 +64,7 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 	cordonedTimestampLabelKey = "cordon-timestamp"
 
 	labelsMap := map[string]string{
-		cordonedByLabelKey:        serviceName,
+		cordonedByLabelKey:        common.ServiceName,
 		cordonedReasonLabelKey:    "gpu-error",
 		cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
@@ -89,7 +90,7 @@ func TestTaintAndCordonNodeAndSetAnnotations(t *testing.T) {
 	if !updatedNode.Spec.Unschedulable {
 		t.Errorf("Node should be cordoned")
 	}
-	if len(updatedNode.Labels) != 3 || updatedNode.Labels[cordonedByLabelKey] != serviceName || updatedNode.Labels[cordonedReasonLabelKey] != "gpu-error" || updatedNode.Labels[cordonedTimestampLabelKey] == "" {
+	if len(updatedNode.Labels) != 3 || updatedNode.Labels[cordonedByLabelKey] != common.ServiceName || updatedNode.Labels[cordonedReasonLabelKey] != "gpu-error" || updatedNode.Labels[cordonedTimestampLabelKey] == "" {
 		t.Errorf("Cordoned labels are not applied on node")
 	}
 
@@ -119,7 +120,7 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 				"test-annotation": "test-value",
 			},
 			Labels: map[string]string{
-				cordonedByLabelKey:        serviceName,
+				cordonedByLabelKey:        common.ServiceName,
 				cordonedReasonLabelKey:    "gpu-error",
 				cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 			},
@@ -154,7 +155,7 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 	annotationKeys := []string{"test-annotation"}
 
 	labelsMap := map[string]string{
-		uncordonedByLabelKey:        serviceName,
+		uncordonedByLabelKey:        common.ServiceName,
 		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
 
@@ -188,7 +189,7 @@ func TestUnTaintAndUnCordonNodeAndRemoveAnnotations(t *testing.T) {
 		t.Errorf("Expected cordoned labels to be removed from node")
 	}
 
-	if len(updatedNode.Labels) != 3 || updatedNode.Labels[uncordonedByLabelKey] != serviceName || updatedNode.Labels[uncordonedReasonLabelkey] != "gpu-error-removed" || updatedNode.Labels[uncordonedTimestampLabelKey] == "" {
+	if len(updatedNode.Labels) != 3 || updatedNode.Labels[uncordonedByLabelKey] != common.ServiceName || updatedNode.Labels[uncordonedReasonLabelkey] != "gpu-error-removed" || updatedNode.Labels[uncordonedTimestampLabelKey] == "" {
 		t.Errorf("Expected uncordoned lables to be applied on node")
 	}
 }
@@ -423,7 +424,7 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 				"annotation2": "val2",
 			},
 			Labels: map[string]string{
-				cordonedByLabelKey:        serviceName,
+				cordonedByLabelKey:        common.ServiceName,
 				cordonedReasonLabelKey:    "gpu-error",
 				cordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 			},
@@ -438,7 +439,7 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 
 	annotationsToRemove := []string{"annotation1"}
 	labelsMap := map[string]string{
-		uncordonedByLabelKey:        serviceName,
+		uncordonedByLabelKey:        common.ServiceName,
 		uncordonedTimestampLabelKey: time.Now().UTC().Format("2006-01-02T15-04-05Z"),
 	}
 	err := k8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx, nodeName, nil, true, annotationsToRemove, []string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap)

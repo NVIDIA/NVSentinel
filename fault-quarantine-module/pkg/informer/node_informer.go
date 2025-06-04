@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -50,14 +51,16 @@ type NodeInformer struct {
 	lister    corelisters.NodeLister
 
 	// Mutex protects access to the counts below
-	mutex                 sync.RWMutex
-	totalGpuNodes         int
-	unschedulableGpuNodes int
+	mutex         sync.RWMutex
+	totalGpuNodes int
 
 	informerSynced cache.InformerSynced
 
 	// workSignal is used to notify the reconciler about relevant node changes
 	workSignal chan struct{}
+
+	// nodeInfo is used to store the node quarantine status
+	nodeInfo *nodeinfo.NodeInfo
 }
 
 // Lister returns the informer's node lister.
@@ -67,7 +70,7 @@ func (ni *NodeInformer) Lister() corelisters.NodeLister {
 
 // NewNodeInformer creates a new NodeInformer focused on nodes with the GpuNodeLabel.
 func NewNodeInformer(clientset kubernetes.Interface,
-	resyncPeriod time.Duration, workSignal chan struct{}) (*NodeInformer, error) {
+	resyncPeriod time.Duration, workSignal chan struct{}, nodeInfo *nodeinfo.NodeInfo) (*NodeInformer, error) {
 	// Filter nodes based on the presence of the GPU label
 	gpuNodeSelector := labels.Set{GpuNodeLabel: "true"}.AsSelector()
 
@@ -86,6 +89,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		lister:         nodeInformer.Lister(),
 		informerSynced: nodeInformer.Informer().HasSynced,
 		workSignal:     workSignal,
+		nodeInfo:       nodeInfo,
 	}
 
 	// Register event handlers
@@ -142,7 +146,7 @@ func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuN
 	ni.mutex.RLock()
 	defer ni.mutex.RUnlock()
 
-	return ni.totalGpuNodes, ni.unschedulableGpuNodes, nil
+	return ni.totalGpuNodes, len(*ni.nodeInfo.GetQuarantinedNodesMap()), nil
 }
 
 // handleAddNode recalculates counts when a node is added.
@@ -156,13 +160,18 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	klog.V(4).Infof("Node added: %s", node.Name)
 
 	ni.mutex.Lock()
-	defer ni.mutex.Unlock()
 
 	ni.totalGpuNodes++
+
+	// Mark as quarantined if the node is unschedulable
 	if node.Spec.Unschedulable {
-		ni.unschedulableGpuNodes++
+		if !ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name) {
+			ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, true)
+		}
 	}
-	// Signal reconciler only if counts actually changed
+	ni.mutex.Unlock()
+
+	// Always signal when a node is added
 	ni.signalWork()
 }
 
@@ -176,25 +185,34 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Recalculate only if the Unschedulable status changed (relevant for MaxPercentage rule)
-	// We assume labels don't change in a way that affects filtering due to informer's label selector
+	// Only process if unschedulable status changed
 	if oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable {
 		klog.V(4).Infof("Node updated: %s (Unschedulable: %t -> %t)", newNode.Name,
 			oldNode.Spec.Unschedulable, newNode.Spec.Unschedulable)
-
-		ni.mutex.Lock()
-		// Signal reconciler after successful count update due to relevant change
-		if newNode.Spec.Unschedulable {
-			ni.unschedulableGpuNodes++
-		} else {
-			ni.unschedulableGpuNodes--
-		}
-		ni.mutex.Unlock() // Unlock before signalling
-
+		ni.updateNodeQuarantineStatus(newNode)
 		ni.signalWork()
 	} else {
 		klog.V(5).Infof("Node update ignored (no relevant change): %s", newNode.Name)
 	}
+}
+
+// updateNodeQuarantineStatus updates the node's quarantine status based on its schedulability
+// and returns true if the status was changed
+func (ni *NodeInformer) updateNodeQuarantineStatus(node *v1.Node) bool {
+	ni.mutex.Lock()
+	defer ni.mutex.Unlock()
+
+	nodeName := node.Name
+	shouldBeQuarantined := node.Spec.Unschedulable
+	currentlyQuarantined := ni.nodeInfo.GetNodeQuarantineStatusCache(nodeName)
+
+	// Only update if there's a difference between current and desired state
+	if currentlyQuarantined != shouldBeQuarantined {
+		ni.nodeInfo.MarkNodeQuarantineStatusCache(nodeName, shouldBeQuarantined)
+		return true
+	}
+
+	return false
 }
 
 // handleDeleteNode recalculates counts when a node is deleted.
@@ -218,15 +236,16 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 	klog.V(4).Infof("Node deleted: %s", node.Name)
 
 	ni.mutex.Lock()
-	defer ni.mutex.Unlock()
 
 	if node.Spec.Unschedulable {
-		ni.unschedulableGpuNodes--
+		if exists := ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name); exists {
+			ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, false)
+		}
 	}
 
 	ni.totalGpuNodes--
+	ni.mutex.Unlock()
 
-	// Signal reconciler only if counts actually changed
 	ni.signalWork()
 }
 
@@ -256,9 +275,8 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 	}
 
 	ni.mutex.Lock()
-	changed := ni.totalGpuNodes != total || ni.unschedulableGpuNodes != unschedulable
+	changed := ni.totalGpuNodes != total || len(*ni.nodeInfo.GetQuarantinedNodesMap()) != unschedulable
 	ni.totalGpuNodes = total
-	ni.unschedulableGpuNodes = unschedulable
 	ni.mutex.Unlock()
 
 	if changed {

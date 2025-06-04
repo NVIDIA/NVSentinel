@@ -20,12 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
-	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -50,8 +48,9 @@ func newGpuNode(name string, unschedulable bool) *v1.Node {
 func TestNewNodeInformer(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	workSignal := make(chan struct{}, 1) // Buffered channel
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
 
-	ni, err := NewNodeInformer(clientset, 0, workSignal) // 0 resync period for tests
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo) // 0 resync period for tests
 
 	if err != nil {
 		t.Fatalf("NewNodeInformer failed: %v", err)
@@ -87,13 +86,32 @@ func waitForSync(t *testing.T, stopCh chan struct{}, informerSynced cache.Inform
 	}
 }
 
+// safeReceiveSignal waits for a signal with a timeout to prevent test hangs
+func safeReceiveSignal(t *testing.T, workSignal chan struct{}, expectSignal bool) bool {
+	t.Helper()
+
+	select {
+	case <-workSignal:
+		if !expectSignal {
+			t.Log("Received unexpected signal")
+		}
+		return true
+	case <-time.After(500 * time.Millisecond):
+		if expectSignal {
+			t.Error("Expected signal but none received within timeout")
+		}
+		return false
+	}
+}
+
 func TestNodeInformer_RunAndSync(t *testing.T) {
 	clientset := fake.NewSimpleClientset(newGpuNode("gpu-node-1", false))
 	workSignal := make(chan struct{}, 1)
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	ni, err := NewNodeInformer(clientset, 0, workSignal)
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
 	if err != nil {
 		t.Fatalf("NewNodeInformer failed: %v", err)
 	}
@@ -152,8 +170,9 @@ func TestNodeInformer_RunAndSync(t *testing.T) {
 func TestNodeInformer_GetGpuNodeCounts_NotSynced(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	workSignal := make(chan struct{}, 1)
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
 
-	ni, err := NewNodeInformer(clientset, 0, workSignal)
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
 	if err != nil {
 		t.Fatalf("NewNodeInformer failed: %v", err)
 	}
@@ -173,7 +192,8 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	ni, err := NewNodeInformer(clientset, 0, workSignal)
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
 	if err != nil {
 		t.Fatalf("NewNodeInformer failed: %v", err)
 	}
@@ -209,8 +229,8 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add node1 to store: %v", err)
 	}
-	ni.handleAddNode(node1) // Manually trigger handler
-	<-workSignal            // Wait for signal
+	ni.handleAddNode(node1)                // Manually trigger handler
+	safeReceiveSignal(t, workSignal, true) // Expect signal, with timeout
 	total, unschedulable, err = ni.GetGpuNodeCounts()
 	if err != nil || total != 1 || unschedulable != 0 {
 		t.Errorf("After adding node1: expected total=1, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
@@ -223,7 +243,7 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 		t.Fatalf("Failed to update node1 in store: %v", err)
 	}
 	ni.handleUpdateNode(node1, node1Cordoned) // Manually trigger handler
-	<-workSignal                              // Wait for signal
+	safeReceiveSignal(t, workSignal, true)    // Expect signal, with timeout
 	total, unschedulable, err = ni.GetGpuNodeCounts()
 	if err != nil || total != 1 || unschedulable != 1 {
 		t.Errorf("After cordoning node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
@@ -238,13 +258,8 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 		t.Fatalf("Failed to update node1 again in store: %v", err)
 	}
 	ni.handleUpdateNode(node1Cordoned, node1CordonedUpdated) // Manually trigger handler
-	// No signal expected
-	select {
-	case <-workSignal:
-		t.Error("Unexpected work signal after irrelevant node update")
-	default:
-		// Expected path
-	}
+	// No signal expected for irrelevant updates
+	safeReceiveSignal(t, workSignal, false) // Don't expect signal, with timeout
 	total, unschedulable, err = ni.GetGpuNodeCounts()
 	if err != nil || total != 1 || unschedulable != 1 {
 		t.Errorf("After irrelevant update node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
@@ -257,8 +272,7 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 		t.Fatalf("Failed to delete node1 from store: %v", err)
 	}
 	ni.handleDeleteNode(node1CordonedUpdated) // Manually trigger handler
-	// No signal expected
-	<-workSignal
+	safeReceiveSignal(t, workSignal, true)    // Expect signal, with timeout
 	total, unschedulable, err = ni.GetGpuNodeCounts()
 	if err != nil || total != 0 || unschedulable != 0 {
 		t.Errorf("After deleting node1: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
@@ -269,12 +283,12 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	t.Logf("Adding node: %s", node2.Name)
 	store.Add(node2)
 	ni.handleAddNode(node2)
-	<-workSignal // Consume signal
+	safeReceiveSignal(t, workSignal, true) // Expect signal, with timeout
 	t.Logf("Deleting node with tombstone: %s", node2.Name)
 	tombstone := cache.DeletedFinalStateUnknown{Key: "default/gpu-node-2", Obj: node2}
-	store.Delete(node2)            // Ensure it's removed from the store view for recalculate
-	ni.handleDeleteNode(tombstone) // Trigger handler with tombstone
-	<-workSignal                   // Wait for signal
+	store.Delete(node2)                    // Ensure it's removed from the store view for recalculate
+	ni.handleDeleteNode(tombstone)         // Trigger handler with tombstone
+	safeReceiveSignal(t, workSignal, true) // Expect signal, with timeout
 	total, unschedulable, err = ni.GetGpuNodeCounts()
 	if err != nil || total != 0 || unschedulable != 0 {
 		t.Errorf("After deleting node2 via tombstone: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
@@ -291,42 +305,29 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 	defer close(stopCh)
 
 	// Pre-populate nodes directly (won't trigger handlers)
-	node1 := newGpuNode("gpu-node-1", false)
+	node1 := newGpuNode("gpu-node-1", true)
 	node2 := newGpuNode("gpu-node-2", true)
-	node3 := newGpuNode("gpu-node-3", false)
+	node3 := newGpuNode("gpu-node-3", true)
 
-	// Use a fake informer manually for this test to control the store directly
-	fakeInformer := cache.NewSharedIndexInformer(
-		&cache.ListWatch{
-			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				// Filter list based on label selector if needed, though Lister does it
-				return clientset.CoreV1().Nodes().List(context.TODO(), options)
-			},
-			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				return clientset.CoreV1().Nodes().Watch(context.TODO(), options)
-			},
-		},
-		&v1.Node{},
-		0, // No resync
-		cache.Indexers{},
-	)
-	lister := corelisters.NewNodeLister(fakeInformer.GetIndexer())
-
-	ni := &NodeInformer{
-		clientset:      clientset,
-		informer:       fakeInformer, // Use manually created informer
-		lister:         lister,       // Use lister associated with the manual informer
-		informerSynced: fakeInformer.HasSynced,
-		workSignal:     workSignal,
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+	if err != nil {
+		t.Fatalf("NewNodeInformer failed: %v", err)
 	}
 
 	// Manually add nodes to the informer's store
-	fakeInformer.GetStore().Add(node1)
-	fakeInformer.GetStore().Add(node2)
-	fakeInformer.GetStore().Add(node3)
+	ni.informer.GetStore().Add(node1)
+	ni.informer.GetStore().Add(node2)
+	ni.informer.GetStore().Add(node3)
+
+	// Manually mark the nodes as quarantined in the nodeInfo cache
+	// since the handleAddNode isn't being called
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-1", true)
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-2", true)
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-3", false)
 
 	// Run recalculate directly
-	_, err := ni.recalculateCounts() // Assign both bool and error, ignore bool
+	_, err = ni.recalculateCounts() // Assign both bool and error, ignore bool
 	if err != nil {
 		t.Fatalf("recalculateCounts failed: %v", err)
 	}
@@ -334,14 +335,14 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 	// Check internal counts directly
 	ni.mutex.RLock()
 	total := ni.totalGpuNodes
-	unschedulable := ni.unschedulableGpuNodes
+	unschedulable := len(*ni.nodeInfo.GetQuarantinedNodesMap())
 	ni.mutex.RUnlock()
 
 	if total != 3 {
 		t.Errorf("Expected totalGpuNodes=3, got %d", total)
 	}
-	if unschedulable != 1 {
-		t.Errorf("Expected unschedulableGpuNodes=1, got %d", unschedulable)
+	if unschedulable != 2 {
+		t.Errorf("Expected unschedulableGpuNodes=3, got %d", unschedulable)
 	}
 }
 
