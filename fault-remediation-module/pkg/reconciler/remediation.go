@@ -26,15 +26,18 @@ import (
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
 )
 
 type FaultRemediationClient struct {
 	clientset    dynamic.Interface
+	restMapper   *restmapper.DeferredDiscoveryRESTMapper
 	dryRunMode   []string
 	template     *template.Template
 	templateData TemplateData
@@ -70,6 +73,16 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
+	// Create discovery client for RESTMapper
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("error creating discovery client: %w", err)
+	}
+
+	// Create RESTMapper for GVK to GVR conversion
+	cachedClient := memory.NewMemCacheClient(discoveryClient)
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
+
 	// Construct full template path
 	templatePath := filepath.Join(templateData.TemplateMountPath, templateData.TemplateFileName)
 
@@ -92,6 +105,7 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 
 	client := &FaultRemediationClient{
 		clientset:    clientset,
+		restMapper:   mapper,
 		template:     tmpl,
 		templateData: templateData,
 	}
@@ -128,15 +142,18 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 
 	maintenance := &unstructured.Unstructured{Object: obj}
 
-	// Define the GVR for Maintenance resource
-	gvr := schema.GroupVersionResource{
-		Group:    c.templateData.ApiGroup,
-		Version:  c.templateData.Version,
-		Resource: "maintenances",
+	// Get GVK from the unstructured object
+	gvk := maintenance.GroupVersionKind()
+
+	// Convert GVK to GVR using RESTMapper
+	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		log.Fatalf("Failed to get REST mapping for %s: %v", gvk, err)
+		return false
 	}
 
-	// Create the maintenance resource
-	_, err := c.clientset.Resource(gvr).Namespace(c.templateData.Namespace).
+	// Create the maintenance resource at cluster level
+	_, err = c.clientset.Resource(mapping.Resource).
 		Create(ctx, maintenance, metav1.CreateOptions{})
 	if err != nil {
 		log.Fatalf("Failed to create Maintenance CR: %v", err)

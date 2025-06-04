@@ -11,14 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-apiVersion: {{.ApiGroup}}/{{.Version}}
-kind: Maintenance
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
 metadata:
-  generateName: maintenance-{{.NodeName}}-
-  namespace: {{.Namespace}}
+  name: maintenance-reboot
 spec:
-  nodeSelector:
-    matchLabels:
-      kubernetes.io/hostname: {{.NodeName}}
-  type: reboot
+  force: false
+  nodeName: ""  # This will be updated with the actual node name

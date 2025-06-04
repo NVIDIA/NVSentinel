@@ -16,17 +16,19 @@ package reconciler
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/restmapper"
 )
 
 // MockDynamicClient implements necessary methods from dynamic.Interface
@@ -52,6 +54,15 @@ func (m *MockNamespaceableResource) Namespace(namespace string) dynamic.Resource
 	}
 }
 
+func (m *MockNamespaceableResource) Create(ctx context.Context, obj *unstructured.Unstructured, opts metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+	return m.createFunc(gvr, obj, opts)
+}
+
 type MockResourceInterface struct {
 	dynamic.ResourceInterface
 	createFunc func(gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts metav1.CreateOptions) (*unstructured.Unstructured, error)
@@ -61,9 +72,118 @@ func (m *MockResourceInterface) Create(ctx context.Context, obj *unstructured.Un
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
 		Version:  "v1alpha1",
-		Resource: "maintenances",
+		Resource: "rebootnodes",
 	}
 	return m.createFunc(gvr, obj, opts)
+}
+
+// MockDiscoveryClient implements discovery.DiscoveryInterface
+type MockDiscoveryClient struct {
+	discovery.DiscoveryInterface
+}
+
+func (m *MockDiscoveryClient) ServerResourcesForGroupVersion(groupVersion string) (*metav1.APIResourceList, error) {
+	return &metav1.APIResourceList{
+		GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+		APIResources: []metav1.APIResource{
+			{
+				Name:         "rebootnodes",
+				SingularName: "rebootnode",
+				Namespaced:   true,
+				Kind:         "RebootNode",
+				Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+			},
+		},
+	}, nil
+}
+
+func (m *MockDiscoveryClient) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	return []*metav1.APIGroup{
+			{
+				Name: "janitor.dgxc.nvidia.com",
+				Versions: []metav1.GroupVersionForDiscovery{
+					{
+						GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+						Version:      "v1alpha1",
+					},
+				},
+				PreferredVersion: metav1.GroupVersionForDiscovery{
+					GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+					Version:      "v1alpha1",
+				},
+			},
+		}, []*metav1.APIResourceList{
+			{
+				GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+				APIResources: []metav1.APIResource{
+					{
+						Name:         "rebootnodes",
+						SingularName: "rebootnode",
+						Namespaced:   true,
+						Kind:         "RebootNode",
+						Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+					},
+				},
+			},
+		}, nil
+}
+
+func (m *MockDiscoveryClient) ServerGroups() (*metav1.APIGroupList, error) {
+	return &metav1.APIGroupList{
+		Groups: []metav1.APIGroup{
+			{
+				Name: "janitor.dgxc.nvidia.com",
+				Versions: []metav1.GroupVersionForDiscovery{
+					{
+						GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+						Version:      "v1alpha1",
+					},
+				},
+				PreferredVersion: metav1.GroupVersionForDiscovery{
+					GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+					Version:      "v1alpha1",
+				},
+			},
+		},
+	}, nil
+}
+
+func (m *MockDiscoveryClient) ServerResources() ([]*metav1.APIResourceList, error) {
+	return nil, nil
+}
+
+func (m *MockDiscoveryClient) ServerPreferredResources() ([]*metav1.APIResourceList, error) {
+	return []*metav1.APIResourceList{
+		{
+			GroupVersion: "janitor.dgxc.nvidia.com/v1alpha1",
+			APIResources: []metav1.APIResource{
+				{
+					Name:         "rebootnodes",
+					SingularName: "rebootnode",
+					Namespaced:   true,
+					Kind:         "RebootNode",
+					Verbs:        []string{"create", "delete", "get", "list", "patch", "update", "watch"},
+				},
+			},
+		},
+	}, nil
+}
+
+func (m *MockDiscoveryClient) ServerPreferredNamespacedResources() ([]*metav1.APIResourceList, error) {
+	return m.ServerPreferredResources()
+}
+
+// MockRESTMapper is a simple mock that returns a fixed GVR
+type MockRESTMapper struct{}
+
+func (m *MockRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*metameta.RESTMapping, error) {
+	return &metameta.RESTMapping{
+		Resource: schema.GroupVersionResource{
+			Group:    "janitor.dgxc.nvidia.com",
+			Version:  "v1alpha1",
+			Resource: "rebootnodes",
+		},
+	}, nil
 }
 
 func TestNewK8sClient(t *testing.T) {
@@ -94,7 +214,7 @@ func TestNewK8sClient(t *testing.T) {
 				Version:           "v1alpha1",
 				ApiGroup:          "janitor.dgxc.nvidia.com",
 				TemplateMountPath: "templates",
-				TemplateFileName:  "maintenance-template.yaml",
+				TemplateFileName:  "rebootnode-template.yaml",
 			})
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -112,7 +232,7 @@ func TestNewK8sClient(t *testing.T) {
 	}
 }
 
-func TestCreateMaintenanceResource(t *testing.T) {
+func TestCreateRebootNodeResource(t *testing.T) {
 	tests := []struct {
 		name          string
 		nodeName      string
@@ -121,14 +241,14 @@ func TestCreateMaintenanceResource(t *testing.T) {
 		expectedError bool
 	}{
 		{
-			name:          "Successful maintenance creation",
+			name:          "Successful rebootnode creation",
 			nodeName:      "test-node-1",
 			dryRun:        false,
 			shouldSucceed: true,
 			expectedError: false,
 		},
 		{
-			name:          "Successful maintenance creation with dry run",
+			name:          "Successful rebootnode creation with dry run",
 			nodeName:      "test-node-2",
 			dryRun:        true,
 			shouldSucceed: true,
@@ -141,37 +261,42 @@ func TestCreateMaintenanceResource(t *testing.T) {
 			// Create a fake dynamic client
 			mockClient := &MockDynamicClient{
 				createFunc: func(gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts metav1.CreateOptions) (*unstructured.Unstructured, error) {
-					// Verify the maintenance resource structure
+					// Verify the rebootnode resource structure
 					assert.Equal(t, "janitor.dgxc.nvidia.com", gvr.Group)
 					assert.Equal(t, "v1alpha1", gvr.Version)
-					assert.Equal(t, "maintenances", gvr.Resource)
+					assert.Equal(t, "rebootnodes", gvr.Resource)
 
 					// Verify the object structure
 					metadata, found, err := unstructured.NestedMap(obj.Object, "metadata")
 					assert.NoError(t, err)
 					assert.True(t, found)
 					assert.Contains(t, metadata["generateName"], tt.nodeName)
-					assert.Equal(t, "dgxc-janitor", metadata["namespace"])
 					return obj, nil
 				},
 			}
 
-			templatePath := filepath.Join("templates", "maintenance-template.yaml")
-			templateContent, err := os.ReadFile(templatePath)
-			assert.NoError(t, err)
-
-			tmpl, err := template.New("maintenance").Parse(string(templateContent))
+			// Create template
+			tmpl := template.New("rebootnode")
+			tmpl, err := tmpl.Parse(`apiVersion: {{.ApiGroup}}/{{.Version}}
+kind: RebootNode
+metadata:
+  generateName: maintenance-{{.NodeName}}-
+spec:
+  nodeName: {{.NodeName}}`)
 			assert.NoError(t, err)
 
 			// Create K8sClient with mock
+			mockDiscovery := &MockDiscoveryClient{}
+			cachedClient := memory.NewMemCacheClient(mockDiscovery)
+			mockMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 			client := &FaultRemediationClient{
 				clientset:  mockClient,
+				restMapper: mockMapper,
 				dryRunMode: []string{},
 				template:   tmpl,
 				templateData: TemplateData{
-					Namespace: "dgxc-janitor",
-					Version:   "v1alpha1",
-					ApiGroup:  "janitor.dgxc.nvidia.com",
+					Version:  "v1alpha1",
+					ApiGroup: "janitor.dgxc.nvidia.com",
 				},
 			}
 			if tt.dryRun {

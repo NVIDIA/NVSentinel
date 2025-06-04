@@ -31,10 +31,10 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
     """
     
     # Constants
-    MAINTENANCE_CRD_NAME = "maintenances.janitor.dgxc.nvidia.com"
+    MAINTENANCE_CRD_NAME = "rebootnodes.janitor.dgxc.nvidia.com"
     MAINTENANCE_CRD_GROUP = "janitor.dgxc.nvidia.com"
     MAINTENANCE_CRD_VERSION = "v1alpha1"
-    MAINTENANCE_CRD_PLURAL = "maintenances"
+    MAINTENANCE_CRD_PLURAL = "rebootnodes"
     JANITOR_NAMESPACE = "dgxc-janitor"
     REMEDIATION_WAIT_TIME = 30  # seconds
 
@@ -58,19 +58,19 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         self.custom_api = CustomObjectsApi(self.client.apiClient)
         
         # Setup required resources
-        self._ensure_maintenance_crd_exists()
+        self._ensure_rebootnode_crd_exists()
         self._ensure_janitor_namespace_exists()
 
-        self._cleanup_maintenance_crs()
+        self._cleanup_rebootnode_crs()
 
 
     @pytest.mark.author(email="nitijain@nvidia.com")
     @pytest.mark.faultremediation
-    def test_maintenance_cr_creation(self, request, setup_fault_remediation):
+    def test_rebootnode_cr_creation(self, request, setup_fault_remediation):
         """
-        Test case of NVsentinel Fault Remediation: Inject XID error triggering maintenance CR creation
+        Test case of NVsentinel Fault Remediation: Inject XID error triggering rebootnode CR creation
         """
-        self.logger.info("Inject XID error triggers maintenance CR test")
+        self.logger.info("Inject XID error triggers rebootnode CR test")
         self.skip_if_fault_remediation_deployment_not_found()
         self.step_manager.print_header("Check the fault remediation pod is running")
         pods, _ = self.client.list_pods(
@@ -86,7 +86,7 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         pods, _ = self.client.list_pods(
             self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor-dcgm*"
         )
-        self.gpu_healthy_pod = pods[-1]
+        self.gpu_healthy_pod = pods[0]
         self.node_name = self.gpu_healthy_pod.spec.node_name
         self.remove_managed_by_nvsentinel_label(self.node_name)
         self.logger.info(f"POD Name: {self.gpu_healthy_pod.metadata.name}")
@@ -108,8 +108,8 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         self.step_manager.print_header("Wait for remediation")
         time.sleep(self.REMEDIATION_WAIT_TIME)
 
-        self.step_manager.print_header("Verify maintenance CR was created")
-        self._verify_maintenance_cr()
+        self.step_manager.print_header("Verify rebootnode CR was created")
+        self._verify_rebootnode_cr()
 
 
         self.step_manager.print_header("Clear the injected error")
@@ -129,26 +129,26 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         self.restore_managed_by_nvsentinel_label(self.node_name)
 
 
-    def _ensure_maintenance_crd_exists(self):
-        """Ensure the maintenance CRD exists, create it if it doesn't"""
-        self.logger.info("Checking maintenance CRD")
+    def _ensure_rebootnode_crd_exists(self):
+        """Ensure the rebootnode CRD exists, create it if it doesn't"""
+        self.logger.info("Checking rebootnode CRD")
         try:
             self.api_extensions.read_custom_resource_definition(name=self.MAINTENANCE_CRD_NAME)
-            self.logger.info("Maintenance CRD already exists")
+            self.logger.info("RebootNode CRD already exists")
         except ApiException as e:
             if e.status == 404:
-                self.logger.info("Maintenance CRD not found, creating it")
+                self.logger.info("RebootNode CRD not found, creating it")
                 crd_file = os.path.join(
-                    os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "janitor.dgxc.nvidia.com_maintenance.yaml"
+                    os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "janitor.dgxc.nvidia.com_rebootnode.yaml"
                 )
                 try:
                     subprocess.run(["kubectl", "apply", "-f", crd_file], check=True)
-                    self.logger.info("Successfully created maintenance CRD")
+                    self.logger.info("Successfully created rebootnode CRD")
                 except subprocess.CalledProcessError as e:
-                    self.logger.error(f"Failed to create maintenance CRD: {e}")
+                    self.logger.error(f"Failed to create rebootnode CRD: {e}")
                     raise
             else:
-                self.logger.error(f"Error checking maintenance CRD: {e}")
+                self.logger.error(f"Error checking rebootnode CRD: {e}")
                 raise
 
     def _ensure_janitor_namespace_exists(self):
@@ -170,50 +170,46 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
                 self.logger.error(f"Error checking janitor namespace: {e}")
                 raise
 
-    def _cleanup_maintenance_crs(self):
-        """Clean up existing maintenance CRs"""
-        self.step_manager.print_header("Clean up existing maintenance CRs")
+    def _cleanup_rebootnode_crs(self):
+        """Clean up existing rebootnode CRs"""
+        self.step_manager.print_header("Clean up existing rebootnode CRs")
         try:
-            maintenance_crs = self.custom_api.list_namespaced_custom_object(
+            rebootnode_crs = self.custom_api.list_cluster_custom_object(
                 group=self.MAINTENANCE_CRD_GROUP,
                 version=self.MAINTENANCE_CRD_VERSION,
-                namespace=self.JANITOR_NAMESPACE,
                 plural=self.MAINTENANCE_CRD_PLURAL
             )
             
-            if "items" in maintenance_crs and len(maintenance_crs["items"]) > 0:
-                self.logger.info(f"Found {len(maintenance_crs['items'])} existing maintenance CRs. Deleting...")
-                for cr in maintenance_crs["items"]:
+            if "items" in rebootnode_crs and len(rebootnode_crs["items"]) > 0:
+                self.logger.info(f"Found {len(rebootnode_crs['items'])} existing rebootnode CRs. Deleting...")
+                for cr in rebootnode_crs["items"]:
                     cr_name = cr["metadata"]["name"]
-                    self.logger.info(f"Deleting maintenance CR: {cr_name}")
+                    self.logger.info(f"Deleting rebootnode CR: {cr_name}")
                     try:
-                        self.custom_api.delete_namespaced_custom_object(
+                        self.custom_api.delete_cluster_custom_object(
                             group=self.MAINTENANCE_CRD_GROUP,
                             version=self.MAINTENANCE_CRD_VERSION,
-                            namespace=self.JANITOR_NAMESPACE,
                             plural=self.MAINTENANCE_CRD_PLURAL,
                             name=cr_name
                         )
                     except ApiException as e:
-                        self.logger.warning(f"Failed to delete maintenance CR {cr_name}: {e}")
-                self.logger.info("Successfully deleted all existing maintenance CRs")
+                        self.logger.warning(f"Failed to delete rebootnode CR {cr_name}: {e}")
+                self.logger.info("Successfully deleted all existing rebootnode CRs")
             else:
-                self.logger.info("No existing maintenance CRs found")
+                self.logger.info("No existing rebootnode CRs found")
         except ApiException as e:
-            self.logger.warning(f"Error while listing maintenance CRs: {e}")
+            self.logger.warning(f"Error while listing rebootnode CRs: {e}")
 
-    def _verify_maintenance_cr(self):
-        """Verify that a maintenance CR was created with the correct specifications"""
-        self.step_manager.print_header("Verify maintenance CR was created")
+    def _verify_rebootnode_cr(self):
+        """Verify that a rebootnode CR was created with the correct specifications"""
+        self.step_manager.print_header("Verify rebootnode CR was created")
         
         try:
-            # Use kubectl to get maintenance CR
+            # Use kubectl to get rebootnode CR
             kubectl_command = [
                 "kubectl",
                 "get",
-                "maintenance",
-                "-n",
-                self.JANITOR_NAMESPACE,
+                "rebootnode",
                 "-o",
                 "yaml"
             ]
@@ -221,19 +217,19 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
             actual_cr = yaml.safe_load(result.stdout)
             
             if not actual_cr.get("items") or len(actual_cr["items"]) == 0:
-                self.logger.error("No maintenance CR was created")
-                raise AssertionError("No maintenance CR was created")
+                self.logger.error("No rebootnode CR was created")
+                raise AssertionError("No rebootnode CR was created")
             
-            # Get the first maintenance CR
-            maintenance_cr = actual_cr["items"][0]
+            # Get the first rebootnode CR
+            rebootnode_cr = actual_cr["items"][0]
             
             # Remove metadata fields
-            maintenance_cr.pop('metadata', None)
-            maintenance_cr.pop('status', None)
+            rebootnode_cr.pop('metadata', None)
+            rebootnode_cr.pop('status', None)
             
             # Load expected YAML
             expected_yaml_path = os.path.join(
-                os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "expected_maintenance_cr.yaml"
+                os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "expected_rebootnode_cr.yaml"
             )
             with open(expected_yaml_path, 'r') as f:
                 expected_cr = yaml.safe_load(f)
@@ -242,27 +238,27 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
             expected_cr.pop('metadata', None)
             
             # Update expected CR with actual node name for comparison
-            expected_cr['spec']['nodeSelector']['matchLabels']['kubernetes.io/hostname'] = self.node_name
+            expected_cr['spec']['nodeName'] = self.node_name
             
             # Compare the CRs
-            if maintenance_cr != expected_cr:
-                self.logger.error("Maintenance CR does not match expected structure")
+            if rebootnode_cr != expected_cr:
+                self.logger.error("RebootNode CR does not match expected structure")
                 self.logger.error("Expected CR:")
                 self.logger.error(yaml.dump(expected_cr))
                 self.logger.error("Actual CR:")
-                self.logger.error(yaml.dump(maintenance_cr))
-                raise AssertionError("Maintenance CR does not match expected structure")
+                self.logger.error(yaml.dump(rebootnode_cr))
+                raise AssertionError("RebootNode CR does not match expected structure")
             
-            self.logger.info("Successfully verified maintenance CR creation")
+            self.logger.info("Successfully verified rebootnode CR creation")
             return True
             
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Failed to get maintenance CRs: {e.stderr}")
-            raise AssertionError(f"Failed to get maintenance CRs: {e.stderr}")
+            self.logger.error(f"Failed to get rebootnode CRs: {e.stderr}")
+            raise AssertionError(f"Failed to get rebootnode CRs: {e.stderr}")
         except yaml.YAMLError as e:
             self.logger.error(f"Failed to parse YAML: {e}")
             raise AssertionError(f"Failed to parse YAML: {e}")
         except Exception as e:
-            self.logger.error(f"Unexpected error verifying maintenance CR: {e}")
-            raise AssertionError(f"Unexpected error verifying maintenance CR: {e}")
+            self.logger.error(f"Unexpected error verifying rebootnode CR: {e}")
+            raise AssertionError(f"Unexpected error verifying rebootnode CR: {e}")
 

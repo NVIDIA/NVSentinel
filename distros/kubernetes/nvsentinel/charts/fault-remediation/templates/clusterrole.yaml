@@ -25,7 +25,7 @@ rules:
 - apiGroups:
   - {{ .Values.maintenanceResource.apiGroup }}
   resources:
-  - {{ .Values.maintenanceResource.name }}
+  - {{ .Values.maintenanceResource.rebootResource.name }}
   verbs:
   - get
   - list
