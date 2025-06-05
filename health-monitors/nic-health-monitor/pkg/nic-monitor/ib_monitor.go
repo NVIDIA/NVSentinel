@@ -25,7 +25,6 @@ import (
 )
 
 const (
-	SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
 
 	// port healthy message
 	portIsHealthy = "Port is healthy"
@@ -53,10 +52,11 @@ type InfinibandDeviceMonitor struct {
 	Devices map[string]InfiniBandDevice
 }
 
-func GetInfinibandDevices(exclusionRegexList []string) (map[string]InfiniBandDevice, error) {
+func GetInfinibandDevices(exclusionRegexList []string,
+	sysClassInfinibandPath string) (map[string]InfiniBandDevice, error) {
 	deviceList := map[string]InfiniBandDevice{}
 
-	dirs, err := fileSystem.ReadDir(SYS_CLASS_INFINIBAND_PATH)
+	dirs, err := fileSystem.ReadDir(sysClassInfinibandPath)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func GetInfinibandDevices(exclusionRegexList []string) (map[string]InfiniBandDev
 			continue
 		}
 
-		ports, err := GetInfinibandPorts(deviceName)
+		ports, err := GetInfinibandPorts(deviceName, sysClassInfinibandPath)
 		if err != nil {
 			return nil, err
 		}
@@ -79,10 +79,10 @@ func GetInfinibandDevices(exclusionRegexList []string) (map[string]InfiniBandDev
 	return deviceList, nil
 }
 
-func GetInfinibandPorts(devName string) (map[string]InfiniBandPort, error) {
+func GetInfinibandPorts(devName string, sysClassInfinibandPath string) (map[string]InfiniBandPort, error) {
 	portList := map[string]InfiniBandPort{}
 
-	path := filepath.Join(SYS_CLASS_INFINIBAND_PATH, devName, "ports")
+	path := filepath.Join(sysClassInfinibandPath, devName, "ports")
 
 	dirs, err := fileSystem.ReadDir(path)
 	if err != nil {
@@ -91,16 +91,16 @@ func GetInfinibandPorts(devName string) (map[string]InfiniBandPort, error) {
 
 	for _, port := range dirs {
 		portName := port.Name()
-		state := GetPortState(devName, portName)
-		phystate := GetPortPhysState(devName, portName)
+		state := GetPortState(devName, portName, sysClassInfinibandPath)
+		phystate := GetPortPhysState(devName, portName, sysClassInfinibandPath)
 		portList[portName] = InfiniBandPort{portName, state, phystate}
 	}
 
 	return portList, nil
 }
 
-func GetPortState(devname, portName string) string {
-	path := filepath.Join(SYS_CLASS_INFINIBAND_PATH, devname, "ports", portName, "state")
+func GetPortState(devname, portName string, sysClassInfinibandPath string) string {
+	path := filepath.Join(sysClassInfinibandPath, devname, "ports", portName, "state")
 
 	state, err := fileSystem.ReadFile(path)
 	if err != nil {
@@ -110,8 +110,8 @@ func GetPortState(devname, portName string) string {
 	return strings.TrimSpace(string(state))
 }
 
-func GetPortPhysState(devname, portName string) string {
-	path := filepath.Join(SYS_CLASS_INFINIBAND_PATH, devname, "ports", portName, "phys_state")
+func GetPortPhysState(devname, portName string, sysClassInfinibandPath string) string {
+	path := filepath.Join(sysClassInfinibandPath, devname, "ports", portName, "phys_state")
 
 	state, err := fileSystem.ReadFile(path)
 	if err != nil {
@@ -121,8 +121,8 @@ func GetPortPhysState(devname, portName string) string {
 	return strings.TrimSpace(string(state))
 }
 
-func getLinkLayer(ibDeviceName string, portName string) (string, error) {
-	linkLayerPath := filepath.Join(SYS_CLASS_INFINIBAND_PATH, ibDeviceName, "ports", portName, "link_layer")
+func getLinkLayer(config *NicMonitorConfig, ibDeviceName string, portName string) (string, error) {
+	linkLayerPath := filepath.Join(config.SysClassInfinibandPath, ibDeviceName, "ports", portName, "link_layer")
 
 	content, err := fileSystem.ReadFile(linkLayerPath)
 	if err != nil {
@@ -134,7 +134,7 @@ func getLinkLayer(ibDeviceName string, portName string) (string, error) {
 
 // nolint: gocognit, cyclop
 func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
-	deviceList, err := GetInfinibandDevices(config.ExclusionRegexes)
+	deviceList, err := GetInfinibandDevices(config.ExclusionRegexes, config.SysClassInfinibandPath)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 			// Filter based on MonitorNetworkType and link_layer
 			if config.MonitorNetworkType == MonitorNetworkTypeRoCE ||
 				config.MonitorNetworkType == MonitorNetworkTypeInfiniBand {
-				linkLayer, err := getLinkLayer(device.Name, portName)
+				linkLayer, err := getLinkLayer(config, device.Name, portName)
 				if err != nil {
 					klog.Warningf(
 						"Could not determine link_layer for IB port %s on device %s, skipping: %v",

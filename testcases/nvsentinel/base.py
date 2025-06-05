@@ -23,6 +23,8 @@ import requests
 from testcases.common.base import Base
 from kubernetes import client
 import string
+import yaml
+import tempfile
 from testcases.utils.kubernetes_utils import KubernetesClient
 from kubernetes.client import CustomObjectsApi
 import psutil
@@ -1015,4 +1017,330 @@ class TestNVSentinelCaseBase(Base):
         if not fault_remediation_deployment:
             self.logger.error("Fault remediation deployment not found")
             pytest.skip("Fault remediation deployment not found")
+
+    def cleanup_mock_ethernet_interface(self, node_name):
+        """
+        Clean up the mock ethernet interface structure
+        """
+        self.logger.info(f"Cleaning up mock ethernet interface on node {node_name}")
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            command = ["/bin/sh", "-c", 'chroot /host bash -c "rm -rf /var/run/nvsentinel/mock-net"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, command)
+            self.logger.debug(f"Cleanup output: {output}")
+        finally:
+            self.client.delete_pod(debug_pod)
+
+    def cleanup_mock_infiniband_interface(self, node_name):
+        """
+        Clean up the mock InfiniBand interface structure
+        """
+        self.logger.info(f"Cleaning up mock InfiniBand interface on node {node_name}")
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            command = ["/bin/sh", "-c", 'chroot /host bash -c "rm -rf /var/run/nvsentinel/mock-infiniband"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, command)
+            self.logger.debug(f"Cleanup output: {output}")
+        finally:
+            self.client.delete_pod(debug_pod)
+
+    def set_mock_ethernet_state(self, node_name, interface_name, state):
+        """
+        Set the operstate of the mock ethernet interface
+        """
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            # Update the file in the mock location (host path)
+            mock_path = f"/var/run/nvsentinel/mock-net/{interface_name}/operstate"
+            command = ["/bin/sh", "-c", f'chroot /host bash -c "echo \'{state}\' > {mock_path}"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, command)
+            self.logger.debug(f"Set state output: {output}")
             
+            # Verify the state was set
+            verify_command = ["/bin/sh", "-c", f'chroot /host bash -c "cat {mock_path}"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, verify_command)
+            self.logger.info(f"Verified state: {output.strip()}")
+            
+        finally:
+            self.client.delete_pod(debug_pod)
+
+    def set_mock_infiniband_state(self, node_name, device_name, port_name, state, phys_state):
+        """
+        Set the state and phys_state of the mock InfiniBand interface
+        """
+        self.logger.info(f"Setting {device_name} port {port_name} state to {state}, phys_state to {phys_state} on node {node_name}")
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            # Update the state file in the mock location (host path)
+            mock_state_path = f"/var/run/nvsentinel/mock-infiniband/{device_name}/ports/{port_name}/state"
+            mock_phys_state_path = f"/var/run/nvsentinel/mock-infiniband/{device_name}/ports/{port_name}/phys_state"
+            
+            # Set state
+            command = ["/bin/sh", "-c", f'chroot /host bash -c "echo \'{state}\' > {mock_state_path}"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, command)
+            self.logger.debug(f"Set state output: {output}")
+            
+            # Set phys_state
+            command = ["/bin/sh", "-c", f'chroot /host bash -c "echo \'{phys_state}\' > {mock_phys_state_path}"']
+            output, _ = self.client.exec_command_in_pod(debug_pod, command)
+            self.logger.debug(f"Set phys_state output: {output}")
+            
+        finally:
+            self.client.delete_pod(debug_pod)
+            
+    def create_mock_ethernet_interface(self, node_name, interface_name="dummy_test"):
+        """
+        Create a mock ethernet interface in a location accessible to both test and container
+        """
+        self.logger.info(f"Creating mock ethernet interface {interface_name} on node {node_name}")
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            # Create the mock filesystem structure in /var/run/nvsentinel (host path)
+            # This will be accessible as /var/run/mock-net inside the container
+            mock_base_path = f"/var/run/nvsentinel/mock-net"
+            mock_interface_path = f"{mock_base_path}/{interface_name}"
+            
+            commands = [
+                # Create the base directory structure
+                f'mkdir -p {mock_interface_path}',
+                
+                # Create device directory (indicates physical device)
+                f'mkdir -p {mock_interface_path}/device',
+                
+                # Create type file with ethernet type (1)
+                f'echo "1" > {mock_interface_path}/type',
+                
+                # Create operstate file with initial "up" state
+                f'echo "up" > {mock_interface_path}/operstate',
+                
+                # Set proper permissions
+                f'chmod 644 {mock_interface_path}/type',
+                f'chmod 644 {mock_interface_path}/operstate',
+                
+                # Verify the structure was created
+                f'ls -la {mock_interface_path}/',
+                f'cat {mock_interface_path}/type',
+                f'cat {mock_interface_path}/operstate',
+            ]
+            
+            for command in commands:
+                exec_command = ["/bin/sh", "-c", f'chroot /host bash -c "{command}"']
+                output, _ = self.client.exec_command_in_pod(debug_pod, exec_command)
+                self.logger.debug(f"Command: {command}, Output: {output}")
+                
+        finally:
+            self.client.delete_pod(debug_pod)
+        
+        return interface_name
+
+    def create_mock_infiniband_interface(self, node_name, device_name="mlx5_test", port_name="1"):
+        """
+        Create a mock InfiniBand interface in a location accessible to both test and container
+        """
+        self.logger.info(f"Creating mock InfiniBand interface {device_name} port {port_name} on node {node_name}")
+        
+        debug_pod = self.create_debug_pod(node_name)
+        try:
+            # Create the mock filesystem structure in /var/run/nvsentinel (host path)
+            # This will be accessible as /var/run/mock-infiniband inside the container
+            mock_base_path = f"/var/run/nvsentinel/mock-infiniband"
+            mock_device_path = f"{mock_base_path}/{device_name}"
+            mock_port_path = f"{mock_device_path}/ports/{port_name}"
+            
+            commands = [
+                # Create the base directory structure
+                f'mkdir -p {mock_port_path}',
+                
+                # Create state file with initial "4: ACTIVE" state (healthy)
+                f'echo "4: ACTIVE" > {mock_port_path}/state',
+                
+                # Create phys_state file with initial "5: LinkUp" state (healthy)
+                f'echo "5: LinkUp" > {mock_port_path}/phys_state',
+                
+                # Set proper permissions
+                f'chmod 644 {mock_port_path}/state',
+                f'chmod 644 {mock_port_path}/phys_state',
+                
+                # Verify the structure was created
+                f'ls -la {mock_port_path}/',
+                f'cat {mock_port_path}/state',
+                f'cat {mock_port_path}/phys_state',
+            ]
+            
+            for command in commands:
+                exec_command = ["/bin/sh", "-c", f'chroot /host bash -c "{command}"']
+                output, _ = self.client.exec_command_in_pod(debug_pod, exec_command)
+                self.logger.debug(f"Command: {command}, Output: {output}")
+                
+        finally:
+            self.client.delete_pod(debug_pod)
+        
+        return device_name, port_name
+
+    def restart_nic_monitor_pod(self, node_name):
+        """
+        Restart the NIC monitor pod to pick up new configmap configuration
+        """
+        self.logger.info(f"Restarting NIC monitor pod on node {node_name} to pick up new configuration")
+        
+        # Get the current pod
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-nic-health*"
+        )
+        
+        target_pod = None
+        for pod in pods:
+            if pod.spec.node_name == node_name:
+                target_pod = pod
+                break
+        
+        if not target_pod:
+            raise Exception(f"No NIC health monitor pod found on node {node_name}")
+        
+        # Delete the current pod so it gets recreated with new configmap
+        self.logger.info(f"Deleting NIC monitor pod {target_pod.metadata.name} to restart with new configmap")
+        self.client.delete_pod(target_pod)
+        
+        # Wait for the pod to be recreated
+        time.sleep(10)
+        
+        # Find the new pod
+        pods, _ = self.client.list_pods(
+            self.nv_namespace, name_pattern="nvsentinel-nic-health*"
+        )
+        
+        new_pod = None
+        for pod in pods:
+            if pod.spec.node_name == node_name:
+                new_pod = pod
+                break
+        
+        if not new_pod:
+            raise Exception(f"New NIC health monitor pod not found on node {node_name}")
+        
+        self.logger.info(f"New NIC monitor pod: {new_pod.metadata.name}")
+        return new_pod.metadata.name
+
+    def update_nic_monitor_configmap(self, field, custom_path):
+        """
+        Update the NIC monitor configmap to include the custom path (container perspective)
+        """
+        self.logger.info(f"Updating NIC monitor configmap with custom path: {custom_path}")
+        
+        # Backup the original configmap first
+        self.backup_cm = "backup_nic_monitor_cm.yaml"
+        self.client.backup_configmap(
+            self.nv_namespace, "nvsentinel-nic-health-monitor", self.backup_cm
+        )
+        
+        try:
+            # Get current configmap
+            cm, _ = self.client.get_configmap(self.nv_namespace, "nvsentinel-nic-health-monitor")
+            
+            # Get current config
+            current_config = cm.data.get("config.ini", "")
+            
+            # Create new config with custom path
+            new_config = current_config
+            if field not in new_config:
+                new_config += f"\n{field} = {custom_path}\n"
+            else:
+                # Replace existing path
+                lines = new_config.split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip().startswith(field):
+                        lines[i] = f"{field} = {custom_path}"
+                        break
+                new_config = '\n'.join(lines)
+            
+            # Create a temporary configmap file with the new config
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as temp_file:
+                configmap_data = {
+                    'apiVersion': 'v1',
+                    'kind': 'ConfigMap',
+                    'metadata': {
+                        'name': 'nvsentinel-nic-health-monitor',
+                        'namespace': self.nv_namespace
+                    },
+                    'data': {
+                        'config.ini': new_config
+                    }
+                }
+                yaml.dump(configmap_data, temp_file)
+                temp_cm_file = temp_file.name
+            # Apply the new configmap
+            self.client.apply_configmap(temp_cm_file)
+            
+            # Clean up temp file
+            os.unlink(temp_cm_file)
+            
+            self.logger.info("Updated configmap successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update configmap: {e}")
+            raise
+
+    def restore_nic_monitor_configmap(self):
+        """
+        Restore the original NIC monitor configmap
+        """
+        if hasattr(self, 'backup_cm'):
+            self.logger.info("Restoring original NIC monitor configmap")
+            try:
+                self.client.apply_configmap(self.backup_cm)
+                self.logger.info("Restored configmap successfully")
+                # Clean up backup file
+                if os.path.exists(self.backup_cm):
+                    os.unlink(self.backup_cm)
+            except Exception as e:
+                self.logger.error(f"Failed to restore configmap: {e}")
+    def verify_ethernet_error_condition(self, node_name, expected_status):
+        """Utility function to verify EthernetErrorCheck condition"""
+        self.step_manager.print_header(
+            f"EthernetErrorCheck will change to {expected_status} in node condition."
+        )
+        target_condition, _ = self.client.read_node_condition_by_type(
+            node_name=node_name, condition_type="EthernetErrorCheck"
+        )
+        assert (
+            target_condition.status == expected_status
+        ), f"Status of EthernetErrorCheck is not {expected_status}: {target_condition}"
+        self.logger.info(
+            f"SUCCESS: EthernetErrorCheck status is {expected_status} when interface state changed"
+        )
+
+    def get_metric_value(self, pod_name):
+        """Utility function to get current metric value"""
+        self.step_manager.print_header(
+            "Get the current value of metric nic_monitor_health_events_published_total"
+        )
+        response = self.query_metrics(
+            query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}'
+        )
+        value = response.json()["data"]["result"][0]["value"]
+        self.logger.info(f"[DEBUG] value = {value}")
+        return int(value[1])
+
+    def validate_metric_changes(self, value_before, value_after_down, value_after_up, expected_down_count):
+        """Utility function to validate metric changes"""
+        self.step_manager.print_header(
+            "check value of the metric is increased when the NIC is set down and when the NIC is set up"
+        )
+        self.logger.info(f"value_before = {value_before}")
+        self.logger.info(f"value_after_down = {value_after_down}")
+        self.logger.info(f"value_after_up = {value_after_up}")
+
+        assert (
+            value_after_down - value_before == expected_down_count
+        ), f"[FAIL] value of the metric is NOT increased by {expected_down_count} when the NIC is set down"
+        assert (
+            value_after_up - value_after_down == 1
+        ), "[FAIL] value of the metric is NOT increased by 1 when the NIC is set up"
+        self.logger.info(
+            f"[PASS] value of the metric is increased by {expected_down_count} when the NIC is set down and when the NIC is set up"
+        )

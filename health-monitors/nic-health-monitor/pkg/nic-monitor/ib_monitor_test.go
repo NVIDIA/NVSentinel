@@ -25,6 +25,7 @@ import (
 )
 
 func TestScrapInfinibandDevices(t *testing.T) {
+	sysClassInfinibandPath := "/sys/class/infiniband"
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
@@ -55,13 +56,14 @@ func TestScrapInfinibandDevices(t *testing.T) {
 		},
 	}
 
-	actualDevs, err := GetInfinibandDevices(nil)
+	actualDevs, err := GetInfinibandDevices(nil, sysClassInfinibandPath)
 	require.NoError(t, err)
 	require.NotNil(t, actualDevs)
 	require.Equal(t, expected, actualDevs)
 }
 
 func TestInfinibandMonitor(t *testing.T) {
+	sysClassInfinibandPath := "/sys/class/infiniband"
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
@@ -83,7 +85,7 @@ func TestInfinibandMonitor(t *testing.T) {
 	// Initialize Devices map for the monitor
 	ibMonitor.Devices = make(map[string]InfiniBandDevice)
 
-	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil, MonitorNetworkType: MonitorNetworkTypeAll}
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: nil, MonitorNetworkType: MonitorNetworkTypeAll, SysClassInfinibandPath: sysClassInfinibandPath}
 
 	// mlx5_0 port 1 is up, so no error expected
 	actualEvents, err := ibMonitor.Monitor(nicConfig)
@@ -178,6 +180,7 @@ func TestInfinibandMonitor(t *testing.T) {
 }
 
 func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
+	sysClassInfinibandPath := "/sys/class/infiniband"
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
@@ -205,7 +208,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	ibMonitor := &InfinibandDeviceMonitor{}
 
 	// exclude mlx5_1 and mlx5_2
-	nicConfig := &NicMonitorConfig{ExclusionRegexes: []string{"^mlx5_1$", "^mlx5_2$"}}
+	nicConfig := &NicMonitorConfig{ExclusionRegexes: []string{"^mlx5_1$", "^mlx5_2$"}, SysClassInfinibandPath: sysClassInfinibandPath}
 
 	// mlx5_0 port 1 is up, and mlx5_1 and mlx5_2 are excluded, so no error expected
 	actualErrors, err := ibMonitor.Monitor(nicConfig)
@@ -247,6 +250,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 }
 
 func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
+	const sysClassInfinibandPath = "/sys/class/infiniband"
 	tests := []struct {
 		name                 string
 		monitorNetworkType   MonitorNetworkType
@@ -380,8 +384,9 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 			ibMonitor.Devices = make(map[string]InfiniBandDevice)
 
 			nicConfig := &NicMonitorConfig{
-				ExclusionRegexes:   nil,
-				MonitorNetworkType: tc.monitorNetworkType,
+				ExclusionRegexes:       nil,
+				MonitorNetworkType:     tc.monitorNetworkType,
+				SysClassInfinibandPath: sysClassInfinibandPath,
 			}
 
 			actualEvents, err := ibMonitor.Monitor(nicConfig)

@@ -63,3 +63,7 @@ nicExclusionRegexes: "^gketmp.*"
 
 maxRetryDurationForDownDetectedNICInMilliseconds: 500
 retryIntervalForDownDetectedNICInMilliseconds: 100
+# Custom path for sys/class/net (for testing purposes)
+# Leave empty to use default /sys/class/net
+sysClassNetPath: ""
+sysClassInfinibandPath: ""

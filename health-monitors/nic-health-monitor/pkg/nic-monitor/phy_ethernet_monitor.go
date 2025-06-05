@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	SYS_CLASS_NET_PATH = "/sys/class/net"
 
 	// device healthy message
 	deviceIsHealthy = "Device is healthy"
@@ -45,7 +44,7 @@ type EthernetDeviceMonitor struct {
 }
 
 // if this function return err (err != nil), then ignore the bool value
-func IsPhyEthernet(dev string) (bool, error) {
+func IsPhyEthernet(dev string, sysClassNetPath string) (bool, error) {
 	// This is for creating a dummy interface for testing purpose
 	// Creating a dummy interface
 	//   $ sudo modprobe dummy
@@ -60,7 +59,7 @@ func IsPhyEthernet(dev string) (bool, error) {
 	}
 
 	// physical device must be exist
-	path := filepath.Join(SYS_CLASS_NET_PATH, dev, "device")
+	path := filepath.Join(sysClassNetPath, dev, "device")
 	if _, err := fileSystem.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -70,7 +69,7 @@ func IsPhyEthernet(dev string) (bool, error) {
 	}
 
 	// type must be an ethernet
-	path = filepath.Join(SYS_CLASS_NET_PATH, dev, "type")
+	path = filepath.Join(sysClassNetPath, dev, "type")
 	if _, err := fileSystem.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -89,7 +88,7 @@ func IsPhyEthernet(dev string) (bool, error) {
 	}
 
 	// must be a master interface
-	path = filepath.Join(SYS_CLASS_NET_PATH, dev, "master")
+	path = filepath.Join(sysClassNetPath, dev, "master")
 	if _, err := fileSystem.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return true, nil
@@ -101,8 +100,8 @@ func IsPhyEthernet(dev string) (bool, error) {
 	return false, nil
 }
 
-func GetEthernetOperstate(devname string) string {
-	path := filepath.Join(SYS_CLASS_NET_PATH, devname, "operstate")
+func GetEthernetOperstate(devname string, sysClassNetPath string) string {
+	path := filepath.Join(sysClassNetPath, devname, "operstate")
 
 	state, err := fileSystem.ReadFile(path)
 	if err != nil {
@@ -112,10 +111,10 @@ func GetEthernetOperstate(devname string) string {
 	return strings.TrimSpace(string(state))
 }
 
-func GetPhyEthernetDevices(exclusionRegexList []string) (map[string]EthernetDevice, error) {
+func GetPhyEthernetDevices(exclusionRegexList []string, sysClassNetPath string) (map[string]EthernetDevice, error) {
 	deviceList := map[string]EthernetDevice{}
 
-	dirs, err := fileSystem.ReadDir(SYS_CLASS_NET_PATH)
+	dirs, err := fileSystem.ReadDir(sysClassNetPath)
 	if err != nil {
 		return nil, err
 	}
@@ -127,14 +126,14 @@ func GetPhyEthernetDevices(exclusionRegexList []string) (map[string]EthernetDevi
 			continue
 		}
 
-		isPhy, err := IsPhyEthernet(deviceName)
+		isPhy, err := IsPhyEthernet(deviceName, sysClassNetPath)
 		if err != nil {
 			klog.Errorf("error on IsPhyEthernet(%s): %v", deviceName, err)
 		} else if !isPhy {
 			continue
 		}
 
-		operstate := GetEthernetOperstate(deviceName)
+		operstate := GetEthernetOperstate(deviceName, sysClassNetPath)
 
 		deviceList[deviceName] = EthernetDevice{deviceName, operstate}
 	}
@@ -154,12 +153,15 @@ func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEv
 
 	defer ticker.Stop()
 
+	// Use the path from config (which is set in main from environment variable)
+	sysClassNetPath := config.SysClassNetPath
+
 tickerLoop:
 	for ; true; <-ticker.C {
 		select {
 		case <-timeout:
 			// maxRetryDuration exceeded, perform final check
-			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
+			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes, sysClassNetPath)
 			if err != nil {
 				return nil, err
 			}
@@ -169,7 +171,7 @@ tickerLoop:
 			break tickerLoop
 
 		default:
-			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes)
+			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes, sysClassNetPath)
 			if err != nil {
 				return nil, err
 			}

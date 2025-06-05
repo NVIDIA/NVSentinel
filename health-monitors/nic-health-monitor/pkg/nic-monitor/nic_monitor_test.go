@@ -233,6 +233,8 @@ func TestScanAndRegisterNics(t *testing.T) {
 			expectedMonitorTypes: []reflect.Type{reflect.TypeOf(&InfinibandDeviceMonitor{})},
 		},
 	}
+	const SYS_CLASS_NET_PATH = "/sys/class/net"
+	const SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,7 +253,7 @@ func TestScanAndRegisterNics(t *testing.T) {
 			}
 			// To simulate os.ErrNotExist for dirExists, ensure the path is NOT in mockFS.Fs
 
-			config := &NicMonitorConfig{MonitorNetworkType: tc.configType}
+			config := &NicMonitorConfig{MonitorNetworkType: tc.configType, SysClassInfinibandPath: SYS_CLASS_INFINIBAND_PATH, SysClassNetPath: SYS_CLASS_NET_PATH}
 			collector := &NicHealthMonitor{monitorConfig: config, EventChan: make(chan *[]NicHealthEvent, 5)}
 
 			scanAndRegisterNics(collector)
@@ -282,6 +284,8 @@ func TestScanAndRegisterNics(t *testing.T) {
 }
 
 func TestBootIDLogic(t *testing.T) {
+	const SYS_CLASS_NET_PATH = "/sys/class/net"
+	const SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
 	const testStateFilePath = "/tmp/nic_monitor_test_state.json"
 	// Clean up any state file that might be created by tests that use the real filesystem by mistake
 	defer os.Remove(testStateFilePath)
@@ -376,7 +380,7 @@ func TestBootIDLogic(t *testing.T) {
 		initialStateData, _ := json.Marshal(initialState)
 		mockFS.Fs[strings.TrimPrefix(testStateFilePath, "/")] = &fstest.MapFile{Data: initialStateData}
 
-		config := &NicMonitorConfig{StateFilePath: testStateFilePath}
+		config := &NicMonitorConfig{StateFilePath: testStateFilePath, SysClassInfinibandPath: SYS_CLASS_INFINIBAND_PATH, SysClassNetPath: SYS_CLASS_NET_PATH}
 		monitor, err := NewNicHealthMonitor(config)
 		require.NoError(t, err)
 
@@ -415,6 +419,8 @@ func TestBootIDLogic(t *testing.T) {
 			MonitorNetworkType:            MonitorNetworkTypeAll,
 			MaxRetryDurationForDownDetectedNICInMilliseconds: 100,
 			RetryIntervalForDownDetectedNICInMilliseconds:    10,
+			SysClassInfinibandPath:                           SYS_CLASS_INFINIBAND_PATH,
+			SysClassNetPath:                                  SYS_CLASS_NET_PATH,
 		}
 		monitor, err := NewNicHealthMonitor(config)
 		require.NoError(t, err)

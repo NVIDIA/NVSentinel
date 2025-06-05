@@ -26,3 +26,6 @@ data:
     NicExclusionRegex = {{ .Values.global.nicHealthMonitor.nicExclusionRegexes | default .Values.nicExclusionRegexes }}
     PollingIntervalInMilliseconds = 1000
     MonitorNetworkType = {{ .Values.global.nicHealthMonitor.monitorNetworkType | default .Values.monitorNetworkType | default "all" }}
+    SysClassNetPath = {{ .Values.sysClassNetPath | default "" }}
+    SysClassInfinibandPath = {{ .Values.sysClassInfinibandPath | default "" }}
+

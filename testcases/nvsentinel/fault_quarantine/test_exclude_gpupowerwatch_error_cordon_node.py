@@ -51,20 +51,15 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         self.step_manager.print_header(
             "Check the node condition. The GpuPowerWatch condition is set to be True."
         )
-        self.conditions, get_expected_result = self.get_node_condition_by_type(
-            self.node_name, "GpuPowerWatchIsNotHealthy"
-        )
-        assert (
-            get_expected_result
-        ), f"GpuPowerWatch condition should be True on node {self.node_name}"
+        events, _ = self.client.get_node_events(node_name=self.node_name)
 
         expected_result = {
-            "Condition Type": "GpuPowerWatch",
-            "Condition Reason": "GpuPowerWatchIsNotHealthy",
-            "Condition Message": "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU.* This GPU can still perform workload. Recommended Action=NONE;",
+            "Event Type": "GpuPowerWatch",
+            "Event Reason": "GpuPowerWatchIsNotHealthy",
+            "Event Message": "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*Recommended Action=NONE",
         }
         self.verify_health_monitor_info(
-            conditions=self.conditions, expected_result=expected_result
+            conditions=events, expected_result=expected_result
         )
 
         self.step_manager.print_header("Check the node  is not cordoned")

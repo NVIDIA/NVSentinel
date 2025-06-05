@@ -49,7 +49,7 @@ serviceAccount:
   name: ""
   
 nodeSelector:
-  nodeGroup: "customer-cpu"
+  nodeGroup: "system-cpu"
 
 tolerations:
   - effect: NoSchedule
@@ -70,7 +70,7 @@ clientCertMountPath: "/etc/ssl/mongo-client"
 udsPath: "/run/nvsentinel/nvsentinel.sock"
 
 # cspName specifies the active cloud service provider. Can be "gcp" or "aws".
-cspName: "gcp"
+cspName: ""
 
 # config.toml content will be generated from the fields below using the configmap template.
 # Both main container and sidecar will mount and use this.
@@ -80,18 +80,18 @@ configToml:
   maintenanceEventPollIntervalSeconds: 60 # Used by Quarantine Trigger Engine sidecar
   triggerQuarantineWorkflowTimeLimitMinutes: 30 # Used by Quarantine Trigger Engine sidecar
   postMaintenanceHealthyDelayMinutes: 15 # Used by Quarantine Trigger Engine sidecar
-  clusterName: "tg220000-dgxc-runai-gcp-cmh-dev0" # Used by main monitor and potentially sidecar if needed
+  clusterName: "" # Used by main monitor and potentially sidecar if needed
   kubeconfigPath: ""  # Optional, only set if running out-of-cluster against a tenant. Set to non-empty string to enable.
 
   gcp:
-    targetProjectId: "proj-dgxc-runai-np-dev-mega" # Used by main monitor
+    targetProjectId: "" # Used by main monitor
     apiPollingIntervalSeconds: 60 # Used by main monitor (GCP poller)
-    gcpServiceAccountName: "csp-monitor-gcp-sa" # GCP service account name for workload identity
-    logFilter: 'logName="projects/proj-dgxc-runai-np-dev-mega/logs/csp-health-monitor-test-log" AND operation.producer="compute.instances.upcomingMaintenance"'
+    gcpServiceAccountName: "" # GCP service account name for workload identity
+    logFilter: "" # example: 'logName="projects/{PROJECT_ID}/logs/csp-health-monitor-test-log" AND operation.producer="compute.instances.upcomingMaintenance"'
 
   aws:
-    accountId: "381491907752" # Used by main monitor
+    accountId: "" # Used by main monitor
     # How often to poll the AWS Health API for events in seconds
     pollingIntervalSeconds: 60 # Used by main monitor (AWS poller)
     # AWS region of the tenant cluster.
-    region: "us-east-1" # Used by main monitor
+    region: "" # Used by main monitor

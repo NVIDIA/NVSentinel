@@ -45,6 +45,9 @@ const (
 
 	ETHERNET_CHECK_NAME = "EthernetErrorCheck"
 	COMPONENT_CLASS     = "NIC"
+
+	DEFAULT_SYS_CLASS_NET_PATH        = "/sys/class/net"
+	DEFAULT_SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
 )
 
 const defaultStateFilePath = "/var/run/nic_monitor/state.json"
@@ -195,6 +198,18 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 
 	monitorNetworkType := getStringValue("MonitorNetworkType", defaultMonitorNetworkType)
 
+	// Read SysClassNetPath from configmap, default to /sys/class/net if not specified
+	sysClassNetPath := section.Key("SysClassNetPath").String()
+	if sysClassNetPath == "" {
+		sysClassNetPath = DEFAULT_SYS_CLASS_NET_PATH
+	}
+
+	// Read SysClassInfinibandPath from configmap, default to /sys/class/infiniband if not specified
+	sysClassInfinibandPath := section.Key("SysClassInfinibandPath").String()
+	if sysClassInfinibandPath == "" {
+		sysClassInfinibandPath = DEFAULT_SYS_CLASS_INFINIBAND_PATH
+	}
+
 	return &nic.NicMonitorConfig{
 		PollingIntervalInMilliseconds:                    pollingInterval,
 		ExclusionRegexes:                                 exclusionRegexes,
@@ -203,6 +218,8 @@ func loadConfig(filePath string) (*nic.NicMonitorConfig, error) {
 		MaxRetriesForRetryableError:                      maxRetriesForRetryableError,
 		RetryDelaySecondsForRetryableError:               retryDelaySecondsForRetryableError,
 		MonitorNetworkType:                               nic.MonitorNetworkType(monitorNetworkType),
+		SysClassNetPath:                                  sysClassNetPath,
+		SysClassInfinibandPath:                           sysClassInfinibandPath,
 	}, nil
 }
 
@@ -217,7 +234,7 @@ func validateConfig(cfg *nic.NicMonitorConfig) error {
 	}
 
 	if cfg.MaxRetryDurationForDownDetectedNICInMilliseconds >= cfg.PollingIntervalInMilliseconds {
-		return fmt.Errorf("MaxRetryDurationForDownDetectedNICInMilliseconds should be strictly less than" +
+		return fmt.Errorf("MaxRetryDurationForDownDetectedNICInMilliseconds should be strictly less than " +
 			"PollingIntervalInMilliseconds")
 	}
 
@@ -301,6 +318,8 @@ func main() {
 		RetryDelaySecondsForRetryableError:               defaultRetryDelaySecondsForRetryableError,
 		StateFilePath:                                    defaultStateFilePath,
 		MonitorNetworkType:                               nic.MonitorNetworkType(*monitorNetworkTypeFlag),
+		SysClassNetPath:                                  DEFAULT_SYS_CLASS_NET_PATH,
+		SysClassInfinibandPath:                           DEFAULT_SYS_CLASS_INFINIBAND_PATH,
 	}
 
 	if *nicExclusionRegexes != "" {
@@ -346,6 +365,10 @@ func main() {
 			nicConfig.MonitorNetworkType = fileConfig.MonitorNetworkType
 		}
 
+		nicConfig.SysClassNetPath = fileConfig.SysClassNetPath
+
+		nicConfig.SysClassInfinibandPath = fileConfig.SysClassInfinibandPath
+
 		klog.Info("Loaded configuration from configmap")
 	}
 
@@ -365,6 +388,9 @@ func main() {
 	klog.Infof("Retry Interval for Down-Detected NIC: %d milliseconds",
 		nicConfig.RetryIntervalForDownDetectedNICInMilliseconds)
 	klog.Infof("Monitor Network Type: %s", nicConfig.MonitorNetworkType)
+
+	klog.Infof("Ethernet interfaces will be monitored from path: %s", nicConfig.SysClassNetPath)
+	klog.Infof("Infiniband interfaces will be monitored from path: %s", nicConfig.SysClassInfinibandPath)
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))

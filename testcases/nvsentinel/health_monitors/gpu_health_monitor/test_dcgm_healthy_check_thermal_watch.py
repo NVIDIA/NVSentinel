@@ -62,17 +62,14 @@ class TestDGCMHealthyCheckThermalWatch(GPUHealthMonitorBase):
 
         self.step_manager.print_header("Check events on the corresponding GPU node")
         time.sleep(30)
-        node_info, _ = self.client.get_node_by_name(
-            node_name=self.node_name, node_type="gpu"
-        )
-        assert node_info is not None, "Find no node info by node name"
+        events, _ = self.client.get_node_events(node_name=self.node_name)
 
         expected_result = {
-            "Condition Type": "GpuThermalWatch",
-            "Condition Reason": "GpuThermalWatchIsNotHealthy",
-            "Condition Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0.*thermal violation.*Recommended Action=NONE",
+            "Event Type": "GpuThermalWatch",
+            "Event Reason": "GpuThermalWatchIsNotHealthy",
+            "Event Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_THERMAL GPU:0.*thermal violation.*Recommended Action=NONE",
         }
         self.verify_health_monitor_info(
-            conditions=node_info.status.conditions, expected_result=expected_result
+            conditions=events, expected_result=expected_result
         )
         self.restore_managed_by_nvsentinel_label(self.node_name)

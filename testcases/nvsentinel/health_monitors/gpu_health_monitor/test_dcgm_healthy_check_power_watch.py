@@ -61,12 +61,15 @@ class TestDGCMHealthyCheckPowerWatch(GPUHealthMonitorBase):
             node_name=self.node_name, node_type="gpu"
         )
         assert node_info is not None, "Find no node info by node name"
+
+        events, _ = self.client.get_node_events(node_name=self.node_name)
+
         expected_result = {
-            "Condition Type": "GpuPowerWatch",
-            "Condition Reason": "GpuPowerWatchIsNotHealthy",
-            "Condition Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*power violation.*Recommended Action=NONE",
+            "Event Type": "GpuPowerWatch",
+            "Event Reason": "GpuPowerWatchIsNotHealthy",
+            "Event Message": "errorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*power violation.*Recommended Action=NONE",
         }
         self.verify_health_monitor_info(
-            conditions=node_info.status.conditions, expected_result=expected_result
+            conditions=events, expected_result=expected_result
         )
         self.restore_managed_by_nvsentinel_label(self.node_name)

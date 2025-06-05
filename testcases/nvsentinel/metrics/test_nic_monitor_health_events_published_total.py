@@ -15,6 +15,8 @@ import pytest
 import time
 from functools import partial
 import os
+import random
+import threading
 
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 
@@ -33,8 +35,113 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
         Test case of NVsentinel Metrics: NIC health monitor metric: nic_monitor_health_events_published_total
         """
         if os.getenv("CLOUD_PROVIDER") == "aws":
-            pytest.skip("This test case is not supported on AWS. Skipping this test case.")
+            self.logger.info("Running on AWS with mock filesystem")
+            autosync_fixture = request.getfixturevalue("nvsentinel_autosync_disabled_enabled")
+            self.nic_monitor_health_events_published_total_with_mock(request)
+        else:
+            self.logger.info("Running on CSP with original filesystem")
+            self.nic_monitor_health_events_published_total_with_real_interface(request)
 
+    def nic_monitor_health_events_published_total_with_mock(self, request):
+        """
+        Test NIC monitor health events published total metric using mock filesystem
+        """
+        self.step_manager.print_header(
+            "Select a node for testing with mock ethernet interface"
+        )
+        nodes, _ = self.client.get_nodes()
+        if not nodes:
+            pytest.skip("No nodes available for testing")
+        
+        node_name = random.choice([node.metadata.name for node in nodes])
+        self.logger.info(f"Selected node for testing: {node_name}")
+
+        self.step_manager.print_header(
+            'Follow "Prometheus metrics for nvsentinel pods" , make sure that promtool is installed and prometheus port 9090 is accessible.'
+        )
+        self.start_prometheus_service()
+
+        self.step_manager.print_header(
+            "Update NIC monitor configuration to use custom path"
+        )
+        
+        try:
+            self.update_nic_monitor_configmap("SysClassNetPath", "/var/run/mock-net")
+            request.addfinalizer(self.restore_nic_monitor_configmap)
+        except Exception as e:
+            self.logger.error(f"Failed to update configmap: {e}")
+            pytest.skip(f"Cannot update NIC monitor configuration: {e}")
+
+        
+        interface_name = f"eth1_test_{random.randint(1000, 9999)}"
+        
+        try:
+            self.create_mock_ethernet_interface(node_name, interface_name)
+        except Exception as e:
+            self.logger.error(f"Failed to create mock interface: {e}")
+            pytest.skip(f"Cannot create mock interface on node {node_name}. Error: {e}")
+        
+        # Register cleanup
+        request.addfinalizer(
+            partial(self.cleanup_mock_ethernet_interface, node_name)
+        )
+
+        
+        try:
+            pod_name = self.restart_nic_monitor_pod(node_name)
+        except Exception as e:
+            self.logger.error(f"Failed to restart NIC monitor: {e}")
+            pytest.skip(f"Cannot restart NIC monitor on node {node_name}. Error: {e}")
+
+        self.step_manager.print_header(
+            "Open one console to check the logs from the pod, do not close this console"
+        )
+        self.pod_logs = []
+        monitor_thread = threading.Thread(
+            target=self.follow_pod_logs, args=(self.nv_namespace, pod_name), daemon=True
+        )
+        monitor_thread.start()
+
+        time.sleep(10)
+
+        value_before = self.get_metric_value(pod_name)
+
+        self.step_manager.print_header(
+            'Execute test case "Ethernet link down", check value of the metric is increased by 1 when the NIC is set down and when the NIC is set UP.'
+        )
+        self.logger.info(f"TARGET INTERFACE NAME: {interface_name}")
+
+        self.step_manager.print_header(f"Down the interface {interface_name}")
+        self.set_mock_ethernet_state(node_name, interface_name, "down")
+        time.sleep(20)
+
+        self.step_manager.print_header(
+            "EthernetErrorCheck will change to True in node condition."
+        )
+        self.verify_ethernet_error_condition(node_name, "True")
+
+        value_after_down = self.get_expected_value(
+            query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}',
+            value_before=value_before,
+            expected_increase=1,
+        )
+
+        self.step_manager.print_header("Up the interface")
+        self.set_mock_ethernet_state(node_name, interface_name, "up")
+        time.sleep(25)
+
+        value_after_up = self.get_expected_value(
+            query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}',
+            value_before=value_after_down,
+            expected_increase=1,
+        )
+
+        self.validate_metric_changes(value_before, value_after_down, value_after_up, 1)
+
+    def nic_monitor_health_events_published_total_with_real_interface(self, request):
+        """
+        Test NIC monitor health events published total metric using real physical interfaces
+        """
         self.step_manager.print_header(
             "Filter out the nodes with more than 2 physical interface on the node"
         )
@@ -46,7 +153,7 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
             )
 
         self.step_manager.print_header(
-            "Follow “Prometheus metrics for nvsentinel pods” , make sure that promtool is installed and prometheus port 9090 is accessible."
+            'Follow "Prometheus metrics for nvsentinel pods" , make sure that promtool is installed and prometheus port 9090 is accessible.'
         )
         self.start_prometheus_service()
 
@@ -69,15 +176,10 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
         self.step_manager.print_header(
             "Get the current value of metric nic_monitor_health_events_published_total"
         )
-        response = self.query_metrics(
-            query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}'
-        )
-        value = response.json()["data"]["result"][0]["value"]
-        self.logger.info(f"[DEBUG] value = {value}")
-        value_before = int(value[1])
+        value_before = self.get_metric_value(pod_name)
 
         self.step_manager.print_header(
-            "Execute test case “Ethernet link down”, check value of the metric is increased by 1 or 2 when the NIC is set down and when the NIC is set UP."
+            'Execute test case "Ethernet link down", check value of the metric is increased by 1 or 2 when the NIC is set down and when the NIC is set UP.'
         )
         non_mgmt_interface = self.get_non_mgmt_ports_of_the_node(node_name)
         self.logger.info(f"TARGET PORT NAME: {non_mgmt_interface}")
@@ -92,15 +194,7 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
             self.step_manager.print_header(
                 "EthernetErrorCheck will change to True in node condition."
             )
-            target_condition, _ = self.client.read_node_condition_by_type(
-                node_name=node_name, condition_type="EthernetErrorCheck"
-            )
-            assert (
-                target_condition.status == "True"
-            ), f"Status of EthernetErrorCheck is still False: {target_condition}"
-            self.logger.info(
-                "SUCCESS: EthernetErrorCheck status is flip to True when port down in node"
-            )
+            self.verify_ethernet_error_condition(node_name, "True")
         except:
             self.up_interface_of_node(node_name, non_mgmt_interface)
             raise
@@ -130,9 +224,6 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
         self.step_manager.print_header(
             "check value of the metric is increased by 1 when the NIC is set down and when the NIC is set up"
         )
-        self.logger.info(f"value_before = {value_before}")
-        self.logger.info(f"value_after_down = {value_after_down}")
-        self.logger.info(f"value_after_up = {value_after_up}")
         ib_interface_flag = self.check_if_ib_interface(node_name)
         if ib_interface_flag:
             # if the node has IB interface, then bring down 1 interface, 2 interface will be down
@@ -140,12 +231,4 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
         else:
             count = 1
 
-        assert (
-            value_after_down - value_before == count
-        ), "[FAIL] value of the metric is NOT increased by {count} when the NIC is set down"
-        assert (
-            value_after_up - value_after_down == 1
-        ), "[FAIL] value of the metric is NOT increased by {count} when the NIC is set up"
-        self.logger.info(
-            "[PASS] value of the metric is increased by {count} when the NIC is set down and when the NIC is set up"
-        )
+        self.validate_metric_changes(value_before, value_after_down, value_after_up, count)

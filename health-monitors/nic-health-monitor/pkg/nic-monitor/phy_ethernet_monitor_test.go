@@ -26,6 +26,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	sysClassNetPath = "/sys/class/net"
+)
+
 func TestScrapPhyEthernetDevices(t *testing.T) {
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
@@ -64,7 +68,7 @@ func TestScrapPhyEthernetDevices(t *testing.T) {
 		"eth0": {Name: "eth0", Operstate: "up"},
 	}
 
-	actualDevs, err := GetPhyEthernetDevices(nil)
+	actualDevs, err := GetPhyEthernetDevices(nil, sysClassNetPath)
 	require.NoError(t, err)
 	require.NotNil(t, actualDevs)
 	require.Equal(t, expected, actualDevs)
@@ -96,6 +100,7 @@ func TestPhyEthernetMonitor(t *testing.T) {
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
 		MonitorNetworkType: MonitorNetworkTypeAll,
+		SysClassNetPath: sysClassNetPath,
 	}
 
 	// eth0 is up, so expect a healthy event
@@ -183,6 +188,7 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 		ExclusionRegexes: []string{"^eth1$", "^eth3$"},
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		SysClassNetPath: sysClassNetPath,
 	}
 
 	// eth0 and eth2 are not excluded, expect healthy events
@@ -236,6 +242,7 @@ func TestMonitorDeviceGoesDownAndStaysDown(t *testing.T) {
 		ExclusionRegexes: nil,
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		SysClassNetPath: sysClassNetPath,
 	}
 
 	// initial state is up
@@ -279,6 +286,7 @@ func TestMonitorDeviceRecoversBeforeMaxRetryDuration(t *testing.T) {
 		ExclusionRegexes: nil,
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		SysClassNetPath: sysClassNetPath,
 	}
 
 	// initial state is up
@@ -320,6 +328,7 @@ func TestMonitorDevicesAddedAndRemoved(t *testing.T) {
 		ExclusionRegexes: nil,
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		SysClassNetPath: sysClassNetPath,
 	}
 
 	actualEvents, err := ethMonitor.Monitor(nicConfig)

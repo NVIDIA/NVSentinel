@@ -68,6 +68,8 @@ type NicMonitorConfig struct {
 	RetryIntervalForDownDetectedNICInMilliseconds    int
 	MaxRetriesForRetryableError                      int
 	RetryDelaySecondsForRetryableError               int
+	SysClassNetPath                                  string
+	SysClassInfinibandPath                           string
 	StateFilePath                                    string
 	MonitorNetworkType                               MonitorNetworkType
 }
@@ -200,7 +202,7 @@ func networkTypesToMonitor(c *NicHealthMonitor) (monitorEth, monitorIB bool) {
 // registerInfinibandMonitor appends an InfinibandDeviceMonitor if the kernel
 // exposes the relevant sysfs path.
 func (c *NicHealthMonitor) registerInfinibandMonitor() {
-	if !dirExists(SYS_CLASS_INFINIBAND_PATH) {
+	if !dirExists(c.monitorConfig.SysClassInfinibandPath) {
 		return
 	}
 
@@ -212,7 +214,7 @@ func (c *NicHealthMonitor) registerInfinibandMonitor() {
 // registerEthernetMonitor appends an EthernetDeviceMonitor when /sys/class/net
 // exists.
 func (c *NicHealthMonitor) registerEthernetMonitor() {
-	if !dirExists(SYS_CLASS_NET_PATH) {
+	if !dirExists(c.monitorConfig.SysClassNetPath) {
 		return
 	}
 
