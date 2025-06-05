@@ -43,6 +43,7 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         """
         Setup method to create CRD and namespace before test
         """
+        self.skip_if_fault_remediation_deployment_not_found()
         # Initialize logger
         self.logger = logging.getLogger(__name__)
         if not self.logger.handlers:
@@ -60,7 +61,6 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         # Setup required resources
         self._ensure_rebootnode_crd_exists()
         self._ensure_janitor_namespace_exists()
-
         self._cleanup_rebootnode_crs()
 
 
@@ -71,7 +71,6 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         Test case of NVsentinel Fault Remediation: Inject XID error triggering rebootnode CR creation
         """
         self.logger.info("Inject XID error triggers rebootnode CR test")
-        self.skip_if_fault_remediation_deployment_not_found()
         self.step_manager.print_header("Check the fault remediation pod is running")
         pods, _ = self.client.list_pods(
             self.nv_namespace, name_pattern="nvsentinel-fault-remediation*"
@@ -261,4 +260,6 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         except Exception as e:
             self.logger.error(f"Unexpected error verifying rebootnode CR: {e}")
             raise AssertionError(f"Unexpected error verifying rebootnode CR: {e}")
+        finally:
+            self._cleanup_rebootnode_crs()
 
