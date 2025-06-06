@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 )
 
@@ -187,6 +188,11 @@ func (m *MockRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*
 }
 
 func TestNewK8sClient(t *testing.T) {
+	// Skip test if in-cluster config works
+	if _, err := rest.InClusterConfig(); err == nil {
+		t.Skip("Skipping test as in-cluster config is available")
+	}
+
 	tests := []struct {
 		name       string
 		kubeconfig string
