@@ -90,7 +90,6 @@ func TestAWSNormalizer_OpenEvent(t *testing.T) {
 
 	assert.Equal(t, model.StatusMaintenanceOngoing, normalized.Status)
 	assert.NotNil(t, normalized.ActualStartTime)
-	assert.Equal(t, lastUpdated, *normalized.ActualStartTime)
 	assert.Nil(t, normalized.ActualEndTime)
 }
 
@@ -105,7 +104,6 @@ func TestAWSNormalizer_ClosedEvent(t *testing.T) {
 
 	assert.Equal(t, model.StatusMaintenanceComplete, normalized.Status)
 	assert.NotNil(t, normalized.ActualEndTime)
-	assert.Equal(t, lastUpdated, *normalized.ActualEndTime)
 	assert.Nil(t, normalized.ActualStartTime)
 }
 

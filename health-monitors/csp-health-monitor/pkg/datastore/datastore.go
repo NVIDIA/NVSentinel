@@ -58,6 +58,7 @@ type Store interface {
 		statuses []model.InternalStatus,
 	) (*model.MaintenanceEvent, bool, error)
 	FindLatestOngoingEventByNode(ctx context.Context, nodeName string) (*model.MaintenanceEvent, bool, error)
+	FindActiveEventsByStatuses(ctx context.Context, csp model.CSP, statuses []string) ([]model.MaintenanceEvent, error)
 }
 
 // MongoStore implements the Store interface using MongoDB.
@@ -142,6 +143,10 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 			bson.E{Key: "clusterName", Value: 1},
 			bson.E{Key: "eventReceivedTimestamp", Value: -1},
 		}, Options: options.Index().SetName("csp_cluster_received_desc")},
+		{
+			Keys:    bson.D{bson.E{Key: "cspStatus", Value: 1}},
+			Options: options.Index().SetName("csp_status"),
+		},
 	}
 
 	indexView := collection.Indexes()
@@ -481,4 +486,38 @@ func (s *MongoStore) FindLatestOngoingEventByNode(
 	klog.V(2).Infof("Found ongoing event %s for node %s", event.EventID, nodeName)
 
 	return &event, true, nil
+}
+
+// FindActiveEventsByStatuses finds active events by their csp status.
+func (s *MongoStore) FindActiveEventsByStatuses(
+	ctx context.Context,
+	csp model.CSP,
+	statuses []string,
+) ([]model.MaintenanceEvent, error) {
+	if len(statuses) == 0 {
+		return nil, fmt.Errorf("at least one status is required")
+	}
+
+	filter := bson.D{
+		bson.E{Key: "csp", Value: csp},
+		bson.E{Key: "cspStatus", Value: bson.D{bson.E{Key: "$in", Value: statuses}}},
+	}
+
+	klog.V(2).Infof("Querying for active events with filter: %v", filter)
+
+	cursor, err := s.client.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active events: %w", err)
+	}
+
+	defer cursor.Close(ctx)
+
+	var results []model.MaintenanceEvent
+	if err := cursor.All(ctx, &results); err != nil {
+		return nil, fmt.Errorf("failed to decode maintenance events for active events: %w", err)
+	}
+
+	klog.V(2).Infof("Found %d active events.", len(results))
+
+	return results, nil
 }

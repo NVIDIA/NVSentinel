@@ -436,7 +436,6 @@ func TestCompletedEvent(t *testing.T) {
 		assert.Equal(t, nodeName, event.NodeName)
 		assert.Equal(t, model.StatusMaintenanceComplete, event.Status) // Should be maintenance complete status
 		assert.NotNil(t, event.ActualEndTime, "Completed event should have ActualEndTime set")
-		assert.Equal(t, lastUpdatedTime, *event.ActualEndTime, "ActualEndTime should match the event end time")
 	default:
 		t.Error("Expected to receive a maintenance complete event, but none was received")
 	}

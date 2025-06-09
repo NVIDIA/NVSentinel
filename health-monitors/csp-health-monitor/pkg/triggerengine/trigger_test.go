@@ -104,6 +104,13 @@ func (m *MockDatastore) FindLatestOngoingEventByNode(
 	return args.Get(0).(*model.MaintenanceEvent), args.Bool(1), args.Error(2)
 }
 
+func (m *MockDatastore) FindActiveEventsByStatuses(ctx context.Context, csp model.CSP, statuses []string) ([]model.MaintenanceEvent, error) {
+	args := m.Called(ctx, csp, statuses)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.MaintenanceEvent), args.Error(1)
+}
 // MockUDSClient is a mock implementation of the pb.PlatformConnectorClient interface
 type MockUDSClient struct {
 	mock.Mock

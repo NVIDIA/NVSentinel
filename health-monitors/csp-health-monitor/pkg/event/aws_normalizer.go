@@ -105,10 +105,12 @@ func (n *AWSNormalizer) Normalize(
 		status = model.StatusDetected
 	case types.EventStatusCodeOpen:
 		status = model.StatusMaintenanceOngoing
-		actualStartTime = event.LastUpdatedTime
+		now := time.Now().UTC()
+		actualStartTime = &now
 	case types.EventStatusCodeClosed:
 		status = model.StatusMaintenanceComplete
-		actualEndTime = event.LastUpdatedTime
+		now := time.Now().UTC()
+		actualEndTime = &now
 	default:
 		klog.Errorf("Unknown event status code found %+v", event)
 		return nil, fmt.Errorf("unknown event status code found %+v", event)
@@ -137,6 +139,7 @@ func (n *AWSNormalizer) Normalize(
 		LastUpdatedTimestamp:   time.Now().UTC(),
 		RecommendedAction:      meta.Action,
 		Metadata: map[string]string{
+			"eventArn":       aws.ToString(event.Arn),
 			"eventTypeCode":  *event.EventTypeCode,
 			"eventScopeCode": string(event.EventScopeCode),
 			"description":    meta.EventDescription,

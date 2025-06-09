@@ -75,6 +75,9 @@ spec:
                 db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
                   { 'scheduledStartTime': 1 },
                 );
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'cspStatus': 1 },
+                );
                 db.getSiblingDB('\$external').runCommand({
                   createUser: '$MONGODB_APPLICATION_USER_DN',
                   roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
