@@ -1319,12 +1319,36 @@ class TestNVSentinelCaseBase(Base):
         self.step_manager.print_header(
             "Get the current value of metric nic_monitor_health_events_published_total"
         )
-        response = self.query_metrics(
-            query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}'
+        max_retry = 5
+        retry_delay = 10  # seconds
+        for attempt in range(max_retry):
+            response = self.query_metrics(
+                query_params=f'nic_monitor_health_events_published_total{{pod="{pod_name}"}}'
+            )
+            data = response.json().get("data", {})
+            results = data.get("result", []) if isinstance(data, dict) else []
+
+            if results:
+                value = results[0]["value"]
+                self.logger.info(f"[DEBUG] value = {value}")
+                return int(value[1])
+
+            self.logger.info(
+                "Metric nic_monitor_health_events_published_total returned no data for pod %s (attempt %d/%d); retrying after %ds",
+                pod_name,
+                attempt + 1,
+                max_retry,
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+
+        # If still no data, return 0 and log warning
+        self.logger.warning(
+            "Metric nic_monitor_health_events_published_total returned no data for pod %s after %d attempts; assuming zero",
+            pod_name,
+            max_retry,
         )
-        value = response.json()["data"]["result"][0]["value"]
-        self.logger.info(f"[DEBUG] value = {value}")
-        return int(value[1])
+        return 0
 
     def validate_metric_changes(self, value_before, value_after_down, value_after_up, expected_down_count):
         """Utility function to validate metric changes"""

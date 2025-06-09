@@ -14,6 +14,7 @@
 
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 import pytest
+import time
 
 
 class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
@@ -49,18 +50,31 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         assert "Successfully injected" in output
 
         self.step_manager.print_header(
-            "Check the node condition. The GpuPowerWatch condition is set to be True."
+            "Check the node events. The GpuPowerWatch event should be present."
         )
-        events, _ = self.client.get_node_events(node_name=self.node_name)
 
-        expected_result = {
-            "Event Type": "GpuPowerWatch",
-            "Event Reason": "GpuPowerWatchIsNotHealthy",
-            "Event Message": "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*Recommended Action=NONE",
-        }
-        self.verify_health_monitor_info(
+        retry_attempts = 5  # number of retries
+        retry_delay = 10     # seconds between retries
+        for _ in range(retry_attempts):
+            events, _ = self.client.get_node_events(node_name=self.node_name)
+            self.logger.info(f"Events: {events}")
+            expected_result = {
+                "Event Type": "GpuPowerWatch",
+                "Event Reason": "GpuPowerWatchIsNotHealthy",
+                "Event Message": "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:1.*Recommended Action=NONE",
+            }
+            if self.verify_health_monitor_info(
+                conditions=events,
+                expected_result=expected_result,
+                assert_on_fail=False,
+            ):
+                break
+            time.sleep(retry_delay)
+
+        # After all retries, make sure we eventually saw the expected event
+        assert self.verify_health_monitor_info(
             conditions=events, expected_result=expected_result
-        )
+        ), "GpuPowerWatch event not found after retries"
 
         self.step_manager.print_header("Check the node  is not cordoned")
         success, _ = self.client.check_node_ready(self.node_name)
