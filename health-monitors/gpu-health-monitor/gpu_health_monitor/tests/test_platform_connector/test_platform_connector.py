@@ -68,7 +68,11 @@ class TestPlatformConnectors(unittest.TestCase):
         server.add_insecure_port(f"unix://{socket_path}")
         server.start()
         watcher = dcgm.DCGMWatcher(
-            addr="localhost:5555", poll_interval_seconds=10, callbacks=[], dcgm_k8s_service_enabled=False
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         gpu_serials = {
             0: "1650924060039",

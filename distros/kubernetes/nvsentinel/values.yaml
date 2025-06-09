@@ -18,6 +18,9 @@ global:
 
   dcgm:
     dcgmK8sServiceEnabled: true
+    service:
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      port: 5555
 
   dryRun: false
 

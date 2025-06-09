@@ -88,4 +88,5 @@ data:
 
 {{ (.Files.Glob "dcgmerrorsmapping.csv").AsConfig | indent 2 }}
 
-{{ (.Files.Glob "is-dcgm-reachable.sh").AsConfig | indent 2 }}
+  is-dcgm-reachable.sh: |
+{{ include "is-dcgm-reachable.sh.tpl" . | indent 4 }}

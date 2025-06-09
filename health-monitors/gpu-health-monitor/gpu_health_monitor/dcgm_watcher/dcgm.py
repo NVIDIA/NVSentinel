@@ -35,6 +35,7 @@ class DCGMWatcher:
         poll_interval_seconds: int,
         callbacks: list[types.CallbackInterface],
         dcgm_k8s_service_enabled: bool,
+        dcgm_k8s_service_url: str,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -49,7 +50,7 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
-        self._dcgm_k8s_service_url = "nvidia-dcgm.gpu-operator.svc:5555"
+        self._dcgm_k8s_service_url = dcgm_k8s_service_url
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
