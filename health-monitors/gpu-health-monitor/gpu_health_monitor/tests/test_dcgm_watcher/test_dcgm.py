@@ -62,7 +62,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         health_watches = watcher._get_available_health_watches()
         assert len(health_watches) == 12
@@ -73,7 +72,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         error_codes = watcher._get_available_error_codes()
         assert len(error_codes) == 112
@@ -84,7 +82,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_fields = watcher._get_available_fields()
         assert len(dcgm_fields) == 320
@@ -95,7 +92,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         health_status_dict = watcher._get_health_status_dict()
         assert len(health_status_dict) == 12
@@ -110,7 +106,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_handle_mock = MagicMock()
         dcgm_system_mock = MagicMock()
@@ -142,7 +137,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -162,7 +156,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -192,7 +185,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_group_mock = MagicMock()
         mock_response = dcgm_structs.c_dcgmHealthResponse_v4
@@ -229,7 +221,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_handle_mock = MagicMock()
         dcgm_system_mock = MagicMock()
@@ -253,7 +244,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         dcgm_handle_mock = MagicMock()
         dcgm_system_mock = MagicMock()
@@ -277,7 +267,6 @@ class TestDCGMHealthChecks:
             poll_interval_seconds=10,
             callbacks=[event_processor_test],
             dcgm_k8s_service_enabled=False,
-            dcgm_k8s_service_url="nvidia-dcgm.gpu-operator.svc:5555",
         )
         exit = Event()
         dcgm_handle_mock = MagicMock()

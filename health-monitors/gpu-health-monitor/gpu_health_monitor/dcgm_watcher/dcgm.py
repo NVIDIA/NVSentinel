@@ -35,7 +35,6 @@ class DCGMWatcher:
         poll_interval_seconds: int,
         callbacks: list[types.CallbackInterface],
         dcgm_k8s_service_enabled: bool,
-        dcgm_k8s_service_url: str,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -50,7 +49,6 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
-        self._dcgm_k8s_service_url = dcgm_k8s_service_url
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -120,7 +118,7 @@ class DCGMWatcher:
                 metrics.callback_success.labels(class_name, func_name).inc()
 
         for callback in self._callbacks:
-            log.info(f"Invoking callback {func_name} on {callback.__class__.__name__}")
+            log.debug(f"Invoking callback {func_name} on {callback.__class__.__name__}")
             self._callback_thread_pool.submit(getattr(callback, func_name), *args).add_done_callback(
                 partial(done_callback, callback.__class__.__name__, func_name)
             )
@@ -256,13 +254,10 @@ class DCGMWatcher:
         while dcgm_handle is None:
             try:
                 if self._dcgm_k8s_service_enabled:
-                    log.info(f"DCGM k8s service enabled. Using {self._dcgm_k8s_service_url}")
-                    dcgm_handle = pydcgm.DcgmHandle(
-                        ipAddress=self._dcgm_k8s_service_url, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO
-                    )
+                    log.info(f"DCGM k8s service enabled. Using {self._addr}")
                 else:
                     log.info(f"DCGM k8s service disabled. Using {self._addr}")
-                    dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+                dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
             except Exception as e:
                 log.error(f"Error creating DCGM handle: {e}")
                 metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()

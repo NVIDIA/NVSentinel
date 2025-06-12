@@ -64,7 +64,7 @@ spec:
             - --dcgm-error-mapping-config-file
             - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
             - --dcgm-addr
-            - "{{ ternary "localhost:5555" "nvidia-dcgm.gpu-operator.svc:5555" .Values.global.gpuHealthMonitor.useHostNetworking }}"
+            - {{ ternary  (printf "%s:%v" .Values.global.dcgm.service.endpoint .Values.global.dcgm.service.port) "localhost:5555" .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
             - --port
             - "{{ .Values.metricsPort }}"
             - --verbose
@@ -73,8 +73,6 @@ spec:
             - {{ .Values.stateFilePath }}
             - --dcgm-k8s-service-enabled
             - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
-            - --dcgm-k8s-service-url
-            - {{ .Values.global.dcgm.service.endpoint }}:{{ .Values.global.dcgm.service.port }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-4.x"

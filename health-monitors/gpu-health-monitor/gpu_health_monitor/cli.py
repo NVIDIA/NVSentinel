@@ -70,7 +70,7 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
 
 
 @click.command()
-@click.option("--dcgm-addr", type=str, default="localhost:5555", help="Host:Port where DCGM is running")
+@click.option("--dcgm-addr", type=str, help="Host:Port where DCGM is running", required=True)
 @click.option(
     "--xid-error-mapping-config-file", type=click.Path(), help="Path to xid errors mapping config file", required=True
 )
@@ -82,7 +82,6 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
-@click.option("--dcgm-k8s-service-url", type=str, help="DCGM Kubernetes service URL", required=True)
 def cli(
     dcgm_addr,
     xid_error_mapping_config_file,
@@ -92,7 +91,6 @@ def cli(
     verbose,
     state_file,
     dcgm_k8s_service_enabled,
-    dcgm_k8s_service_url,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -183,7 +181,6 @@ def cli(
         poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
-        dcgm_k8s_service_url=dcgm_k8s_service_url,
     )
     dcgm_watcher.start([], exit)
 
