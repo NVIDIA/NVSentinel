@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG TAG=v3.0.5
+ARG TAG=v3.1.9
 ARG IMG=nvcr.io/nvidian/distroless/go
 
 FROM golang:1.22 AS builder

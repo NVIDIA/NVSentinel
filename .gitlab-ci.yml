@@ -86,7 +86,7 @@ include:
           optional: true
       nspect_id: NSPECT-JRZ4-EI8F
       policy: "container_scan_policy.json"
-      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/nvsentinel-fault-notification-module", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/rtsp-mongosh", "nvcr.io/nv-ngc-devops/kubectl"]
+      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/rtsp-mongosh"]
       is_release: false
       allow_failure: true
       platform_archs: ["linux/amd64"]

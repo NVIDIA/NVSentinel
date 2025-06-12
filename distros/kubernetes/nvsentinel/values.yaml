@@ -99,7 +99,7 @@ global:
     images:
       mongosh:
         repository: nvcr.io/nv-ngc-devops/rtsp-mongosh
-        tag: "2.3.3"
+        tag: "2.5.2"
         pullPolicy: IfNotPresent
 
 
@@ -127,8 +127,6 @@ platformConnector:
   mongodbStore:
     enabled: false
     clientCertMountPath: "/etc/ssl/mongo-client"
-
-  kubectlImage: "nvcr.io/nv-ngc-devops/kubectl:1.28.5"
 
   podSecurityContext: {}
 

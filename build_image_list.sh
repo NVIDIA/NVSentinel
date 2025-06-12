@@ -47,7 +47,7 @@ declare -a dynamic_images=(
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME}"
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME}"
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${SAFE_REF_NAME}"
-  "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-notification-module:${SAFE_REF_NAME}"
+  "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"
 )
 
 # Write dynamic images to output file
@@ -101,11 +101,6 @@ awk -v prefix="$static_prefix" '
     }
   }
 ' "$input_file" > "$static_tmp"
-
-# Extract kubectl image information
-grep -E '^[[:space:]]*kubectlImage:' "$input_file" \
-  | sed -E 's/^[[:space:]]*kubectlImage:[[:space:]]*"?([^"]+)"?/\1/' \
-  >> "$static_tmp"
 
 # Merge static items that are not in the dynamic list
 echo "Merging static images…"
