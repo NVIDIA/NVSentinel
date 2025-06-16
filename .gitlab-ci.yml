@@ -312,7 +312,51 @@ nic-health-monitor-container-publish:
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
     - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${SAFE_REF_NAME} . 
   
+syslog-health-monitor-lint:
+  stage: lint
+  script:
+    - cd health-monitors/syslog-health-monitor
+    - go vet ./...
+    - golangci-lint run
+  artifacts:
+    when: always
+    reports:
+      codequality: syslog-health-monitor/code-quality-report.json
+    paths:
+      - syslog-health-monitor/code-quality-report.json
 
+syslog-health-monitor-test:
+  stage: test
+  script:
+    - cd health-monitors/syslog-health-monitor
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: syslog-health-monitor/coverage.xml
+      junit: syslog-health-monitor/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+syslog-health-monitor-container-publish:
+  stage: publish
+  image: docker:27.3.1
+  services:
+    - docker:27.3.1-dind
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+  script:
+    - cd health-monitors/syslog-health-monitor
+    - docker context create builder
+    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME} .
+  tags:
+    - dind
+    
 nvswitch-health-monitor-lint:
   stage: lint
   extends:

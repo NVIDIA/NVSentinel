@@ -282,6 +282,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 				}
 
 				duration := time.Since(startTime).Seconds()
+
 				eventHandlingDuration.Observe(duration)
 			}
 		}

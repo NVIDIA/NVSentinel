@@ -39,6 +39,7 @@ global:
         tag: "1.37.0"
         pullPolicy: IfNotPresent
 
+
   nicHealthMonitor:
     enabled: true
     nicExclusionRegexesForInjectedContainer: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
@@ -88,6 +89,13 @@ global:
 
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-csp-health-monitor
+      pullPolicy: IfNotPresent
+
+  syslogHealthMonitor:
+    enabled: false
+
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-syslog-health-monitor
       pullPolicy: IfNotPresent
 
   imagePullSecrets:
