@@ -132,7 +132,7 @@ func TestNetworkTypesToMonitor(t *testing.T) {
 		},
 		{
 			name:               "UnknownType",
-			config:             &NicMonitorConfig{MonitorNetworkType: "unknown"},
+			config:             &NicMonitorConfig{MonitorNetworkType: UNKNOWN_LINK_LAYER},
 			expectedMonitorEth: true, // Defaults to all
 			expectedMonitorIB:  true, // Defaults to all
 		},

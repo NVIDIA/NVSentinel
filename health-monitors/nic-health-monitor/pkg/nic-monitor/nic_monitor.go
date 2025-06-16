@@ -36,6 +36,9 @@ const (
 	// states
 	doesNotExistState = "state: Does Not Exist"
 	existsState       = "state: Exists"
+
+	// Link layer types
+	UNKNOWN_LINK_LAYER = "unknown"
 )
 
 // MonitorNetworkType defines the types of network to monitor
@@ -72,6 +75,7 @@ type NicMonitorConfig struct {
 	SysClassInfinibandPath                           string
 	StateFilePath                                    string
 	MonitorNetworkType                               MonitorNetworkType
+	RoCEInterfaceRegexes                             []string
 }
 
 var storedBootID string
@@ -367,6 +371,7 @@ type NicHealthEvent struct {
 	Name           string
 	Message        string
 	IsHealthyEvent bool
+	LinkLayer      string // e.g., "Ethernet", "InfiniBand", "unknown"
 }
 
 var fetchCurrentBootID = func() (string, error) {

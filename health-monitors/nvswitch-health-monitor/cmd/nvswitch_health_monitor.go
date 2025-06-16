@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,7 +34,9 @@ import (
 	sxid "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nvswitch-health-monitor/pkg/sxid-monitor"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/ini.v1"
@@ -93,6 +96,69 @@ var (
 		Help: "Error in insertions of health events to UDS",
 	})
 )
+
+// connectionManager manages the gRPC connection lifecycle with automatic reconnection
+type connectionManager struct {
+	socket string
+	conn   *grpc.ClientConn
+	mu     sync.Mutex
+}
+
+func newConnectionManager(socket string) *connectionManager {
+	return &connectionManager{
+		socket: socket,
+	}
+}
+
+func (cm *connectionManager) getConnection() (*grpc.ClientConn, error) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// Check if connection exists and is in a good state
+	if cm.conn != nil {
+		state := cm.conn.GetState()
+		if state != connectivity.TransientFailure && state != connectivity.Shutdown {
+			return cm.conn, nil
+		}
+		// Connection is in bad state, close it
+		klog.Info("Closing stale gRPC connection")
+		cm.conn.Close()
+	}
+
+	// Create new connection with keepalive
+	klog.Info("Creating new gRPC connection")
+	var opts []grpc.DialOption
+	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                10 * time.Second, // Send pings every 10 seconds
+		Timeout:             3 * time.Second,  // Wait 3 seconds for ping ack
+		PermitWithoutStream: true,             // Send pings even without active streams
+	}))
+
+	conn, err := grpc.NewClient(cm.socket, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gRPC connection: %w", err)
+	}
+
+	cm.conn = conn
+	return conn, nil
+}
+
+func (cm *connectionManager) getClient() (pb.PlatformConnectorClient, error) {
+	conn, err := cm.getConnection()
+	if err != nil {
+		return nil, err
+	}
+	return pb.NewPlatformConnectorClient(conn), nil
+}
+
+func (cm *connectionManager) close() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.conn != nil {
+		cm.conn.Close()
+	}
+}
 
 func GetGPUID(nvswitch, nvlink int) (int, error) {
 	dgxType := lsnvlink.GetDGXType()
@@ -292,13 +358,8 @@ func main() {
 
 	nvswitchConfig.StateFilePath = defaultStateFilePath
 
-	var opts []grpc.DialOption
-	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	conn, err := grpc.NewClient(*socket, opts...)
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
+	cm := newConnectionManager(*socket)
+	defer cm.close()
 
 	recommendationActionMapping := createRecommendationActionMapping(*configFile)
 
@@ -306,8 +367,6 @@ func main() {
 	if err != nil {
 		klog.Fatalf("failed to get xid error mapping: %v", err)
 	}
-
-	client := pb.NewPlatformConnectorClient(conn)
 
 	sxidErrorMonitor, err := sxid.NewSxidEventMonitor(nvswitchConfig.SxidEventMonitorConfig)
 	if err != nil {
@@ -344,7 +403,7 @@ func main() {
 			healthEvents := SxidEvent2HealthEvents(sxidError, nodeName, recommendationAction, xidErrorMapping)
 
 			retryDelay := time.Duration(nvswitchConfig.RetryDelaySecondsForHealthyEvent) * time.Second
-			sendHealthEventWithRetry(client, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent, retryDelay)
+			sendHealthEventWithRetry(cm, healthEvents, nvswitchConfig.MaxRetriesForHealthyEvent, retryDelay)
 		}
 	}
 }
@@ -363,7 +422,7 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
+func sendHealthEventWithRetry(cm *connectionManager, healthEvents *pb.HealthEvents,
 	maxRetries int, retryDelay time.Duration) {
 	backoff := wait.Backoff{
 		Steps:    maxRetries,
@@ -375,7 +434,12 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
 		start := time.Now()
 
-		_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
+		client, err := cm.getClient()
+		if err != nil {
+			return false, err
+		}
+
+		_, err = client.HealthEventOccuredV1(context.Background(), healthEvents)
 
 		duration := float64(time.Since(start).Milliseconds())
 		healthEventPublishDuration.Observe(duration)

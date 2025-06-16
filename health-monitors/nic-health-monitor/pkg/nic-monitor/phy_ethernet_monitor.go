@@ -19,6 +19,7 @@ package nic_monitor
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -105,10 +106,32 @@ func GetEthernetOperstate(devname string, sysClassNetPath string) string {
 
 	state, err := fileSystem.ReadFile(path)
 	if err != nil {
-		return "unknown"
+		return UNKNOWN_LINK_LAYER
 	}
 
 	return strings.TrimSpace(string(state))
+}
+
+// isRoCEInterfaceAllowed checks if a device name matches the RoCE interface regexes
+func isRoCEInterfaceAllowed(deviceName string, roCEInterfaceRegexes []string) bool {
+	if len(roCEInterfaceRegexes) == 0 {
+		// If no regex specified, allow all devices
+		return true
+	}
+
+	for _, regexPattern := range roCEInterfaceRegexes {
+		regex, err := regexp.Compile(regexPattern)
+		if err != nil {
+			klog.Errorf("invalid RoCE interface regex '%s': %v", regexPattern, err)
+			continue
+		}
+
+		if regex.MatchString(deviceName) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func GetPhyEthernetDevices(exclusionRegexList []string, sysClassNetPath string) (map[string]EthernetDevice, error) {
@@ -141,6 +164,44 @@ func GetPhyEthernetDevices(exclusionRegexList []string, sysClassNetPath string) 
 	return deviceList, nil
 }
 
+// GetPhyEthernetDevicesWithRoCEFilter is the new function that supports RoCE filtering
+func GetPhyEthernetDevicesWithRoCEFilter(config *NicMonitorConfig) (map[string]EthernetDevice, error) {
+	deviceList := map[string]EthernetDevice{}
+
+	dirs, err := fileSystem.ReadDir(config.SysClassNetPath)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, device := range dirs {
+		deviceName := device.Name()
+
+		if isExcluded(deviceName, config.ExclusionRegexes) {
+			continue
+		}
+
+		// Apply RoCE interface filter for all Ethernet devices since they all have Ethernet link layer
+		// Only monitor devices that match the RoCE interface patterns (e.g., eth*, rdma*)
+		if !isRoCEInterfaceAllowed(deviceName, config.RoCEInterfaceRegexes) {
+			// Device doesn't match RoCE interface patterns, skip it
+			continue
+		}
+
+		isPhy, err := IsPhyEthernet(deviceName, config.SysClassNetPath)
+		if err != nil {
+			klog.Errorf("error on IsPhyEthernet(%s): %v", deviceName, err)
+		} else if !isPhy {
+			continue
+		}
+
+		operstate := GetEthernetOperstate(deviceName, config.SysClassNetPath)
+
+		deviceList[deviceName] = EthernetDevice{deviceName, operstate}
+	}
+
+	return deviceList, nil
+}
+
 func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEvent, error) {
 	maxRetryDuration := time.Duration(config.MaxRetryDurationForDownDetectedNICInMilliseconds) * time.Millisecond
 	retryInterval := time.Duration(config.RetryIntervalForDownDetectedNICInMilliseconds) * time.Millisecond
@@ -153,15 +214,12 @@ func (m *EthernetDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealthEv
 
 	defer ticker.Stop()
 
-	// Use the path from config (which is set in main from environment variable)
-	sysClassNetPath := config.SysClassNetPath
-
 tickerLoop:
 	for ; true; <-ticker.C {
 		select {
 		case <-timeout:
 			// maxRetryDuration exceeded, perform final check
-			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes, sysClassNetPath)
+			deviceList, err := GetPhyEthernetDevicesWithRoCEFilter(config)
 			if err != nil {
 				return nil, err
 			}
@@ -171,7 +229,7 @@ tickerLoop:
 			break tickerLoop
 
 		default:
-			deviceList, err := GetPhyEthernetDevices(config.ExclusionRegexes, sysClassNetPath)
+			deviceList, err := GetPhyEthernetDevicesWithRoCEFilter(config)
 			if err != nil {
 				return nil, err
 			}
@@ -240,6 +298,7 @@ func createNicHealthEvent(device EthernetDevice, isHealthy bool, message string)
 		Name:           device.Name,
 		Message:        message,
 		IsHealthyEvent: isHealthy,
+		LinkLayer:      "Ethernet", // All interfaces in /sys/class/net are Ethernet link layer
 	}
 }
 

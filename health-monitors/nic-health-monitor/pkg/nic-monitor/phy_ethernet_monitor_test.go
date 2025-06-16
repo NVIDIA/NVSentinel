@@ -35,7 +35,7 @@ func TestScrapPhyEthernetDevices(t *testing.T) {
 		Fs: fstest.MapFS{
 			// DO NOT MONITOR: interface without device and type 772 (lo) should not be monitored
 			"sys/class/net/lo":           {Mode: fs.ModeDir},
-			"sys/class/net/lo/operstate": {Data: []byte("unknown")},
+			"sys/class/net/lo/operstate": {Data: []byte(UNKNOWN_LINK_LAYER)},
 			"sys/class/net/lo/type":      {Data: []byte("772")},
 			// DO NOT MONITOR: ethernet interface (1), but virtual (no device) should not be monitored
 			"sys/class/net/docker0/":          {Mode: fs.ModeDir},
@@ -86,10 +86,10 @@ func TestPhyEthernetMonitor(t *testing.T) {
 	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedHealthyEvent := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}
 	expectedDownEvent := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: "state: down"},
+		{NicType: Ethernet, Name: "eth0", Message: "state: down", LinkLayer: "Ethernet"},
 	}
 
 	ethMonitor := &EthernetDeviceMonitor{}
@@ -100,7 +100,7 @@ func TestPhyEthernetMonitor(t *testing.T) {
 		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
 		RetryIntervalForDownDetectedNICInMilliseconds:    100,
 		MonitorNetworkType: MonitorNetworkTypeAll,
-		SysClassNetPath: sysClassNetPath,
+		SysClassNetPath:    sysClassNetPath,
 	}
 
 	// eth0 is up, so expect a healthy event
@@ -144,7 +144,7 @@ func TestPhyEthernetMonitor(t *testing.T) {
 		"sys/class/net/eth_new/type":      {Data: []byte("1")},
 	}
 	expectedNewUnhealthyEthDeviceEvents := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth_new", Message: "state: lowerlayerdown", IsHealthyEvent: false},
+		{NicType: Ethernet, Name: "eth_new", Message: "state: lowerlayerdown", IsHealthyEvent: false, LinkLayer: "Ethernet"},
 	}
 	actualEvents, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
@@ -177,8 +177,8 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedHealthyEvents := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true},
-		{NicType: Ethernet, Name: "eth2", Message: "Device is healthy", IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "eth2", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}
 
 	ethMonitor := &EthernetDeviceMonitor{}
@@ -212,7 +212,7 @@ func TestPhyEthernetMonitorWithExclusionRegexes(t *testing.T) {
 	// update eth2 to have a state change, expect a down event
 	mockFS.Fs["sys/class/net/eth2/operstate"].Data = []byte("down")
 	expectedDownEvent := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth2", Message: "state: down"},
+		{NicType: Ethernet, Name: "eth2", Message: "state: down", LinkLayer: "Ethernet"},
 	}
 	actualEvents, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
@@ -249,7 +249,7 @@ func TestMonitorDeviceGoesDownAndStaysDown(t *testing.T) {
 	actualEvents, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.Equal(t, []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}, actualEvents)
 
 	// change state to down
@@ -260,7 +260,7 @@ func TestMonitorDeviceGoesDownAndStaysDown(t *testing.T) {
 	elapsedTime := time.Since(startTime)
 	require.NoError(t, err)
 	require.Equal(t, []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: "state: down"},
+		{NicType: Ethernet, Name: "eth0", Message: "state: down", LinkLayer: "Ethernet"},
 	}, actualEvents)
 	// ensure that it retried for at least MaxRetryDuration
 	require.GreaterOrEqual(
@@ -293,7 +293,7 @@ func TestMonitorDeviceRecoversBeforeMaxRetryDuration(t *testing.T) {
 	actualEvents, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.Equal(t, []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}, actualEvents)
 
 	mockFS.mu.Lock()
@@ -334,7 +334,7 @@ func TestMonitorDevicesAddedAndRemoved(t *testing.T) {
 	actualEvents, err := ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	expectedEvents := []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth0", Message: deviceIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}
 	require.Equal(t, expectedEvents, actualEvents)
 
@@ -346,7 +346,7 @@ func TestMonitorDevicesAddedAndRemoved(t *testing.T) {
 	actualEvents, err = ethMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	expectedEvents = []NicHealthEvent{
-		{NicType: Ethernet, Name: "eth1", Message: deviceIsHealthy, IsHealthyEvent: true},
+		{NicType: Ethernet, Name: "eth1", Message: deviceIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
 	}
 	require.Equal(t, expectedEvents, actualEvents)
 
@@ -359,4 +359,273 @@ func TestMonitorDevicesAddedAndRemoved(t *testing.T) {
 	require.NoError(t, err)
 	// no events because eth0 removal is not reported
 	require.Empty(t, actualEvents)
+}
+
+func TestPhyEthernetMonitorWithRoCEInterfaceFiltering(t *testing.T) {
+	fileSystem = &MockFileSystem{
+		Fs: fstest.MapFS{
+			// MONITOR: These match the default RoCE regex patterns
+			"sys/class/net/eth0/device":     {Mode: fs.ModeDir},
+			"sys/class/net/eth0/operstate":  {Data: []byte("up")},
+			"sys/class/net/eth0/type":       {Data: []byte("1")},
+			"sys/class/net/rdma0/device":    {Mode: fs.ModeDir},
+			"sys/class/net/rdma0/operstate": {Data: []byte("up")},
+			"sys/class/net/rdma0/type":      {Data: []byte("1")},
+			// DO NOT MONITOR: These don't match the RoCE regex patterns
+			"sys/class/net/ens340f1np1/device":    {Mode: fs.ModeDir},
+			"sys/class/net/ens340f1np1/operstate": {Data: []byte("down")},
+			"sys/class/net/ens340f1np1/type":      {Data: []byte("1")},
+			"sys/class/net/ens1100v0/device":      {Mode: fs.ModeDir},
+			"sys/class/net/ens1100v0/operstate":   {Data: []byte("down")},
+			"sys/class/net/ens1100v0/type":        {Data: []byte("1")},
+		},
+	}
+
+	expectedHealthyEvents := []NicHealthEvent{
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "rdma0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+	}
+
+	ethMonitor := &EthernetDeviceMonitor{}
+
+	// RoCE configuration with default regex patterns
+	nicConfig := &NicMonitorConfig{
+		ExclusionRegexes: []string{},
+		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
+		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		MonitorNetworkType:   MonitorNetworkTypeRoCE,
+		RoCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"},
+		SysClassNetPath:      sysClassNetPath,
+	}
+
+	// Only eth0 and rdma0 should be monitored, ens* interfaces should be filtered out
+	actualEvents, err := ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualEvents)
+
+	// Sort for comparison
+	sort.Slice(
+		expectedHealthyEvents,
+		func(i, j int) bool { return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name },
+	)
+	sort.Slice(
+		actualEvents,
+		func(i, j int) bool { return actualEvents[i].Name < actualEvents[j].Name },
+	)
+	require.Equal(t, expectedHealthyEvents, actualEvents)
+}
+
+func TestPhyEthernetMonitorWithRoCEInterfaceFilteringAllNetworkType(t *testing.T) {
+	fileSystem = &MockFileSystem{
+		Fs: fstest.MapFS{
+			// MONITOR: These match the RoCE regex patterns
+			"sys/class/net/eth0/device":     {Mode: fs.ModeDir},
+			"sys/class/net/eth0/operstate":  {Data: []byte("up")},
+			"sys/class/net/eth0/type":       {Data: []byte("1")},
+			"sys/class/net/rdma0/device":    {Mode: fs.ModeDir},
+			"sys/class/net/rdma0/operstate": {Data: []byte("up")},
+			"sys/class/net/rdma0/type":      {Data: []byte("1")},
+			// DO NOT MONITOR: These don't match the RoCE regex patterns (should be filtered out even with "all")
+			"sys/class/net/ens340f1np1/device":    {Mode: fs.ModeDir},
+			"sys/class/net/ens340f1np1/operstate": {Data: []byte("up")},
+			"sys/class/net/ens340f1np1/type":      {Data: []byte("1")},
+		},
+	}
+
+	expectedHealthyEvents := []NicHealthEvent{
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "rdma0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+	}
+
+	ethMonitor := &EthernetDeviceMonitor{}
+
+	// All network type configuration - should still apply RoCE filtering for Ethernet interfaces
+	nicConfig := &NicMonitorConfig{
+		ExclusionRegexes: []string{},
+		MaxRetryDurationForDownDetectedNICInMilliseconds: 500,
+		RetryIntervalForDownDetectedNICInMilliseconds:    100,
+		MonitorNetworkType:   MonitorNetworkTypeAll,
+		RoCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"},
+		SysClassNetPath:      sysClassNetPath,
+	}
+
+	// Only RoCE-compatible interfaces should be monitored even when MonitorNetworkType is All
+	actualEvents, err := ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+	require.NotNil(t, actualEvents)
+
+	// Sort for comparison
+	sort.Slice(
+		expectedHealthyEvents,
+		func(i, j int) bool { return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name },
+	)
+	sort.Slice(
+		actualEvents,
+		func(i, j int) bool { return actualEvents[i].Name < actualEvents[j].Name },
+	)
+	require.Equal(t, expectedHealthyEvents, actualEvents)
+}
+
+func TestIsRoCEInterfaceAllowed(t *testing.T) {
+	tests := []struct {
+		name                 string
+		deviceName           string
+		roCEInterfaceRegexes []string
+		expectedAllowed      bool
+	}{
+		{
+			name:                 "EmptyRegexList_AllowsAll",
+			deviceName:           "ens340f1np1",
+			roCEInterfaceRegexes: []string{},
+			expectedAllowed:      true,
+		},
+		{
+			name:                 "EthPattern_MatchesEth0",
+			deviceName:           "eth0",
+			roCEInterfaceRegexes: []string{"^eth\\d+$"},
+			expectedAllowed:      true,
+		},
+		{
+			name:                 "EthPattern_DoesNotMatchEns",
+			deviceName:           "ens340f1np1",
+			roCEInterfaceRegexes: []string{"^eth\\d+$"},
+			expectedAllowed:      false,
+		},
+		{
+			name:                 "RdmaPattern_MatchesRdma0",
+			deviceName:           "rdma0",
+			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			expectedAllowed:      true,
+		},
+		{
+			name:                 "DefaultPatterns_MatchesEth",
+			deviceName:           "eth1",
+			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"},
+			expectedAllowed:      true,
+		},
+		{
+			name:                 "DefaultPatterns_MatchesRdma",
+			deviceName:           "rdma2",
+			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"},
+			expectedAllowed:      true,
+		},
+		{
+			name:                 "DefaultPatterns_DoesNotMatchEns",
+			deviceName:           "ens1100v0",
+			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"},
+			expectedAllowed:      false,
+		},
+		{
+			name:                 "InvalidRegex_SkipsAndContinues",
+			deviceName:           "eth0",
+			roCEInterfaceRegexes: []string{"[invalid(regex", "^eth\\d+$"},
+			expectedAllowed:      true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actualAllowed := isRoCEInterfaceAllowed(tc.deviceName, tc.roCEInterfaceRegexes)
+			require.Equal(t, tc.expectedAllowed, actualAllowed)
+		})
+	}
+}
+
+func TestPhyEthernetMonitorWithEmptyRoCERegexes(t *testing.T) {
+	fileSystem = &MockFileSystem{
+		Fs: fstest.MapFS{
+			// MONITOR: All should be monitored when RoCEInterfaceRegexes is empty
+			"sys/class/net/eth0/device":           {Mode: fs.ModeDir},
+			"sys/class/net/eth0/operstate":        {Data: []byte("up")},
+			"sys/class/net/eth0/type":             {Data: []byte("1")},
+			"sys/class/net/ens340f1np1/device":    {Mode: fs.ModeDir},
+			"sys/class/net/ens340f1np1/operstate": {Data: []byte("up")},
+			"sys/class/net/ens340f1np1/type":      {Data: []byte("1")},
+			"sys/class/net/ens1100v0/device":      {Mode: fs.ModeDir},
+			"sys/class/net/ens1100v0/operstate":   {Data: []byte("up")},
+			"sys/class/net/ens1100v0/type":        {Data: []byte("1")},
+		},
+	}
+
+	ethMonitor := &EthernetDeviceMonitor{}
+	ethMonitor.devices = make(map[string]EthernetDevice)
+
+	nicConfig := &NicMonitorConfig{
+		ExclusionRegexes:     nil,
+		MonitorNetworkType:   MonitorNetworkTypeAll,
+		RoCEInterfaceRegexes: []string{}, // Empty - should allow all devices
+		SysClassNetPath:      sysClassNetPath,
+		MaxRetryDurationForDownDetectedNICInMilliseconds: 1000, // Required for Ethernet monitor
+		RetryIntervalForDownDetectedNICInMilliseconds:    100,  // Required for Ethernet monitor
+	}
+
+	actualEvents, err := ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+
+	// When RoCEInterfaceRegexes is empty, all devices should be monitored
+	expectedHealthyEvents := []NicHealthEvent{
+		{NicType: Ethernet, Name: "ens1100v0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "ens340f1np1", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+	}
+
+	sort.Slice(actualEvents, func(i, j int) bool {
+		return actualEvents[i].Name < actualEvents[j].Name
+	})
+	sort.Slice(expectedHealthyEvents, func(i, j int) bool {
+		return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name
+	})
+
+	require.Equal(t, expectedHealthyEvents, actualEvents)
+}
+
+func TestPhyEthernetMonitorWithRoCEFilteringForAllEthernetDevices(t *testing.T) {
+	fileSystem = &MockFileSystem{
+		Fs: fstest.MapFS{
+			// MONITOR: These match the RoCE regex patterns
+			"sys/class/net/eth0/device":     {Mode: fs.ModeDir},
+			"sys/class/net/eth0/operstate":  {Data: []byte("up")},
+			"sys/class/net/eth0/type":       {Data: []byte("1")},
+			"sys/class/net/rdma0/device":    {Mode: fs.ModeDir},
+			"sys/class/net/rdma0/operstate": {Data: []byte("up")},
+			"sys/class/net/rdma0/type":      {Data: []byte("1")},
+			// DO NOT MONITOR: These don't match the RoCE regex patterns
+			"sys/class/net/ens340f1np1/device":    {Mode: fs.ModeDir},
+			"sys/class/net/ens340f1np1/operstate": {Data: []byte("up")},
+			"sys/class/net/ens340f1np1/type":      {Data: []byte("1")},
+			"sys/class/net/ens1100v0/device":      {Mode: fs.ModeDir},
+			"sys/class/net/ens1100v0/operstate":   {Data: []byte("up")},
+			"sys/class/net/ens1100v0/type":        {Data: []byte("1")},
+		},
+	}
+
+	ethMonitor := &EthernetDeviceMonitor{}
+	ethMonitor.devices = make(map[string]EthernetDevice)
+
+	nicConfig := &NicMonitorConfig{
+		ExclusionRegexes:     nil,
+		MonitorNetworkType:   MonitorNetworkTypeAll,
+		RoCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"}, // Only rdma* and eth* patterns
+		SysClassNetPath:      sysClassNetPath,
+		MaxRetryDurationForDownDetectedNICInMilliseconds: 1000, // Required for Ethernet monitor
+		RetryIntervalForDownDetectedNICInMilliseconds:    100,  // Required for Ethernet monitor
+	}
+
+	actualEvents, err := ethMonitor.Monitor(nicConfig)
+	require.NoError(t, err)
+
+	// Only eth* and rdma* interfaces should be monitored, ens* should be filtered out
+	expectedHealthyEvents := []NicHealthEvent{
+		{NicType: Ethernet, Name: "eth0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{NicType: Ethernet, Name: "rdma0", Message: "Device is healthy", IsHealthyEvent: true, LinkLayer: "Ethernet"},
+	}
+
+	sort.Slice(actualEvents, func(i, j int) bool {
+		return actualEvents[i].Name < actualEvents[j].Name
+	})
+	sort.Slice(expectedHealthyEvents, func(i, j int) bool {
+		return expectedHealthyEvents[i].Name < expectedHealthyEvents[j].Name
+	})
+
+	require.Equal(t, expectedHealthyEvents, actualEvents)
 }

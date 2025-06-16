@@ -22,6 +22,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,7 +32,9 @@ import (
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor/pkg/protos"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/ini.v1"
@@ -45,6 +48,7 @@ const (
 
 	ETHERNET_CHECK_NAME = "EthernetErrorCheck"
 	COMPONENT_CLASS     = "NIC"
+	UNKNOWN_LINK_LAYER  = "unknown"
 
 	DEFAULT_SYS_CLASS_NET_PATH        = "/sys/class/net"
 	DEFAULT_SYS_CLASS_INFINIBAND_PATH = "/sys/class/infiniband"
@@ -59,7 +63,72 @@ const (
 	defaultMaxRetriesForRetryableError                      = 10
 	defaultRetryDelaySecondsForRetryableError               = 5
 	defaultMonitorNetworkType                               = string(nic.MonitorNetworkTypeAll)
+	defaultRoCEInterfaceRegexes                             = "^rdma\\d+$,^eth\\d+$"
 )
+
+// connectionManager manages the gRPC connection and handles reconnection
+type connectionManager struct {
+	socket string
+	opts   []grpc.DialOption
+	conn   *grpc.ClientConn
+	client pb.PlatformConnectorClient
+	mu     sync.Mutex
+}
+
+func newConnectionManager(socket string, opts []grpc.DialOption) (*connectionManager, error) {
+	cm := &connectionManager{
+		socket: socket,
+		opts:   opts,
+	}
+	if err := cm.connect(); err != nil {
+		return nil, err
+	}
+
+	return cm, nil
+}
+
+func (cm *connectionManager) connect() error {
+	conn, err := grpc.NewClient(cm.socket, cm.opts...)
+	if err != nil {
+		return err
+	}
+
+	cm.conn = conn
+	cm.client = pb.NewPlatformConnectorClient(conn)
+
+	return nil
+}
+
+func (cm *connectionManager) getClient() (pb.PlatformConnectorClient, error) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// Check connection state
+	if cm.conn == nil || cm.conn.GetState() == connectivity.Shutdown ||
+		cm.conn.GetState() == connectivity.TransientFailure {
+		// Close old connection if exists
+		if cm.conn != nil {
+			cm.conn.Close()
+		}
+		// Reconnect
+		if err := cm.connect(); err != nil {
+			return nil, err
+		}
+
+		klog.Info("Reconnected to gRPC server")
+	}
+
+	return cm.client, nil
+}
+
+func (cm *connectionManager) close() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.conn != nil {
+		cm.conn.Close()
+	}
+}
 
 var (
 	healthEventsPublished = promauto.NewCounter(prometheus.CounterOpts{
@@ -91,10 +160,21 @@ func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent, nodeName string) *pb
 		var checkname, componentClass string
 		componentClass = COMPONENT_CLASS
 
-		if nicEvent.NicType == nic.Infiniband {
+		// Determine check name based on link layer instead of NicType
+		// Treat "unknown" link layer as Ethernet
+		switch nicEvent.LinkLayer {
+		case "InfiniBand":
 			checkname = INFINIBAND_CHECK_NAME
-		} else if nicEvent.NicType == nic.Ethernet {
+		case "Ethernet", nic.UNKNOWN_LINK_LAYER, "":
 			checkname = ETHERNET_CHECK_NAME
+		default:
+			// Fallback to original logic for backward compatibility
+			switch nicEvent.NicType {
+			case nic.Infiniband:
+				checkname = INFINIBAND_CHECK_NAME
+			case nic.Ethernet:
+				checkname = ETHERNET_CHECK_NAME
+			}
 		}
 
 		isHealthy := nicEvent.IsHealthyEvent
@@ -276,10 +356,16 @@ func validateConfig(cfg *nic.NicMonitorConfig) error {
 		}
 	}
 
+	for _, regex := range cfg.RoCEInterfaceRegexes {
+		if _, err := regexp.Compile(regex); err != nil {
+			return fmt.Errorf("invalid RoCE interface regex '%s': %w", regex, err)
+		}
+	}
+
 	return nil
 }
 
-// nolint: cyclop
+// nolint: cyclop, gocognit
 func main() {
 	var (
 		socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
@@ -304,6 +390,13 @@ func main() {
 		monitorNetworkTypeFlag = flag.String("monitor-network-type", defaultMonitorNetworkType,
 			fmt.Sprintf("Type of network to monitor. Options: %s, %s, %s",
 				nic.MonitorNetworkTypeAll, nic.MonitorNetworkTypeRoCE, nic.MonitorNetworkTypeInfiniBand))
+
+		roCEInterfaceRegexesFlag = flag.String(
+			"roce-interface-regexes",
+			defaultRoCEInterfaceRegexes,
+			"Comma-separated list of regex patterns for filtering RoCE interfaces in "+
+				"/sys/class/infiniband/<device>/device/net (default matches rdma0, rdma1, eth0, eth1, etc.)",
+		)
 	)
 
 	flag.Parse()
@@ -331,10 +424,23 @@ func main() {
 		}
 	}
 
+	if *roCEInterfaceRegexesFlag != "" {
+		for _, regex := range strings.Split(*roCEInterfaceRegexesFlag, ",") {
+			trimmedRegex := strings.TrimSpace(regex)
+			if trimmedRegex != "" {
+				nicConfig.RoCEInterfaceRegexes = append(nicConfig.RoCEInterfaceRegexes, trimmedRegex)
+			}
+		}
+	} else {
+		// Use default if not specified
+		nicConfig.RoCEInterfaceRegexes = append(nicConfig.RoCEInterfaceRegexes, defaultRoCEInterfaceRegexes)
+	}
+
 	// check if config.ini exists and load it to override flag values
 	configFilePath := "/etc/nichealthmonitor/config.ini"
 	_, err := os.Stat(configFilePath)
 
+	//nolint
 	if err != nil {
 		if !os.IsNotExist(err) {
 			klog.Fatalf("failed to read config file path: %v", err)
@@ -392,16 +498,23 @@ func main() {
 	klog.Infof("Ethernet interfaces will be monitored from path: %s", nicConfig.SysClassNetPath)
 	klog.Infof("Infiniband interfaces will be monitored from path: %s", nicConfig.SysClassInfinibandPath)
 
+	if nicConfig.MonitorNetworkType == nic.MonitorNetworkTypeRoCE {
+		klog.Infof("RoCE Interface Regexes: %v", nicConfig.RoCEInterfaceRegexes)
+	}
+
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                10 * time.Second, // Send pings every 10 seconds
+		Timeout:             3 * time.Second,  // Wait 3 seconds for ping ack
+		PermitWithoutStream: true,             // Send pings even without active streams
+	}))
 
-	conn, err := grpc.NewClient(*socket, opts...)
+	connMgr, err := newConnectionManager(*socket, opts)
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
-
-	client := pb.NewPlatformConnectorClient(conn)
+	defer connMgr.close()
 
 	nicHealthMonitor, err := nic.NewNicHealthMonitor(nicConfig)
 	if err != nil {
@@ -432,7 +545,7 @@ func main() {
 				continue
 			}
 
-			sendHealthEventWithRetry(client, healthEvents, nicConfig.MaxRetriesForRetryableError,
+			sendHealthEventWithRetry(connMgr, healthEvents, nicConfig.MaxRetriesForRetryableError,
 				time.Duration(nicConfig.RetryDelaySecondsForRetryableError)*time.Second)
 		}
 	}
@@ -452,7 +565,7 @@ func isRetryableError(err error) bool {
 	return false
 }
 
-func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *pb.HealthEvents,
+func sendHealthEventWithRetry(connMgr *connectionManager, healthEvents *pb.HealthEvents,
 	maxRetries int, retryDelay time.Duration,
 ) {
 	backoff := wait.Backoff{
@@ -465,7 +578,13 @@ func sendHealthEventWithRetry(client pb.PlatformConnectorClient, healthEvents *p
 	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
 		start := time.Now()
 
-		_, err := client.HealthEventOccuredV1(context.Background(), healthEvents)
+		client, err := connMgr.getClient()
+		if err != nil {
+			klog.Errorf("Failed to get gRPC client: %v", err)
+			return false, nil // Retry
+		}
+
+		_, err = client.HealthEventOccuredV1(context.Background(), healthEvents)
 
 		duration := float64(time.Since(start).Milliseconds())
 		healthEventPublishDuration.Observe(duration)

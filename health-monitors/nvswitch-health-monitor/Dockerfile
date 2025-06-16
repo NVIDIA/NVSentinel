@@ -29,6 +29,9 @@ COPY . .
 
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
+# build the clear_fatal_errors utility for testing
+RUN go build -o clear_fatal_errors clear-nvswitch-fatal-errors/clear_fatal_errors.go
+
 
 FROM debian:bullseye-slim
 
@@ -42,5 +45,8 @@ RUN apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /go/src/nvswitch-health-monitor/nvswitch-health-monitor /app/nvswitch-health-monitor
+
+# binary is used for testing
+COPY --from=builder /go/src/nvswitch-health-monitor/clear_fatal_errors /usr/local/bin/clear_fatal_errors
 
 ENTRYPOINT ["/app/nvswitch-health-monitor"]
