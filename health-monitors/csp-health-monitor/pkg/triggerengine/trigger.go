@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -29,7 +30,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	klog "k8s.io/klog/v2"
 )
 
@@ -46,24 +50,35 @@ const (
 	failureReasonMapping        = "mapping"
 	failureReasonUDS            = "uds"
 	failureReasonDBUpdate       = "db_update"
+	defaultMonitorInterval      = 5 * time.Minute
 )
 
 // Engine polls the datastore for maintenance events and forwards the
 // corresponding health signals to NVSentinel through the UDS connector.
 type Engine struct {
-	store        datastore.Store
-	udsClient    pb.PlatformConnectorClient
-	config       *config.Config
-	pollInterval time.Duration
+	store           datastore.Store
+	udsClient       pb.PlatformConnectorClient
+	config          *config.Config
+	pollInterval    time.Duration
+	k8sClient       kubernetes.Interface
+	monitoredNodes  sync.Map // Track which nodes are currently being monitored
+	monitorInterval time.Duration
 }
 
 // NewEngine constructs a ready-to-run Engine instance.
-func NewEngine(cfg *config.Config, store datastore.Store, udsClient pb.PlatformConnectorClient) *Engine {
+func NewEngine(
+	cfg *config.Config,
+	store datastore.Store,
+	udsClient pb.PlatformConnectorClient,
+	k8sClient kubernetes.Interface,
+) *Engine {
 	return &Engine{
-		config:       cfg,
-		store:        store,
-		udsClient:    udsClient,
-		pollInterval: time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
+		config:          cfg,
+		store:           store,
+		udsClient:       udsClient,
+		pollInterval:    time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
+		k8sClient:       k8sClient,
+		monitorInterval: defaultMonitorInterval,
 	}
 }
 
@@ -148,9 +163,51 @@ func (e *Engine) checkAndTriggerEvents(ctx context.Context) error {
 	klog.V(1).Infof("Found %d events potentially needing healthy trigger.", len(healthyEvents))
 
 	for _, event := range healthyEvents {
-		if errTrig := e.triggerHealthy(ctx, event); errTrig != nil {
-			// Metrics incremented within triggerHealthy
-			klog.Errorf("Error triggering healthy for event %s (Node: %s): %v", event.EventID, event.NodeName, errTrig)
+		ready, err := e.isNodeReady(ctx, event.NodeName)
+		if err != nil {
+			klog.Errorf(
+				"Failed to confirm node readiness for event %s (Node: %s): %v. Will check with next polling interval.",
+				event.EventID,
+				event.NodeName,
+				err,
+			)
+
+			continue
+		}
+
+		if ready {
+			// Node is ready, proceed with triggering healthy event
+			if errTrig := e.triggerHealthy(ctx, event); errTrig != nil {
+				// Metrics incremented within triggerHealthy
+				klog.Errorf(
+					"Error triggering healthy for event %s (Node: %s): %v",
+					event.EventID,
+					event.NodeName,
+					errTrig,
+				)
+			}
+		} else {
+			// Node is not ready, start background monitoring if not already monitoring
+			_, alreadyMonitoring := e.monitoredNodes.LoadOrStore(event.NodeName, true)
+			if !alreadyMonitoring {
+				klog.V(2).Infof(
+					"Node %s is not Ready yet. Starting background monitoring for event %s.",
+					event.NodeName,
+					event.EventID,
+				)
+
+				// Increment monitoring started metric
+				metrics.NodeReadinessMonitoringStarted.WithLabelValues(event.NodeName).Inc()
+
+				// Start background monitoring in a goroutine
+				go e.monitorNodeReadiness(context.Background(), event.NodeName, event.EventID, event)
+			} else {
+				klog.V(2).Infof(
+					"Node %s is already being monitored. Deferring healthy trigger for event %s.",
+					event.NodeName,
+					event.EventID,
+				)
+			}
 		}
 	}
 
@@ -349,15 +406,24 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 			Events: []*pb.HealthEvent{healthEvent},
 		}
 
-		klog.V(2).Infof("Attempting to send health event via UDS (Node: %s, Check: %s, Fatal: %v, Healthy: %v)",
-			healthEvent.NodeName, healthEvent.CheckName, healthEvent.IsFatal, healthEvent.IsHealthy)
+		klog.V(2).Infof(
+			"Attempting to send health event via UDS (Node: %s, Check: %s, Fatal: %v, Healthy: %v)",
+			healthEvent.NodeName,
+			healthEvent.CheckName,
+			healthEvent.IsFatal,
+			healthEvent.IsHealthy,
+		)
 
 		_, attemptErr := e.udsClient.HealthEventOccuredV1(ctx, healthEvents)
 		lastErr = attemptErr // Store the error from this attempt
 
 		if attemptErr == nil {
-			klog.V(1).
-				Infof("Successfully sent health event via UDS: (Node: %s, Check: %s)", healthEvent.NodeName, healthEvent.CheckName)
+			klog.V(1).Infof(
+				"Successfully sent health event via UDS: (Node: %s, Check: %s)",
+				healthEvent.NodeName,
+				healthEvent.CheckName,
+			)
+
 			return true, nil // Success
 		}
 
@@ -374,7 +440,11 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 			return false, nil // Retryable error, continue loop
 		}
 
-		klog.Errorf("Non-retryable error sending health event via UDS (Node: %s): %v", healthEvent.NodeName, attemptErr)
+		klog.Errorf(
+			"Non-retryable error sending health event via UDS (Node: %s): %v",
+			healthEvent.NodeName,
+			attemptErr,
+		)
 
 		return false, attemptErr // Non-retryable error, stop loop and return this error
 	})
@@ -407,4 +477,127 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 	}
 
 	return nil // Success
+}
+
+func (e *Engine) isNodeReady(ctx context.Context, nodeName string) (bool, error) {
+	if nodeName == "" {
+		return false, fmt.Errorf("node name is empty")
+	}
+
+	node, err := e.k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return false, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue, nil
+		}
+	}
+
+	return false, nil
+}
+
+// monitorNodeReadiness monitors a node's readiness status with exponential backoff
+// and creates an alert if the node is not ready after 1 hour
+func (e *Engine) monitorNodeReadiness(ctx context.Context, nodeName, eventID string, event model.MaintenanceEvent) {
+	defer func() {
+		// Clean up the monitoring flag when done
+		klog.Infof("Deleting monitoring flag for node %s (EventID: %s)", nodeName, eventID)
+		e.monitoredNodes.Delete(nodeName)
+	}()
+
+	klog.Infof(
+		"Starting background node readiness monitoring for node %s (EventID: %s)",
+		nodeName,
+		eventID,
+	)
+
+	// Create a context with configurable timeout
+	nodeReadinessTimeout := time.Duration(e.config.NodeReadinessTimeoutMinutes) * time.Minute
+
+	monitorCtx, cancel := context.WithTimeout(ctx, nodeReadinessTimeout)
+
+	defer cancel()
+
+	// Start periodic monitoring with fixed interval (node was confirmed NOT ready before calling this function)
+
+	ticker := time.NewTicker(e.monitorInterval)
+	defer ticker.Stop()
+
+	startTime := time.Now()
+
+	var err error
+
+	for {
+		select {
+		case <-monitorCtx.Done():
+			// Context timeout or cancellation - monitoring period ended
+			duration := time.Since(startTime)
+			err = monitorCtx.Err()
+
+			if err == context.DeadlineExceeded {
+				klog.Errorf(
+					"ALERT: Node %s has been not Ready for %v (EventID: %s). Node readiness timeout exceeded!",
+					nodeName,
+					duration,
+					eventID,
+				)
+
+				metrics.NodeNotReadyTimeout.WithLabelValues(nodeName).Inc()
+
+				if err := e.store.UpdateEventStatus(ctx, eventID, model.StatusNodeReadinessTimeout); err != nil {
+					klog.Errorf("Failed to update event %s status to NODE_READINESS_TIMEOUT: %v", eventID, err)
+				}
+			} else if err != nil {
+				klog.Errorf(
+					"Background node readiness monitoring failed for node %s (EventID: %s): %v",
+					nodeName,
+					eventID,
+					err,
+				)
+			}
+
+			return
+		case <-ticker.C:
+			ready, err := e.isNodeReady(monitorCtx, nodeName)
+			if err != nil {
+				klog.V(2).Infof(
+					"Error checking node readiness for %s during background monitoring: %v. Will retry in next interval.",
+					nodeName,
+					err,
+				)
+
+				continue
+			}
+
+			if ready {
+				elapsed := time.Since(startTime)
+				klog.Infof(
+					"Node %s became Ready after %v of monitoring. Triggering healthy event.",
+					nodeName,
+					elapsed,
+				)
+
+				if errTrig := e.triggerHealthy(monitorCtx, event); errTrig != nil {
+					klog.Errorf(
+						"Error triggering healthy for event %s (Node: %s): %v",
+						event.EventID,
+						event.NodeName,
+						errTrig,
+					)
+				}
+
+				return
+			}
+
+			elapsed := time.Since(startTime)
+			klog.V(2).Infof(
+				"Node %s still not Ready after %v of monitoring. Will check again in %v.",
+				nodeName,
+				elapsed,
+				e.monitorInterval,
+			)
+		}
+	}
 }

@@ -227,4 +227,20 @@ var (
 			Help: "Total number of errors encountered when sending events via UDS.",
 		},
 	)
+
+	// Node Readiness Metrics
+	NodeNotReadyTimeout = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "csp_health_monitor_node_not_ready_timeout_total",
+			Help: "Total number of nodes that remained not ready after the timeout period.",
+		},
+		[]string{"node_name"}, // Track which specific nodes are having issues
+	)
+	NodeReadinessMonitoringStarted = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "csp_health_monitor_node_readiness_monitoring_started_total",
+			Help: "Total number of times background node readiness monitoring was started.",
+		},
+		[]string{"node_name"}, // Track which nodes are being monitored
+	)
 )

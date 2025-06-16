@@ -27,6 +27,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
@@ -111,6 +115,7 @@ func (m *MockDatastore) FindActiveEventsByStatuses(ctx context.Context, csp mode
 	}
 	return args.Get(0).([]model.MaintenanceEvent), args.Error(1)
 }
+
 // MockUDSClient is a mock implementation of the pb.PlatformConnectorClient interface
 type MockUDSClient struct {
 	mock.Mock
@@ -133,21 +138,66 @@ func newTestConfig() *config.Config {
 		MaintenanceEventPollIntervalSeconds:       60,
 		TriggerQuarantineWorkflowTimeLimitMinutes: 30,
 		PostMaintenanceHealthyDelayMinutes:        15,
+		NodeReadinessTimeoutMinutes:               10,
 		ClusterName:                               "test-cluster",
 	}
+}
+
+// createMockClientWithReadyNodes returns a mocked Kubernetes clientset with the given node names marked Ready.
+func createMockClientWithReadyNodes(nodeNames ...string) *k8sfake.Clientset {
+	objs := []runtime.Object{}
+	for _, n := range nodeNames {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: n},
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
+					{
+						Type:               corev1.NodeReady,
+						Status:             corev1.ConditionTrue,
+						LastHeartbeatTime:  metav1.Now(),
+						LastTransitionTime: metav1.Now(),
+					},
+				},
+			},
+		}
+		objs = append(objs, node)
+	}
+
+	return k8sfake.NewSimpleClientset(objs...)
+}
+
+// createMockClientWithNotReadyNode returns a fake clientset with a single node set to NotReady.
+func createMockClientWithNotReadyNode(nodeName string) *k8sfake.Clientset {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{
+					Type:               corev1.NodeReady,
+					Status:             corev1.ConditionFalse,
+					LastHeartbeatTime:  metav1.Now(),
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	return k8sfake.NewSimpleClientset(node)
 }
 
 func TestNewEngine(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)
 	mUDSClient := new(MockUDSClient)
+	mockClient := createMockClientWithReadyNodes()
 
-	engine := NewEngine(cfg, mStore, mUDSClient)
+	engine := NewEngine(cfg, mStore, mUDSClient, mockClient)
 
 	assert.NotNil(t, engine)
 	assert.Equal(t, cfg, engine.config)
 	assert.Equal(t, mStore, engine.store)
 	assert.Equal(t, mUDSClient, engine.udsClient)
+	assert.Equal(t, mockClient, engine.k8sClient)
 	assert.Equal(t, time.Duration(cfg.MaintenanceEventPollIntervalSeconds)*time.Second, engine.pollInterval)
 }
 
@@ -155,7 +205,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 	cfg := newTestConfig()
 	mStore := new(MockDatastore)     // Not strictly needed for this func, but engine needs it
 	mUDSClient := new(MockUDSClient) // Not strictly needed for this func, but engine needs it
-	engine := NewEngine(cfg, mStore, mUDSClient)
+	engine := NewEngine(cfg, mStore, mUDSClient, nil)
 
 	tests := []struct {
 		name          string
@@ -560,7 +610,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
-			engine := NewEngine(cfg, mStore, mUDSClient)
+			engine := NewEngine(cfg, mStore, mUDSClient, nil)
 
 			tc.setupMocks(mStore, mUDSClient, tc.event, tc.targetDBStatus)
 
@@ -740,7 +790,8 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mStore := new(MockDatastore)
 			mUDSClient := new(MockUDSClient)
-			engine := NewEngine(cfg, mStore, mUDSClient)
+			mockClient := createMockClientWithReadyNodes("node-q1", "node-h1", "q-no-node")
+			engine := NewEngine(cfg, mStore, mUDSClient, mockClient)
 
 			if tc.setupMocks != nil {
 				tc.setupMocks(mStore, mUDSClient)
@@ -762,4 +813,50 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHealthyTriggerWaitsForNodeReady verifies that a healthy trigger is skipped when the node is NotReady and
+// is successfully sent once the node transitions to Ready in a subsequent poll cycle.
+func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTestConfig()
+
+	healthyEvent := model.MaintenanceEvent{
+		EventID: "h-event-deferred", NodeName: "node-deferred", ResourceType: "test", ResourceID: "h-id", RecommendedAction: pb.RecommenedAction_NONE.String(),
+	}
+
+	mockClient := createMockClientWithNotReadyNode(healthyEvent.NodeName)
+
+	mStore := new(MockDatastore)
+	mUDSClient := new(MockUDSClient)
+
+	mStore.On("FindEventsToTriggerQuarantine", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{}, nil).Twice()
+	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{healthyEvent}, nil).Once()
+	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{}, nil).Once()
+
+	mUDSClient.On("HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
+	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()
+
+	engine := NewEngine(cfg, mStore, mUDSClient, mockClient)
+	engine.monitorInterval = 3 * time.Second
+
+	err := engine.checkAndTriggerEvents(ctx)
+	assert.NoError(t, err)
+	mUDSClient.AssertNotCalled(t, "HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything)
+	mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
+
+	node, _ := mockClient.CoreV1().Nodes().Get(ctx, healthyEvent.NodeName, metav1.GetOptions{})
+	for i, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			node.Status.Conditions[i].Status = corev1.ConditionTrue
+		}
+	}
+	_, _ = mockClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+
+	time.Sleep(5 * time.Second)
+	err = engine.checkAndTriggerEvents(ctx)
+	assert.NoError(t, err)
+
+	mUDSClient.AssertExpectations(t)
+	mStore.AssertExpectations(t)
 }

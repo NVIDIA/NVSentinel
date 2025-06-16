@@ -80,6 +80,7 @@ configToml:
   maintenanceEventPollIntervalSeconds: 60 # Used by Quarantine Trigger Engine sidecar
   triggerQuarantineWorkflowTimeLimitMinutes: 30 # Used by Quarantine Trigger Engine sidecar
   postMaintenanceHealthyDelayMinutes: 15 # Used by Quarantine Trigger Engine sidecar
+  nodeReadinessTimeoutMinutes: 60 # Used to monitor node readiness after maintenance
   clusterName: "" # Used by main monitor and potentially sidecar if needed
   kubeconfigPath: ""  # Optional, only set if running out-of-cluster against a tenant. Set to non-empty string to enable.
 

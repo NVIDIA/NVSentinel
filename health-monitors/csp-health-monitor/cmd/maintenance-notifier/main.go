@@ -27,6 +27,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	klog "k8s.io/klog/v2"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -43,6 +46,7 @@ const (
 	defaultMetricsPortSidecar   = "2113"
 )
 
+// nolint: cyclop
 func main() {
 	// Command-line flags
 	configPath := flag.String("config", defaultConfigPathSidecar, "Path to the TOML configuration file.")
@@ -132,8 +136,36 @@ func main() {
 
 	platformConnectorClient := pb.NewPlatformConnectorClient(conn)
 
+	var k8sClient kubernetes.Interface
+
+	var restCfg *rest.Config
+
+	if cfg != nil && cfg.KubeconfigPath != "" {
+		restCfg, err = clientcmd.BuildConfigFromFlags("", cfg.KubeconfigPath)
+		if err != nil {
+			klog.Errorf("Trigger Engine: failed to build kubeconfig from %s: %v", cfg.KubeconfigPath, err)
+		}
+	} else {
+		restCfg, err = rest.InClusterConfig()
+		if err != nil {
+			klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
+		}
+	}
+
+	if err == nil && restCfg != nil {
+		if k8sClient, err = kubernetes.NewForConfig(restCfg); err != nil {
+			klog.Errorf("Trigger Engine: failed to create Kubernetes clientset: %v", err)
+
+			k8sClient = nil
+		} else {
+			klog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
+		}
+	} else {
+		klog.Error("Trigger Engine: failed to initialize Kubernetes clientset.")
+	}
+
 	// Initialise and start the trigger engine (blocking)
-	engine := trigger.NewEngine(cfg, store, platformConnectorClient)
+	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 
 	klog.Info("Trigger engine starting...")
 	engine.Start(ctx) // This is blocking

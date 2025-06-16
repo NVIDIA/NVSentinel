@@ -91,6 +91,7 @@ func (p *Processor) inheritState(ctx context.Context, event *model.MaintenanceEv
 	case model.StatusDetected,
 		model.StatusQuarantineTriggered,
 		model.StatusHealthyTriggered,
+		model.StatusNodeReadinessTimeout,
 		model.StatusCancelled,
 		model.StatusError:
 		klog.V(3).

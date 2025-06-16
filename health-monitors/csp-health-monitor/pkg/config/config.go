@@ -28,10 +28,12 @@ const (
 	DefaultMaintenanceEventPollIntervalSeconds       = 60
 	DefaultTriggerQuarantineWorkflowTimeLimitMinutes = 30
 	DefaultPostMaintenanceHealthyDelayMinutes        = 15
+	DefaultNodeReadinessTimeoutMinutes               = 60
 
 	MinMaintenanceEventPollIntervalSeconds       = 10
 	MinTriggerQuarantineWorkflowTimeLimitMinutes = 10
 	MinPostMaintenanceHealthyDelayMinutes        = 10
+	MinNodeReadinessTimeoutMinutes               = 10
 
 	minCSPSpecificPollingIntervalSeconds = 30
 )
@@ -41,6 +43,7 @@ type Config struct {
 	MaintenanceEventPollIntervalSeconds       int    `toml:"maintenanceEventPollIntervalSeconds"`
 	TriggerQuarantineWorkflowTimeLimitMinutes int    `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
 	PostMaintenanceHealthyDelayMinutes        int    `toml:"postMaintenanceHealthyDelayMinutes"`
+	NodeReadinessTimeoutMinutes               int    `toml:"nodeReadinessTimeoutMinutes"`
 	ClusterName                               string `toml:"clusterName"`
 	// Optional: Path to tenant kubeconfig (for MCP mode)
 	KubeconfigPath string    `toml:"kubeconfigPath,omitempty"`
@@ -127,6 +130,15 @@ func applyDefaults(cfg *Config) {
 
 		cfg.PostMaintenanceHealthyDelayMinutes = DefaultPostMaintenanceHealthyDelayMinutes
 	}
+
+	if cfg.NodeReadinessTimeoutMinutes == 0 {
+		klog.Infof(
+			"Configuration: 'nodeReadinessTimeoutMinutes' not set or is 0, defaulting to %d",
+			DefaultNodeReadinessTimeoutMinutes,
+		)
+
+		cfg.NodeReadinessTimeoutMinutes = DefaultNodeReadinessTimeoutMinutes
+	}
 }
 
 // validateGeneralConfig checks and enforces settings for logging and global timeouts.
@@ -169,6 +181,15 @@ func validateGeneralConfig(cfg *Config) error {
 			"postMaintenanceHealthyDelayMinutes must be at least %d minute(s) (got %d)",
 			MinPostMaintenanceHealthyDelayMinutes,
 			cfg.PostMaintenanceHealthyDelayMinutes,
+		)
+	}
+
+	// Validate NodeReadinessTimeoutMinutes
+	if cfg.NodeReadinessTimeoutMinutes < MinNodeReadinessTimeoutMinutes {
+		return fmt.Errorf(
+			"nodeReadinessTimeoutMinutes must be at least %d minute(s) (got %d)",
+			MinNodeReadinessTimeoutMinutes,
+			cfg.NodeReadinessTimeoutMinutes,
 		)
 	}
 

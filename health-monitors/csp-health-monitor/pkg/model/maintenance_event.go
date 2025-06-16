@@ -65,13 +65,14 @@ const (
 
 // Constants for internal status
 const (
-	StatusDetected            InternalStatus = "DETECTED"
-	StatusQuarantineTriggered InternalStatus = "QUARANTINE_TRIGGERED"
-	StatusMaintenanceOngoing  InternalStatus = "MAINTENANCE_ONGOING"
-	StatusMaintenanceComplete InternalStatus = "MAINTENANCE_COMPLETE"
-	StatusHealthyTriggered    InternalStatus = "HEALTHY_TRIGGERED"
-	StatusCancelled           InternalStatus = "CANCELLED"
-	StatusError               InternalStatus = "ERROR"
+	StatusDetected             InternalStatus = "DETECTED"
+	StatusQuarantineTriggered  InternalStatus = "QUARANTINE_TRIGGERED"
+	StatusMaintenanceOngoing   InternalStatus = "MAINTENANCE_ONGOING"
+	StatusMaintenanceComplete  InternalStatus = "MAINTENANCE_COMPLETE"
+	StatusHealthyTriggered     InternalStatus = "HEALTHY_TRIGGERED"
+	StatusNodeReadinessTimeout InternalStatus = "NODE_READINESS_TIMEOUT"
+	StatusCancelled            InternalStatus = "CANCELLED"
+	StatusError                InternalStatus = "ERROR"
 )
 
 // Constants for CSP provider-reported maintenance statuses
