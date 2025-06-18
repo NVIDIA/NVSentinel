@@ -29,6 +29,7 @@ data:
     triggerQuarantineWorkflowTimeLimitMinutes = {{ .Values.configToml.triggerQuarantineWorkflowTimeLimitMinutes }}
     postMaintenanceHealthyDelayMinutes = {{ .Values.configToml.postMaintenanceHealthyDelayMinutes }}
     clusterName = {{ .Values.configToml.clusterName | quote }}
+    nodeReadinessTimeoutMinutes = {{ .Values.configToml.nodeReadinessTimeoutMinutes }}
     {{- if .Values.configToml.kubeconfigPath }}
     kubeconfigPath = {{ .Values.configToml.kubeconfigPath | quote }}
     {{- end }}
