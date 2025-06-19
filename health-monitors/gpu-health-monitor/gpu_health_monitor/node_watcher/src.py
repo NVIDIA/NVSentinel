@@ -92,7 +92,6 @@ def main():
         try:
             for event in w.stream(
                 v1.list_pod_for_all_namespaces,
-                namespace="gpu-operator",
                 timeout_seconds=0,
                 label_selector="app=nvidia-dcgm",
             ):
