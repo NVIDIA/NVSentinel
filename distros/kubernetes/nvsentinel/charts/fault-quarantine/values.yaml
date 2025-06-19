@@ -127,3 +127,28 @@ config: |
 
     [rule-sets.cordon]
       shouldCordon = true
+
+  [[rule-sets]]
+    version = "1"
+    name = "CSP health monitor fatal error ruleset"    
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent" 
+      expression = "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance'"
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent" 
+      expression = "event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+      
+    [[rule-sets.match.all]]
+      kind = "MaxPercentageOfNodesToCordon"
+      expression = "maxPercentageOfNodesToCordon <= 100"
+
+    [rule-sets.cordon]
+      shouldCordon = true

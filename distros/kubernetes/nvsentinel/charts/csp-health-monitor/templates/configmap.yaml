@@ -24,7 +24,6 @@ metadata:
 data:
   config.toml: |
     # Global settings
-    logLevel = {{ .Values.configToml.logLevel | quote }}
     maintenanceEventPollIntervalSeconds = {{ .Values.configToml.maintenanceEventPollIntervalSeconds }}
     triggerQuarantineWorkflowTimeLimitMinutes = {{ .Values.configToml.triggerQuarantineWorkflowTimeLimitMinutes }}
     postMaintenanceHealthyDelayMinutes = {{ .Values.configToml.postMaintenanceHealthyDelayMinutes }}

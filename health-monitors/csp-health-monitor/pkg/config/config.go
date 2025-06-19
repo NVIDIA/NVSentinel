@@ -17,29 +17,26 @@ package config
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 	klog "k8s.io/klog/v2"
 )
 
 const (
-	DefaultLogLevel                                  = "INFO"
 	DefaultMaintenanceEventPollIntervalSeconds       = 60
 	DefaultTriggerQuarantineWorkflowTimeLimitMinutes = 30
 	DefaultPostMaintenanceHealthyDelayMinutes        = 15
 	DefaultNodeReadinessTimeoutMinutes               = 60
 
 	MinMaintenanceEventPollIntervalSeconds       = 10
-	MinTriggerQuarantineWorkflowTimeLimitMinutes = 10
-	MinPostMaintenanceHealthyDelayMinutes        = 10
-	MinNodeReadinessTimeoutMinutes               = 10
+	MinTriggerQuarantineWorkflowTimeLimitMinutes = 1
+	MinPostMaintenanceHealthyDelayMinutes        = 1
+	MinNodeReadinessTimeoutMinutes               = 1
 
 	minCSPSpecificPollingIntervalSeconds = 30
 )
 
 type Config struct {
-	LogLevel                                  string `toml:"logLevel"`
 	MaintenanceEventPollIntervalSeconds       int    `toml:"maintenanceEventPollIntervalSeconds"`
 	TriggerQuarantineWorkflowTimeLimitMinutes int    `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
 	PostMaintenanceHealthyDelayMinutes        int    `toml:"postMaintenanceHealthyDelayMinutes"`
@@ -99,11 +96,6 @@ func LoadConfig(filePath string) (*Config, error) {
 
 // applyDefaults assigns default values to zero-value fields.
 func applyDefaults(cfg *Config) {
-	if cfg.LogLevel == "" {
-		klog.Infof("Configuration: 'logLevel' not set, defaulting to %s", DefaultLogLevel)
-		cfg.LogLevel = DefaultLogLevel
-	}
-
 	if cfg.MaintenanceEventPollIntervalSeconds == 0 {
 		klog.Infof(
 			"Configuration: 'maintenanceEventPollIntervalSeconds' not set, defaulting to %d",
@@ -143,15 +135,6 @@ func applyDefaults(cfg *Config) {
 
 // validateGeneralConfig checks and enforces settings for logging and global timeouts.
 func validateGeneralConfig(cfg *Config) error {
-	// Validate LogLevel
-	cfg.LogLevel = strings.ToUpper(cfg.LogLevel)
-	switch cfg.LogLevel {
-	case "INFO", "WARNING", "ERROR", "DEBUG":
-		// valid
-	default:
-		return fmt.Errorf("invalid logLevel '%s': must be one of INFO, WARNING, ERROR, DEBUG", cfg.LogLevel)
-	}
-
 	// Validate ClusterName
 	if cfg.ClusterName == "" {
 		return fmt.Errorf("clusterName must be set in the configuration")

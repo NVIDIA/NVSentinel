@@ -76,7 +76,6 @@ cspName: ""
 # Both main container and sidecar will mount and use this.
 configToml:
   # Global settings
-  logLevel: "info" # General log level for app logic, klog '-v' controls verbosity
   maintenanceEventPollIntervalSeconds: 60 # Used by Quarantine Trigger Engine sidecar
   triggerQuarantineWorkflowTimeLimitMinutes: 30 # Used by Quarantine Trigger Engine sidecar
   postMaintenanceHealthyDelayMinutes: 15 # Used by Quarantine Trigger Engine sidecar
