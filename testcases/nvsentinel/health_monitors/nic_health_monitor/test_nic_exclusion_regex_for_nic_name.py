@@ -26,7 +26,7 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nichealthmonitor
-    def test_nic_exclusion_regex_for_nic_name(self, request):
+    def test_nic_exclusion_regex_for_nic_name(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests if the regex exclusion for NIC name is working correctly
         """
@@ -35,7 +35,6 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
         # interfaces.
         if os.getenv("CLOUD_PROVIDER") == "aws":
             self.logger.info("Running on AWS with mock filesystem")
-            autosync_fixture = request.getfixturevalue("nvsentinel_autosync_disabled_enabled")
             self.nic_exclusion_regex_in_aws(request)
             return
         else:
@@ -132,7 +131,7 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
         match = re.search(line_pattern, config_ini)
         if match:
             existing_regex = match.group(1).strip()
-            if regex not in existing_regex.split("|"):
+            if regex not in existing_regex.split(","):
                 combined_regex = f"{existing_regex},{regex}"
             else:
                 combined_regex = existing_regex
@@ -225,8 +224,8 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
         if not nodes:
             pytest.skip("No nodes available for testing")
 
-        #node_name = random.choice([node.metadata.name for node in nodes])
-        node_name = "ip-10-0-190-59.ec2.internal"
+        node_name = random.choice([node.metadata.name for node in nodes])
+
         self.logger.info(f"Selected node for testing: {node_name}")
 
         # 1. Update SysClassNetPath in configmap so NIC monitor looks at mock path
@@ -238,7 +237,7 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
             pytest.skip(f"Cannot update NIC monitor configuration: {e}")
 
         # 2. Create mock ethernet interface
-        interface_name = f"eth1_test_{random.randint(1000, 9999)}"
+        interface_name = f"eth{random.randint(1000, 9999)}"
         try:
             self.create_mock_ethernet_interface(node_name, interface_name)
             request.addfinalizer(partial(self.cleanup_mock_ethernet_interface, node_name))
@@ -295,8 +294,8 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
             match = re.search(regex_line_pattern, config_ini)
             if match:
                 existing_regex = match.group(1).strip()
-                if new_regex not in existing_regex.split("|"):
-                    combined_regex = f"{existing_regex}|{new_regex}"
+                if new_regex not in existing_regex.split(","):
+                    combined_regex = f"{existing_regex},{new_regex}"
                 else:
                     combined_regex = existing_regex
                 new_config_ini = re.sub(regex_line_pattern, f"NicExclusionRegex = {combined_regex}\n", config_ini)

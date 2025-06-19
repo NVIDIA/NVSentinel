@@ -1151,10 +1151,17 @@ class TestNVSentinelCaseBase(Base):
             mock_base_path = f"/var/run/nvsentinel/mock-infiniband"
             mock_device_path = f"{mock_base_path}/{device_name}"
             mock_port_path = f"{mock_device_path}/ports/{port_name}"
+            mock_net_path = f"{mock_device_path}/device/net"
             
             commands = [
                 # Create the base directory structure
                 f'mkdir -p {mock_port_path}',
+                
+                # Create the device/net directory structure for RoCE interface filtering
+                f'mkdir -p {mock_net_path}',
+                
+                # Create a mock network interface that matches typical InfiniBand naming
+                f'mkdir -p {mock_net_path}/{device_name.replace("rdmap", "rdma")}',
                 
                 # Create state file with initial "4: ACTIVE" state (healthy)
                 f'echo "4: ACTIVE" > {mock_port_path}/state',
@@ -1162,20 +1169,26 @@ class TestNVSentinelCaseBase(Base):
                 # Create phys_state file with initial "5: LinkUp" state (healthy)
                 f'echo "5: LinkUp" > {mock_port_path}/phys_state',
                 
+                # Set link_layer to "InfiniBand" instead of "unknown" for proper filtering
+                f'echo "InfiniBand" > {mock_port_path}/link_layer',
+
                 # Set proper permissions
                 f'chmod 644 {mock_port_path}/state',
                 f'chmod 644 {mock_port_path}/phys_state',
+                f'chmod 644 {mock_port_path}/link_layer',
                 
                 # Verify the structure was created
                 f'ls -la {mock_port_path}/',
                 f'cat {mock_port_path}/state',
                 f'cat {mock_port_path}/phys_state',
+                f'cat {mock_port_path}/link_layer',
+                f'ls -la {mock_net_path}/',
             ]
             
             for command in commands:
                 exec_command = ["/bin/sh", "-c", f'chroot /host bash -c "{command}"']
                 output, _ = self.client.exec_command_in_pod(debug_pod, exec_command)
-                self.logger.debug(f"Command: {command}, Output: {output}")
+                self.logger.info(f"Command: {command}, Output: {output}")
                 
         finally:
             self.client.delete_pod(debug_pod)

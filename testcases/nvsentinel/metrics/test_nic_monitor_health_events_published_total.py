@@ -73,7 +73,7 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
             pytest.skip(f"Cannot update NIC monitor configuration: {e}")
 
         
-        interface_name = f"eth1_test_{random.randint(1000, 9999)}"
+        interface_name = f"eth{random.randint(1000, 9999)}"
         
         try:
             self.create_mock_ethernet_interface(node_name, interface_name)

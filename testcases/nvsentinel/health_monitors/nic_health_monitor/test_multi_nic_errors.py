@@ -93,7 +93,7 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         )
         
         # Create a unique interface name for this test
-        interface_name = f"eth1_test_{random.randint(1000, 9999)}"
+        interface_name = f"eth{random.randint(1000, 9999)}"
         
         # Create the mock interface
         try:

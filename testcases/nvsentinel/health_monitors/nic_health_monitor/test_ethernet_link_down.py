@@ -111,10 +111,7 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
                 node_name=node_name, condition_type="EthernetErrorCheck"
             )
             
-            if target_condition and target_condition.status == expected_condition_status:
-                self.logger.debug(condition_success_message)
-            else:
-                self.logger.warning(f"EthernetErrorCheck status: {target_condition.status if target_condition else 'Not found'}")
+            assert target_condition.status == expected_condition_status, f"EthernetErrorCheck status is {target_condition.status} when interface is {state}"
 
         except Exception as e:
             self.logger.error(f"Error during ethernet link {state} test: {e}")
@@ -152,7 +149,7 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
         )
         
         # Create a unique interface name for this test
-        interface_name = f"eth1_test_{random.randint(1000, 9999)}"
+        interface_name = f"eth{random.randint(1000, 9999)}"
         
         # Create the mock interface
         try:

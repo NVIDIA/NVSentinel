@@ -14,7 +14,6 @@ import random
 import time
 import os
 import re
-import tempfile
 from functools import partial
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 
@@ -31,7 +30,7 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
         Tests if the InfiniBandErrorCheck condition is set correctly when the InfiniBand link is down
         """
         if os.getenv("CLOUD_PROVIDER") == "aws":
-            autosync_fixture = request.getfixturevalue("nvsentinel_autosync_disabled_enabled")
+            request.getfixturevalue("nvsentinel_autosync_disabled_enabled")
             self.infiniband_down_in_aws(request)
         else:
             self.infiniband_link_down_in_csp(request)
@@ -58,7 +57,6 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
                 expected_status_message = "state: 1: Down"
                 expected_condition_status = "True"
                 success_message = "SUCCESS: 'state: 1: Down' message found in pod console log"
-                condition_success_message = "SUCCESS: InfiniBandErrorCheck status is True when interface is down"
                 recent_logs_count = 5
                 wait_time = 10
             elif state == "up":
@@ -67,7 +65,6 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
                 expected_status_message = "Port is healthy"
                 expected_condition_status = "False"
                 success_message = "SUCCESS: 'Port is healthy' message found in pod console log"
-                condition_success_message = "SUCCESS: InfiniBandErrorCheck status is False when interface is up"
                 recent_logs_count = 10
                 wait_time = 30
             else:
@@ -116,11 +113,8 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
             target_condition, _ = self.client.read_node_condition_by_type(
                 node_name=node_name, condition_type="InfiniBandErrorCheck"
             )
-            
-            if target_condition and target_condition.status == expected_condition_status:
-                self.logger.debug(condition_success_message)
-            else:
-                self.logger.warning(f"InfiniBandErrorCheck status: {target_condition.status if target_condition else 'Not found'}")
+
+            assert target_condition.status == expected_condition_status, f"InfiniBandErrorCheck status is {target_condition.status} when interface is {state}"
 
         except Exception as e:
             self.logger.error(f"Error during InfiniBand link {state} test: {e}")
@@ -147,17 +141,20 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
             "Create mock InfiniBand interface structure"
         )
         
-        # Update configmap to use /var/run/mock-net (container perspective)
+        # Update configmap to use /var/run/mock-infiniband (container perspective)
         try:
             self.update_nic_monitor_configmap("SysClassInfinibandPath", "/var/run/mock-infiniband")
+            # Use InfiniBand network type to avoid RoCE interface filtering issues
+            self.update_nic_monitor_configmap("MonitorNetworkType", "infiniband")
             # Register cleanup for configmap
             request.addfinalizer(self.restore_nic_monitor_configmap)
         except Exception as e:
             self.logger.error(f"Failed to update configmap: {e}")
             pytest.skip(f"Cannot update NIC monitor configuration: {e}")
 
-        # Create a unique device name for this test
-        device_name = f"rdmap166s0_test_{random.randint(1000, 9999)}"
+        # Create a unique device name for this test using timestamp to avoid conflicts
+        timestamp = int(time.time())
+        device_name = f"mlx5_test_{timestamp}"
         port_name = "1"
         
         # Create the mock interface
