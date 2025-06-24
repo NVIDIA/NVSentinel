@@ -195,20 +195,20 @@ func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
 	event *platformconnectorprotos.HealthEvent,
 ) (common.RuleEvaluationResult, error) {
 	// Get counts directly from the informer
-	totalNodes, cordonedNodes, err := nc.nodeInformer.GetGpuNodeCounts()
+	totalNodes, cordonedNodes, err := nc.nodeInformer.GetCustomerNodeCounts()
 	if err != nil {
 		// Handle cases where the informer might not be synced yet or other errors
-		return common.RuleEvaluationErroredOut, fmt.Errorf("failed to get GPU node counts from informer: %w", err)
+		return common.RuleEvaluationErroredOut, fmt.Errorf("failed to get customer node counts from informer: %w", err)
 	}
 
 	klog.V(3).Infof("Got counts from NodeInformer: Total=%d, Cordoned=%d", totalNodes, cordonedNodes)
 
 	if totalNodes == 0 {
-		// If the informer reports 0 GPU nodes, evaluation doesn't make sense.
-		klog.Warningf("MaxPercentageOfNodesToCordonRuleEvaluator: No GPU nodes reported by informer.")
+		// If the informer reports 0 customer nodes, evaluation doesn't make sense.
+		klog.Warningf("MaxPercentageOfNodesToCordonRuleEvaluator: No customer nodes reported by informer.")
 		// Depending on desired behavior, could be Failed or ErroredOut.
 		// Let's treat it as Failed for now, as the condition technically can't be met.
-		return common.RuleEvaluationFailed, fmt.Errorf("no GPU nodes found in the cluster (reported by informer)")
+		return common.RuleEvaluationFailed, fmt.Errorf("no customer nodes found in the cluster (reported by informer)")
 	}
 	// Calculate percentage if we cordon one more node
 	potentialPercentage := int((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))

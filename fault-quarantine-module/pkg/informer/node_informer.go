@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -30,16 +31,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const (
-	// GpuNodeLabel is the label used to identify nodes with GPUs relevant to NVSentinel.
-	GpuNodeLabel = "nvidia.com/gpu.present"
-)
-
 // NodeInfoProvider defines the interface for getting node counts.
 type NodeInfoProvider interface {
-	// GetGpuNodeCounts returns the total number of nodes with the GpuNodeLabel
+	// GetCustomerNodeCounts returns the total number of nodes matching the selector
 	// and the number of those nodes that are currently unschedulable (cordoned).
-	GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuNodes int, err error)
+	GetCustomerNodeCounts() (totalCustomerNodes int, unschedulableCustomerNodes int, err error)
 	// HasSynced returns true if the underlying informer cache has synced.
 	HasSynced() bool
 }
@@ -51,8 +47,8 @@ type NodeInformer struct {
 	lister    corelisters.NodeLister
 
 	// Mutex protects access to the counts below
-	mutex         sync.RWMutex
-	totalGpuNodes int
+	mutex              sync.RWMutex
+	totalCustomerNodes int
 
 	informerSynced cache.InformerSynced
 
@@ -68,14 +64,22 @@ func (ni *NodeInformer) Lister() corelisters.NodeLister {
 	return ni.lister
 }
 
-// NewNodeInformer creates a new NodeInformer focused on nodes with the GpuNodeLabel.
+// NewNodeInformer creates a new NodeInformer focused on nodes with specific labels.
 func NewNodeInformer(clientset kubernetes.Interface,
 	resyncPeriod time.Duration, workSignal chan struct{}, nodeInfo *nodeinfo.NodeInfo) (*NodeInformer, error) {
-	// Filter nodes based on the presence of the GPU label
-	gpuNodeSelector := labels.Set{GpuNodeLabel: "true"}.AsSelector()
+	// Filter nodes based on the nodeGroup label.
+	// We want nodes where nodeGroup is 'customer-gpu' or 'customer-cpu'.
+	selector := labels.NewSelector()
+
+	requirement, err := labels.NewRequirement("nodeGroup", selection.In, []string{"customer-gpu", "customer-cpu"})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create label requirement: %w", err)
+	}
+
+	nodeSelector := selector.Add(*requirement)
 
 	tweakListOptions := func(options *metav1.ListOptions) {
-		options.LabelSelector = gpuNodeSelector.String()
+		options.LabelSelector = nodeSelector.String()
 	}
 
 	// Create an informer factory filtered for the specific label
@@ -93,7 +97,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	}
 
 	// Register event handlers
-	_, err := ni.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err = ni.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    ni.handleAddNode,
 		UpdateFunc: ni.handleUpdateNode,
 		DeleteFunc: ni.handleDeleteNode,
@@ -102,7 +106,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	klog.Infof("NodeInformer created, watching nodes with label %s=true", GpuNodeLabel)
+	klog.Infof("NodeInformer created, watching nodes with selector %s", nodeSelector.String())
 
 	return ni, nil
 }
@@ -137,8 +141,8 @@ func (ni *NodeInformer) HasSynced() bool {
 	return ni.informerSynced()
 }
 
-// GetGpuNodeCounts returns the current counts of total and unschedulable GPU nodes.
-func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuNodes int, err error) {
+// GetCustomerNodeCounts returns the current counts of total and unschedulable customer nodes.
+func (ni *NodeInformer) GetCustomerNodeCounts() (totalCustomerNodes int, unschedulableCustomerNodes int, err error) {
 	if !ni.HasSynced() {
 		return 0, 0, fmt.Errorf("node informer cache not synced yet")
 	}
@@ -146,7 +150,7 @@ func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuN
 	ni.mutex.RLock()
 	defer ni.mutex.RUnlock()
 
-	return ni.totalGpuNodes, len(*ni.nodeInfo.GetQuarantinedNodesMap()), nil
+	return ni.totalCustomerNodes, len(*ni.nodeInfo.GetQuarantinedNodesMap()), nil
 }
 
 // handleAddNode recalculates counts when a node is added.
@@ -161,7 +165,7 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 
 	ni.mutex.Lock()
 
-	ni.totalGpuNodes++
+	ni.totalCustomerNodes++
 
 	// Mark as quarantined if the node is unschedulable
 	if node.Spec.Unschedulable {
@@ -243,7 +247,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		}
 	}
 
-	ni.totalGpuNodes--
+	ni.totalCustomerNodes--
 	ni.mutex.Unlock()
 
 	ni.signalWork()
@@ -258,31 +262,24 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 		return false, fmt.Errorf("failed to list nodes from informer cache: %w", err)
 	}
 
-	total := 0
+	total := len(nodes)
 	unschedulable := 0
 
 	for _, node := range nodes {
-		// Double-check the label, although the informer should only list matching nodes
-		if _, exists := node.Labels[GpuNodeLabel]; exists {
-			total++
-
-			if node.Spec.Unschedulable {
-				unschedulable++
-			}
-		} else {
-			klog.Warningf("Node %s found in informer cache despite missing label %s", node.Name, GpuNodeLabel)
+		if node.Spec.Unschedulable {
+			unschedulable++
 		}
 	}
 
 	ni.mutex.Lock()
-	changed := ni.totalGpuNodes != total || len(*ni.nodeInfo.GetQuarantinedNodesMap()) != unschedulable
-	ni.totalGpuNodes = total
+	changed := ni.totalCustomerNodes != total || len(*ni.nodeInfo.GetQuarantinedNodesMap()) != unschedulable
+	ni.totalCustomerNodes = total
 	ni.mutex.Unlock()
 
 	if changed {
-		klog.V(2).Infof("Node counts updated: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d", total, unschedulable)
+		klog.V(2).Infof("Node counts updated: Total Customer Nodes=%d, Unschedulable Customer Nodes=%d", total, unschedulable)
 	} else {
-		klog.V(4).Infof("Node counts recalculated, no change: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d",
+		klog.V(4).Infof("Node counts recalculated, no change: Total Customer Nodes=%d, Unschedulable Customer Nodes=%d",
 			total, unschedulable)
 	}
 
