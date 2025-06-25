@@ -34,6 +34,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+var (
+	pollStartTime = time.Now().Add(-24 * time.Minute)
+)
+
 // MockAWSHealthClient is a mock for AWS Health client
 type MockAWSHealthClient struct {
 	mock.Mock
@@ -156,7 +160,7 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify we received an event
@@ -191,7 +195,7 @@ func TestNoMaintenanceEvents(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	mockAWSClient.AssertNotCalled(t, "DescribeAffectedEntities", mock.Anything, mock.Anything)
@@ -288,7 +292,7 @@ func TestMultipleAffectedEntities(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify we received events for all affected instances
@@ -412,7 +416,7 @@ func TestCompletedEvent(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify we received a completed event
@@ -458,7 +462,7 @@ func TestErrorScenario(t *testing.T) {
 	}
 
 	// Call the function being tested - should not panic but return error
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.Error(t, err)
 
 	mockAWSClient.AssertNotCalled(t, "DescribeAffectedEntities", mock.Anything, mock.Anything)
@@ -479,8 +483,10 @@ func TestTimeWindowFiltering(t *testing.T) {
 	// Setup current time for test
 	now := time.Now().UTC()
 
-	// Set polling interval to 1 hour
+	// Set polling interval to 1 minute
 	client.config.PollingIntervalSeconds = 60 // 1 minute
+
+	pollStartTime := now.Add(-time.Duration(client.config.PollingIntervalSeconds) * time.Second)
 
 	// Setup AWS Health API mock with an old event
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.MatchedBy(func(input *health.DescribeEventsInput) bool {
@@ -500,7 +506,7 @@ func TestTimeWindowFiltering(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify no events were received (as our filter should exclude the old event)
@@ -589,7 +595,7 @@ func TestInstanceFiltering(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Should receive exactly one event for our cluster instance
@@ -690,7 +696,7 @@ func TestInvalidEntityData(t *testing.T) {
 	}
 
 	// Call the function - should handle nil values without panicking
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Should still receive event for the valid entity
@@ -765,7 +771,7 @@ func TestInstanceRebootEvent(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify we received a maintenance event with correct type
@@ -866,7 +872,7 @@ func TestIgnoredEventTypes(t *testing.T) {
 	}
 
 	// Call the function being tested
-	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan)
+	err := client.handleMaintenanceEvents(context.Background(), instanceIDs, eventChan, pollStartTime)
 	assert.NoError(t, err)
 
 	// Verify no events were received (as these should be filtered out)

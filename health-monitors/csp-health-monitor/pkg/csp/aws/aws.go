@@ -46,6 +46,9 @@ const (
 	DEDICATED_HOST_MAINTENANCE_SCHEDULED         = "AWS_EC2_DEDICATED_HOST_MAINTENANCE_SCHEDULED"
 	DEDICATED_HOST_NETWORK_MAINTENANCE_SCHEDULED = "AWS_EC2_DEDICATED_HOST_NETWORK_MAINTENANCE_SCHEDULED"
 	DEDICATED_HOST_POWER_MAINTENANCE_SCHEDULED   = "AWS_EC2_DEDICATED_HOST_POWER_MAINTENANCE_SCHEDULED"
+	ULTRASERVER_MAINTENANCE_INITIATED            = "AWS_EC2_ULTRASERVER_MAINTENANCE_INITIATED"
+	ULTRASERVER_CAPACITY_REDUCED                 = "AWS_EC2_ULTRASERVER_CAPACITY_REDUCED"
+	ULTRASERVER_MAINTENANCE_COMPLETED            = "AWS_EC2_ULTRASERVER_MAINTENANCE_COMPLETED"
 )
 
 var SupportedEventTypeCodes = map[string]string{
@@ -56,6 +59,9 @@ var SupportedEventTypeCodes = map[string]string{
 	DEDICATED_HOST_MAINTENANCE_SCHEDULED:         "",
 	DEDICATED_HOST_NETWORK_MAINTENANCE_SCHEDULED: "",
 	DEDICATED_HOST_POWER_MAINTENANCE_SCHEDULED:   "",
+	ULTRASERVER_MAINTENANCE_INITIATED:            "",
+	ULTRASERVER_CAPACITY_REDUCED:                 "",
+	ULTRASERVER_MAINTENANCE_COMPLETED:            "",
 }
 
 var SupportedEventTypeCodesList = []string{
@@ -66,6 +72,9 @@ var SupportedEventTypeCodesList = []string{
 	DEDICATED_HOST_MAINTENANCE_SCHEDULED,
 	DEDICATED_HOST_NETWORK_MAINTENANCE_SCHEDULED,
 	DEDICATED_HOST_POWER_MAINTENANCE_SCHEDULED,
+	ULTRASERVER_MAINTENANCE_INITIATED,
+	ULTRASERVER_CAPACITY_REDUCED,
+	ULTRASERVER_MAINTENANCE_COMPLETED,
 }
 
 // isSupportedEventTypeCode reports whether code is one of the supported maintenance event codes.
@@ -188,7 +197,10 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 	ticker := time.NewTicker(time.Duration(c.config.PollingIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	if err := c.pollNewEvents(ctx, eventChan); err != nil {
+	lastEventProcessedTime := c.getInitialPollStartTime(ctx)
+	klog.V(2).Infof("Starting first poll from %v", lastEventProcessedTime)
+
+	if err := c.pollNewEvents(ctx, eventChan, lastEventProcessedTime); err != nil {
 		klog.Errorf("Initial error polling AWS Health events: %v", err)
 	}
 
@@ -214,7 +226,8 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 			go func() {
 				defer wg.Done()
 
-				if err := c.pollNewEvents(ctx, eventChan); err != nil {
+				pollStartTime := time.Now().UTC().Add(-time.Duration(c.config.PollingIntervalSeconds) * time.Second)
+				if err := c.pollNewEvents(ctx, eventChan, pollStartTime); err != nil {
 					metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "poll_events_error").Inc()
 					klog.Errorf("Error polling AWS Health events: %v", err)
 				}
@@ -225,8 +238,61 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 	}
 }
 
+// getInitialPollStartTime determines the starting point for polling events.
+// It prioritizes the last processed timestamp from the datastore, falling back
+// to the current time.
+func (c *AWSClient) getInitialPollStartTime(
+	ctx context.Context,
+) time.Time {
+	defaultPollStartTime := time.Now().UTC().Add(-time.Duration(c.config.PollingIntervalSeconds) * time.Second)
+
+	if c.store == nil {
+		klog.Warningf("Datastore client is nil for GCP monitor. Starting poll from current time.")
+
+		return defaultPollStartTime
+	}
+
+	lastProcessedEventTS, found, errDb := c.store.GetLastProcessedEventTimestampByCSP(
+		ctx,
+		c.clusterName,
+		model.CSPAWS,
+		"AWS",
+	)
+	if errDb != nil {
+		klog.Warningf(
+			"Failed to get last processed AWS event timestamp for cluster %s from datastore: %v. "+
+				"Starting poll from current time.",
+			c.clusterName,
+			errDb,
+		)
+
+		return defaultPollStartTime
+	}
+
+	if found && !lastProcessedEventTS.IsZero() {
+		klog.Infof(
+			"Resuming poll: last processed AWS event timestamp for cluster %s is %v. "+
+				"Next poll window will start after this.",
+			c.clusterName,
+			lastProcessedEventTS.Format(time.RFC3339Nano),
+		)
+
+		return lastProcessedEventTS
+	}
+
+	klog.Infof(
+		"No previous AWS logs checkpoint found in datastore for cluster %s. "+
+			"Starting poll from current time.",
+		c.clusterName,
+	)
+
+	return defaultPollStartTime
+}
+
 // pollNewEvents performs a single poll request to the AWS Health API.
-func (c *AWSClient) pollNewEvents(ctx context.Context, eventChan chan<- model.MaintenanceEvent) error {
+func (c *AWSClient) pollNewEvents(ctx context.Context,
+	eventChan chan<- model.MaintenanceEvent,
+	pollStartTime time.Time) error {
 	pollStart := time.Now()
 	defer func() {
 		metrics.CSPPollingDuration.WithLabelValues(string(model.CSPAWS)).Observe(time.Since(pollStart).Seconds())
@@ -244,7 +310,7 @@ func (c *AWSClient) pollNewEvents(ctx context.Context, eventChan chan<- model.Ma
 
 	klog.V(2).Infof("Found nodes with instance IDs: %v", instanceIDs)
 
-	err = c.handleMaintenanceEvents(ctx, instanceIDs, eventChan)
+	err = c.handleMaintenanceEvents(ctx, instanceIDs, eventChan, pollStartTime)
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "handle_maintenance_events_error").Inc()
 		klog.Errorf("Error polling AWS Health events: %v\n", err)
@@ -260,8 +326,8 @@ func (c *AWSClient) handleMaintenanceEvents(
 	ctx context.Context,
 	instanceIDs map[string]string,
 	eventChan chan<- model.MaintenanceEvent,
+	pollStartTime time.Time,
 ) error {
-	pollStartTime := time.Now().UTC().Add(-time.Duration(c.config.PollingIntervalSeconds) * time.Second)
 	klog.V(2).Infof("AWS Poll: Checking all maintenance events as of %v", pollStartTime)
 
 	events, err := c.pollEventsAPI(ctx, pollStartTime)
@@ -373,6 +439,7 @@ func (c *AWSClient) processSingleEntityForEvent(
 		NodeName:         nodeName,
 		InstanceId:       instanceID,
 		EntityArn:        aws.ToString(entity.EntityArn),
+		ClusterName:      c.clusterName,
 		Action:           action.String(),
 		EventDescription: desc,
 	}

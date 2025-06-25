@@ -29,6 +29,7 @@ type EventMetadata struct {
 	NodeName         string
 	InstanceId       string
 	EntityArn        string
+	ClusterName      string
 	Action           string
 	EventDescription string
 }
@@ -125,6 +126,7 @@ func (n *AWSNormalizer) Normalize(
 	normalizedEvent := &model.MaintenanceEvent{
 		EventID:                meta.EntityArn,
 		CSP:                    model.CSPAWS,
+		ClusterName:            meta.ClusterName,
 		ResourceType:           *event.Service,
 		ResourceID:             meta.InstanceId,
 		NodeName:               meta.NodeName,
