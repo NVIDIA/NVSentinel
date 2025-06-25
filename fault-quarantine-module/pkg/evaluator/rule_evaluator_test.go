@@ -113,64 +113,59 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 		},
 	}
 
-	nodeGroups := []string{"customer-gpu", "customer-cpu"}
-	for _, nodeGroup := range nodeGroups {
-		t.Run(fmt.Sprintf("nodeGroup=%s", nodeGroup), func(t *testing.T) {
-			for _, tt := range tests {
-				t.Run(tt.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 
-					// Create mock node object with labels from test case
-					node := &corev1.Node{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:   "test-node",
-							Labels: tt.nodeLabels, // Keep original labels from test case
-						},
-						Spec: corev1.NodeSpec{},
-					}
+			// Create mock node object with labels from test case
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: tt.nodeLabels, // Keep original labels from test case
+				},
+				Spec: corev1.NodeSpec{},
+			}
 
-					// Ensure the required label for the informer exists.
-					// The NodeInformer now looks for "nodeGroup" label.
-					if node.Labels == nil {
-						node.Labels = make(map[string]string)
-					}
-					// Add the label the informer expects, preserving existing labels
-					node.Labels["nodeGroup"] = nodeGroup
+			// Ensure the required label for the informer exists.
+			// The NodeInformer specifically looks for GpuNodeLabel ("nvidia.com/gpu.present").
+			if node.Labels == nil {
+				node.Labels = make(map[string]string)
+			}
+			// Add the label the informer expects, preserving existing labels
+			node.Labels[informer.GpuNodeLabel] = "true"
 
-					clientset := fake.NewSimpleClientset(node)
-					workSignal := make(chan struct{}, 1)
-					// Use 0 resync period for tests unless specific timing is needed
-					nodeInfo := nodeinfo.NewNodeInfo(workSignal)
-					nodeInformer, err := informer.NewNodeInformer(clientset, 0, workSignal, nodeInfo)
-					if err != nil {
-						t.Fatalf("Failed to create NodeInformer: %v", err)
-					}
-					stopCh := make(chan struct{})
-					defer close(stopCh)
+			clientset := fake.NewSimpleClientset(node)
+			workSignal := make(chan struct{}, 1)
+			// Use 0 resync period for tests unless specific timing is needed
+			nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+			nodeInformer, err := informer.NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+			if err != nil {
+				t.Fatalf("Failed to create NodeInformer: %v", err)
+			}
+			stopCh := make(chan struct{})
+			defer close(stopCh)
 
-					go nodeInformer.Run(stopCh)
+			go nodeInformer.Run(stopCh)
 
-					// Wait for the cache to sync
-					if ok := cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced); !ok {
-						t.Fatalf("failed to wait for caches to sync")
-					}
-					// Create evaluator with mocked client
-					evaluator, err := NewNodeRuleEvaluator(tt.expression, nodeInformer.Lister())
-					if err != nil && !tt.expectError {
-						t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
-					}
-					if evaluator != nil {
-						isEvaluated, err := evaluator.Evaluate(&platformconnectorprotos.HealthEvent{
-							NodeName: "test-node",
-						})
-						if (err != nil) != tt.expectError {
-							t.Errorf("Failed to evaluate expression: %s: %+v", tt.name, err)
-							return
-						}
-						if isEvaluated != tt.expectEvaluate {
-							t.Errorf("Expected evaluator %s to return %d but got %d", tt.name, tt.expectEvaluate, isEvaluated)
-						}
-					}
+			// Wait for the cache to sync
+			if ok := cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced); !ok {
+				t.Fatalf("failed to wait for caches to sync")
+			}
+			// Create evaluator with mocked client
+			evaluator, err := NewNodeRuleEvaluator(tt.expression, nodeInformer.Lister())
+			if err != nil && !tt.expectError {
+				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
+			}
+			if evaluator != nil {
+				isEvaluated, err := evaluator.Evaluate(&platformconnectorprotos.HealthEvent{
+					NodeName: "test-node",
 				})
+				if (err != nil) != tt.expectError {
+					t.Errorf("Failed to evaluate expression: %s: %+v", tt.name, err)
+					return
+				}
+				if isEvaluated != tt.expectEvaluate {
+					t.Errorf("Expected evaluator %s to return %d but got %d", tt.name, tt.expectEvaluate, isEvaluated)
+				}
 			}
 		})
 	}
@@ -236,7 +231,7 @@ type mockNodeInfoProvider struct {
 	InformerSynced bool
 }
 
-func (m *mockNodeInfoProvider) GetCustomerNodeCounts() (int, int, error) {
+func (m *mockNodeInfoProvider) GetGpuNodeCounts() (int, int, error) {
 	if !m.InformerSynced {
 		return 0, 0, fmt.Errorf("informer not synced") // Simulate not synced error
 	}
@@ -271,10 +266,10 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			expectedErrorSubstr: "informer not synced",
 		},
 		{
-			name: "GetCustomerNodeCounts Error",
+			name: "GetGpuNodeCounts Error",
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
-				Err:            fmt.Errorf("internal informer error"), // Simulate error from GetCustomerNodeCounts
+				Err:            fmt.Errorf("internal informer error"), // Simulate error from GetGpuNodeCounts
 			},
 			expectedResult:      common.RuleEvaluationErroredOut,
 			expectError:         true,
@@ -289,7 +284,7 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			},
 			expectedResult:      common.RuleEvaluationFailed, // As per current logic
 			expectError:         true,                        // Error is returned in this case too
-			expectedErrorSubstr: "no customer nodes found",
+			expectedErrorSubstr: "no GPU nodes found",
 		},
 		{
 			name: "Cordon Allowed (0/10 nodes -> 10% <= 50%)",
