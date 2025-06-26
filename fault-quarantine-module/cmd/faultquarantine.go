@@ -157,6 +157,7 @@ func main() {
 		TokenConfig:                      tokenConfig,
 		MongoPipeline:                    pipeline,
 		K8sClient:                        k8sClient,
+		DryRun:                           *dryRun,
 	}
 
 	// Create the work signal channel (buffered channel acting as semaphore)

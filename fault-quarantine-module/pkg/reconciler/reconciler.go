@@ -43,6 +43,7 @@ type ReconcilerConfig struct {
 	TokenConfig                      storewatcher.TokenConfig
 	MongoPipeline                    mongo.Pipeline
 	K8sClient                        K8sClientInterface
+	DryRun                           bool
 }
 
 type rulesetsConfig struct {
@@ -537,6 +538,14 @@ func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *platformconnectorprotos.HealthEvent,
 ) bool {
+	// simulate the unquarantine if we are in dry-run mode and the node is already quarantined
+	if r.config.DryRun && r.nodeInfo.GetNodeQuarantineStatusCache(event.NodeName) {
+		r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false)
+
+		currentQuarantinedNodes.Dec()
+		totalNodesUnquarantined.Inc()
+	}
+
 	annotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, event.NodeName)
 	if err != nil {
 		klog.Errorf("error while getting node annotations for event: %+v: %+v", event, err)
