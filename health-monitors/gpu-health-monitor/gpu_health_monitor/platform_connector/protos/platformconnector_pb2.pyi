@@ -33,6 +33,8 @@ class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESET_GPU: _ClassVar[RecommenedAction]
     CHECK_LINK_MECHANICAL_CONNECTIONS: _ClassVar[RecommenedAction]
     INVESTIGATE_LINK_SI: _ClassVar[RecommenedAction]
+    CHECK_UVM: _ClassVar[RecommenedAction]
+    RESTART_BM: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
 NONE: RecommenedAction
 NODE_REBOOT: RecommenedAction
@@ -57,6 +59,8 @@ CHECK_THERMALS: RecommenedAction
 RESET_GPU: RecommenedAction
 CHECK_LINK_MECHANICAL_CONNECTIONS: RecommenedAction
 INVESTIGATE_LINK_SI: RecommenedAction
+CHECK_UVM: RecommenedAction
+RESTART_BM: RecommenedAction
 UNKNOWN: RecommenedAction
 
 class HealthEvents(_message.Message):

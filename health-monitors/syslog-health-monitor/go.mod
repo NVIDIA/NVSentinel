@@ -6,6 +6,7 @@ toolchain go1.23.4
 
 require (
 	github.com/coreos/go-systemd/v22 v22.5.0
+	github.com/golang/protobuf v1.5.4
 	github.com/stretchr/testify v1.10.0
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6

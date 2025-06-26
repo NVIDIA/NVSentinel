@@ -3,6 +3,7 @@ module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-event
 go 1.23.2
 
 require (
+	github.com/golang/protobuf v1.5.4
 	github.com/prometheus/client_golang v1.20.4
 	github.com/stretchr/testify v1.10.0
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250326070254-068ef4e9b24f

@@ -63,6 +63,11 @@ data:
     WORKFLOW_NVLINK_ERR = 13
     UPDATE_SWFW = 14
     RESTART_VM = 15
+    CHECK_THERMALS = 19
+    CHECK_FM_CONFIG = 18
+    RESTART_BM = 24
+    CHECK_UVM = 23
+
 
     [DCGMHealthConditionsCategorizationMapping]
     DCGM_HEALTH_WATCH_THERMAL=NonFatal
