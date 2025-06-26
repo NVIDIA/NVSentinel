@@ -120,6 +120,12 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 }
 
 func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+	// Skip custom resource creation if dry-run is enabled
+	if len(c.dryRunMode) > 0 {
+		log.Printf("DRY-RUN: Skipping custom resource creation for node %s", healthEvent.NodeName)
+		return true
+	}
+
 	log.Printf("Creating CR for node: %s", healthEvent.NodeName)
 	c.templateData.NodeName = healthEvent.NodeName
 	c.templateData.RecommendedAction = healthEvent.RecommendedAction

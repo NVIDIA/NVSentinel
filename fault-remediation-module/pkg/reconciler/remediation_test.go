@@ -245,6 +245,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 		dryRun        bool
 		shouldSucceed bool
 		expectedError bool
+		shouldCreate  bool
 	}{
 		{
 			name:          "Successful rebootnode creation",
@@ -252,21 +253,26 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			dryRun:        false,
 			shouldSucceed: true,
 			expectedError: false,
+			shouldCreate:  true,
 		},
 		{
-			name:          "Successful rebootnode creation with dry run",
+			name:          "Skip rebootnode creation with dry run",
 			nodeName:      "test-node-2",
 			dryRun:        true,
 			shouldSucceed: true,
 			expectedError: false,
+			shouldCreate:  false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			createCalled := false
+
 			// Create a fake dynamic client
 			mockClient := &MockDynamicClient{
 				createFunc: func(gvr schema.GroupVersionResource, obj *unstructured.Unstructured, opts metav1.CreateOptions) (*unstructured.Unstructured, error) {
+					createCalled = true
 					// Verify the rebootnode resource structure
 					assert.Equal(t, "janitor.dgxc.nvidia.com", gvr.Group)
 					assert.Equal(t, "v1alpha1", gvr.Version)
@@ -317,6 +323,7 @@ spec:
 			// Test CreateMaintenanceResource
 			result := client.CreateMaintenanceResource(context.Background(), healthEvent)
 			assert.Equal(t, tt.shouldSucceed, result)
+			assert.Equal(t, tt.shouldCreate, createCalled, "Create function should only be called when not in dry-run mode")
 		})
 	}
 }
