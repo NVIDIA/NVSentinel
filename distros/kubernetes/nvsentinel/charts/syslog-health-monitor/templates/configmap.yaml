@@ -34,6 +34,7 @@ data:
         tags: []
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
+        recommended_action: REPORT_ISSUE
 
       - name: "SysLogsBMCHealth"
         matches:
@@ -43,6 +44,8 @@ data:
         tags: [] # Assuming empty if not specified, original snippet doesn't show for this
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
+        recommended_action: REPORT_ISSUE
+
       - name: "SysLogsGPUMissing"
         matches:
           - 'GPU has fallen off the bus'
@@ -51,6 +54,17 @@ data:
         tags: [] # Assuming empty if not specified
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
+        recommended_action: NODE_REBOOT
+
+      - name: "SysLogsXidError"
+        matches:
+          - 'Xid .* waiting for RPC response from GPU'
+        count: 0
+        ignoreCase: true
+        tags: [] # Assuming empty if not specified
+        journalPath: "/nvsentinel/var/log/journal/"
+        boot: false
+        recommended_action: NODE_REBOOT
 
       - name: "SysLogshcaFwError"
         matches:
@@ -60,6 +74,7 @@ data:
         tags: [] # Assuming empty if not specified
         journalPath: "/nvsentinel/var/log/journal/" # Original snippet does not specify path for this one. Defaulting to empty.
         boot: false
+        recommended_action: REPORT_ISSUE
 
       - name: "SysLogsIbFirmwareBug"
         matches:
@@ -69,6 +84,7 @@ data:
         tags: [] # Assuming empty if not specified
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
+        recommended_action: REPORT_ISSUE
 
       - name: "SysLogsMceErrors"
         matches:
@@ -78,7 +94,8 @@ data:
         tags: [] # Assuming empty if not specified
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
- 
+        recommended_action: REPORT_ISSUE
+
       - name: "SysLogsNvidiaFabricmanager"
         matches:
           - "Failed to find GPU"
@@ -90,6 +107,7 @@ data:
           - "-u nv-fabricmanager.service"
         journalPath: "/nvsentinel/var/log/journal/"
         boot: true
+        recommended_action: NODE_REBOOT
 
       - name: "SysLogsNvidiaPersistenced"
         matches:
@@ -101,3 +119,4 @@ data:
           - "-u nvidia-persistenced.service"
         journalPath: "/nvsentinel/var/log/journal/"
         boot: true
+        recommended_action: REPORT_ISSUE

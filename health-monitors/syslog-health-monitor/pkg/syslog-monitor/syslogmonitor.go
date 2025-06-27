@@ -51,7 +51,7 @@ const (
 
 // syslogMonitorState represents the persistent state of the syslog monitor
 type syslogMonitorState struct {
-	Version           int               `json:"version"`
+	Version          int               `json:"version"`
 	BootID           string            `json:"boot_id"`
 	CheckLastCursors map[string]string `json:"check_last_cursors"`
 }
@@ -83,7 +83,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 		if os.IsNotExist(err) {
 			// Return default state for first run
 			return syslogMonitorState{
-				Version:           stateFileVersion,
+				Version:          stateFileVersion,
 				BootID:           "",
 				CheckLastCursors: make(map[string]string),
 			}, nil
@@ -95,7 +95,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 	if len(data) == 0 {
 		klog.Warningf("State file %s exists but is empty, treating as non-existent", stateFilePath)
 		return syslogMonitorState{
-			Version:           stateFileVersion,
+			Version:          stateFileVersion,
 			BootID:           "",
 			CheckLastCursors: make(map[string]string),
 		}, nil
@@ -104,7 +104,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		klog.Warningf("State file %s is corrupted: %v, resetting to default state", stateFilePath, err)
 		return syslogMonitorState{
-			Version:           stateFileVersion,
+			Version:          stateFileVersion,
 			BootID:           "",
 			CheckLastCursors: make(map[string]string),
 		}, nil
@@ -171,7 +171,6 @@ func NewSyslogMonitor(nodeName string, checks []common.CheckDefinition, pcClient
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
 func NewSyslogMonitorWithFactory(nodeName string, checks []common.CheckDefinition, pcClient pb.PlatformConnectorClient, defaultAgentName string, defaultComponentClass string, pollingInterval string, stateFilePath string, journalFactory JournalFactory) (*SyslogMonitor, error) {
-	
 	// Load state from file
 	state, err := loadState(stateFilePath)
 	if err != nil {
@@ -209,52 +208,51 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []common.CheckDefinitio
 
 // handleBootIDChange handles system reboot detection and cursor reset
 func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
-	if oldBootID != newBootID && oldBootID != "" {
+	if oldBootID != newBootID {
 		klog.Infof("Detected bootID change. Old bootID: %s, New bootID: %s", oldBootID, newBootID)
-		
+
 		// Clear all cursors on reboot since journal cursors become invalid
 		for checkName := range sm.checkLastCursors {
 			delete(sm.checkLastCursors, checkName)
 		}
-		
+
 		// Save updated state
 		state := syslogMonitorState{
-			Version:           stateFileVersion,
+			Version:          stateFileVersion,
 			BootID:           newBootID,
 			CheckLastCursors: sm.checkLastCursors,
 		}
-		
+
 		if err := saveState(sm.stateFilePath, state); err != nil {
 			return fmt.Errorf("failed to save state after boot ID change: %w", err)
 		}
-		
+
 		klog.Info("Cleared all cursors due to system reboot")
-	} else if oldBootID == "" {
-		// First run, save current boot ID
-		state := syslogMonitorState{
-			Version:           stateFileVersion,
-			BootID:           newBootID,
-			CheckLastCursors: sm.checkLastCursors,
+
+		// Publish healthy events for all checks after a reboot
+		if sm.pcClient != nil {
+			for _, check := range sm.checks {
+				message := "No Health Failures"
+				healthEvents := sm.prepareHealthEvent(check, message, true, false)
+				sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
+				klog.Infof("Published healthy event for check '%s' after system reboot", check.Name)
+			}
+		} else {
+			klog.Warningf("Platform connector client is nil, cannot send healthy events after reboot")
 		}
-		
-		if err := saveState(sm.stateFilePath, state); err != nil {
-			return fmt.Errorf("failed to save initial state: %w", err)
-		}
-		
-		klog.Infof("Initialized state with boot ID: %s", newBootID)
 	}
-	
+
 	return nil
 }
 
 // saveCurrentState saves the current state to the state file
 func (sm *SyslogMonitor) saveCurrentState() error {
 	state := syslogMonitorState{
-		Version:           stateFileVersion,
+		Version:          stateFileVersion,
 		BootID:           sm.currentBootID,
 		CheckLastCursors: sm.checkLastCursors,
 	}
-	
+
 	return saveState(sm.stateFilePath, state)
 }
 
@@ -443,7 +441,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, patterns []*rege
 		if errPrev != nil && errPrev != io.EOF {
 			return nil, fmt.Errorf("seek previous: %w", errPrev)
 		}
-		if count == 0 {                 // journal is empty
+		if count == 0 { // journal is empty
 			klog.Infof("Check %q: journal empty, nothing to do", check.Name)
 			return nil, nil
 		}
@@ -660,6 +658,22 @@ func (sm *SyslogMonitor) getCurrentBootID() string {
 func (sm *SyslogMonitor) prepareHealthEvent(check common.CheckDefinition, message string, isHealthy bool, isFatal bool) *pb.HealthEvents {
 	klog.Infof("Preparing health event for check '%s': Message: %s, Healthy: %t, Fatal: %t", check.Name, message, isHealthy, isFatal)
 
+	// Default to REPORT_ISSUE if RecommendedAction is not specified
+	recommendedAction := pb.RecommenedAction_REPORT_ISSUE
+
+	// Parse the RecommendedAction from the check definition if it's specified
+	if check.RecommendedAction != "" {
+		switch check.RecommendedAction {
+		case "NODE_REBOOT":
+			recommendedAction = pb.RecommenedAction_NODE_REBOOT
+		case "REPORT_ISSUE":
+			recommendedAction = pb.RecommenedAction_REPORT_ISSUE
+		default:
+			klog.Warningf("Unknown RecommendedAction '%s' for check '%s', defaulting to REPORT_ISSUE",
+				check.RecommendedAction, check.Name)
+		}
+	}
+
 	event := &pb.HealthEvent{
 		Version:            1,
 		Agent:              sm.defaultAgentName,
@@ -671,7 +685,7 @@ func (sm *SyslogMonitor) prepareHealthEvent(check common.CheckDefinition, messag
 		IsFatal:            isFatal,
 		IsHealthy:          isHealthy,
 		NodeName:           sm.nodeName,
-		RecommendedAction:  pb.RecommenedAction_REPORT_ISSUE,
+		RecommendedAction:  recommendedAction,
 	}
 	return &pb.HealthEvents{
 		Version: 1,

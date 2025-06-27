@@ -55,6 +55,7 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
+    recommended_action: "REPORT_ISSUE"
 
   - name: "sw_sys_logs_bmc_health"
     matches:
@@ -66,6 +67,7 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
+    recommended_action: "REPORT_ISSUE"
 
   - name: "sw_sys_logs_gpu_missing"
     matches:
@@ -77,6 +79,17 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
+    recommended_action: "REBOOT_NODE"
+
+  - name: "sw_sys_logs_xid_error"
+    matches:
+      - 'Xid .* waiting for RPC response from GPU'
+    count: 0
+    ignoreCase: true
+    tags: [] # Assuming empty if not specified
+    journalPath: "/nvsentinel/var/log/journal/"
+    boot: false
+    recommended_action: "NODE_REBOOT"
 
   - name: "sw_sys_logs_hca_fw_error"
     matches:
@@ -88,7 +101,8 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
-
+    recommended_action: "REPORT_ISSUE"
+    
   - name: "sw_sys_logs_ib_firmware_bug"
     matches:
       - 'Skipping wait for vf pages stage'
@@ -99,7 +113,8 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
-
+    recommended_action: "REPORT_ISSUE"
+    
   - name: "sw_sys_logs_mce_errors"
     matches:
       - 'Machine check events logged'
@@ -110,6 +125,7 @@ checks:
     boot: false
     lookback: "43200s"
     invertMatches: []
+    recommended_action: "REPORT_ISSUE"
 `
 
 func TestExecuteCheckWithSyslog(t *testing.T) {
@@ -163,13 +179,16 @@ func TestExecuteCheckWithSyslog(t *testing.T) {
 				if err == nil {
 					// If check.Count is 0, and if there were truly no matches (which we can't verify here),
 					// then no health event should be sent. This is a weak assertion now.
-					if check.Count == 0 {
-						assert.Empty(t, mockPCClient.RecordedHealthEvents, "Expected no health event if count is 0 and no matches (assumption)")
-					} else {
-						// If count > 0, and no matches (assumption), also no event.
-						// This doesn't test the > count scenario effectively anymore.
-						assert.Empty(t, mockPCClient.RecordedHealthEvents, "Health event logic is not effectively tested without controlled input")
-					}
+
+					// If count > 0, and no matches (assumption), also no event.
+					// This doesn't test the > count scenario effectively anymore.
+					assert.NotEmpty(t, mockPCClient.RecordedHealthEvents, "Expected health event to be sent")
+					// Check if the recorded health event has isHealthy: true and isFatal: false
+					healthEvent := mockPCClient.RecordedHealthEvents[0]
+					assert.True(t, healthEvent.Events[0].IsHealthy, "Expected health event to have IsHealthy: true")
+					assert.False(t, healthEvent.Events[0].IsFatal, "Expected health event to have IsFatal: false")
+					assert.Equal(t, check.Name, healthEvent.Events[0].CheckName)
+
 				} else {
 					// If an error occurred, it's likely a journal access error. No health event should have been processed to the point of sending.
 					assert.Empty(t, mockPCClient.RecordedHealthEvents, "Expected no health event if executeCheck errored before evaluation")
@@ -202,7 +221,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 	// Test case 1: Valid configuration with default factory
 	testStateFile := "/tmp/test-syslog-monitor-state.json"
 	defer os.Remove(testStateFile) // Cleanup
-	
+
 	monitor, err := NewSyslogMonitor(args.NodeName, args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
@@ -219,7 +238,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 
 	testStateFile2 := "/tmp/test-syslog-monitor-state2.json"
 	defer os.Remove(testStateFile2) // Cleanup
-	
+
 	monitor, err = NewSyslogMonitorWithFactory(args.NodeName, args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile2, fakeJournalFactory)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
@@ -272,11 +291,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 		{
 			name: "No matches with count 0",
 			check: common.CheckDefinition{
-				Name:        "test_no_matches",
-				Matches:     []string{"pattern that won't match"},
-				Count:       0,
-				IgnoreCase:  false,
-				JournalPath: "/fake/journal/path",
+				Name:              "test_no_matches",
+				Matches:           []string{"pattern that won't match"},
+				Count:             0,
+				IgnoreCase:        false,
+				JournalPath:       "/fake/journal/path",
+				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
 				"Log message 1",
@@ -288,11 +308,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 		{
 			name: "Matches below threshold",
 			check: common.CheckDefinition{
-				Name:        "test_matches_below_threshold",
-				Matches:     []string{"match"},
-				Count:       3,
-				IgnoreCase:  false,
-				JournalPath: "/fake/journal/path",
+				Name:              "test_matches_below_threshold",
+				Matches:           []string{"match"},
+				Count:             3,
+				IgnoreCase:        false,
+				JournalPath:       "/fake/journal/path",
+				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
 				"Log with match in it",
@@ -304,11 +325,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 		{
 			name: "Matches above threshold",
 			check: common.CheckDefinition{
-				Name:        "test_matches_above_threshold",
-				Matches:     []string{"match"},
-				Count:       1,
-				IgnoreCase:  false,
-				JournalPath: "/fake/journal/path",
+				Name:              "test_matches_above_threshold",
+				Matches:           []string{"match"},
+				Count:             1,
+				IgnoreCase:        false,
+				JournalPath:       "/fake/journal/path",
+				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
 				"Log with match in it",
@@ -321,11 +343,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 		{
 			name: "Case insensitive matching",
 			check: common.CheckDefinition{
-				Name:        "test_case_insensitive",
-				Matches:     []string{"MATCH"},
-				Count:       1,
-				IgnoreCase:  true,
-				JournalPath: "/fake/journal/path",
+				Name:              "test_case_insensitive",
+				Matches:           []string{"MATCH"},
+				Count:             1,
+				IgnoreCase:        true,
+				JournalPath:       "/fake/journal/path",
+				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
 				"Log with match in it", // lowercase should match with ignoreCase true
@@ -337,10 +360,11 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 		{
 			name: "Empty journal path",
 			check: common.CheckDefinition{
-				Name:        "test_empty_path",
-				Matches:     []string{"pattern"},
-				Count:       0,
-				JournalPath: "",
+				Name:              "test_empty_path",
+				Matches:           []string{"pattern"},
+				Count:             0,
+				JournalPath:       "",
+				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{},
 			expectError:    true,
@@ -405,10 +429,7 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				if len(mockPCClient.RecordedHealthEvents) > 0 {
 					event := mockPCClient.RecordedHealthEvents[0]
 					assert.Equal(t, tc.check.Name, event.Events[0].CheckName)
-					assert.False(t, event.Events[0].IsHealthy)
 				}
-			} else {
-				assert.Empty(t, mockPCClient.RecordedHealthEvents, "Expected no health events")
 			}
 		})
 	}

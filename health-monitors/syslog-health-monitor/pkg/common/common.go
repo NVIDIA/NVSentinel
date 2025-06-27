@@ -15,13 +15,14 @@ package common
 
 // CheckDefinition matches the structure of each check in the YAML config file
 type CheckDefinition struct {
-	Name          string   `yaml:"name"`
-	Matches       []string `yaml:"matches"`
-	Count         int      `yaml:"count"`
-	IgnoreCase    bool     `yaml:"ignoreCase"`
-	Tags          []string `yaml:"tags"`
-	JournalPath   string   `yaml:"journalPath"`
-	Boot          bool     `yaml:"boot"`
-	Lookback      string   `yaml:"lookback"`
-	InvertMatches []string `yaml:"invertMatches"`
+	Name              string   `yaml:"name"`
+	Matches           []string `yaml:"matches"`
+	Count             int      `yaml:"count"`
+	IgnoreCase        bool     `yaml:"ignoreCase"`
+	Tags              []string `yaml:"tags"`
+	JournalPath       string   `yaml:"journalPath"`
+	Boot              bool     `yaml:"boot"`
+	Lookback          string   `yaml:"lookback"`
+	InvertMatches     []string `yaml:"invertMatches"`
+	RecommendedAction string   `yaml:"recommended_action"`
 }
