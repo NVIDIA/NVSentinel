@@ -31,8 +31,8 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
             "Check daemonset exist and is running and healthy on all GPU nodes."
         )
         daemonset_to_check = ["nvidia-dcgm-exporter", "nvidia-dcgm"]
-        daemonsets, _ = self.client.list_daemonset(namespace="gpu-operator")
-        assert daemonsets, "ERROR: No resources found in gpu-operator namespace."
+        daemonsets, _ = self.client.list_daemonset(namespace=self.gpu_operator_namespace)
+        assert daemonsets, f"ERROR: No resources found in {self.gpu_operator_namespace} namespace."
         daemonset_list = [daemonset.metadata.name for daemonset in daemonsets]
         for target_ademonset in daemonset_to_check:
             self.logger.info(f"Daemonset Name:{target_ademonset}")
@@ -56,21 +56,16 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
 
         self.step_manager.print_header("Scale deployment gpu-operator to be 0")
 
-        self.client.scale_deployment("gpu-operator", 0, namespace="gpu-operator")
-        request.addfinalizer(
-            partial(self.client.scale_deployment, "gpu-operator", 1, "gpu-operator")
-        )
-
         self.step_manager.print_header("Change the port of the DCGM service")
         self.client.patch_custom_resource(
             "svc",
             "nvidia-dcgm",
-            "gpu-operator",
+            self.gpu_operator_namespace,
             [{"op": "replace", "path": "/spec/ports/0/targetPort", "value": 1555}],
         )
 
         self.logger.info("Check the port is updated succesfully")
-        svc_yaml, _ = self.client.get_service_yaml("gpu-operator", "nvidia-dcgm")
+        svc_yaml, _ = self.client.get_service_yaml(self.gpu_operator_namespace, "nvidia-dcgm")
         ports = svc_yaml.get("spec", {}).get("ports", [])
         for port in ports:
             if port.get("targetPort"):
@@ -91,7 +86,7 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
         self.step_manager.print_header(
             "Login into one nvidia-dcgm pod of a gpu node and try to inject error"
         )
-        pods, _ = self.client.list_pods("gpu-operator", name_pattern="nvidia-dcgm-.*")
+        pods, _ = self.client.list_pods(self.gpu_operator_namespace, name_pattern="nvidia-dcgm-.*")
         dcgm_pod = next(
             (
                 pod
@@ -106,7 +101,7 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 230 -v 43",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 230 -v 43",
         ]
         output, _ = self.client.exec_command_in_pod(dcgm_pod, command)
         keywords = [
@@ -173,8 +168,6 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
             else:
                 time.sleep(30)
 
-        self.step_manager.print_header("Recover gpu-operator deployment")
-        self.client.scale_deployment("gpu-operator", 1, namespace="gpu-operator")
 
         self.step_manager.print_header(
             "Inject a GpuXid non-fatal error on the node where the gpu monitor restarted"
@@ -182,7 +175,7 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 230 -v 43",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 230 -v 43",
         ]
         output, _ = self.client.exec_command_in_pod(
             new_pod,
@@ -220,11 +213,11 @@ class TestGPUHealthMonitorWaitingForDCGM(GPUHealthMonitorBase):
         self.client.patch_custom_resource(
             "svc",
             "nvidia-dcgm",
-            "gpu-operator",
+            self.gpu_operator_namespace,
             '[{"op": "replace", "path": "/spec/ports/0/targetPort", "value":5555}]',
         )
         self.logger.info("Check the port is updated succesfully")
-        svc_yaml, _ = self.client.get_service_yaml("gpu-operator", "nvidia-dcgm")
+        svc_yaml, _ = self.client.get_service_yaml(self.gpu_operator_namespace, "nvidia-dcgm")
         ports = svc_yaml.get("spec", {}).get("ports", [])
         for port in ports:
             if port.get("targetPort"):

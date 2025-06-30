@@ -15,7 +15,7 @@
 import pytest
 import logging
 import os
-import yaml
+import subprocess
 import time
 from testcases.utils.kubernetes_utils import KubernetesClient
 
@@ -32,26 +32,46 @@ def nvsentinel_autosync_disabled_enabled():
     1. Disable auto-sync for mk8s, nvsentinel, and gpu-operator when nvsentinel tests begin
     2. Enable auto-sync for these applications after all nvsentinel tests in the package complete
     """
+
+    tenant_context = os.getenv("TENANT_KUBE_CONTEXT")
+    tenant_profile = os.getenv("TENANT_CSP_PROFILE")
+    nmc_context = os.getenv("NMC_KUBE_CONTEXT")
+    nmc_profile = os.getenv("NMC_CSP_PROFILE")
+    cloud_provider = os.getenv("CLOUD_PROVIDER")
+
+    if nmc_context:
+        switch_context(nmc_context, nmc_profile, cloud_provider)
+        nvsentinel_app = "nmc-runtime-tenant"
+        gpu_operator_app = "gpu-operator-tenant"
+        nvsentinel_namespace = "dgxc-system"
+    else:
+        logger.info("No NMC context found, skipping context switch")
+        gpu_operator_app = "gpu-operator"
+        nvsentinel_app = "nvsentinel"
+        nvsentinel_namespace = "nvsentinel"
+
     client = KubernetesClient()
     logger.info("Setting up nvsentinel auto-sync control")
 
     try:
         # Setup - disable auto-sync
-        logger.info("Disabling auto-sync for mk8s, nvsentinel, and gpu-operator")
-        apps = ["mk8s", "nvsentinel", "gpu-operator"]
+        logger.info(f"Disabling auto-sync for mk8s, {nvsentinel_app}, and {gpu_operator_app}")
+        apps = ["mk8s", nvsentinel_app, gpu_operator_app]
         for app in apps:
             result = client.disable_argocd_auto_sync(app)
             if not result.values[0]:
                 logger.warning(f"Failed to disable auto-sync for {app}: {result.values[1]}")
             else:
                 logger.info(f"Successfully disabled auto-sync for {app}")
+        if tenant_context:
+            switch_context(tenant_context, tenant_profile, cloud_provider)
         time.sleep(60)
         yield  # Run nvsentinel package tests
 
     finally:
         # Cleanup - enable auto-sync and trigger sync
         client = KubernetesClient()
-        logger.info("Enabling auto-sync for mk8s, nvsentinel, and gpu-operator")
+        logger.info(f"Enabling auto-sync for mk8s, {nvsentinel_app}, and {gpu_operator_app}")
         for app in apps:
             try:
                 # Enable auto-sync
@@ -72,11 +92,26 @@ def nvsentinel_autosync_disabled_enabled():
                     logger.info(f"Successfully triggered sync for {app}")
             except Exception as e:
                 logger.error(f"Error in cleanup operations for {app}: {e}")
+        if tenant_context:
+            switch_context(tenant_context, tenant_profile, cloud_provider)
+            client = KubernetesClient()
+
         client.rollout_daemonset(
-            "nvsentinel-gpu-health-monitor-dcgm-3.x", namespace="nvsentinel"
+            "nvsentinel-gpu-health-monitor-dcgm-3.x", namespace=nvsentinel_namespace
         )
-        client.rollout_daemonset("nvsentinel-nic-health-monitor", namespace="nvsentinel")
+        client.rollout_daemonset("nvsentinel-nic-health-monitor", namespace=nvsentinel_namespace)
         client.rollout_daemonset(
-            "nvsentinel-nvswitch-health-monitor", namespace="nvsentinel"
+            "nvsentinel-nvswitch-health-monitor", namespace=nvsentinel_namespace
         )
-        client.rollout_daemonset("nvsentinel-platform-connector", namespace="nvsentinel")
+        client.rollout_daemonset("nvsentinel-platform-connector", namespace=nvsentinel_namespace)
+
+def switch_context(context_name, profile_name, cloud_provider):
+    """Helper to switch both kubectl context and CSP profile"""
+    # Switch kubectl context
+    subprocess.run(['kubectl', 'config', 'use-context', context_name], check=True)
+    logger.info(f"Switched to context (from the code): {context_name}")
+    # Switch CSP profile
+    if cloud_provider == 'gcp':
+        subprocess.run(['gcloud', 'config', 'configurations', 'activate', profile_name], check=True)
+    elif cloud_provider == 'aws':
+        os.environ['AWS_PROFILE'] = profile_name

@@ -54,7 +54,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
         self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Backup the default fault quarantine config map")
         self.client.backup_configmap(
-            "nvsentinel", "fault-quarantine-config", self.backup_cm
+            self.nv_namespace, "fault-quarantine-config", self.backup_cm
         )
 
         self.step_manager.print_header("Redeploy fault quarantine with a new config map of max cordon")

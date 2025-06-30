@@ -45,7 +45,7 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 84 -v 0",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 84 -v 0",
         ]
         output, _ = self.client.exec_command_in_pod(gpu_monitor_pod, command)
         assert "Successfully injected" in output, f"Failed to inject Error: {output}"
@@ -54,7 +54,7 @@ class TestDGCMHealthyCheckInfoROMError(GPUHealthMonitorBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 84 -v 1",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 84 -v 1",
         ]
         request.addfinalizer(
             partial(self.client.exec_command_in_pod, gpu_monitor_pod, command)

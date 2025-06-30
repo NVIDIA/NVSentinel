@@ -49,7 +49,7 @@ class TestDGCMHealthyCheckThermalWatch(GPUHealthMonitorBase):
             command = [
                 "/bin/sh",
                 "-c",
-                "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 241 -v 30000",
+                 f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 241 -v 30000",
             ]
             output, _ = self.client.exec_command_in_pod(job_pod, command)
             if "Successfully injected" in output:

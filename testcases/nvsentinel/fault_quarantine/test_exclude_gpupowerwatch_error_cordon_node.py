@@ -42,7 +42,7 @@ class TestExcludeGPUPowerWatchError(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 240 -v 1000",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 240 -v 1000",
         ]
         output, _ = self.client.exec_command_in_pod(
             pod=gpu_health_monitor_pod, command=command

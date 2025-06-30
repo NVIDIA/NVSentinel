@@ -32,7 +32,7 @@ class TestMultiNvswitchErrors(NVSwitchHealthMonitorBase):
         Test case of NVsentinel NV Switch Health Monitor: Multi NVswitch errors
         """
         self.client.rollout_daemonset(
-            "nvsentinel-nvswitch-health-monitor", namespace="nvsentinel"
+            "nvsentinel-nvswitch-health-monitor", namespace=self.nv_namespace
         )
         time.sleep(10)
         self.step_manager.print_header(

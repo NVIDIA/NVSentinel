@@ -34,19 +34,28 @@ class TestNVSentinelCaseBase(Base):
     daemonset_name = ""
     node_name = ""
     MONGO_URI = "mongodb://CN%3Dmongo-user-client%2COU%3DDGXC%2CO%3DNvidia%2CL%3DSantaClara%2CST%3DCalifornia%2CC%3DUS@nvsentinel-mongodb-0.nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/HealthEventsDatabase?authMechanism=MONGODB-X509&authSource=$external&tls=true"
+    nmc_context = os.getenv("NMC_KUBE_CONTEXT")
+    if nmc_context:
+        nv_namespace = "dgxc-system"
+        gpu_operator_namespace = "dgxc-system"
+        prometheus_namespace = "dgxc-system"
+    else:
+        nv_namespace = "nvsentinel"
+        gpu_operator_namespace = "gpu-operator"
+        prometheus_namespace = "prometheus"
 
     @pytest.fixture(autouse=True)
     def setup_runai_test(self):
         time.sleep(10)
         self.default_namespace = "runai-" + self.project
-        self.nv_namespace = "nvsentinel"
+
         self.client = KubernetesClient()
         self.pod_logs = []
         self.debug_pod = None
         self.gpu_healthy_node = None
         self.gpu_healthy_pods = []
         self.node_name = None
-        pods, _ = self.client.list_pods("nvsentinel", name_pattern="mongo-client-pod")
+        pods, _ = self.client.list_pods(self.nv_namespace, name_pattern="mongo-client-pod")
         if pods:  # clean up existing debug pod before testing
             self.client.delete_pod(pod=pods[-1])
         try:
@@ -477,14 +486,14 @@ class TestNVSentinelCaseBase(Base):
         # Check if a port-forward process is already running
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             if 'kubectl' in proc.info['name'] and 'port-forward' in proc.info['cmdline']:
-                if 'service/prometheus-prometheus' in proc.info['cmdline'] and '-n' in proc.info['cmdline'] and 'prometheus' in proc.info['cmdline']:
+                if 'service/prometheus-prometheus' in proc.info['cmdline'] and '-n' in proc.info['cmdline'] and self.prometheus_namespace in proc.info['cmdline']:
                     print("Port forwarding is already running.")
                     return
 
         # If no existing process is found, start a new one
         try:
             result = subprocess.run(
-                ["kubectl", "port-forward", "service/prometheus-prometheus", "-n", "prometheus", "9090:9090"],
+                ["kubectl", "port-forward", "service/prometheus-prometheus", "-n", self.prometheus_namespace, "9090:9090"],
                 check=True,
                 capture_output=True,
                 text=True
@@ -506,7 +515,7 @@ class TestNVSentinelCaseBase(Base):
         output_message, _ = self.client.get_crd(
             api_group="monitoring.coreos.com",
             api_version="v1",
-            namespace="nvsentinel",
+            namespace=self.nv_namespace,
             resource_plural="podmonitors",
             resource_name="podmonitors"
         )
@@ -517,7 +526,7 @@ class TestNVSentinelCaseBase(Base):
             "Get the svc cluster IP of prometheus-prometheus svc in prometheus namespace"
         )
         services, _ = self.client.list_services(
-            namespace="prometheus",
+            namespace=self.prometheus_namespace,
             name_pattern="prometheus-prometheus"
         )
         self.logger.info(f"services = {services}")
@@ -632,7 +641,7 @@ class TestNVSentinelCaseBase(Base):
 
     def get_fault_quarantine_pod(self):
         pods, _ = self.client.list_pods(
-            "nvsentinel", name_pattern="nvsentinel-fault-quarantine*"
+            self.nv_namespace, name_pattern="nvsentinel-fault-quarantine*"
         )
         fault_quarantine_pod = pods[0]
         return fault_quarantine_pod
@@ -643,12 +652,12 @@ class TestNVSentinelCaseBase(Base):
 
     def get_fault_quarantine_pod_log(self):
         fault_quarantine_pod = self.get_fault_quarantine_pod()
-        logs, _ = self.client.get_pod_logs("nvsentinel", fault_quarantine_pod.metadata.name)
+        logs, _ = self.client.get_pod_logs(self.nv_namespace, fault_quarantine_pod.metadata.name)
         return logs
 
     def get_node_drainer_pod(self):
         pods, _ = self.client.list_pods(
-            "nvsentinel", name_pattern="nvsentinel-node-drainer*"
+            self.nv_namespace, name_pattern="nvsentinel-node-drainer*"
         )
         node_drainer_pod = pods[0]
         return node_drainer_pod
@@ -673,7 +682,7 @@ class TestNVSentinelCaseBase(Base):
     def get_node_drainer_pod_log(self):
         node_drainer_pod = self.get_node_drainer_pod()
         logs, _ = self.client.get_pod_logs(
-            "nvsentinel", node_drainer_pod.metadata.name
+            self.nv_namespace, node_drainer_pod.metadata.name
         )
         return logs
 
@@ -884,7 +893,7 @@ class TestNVSentinelCaseBase(Base):
 
     def get_platform_connector_by_node_name(self, node_name):
         pods, _ = self.client.list_pods(
-            "nvsentinel", name_pattern="nvsentinel-platform-connector*"
+            self.nv_namespace, name_pattern="nvsentinel-platform-connector*"
         )
         for pod in pods:
             if pod.spec.node_name == node_name:
@@ -968,7 +977,7 @@ class TestNVSentinelCaseBase(Base):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 0",
         ]
         output, _ = self.client.exec_command_in_pod(pod, command)
         assert "Successfully injected" in output
@@ -977,7 +986,7 @@ class TestNVSentinelCaseBase(Base):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 1",
         ]
         output, _ = self.client.exec_command_in_pod(pod, command)
         assert "Successfully injected" in output

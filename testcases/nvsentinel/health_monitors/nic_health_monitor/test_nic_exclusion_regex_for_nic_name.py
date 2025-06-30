@@ -122,7 +122,7 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
         backup_cm = "backup_nic_monitor_cm.yaml"
         modified_cm = "nic_regex_cm.yaml"
         self.client.backup_configmap(
-            "nvsentinel", "nvsentinel-nic-health-monitor", backup_cm
+            self.nv_namespace, "nvsentinel-nic-health-monitor", backup_cm
         )
         with open(backup_cm, "r") as f:
             config_data = yaml.safe_load(f)

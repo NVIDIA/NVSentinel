@@ -202,7 +202,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 0",
         ]
         self.client.exec_command_in_pod(gpu_health_monitor_pod, command=command)
 
@@ -234,7 +234,7 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 1",
         ]
         self.client.exec_command_in_pod(gpu_health_monitor_pod, command=command)
         success, error = self.client.check_node_ready(self.node_name)

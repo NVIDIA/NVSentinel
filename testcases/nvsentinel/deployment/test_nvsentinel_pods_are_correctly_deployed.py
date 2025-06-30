@@ -26,7 +26,7 @@ class TestPodsAreCorrectlyDeployed(TestNVSentinelCaseBase):
         """
         Tests if all NVsentinel pods are correctly deployed and running
         """
-        self.logger.print_header("Check namespace nvsentinel exist")
+        self.logger.print_header(f"Check namespace {self.nv_namespace} exist")
         namespaces, _ = self.client.list_namespaces()
         namespace_names = [namespace.metadata.name for namespace in namespaces]
         self.logger.info(namespace_names)
@@ -98,6 +98,11 @@ class TestPodsAreCorrectlyDeployed(TestNVSentinelCaseBase):
         assert pods, f"ERROR: No resources found in {self.nv_namespace} namespace."
         number = 0
         for pod in pods:
+
+            # This check is specific for NMC cluster where we're using dgxc-system namespace
+            # for the entire stack
+            if not pod.metadata.name.startswith("nvsentinel"):
+                continue
             pod_state = pod.status.phase
             self.logger.info(f"pod name: {pod.metadata.name}")
             self.logger.info(f"Status: {pod_state}")

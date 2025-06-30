@@ -94,7 +94,7 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 0",
         ]
 
         output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
@@ -116,7 +116,7 @@ class TestFaultRemediation(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 1",
         ]
         output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
         assert "Successfully injected" in output, "Failed to inject GPU error"

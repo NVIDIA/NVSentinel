@@ -80,6 +80,7 @@ class TestNVsentinelGPUHealthMonitorGpuOperatorIntegration(GPUHealthMonitorBase)
             node_selector_terms = pod_body["spec"]["affinity"]["nodeAffinity"][
                 "requiredDuringSchedulingIgnoredDuringExecution"
             ]["nodeSelectorTerms"]
+            pod_body["metadata"]["namespace"] = self.nv_namespace
             for term in node_selector_terms:
                 for match_field in term["matchFields"]:
                     if (
@@ -128,7 +129,7 @@ class TestNVsentinelGPUHealthMonitorGpuOperatorIntegration(GPUHealthMonitorBase)
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 0",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 0",
         ]
         output, _ = self.client.exec_command_in_pod(
             gpu_monitor_pod,
@@ -139,7 +140,7 @@ class TestNVsentinelGPUHealthMonitorGpuOperatorIntegration(GPUHealthMonitorBase)
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 84 -v 1",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 1",
         ]
         request.addfinalizer(
             partial(self.client.exec_command_in_pod, gpu_monitor_pod, command)

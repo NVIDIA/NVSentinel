@@ -52,7 +52,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         self.skip_if_fault_quarantine_deployment_not_found()
         self.step_manager.print_header("Backup the default fault quarantine config map")
         self.client.backup_configmap(
-            "nvsentinel", "fault-quarantine-config", self.backup_cm
+            self.nv_namespace, "fault-quarantine-config", self.backup_cm
         )
 
         self.step_manager.print_header(
@@ -65,7 +65,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         self.logger.info("Restart the fault-quarantine pod")
         self.delete_fault_quarantine_pod()
         time.sleep(30)
-        cm, _ = self.client.get_configmap("nvsentinel", "fault-quarantine-config")
+        cm, _ = self.client.get_configmap(self.nv_namespace, "fault-quarantine-config")
         assert "Higher priority than Rule 1" in str(cm.data)
 
         pods, _ = self.client.list_pods(
@@ -86,7 +86,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
             command = [
                 "/bin/sh",
                 "-c",
-                f"dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v {errorcode}",
+                f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 230 -v {errorcode}",
             ]
             output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
             assert "Successfully injected" in output
@@ -116,7 +116,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 230 -v 153",
+            f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 230 -v 153",
         ]
         output, _ = self.client.exec_command_in_pod(self.gpu_healthy_pod, command)
         assert "Successfully injected" in output

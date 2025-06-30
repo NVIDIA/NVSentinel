@@ -47,7 +47,7 @@ class TestGPUMonitorMetric(TestNVSentinelCaseBase):
         command = [
             "/bin/sh",
             "-c",
-            "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 0 -f 230 -v 43",
+             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 230 -v 43",
         ]
         output, _ = self.client.exec_command_in_pod(job_pod, command)
         assert "Successfully injected" in output, f"Failed to inject GpuXid Error: {output}"

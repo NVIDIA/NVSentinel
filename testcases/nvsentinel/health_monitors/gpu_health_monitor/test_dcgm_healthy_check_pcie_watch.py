@@ -48,7 +48,7 @@ class TestDGCMHealthyCheckPcieWatch(GPUHealthMonitorBase):
             command = [
                 "/bin/sh",
                 "-c",
-                "dcgmi test --host nvidia-dcgm.gpu-operator.svc:5555 --inject --gpuid 1 -f 202 -v 99999",
+                 f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 1 -f 202 -v 99999",
             ]
             output, _ = self.client.exec_command_in_pod(job_pod, command)
             assert output and "Successfully injected" in output, f"Failed to inject Error: {output}"
