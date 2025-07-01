@@ -505,9 +505,9 @@ func main() {
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time:                10 * time.Second, // Send pings every 10 seconds
-		Timeout:             3 * time.Second,  // Wait 3 seconds for ping ack
-		PermitWithoutStream: true,             // Send pings even without active streams
+		Time:                30 * time.Second, // Send pings every 30 seconds
+		Timeout:             10 * time.Second, // Wait 10 seconds for ping ack
+		PermitWithoutStream: true,             // Send pings even without active streams to keep connection alive
 	}))
 
 	connMgr, err := newConnectionManager(*socket, opts)

@@ -60,6 +60,7 @@ pollingInterval: 1000
 
 nicExclusionRegexesForInjectedContainer: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
 nicExclusionRegexes: "^gketmp.*" 
+roCEInterfaceRegexes: "^rdma\\\\d+$,^eth\\\\d+$" # Default regex patterns for RoCE interfaces (rdma0, rdma1, eth0, eth1, etc.)
 
 maxRetryDurationForDownDetectedNICInMilliseconds: 500
 retryIntervalForDownDetectedNICInMilliseconds: 100

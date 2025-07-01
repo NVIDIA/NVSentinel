@@ -52,6 +52,7 @@ spec:
             - "--metrics-port={{ .Values.metricsPort }}"
             - "--max-retry-duration-for-down-detected-nic={{ .Values.maxRetryDurationForDownDetectedNICInMilliseconds }}"
             - "--retry-interval-for-down-detected-nic={{ .Values.retryIntervalForDownDetectedNICInMilliseconds }}"
+            - "--roce-interface-regexes={{ .Values.global.nicHealthMonitor.roCEInterfaceRegexes | default .Values.roCEInterfaceRegexes }}"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.global.nicHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"

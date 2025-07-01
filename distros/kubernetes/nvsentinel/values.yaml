@@ -45,6 +45,7 @@ global:
     nicExclusionRegexesForInjectedContainer: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
     nicExclusionRegexes: "^gketmp.*"
     monitorNetworkType: "all"
+    roCEInterfaceRegexes: "^rdma\\\\d+$,^eth\\\\d+$"  # Default regex patterns for RoCE interfaces
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor
       pullPolicy: IfNotPresent

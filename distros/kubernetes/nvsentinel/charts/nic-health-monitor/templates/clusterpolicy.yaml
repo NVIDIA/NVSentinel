@@ -49,6 +49,7 @@ spec:
                   - "--nic-exclusion-regexes={{ .Values.global.nicHealthMonitor.nicExclusionRegexesForInjectedContainer | default .Values.nicExclusionRegexesForInjectedContainer }}"
                   - "--max-retry-duration-for-down-detected-nic={{ .Values.maxRetryDurationForDownDetectedNICInMilliseconds }}"
                   - "--retry-interval-for-down-detected-nic={{ .Values.retryIntervalForDownDetectedNICInMilliseconds }}"
+                  - "--roce-interface-regexes={{ .Values.global.nicHealthMonitor.roCEInterfaceRegexes | default .Values.roCEInterfaceRegexes }}"
                 securityContext:
                   runAsUser: 0
                 resources:
