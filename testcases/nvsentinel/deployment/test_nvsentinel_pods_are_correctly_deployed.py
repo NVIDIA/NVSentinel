@@ -115,6 +115,7 @@ class TestPodsAreCorrectlyDeployed(TestNVSentinelCaseBase):
                 and "node-labeler" not in pod.metadata.name
                 and "fault" not in pod.metadata.name
                 and "drainer" not in pod.metadata.name
+                and "syslog" not in pod.metadata.name # we've not deploy syslog health monitor everywhere yet
             ):
                 number += 1
         err_msg = f"Mismatch nodes number found, current pods number:{number}, expected:{total_pods_number}"

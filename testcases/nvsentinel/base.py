@@ -1017,7 +1017,7 @@ class TestNVSentinelCaseBase(Base):
         self.logger.info(f"Backup label value: {self.backup_label_value}")
 
     def restore_managed_by_nvsentinel_label(self, node_name):
-        if self.backup_label_value:
+        if hasattr(self, "backup_label_value") and self.backup_label_value:
             self.client.add_label_to_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel", self.backup_label_value)
         else:
             self.client.remove_label_from_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")

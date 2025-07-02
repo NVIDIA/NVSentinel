@@ -38,16 +38,14 @@ def nvsentinel_autosync_disabled_enabled():
     nmc_context = os.getenv("NMC_KUBE_CONTEXT")
     nmc_profile = os.getenv("NMC_CSP_PROFILE")
     cloud_provider = os.getenv("CLOUD_PROVIDER")
-
+    apps = ["mk8s"]
     if nmc_context:
         switch_context(nmc_context, nmc_profile, cloud_provider)
-        nvsentinel_app = "nmc-runtime-tenant"
-        gpu_operator_app = "gpu-operator-tenant"
+        apps += ["nvsentinel-mgmt", "nvsentinel-tenant", "gpu-operator-tenant"]
         nvsentinel_namespace = "dgxc-system"
     else:
         logger.info("No NMC context found, skipping context switch")
-        gpu_operator_app = "gpu-operator"
-        nvsentinel_app = "nvsentinel"
+        apps += ["gpu-operator", "nvsentinel"]
         nvsentinel_namespace = "nvsentinel"
 
     client = KubernetesClient()
@@ -55,8 +53,7 @@ def nvsentinel_autosync_disabled_enabled():
 
     try:
         # Setup - disable auto-sync
-        logger.info(f"Disabling auto-sync for mk8s, {nvsentinel_app}, and {gpu_operator_app}")
-        apps = ["mk8s", nvsentinel_app, gpu_operator_app]
+        logger.info(f"Disabling auto-sync for {apps}")
         for app in apps:
             result = client.disable_argocd_auto_sync(app)
             if not result.values[0]:
@@ -71,7 +68,7 @@ def nvsentinel_autosync_disabled_enabled():
     finally:
         # Cleanup - enable auto-sync and trigger sync
         client = KubernetesClient()
-        logger.info(f"Enabling auto-sync for mk8s, {nvsentinel_app}, and {gpu_operator_app}")
+        logger.info(f"Enabling auto-sync for {apps}")
         for app in apps:
             try:
                 # Enable auto-sync
@@ -98,6 +95,9 @@ def nvsentinel_autosync_disabled_enabled():
 
         client.rollout_daemonset(
             "nvsentinel-gpu-health-monitor-dcgm-3.x", namespace=nvsentinel_namespace
+        )
+        client.rollout_daemonset(
+            "nvsentinel-gpu-health-monitor-dcgm-4.x", namespace=nvsentinel_namespace
         )
         client.rollout_daemonset("nvsentinel-nic-health-monitor", namespace=nvsentinel_namespace)
         client.rollout_daemonset(
