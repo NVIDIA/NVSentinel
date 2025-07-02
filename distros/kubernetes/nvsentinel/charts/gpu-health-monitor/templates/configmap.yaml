@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,8 +19,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: tenant
+
 data:
   config.ini: |
     [logging]
@@ -95,3 +94,5 @@ data:
 
   is-dcgm-reachable.sh: |
 {{ include "is-dcgm-reachable.sh.tpl" . | indent 4 }}
+
+{{ end }}

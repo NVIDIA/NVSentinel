@@ -11,15 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-4.x
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: tenant
+
 spec:
   updateStrategy:
     type: {{ .Values.updateStrategy }}
@@ -125,3 +124,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{ end }}

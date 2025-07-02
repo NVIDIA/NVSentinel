@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,8 +20,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "csp-health-monitor.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: management
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -113,11 +112,14 @@ spec:
                 name: mongodb-config
                 optional: true
       restartPolicy: Always
+      {{- if not (eq .Values.global.clusterType "mgmt") }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{ end }}

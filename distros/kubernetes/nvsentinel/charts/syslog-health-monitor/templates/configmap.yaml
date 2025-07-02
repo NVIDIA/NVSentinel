@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -120,3 +120,4 @@ data:
         journalPath: "/nvsentinel/var/log/journal/"
         boot: true
         recommended_action: REPORT_ISSUE
+{{ end }}

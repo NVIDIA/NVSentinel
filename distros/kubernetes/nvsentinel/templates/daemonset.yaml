@@ -19,8 +19,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: tenant
+
 spec:
   updateStrategy:
     type: {{ .Values.platformConnector.updateStrategy }}
@@ -79,6 +78,14 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+        {{- if eq .Values.global.clusterType "mgmt" }}
+            - name: KUBERNETES_CLUSTER_DOMAIN
+              value: "cluster.local"
+            - name: KUBERNETES_SERVICE_HOST
+              value: "apiserver-portal"
+            - name: KUBERNETES_SERVICE_PORT_HTTPS
+              value: "443"
+        {{- end }}
           envFrom:
             - configMapRef:
                 name: mongodb-config

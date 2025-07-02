@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -19,8 +19,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: management
+
 subjects:
   - kind: ServiceAccount
     name: "{{ .Values.mongodb.serviceAccount.name }}"
@@ -29,3 +28,4 @@ roleRef:
   kind: Role
   name: "{{ .Release.Namespace }}-mongodb-role"
   apiGroup: rbac.authorization.k8s.io
+{{ end }}

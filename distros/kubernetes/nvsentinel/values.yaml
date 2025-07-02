@@ -111,6 +111,7 @@ global:
         tag: "2.5.2"
         pullPolicy: IfNotPresent
 
+  clusterType: standalone # standalone|mgmt|tenant
 
 platformConnector:
   image:

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -19,8 +19,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "csp-health-monitor.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: management
 rules:
 - apiGroups:
   - ""
@@ -30,3 +28,4 @@ rules:
   verbs:
   - get
   - list
+{{ end }}

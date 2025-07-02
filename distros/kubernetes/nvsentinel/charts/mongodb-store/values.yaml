@@ -127,9 +127,6 @@ mongodb:
     - "--setParameter"
     - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
 
-  nodeSelector:
-    nodeGroup: "system-cpu"
-
   tolerations:
     - effect: NoSchedule
       operator: Exists

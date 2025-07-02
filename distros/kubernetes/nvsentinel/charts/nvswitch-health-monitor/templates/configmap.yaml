@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,8 +19,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvswitch-health-monitor.labels" . | nindent 4 }}
-  annotations:
-    dgxc.nvidia.com/resource-category: tenant
+
 data:
   config.ini: |
     PollingIntervalInMilliseconds = 100
@@ -42,3 +41,4 @@ data:
   # The below tables should map to the xid error spreadsheet https://docs.google.com/spreadsheets/d/1t6PpsC5TXiNl4JMBuHlFIjmSbjLZ2ik0Sz3DLw8cLmE/edit?gid=121017179#gid=121017179
   # ordering of below columns => sxiderrorno,sxiderrorname,sxiderrorrecommendedaction,FATAL/NONFATAL errors
 {{ (.Files.Glob "sxiderrorsmapping.csv").AsConfig | indent 2 }}
+{{ end }}

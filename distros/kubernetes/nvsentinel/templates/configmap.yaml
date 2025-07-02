@@ -17,8 +17,7 @@ kind: ConfigMap
 metadata:
   name: platform-connector-configmap
   namespace: {{ .Release.Namespace }}
-  annotations:
-    dgxc.nvidia.com/resource-category: tenant
+
 data:
   config.json: |
     {
