@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -42,7 +43,7 @@ var customBackoff = wait.Backoff{
 type FaultQuarantineClient struct {
 	// client is the Kubernetes client
 	clientset  kubernetes.Interface
-	dryRunMode []string
+	dryRunMode bool
 }
 
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineClient, error) {
@@ -65,12 +66,8 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineC
 	}
 
 	client := &FaultQuarantineClient{
-		clientset: clientset,
-	}
-	if dryRun {
-		client.dryRunMode = []string{metav1.DryRunAll}
-	} else {
-		client.dryRunMode = []string{}
+		clientset:  clientset,
+		dryRunMode: dryRun,
 	}
 
 	return client, nil
@@ -124,15 +121,24 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 		}
 
 		// Cordon check
+		// nolint: cyclop, gocognit, nestif //fix this as part of NGCC-21793
 		if isCordon {
+			_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 			if node.Spec.Unschedulable {
-				klog.Infof("Node is already cordoned: %s", nodename)
-				return nil
+				if exist {
+					klog.Infof("Node %s already cordoned by FQM; skipping taint/annotation updates", nodename)
+					return nil
+				}
+
+				klog.Infof("Node %s is cordoned manually; applying FQM taints/annotations", nodename)
+			} else {
+				// Cordoning the node since it is currently schedulable.
+				klog.Infof("Cordoning node %s", nodename)
+
+				if !c.dryRunMode {
+					node.Spec.Unschedulable = true
+				}
 			}
-
-			klog.Infof("Cordoning node %s", nodename)
-
-			node.Spec.Unschedulable = true
 		}
 
 		// Annotation check
@@ -155,9 +161,7 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 			node.Labels[k] = v
 		}
 
-		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{
-			DryRun: c.dryRunMode,
-		})
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 
 		if err != nil {
 			return fmt.Errorf("failed to taint node: %w", err)
@@ -230,14 +234,16 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 		// uncordon check
 		if isUnCordon {
-			if !node.Spec.Unschedulable {
+			if !node.Spec.Unschedulable && !c.dryRunMode {
 				klog.Infof("Node is already uncordoned: %s", nodename)
 				return nil
 			}
 
 			klog.Infof("Uncordoning node %s", nodename)
 
-			node.Spec.Unschedulable = false
+			if !c.dryRunMode {
+				node.Spec.Unschedulable = false
+			}
 
 			klog.Infof("Adding labels on node %s", nodename)
 
@@ -271,9 +277,7 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 			}
 		}
 
-		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{
-			DryRun: c.dryRunMode,
-		})
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to remove taint from node: %w", err)
 		}

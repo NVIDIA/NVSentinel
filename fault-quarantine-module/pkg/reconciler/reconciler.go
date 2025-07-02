@@ -167,12 +167,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
 	}
 
-	watcher.Start(ctx)
-
-	klog.Info("Listening for events on the channel...")
-
-	go r.watchEvents(watcher)
-
 	err = nodeInformer.Run(ctx.Done())
 	if err != nil {
 		klog.Fatalf("failed to run node informer: %+v", err)
@@ -191,7 +185,11 @@ func (r *Reconciler) Start(ctx context.Context) {
 		}
 	}
 
-	klog.Info("NodeInformer cache synced. Starting event processing loop.")
+	watcher.Start(ctx)
+
+	klog.Info("Listening for events on the channel...")
+
+	go r.watchEvents(watcher)
 
 	// Process events in the main goroutine
 	for {
@@ -322,7 +320,24 @@ func (r *Reconciler) handleEvent(
 ) (*storeconnector.Status, common.RuleEvaluationResult) {
 	var status storeconnector.Status
 
-	if r.nodeInfo.GetNodeQuarantineStatusCache(event.HealthEvent.NodeName) {
+	quarantineAnnotationExists := false
+
+	annotations, annErr := r.config.K8sClient.GetNodeAnnotations(ctx, event.HealthEvent.NodeName)
+	if annErr != nil {
+		klog.Errorf("failed to fetch annotations for node %s: %+v",
+			event.HealthEvent.NodeName, annErr)
+	} else {
+		annotationVal, exists := annotations[common.QuarantineHealthEventAnnotationKey]
+
+		if exists && annotationVal != "" {
+			quarantineAnnotationExists = true
+		}
+	}
+
+	if quarantineAnnotationExists {
+		// The node was already quarantined by FQM earlier. Delegate to the
+		// specialized handler which decides whether to keep it quarantined or
+		// un-quarantine based on the incoming event.
 		if r.handleQuarantinedNode(ctx, event.HealthEvent) {
 			totalEventsSkipped.Inc()
 
@@ -333,6 +348,12 @@ func (r *Reconciler) handleEvent(
 
 		return &status, common.RuleEvaluationNotApplicable
 	}
+
+	// A node should be considered "already quarantined" for status reporting
+	// if it is already marked as quarantined in our in-memory cache (e.g. it
+	// was cordoned manually) even though the FQM annotation is not present
+	// yet.
+	treatStatusAsAlreadyQuarantined := r.nodeInfo.GetNodeQuarantineStatusCache(event.HealthEvent.NodeName)
 
 	type keyValTaint struct {
 		Key   string
@@ -530,6 +551,11 @@ func (r *Reconciler) handleEvent(
 		status = storeconnector.UnQuarantined
 	}
 
+	// Override status if node was already cordoned manually (no FQM annotation)
+	if treatStatusAsAlreadyQuarantined {
+		status = storeconnector.AlreadyQuarantined
+	}
+
 	return &status, common.RuleEvaluationNotApplicable
 }
 
@@ -538,14 +564,6 @@ func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *platformconnectorprotos.HealthEvent,
 ) bool {
-	// simulate the unquarantine if we are in dry-run mode and the node is already quarantined
-	if r.config.DryRun && r.nodeInfo.GetNodeQuarantineStatusCache(event.NodeName) {
-		r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false)
-
-		currentQuarantinedNodes.Dec()
-		totalNodesUnquarantined.Inc()
-	}
-
 	annotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, event.NodeName)
 	if err != nil {
 		klog.Errorf("error while getting node annotations for event: %+v: %+v", event, err)
@@ -558,6 +576,7 @@ func (r *Reconciler) handleQuarantinedNode(
 	quarantineAnnotationEvent, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
 	if !exists || quarantineAnnotationEvent == "" {
+		klog.Infof("No quarantine annotation found for node %s", event.NodeName)
 		return false
 	}
 

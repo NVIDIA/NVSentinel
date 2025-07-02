@@ -141,6 +141,9 @@ func TestHandleEvent(t *testing.T) {
 				}
 				return nil
 			},
+			getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+				return map[string]string{}, nil
+			},
 		},
 	}
 
@@ -211,6 +214,9 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
 				t.Errorf("TaintAndCordonNodeAndSetAnnotations should not be called when no rules triggered.")
 				return nil
+			},
+			getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+				return map[string]string{}, nil
 			},
 		},
 	}
@@ -445,6 +451,9 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 			taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelsMap map[string]string) error {
 				return nil
 			},
+			getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+				return map[string]string{}, nil
+			},
 		},
 	}
 
@@ -551,4 +560,258 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture (with error)")
 		}
 	})
+}
+
+func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
+	ctx := context.Background()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k88s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name: "ruleset-1",
+				Taint: config.Taint{
+					Key:    "key1",
+					Value:  "val1",
+					Effect: "NoSchedule",
+				},
+				Cordon:   config.Cordon{ShouldCordon: true},
+				Priority: 1,
+			},
+		},
+	}
+
+	// Track if the taint and annotation call was invoked
+	taintsSeen := []config.Taint{}
+	annotationsSeen := map[string]string{}
+	taintCalled := false
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// node is cordoned manually, no FQM annotation yet
+			return map[string]string{}, nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string,
+			taints []config.Taint, isCordon bool,
+			annotations map[string]string, labelsMap map[string]string) error {
+
+			taintCalled = true
+			taintsSeen = append(taintsSeen, taints...)
+
+			for k, v := range annotations {
+				annotationsSeen[k] = v
+			}
+			return nil
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		TomlConfig: tomlConfig,
+		K8sClient:  k8sMock,
+	}
+
+	r := NewReconciler(ctx, cfg, nil)
+	r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
+
+	// Simulate that the node has been cordoned manually (unschedulable) but NOT by FQM
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+
+	// Prepare the evaluator which will return success so taint should be applied
+	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
+		&mockEvaluator{name: "ruleset-1", ruleEvalResult: common.RuleEvaluationSuccess},
+	}
+
+	event := &platformconnectorprotos.HealthEvent{NodeName: "node1"}
+	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: event}
+
+	status, _ := r.handleEvent(ctx, healthEventWithStatus, ruleSetEvals,
+		rulesetsConfig{
+			TaintConfigMap: map[string]*config.Taint{
+				"ruleset-1": &tomlConfig.RuleSets[0].Taint,
+			},
+			CordonConfigMap: map[string]bool{
+				"ruleset-1": true,
+			},
+			RuleSetPriorityMap: map[string]int{
+				"ruleset-1": 1,
+			},
+		},
+	)
+
+	// The reconciler should attempt to taint & annotate the node even though it was already cordoned manually
+	if !taintCalled {
+		t.Errorf("Expected TaintAndCordonNodeAndSetAnnotations to be called for already cordoned node")
+	}
+
+	if status == nil {
+		t.Fatalf("Expected non-nil status returned from handleEvent")
+	}
+
+	if *status != store.AlreadyQuarantined {
+		t.Errorf("Expected status to be AlreadyQuarantined, got %v", *status)
+	}
+
+	if len(taintsSeen) == 0 {
+		t.Fatalf("expected at least one taint, got none")
+	}
+	if taintsSeen[0] != tomlConfig.RuleSets[0].Taint {
+		t.Errorf("Unexpected taint values: %+v", taintsSeen[0])
+	}
+
+	if _, ok := annotationsSeen[common.QuarantineHealthEventAnnotationKey]; !ok {
+		t.Errorf("expected %s annotation, but it wasn't passed to the client",
+			common.QuarantineHealthEventAnnotationKey)
+	}
+}
+
+// TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined verifies that when a node is already
+// quarantined by FQM (i.e. has the quarantine annotation) and receives another *unhealthy* event,
+// the reconciler skips further processing and keeps the node quarantined.
+func TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined(t *testing.T) {
+	ctx := context.Background()
+
+	// Build an annotation payload representing the original quarantining event
+	originalEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:  "node1",
+		Agent:     "agent1",
+		CheckName: "checkA",
+		Version:   1,
+		// The original event that quarantined the node was unhealthy
+		IsHealthy: false,
+	}
+	annotationPayload, _ := json.Marshal(originalEvent)
+
+	annotationMap := map[string]string{
+		quarantineHealthEventAnnotationKey: string(annotationPayload),
+	}
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			return annotationMap, nil
+		},
+		// These functions should NOT be invoked because reconciler should early-return.
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			t.Fatalf("TaintAndCordonNodeAndSetAnnotations should not be called for already FQM-quarantined node (still unhealthy)")
+			return nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			t.Fatalf("UnTaintAndUnCordonNodeAndRemoveAnnotations should not be called when node remains quarantined")
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+	// Mark node as cordoned/quarantined in the cache to satisfy nodeAlreadyCordoned check
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+
+	// Initialize label keys so that handleQuarantinedNode may construct labels correctly if needed.
+	r.SetLabelKeys("k88s.nvidia.com/")
+
+	// Incoming event is still unhealthy, hence node should stay quarantined
+	incomingEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:  "node1",
+		Agent:     "agent1",
+		CheckName: "checkA",
+		Version:   1,
+		IsHealthy: false,
+	}
+
+	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: incomingEvent}
+
+	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
+
+	if status == nil {
+		t.Fatalf("Expected non-nil status when node already quarantined by FQM")
+	}
+	if *status != store.AlreadyQuarantined {
+		t.Errorf("Expected status AlreadyQuarantined, got %v", *status)
+	}
+
+	// The cache should still indicate the node is quarantined
+	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+		t.Errorf("Expected node to remain quarantined in cache")
+	}
+}
+
+// TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine verifies that when a node is already
+// quarantined by FQM but receives the corresponding *healthy* event, the reconciler un-quarantines
+// it and updates the status appropriately.
+func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
+	ctx := context.Background()
+
+	// The annotation reflects the original unhealthy event that caused quarantine
+	originalEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      false,
+	}
+	annotationPayload, _ := json.Marshal(originalEvent)
+
+	annotationMap := map[string]string{
+		quarantineHealthEventAnnotationKey:              string(annotationPayload),
+		quarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
+		quarantineHealthEventIsCordonedAnnotationKey:    "True",
+	}
+
+	unquarantineCalled := false
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			return annotationMap, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			unquarantineCalled = true
+			if !isUncordon {
+				t.Errorf("Expected isUncordon to be true when un-quarantining the node")
+			}
+			return nil
+		},
+		// No new tainting expected in this path
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			t.Fatalf("TaintAndCordonNodeAndSetAnnotations should not be called when node is being unquarantined")
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+	// Mark node as currently quarantined
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.SetLabelKeys("k88s.nvidia.com/")
+
+	// Incoming *healthy* event that matches annotation ‑- should trigger un-quarantine
+	incomingEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      true,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{{
+			EntityType:  "GPU",
+			EntityValue: "gpu0",
+		}},
+	}
+
+	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: incomingEvent}
+
+	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
+
+	if status == nil {
+		t.Fatalf("Expected non-nil status when node already quarantined by FQM")
+	}
+	if *status != store.UnQuarantined {
+		t.Errorf("Expected status UnQuarantined after healthy event, got %v", *status)
+	}
+
+	if !unquarantineCalled {
+		t.Errorf("Expected UnTaintAndUnCordonNodeAndRemoveAnnotations to be invoked for healthy event")
+	}
+
+	// The cache must reflect that the node is no longer quarantined
+	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+		t.Errorf("Expected node to be removed from quarantined cache after unquarantine")
+	}
 }

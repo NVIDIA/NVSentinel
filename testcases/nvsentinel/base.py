@@ -28,6 +28,9 @@ import tempfile
 from testcases.utils.kubernetes_utils import KubernetesClient
 from kubernetes.client import CustomObjectsApi
 import psutil
+import copy
+import signal
+import logging
 
 
 class TestNVSentinelCaseBase(Base):
@@ -499,10 +502,23 @@ class TestNVSentinelCaseBase(Base):
                 text=True
             )
             print("Port forwarding established successfully.")
-            print("Output:", result.stdout)
+            print(f"Output: {result.stdout}")
         except subprocess.CalledProcessError as e:
             print("Failed to establish port forwarding.")
             print("Error:", e.stderr)
+
+    def stop_port_forward_prometheus(self):
+        """
+        Find and terminate any kubectl port-forward processes that point at
+        prometheus-prometheus in the prometheus namespace.
+        """
+        self.step_manager.print_header("Stopping port-forward prometheus")
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            if 'kubectl' in proc.info['name'] and 'port-forward' in proc.info['cmdline']:
+                if 'service/prometheus-prometheus' in proc.info['cmdline'] and '-n' in proc.info['cmdline'] and 'prometheus' in proc.info['cmdline']:
+                    print(f"Stopping port-forward PID {proc.pid}")
+                    proc.send_signal(signal.SIGTERM)
+                    proc.wait(timeout=5)
 
     def start_prometheus_service(self):
         """
@@ -529,8 +545,7 @@ class TestNVSentinelCaseBase(Base):
             namespace=self.prometheus_namespace,
             name_pattern="prometheus-prometheus"
         )
-        self.logger.info(f"services = {services}")
-
+        
         self.step_manager.print_header(
             "Download promtool in your local machine (Promtool is inside the prometheus tarballs)"
         )
@@ -981,7 +996,6 @@ class TestNVSentinelCaseBase(Base):
         ]
         output, _ = self.client.exec_command_in_pod(pod, command)
         assert "Successfully injected" in output
-    
     def clear_gpu_inforom_watch_error(self, pod):
         command = [
             "/bin/sh",
@@ -1390,3 +1404,121 @@ class TestNVSentinelCaseBase(Base):
         self.logger.info(
             f"[PASS] value of the metric is increased by {expected_down_count} when the NIC is set down and when the NIC is set up"
         )
+
+    def _enable_dry_run_mode(self):
+        """Put the Fault-Quarantine deployment into dry-run mode.
+
+        * Stores the original container arguments so they can be restored later
+          (saved only the first time it is invoked).
+        * Ensures there is **exactly one** `--dry-run true` flag in the container
+          arguments, regardless of the original flag style.
+        """
+        deployments = self.client.get_deployments(
+            self.nv_namespace, "nvsentinel-fault-quarantine"
+        )
+        if not deployments:
+            pytest.fail("Fault-quarantine deployment not found – cannot enable dry-run mode")
+
+        deployment = deployments[0]
+
+        # Locate the single container we care about
+        fq_container = None
+        for c in deployment.spec.template.spec.containers:
+            if c.name == "fault-quarantine":
+                fq_container = c
+                break
+        if fq_container is None:
+            pytest.fail("fault-quarantine container not found in deployment")
+
+        # Cache the ORIGINAL args once so we can restore them later
+        if not hasattr(self, "_fq_original_args"):
+            # Make a **deep** copy so later edits do not mutate the saved list
+            self._fq_original_args = list(fq_container.args or [])
+            self.logger.info(f"Cached original fault-quarantine args: {self._fq_original_args}")
+
+        # ------------------------------------------------------------------
+        # Build new args list with *no* existing dry-run flags, then append ours
+        # ------------------------------------------------------------------
+        new_args = []
+        skip_next = False
+        for arg in fq_container.args or []:
+            if skip_next:
+                skip_next = False
+                continue
+
+            # Handle split form: --dry-run true/false
+            if arg == "--dry-run":
+                skip_next = True
+                continue
+            # Handle combined form: --dry-run=true / --dry-run=false
+            if arg.startswith("--dry-run="):
+                continue
+
+            new_args.append(arg)
+
+        # Add the canonical form we want
+        new_args.extend(["--dry-run", "true"])
+        fq_container.args = new_args
+        self.logger.info(f"Applying dry-run args: {new_args}")
+
+        # Update the deployment (replace is fine – we kept the current resourceVersion)
+        self.client.appsV1Api.replace_namespaced_deployment(
+            name=deployment.metadata.name,
+            namespace=self.nv_namespace,
+            body=deployment,
+        )
+        # Allow some time for rollout to start
+        time.sleep(10)
+
+    def _restore_dry_run_mode(self):
+        """Restore the Fault-Quarantine deployment to its original non-dry-run state."""
+        deployments = self.client.get_deployments(
+            self.nv_namespace, "nvsentinel-fault-quarantine"
+        )
+        if not deployments:
+            self.logger.error("Fault-quarantine deployment not found – cannot restore dry-run mode")
+            return
+
+        deployment = deployments[0]
+
+        # Locate container
+        fq_container = None
+        for c in deployment.spec.template.spec.containers:
+            if c.name == "fault-quarantine":
+                fq_container = c
+                break
+        if fq_container is None:
+            self.logger.error("fault-quarantine container not found in deployment – cannot restore")
+            return
+
+        # If we cached the original args, restore them; otherwise just strip the flag
+        if hasattr(self, "_fq_original_args"):
+            fq_container.args = list(self._fq_original_args)
+            self.logger.info("Restored original fault-quarantine args from cache")
+        else:
+            # No cache – remove any dry-run flags that may exist
+            new_args = []
+            skip_next = False
+            for arg in fq_container.args or []:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg == "--dry-run":
+                    skip_next = True
+                    continue
+                if arg.startswith("--dry-run="):
+                    continue
+                new_args.append(arg)
+            fq_container.args = new_args
+            self.logger.info("Removed --dry-run flags from current deployment args")
+
+        # Replace deployment with cleaned args
+        self.client.appsV1Api.replace_namespaced_deployment(
+            name=deployment.metadata.name,
+            namespace=self.nv_namespace,
+            body=deployment,
+        )
+        # Wait for rollout to complete
+        time.sleep(10)
+
+    

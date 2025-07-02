@@ -51,7 +51,8 @@ func (n *NodeInfo) BuildQuarantinedNodesMap(k8sClient kubernetes.Interface) erro
 	defer n.mutex.Unlock()
 
 	for _, node := range nodes.Items {
-		if node.Annotations[common.QuarantineHealthEventAnnotationKey] == "true" {
+		key := common.QuarantineHealthEventIsCordonedAnnotationKey
+		if node.Annotations[key] == common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
 			n.quarantinedNodesMap[node.Name] = true
 		}
 	}
@@ -67,6 +68,8 @@ func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined 
 	} else {
 		delete(n.quarantinedNodesMap, nodeName)
 	}
+
+	klog.V(3).Infof("Quarantined nodes map: %+v, Total length: %d", n.quarantinedNodesMap, len(n.quarantinedNodesMap))
 	n.mutex.Unlock()
 	n.signalWork()
 }

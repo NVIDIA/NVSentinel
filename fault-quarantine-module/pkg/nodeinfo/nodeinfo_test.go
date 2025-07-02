@@ -87,7 +87,7 @@ func TestBuildQuarantinedNodesMap(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node1",
 						Annotations: map[string]string{
-							common.QuarantineHealthEventAnnotationKey: "true",
+							common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
 						},
 					},
 				},
@@ -101,7 +101,7 @@ func TestBuildQuarantinedNodesMap(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node3",
 						Annotations: map[string]string{
-							common.QuarantineHealthEventAnnotationKey: "true",
+							common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
 						},
 					},
 				},
@@ -116,7 +116,7 @@ func TestBuildQuarantinedNodesMap(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node1",
 						Annotations: map[string]string{
-							common.QuarantineHealthEventAnnotationKey: "false",
+							common.QuarantineHealthEventIsCordonedAnnotationKey: "False",
 						},
 					},
 				},
@@ -124,7 +124,7 @@ func TestBuildQuarantinedNodesMap(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "node2",
 						Annotations: map[string]string{
-							common.QuarantineHealthEventAnnotationKey: "true",
+							common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
 						},
 					},
 				},
