@@ -1041,6 +1041,12 @@ class TestNVSentinelCaseBase(Base):
             self.logger.error("Fault remediation deployment not found")
             pytest.skip("Fault remediation deployment not found")
 
+    def skip_if_csp_health_monitor_deployment_not_found(self):
+        deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-csp-health-monitor")
+        if not deployment:
+            self.logger.error("CSP health monitor deployment not found")
+            pytest.skip("CSP health monitor deployment not found")
+
     def cleanup_mock_ethernet_interface(self, node_name):
         """
         Clean up the mock ethernet interface structure
