@@ -63,7 +63,7 @@ func NewMaxPercentageOfNodesToCordonRuleEvaluator(expression string,
 
 	// Create a CEL environment with declarations for maxPercentageOfNodesToCordon
 	env, err := cel.NewEnv(
-		cel.Variable("maxPercentageOfNodesToCordon", cel.IntType),
+		cel.Variable("maxPercentageOfNodesToCordon", cel.DoubleType),
 		ext.Strings(),
 	)
 	if err != nil {
@@ -211,7 +211,7 @@ func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
 		return common.RuleEvaluationFailed, fmt.Errorf("no GPU nodes found in the cluster (reported by informer)")
 	}
 	// Calculate percentage if we cordon one more node
-	potentialPercentage := int((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))
+	potentialPercentage := ((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))
 
 	// Evaluate the expression with the calculated percentage
 	out, _, err := nc.program.Eval(map[string]interface{}{
@@ -227,7 +227,7 @@ func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
 	}
 
 	klog.V(3).Infof(
-		"result: %v for rule %s (TotalNodes: %d, CordonedNodes: %d, PotentialPercentage: %d)",
+		"result: %v for rule %s (TotalNodes: %d, CordonedNodes: %d, PotentialPercentage: %f)",
 		result, nc.expression, totalNodes, cordonedNodes, potentialPercentage)
 
 	if result {
