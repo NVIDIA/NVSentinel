@@ -343,9 +343,14 @@ syslog-health-monitor-test:
 
 syslog-health-monitor-container-publish:
   stage: publish
-  image: docker:27.3.1
-  services:
-    - docker:27.3.1-dind
+  extends:
+    - .dind-service
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
   before_script:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
