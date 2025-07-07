@@ -120,7 +120,7 @@ class TestDCGMHealthChecks:
             elif entityGroupId == dcgm_fields.DCGM_FE_SWITCH:
                 return supported_switches
             else:
-                raise "unknown entityGroupId"
+                raise ValueError("unknown entityGroupId")
 
         dcgm_system_mock.discovery.GetEntityGroupEntities = MagicMock(side_effect=GetEntityGroupEntities_mock)
         dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock

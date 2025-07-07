@@ -46,6 +46,15 @@ var (
 	originalOsReadFile  func(string) ([]byte, error)
 )
 
+const (
+	// Boot ID values reused across multiple tests
+	bootID1         = "boot-id-1"
+	bootIDNew       = "boot-id-new"
+	bootIDCurrent   = "boot-id-current"
+	bootIDInitial   = "initial-boot-id"
+	bootIDFromState = "boot-id-from-state"
+)
+
 // Reset global boot ID state so tests are isolated
 
 // setupMockFS configures the package-level fileSystem variable to use a MockFileSystem.
@@ -297,7 +306,7 @@ func TestBootIDLogic(t *testing.T) {
 		mockFS := setupMockFS()
 		defer teardownMockFS()
 
-		fetchCurrentBootID = func() (string, error) { return "boot-id-1", nil }
+		fetchCurrentBootID = func() (string, error) { return bootID1, nil }
 		// Ensure state file does not exist in mockFS for loadNicMonitorState to get os.ErrNotExist
 		// The MockFileSystem in os_fs.go's ReadFile will return error if not found.
 
@@ -310,7 +319,7 @@ func TestBootIDLogic(t *testing.T) {
 
 		assert.True(t, monitor.initialRebootDetected, "Initial reboot should be detected")
 		assert.Equal(t, "", monitor.previousBootIDForEvent, "Previous boot ID should be empty")
-		assert.Equal(t, "boot-id-1", storedBootID, "Stored boot ID should be current")
+		assert.Equal(t, bootID1, storedBootID, "Stored boot ID should be current")
 
 		// Verify state was saved to mock filesystem
 		stateData, err := mockFS.ReadFile(strings.TrimPrefix(testStateFilePath, "/"))
@@ -319,14 +328,14 @@ func TestBootIDLogic(t *testing.T) {
 		err = json.Unmarshal(stateData, &savedState)
 		require.NoError(t, err)
 		assert.Equal(t, nicMonitorStateFileVersion, savedState.Version)
-		assert.Equal(t, "boot-id-1", savedState.BootID)
+		assert.Equal(t, bootID1, savedState.BootID)
 	})
 
 	t.Run("NewNic_StateFileWithOldBootID_RebootDetected", func(t *testing.T) {
 		mockFS := setupMockFS()
 		defer teardownMockFS()
 
-		fetchCurrentBootID = func() (string, error) { return "boot-id-new", nil }
+		fetchCurrentBootID = func() (string, error) { return bootIDNew, nil }
 		initialState := NicMonitorState{Version: 1, BootID: "boot-id-old"}
 		initialStateData, _ := json.Marshal(initialState)
 		mockFS.Fs[strings.TrimPrefix(testStateFilePath, "/")] = &fstest.MapFile{Data: initialStateData}
@@ -337,22 +346,22 @@ func TestBootIDLogic(t *testing.T) {
 
 		assert.True(t, monitor.initialRebootDetected, "Initial reboot should be detected")
 		assert.Equal(t, "boot-id-old", monitor.previousBootIDForEvent)
-		assert.Equal(t, "boot-id-new", storedBootID)
+		assert.Equal(t, bootIDNew, storedBootID)
 
 		stateData, err := mockFS.ReadFile(strings.TrimPrefix(testStateFilePath, "/"))
 		require.NoError(t, err)
 		var savedState NicMonitorState
 		err = json.Unmarshal(stateData, &savedState)
 		require.NoError(t, err)
-		assert.Equal(t, "boot-id-new", savedState.BootID)
+		assert.Equal(t, bootIDNew, savedState.BootID)
 	})
 
 	t.Run("NewNic_StateFileWithCurrentBootID_NoReboot", func(t *testing.T) {
 		mockFS := setupMockFS()
 		defer teardownMockFS()
 
-		fetchCurrentBootID = func() (string, error) { return "boot-id-current", nil }
-		initialState := NicMonitorState{Version: 1, BootID: "boot-id-current"}
+		fetchCurrentBootID = func() (string, error) { return bootIDCurrent, nil }
+		initialState := NicMonitorState{Version: 1, BootID: bootIDCurrent}
 		initialStateData, _ := json.Marshal(initialState)
 		mockFS.Fs[strings.TrimPrefix(testStateFilePath, "/")] = &fstest.MapFile{Data: initialStateData}
 
@@ -361,14 +370,14 @@ func TestBootIDLogic(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.False(t, monitor.initialRebootDetected, "Initial reboot should NOT be detected")
-		assert.Equal(t, "boot-id-current", storedBootID)
+		assert.Equal(t, bootIDCurrent, storedBootID)
 		// Verify state file is re-saved with the current ID (even if same)
 		stateData, err := mockFS.ReadFile(strings.TrimPrefix(testStateFilePath, "/"))
 		require.NoError(t, err)
 		var savedState NicMonitorState
 		err = json.Unmarshal(stateData, &savedState)
 		require.NoError(t, err)
-		assert.Equal(t, "boot-id-current", savedState.BootID)
+		assert.Equal(t, bootIDCurrent, savedState.BootID)
 	})
 
 	t.Run("NewNic_FetchBootIDError_UsesOldStateBootID", func(t *testing.T) {
@@ -376,7 +385,7 @@ func TestBootIDLogic(t *testing.T) {
 		defer teardownMockFS()
 
 		fetchCurrentBootID = func() (string, error) { return "", errors.New("failed to fetch boot id") }
-		initialState := NicMonitorState{Version: 1, BootID: "boot-id-from-state"}
+		initialState := NicMonitorState{Version: 1, BootID: bootIDFromState}
 		initialStateData, _ := json.Marshal(initialState)
 		mockFS.Fs[strings.TrimPrefix(testStateFilePath, "/")] = &fstest.MapFile{Data: initialStateData}
 
@@ -388,14 +397,14 @@ func TestBootIDLogic(t *testing.T) {
 		// initialRebootDetected should be false. The on-disk state should remain unchanged.
 		assert.False(t, monitor.initialRebootDetected, "Reboot should NOT be detected when boot ID fetch fails")
 		assert.Equal(t, "", monitor.previousBootIDForEvent)
-		assert.Equal(t, "boot-id-from-state", storedBootID, "storedBootID should remain from state file")
+		assert.Equal(t, bootIDFromState, storedBootID, "storedBootID should remain from state file")
 
 		stateData, err := mockFS.ReadFile(strings.TrimPrefix(testStateFilePath, "/"))
 		require.NoError(t, err, "State file should still exist")
 		var savedState NicMonitorState
 		err = json.Unmarshal(stateData, &savedState)
 		require.NoError(t, err)
-		assert.Equal(t, "boot-id-from-state", savedState.BootID, "State file should be unchanged when fetch fails")
+		assert.Equal(t, bootIDFromState, savedState.BootID, "State file should be unchanged when fetch fails")
 	})
 
 	t.Run("Run_DetectsBootIDChange_EmitsEvent_SavesState", func(t *testing.T) {
@@ -403,9 +412,9 @@ func TestBootIDLogic(t *testing.T) {
 		defer teardownMockFS()
 
 		// Setup initial state for NewNicHealthMonitor
-		currentBootID := "initial-boot-id"
+		currentBootID := bootIDInitial
 		fetchCurrentBootID = func() (string, error) { return currentBootID, nil }
-		initialState := NicMonitorState{Version: 1, BootID: "initial-boot-id"}
+		initialState := NicMonitorState{Version: 1, BootID: bootIDInitial}
 		initialStateData, _ := json.Marshal(initialState)
 		mockFS.Fs[strings.TrimPrefix(testStateFilePath, "/")] = &fstest.MapFile{Data: initialStateData}
 
@@ -425,7 +434,7 @@ func TestBootIDLogic(t *testing.T) {
 		monitor, err := NewNicHealthMonitor(config)
 		require.NoError(t, err)
 		require.False(t, monitor.initialRebootDetected, "No initial reboot expected")
-		require.Equal(t, "initial-boot-id", storedBootID)
+		require.Equal(t, bootIDInitial, storedBootID)
 
 		// Replace EventChan with a buffered version to avoid blocking when the
 		// reboot detection emits events before we can receive them in this
@@ -450,8 +459,8 @@ func TestBootIDLogic(t *testing.T) {
 			for _, event := range *events {
 				assert.True(t, event.IsHealthyEvent)
 				assert.Contains(t, event.Message, "System reboot detected")
-				assert.Contains(t, event.Message, "initial-boot-id")
-				assert.Contains(t, event.Message, "new-boot-id")
+				assert.Contains(t, event.Message, bootIDInitial)
+				assert.Contains(t, event.Message, newBootID)
 			}
 
 			stateData, err := mockFS.ReadFile(strings.TrimPrefix(testStateFilePath, "/"))

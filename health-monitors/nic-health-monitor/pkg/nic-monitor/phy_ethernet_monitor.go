@@ -273,23 +273,43 @@ func (m *EthernetDeviceMonitor) checkDevices(deviceList map[string]EthernetDevic
 			continue
 		}
 
-		// device existed before and Operstate has changed
-		if device.Operstate != oldDevice.Operstate {
-			if device.Operstate == operstateUp {
-				events = append(events, createNicHealthEvent(device, true, deviceIsHealthy))
-			} else {
-				// device is down
-				if time.Since(startTime) < maxRetryDuration {
-					retryNeeded = true
-					continue
-				}
+		// Handle existing device state changes
+		event, needsRetry := m.handleExistingDevice(device, oldDevice, startTime, maxRetryDuration)
+		if event != nil {
+			events = append(events, *event)
+		}
 
-				events = append(events, createNicHealthEvent(device, false, "state: "+device.Operstate))
-			}
+		if needsRetry {
+			retryNeeded = true
 		}
 	}
 
 	return events, retryNeeded
+}
+
+func (m *EthernetDeviceMonitor) handleExistingDevice(
+	device EthernetDevice,
+	oldDevice EthernetDevice,
+	startTime time.Time,
+	maxRetryDuration time.Duration) (*NicHealthEvent, bool) {
+	// device existed before and Operstate has changed
+	if device.Operstate != oldDevice.Operstate {
+		if device.Operstate == operstateUp {
+			event := createNicHealthEvent(device, true, deviceIsHealthy)
+			return &event, false
+		} else {
+			// device is down
+			if time.Since(startTime) < maxRetryDuration {
+				return nil, true
+			}
+
+			event := createNicHealthEvent(device, false, "state: "+device.Operstate)
+
+			return &event, false
+		}
+	}
+
+	return nil, false
 }
 
 func createNicHealthEvent(device EthernetDevice, isHealthy bool, message string) NicHealthEvent {

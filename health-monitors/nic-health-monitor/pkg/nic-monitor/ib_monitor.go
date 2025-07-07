@@ -184,18 +184,50 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 
 	events := []NicHealthEvent{}
 
-	// Check if any nic device is disappeared
+	// Check for disappeared devices and ports
+	events = append(events, m.checkDisappearedDevices(deviceList)...)
+	events = append(events, m.checkDisappearedPorts(deviceList, config)...)
+
+	// Monitor current devices
+	deviceEvents, err := m.monitorDevices(deviceList, config)
+	if err != nil {
+		return nil, err
+	}
+
+	events = append(events, deviceEvents...)
+
+	m.Devices = deviceList
+
+	return events, nil
+}
+
+func (m *InfinibandDeviceMonitor) checkDisappearedDevices(
+	deviceList map[string]InfiniBandDevice) []NicHealthEvent {
+	var events []NicHealthEvent
+
 	for name := range m.Devices {
-		device, ok := deviceList[name]
-		if !ok {
+		if _, ok := deviceList[name]; !ok {
 			events = append(events, NicHealthEvent{
 				NicType:        Infiniband,
 				Name:           name,
 				Message:        doesNotExistState,
 				IsHealthyEvent: false,
-				LinkLayer:      UNKNOWN_LINK_LAYER, // Device-level event, no specific port
+				LinkLayer:      UNKNOWN_LINK_LAYER,
 			})
+		}
+	}
 
+	return events
+}
+
+func (m *InfinibandDeviceMonitor) checkDisappearedPorts(
+	deviceList map[string]InfiniBandDevice,
+	config *NicMonitorConfig) []NicHealthEvent {
+	var events []NicHealthEvent
+
+	for name := range m.Devices {
+		device, ok := deviceList[name]
+		if !ok {
 			continue
 		}
 
@@ -219,6 +251,14 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 		}
 	}
 
+	return events
+}
+
+func (m *InfinibandDeviceMonitor) monitorDevices(
+	deviceList map[string]InfiniBandDevice,
+	config *NicMonitorConfig) ([]NicHealthEvent, error) {
+	var events []NicHealthEvent
+
 	for deviceName, device := range deviceList {
 		oldDevice, oldDeviceExist := m.Devices[deviceName]
 
@@ -232,164 +272,178 @@ func (m *InfinibandDeviceMonitor) Monitor(config *NicMonitorConfig) ([]NicHealth
 			})
 		}
 
-		// Check RoCE interface filter if MonitorNetworkType is RoCE
-		if config.MonitorNetworkType == MonitorNetworkTypeRoCE {
-			hasMatch, err := hasMatchingRoCEInterface(device.Name, config.RoCEInterfaceRegexes, config)
-			if err != nil {
-				klog.Warningf(
-					"Could not check RoCE interfaces for device %s: %v, skipping device",
-					device.Name,
-					err,
-				)
-
-				continue
-			}
-
-			if !hasMatch {
-				// Device doesn't have matching RoCE interfaces, skip it
-				continue
-			}
+		if !m.shouldMonitorDevice(device, config) {
+			continue
 		}
 
-		for portName, port := range device.Ports {
-			// Get link layer for this port
-			linkLayer, err := getLinkLayer(config, device.Name, portName)
-			if err != nil {
-				klog.Warningf(
-					"Could not determine link_layer for IB port %s on device %s: %v, treating as unknown",
-					portName,
-					device.Name,
-					err,
-				)
+		deviceEvents, err := m.monitorDevicePorts(device, oldDevice, oldDeviceExist, config)
+		if err != nil {
+			return nil, err
+		}
 
-				// Default to unknown if we can't read link layer
-				linkLayer = UNKNOWN_LINK_LAYER
-			}
+		events = append(events, deviceEvents...)
+	}
 
-			// Apply RoCE interface filtering for Ethernet/unknown link layers
-			// For InfiniBand link layer, no additional filtering is needed
-			if linkLayer == "Ethernet" || linkLayer == UNKNOWN_LINK_LAYER {
-				// Check if any network interface for this device matches RoCE patterns
-				hasMatch, err := hasMatchingRoCEInterface(
-					device.Name,
-					config.RoCEInterfaceRegexes,
-					config,
-				)
-				if err != nil {
-					klog.Warningf(
-						"Could not check RoCE interfaces for device %s with %s link layer: %v, skipping port %s",
-						device.Name,
-						linkLayer,
-						err,
-						portName,
-					)
+	return events, nil
+}
 
-					continue
-				}
+func (m *InfinibandDeviceMonitor) shouldMonitorDevice(device InfiniBandDevice, config *NicMonitorConfig) bool {
+	if config.MonitorNetworkType != MonitorNetworkTypeRoCE {
+		return true
+	}
 
-				if !hasMatch {
-					// Device doesn't have matching RoCE interfaces for Ethernet/unknown link layer, skip this port
-					continue
-				}
-			}
+	hasMatch, err := hasMatchingRoCEInterface(device.Name, config.RoCEInterfaceRegexes, config)
+	if err != nil {
+		klog.Warningf("Could not check RoCE interfaces for device %s: %v, skipping device", device.Name, err)
+		return false
+	}
 
-			// Filter based on MonitorNetworkType and link_layer
-			if config.MonitorNetworkType == MonitorNetworkTypeRoCE ||
-				config.MonitorNetworkType == MonitorNetworkTypeInfiniBand {
-				if config.MonitorNetworkType == MonitorNetworkTypeRoCE && linkLayer != "Ethernet" {
-					continue
-				}
+	return hasMatch
+}
 
-				if config.MonitorNetworkType == MonitorNetworkTypeInfiniBand && linkLayer != "InfiniBand" {
-					continue
-				}
-			}
+func (m *InfinibandDeviceMonitor) monitorDevicePorts(device InfiniBandDevice,
+	oldDevice InfiniBandDevice,
+	oldDeviceExist bool,
+	config *NicMonitorConfig) ([]NicHealthEvent, error) {
+	var events []NicHealthEvent
 
-			var oldPort InfiniBandPort
+	for portName, port := range device.Ports {
+		linkLayer, err := getLinkLayer(config, device.Name, portName)
+		if err != nil {
+			klog.Warningf("Could not determine link_layer for IB port %s on device %s: %v, treating as unknown",
+				portName,
+				device.Name,
+				err,
+			)
 
-			oldPortExist := false
+			linkLayer = UNKNOWN_LINK_LAYER
+		}
 
-			if oldDeviceExist {
-				var exists bool
-				oldPort, exists = oldDevice.Ports[portName]
-				oldPortExist = exists
-			}
+		if !m.shouldMonitorPort(device, portName, linkLayer, config) {
+			continue
+		}
 
-			// port is new
-			//nolint
-			if !oldPortExist {
-				// if port is new and healthy, then create a healthy event
-				if port.State == stateActive && port.PhysState == phyStateLinkup {
-					events = append(events, NicHealthEvent{
-						NicType:        Infiniband,
-						Name:           device.Name + "_" + port.Name,
-						Message:        portIsHealthy,
-						IsHealthyEvent: true,
-						LinkLayer:      linkLayer,
-					})
-				} else {
-					// Port is new and not healthy, create an unhealthy event
-					var msgParts []string
-					if port.State != stateActive {
-						msgParts = append(msgParts, "state: "+port.State)
-					}
+		var oldPort InfiniBandPort
 
-					if port.PhysState != phyStateLinkup {
-						msgParts = append(msgParts, "phys_state: "+port.PhysState)
-					}
+		oldPortExist := false
 
-					msg := strings.Join(msgParts, ", ")
+		if oldDeviceExist {
+			var exists bool
+			oldPort, exists = oldDevice.Ports[portName]
+			oldPortExist = exists
+		}
 
-					events = append(events, NicHealthEvent{
-						NicType:        Infiniband,
-						Name:           device.Name + "_" + port.Name,
-						Message:        msg,
-						IsHealthyEvent: false,
-						LinkLayer:      linkLayer,
-					})
-				}
+		portEvents := m.createPortHealthEvents(device, port, oldPort, oldPortExist, linkLayer)
+		events = append(events, portEvents...)
+	}
 
-				continue
-			}
+	return events, nil
+}
 
-			// old port exists and the state or PhysState have changed
-			if port.State != oldPort.State || port.PhysState != oldPort.PhysState {
-				if port.State == stateActive && port.PhysState == phyStateLinkup {
-					events = append(events, NicHealthEvent{
-						NicType:        Infiniband,
-						Name:           device.Name + "_" + port.Name,
-						Message:        portIsHealthy,
-						IsHealthyEvent: true,
-						LinkLayer:      linkLayer,
-					})
+func (m *InfinibandDeviceMonitor) shouldMonitorPort(
+	device InfiniBandDevice,
+	portName string,
+	linkLayer string,
+	config *NicMonitorConfig) bool {
+	// Apply RoCE interface filtering for Ethernet/unknown link layers
+	if linkLayer == "Ethernet" || linkLayer == UNKNOWN_LINK_LAYER {
+		hasMatch, err := hasMatchingRoCEInterface(device.Name, config.RoCEInterfaceRegexes, config)
+		if err != nil {
+			klog.Warningf("Could not check RoCE interfaces for device %s with %s link layer: %v, skipping port %s",
+				device.Name,
+				linkLayer,
+				err,
+				portName)
 
-					continue
-				}
+			return false
+		}
 
-				var msgParts []string
-
-				if port.State != stateActive {
-					msgParts = append(msgParts, "state: "+port.State)
-				}
-
-				if port.PhysState != phyStateLinkup {
-					msgParts = append(msgParts, "phys_state: "+port.PhysState)
-				}
-
-				msg := strings.Join(msgParts, ", ")
-
-				events = append(events, NicHealthEvent{
-					NicType:        Infiniband,
-					Name:           device.Name + "_" + port.Name,
-					Message:        msg,
-					IsHealthyEvent: false,
-					LinkLayer:      linkLayer,
-				})
-			}
+		if !hasMatch {
+			return false
 		}
 	}
 
-	m.Devices = deviceList
+	// Filter based on MonitorNetworkType and link_layer
+	if config.MonitorNetworkType == MonitorNetworkTypeRoCE {
+		return linkLayer == "Ethernet"
+	}
 
-	return events, nil
+	if config.MonitorNetworkType == MonitorNetworkTypeInfiniBand {
+		return linkLayer == "InfiniBand"
+	}
+
+	return true
+}
+
+func (m *InfinibandDeviceMonitor) createPortHealthEvents(
+	device InfiniBandDevice,
+	port InfiniBandPort,
+	oldPort InfiniBandPort,
+	oldPortExist bool,
+	linkLayer string) []NicHealthEvent {
+	var events []NicHealthEvent
+
+	portName := device.Name + "_" + port.Name
+
+	// New port
+	if !oldPortExist {
+		if port.State == stateActive && port.PhysState == phyStateLinkup {
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           portName,
+				Message:        portIsHealthy,
+				IsHealthyEvent: true,
+				LinkLayer:      linkLayer,
+			})
+		} else {
+			msg := m.buildUnhealthyMessage(port)
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           portName,
+				Message:        msg,
+				IsHealthyEvent: false,
+				LinkLayer:      linkLayer,
+			})
+		}
+
+		return events
+	}
+
+	// Existing port with state changes
+	if port.State != oldPort.State || port.PhysState != oldPort.PhysState {
+		if port.State == stateActive && port.PhysState == phyStateLinkup {
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           portName,
+				Message:        portIsHealthy,
+				IsHealthyEvent: true,
+				LinkLayer:      linkLayer,
+			})
+		} else {
+			msg := m.buildUnhealthyMessage(port)
+			events = append(events, NicHealthEvent{
+				NicType:        Infiniband,
+				Name:           portName,
+				Message:        msg,
+				IsHealthyEvent: false,
+				LinkLayer:      linkLayer,
+			})
+		}
+	}
+
+	return events
+}
+
+func (m *InfinibandDeviceMonitor) buildUnhealthyMessage(port InfiniBandPort) string {
+	var msgParts []string
+
+	if port.State != stateActive {
+		msgParts = append(msgParts, "state: "+port.State)
+	}
+
+	if port.PhysState != phyStateLinkup {
+		msgParts = append(msgParts, "phys_state: "+port.PhysState)
+	}
+
+	return strings.Join(msgParts, ", ")
 }

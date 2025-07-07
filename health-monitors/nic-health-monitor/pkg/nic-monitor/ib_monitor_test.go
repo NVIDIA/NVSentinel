@@ -25,21 +25,55 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	MLX5_0_PORT1_PATH         = "sys/class/infiniband/mlx5_0/ports/1"
+	MLX5_1_PORT1_PATH         = "sys/class/infiniband/mlx5_1/ports/1"
+	MLX5_2_PORT1_PATH         = "sys/class/infiniband/mlx5_2/ports/1"
+	MLX5_1_PORT2_PATH         = "sys/class/infiniband/mlx5_1/ports/2"
+	MLX5_NEW_PORT1_PATH       = "sys/class/infiniband/mlx5_new/ports/1"
+	MLX5_TEST_PORT1_PATH      = "sys/class/infiniband/mlx5_test/ports/1"
+	MLX5_0_DEVICE_NET         = "sys/class/infiniband/mlx5_0/device/net"
+	SYS_CLASS_INFINIBAND_PATH = "sys/class/infiniband"
+
+	PHYS_STATE = "/phys_state"
+	STATE      = "/state"
+	LINK_LAYER = "/link_layer"
+
+	PORT_PHYS_STATE_LINK_UP = "5: LinkUp"
+	PORT_STATE_ACTIVE       = "4: ACTIVE"
+	PORT_STATE_DOWN         = "1: DOWN"
+	PORT_PHYS_STATE_POLLING = "2: Polling"
+
+	LINK_LAYER_INFINIBAND = "InfiniBand"
+	LINK_LAYER_ETHERNET   = "Ethernet"
+
+	HEALTH_STATE_DOWN_POLLING = "state: 1: DOWN, phys_state: 2: Polling"
+
+	ETH0        = "/eth0"
+	RDMA0       = "/rdma0"
+	MLX5_0      = "mlx5_0"
+	MLX5_0_1    = "mlx5_0_1"
+	MLX5_0_PATH = "/mlx5_0"
+
+	RDMA_INTERFACE_REGEX = "^rdma\\d+$"
+	ETH_INTERFACE_REGEX  = "^eth\\d+$"
+)
+
 func TestScrapInfinibandDevices(t *testing.T) {
-	sysClassInfinibandPath := "/sys/class/infiniband"
+	sysClassInfinibandPath := SYS_CLASS_INFINIBAND_PATH
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
-			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
+			MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
 			// mlx5_1 with port 1 and 2
-			"sys/class/infiniband/mlx5_1/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_1/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_1/ports/1/state":      {Data: []byte("4: ACTIVE")},
-			"sys/class/infiniband/mlx5_1/ports/2":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_1/ports/2/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_1/ports/2/state":      {Data: []byte("4: ACTIVE")},
+			MLX5_1_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_1_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_1_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+			MLX5_1_PORT2_PATH:              {Mode: fs.ModeDir},
+			MLX5_1_PORT2_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_1_PORT2_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
 		},
 	}
 
@@ -47,13 +81,13 @@ func TestScrapInfinibandDevices(t *testing.T) {
 		"mlx5_1": {
 			Name: "mlx5_1",
 			Ports: map[string]InfiniBandPort{
-				"2": {Name: "2", State: "4: ACTIVE", PhysState: "5: LinkUp"},
-				"1": {Name: "1", State: "4: ACTIVE", PhysState: "5: LinkUp"},
+				"2": {Name: "2", State: PORT_STATE_ACTIVE, PhysState: PORT_PHYS_STATE_LINK_UP},
+				"1": {Name: "1", State: PORT_STATE_ACTIVE, PhysState: PORT_PHYS_STATE_LINK_UP},
 			},
 		},
 		"mlx5_0": {
-			Name:  "mlx5_0",
-			Ports: map[string]InfiniBandPort{"1": {Name: "1", State: "4: ACTIVE", PhysState: "5: LinkUp"}},
+			Name:  MLX5_0,
+			Ports: map[string]InfiniBandPort{"1": {Name: "1", State: PORT_STATE_ACTIVE, PhysState: PORT_PHYS_STATE_LINK_UP}},
 		},
 	}
 
@@ -64,22 +98,22 @@ func TestScrapInfinibandDevices(t *testing.T) {
 }
 
 func TestInfinibandMonitor(t *testing.T) {
-	sysClassInfinibandPath := "/sys/class/infiniband"
+	sysClassInfinibandPath := SYS_CLASS_INFINIBAND_PATH
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
-			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-			"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("InfiniBand")}, // Default link layer
+			MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+			MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_INFINIBAND)}, // Default link layer
 		},
 	}
 
 	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedHealthyDeviceAndPort := []NicHealthEvent{
-		{NicType: Infiniband, Name: "mlx5_0", Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-		{NicType: Infiniband, Name: "mlx5_0_1", Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "InfiniBand"},
+		{NicType: Infiniband, Name: MLX5_0, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+		{NicType: Infiniband, Name: MLX5_0_1, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_INFINIBAND},
 	}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
@@ -95,15 +129,15 @@ func TestInfinibandMonitor(t *testing.T) {
 	require.ElementsMatch(t, expectedHealthyDeviceAndPort, actualEvents)
 
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
-	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
+	mockFS.Fs[MLX5_0_PORT1_PATH+PHYS_STATE].Data = []byte(PORT_PHYS_STATE_POLLING)
 
 	expectedPhyStatePolling := []NicHealthEvent{
 		{
 			NicType:        Infiniband,
-			Name:           "mlx5_0_1",
+			Name:           MLX5_0_1,
 			Message:        "phys_state: 2: Polling",
 			IsHealthyEvent: false,
-			LinkLayer:      "InfiniBand",
+			LinkLayer:      LINK_LAYER_INFINIBAND,
 		},
 	}
 
@@ -120,9 +154,9 @@ func TestInfinibandMonitor(t *testing.T) {
 	require.ElementsMatch(t, expectedNoEvents, actualEvents)
 
 	// mlx5_0 port 1 become up - no error reports
-	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("5: LinkUp")
+	mockFS.Fs[MLX5_0_PORT1_PATH+PHYS_STATE].Data = []byte(PORT_PHYS_STATE_LINK_UP)
 	expectedPortBecomesHealthy := []NicHealthEvent{
-		{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true, LinkLayer: "InfiniBand"},
+		{NicType: Infiniband, Name: MLX5_0_1, Message: "Port is healthy", IsHealthyEvent: true, LinkLayer: LINK_LAYER_INFINIBAND},
 	}
 	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
@@ -130,22 +164,22 @@ func TestInfinibandMonitor(t *testing.T) {
 	require.ElementsMatch(t, expectedPortBecomesHealthy, actualEvents)
 
 	// eth0 become down again, so report nic down event
-	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/phys_state"].Data = []byte("2: Polling")
+	mockFS.Fs[MLX5_0_PORT1_PATH+PHYS_STATE].Data = []byte(PORT_PHYS_STATE_POLLING)
 	actualEvents, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	require.NotNil(t, actualEvents)
 	require.ElementsMatch(t, expectedPhyStatePolling, actualEvents)
 
 	// mlx5_0 port 1 physical link is not ready, so report nic down event
-	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
+	mockFS.Fs[MLX5_0_PORT1_PATH+STATE].Data = []byte(PORT_STATE_DOWN)
 
 	expectedStateDownAndPhyPolling := []NicHealthEvent{
 		{
 			NicType:        Infiniband,
-			Name:           "mlx5_0_1",
-			Message:        "state: 1: Down, phys_state: 2: Polling",
+			Name:           MLX5_0_1,
+			Message:        HEALTH_STATE_DOWN_POLLING,
 			IsHealthyEvent: false,
-			LinkLayer:      "InfiniBand",
+			LinkLayer:      LINK_LAYER_INFINIBAND,
 		},
 	}
 
@@ -158,19 +192,19 @@ func TestInfinibandMonitor(t *testing.T) {
 	ibMonitor = &InfinibandDeviceMonitor{} // Reset monitor state
 	ibMonitor.Devices = make(map[string]InfiniBandDevice)
 	mockFS.Fs = fstest.MapFS{ // Reset FS to only one device, initially unhealthy
-		"sys/class/infiniband/mlx5_new/ports/1":            {Mode: fs.ModeDir},
-		"sys/class/infiniband/mlx5_new/ports/1/phys_state": {Data: []byte("1: Disabled")},
-		"sys/class/infiniband/mlx5_new/ports/1/state":      {Data: []byte("1: Down")},
-		"sys/class/infiniband/mlx5_new/ports/1/link_layer": {Data: []byte("InfiniBand")},
+		MLX5_NEW_PORT1_PATH:              {Mode: fs.ModeDir},
+		MLX5_NEW_PORT1_PATH + PHYS_STATE: {Data: []byte("1: Disabled")},
+		MLX5_NEW_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_DOWN)},
+		MLX5_NEW_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_INFINIBAND)},
 	}
 	expectedNewUnhealthyPortEvents := []NicHealthEvent{
 		{NicType: Infiniband, Name: "mlx5_new", Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 		{
 			NicType:        Infiniband,
 			Name:           "mlx5_new_1",
-			Message:        "state: 1: Down, phys_state: 1: Disabled",
+			Message:        "state: 1: DOWN, phys_state: 1: Disabled",
 			IsHealthyEvent: false,
-			LinkLayer:      "InfiniBand",
+			LinkLayer:      LINK_LAYER_INFINIBAND,
 		},
 	}
 	actualEvents, err = ibMonitor.Monitor(nicConfig)
@@ -184,32 +218,32 @@ func TestInfinibandMonitor(t *testing.T) {
 }
 
 func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
-	sysClassInfinibandPath := "/sys/class/infiniband"
+	sysClassInfinibandPath := SYS_CLASS_INFINIBAND_PATH
 	fileSystem = &MockFileSystem{
 		Fs: fstest.MapFS{
 			// mlx5_0 with port 1
-			"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-			"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("InfiniBand")},
+			MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+			MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_INFINIBAND)},
 			// mlx5_1 with port 1
-			"sys/class/infiniband/mlx5_1/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_1/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_1/ports/1/state":      {Data: []byte("4: ACTIVE")},
-			"sys/class/infiniband/mlx5_1/ports/1/link_layer": {Data: []byte("InfiniBand")},
+			MLX5_1_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_1_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_1_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+			MLX5_1_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_INFINIBAND)},
 			// mlx5_2 with port 1
-			"sys/class/infiniband/mlx5_2/ports/1":            {Mode: fs.ModeDir},
-			"sys/class/infiniband/mlx5_2/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-			"sys/class/infiniband/mlx5_2/ports/1/state":      {Data: []byte("4: ACTIVE")},
-			"sys/class/infiniband/mlx5_2/ports/1/link_layer": {Data: []byte("InfiniBand")},
+			MLX5_2_PORT1_PATH:              {Mode: fs.ModeDir},
+			MLX5_2_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+			MLX5_2_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+			MLX5_2_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_INFINIBAND)},
 		},
 	}
 
 	mockFS := fileSystem.(*MockFileSystem)
 
 	expectedNoError := []NicHealthEvent{
-		{NicType: Infiniband, Name: "mlx5_0", Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-		{NicType: Infiniband, Name: "mlx5_0_1", Message: "Port is healthy", IsHealthyEvent: true, LinkLayer: "InfiniBand"},
+		{NicType: Infiniband, Name: MLX5_0, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+		{NicType: Infiniband, Name: MLX5_0_1, Message: "Port is healthy", IsHealthyEvent: true, LinkLayer: LINK_LAYER_INFINIBAND},
 	}
 
 	ibMonitor := &InfinibandDeviceMonitor{}
@@ -224,7 +258,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// update mlx5_1 state and verify it is not detected as  it is excluded
-	mockFS.Fs["sys/class/infiniband/mlx5_1/ports/1/state"].Data = []byte("1: Down")
+	mockFS.Fs[MLX5_1_PORT1_PATH+STATE].Data = []byte(PORT_STATE_DOWN)
 	expectedNoError = []NicHealthEvent{}
 	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
@@ -232,7 +266,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// udate mlx5_2 phys_state and verify it is not detected as it is excluded
-	mockFS.Fs["sys/class/infiniband/mlx5_2/ports/1/phys_state"].Data = []byte("2: Polling")
+	mockFS.Fs[MLX5_2_PORT1_PATH+PHYS_STATE].Data = []byte(PORT_PHYS_STATE_POLLING)
 
 	actualErrors, err = ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
@@ -240,14 +274,14 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 	require.Equal(t, expectedNoError, actualErrors)
 
 	// update mlx5_0 to have a state change, it should be detected
-	mockFS.Fs["sys/class/infiniband/mlx5_0/ports/1/state"].Data = []byte("1: Down")
+	mockFS.Fs[MLX5_0_PORT1_PATH+STATE].Data = []byte(PORT_STATE_DOWN)
 
 	expectedStateDown := []NicHealthEvent{
 		{
 			NicType:   Infiniband,
-			Name:      "mlx5_0_1",
-			Message:   "state: 1: Down",
-			LinkLayer: "InfiniBand",
+			Name:      MLX5_0_1,
+			Message:   "state: 1: DOWN",
+			LinkLayer: LINK_LAYER_INFINIBAND,
 		},
 	}
 
@@ -258,7 +292,7 @@ func TestInfinibandMonitorWithExclusionRegexes(t *testing.T) {
 }
 
 func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
-	const sysClassInfinibandPath = "/sys/class/infiniband"
+	const sysClassInfinibandPath = SYS_CLASS_INFINIBAND_PATH
 	tests := []struct {
 		name                 string
 		monitorNetworkType   MonitorNetworkType
@@ -270,42 +304,42 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 		{
 			name:                 "MonitorTypeAll_LinkLayerIB_Healthy",
 			monitorNetworkType:   MonitorNetworkTypeAll,
-			linkLayer:            "InfiniBand",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_INFINIBAND,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "InfiniBand"},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_INFINIBAND},
 			},
 		},
 		{
 			name:                 "MonitorTypeAll_LinkLayerEth_Healthy",
 			monitorNetworkType:   MonitorNetworkTypeAll,
-			linkLayer:            "Ethernet",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_ETHERNET,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 			},
 		},
 		{
 			name:                 "MonitorTypeRoCE_LinkLayerEth_Healthy",
 			monitorNetworkType:   MonitorNetworkTypeRoCE,
-			linkLayer:            "Ethernet",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_ETHERNET,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 			},
 		},
 		{
 			name:                 "MonitorTypeRoCE_LinkLayerIB_Healthy_ShouldBeSkipped",
 			monitorNetworkType:   MonitorNetworkTypeRoCE,
-			linkLayer:            "InfiniBand",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_INFINIBAND,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 			},
@@ -313,20 +347,20 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 		{
 			name:                 "MonitorTypeInfiniBand_LinkLayerIB_Healthy",
 			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
-			linkLayer:            "InfiniBand",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_INFINIBAND,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "InfiniBand"},
+				{Name: "mlx5_test_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_INFINIBAND},
 			},
 		},
 		{
 			name:                 "MonitorTypeInfiniBand_LinkLayerEth_Healthy_ShouldBeSkipped",
 			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
-			linkLayer:            "Ethernet",
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			linkLayer:            LINK_LAYER_ETHERNET,
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 			},
@@ -334,34 +368,34 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 		{
 			name:                 "MonitorTypeRoCE_LinkLayerEth_NewUnhealthyPort",
 			monitorNetworkType:   MonitorNetworkTypeRoCE,
-			linkLayer:            "Ethernet",
-			initialPortState:     "1: DOWN",
-			initialPortPhysState: "2: Polling",
+			linkLayer:            LINK_LAYER_ETHERNET,
+			initialPortState:     PORT_STATE_DOWN,
+			initialPortPhysState: PORT_PHYS_STATE_POLLING,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				{
 					Name:           "mlx5_test_1",
 					NicType:        Infiniband,
-					Message:        "state: 1: DOWN, phys_state: 2: Polling",
+					Message:        HEALTH_STATE_DOWN_POLLING,
 					IsHealthyEvent: false,
-					LinkLayer:      "Ethernet",
+					LinkLayer:      LINK_LAYER_ETHERNET,
 				},
 			},
 		},
 		{
 			name:                 "MonitorTypeInfiniBand_LinkLayerIB_NewUnhealthyPort",
 			monitorNetworkType:   MonitorNetworkTypeInfiniBand,
-			linkLayer:            "InfiniBand",
-			initialPortState:     "1: DOWN",
-			initialPortPhysState: "2: Polling",
+			linkLayer:            LINK_LAYER_INFINIBAND,
+			initialPortState:     PORT_STATE_DOWN,
+			initialPortPhysState: PORT_PHYS_STATE_POLLING,
 			expectedEvents: []NicHealthEvent{
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				{
 					Name:           "mlx5_test_1",
 					NicType:        Infiniband,
-					Message:        "state: 1: DOWN, phys_state: 2: Polling",
+					Message:        HEALTH_STATE_DOWN_POLLING,
 					IsHealthyEvent: false,
-					LinkLayer:      "InfiniBand",
+					LinkLayer:      LINK_LAYER_INFINIBAND,
 				},
 			},
 		},
@@ -369,8 +403,8 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 			name:                 "MonitorTypeRoCE_LinkLayerMissing_ShouldSkipPort",
 			monitorNetworkType:   MonitorNetworkTypeRoCE,
 			linkLayer:            "MISSING", // Special value to indicate file should not be created
-			initialPortState:     "4: ACTIVE",
-			initialPortPhysState: "5: LinkUp",
+			initialPortState:     PORT_STATE_ACTIVE,
+			initialPortPhysState: PORT_PHYS_STATE_LINK_UP,
 			expectedEvents: []NicHealthEvent{ // Only device detection, port is skipped due to missing link_layer
 				{Name: "mlx5_test", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 			},
@@ -380,12 +414,12 @@ func TestInfinibandMonitorNetworkTypeFiltering(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fsMap := fstest.MapFS{
-				"sys/class/infiniband/mlx5_test/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_test/ports/1/state":      {Data: []byte(tc.initialPortState)},
-				"sys/class/infiniband/mlx5_test/ports/1/phys_state": {Data: []byte(tc.initialPortPhysState)},
+				MLX5_TEST_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_TEST_PORT1_PATH + STATE:      {Data: []byte(tc.initialPortState)},
+				MLX5_TEST_PORT1_PATH + PHYS_STATE: {Data: []byte(tc.initialPortPhysState)},
 			}
 			if tc.linkLayer != "MISSING" {
-				fsMap["sys/class/infiniband/mlx5_test/ports/1/link_layer"] = &fstest.MapFile{Data: []byte(tc.linkLayer)}
+				fsMap[MLX5_TEST_PORT1_PATH+LINK_LAYER] = &fstest.MapFile{Data: []byte(tc.linkLayer)}
 			}
 
 			fileSystem = &MockFileSystem{Fs: fsMap}
@@ -428,64 +462,64 @@ func TestHasMatchingRoCEInterface(t *testing.T) {
 	}{
 		{
 			name:                 "EmptyRegexList_ShouldAllowAll",
-			deviceName:           "mlx5_0",
+			deviceName:           MLX5_0,
 			roCEInterfaceRegexes: []string{},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/eth0": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0: {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "SingleMatchingInterface",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/rdma0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/eth0":  {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + RDMA0: {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0:  {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "NoMatchingInterface",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/eth0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/ib0":  {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0:   {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/ib0": {Mode: fs.ModeDir},
 			},
 			expectedResult: false,
 			expectError:    false,
 		},
 		{
 			name:                 "MultipleRegexes_OneMatches",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^mlx5_\\d+$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, "^mlx5_\\d+$"},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/mlx5_0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/eth0":   {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + MLX5_0_PATH: {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0:        {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "MultipleRegexes_MultipleMatches",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^mlx5_.*$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, "^mlx5_.*$"},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/rdma0":  {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/rdma1":  {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/mlx5_0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/mlx5_1": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + RDMA0:       {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/rdma1":    {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + MLX5_0_PATH: {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/mlx5_1":   {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "NoNetDirectory_ShouldReturnFalse",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
 				"sys/class/infiniband/mlx5_0/device": {Mode: fs.ModeDir},
 				// No net directory
@@ -495,10 +529,10 @@ func TestHasMatchingRoCEInterface(t *testing.T) {
 		},
 		{
 			name:                 "InvalidRegex",
-			deviceName:           "mlx5_0",
+			deviceName:           MLX5_0,
 			roCEInterfaceRegexes: []string{"[invalid(regex"},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/rdma0": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + RDMA0: {Mode: fs.ModeDir},
 			},
 			expectedResult: false,
 			expectError:    true,
@@ -506,64 +540,64 @@ func TestHasMatchingRoCEInterface(t *testing.T) {
 		},
 		{
 			name:                 "EmptyNetDirectory",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "": {Mode: fs.ModeDir},
 			},
 			expectedResult: false,
 			expectError:    false,
 		},
 		{
 			name:                 "ComplexRegexPattern",
-			deviceName:           "mlx5_0",
+			deviceName:           MLX5_0,
 			roCEInterfaceRegexes: []string{"^(rdma|roce|ib)\\d+$"},
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/roce0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/eth0":  {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/roce0": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0:     {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "CaseSensitiveMatch",
-			deviceName:           "mlx5_0",
+			deviceName:           MLX5_0,
 			roCEInterfaceRegexes: []string{"^RDMA\\d+$"}, // Uppercase
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/rdma0": {Mode: fs.ModeDir}, // Lowercase
+				MLX5_0_DEVICE_NET + RDMA0: {Mode: fs.ModeDir}, // Lowercase
 			},
 			expectedResult: false, // Should not match due to case sensitivity
 			expectError:    false,
 		},
 		{
 			name:                 "DefaultPatterns_MatchRdma",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"}, // Default patterns
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, ETH_INTERFACE_REGEX}, // Default patterns
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/rdma0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/ib0":   {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + RDMA0:  {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/ib0": {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "DefaultPatterns_MatchEth",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"}, // Default patterns
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, ETH_INTERFACE_REGEX}, // Default patterns
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/eth0": {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/ib0":  {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + ETH0:   {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/ib0": {Mode: fs.ModeDir},
 			},
 			expectedResult: true,
 			expectError:    false,
 		},
 		{
 			name:                 "DefaultPatterns_NoMatch",
-			deviceName:           "mlx5_0",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^eth\\d+$"}, // Default patterns
+			deviceName:           MLX5_0,
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, ETH_INTERFACE_REGEX}, // Default patterns
 			fsMap: fstest.MapFS{
-				"sys/class/infiniband/mlx5_0/device/net/ib0":    {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/device/net/mlx5_0": {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + "/ib0":      {Mode: fs.ModeDir},
+				MLX5_0_DEVICE_NET + MLX5_0_PATH: {Mode: fs.ModeDir},
 			},
 			expectedResult: false,
 			expectError:    false,
@@ -575,7 +609,7 @@ func TestHasMatchingRoCEInterface(t *testing.T) {
 			fileSystem = &MockFileSystem{Fs: tc.fsMap}
 
 			result, err := hasMatchingRoCEInterface(tc.deviceName, tc.roCEInterfaceRegexes, &NicMonitorConfig{
-				SysClassInfinibandPath: "/sys/class/infiniband",
+				SysClassInfinibandPath: SYS_CLASS_INFINIBAND_PATH,
 			})
 
 			if tc.expectError {
@@ -601,66 +635,66 @@ func TestInfinibandMonitorWithRoCEInterfaceFiltering(t *testing.T) {
 	}{
 		{
 			name:                 "RoCEMode_DeviceWithMatchingInterface",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
 				// mlx5_0 with rdma0 interface
-				"sys/class/infiniband/mlx5_0/device/net/rdma0":   {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				MLX5_0_DEVICE_NET + RDMA0:      {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + "":         {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_0_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0_1, NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 			},
 			description: "Device with matching RoCE interface should be monitored",
 		},
 		{
 			name:                 "RoCEMode_DeviceWithoutMatchingInterface",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
 				// mlx5_0 with only eth0 interface (no rdma)
-				"sys/class/infiniband/mlx5_0/device/net/eth0":    {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				MLX5_0_DEVICE_NET + ETH0:       {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				// No port events because device is filtered out after detection
 			},
 			description: "Device without matching RoCE interface should be filtered out",
 		},
 		{
 			name:                 "RoCEMode_MultipleDevices_MixedInterfaces",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$", "^roce\\d+$"},
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX, "^roce\\d+$"},
 			fsMap: fstest.MapFS{
 				// mlx5_0 with rdma0 - should be monitored
-				"sys/class/infiniband/mlx5_0/device/net/rdma0":   {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				MLX5_0_DEVICE_NET + RDMA0:      {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 				// mlx5_1 with roce0 - should be monitored
-				"sys/class/infiniband/mlx5_1/device/net/roce0":   {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_1/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_1/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_1/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_1/ports/1/link_layer": {Data: []byte("Ethernet")},
+				"sys/class/infiniband/mlx5_1/device/net/roce0": {Mode: fs.ModeDir},
+				MLX5_1_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_1_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_1_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_1_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 				// mlx5_2 with only eth0 - should be filtered out
-				"sys/class/infiniband/mlx5_2/device/net/eth0":    {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_2/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_2/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_2/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_2/ports/1/link_layer": {Data: []byte("Ethernet")},
+				"sys/class/infiniband/mlx5_2/device/net/eth0": {Mode: fs.ModeDir},
+				MLX5_2_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_2_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_2_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_2_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_0_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0_1, NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 				{Name: "mlx5_1", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_1_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: "mlx5_1_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 				{Name: "mlx5_2", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				// No mlx5_2 port events because it's filtered out
 			},
@@ -668,40 +702,40 @@ func TestInfinibandMonitorWithRoCEInterfaceFiltering(t *testing.T) {
 		},
 		{
 			name:                 "RoCEMode_DeviceNoNetDirectory",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
 				// mlx5_0 without net directory
-				"sys/class/infiniband/mlx5_0/device":             {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				"sys/class/infiniband/mlx5_0/device": {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH:                    {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:            {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_0_PORT1_PATH + PHYS_STATE:       {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_0_PORT1_PATH + LINK_LAYER:       {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				// No port events because device has no net directory
 			},
 			description: "Device without net directory should be filtered out",
 		},
 		{
 			name:                 "RoCEMode_UnhealthyPortWithMatchingInterface",
-			roCEInterfaceRegexes: []string{"^rdma\\d+$"},
+			roCEInterfaceRegexes: []string{RDMA_INTERFACE_REGEX},
 			fsMap: fstest.MapFS{
 				// mlx5_0 with rdma0 interface and unhealthy port
-				"sys/class/infiniband/mlx5_0/device/net/rdma0":   {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("1: DOWN")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("2: Polling")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				MLX5_0_DEVICE_NET + RDMA0:      {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_DOWN)},
+				MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_POLLING)},
+				MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
 				{
-					Name:           "mlx5_0_1",
+					Name:           MLX5_0_1,
 					NicType:        Infiniband,
-					Message:        "state: 1: DOWN, phys_state: 2: Polling",
+					Message:        HEALTH_STATE_DOWN_POLLING,
 					IsHealthyEvent: false,
-					LinkLayer:      "Ethernet",
+					LinkLayer:      LINK_LAYER_ETHERNET,
 				},
 			},
 			description: "Unhealthy port on device with matching interface should be reported",
@@ -711,15 +745,15 @@ func TestInfinibandMonitorWithRoCEInterfaceFiltering(t *testing.T) {
 			roCEInterfaceRegexes: []string{},
 			fsMap: fstest.MapFS{
 				// mlx5_0 with any interface
-				"sys/class/infiniband/mlx5_0/device/net/eth0":    {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-				"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+				MLX5_0_DEVICE_NET + ETH0:       {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+				MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 			},
 			expectedEvents: []NicHealthEvent{
-				{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-				{Name: "mlx5_0_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+				{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+				{Name: MLX5_0_1, NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 			},
 			description: "Empty regex list should allow all devices",
 		},
@@ -736,7 +770,7 @@ func TestInfinibandMonitorWithRoCEInterfaceFiltering(t *testing.T) {
 				ExclusionRegexes:       nil,
 				MonitorNetworkType:     MonitorNetworkTypeRoCE,
 				RoCEInterfaceRegexes:   tc.roCEInterfaceRegexes,
-				SysClassInfinibandPath: "/sys/class/infiniband",
+				SysClassInfinibandPath: SYS_CLASS_INFINIBAND_PATH,
 			}
 
 			actualEvents, err := ibMonitor.Monitor(nicConfig)
@@ -749,11 +783,11 @@ func TestInfinibandMonitorWithRoCEInterfaceFiltering(t *testing.T) {
 func TestInfinibandMonitorRoCEFilteringStateTransitions(t *testing.T) {
 	// Initial state: mlx5_0 with rdma0 interface
 	initialFS := fstest.MapFS{
-		"sys/class/infiniband/mlx5_0/device/net/rdma0":   {Mode: fs.ModeDir},
-		"sys/class/infiniband/mlx5_0/ports/1":            {Mode: fs.ModeDir},
-		"sys/class/infiniband/mlx5_0/ports/1/state":      {Data: []byte("4: ACTIVE")},
-		"sys/class/infiniband/mlx5_0/ports/1/phys_state": {Data: []byte("5: LinkUp")},
-		"sys/class/infiniband/mlx5_0/ports/1/link_layer": {Data: []byte("Ethernet")},
+		MLX5_0_DEVICE_NET + RDMA0:      {Mode: fs.ModeDir},
+		MLX5_0_PORT1_PATH + "":         {Mode: fs.ModeDir},
+		MLX5_0_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+		MLX5_0_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
+		MLX5_0_PORT1_PATH + LINK_LAYER: {Data: []byte(LINK_LAYER_ETHERNET)},
 	}
 
 	fileSystem = &MockFileSystem{Fs: initialFS}
@@ -763,16 +797,16 @@ func TestInfinibandMonitorRoCEFilteringStateTransitions(t *testing.T) {
 	nicConfig := &NicMonitorConfig{
 		ExclusionRegexes:       nil,
 		MonitorNetworkType:     MonitorNetworkTypeRoCE,
-		RoCEInterfaceRegexes:   []string{"^rdma\\d+$"},
-		SysClassInfinibandPath: "/sys/class/infiniband",
+		RoCEInterfaceRegexes:   []string{RDMA_INTERFACE_REGEX},
+		SysClassInfinibandPath: SYS_CLASS_INFINIBAND_PATH,
 	}
 
 	// First monitor call - device should be detected
 	actualEvents, err := ibMonitor.Monitor(nicConfig)
 	require.NoError(t, err)
 	expectedEvents := []NicHealthEvent{
-		{Name: "mlx5_0", NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
-		{Name: "mlx5_0_1", NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: "Ethernet"},
+		{Name: MLX5_0, NicType: Infiniband, Message: nicIsDetected, IsHealthyEvent: true, LinkLayer: UNKNOWN_LINK_LAYER},
+		{Name: MLX5_0_1, NicType: Infiniband, Message: portIsHealthy, IsHealthyEvent: true, LinkLayer: LINK_LAYER_ETHERNET},
 	}
 	require.ElementsMatch(t, expectedEvents, actualEvents)
 
@@ -783,8 +817,8 @@ func TestInfinibandMonitorRoCEFilteringStateTransitions(t *testing.T) {
 
 	// Change interface from rdma0 to eth0 (device should disappear)
 	mockFS := fileSystem.(*MockFileSystem)
-	delete(mockFS.Fs, "sys/class/infiniband/mlx5_0/device/net/rdma0")
-	mockFS.Fs["sys/class/infiniband/mlx5_0/device/net/eth0"] = &fstest.MapFile{Mode: fs.ModeDir}
+	delete(mockFS.Fs, MLX5_0_DEVICE_NET+RDMA0)
+	mockFS.Fs[MLX5_0_DEVICE_NET+ETH0] = &fstest.MapFile{Mode: fs.ModeDir}
 
 	// Third monitor call - device is still detected but ports are skipped
 	actualEvents, err = ibMonitor.Monitor(nicConfig)
@@ -793,7 +827,7 @@ func TestInfinibandMonitorRoCEFilteringStateTransitions(t *testing.T) {
 	require.Empty(t, actualEvents)
 
 	// Add rdma0 back (device should start being monitored again)
-	mockFS.Fs["sys/class/infiniband/mlx5_0/device/net/rdma0"] = &fstest.MapFile{Mode: fs.ModeDir}
+	mockFS.Fs[MLX5_0_DEVICE_NET+RDMA0] = &fstest.MapFile{Mode: fs.ModeDir}
 
 	// Fourth monitor call - ports should be monitored again
 	actualEvents, err = ibMonitor.Monitor(nicConfig)
@@ -803,7 +837,7 @@ func TestInfinibandMonitorRoCEFilteringStateTransitions(t *testing.T) {
 }
 
 func TestInfinibandMonitorWithLinkLayerBasedRoCEFiltering(t *testing.T) {
-	const sysClassInfinibandPath = "/sys/class/infiniband"
+	const sysClassInfinibandPath = SYS_CLASS_INFINIBAND_PATH
 
 	testCases := []struct {
 		name                 string
@@ -814,21 +848,21 @@ func TestInfinibandMonitorWithLinkLayerBasedRoCEFiltering(t *testing.T) {
 	}{
 		{
 			name:                 "InfiniBand_LinkLayer_FilteredOutByRoCEMode",
-			linkLayer:            "InfiniBand",
+			linkLayer:            LINK_LAYER_INFINIBAND,
 			hasMatchingInterface: false, // Interface doesn't matter for InfiniBand link layer
 			expectedPortEvents:   0,     // Port should be filtered out by RoCE mode
 			description:          "InfiniBand link layer should be filtered out when MonitorNetworkType is RoCE",
 		},
 		{
 			name:                 "Ethernet_LinkLayer_WithMatchingInterface",
-			linkLayer:            "Ethernet",
+			linkLayer:            LINK_LAYER_ETHERNET,
 			hasMatchingInterface: true, // Has matching interface, should be monitored
 			expectedPortEvents:   1,    // Port event should be generated
 			description:          "Ethernet link layer with matching RoCE interface should be monitored",
 		},
 		{
 			name:                 "Ethernet_LinkLayer_WithoutMatchingInterface",
-			linkLayer:            "Ethernet",
+			linkLayer:            LINK_LAYER_ETHERNET,
 			hasMatchingInterface: false, // No matching interface, should be filtered out
 			expectedPortEvents:   0,     // No port events should be generated
 			description:          "Ethernet link layer without matching RoCE interface should be filtered out",
@@ -852,14 +886,14 @@ func TestInfinibandMonitorWithLinkLayerBasedRoCEFiltering(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			fsMap := fstest.MapFS{
-				"sys/class/infiniband/mlx5_test/ports/1":            {Mode: fs.ModeDir},
-				"sys/class/infiniband/mlx5_test/ports/1/state":      {Data: []byte("4: ACTIVE")},
-				"sys/class/infiniband/mlx5_test/ports/1/phys_state": {Data: []byte("5: LinkUp")},
+				MLX5_TEST_PORT1_PATH:              {Mode: fs.ModeDir},
+				MLX5_TEST_PORT1_PATH + STATE:      {Data: []byte(PORT_STATE_ACTIVE)},
+				MLX5_TEST_PORT1_PATH + PHYS_STATE: {Data: []byte(PORT_PHYS_STATE_LINK_UP)},
 			}
 
 			// Add link_layer file if not "unknown"
 			if tc.linkLayer != UNKNOWN_LINK_LAYER {
-				fsMap["sys/class/infiniband/mlx5_test/ports/1/link_layer"] = &fstest.MapFile{Data: []byte(tc.linkLayer)}
+				fsMap[MLX5_TEST_PORT1_PATH+LINK_LAYER] = &fstest.MapFile{Data: []byte(tc.linkLayer)}
 			}
 
 			// Add network interface directory and matching interface if needed
@@ -880,7 +914,7 @@ func TestInfinibandMonitorWithLinkLayerBasedRoCEFiltering(t *testing.T) {
 			nicConfig := &NicMonitorConfig{
 				ExclusionRegexes:       nil,
 				MonitorNetworkType:     MonitorNetworkTypeRoCE,
-				RoCEInterfaceRegexes:   []string{"^eth\\d+$", "^rdma\\d+$"}, // Only eth* and rdma* patterns
+				RoCEInterfaceRegexes:   []string{ETH_INTERFACE_REGEX, RDMA_INTERFACE_REGEX}, // Only eth* and rdma* patterns
 				SysClassInfinibandPath: sysClassInfinibandPath,
 			}
 
