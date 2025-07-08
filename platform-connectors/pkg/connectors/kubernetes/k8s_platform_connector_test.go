@@ -17,7 +17,10 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,9 +30,10 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -57,37 +61,37 @@ type healthConditionList struct {
 	ExpectedOutputConditionType string
 }
 
-func getNode() *v1.Node {
+func getNode() *corev1.Node {
 	// Create a fake node
-	fakeNode := &v1.Node{
+	fakeNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "testnode",
 		},
-		Status: v1.NodeStatus{
-			Capacity: v1.ResourceList{
-				v1.ResourceCPU:    resource.MustParse("4"),
-				v1.ResourceMemory: resource.MustParse("8Gi"),
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("4"),
+				corev1.ResourceMemory: resource.MustParse("8Gi"),
 			},
-			Conditions: []v1.NodeCondition{
+			Conditions: []corev1.NodeCondition{
 				{
-					Type:               v1.NodeReady,
-					Status:             v1.ConditionTrue,
+					Type:               corev1.NodeReady,
+					Status:             corev1.ConditionTrue,
 					LastHeartbeatTime:  metav1.Now(),
 					LastTransitionTime: metav1.Now(),
 					Reason:             "KubeletReady",
 					Message:            "kubelet is posting ready status",
 				},
 				{
-					Type:               v1.NodeMemoryPressure,
-					Status:             v1.ConditionFalse,
+					Type:               corev1.NodeMemoryPressure,
+					Status:             corev1.ConditionFalse,
 					LastHeartbeatTime:  metav1.Now(),
 					LastTransitionTime: metav1.Now(),
 					Reason:             "KubeletHasSufficientMemory",
 					Message:            "kubelet has sufficient memory available",
 				},
 				{
-					Type:               v1.NodeDiskPressure,
-					Status:             v1.ConditionFalse,
+					Type:               corev1.NodeDiskPressure,
+					Status:             corev1.ConditionFalse,
 					LastHeartbeatTime:  metav1.Now(),
 					LastTransitionTime: metav1.Now(),
 					Reason:             "KubeletHasNoDiskPressure",
@@ -95,7 +99,7 @@ func getNode() *v1.Node {
 				},
 				{
 					Type:               corev1.NodeConditionType("GpuThermalWatch"),
-					Status:             v1.ConditionFalse,
+					Status:             corev1.ConditionFalse,
 					LastHeartbeatTime:  metav1.Now(),
 					LastTransitionTime: metav1.Now(),
 					Reason:             "GpuThermalWatchIsHealthy",
@@ -103,7 +107,7 @@ func getNode() *v1.Node {
 				},
 				{
 					Type:               corev1.NodeConditionType("GpuPcieWatch"),
-					Status:             v1.ConditionFalse,
+					Status:             corev1.ConditionFalse,
 					LastHeartbeatTime:  metav1.Now(),
 					LastTransitionTime: metav1.Now(),
 					Reason:             "GpuPcieWatchIsHealthy",
@@ -602,12 +606,12 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
-		fakeNode := &v1.Node{
+		fakeNode := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "testnode",
 			},
-			Status: v1.NodeStatus{
-				Conditions: []v1.NodeCondition{
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
 					{
 						Type:               conditionType,
 						Status:             corev1.ConditionFalse,
@@ -700,12 +704,12 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 	for _, healthEvent := range healthEventsList {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
-		fakeNode := &v1.Node{
+		fakeNode := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "testnode",
 			},
-			Status: v1.NodeStatus{
-				Conditions: []v1.NodeCondition{},
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{},
 			},
 		}
 		_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
@@ -814,12 +818,12 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 	for _, testCase := range healthEventsList {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
-		fakeNode := &v1.Node{
+		fakeNode := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "testnode",
 			},
-			Status: v1.NodeStatus{
-				Conditions: []v1.NodeCondition{
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
 					{
 						Type:               testCase.conditionType,
 						Status:             corev1.ConditionTrue,
@@ -898,12 +902,12 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 	for index, testCase := range testCases {
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 
-		fakeNode := &v1.Node{
+		fakeNode := &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "testnode",
 			},
-			Status: v1.NodeStatus{
-				Conditions: []v1.NodeCondition{
+			Status: corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
 					{
 						Type:               testCase.conditionType,
 						Status:             corev1.ConditionTrue,
@@ -960,4 +964,334 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 
 		_ = clientSet.CoreV1().Nodes().Delete(ctx, "testnode", metav1.DeleteOptions{})
 	}
+}
+
+func TestIsTemporaryError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		// Nil error
+		{
+			name:     "nil error should return false",
+			err:      nil,
+			expected: false,
+		},
+
+		// Context errors
+		{
+			name:     "context.DeadlineExceeded should be retryable",
+			err:      context.DeadlineExceeded,
+			expected: true,
+		},
+		{
+			name:     "context.Canceled should be retryable",
+			err:      context.Canceled,
+			expected: true,
+		},
+		{
+			name:     "wrapped context.DeadlineExceeded should be retryable",
+			err:      fmt.Errorf("operation failed: %w", context.DeadlineExceeded),
+			expected: true,
+		},
+
+		// Kubernetes API errors
+		{
+			name:     "timeout error should be retryable",
+			err:      apierrors.NewTimeoutError("operation timed out", 30),
+			expected: true,
+		},
+		{
+			name:     "server timeout error should be retryable",
+			err:      apierrors.NewServerTimeout(schema.GroupResource{Group: "", Resource: "nodes"}, "update", 30),
+			expected: true,
+		},
+		{
+			name:     "service unavailable error should be retryable",
+			err:      apierrors.NewServiceUnavailable("service temporarily unavailable"),
+			expected: true,
+		},
+		{
+			name:     "too many requests error should be retryable",
+			err:      apierrors.NewTooManyRequests("rate limit exceeded", 60),
+			expected: true,
+		},
+		{
+			name:     "internal server error should be retryable",
+			err:      apierrors.NewInternalError(fmt.Errorf("internal error")),
+			expected: true,
+		},
+		{
+			name:     "not found error should not be retryable",
+			err:      apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "nodes"}, "test-node"),
+			expected: false,
+		},
+		{
+			name:     "bad request error should not be retryable",
+			err:      apierrors.NewBadRequest("invalid request"),
+			expected: false,
+		},
+
+		// Network errors
+		{
+			name:     "network timeout error should be retryable",
+			err:      &timeoutError{timeout: true},
+			expected: true,
+		},
+		{
+			name:     "non-timeout network error should not be retryable",
+			err:      &timeoutError{timeout: false},
+			expected: false,
+		},
+
+		// Syscall errors
+		{
+			name:     "ECONNREFUSED should be retryable",
+			err:      syscall.ECONNREFUSED,
+			expected: true,
+		},
+		{
+			name:     "ECONNRESET should be retryable",
+			err:      syscall.ECONNRESET,
+			expected: true,
+		},
+		{
+			name:     "ECONNABORTED should be retryable",
+			err:      syscall.ECONNABORTED,
+			expected: true,
+		},
+		{
+			name:     "ETIMEDOUT should be retryable",
+			err:      syscall.ETIMEDOUT,
+			expected: true,
+		},
+		{
+			name:     "EHOSTUNREACH should be retryable",
+			err:      syscall.EHOSTUNREACH,
+			expected: true,
+		},
+		{
+			name:     "ENETUNREACH should be retryable",
+			err:      syscall.ENETUNREACH,
+			expected: true,
+		},
+		{
+			name:     "EPIPE should be retryable",
+			err:      syscall.EPIPE,
+			expected: true,
+		},
+		{
+			name:     "wrapped ECONNRESET should be retryable",
+			err:      fmt.Errorf("connection failed: %w", syscall.ECONNRESET),
+			expected: true,
+		},
+		{
+			name:     "EACCES should not be retryable",
+			err:      syscall.EACCES,
+			expected: false,
+		},
+
+		// io.EOF errors
+		{
+			name:     "io.EOF should be retryable",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "wrapped io.EOF should be retryable",
+			err:      fmt.Errorf("read failed: %w", io.EOF),
+			expected: true,
+		},
+
+		// String-based HTTP/2 and connection errors
+		{
+			name:     "http2: client connection lost should be retryable",
+			err:      fmt.Errorf("http2: client connection lost"),
+			expected: true,
+		},
+		{
+			name:     "http2: server connection lost should be retryable",
+			err:      fmt.Errorf("http2: server connection lost"),
+			expected: true,
+		},
+		{
+			name:     "http2: connection closed should be retryable",
+			err:      fmt.Errorf("http2: connection closed"),
+			expected: true,
+		},
+		{
+			name:     "connection reset by peer should be retryable",
+			err:      fmt.Errorf("read: connection reset by peer"),
+			expected: true,
+		},
+		{
+			name:     "broken pipe should be retryable",
+			err:      fmt.Errorf("write: broken pipe"),
+			expected: true,
+		},
+		{
+			name:     "connection refused should be retryable",
+			err:      fmt.Errorf("dial tcp: connection refused"),
+			expected: true,
+		},
+		{
+			name:     "connection timed out should be retryable",
+			err:      fmt.Errorf("dial tcp: connection timed out"),
+			expected: true,
+		},
+		{
+			name:     "i/o timeout should be retryable",
+			err:      fmt.Errorf("Post \"https://example.com\": i/o timeout"),
+			expected: true,
+		},
+		{
+			name:     "network is unreachable should be retryable",
+			err:      fmt.Errorf("dial tcp: network is unreachable"),
+			expected: true,
+		},
+		{
+			name:     "host is unreachable should be retryable",
+			err:      fmt.Errorf("dial tcp: no route to host: host is unreachable"),
+			expected: true,
+		},
+
+		// TLS/SSL errors
+		{
+			name:     "tls: handshake timeout should be retryable",
+			err:      fmt.Errorf("tls: handshake timeout"),
+			expected: true,
+		},
+		{
+			name:     "tls: oversized record received should be retryable",
+			err:      fmt.Errorf("tls: oversized record received with length 65536"),
+			expected: true,
+		},
+		{
+			name:     "remote error: tls: should be retryable",
+			err:      fmt.Errorf("remote error: tls: bad certificate"),
+			expected: true,
+		},
+
+		// DNS errors
+		{
+			name:     "no such host should be retryable",
+			err:      fmt.Errorf("dial tcp: lookup example.com: no such host"),
+			expected: true,
+		},
+		{
+			name:     "dns: no answer should be retryable",
+			err:      fmt.Errorf("dns: no answer from server"),
+			expected: true,
+		},
+		{
+			name:     "temporary failure in name resolution should be retryable",
+			err:      fmt.Errorf("dial tcp: lookup example.com on 127.0.0.1:53: temporary failure in name resolution"),
+			expected: true,
+		},
+
+		// Load balancer and proxy errors
+		{
+			name:     "502 Bad Gateway should be retryable",
+			err:      fmt.Errorf("502 Bad Gateway"),
+			expected: true,
+		},
+		{
+			name:     "503 Service Unavailable should be retryable",
+			err:      fmt.Errorf("503 Service Unavailable"),
+			expected: true,
+		},
+		{
+			name:     "504 Gateway Timeout should be retryable",
+			err:      fmt.Errorf("504 Gateway Timeout"),
+			expected: true,
+		},
+
+		// Kubernetes-specific error patterns
+		{
+			name:     "server unable to handle request should be retryable",
+			err:      fmt.Errorf("the server is currently unable to handle the request"),
+			expected: true,
+		},
+		{
+			name:     "etcd cluster unavailable should be retryable",
+			err:      fmt.Errorf("etcd cluster is unavailable or misconfigured"),
+			expected: true,
+		},
+		{
+			name:     "unable to connect to server should be retryable",
+			err:      fmt.Errorf("unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused"),
+			expected: true,
+		},
+		{
+			name:     "server not ready should be retryable",
+			err:      fmt.Errorf("server is not ready to handle requests"),
+			expected: true,
+		},
+
+		// String EOF errors
+		{
+			name:     "string EOF should be retryable",
+			err:      fmt.Errorf("unexpected EOF"),
+			expected: true,
+		},
+
+		// Non-retryable errors
+		{
+			name:     "generic error should not be retryable",
+			err:      fmt.Errorf("some random error"),
+			expected: false,
+		},
+		{
+			name:     "permission denied should not be retryable",
+			err:      fmt.Errorf("permission denied"),
+			expected: false,
+		},
+		{
+			name:     "invalid argument should not be retryable",
+			err:      fmt.Errorf("invalid argument"),
+			expected: false,
+		},
+
+		// Complex error scenarios
+		{
+			name:     "nested http2 error in url.Error should be retryable",
+			err:      &url.Error{Op: "Get", URL: "https://example.com", Err: fmt.Errorf("http2: client connection lost")},
+			expected: true,
+		},
+		{
+			name:     "deeply nested retryable error should be retryable",
+			err:      fmt.Errorf("operation failed: %w", fmt.Errorf("network error: %w", syscall.ECONNRESET)),
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isTemporaryError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isTemporaryError(%v) = %v, expected %v", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+// timeoutError is a mock implementation of net.Error for testing
+type timeoutError struct {
+	timeout bool
+}
+
+func (e *timeoutError) Error() string {
+	if e.timeout {
+		return "operation timed out"
+	}
+	return "network error"
+}
+
+func (e *timeoutError) Timeout() bool {
+	return e.timeout
+}
+
+func (e *timeoutError) Temporary() bool {
+	return false
 }
