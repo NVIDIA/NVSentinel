@@ -431,9 +431,6 @@ func main() {
 				nicConfig.RoCEInterfaceRegexes = append(nicConfig.RoCEInterfaceRegexes, trimmedRegex)
 			}
 		}
-	} else {
-		// Use default if not specified
-		nicConfig.RoCEInterfaceRegexes = append(nicConfig.RoCEInterfaceRegexes, defaultRoCEInterfaceRegexes)
 	}
 
 	// check if config.ini exists and load it to override flag values
