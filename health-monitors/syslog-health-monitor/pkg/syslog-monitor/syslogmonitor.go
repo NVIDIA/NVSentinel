@@ -303,6 +303,21 @@ func (sm *SyslogMonitor) validateCheckDefinition(check common.CheckDefinition) e
 	return nil
 }
 
+// validateJournalPath validates the journal path on the filesystem
+func (sm *SyslogMonitor) validateJournalPath(check common.CheckDefinition) error {
+	fileInfo, err := os.Stat(check.JournalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("check '%s': journal path does not exist: %s", check.Name, check.JournalPath)
+		}
+		return fmt.Errorf("check '%s': error accessing journal path %s: %v", check.Name, check.JournalPath, err)
+	}
+	if !fileInfo.IsDir() {
+		return fmt.Errorf("check '%s': journal path is not a directory: %s", check.Name, check.JournalPath)
+	}
+	return nil
+}
+
 // openJournal opens the systemd journal with the specified path
 func (sm *SyslogMonitor) openJournal(check common.CheckDefinition) (Journal, error) {
 	if check.JournalPath != "" {
@@ -310,15 +325,8 @@ func (sm *SyslogMonitor) openJournal(check common.CheckDefinition) (Journal, err
 
 		// Only validate path on filesystem for real journal factories
 		if sm.journalFactory.RequiresFileSystemCheck() {
-			fileInfo, err := os.Stat(check.JournalPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return nil, fmt.Errorf("check '%s': journal path does not exist: %s", check.Name, check.JournalPath)
-				}
-				return nil, fmt.Errorf("check '%s': error accessing journal path %s: %v", check.Name, check.JournalPath, err)
-			}
-			if !fileInfo.IsDir() {
-				return nil, fmt.Errorf("check '%s': journal path is not a directory: %s", check.Name, check.JournalPath)
+			if err := sm.validateJournalPath(check); err != nil {
+				return nil, err
 			}
 		}
 

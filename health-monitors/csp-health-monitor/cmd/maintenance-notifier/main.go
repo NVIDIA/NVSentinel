@@ -46,17 +46,24 @@ const (
 	defaultMetricsPortSidecar   = "2113"
 )
 
-// nolint: cyclop
-func main() {
+type appConfig struct {
+	configPath               string
+	udsPath                  string
+	mongoClientCertMountPath string
+	metricsPort              string
+}
+
+func parseFlags() *appConfig {
+	cfg := &appConfig{}
 	// Command-line flags
-	configPath := flag.String("config", defaultConfigPathSidecar, "Path to the TOML configuration file.")
-	udsPath := flag.String("uds-path", defaultUdsPathSidecar, "Path to the Platform Connector UDS socket.")
-	mongoClientCertMountPath := flag.String(
+	flag.StringVar(&cfg.configPath, "config", defaultConfigPathSidecar, "Path to the TOML configuration file.")
+	flag.StringVar(&cfg.udsPath, "uds-path", defaultUdsPathSidecar, "Path to the Platform Connector UDS socket.")
+	flag.StringVar(&cfg.mongoClientCertMountPath,
 		"mongo-client-cert-mount-path",
 		defaultMongoCertPathSidecar,
 		"Directory where MongoDB client tls.crt, tls.key, and ca.crt are mounted.",
 	)
-	metricsPort := flag.String("metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
+	flag.StringVar(&cfg.metricsPort, "metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
 
 	// Initialise klog and parse flags
 	klog.InitFlags(nil)
@@ -64,26 +71,22 @@ func main() {
 	// Parse flags after initialising klog
 	flag.Parse()
 
-	defer klog.Flush()
+	return cfg
+}
 
+func logStartupInfo(cfg *appConfig) {
 	klog.Infof("Starting Quarantine Trigger Engine Sidecar...")
-	klog.Infof("Using configuration file: %s", *configPath)
-	klog.Infof("Platform Connector UDS Path: %s", *udsPath)
-	klog.Infof("MongoDB Client Cert Mount Path: %s", *mongoClientCertMountPath)
-	klog.Infof("Exposing sidecar metrics on port: %s", *metricsPort)
+	klog.Infof("Using configuration file: %s", cfg.configPath)
+	klog.Infof("Platform Connector UDS Path: %s", cfg.udsPath)
+	klog.Infof("MongoDB Client Cert Mount Path: %s", cfg.mongoClientCertMountPath)
+	klog.Infof("Exposing sidecar metrics on port: %s", cfg.metricsPort)
 	klog.V(2).Infof("Klog verbosity level is set based on the -v flag for sidecar.")
+}
 
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		klog.Fatalf("Failed to load configuration: %v", err)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+func startMetricsServer(metricsPort string) {
 	// Start metrics endpoint in a separate goroutine
 	go func() {
-		listenAddress := fmt.Sprintf(":%s", *metricsPort)
+		listenAddress := fmt.Sprintf(":%s", metricsPort)
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
 
@@ -103,17 +106,11 @@ func main() {
 
 		klog.Info("Metrics server (sidecar) stopped.")
 	}()
+}
 
-	// Initialise datastore and UDS connection
-	store, err := datastore.NewStore(ctx, mongoClientCertMountPath)
-	if err != nil {
-		klog.Fatalf("Failed to initialize datastore for sidecar: %v", err)
-	}
-
-	klog.Info("Datastore initialized successfully for sidecar.")
-
-	klog.Infof("Sidecar attempting to connect to Platform Connector UDS at: unix:%s", *udsPath)
-	target := fmt.Sprintf("unix:%s", *udsPath)
+func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorClient) {
+	klog.Infof("Sidecar attempting to connect to Platform Connector UDS at: unix:%s", udsPath)
+	target := fmt.Sprintf("unix:%s", udsPath)
 
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -125,6 +122,66 @@ func main() {
 		klog.Fatalf("Sidecar failed to dial Platform Connector UDS %s: %v", target, err)
 	}
 
+	klog.Info("Sidecar successfully connected to Platform Connector UDS.")
+
+	return conn, pb.NewPlatformConnectorClient(conn)
+}
+
+func setupKubernetesClient(cfg *config.Config) kubernetes.Interface {
+	var restCfg *rest.Config
+
+	var err error
+
+	if cfg != nil && cfg.KubeconfigPath != "" {
+		restCfg, err = clientcmd.BuildConfigFromFlags("", cfg.KubeconfigPath)
+		if err != nil {
+			klog.Errorf("Trigger Engine: failed to build kubeconfig from %s: %v", cfg.KubeconfigPath, err)
+			return nil
+		}
+	} else {
+		restCfg, err = rest.InClusterConfig()
+		if err != nil {
+			klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
+			return nil
+		}
+	}
+
+	k8sClient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		klog.Errorf("Trigger Engine: failed to create Kubernetes clientset: %v", err)
+		return nil
+	}
+
+	klog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
+
+	return k8sClient
+}
+
+func main() {
+	appCfg := parseFlags()
+
+	defer klog.Flush()
+
+	logStartupInfo(appCfg)
+
+	cfg, err := config.LoadConfig(appCfg.configPath)
+	if err != nil {
+		klog.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	startMetricsServer(appCfg.metricsPort)
+
+	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
+	if err != nil {
+		klog.Fatalf("Failed to initialize datastore for sidecar: %v", err)
+	}
+
+	klog.Info("Datastore initialized successfully for sidecar.")
+
+	conn, platformConnectorClient := setupUDSConnection(appCfg.udsPath)
 	defer func() {
 		klog.Info("Closing UDS connection for sidecar.")
 
@@ -132,39 +189,9 @@ func main() {
 			klog.Errorf("Error closing sidecar UDS connection: %v", errClose)
 		}
 	}()
-	klog.Info("Sidecar successfully connected to Platform Connector UDS.")
 
-	platformConnectorClient := pb.NewPlatformConnectorClient(conn)
+	k8sClient := setupKubernetesClient(cfg)
 
-	var k8sClient kubernetes.Interface
-
-	var restCfg *rest.Config
-
-	if cfg != nil && cfg.KubeconfigPath != "" {
-		restCfg, err = clientcmd.BuildConfigFromFlags("", cfg.KubeconfigPath)
-		if err != nil {
-			klog.Errorf("Trigger Engine: failed to build kubeconfig from %s: %v", cfg.KubeconfigPath, err)
-		}
-	} else {
-		restCfg, err = rest.InClusterConfig()
-		if err != nil {
-			klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
-		}
-	}
-
-	if err == nil && restCfg != nil {
-		if k8sClient, err = kubernetes.NewForConfig(restCfg); err != nil {
-			klog.Errorf("Trigger Engine: failed to create Kubernetes clientset: %v", err)
-
-			k8sClient = nil
-		} else {
-			klog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
-		}
-	} else {
-		klog.Error("Trigger Engine: failed to initialize Kubernetes clientset.")
-	}
-
-	// Initialise and start the trigger engine (blocking)
 	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 
 	klog.Info("Trigger engine starting...")

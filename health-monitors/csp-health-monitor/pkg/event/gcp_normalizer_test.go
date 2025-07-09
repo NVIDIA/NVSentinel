@@ -28,6 +28,14 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
+const (
+	DATE_TIME         = "2023-01-15T10:30:00.123456789Z"
+	DATE_TIME_RFC3339 = "2023-01-15T10:30:00Z"
+	K8S_NODE_1        = "k8s-node-1"
+	TEST_CLUSTER      = "test-cluster"
+	TEST_INSTANCE_ERR = "projects/p/zones/z/instances/i-err"
+)
+
 func TestSafeFormatTime(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -42,10 +50,10 @@ func TestSafeFormatTime(t *testing.T) {
 		{
 			name: "valid time",
 			input: func() *time.Time {
-				tm, _ := time.Parse(time.RFC3339Nano, "2023-01-15T10:30:00.123456789Z")
+				tm, _ := time.Parse(time.RFC3339Nano, DATE_TIME)
 				return &tm
 			}(),
-			expected: "2023-01-15T10:30:00.123456789Z",
+			expected: DATE_TIME,
 		},
 	}
 
@@ -107,6 +115,25 @@ func TestExtractInstanceNameFromFQN(t *testing.T) {
 	}
 }
 
+// Helper function to validate parseMetadataTime results and reduce cognitive complexity
+func validateParseMetadataTimeResult(t *testing.T, result *time.Time, err error, expectErr bool, expected *time.Time) {
+	if expectErr {
+		if err == nil {
+			t.Errorf("Expected error, got nil")
+		}
+		return
+	}
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	if !result.Equal(*expected) {
+		t.Errorf("Expected time %v, got %v", *expected, *result)
+	}
+}
+
 func TestParseMetadataTime(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -116,17 +143,17 @@ func TestParseMetadataTime(t *testing.T) {
 	}{
 		{
 			name:    "RFC3339Nano",
-			timeStr: "2023-01-15T10:30:00.123456789Z",
+			timeStr: DATE_TIME,
 			expected: func() *time.Time {
-				tm, _ := time.Parse(time.RFC3339Nano, "2023-01-15T10:30:00.123456789Z")
+				tm, _ := time.Parse(time.RFC3339Nano, DATE_TIME)
 				return &tm
 			}(),
 		},
 		{
 			name:    "RFC3339",
-			timeStr: "2023-01-15T10:30:00Z",
+			timeStr: DATE_TIME_RFC3339,
 			expected: func() *time.Time {
-				tm, _ := time.Parse(time.RFC3339, "2023-01-15T10:30:00Z")
+				tm, _ := time.Parse(time.RFC3339, DATE_TIME_RFC3339)
 				return &tm
 			}(),
 		},
@@ -145,24 +172,43 @@ func TestParseMetadataTime(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := parseMetadataTime(tc.timeStr)
-			if tc.expectErr {
-				if err == nil {
-					t.Errorf("Expected error, got nil")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-				}
-				if !result.Equal(*tc.expected) {
-					t.Errorf("Expected time %v, got %v", *tc.expected, *result)
-				}
-			}
+			validateParseMetadataTimeResult(t, result, err, tc.expectErr, tc.expected)
 		})
 	}
 }
 
+// Helper function to compare time pointers and reduce cognitive complexity
+func compareTimePointers(t *testing.T, fieldName string, actual, expected *time.Time) {
+	if (actual == nil && expected != nil) ||
+		(actual != nil && expected == nil) ||
+		(actual != nil && expected != nil && !actual.Equal(*expected)) {
+		t.Errorf(
+			"%s: expected %v, got %v",
+			fieldName,
+			expected,
+			actual,
+		)
+	}
+}
+
+// Helper function to validate maintenance event fields
+func validateMaintenanceEventFields(t *testing.T, actual, expected *model.MaintenanceEvent) {
+	if actual.CSPStatus != expected.CSPStatus {
+		t.Errorf("CSPStatus: expected %s, got %s", expected.CSPStatus, actual.CSPStatus)
+	}
+	if actual.MaintenanceType != expected.MaintenanceType {
+		t.Errorf(
+			"MaintenanceType: expected %s, got %s",
+			expected.MaintenanceType,
+			actual.MaintenanceType,
+		)
+	}
+	compareTimePointers(t, "ScheduledStartTime", actual.ScheduledStartTime, expected.ScheduledStartTime)
+	compareTimePointers(t, "ScheduledEndTime", actual.ScheduledEndTime, expected.ScheduledEndTime)
+}
+
 func TestParseMaintenanceFieldsFromProtoPayloadMetadata(t *testing.T) {
-	timeStr := "2023-01-15T10:30:00Z"
+	timeStr := DATE_TIME_RFC3339
 	expectedTime, _ := time.Parse(time.RFC3339, timeStr)
 
 	tests := []struct {
@@ -251,35 +297,7 @@ func TestParseMaintenanceFieldsFromProtoPayloadMetadata(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			parseMaintenanceFieldsFromProtoPayloadMetadata(tc.metadataStruct, tc.initialEvent)
-			// Compare only the fields we expect to be modified by this function
-			if tc.initialEvent.CSPStatus != tc.expectedEvent.CSPStatus {
-				t.Errorf("CSPStatus: expected %s, got %s", tc.expectedEvent.CSPStatus, tc.initialEvent.CSPStatus)
-			}
-			if tc.initialEvent.MaintenanceType != tc.expectedEvent.MaintenanceType {
-				t.Errorf(
-					"MaintenanceType: expected %s, got %s",
-					tc.expectedEvent.MaintenanceType,
-					tc.initialEvent.MaintenanceType,
-				)
-			}
-			if (tc.initialEvent.ScheduledStartTime == nil && tc.expectedEvent.ScheduledStartTime != nil) ||
-				(tc.initialEvent.ScheduledStartTime != nil && tc.expectedEvent.ScheduledStartTime == nil) ||
-				(tc.initialEvent.ScheduledStartTime != nil && tc.expectedEvent.ScheduledStartTime != nil && !tc.initialEvent.ScheduledStartTime.Equal(*tc.expectedEvent.ScheduledStartTime)) {
-				t.Errorf(
-					"ScheduledStartTime: expected %v, got %v",
-					tc.expectedEvent.ScheduledStartTime,
-					tc.initialEvent.ScheduledStartTime,
-				)
-			}
-			if (tc.initialEvent.ScheduledEndTime == nil && tc.expectedEvent.ScheduledEndTime != nil) ||
-				(tc.initialEvent.ScheduledEndTime != nil && tc.expectedEvent.ScheduledEndTime == nil) ||
-				(tc.initialEvent.ScheduledEndTime != nil && tc.expectedEvent.ScheduledEndTime != nil && !tc.initialEvent.ScheduledEndTime.Equal(*tc.expectedEvent.ScheduledEndTime)) {
-				t.Errorf(
-					"ScheduledEndTime: expected %v, got %v",
-					tc.expectedEvent.ScheduledEndTime,
-					tc.initialEvent.ScheduledEndTime,
-				)
-			}
+			validateMaintenanceEventFields(t, tc.initialEvent, tc.expectedEvent)
 		})
 	}
 }
@@ -337,13 +355,13 @@ func TestInitializeEventFromLogEntry(t *testing.T) {
 				"zone":        "us-central1-a",
 				"project_id":  "my-proj",
 			}),
-			nodeName: "k8s-node-1",
+			nodeName: K8S_NODE_1,
 			expectedEvent: &model.MaintenanceEvent{
 				EventID:           "insert1",
 				CSP:               model.CSPGCP,
 				ResourceType:      "gce_instance",
 				ResourceID:        "12345",
-				NodeName:          "k8s-node-1",
+				NodeName:          K8S_NODE_1,
 				CSPStatus:         model.CSPStatusUnknown,
 				MaintenanceType:   "",
 				Status:            model.StatusDetected,
@@ -511,6 +529,53 @@ func TestInitializeEventFromLogEntry(t *testing.T) {
 	}
 }
 
+// Helper function to validate CSP status
+func validateCSPStatus(t *testing.T, actual, expected model.ProviderStatus) {
+	if actual != expected {
+		t.Errorf("Expected CSPStatus %s, got %s", expected, actual)
+	}
+}
+
+// Helper function to validate expected ActualEndTime when it should be set
+func validateExpectedActualEndTime(t *testing.T, actualEndTime, originalEndTime *time.Time) {
+	if actualEndTime == nil {
+		t.Error("Expected ActualEndTime to be set, but it was nil")
+		return
+	}
+	if originalEndTime == nil && actualEndTime.IsZero() {
+		t.Error("ActualEndTime was set, but to a zero value unexpectedly")
+	}
+}
+
+// Helper function to validate ActualEndTime when it should remain unchanged
+func validateUnchangedActualEndTime(t *testing.T, actualEndTime, originalEndTime *time.Time) {
+	if actualEndTime == originalEndTime {
+		return // Same pointer, so unchanged
+	}
+
+	// Check if both are nil (unchanged)
+	if originalEndTime == nil && actualEndTime == nil {
+		return
+	}
+
+	// Check if both are non-nil and equal
+	if originalEndTime != nil && actualEndTime != nil && originalEndTime.Equal(*actualEndTime) {
+		return
+	}
+
+	// If we get here, the time was changed when it shouldn't have been
+	t.Errorf("Expected ActualEndTime to remain unchanged (%v), but got %v", originalEndTime, actualEndTime)
+}
+
+// Helper function to validate ActualEndTime based on expectation
+func validateActualEndTime(t *testing.T, initialEvent *model.MaintenanceEvent, originalEndTime *time.Time, expectActualEndTime bool) {
+	if expectActualEndTime {
+		validateExpectedActualEndTime(t, initialEvent.ActualEndTime, originalEndTime)
+	} else {
+		validateUnchangedActualEndTime(t, initialEvent.ActualEndTime, originalEndTime)
+	}
+}
+
 func TestHandleGcpCompletionMessage(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -575,25 +640,9 @@ func TestHandleGcpCompletionMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			originalActualEndTime := tc.initialEvent.ActualEndTime
 			handleGcpCompletionMessage(tc.initialEvent, tc.methodName, tc.rpcStatusMessage, tc.entryInsertID)
-			if tc.initialEvent.CSPStatus != tc.expectedCSPStatus {
-				t.Errorf("Expected CSPStatus %s, got %s", tc.expectedCSPStatus, tc.initialEvent.CSPStatus)
-			}
-			if tc.expectActualEndTime {
-				if tc.initialEvent.ActualEndTime == nil {
-					t.Error("Expected ActualEndTime to be set, but it was nil")
-				} else if originalActualEndTime == nil && tc.initialEvent.ActualEndTime.IsZero() {
-					// If it was nil and now it is set, it should not be zero (unless time.Now() somehow returned zero)
-					t.Error("ActualEndTime was set, but to a zero value unexpectedly")
-				}
-			} else {
-				if tc.initialEvent.ActualEndTime != originalActualEndTime {
-					// Check if it was nil initially and is still nil, or was non-nil and is still the same
-					if !(originalActualEndTime == nil && tc.initialEvent.ActualEndTime == nil) &&
-						!originalActualEndTime.Equal(*tc.initialEvent.ActualEndTime) {
-						t.Errorf("Expected ActualEndTime to remain unchanged (%v), but got %v", originalActualEndTime, tc.initialEvent.ActualEndTime)
-					}
-				}
-			}
+
+			validateCSPStatus(t, tc.initialEvent.CSPStatus, tc.expectedCSPStatus)
+			validateActualEndTime(t, tc.initialEvent, originalActualEndTime, tc.expectActualEndTime)
 		})
 	}
 }
@@ -699,6 +748,95 @@ func TestRefineGcpStatusAndType(t *testing.T) {
 	}
 }
 
+// Helper function to validate internal status
+func validateInternalStatus(t *testing.T, actual, expected model.InternalStatus) {
+	if actual != expected {
+		t.Errorf("Expected internal Status %s, got %s", expected, actual)
+	}
+}
+
+// Helper function to validate expected ActualStartTime when it should be set
+func validateExpectedActualStartTime(t *testing.T, actualStartTime, originalStartTime *time.Time) {
+	if actualStartTime == nil {
+		t.Error("Expected ActualStartTime to be set, but it was nil")
+		return
+	}
+	if originalStartTime == nil && actualStartTime.IsZero() {
+		t.Error("ActualStartTime was set by finalize, but to a zero value unexpectedly")
+	}
+}
+
+// Helper function to validate ActualStartTime when it should remain unchanged
+func validateUnchangedActualStartTime(t *testing.T, actualStartTime, originalStartTime *time.Time) {
+	// If both are the same pointer, it's unchanged
+	if actualStartTime == originalStartTime {
+		return
+	}
+
+	// If original was not nil and current is not nil, check if they're equal
+	if originalStartTime != nil && actualStartTime != nil {
+		if !originalStartTime.Equal(*actualStartTime) {
+			t.Errorf("ActualStartTime was already set and should not have changed, expected %v, got %v", originalStartTime, actualStartTime)
+		}
+		return
+	}
+
+	// If original was nil but current is not nil, it was set when it shouldn't have been
+	if originalStartTime == nil && actualStartTime != nil {
+		t.Errorf("ActualStartTime was not expected to be set by finalize, but it was. Got %v", actualStartTime)
+	}
+}
+
+// Helper function to validate ActualStartTime based on expectation
+func validateActualStartTime(t *testing.T, initialEvent *model.MaintenanceEvent, originalStartTime *time.Time, expectActualStartTime bool) {
+	if expectActualStartTime {
+		validateExpectedActualStartTime(t, initialEvent.ActualStartTime, originalStartTime)
+	} else {
+		validateUnchangedActualStartTime(t, initialEvent.ActualStartTime, originalStartTime)
+	}
+}
+
+// Helper function to validate expected ActualEndTime when it should be set
+func validateExpectedActualEndTimeForFinalize(t *testing.T, actualEndTime, originalEndTime *time.Time) {
+	if actualEndTime == nil {
+		t.Error("Expected ActualEndTime to be set, but it was nil")
+		return
+	}
+	if originalEndTime == nil && actualEndTime.IsZero() {
+		t.Error("ActualEndTime was set by finalize, but to a zero value unexpectedly")
+	}
+}
+
+// Helper function to validate ActualEndTime when it should remain unchanged
+func validateUnchangedActualEndTimeForFinalize(t *testing.T, actualEndTime, originalEndTime *time.Time) {
+	// If both are the same pointer, it's unchanged
+	if actualEndTime == originalEndTime {
+		return
+	}
+
+	// If original was not nil and current is not nil, check if they're equal
+	if originalEndTime != nil && actualEndTime != nil {
+		if !originalEndTime.Equal(*actualEndTime) {
+			t.Errorf("ActualEndTime was already set and should not have changed, expected %v, got %v", originalEndTime, actualEndTime)
+		}
+		return
+	}
+
+	// If original was nil but current is not nil, it was set when it shouldn't have been
+	if originalEndTime == nil && actualEndTime != nil {
+		t.Errorf("ActualEndTime was not expected to be set by finalize, but it was. Got %v", actualEndTime)
+	}
+}
+
+// Helper function to validate ActualEndTime based on expectation for finalize
+func validateActualEndTimeForFinalize(t *testing.T, initialEvent *model.MaintenanceEvent, originalEndTime *time.Time, expectActualEndTime bool) {
+	if expectActualEndTime {
+		validateExpectedActualEndTimeForFinalize(t, initialEvent.ActualEndTime, originalEndTime)
+	} else {
+		validateUnchangedActualEndTimeForFinalize(t, initialEvent.ActualEndTime, originalEndTime)
+	}
+}
+
 func TestFinalizeEventStatus(t *testing.T) {
 	tests := []struct {
 		name                   string
@@ -793,56 +931,212 @@ func TestFinalizeEventStatus(t *testing.T) {
 
 			finalizeEventStatus(tc.initialEvent, tc.methodName, tc.entryInsertID)
 
-			if tc.initialEvent.Status != tc.expectedInternalStatus {
-				t.Errorf("Expected internal Status %s, got %s", tc.expectedInternalStatus, tc.initialEvent.Status)
-			}
-
-			if tc.expectActualStartTime {
-				if tc.initialEvent.ActualStartTime == nil {
-					t.Error("Expected ActualStartTime to be set, but it was nil")
-				} else if originalActualStartTime == nil && tc.initialEvent.ActualStartTime.IsZero() {
-					t.Error("ActualStartTime was set by finalize, but to a zero value unexpectedly")
-				}
-			} else if originalActualStartTime != nil && tc.initialEvent.ActualStartTime != nil {
-				// If not expected to be set by finalize, and was already set, ensure it's the same
-				if !originalActualStartTime.Equal(*tc.initialEvent.ActualStartTime) {
-					t.Errorf("ActualStartTime was already set and should not have changed, expected %v, got %v", originalActualStartTime, tc.initialEvent.ActualStartTime)
-				}
-			} else if originalActualStartTime == nil && tc.initialEvent.ActualStartTime != nil {
-				t.Errorf("ActualStartTime was not expected to be set by finalize, but it was. Got %v", tc.initialEvent.ActualStartTime)
-			}
-
-			if tc.expectActualEndTime {
-				if tc.initialEvent.ActualEndTime == nil {
-					t.Error("Expected ActualEndTime to be set, but it was nil")
-				} else if originalActualEndTime == nil && tc.initialEvent.ActualEndTime.IsZero() {
-					t.Error("ActualEndTime was set by finalize, but to a zero value unexpectedly")
-				}
-			} else if originalActualEndTime != nil && tc.initialEvent.ActualEndTime != nil {
-				// If not expected to be set by finalize, and was already set, ensure it's the same
-				if !originalActualEndTime.Equal(*tc.initialEvent.ActualEndTime) {
-					t.Errorf("ActualEndTime was already set and should not have changed, expected %v, got %v", originalActualEndTime, tc.initialEvent.ActualEndTime)
-				}
-			} else if originalActualEndTime == nil && tc.initialEvent.ActualEndTime != nil {
-				t.Errorf("ActualEndTime was not expected to be set by finalize, but it was. Got %v", tc.initialEvent.ActualEndTime)
-			}
+			validateInternalStatus(t, tc.initialEvent.Status, tc.expectedInternalStatus)
+			validateActualStartTime(t, tc.initialEvent, originalActualStartTime, tc.expectActualStartTime)
+			validateActualEndTimeForFinalize(t, tc.initialEvent, originalActualEndTime, tc.expectActualEndTime)
 		})
 	}
 }
 
-func TestGCPNormalizer_Normalize(t *testing.T) {
+// Helper function to validate basic event fields
+func validateGCPNormalizerEventFields(t *testing.T, result, expected *model.MaintenanceEvent) {
+	if result.EventID != expected.EventID {
+		t.Errorf("EventID: expected %q, got %q", expected.EventID, result.EventID)
+	}
+	if result.CSP != expected.CSP {
+		t.Errorf("CSP: expected %q, got %q", expected.CSP, result.CSP)
+	}
+	if result.NodeName != expected.NodeName {
+		t.Errorf("NodeName: expected %q, got %q", expected.NodeName, result.NodeName)
+	}
+	if result.ResourceType != expected.ResourceType {
+		t.Errorf("ResourceType: expected %q, got %q", expected.ResourceType, result.ResourceType)
+	}
+	if result.ResourceID != expected.ResourceID {
+		t.Errorf("ResourceID: expected %q, got %q", expected.ResourceID, result.ResourceID)
+	}
+	if result.MaintenanceType != expected.MaintenanceType {
+		t.Errorf(
+			"MaintenanceType: expected %q, got %q",
+			expected.MaintenanceType,
+			result.MaintenanceType,
+		)
+	}
+	if result.CSPStatus != expected.CSPStatus {
+		t.Errorf("CSPStatus: expected %q, got %q", expected.CSPStatus, result.CSPStatus)
+	}
+	if result.Status != expected.Status {
+		t.Errorf("Status: expected %q, got %q", expected.Status, result.Status)
+	}
+	if result.ClusterName != expected.ClusterName {
+		t.Errorf("ClusterName: expected %q, got %q", expected.ClusterName, result.ClusterName)
+	}
+}
+
+// Helper function to validate scheduled times
+func validateScheduledTimes(t *testing.T, result, expected *model.MaintenanceEvent) {
+	compareTimePointers(t, "ScheduledStartTime", result.ScheduledStartTime, expected.ScheduledStartTime)
+	compareTimePointers(t, "ScheduledEndTime", result.ScheduledEndTime, expected.ScheduledEndTime)
+}
+
+// Helper function to validate actual times based on status
+func validateActualTimes(t *testing.T, result, expected *model.MaintenanceEvent) {
+	if expected.Status == model.StatusMaintenanceOngoing && result.ActualStartTime == nil {
+		t.Errorf("Expected ActualStartTime to be set for ONGOING status, but was nil")
+	}
+	if expected.Status == model.StatusMaintenanceComplete && result.ActualEndTime == nil {
+		t.Errorf("Expected ActualEndTime to be set for COMPLETED status, but was nil")
+	}
+	// If status is not ongoing/complete, actual times should be nil unless already set from a previous state
+	if expected.Status != model.StatusMaintenanceOngoing &&
+		expected.Status != model.StatusMaintenanceComplete {
+		if result.ActualStartTime != nil && expected.ActualStartTime == nil {
+			t.Errorf(
+				"ActualStartTime was set (%v) but not expected for status %s",
+				result.ActualStartTime,
+				expected.Status,
+			)
+		}
+		if result.ActualEndTime != nil && expected.ActualEndTime == nil {
+			t.Errorf(
+				"ActualEndTime was set (%v) but not expected for status %s",
+				result.ActualEndTime,
+				expected.Status,
+			)
+		}
+	}
+}
+
+// Helper function to validate timestamps
+func validateTimestamps(t *testing.T, result *model.MaintenanceEvent, rawEvent interface{}) {
+	// Check EventReceivedTimestamp is set (should be close to baseTime used in entry creation)
+	if entry, ok := rawEvent.(*logging.Entry); ok && entry != nil {
+		if result.EventReceivedTimestamp.Sub(entry.Timestamp) > time.Millisecond {
+			t.Errorf(
+				"EventReceivedTimestamp %v is not close to entry.Timestamp %v",
+				result.EventReceivedTimestamp,
+				entry.Timestamp,
+			)
+		}
+	}
+	// Check LastUpdatedTimestamp is recent
+	if time.Since(result.LastUpdatedTimestamp) > 5*time.Second {
+		t.Errorf("LastUpdatedTimestamp %v is too old", result.LastUpdatedTimestamp)
+	}
+}
+
+// Helper function to handle error cases
+func handleErrorCase(t *testing.T, err error, expectErr bool) bool {
+	if expectErr {
+		if err == nil {
+			t.Errorf("Expected error, got nil")
+		}
+		return true // Skip further validation
+	}
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return true // Skip further validation
+	}
+	return false // Continue with validation
+}
+
+// Test case struct for GCP Normalizer tests
+type gcpNormalizerTestCase struct {
+	name                string
+	rawEvent            interface{}
+	additionalInfo      []interface{}
+	expectedEvent       *model.MaintenanceEvent
+	expectErr           bool
+	checkActualTimes    bool
+	checkScheduledTimes bool
+}
+
+// Helper function to create scheduled maintenance metadata
+func createScheduledMaintenanceMetadata(baseTime time.Time, maintenanceType, status string) *structpb.Struct {
+	return &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"type":              structpb.NewStringValue(maintenanceType),
+			"windowStartTime":   structpb.NewStringValue(baseTime.Format(time.RFC3339Nano)),
+			"windowEndTime":     structpb.NewStringValue(baseTime.Add(time.Hour).Format(time.RFC3339Nano)),
+			"maintenanceStatus": structpb.NewStringValue(status),
+		},
+	}
+}
+
+// Helper function to create basic maintenance metadata
+func createBasicMaintenanceMetadata(status string) *structpb.Struct {
+	return &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"maintenanceStatus": structpb.NewStringValue(status),
+		},
+	}
+}
+
+// Helper function to create metadata with type and status
+func createMaintenanceMetadataWithType(maintenanceType, status string) *structpb.Struct {
+	return &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"maintenanceStatus": structpb.NewStringValue(status),
+			"type":              structpb.NewStringValue(maintenanceType),
+		},
+	}
+}
+
+// Helper function to create expected maintenance event
+func createExpectedMaintenanceEvent(eventID, nodeName, resourceID string, maintenanceType model.MaintenanceType, cspStatus model.ProviderStatus, status model.InternalStatus, clusterName string, scheduledStart, scheduledEnd *time.Time) *model.MaintenanceEvent {
+	return &model.MaintenanceEvent{
+		EventID:            eventID,
+		CSP:                model.CSPGCP,
+		NodeName:           nodeName,
+		ResourceType:       "gce_instance",
+		ResourceID:         resourceID,
+		MaintenanceType:    maintenanceType,
+		CSPStatus:          cspStatus,
+		Status:             status,
+		ScheduledStartTime: scheduledStart,
+		ScheduledEndTime:   scheduledEnd,
+		ClusterName:        clusterName,
+	}
+}
+
+// Helper function to run a single test case
+func runGCPNormalizerTestCase(t *testing.T, normalizer *GCPNormalizer, baseTime time.Time, tc gcpNormalizerTestCase) {
+	t.Run(tc.name, func(t *testing.T) {
+		// For tests that set specific timestamps in payload, ensure tc.entry.Timestamp is consistent
+		if entry, ok := tc.rawEvent.(*logging.Entry); ok && entry != nil {
+			entry.Timestamp = baseTime // Standardize for EventReceivedTimestamp field
+		}
+
+		result, err := normalizer.Normalize(tc.rawEvent, tc.additionalInfo...)
+
+		if handleErrorCase(t, err, tc.expectErr) {
+			return
+		}
+
+		if result == nil {
+			t.Errorf("Expected non-nil event, got nil")
+			return
+		}
+
+		validateGCPNormalizerEventFields(t, result, tc.expectedEvent)
+
+		if tc.checkScheduledTimes {
+			validateScheduledTimes(t, result, tc.expectedEvent)
+		}
+
+		if tc.checkActualTimes {
+			validateActualTimes(t, result, tc.expectedEvent)
+		}
+
+		validateTimestamps(t, result, tc.rawEvent)
+	})
+}
+
+func TestGCPNormalizer_Normalize_ErrorCases(t *testing.T) {
 	normalizer := &GCPNormalizer{}
 	baseTime := time.Date(2023, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	tests := []struct {
-		name                string
-		rawEvent            interface{}
-		additionalInfo      []interface{}
-		expectedEvent       *model.MaintenanceEvent // Only compare key fields that Normalize is responsible for setting/deriving
-		expectErr           bool
-		checkActualTimes    bool // if true, will check if ActualStartTime/EndTime are set or not (but not their exact value beyond non-zero)
-		checkScheduledTimes bool // if true, will check if ScheduledStartTime/EndTime are specifically set by the payload
-	}{
+	errorTests := []gcpNormalizerTestCase{
 		{
 			name:      "nil rawEvent",
 			rawEvent:  nil,
@@ -854,119 +1148,6 @@ func TestGCPNormalizer_Normalize(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name: "upcoming maintenance - PENDING - Type from Metadata",
-			rawEvent: newTestLogEntry("up1",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-1", "",
-					&structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							"type":            structpb.NewStringValue(string(model.TypeScheduled)),
-							"windowStartTime": structpb.NewStringValue(baseTime.Format(time.RFC3339Nano)),
-							"windowEndTime": structpb.NewStringValue(
-								baseTime.Add(time.Hour).Format(time.RFC3339Nano),
-							),
-							"maintenanceStatus": structpb.NewStringValue(string(model.CSPStatusPending)),
-						},
-					}),
-				"gce_instance", map[string]string{"instance_id": "id-123"}),
-			additionalInfo: []interface{}{"k8s-node-1", "test-cluster"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:            "up1",
-				CSP:                model.CSPGCP,
-				NodeName:           "k8s-node-1",
-				ResourceType:       "gce_instance",
-				ResourceID:         "id-123",
-				MaintenanceType:    model.TypeScheduled,
-				CSPStatus:          model.CSPStatusPending,
-				Status:             model.StatusDetected,
-				ScheduledStartTime: &baseTime,
-				ScheduledEndTime:   func() *time.Time { t := baseTime.Add(time.Hour); return &t }(),
-				ClusterName:        "test-cluster",
-			},
-			checkScheduledTimes: true,
-		},
-		{
-			name: "upcoming maintenance - PENDING - Type UNSCHEDULED from Metadata",
-			rawEvent: newTestLogEntry("up_unsched",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-unsched", "",
-					&structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							"type":            structpb.NewStringValue(string(model.TypeUnscheduled)),
-							"windowStartTime": structpb.NewStringValue(baseTime.Format(time.RFC3339Nano)),
-							"windowEndTime": structpb.NewStringValue(
-								baseTime.Add(time.Hour).Format(time.RFC3339Nano),
-							),
-							"maintenanceStatus": structpb.NewStringValue(string(model.CSPStatusPending)),
-						},
-					}),
-				"gce_instance", map[string]string{"instance_id": "id-up-unsched"}),
-			additionalInfo: []interface{}{"k8s-node-up-unsched", "test-cluster-unsched"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:            "up_unsched",
-				CSP:                model.CSPGCP,
-				NodeName:           "k8s-node-up-unsched",
-				ResourceType:       "gce_instance",
-				ResourceID:         "id-up-unsched",
-				MaintenanceType:    model.TypeUnscheduled,
-				CSPStatus:          model.CSPStatusPending,
-				Status:             model.StatusDetected,
-				ScheduledStartTime: &baseTime,
-				ScheduledEndTime:   func() *time.Time { t := baseTime.Add(time.Hour); return &t }(),
-				ClusterName:        "test-cluster-unsched",
-			},
-			checkScheduledTimes: true,
-		},
-		{
-			name: "migrate on host maintenance - ONGOING - No Type in Metadata",
-			rawEvent: newTestLogEntry("mig1",
-				newTestAuditLog(GCPMethodMigrateOnHostMaintenance, "projects/p/zones/z/instances/i-2", "",
-					&structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							"maintenanceStatus": structpb.NewStringValue(string(model.CSPStatusActive)),
-						},
-					}),
-				"gce_instance", map[string]string{"instance_id": "id-456"}),
-			additionalInfo: []interface{}{"k8s-node-2", "test-cluster-mig"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:         "mig1",
-				CSP:             model.CSPGCP,
-				NodeName:        "k8s-node-2",
-				ResourceType:    "gce_instance",
-				ResourceID:      "id-456",
-				MaintenanceType: "",
-				CSPStatus:       model.CSPStatusActive,
-				Status:          model.StatusMaintenanceOngoing,
-				ClusterName:     "test-cluster-mig",
-			},
-			checkActualTimes: true,
-		},
-		{
-			name: "maintenance completion message - COMPLETED - No Type in Metadata",
-			rawEvent: newTestLogEntry(
-				"comp1",
-				newTestAuditLog(
-					GCPMethodUpcomingMaintenance,
-					"projects/p/zones/z/instances/i-3",
-					GCPMaintenanceCompletedMsg,
-					nil,
-				),
-				"gce_instance",
-				map[string]string{"instance_id": "id-789"},
-			),
-			additionalInfo: []interface{}{"k8s-node-3", "test-cluster-comp"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:         "comp1",
-				CSP:             model.CSPGCP,
-				NodeName:        "k8s-node-3",
-				ResourceType:    "gce_instance",
-				ResourceID:      "id-789",
-				MaintenanceType: "",
-				CSPStatus:       model.CSPStatusCompleted,
-				Status:          model.StatusMaintenanceComplete,
-				ClusterName:     "test-cluster-comp",
-			},
-			checkActualTimes: true,
-		},
-		{
 			name: "unsupported payload type",
 			rawEvent: newTestLogEntry("errpayload1",
 				"not an audit log payload",
@@ -975,60 +1156,9 @@ func TestGCPNormalizer_Normalize(t *testing.T) {
 			expectErr:      true,
 		},
 		{
-			name: "gce_instance - resource name parsing - No Type in Metadata - ResourceID becomes defaultUnknown",
-			rawEvent: newTestLogEntry(
-				"fqn_test",
-				newTestAuditLog(
-					GCPMethodUpcomingMaintenance,
-					"projects/test-proj/zones/us-west1-b/instances/instance-from-fqn",
-					"",
-					nil,
-				),
-				"gce_instance",
-				map[string]string{},
-			),
-			additionalInfo: []interface{}{"k8s-node-fqn", "test-cluster-fqn"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:         "fqn_test",
-				CSP:             model.CSPGCP,
-				NodeName:        "k8s-node-fqn",
-				ResourceType:    "gce_instance",
-				ResourceID:      defaultUnknown,
-				MaintenanceType: "",
-				CSPStatus:       model.CSPStatusPending,
-				Status:          model.StatusDetected,
-				ClusterName:     "test-cluster-fqn",
-			},
-		},
-		{
-			name: "ONGOING from metadata - Type from metadata",
-			rawEvent: newTestLogEntry("meta_ongoing",
-				newTestAuditLog("some.other.Method", "projects/p/zones/z/instances/i-meta", "",
-					&structpb.Struct{
-						Fields: map[string]*structpb.Value{
-							"maintenanceStatus": structpb.NewStringValue(string(model.CSPStatusOngoing)),
-							"type":              structpb.NewStringValue(string(model.TypeScheduled)),
-						},
-					}),
-				"gce_instance", map[string]string{"instance_id": "id-meta-ongoing"}),
-			additionalInfo: []interface{}{"k8s-node-meta-ongoing", "test-cluster-meta"},
-			expectedEvent: &model.MaintenanceEvent{
-				EventID:         "meta_ongoing",
-				CSP:             model.CSPGCP,
-				NodeName:        "k8s-node-meta-ongoing",
-				ResourceType:    "gce_instance",
-				ResourceID:      "id-meta-ongoing",
-				MaintenanceType: model.TypeScheduled,
-				CSPStatus:       model.CSPStatusOngoing,
-				Status:          model.StatusMaintenanceOngoing,
-				ClusterName:     "test-cluster-meta",
-			},
-			checkActualTimes: true,
-		},
-		{
 			name: "error - missing nodeName in additionalInfo",
 			rawEvent: newTestLogEntry("err_no_nodename",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-err", "", nil),
+				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-nn"}),
 			additionalInfo: []interface{}{},
 			expectErr:      true,
@@ -1036,15 +1166,15 @@ func TestGCPNormalizer_Normalize(t *testing.T) {
 		{
 			name: "error - empty nodeName in additionalInfo",
 			rawEvent: newTestLogEntry("err_empty_nodename",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-err", "", nil),
+				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-en"}),
-			additionalInfo: []interface{}{"", "test-cluster"},
+			additionalInfo: []interface{}{"", TEST_CLUSTER},
 			expectErr:      true,
 		},
 		{
 			name: "error - missing clusterName in additionalInfo",
 			rawEvent: newTestLogEntry("err_no_clustername",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-err", "", nil),
+				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-cn"}),
 			additionalInfo: []interface{}{"k8s-node-valid"},
 			expectErr:      true,
@@ -1052,7 +1182,7 @@ func TestGCPNormalizer_Normalize(t *testing.T) {
 		{
 			name: "error - empty clusterName in additionalInfo",
 			rawEvent: newTestLogEntry("err_empty_clustername",
-				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-err", "", nil),
+				newTestAuditLog(GCPMethodUpcomingMaintenance, TEST_INSTANCE_ERR, "", nil),
 				"gce_instance", map[string]string{"instance_id": "id-err-ecn"}),
 			additionalInfo: []interface{}{"k8s-node-valid", ""},
 			expectErr:      true,
@@ -1067,130 +1197,129 @@ func TestGCPNormalizer_Normalize(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			// For tests that set specific timestamps in payload, ensure tc.entry.Timestamp is consistent
-			if entry, ok := tc.rawEvent.(*logging.Entry); ok && entry != nil {
-				entry.Timestamp = baseTime // Standardize for EventReceivedTimestamp field
-			}
+	for _, tc := range errorTests {
+		runGCPNormalizerTestCase(t, normalizer, baseTime, tc)
+	}
+}
 
-			result, err := normalizer.Normalize(tc.rawEvent, tc.additionalInfo...)
+func TestGCPNormalizer_Normalize_ScheduledMaintenance(t *testing.T) {
+	normalizer := &GCPNormalizer{}
+	baseTime := time.Date(2023, 1, 15, 10, 0, 0, 0, time.UTC)
+	endTime := baseTime.Add(time.Hour)
 
-			if tc.expectErr {
-				if err == nil {
-					t.Errorf("Expected error, got nil")
-				}
-				return // No further checks if error is expected
-			}
+	scheduledTests := []gcpNormalizerTestCase{
+		{
+			name: "upcoming maintenance - PENDING - Type from Metadata",
+			rawEvent: newTestLogEntry("up1",
+				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-1", "",
+					createScheduledMaintenanceMetadata(baseTime, string(model.TypeScheduled), string(model.CSPStatusPending))),
+				"gce_instance", map[string]string{"instance_id": "id-123"}),
+			additionalInfo:      []interface{}{K8S_NODE_1, TEST_CLUSTER},
+			expectedEvent:       createExpectedMaintenanceEvent("up1", K8S_NODE_1, "id-123", model.TypeScheduled, model.CSPStatusPending, model.StatusDetected, TEST_CLUSTER, &baseTime, &endTime),
+			checkScheduledTimes: true,
+		},
+		{
+			name: "upcoming maintenance - PENDING - Type UNSCHEDULED from Metadata",
+			rawEvent: newTestLogEntry("up_unsched",
+				newTestAuditLog(GCPMethodUpcomingMaintenance, "projects/p/zones/z/instances/i-unsched", "",
+					createScheduledMaintenanceMetadata(baseTime, string(model.TypeUnscheduled), string(model.CSPStatusPending))),
+				"gce_instance", map[string]string{"instance_id": "id-up-unsched"}),
+			additionalInfo:      []interface{}{"k8s-node-up-unsched", "test-cluster-unsched"},
+			expectedEvent:       createExpectedMaintenanceEvent("up_unsched", "k8s-node-up-unsched", "id-up-unsched", model.TypeUnscheduled, model.CSPStatusPending, model.StatusDetected, "test-cluster-unsched", &baseTime, &endTime),
+			checkScheduledTimes: true,
+		},
+	}
 
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
+	for _, tc := range scheduledTests {
+		runGCPNormalizerTestCase(t, normalizer, baseTime, tc)
+	}
+}
 
-			if result == nil {
-				t.Errorf("Expected non-nil event, got nil")
-				return
-			}
+func TestGCPNormalizer_Normalize_OngoingMaintenance(t *testing.T) {
+	normalizer := &GCPNormalizer{}
+	baseTime := time.Date(2023, 1, 15, 10, 0, 0, 0, time.UTC)
 
-			// Compare key fields
-			if result.EventID != tc.expectedEvent.EventID {
-				t.Errorf("EventID: expected %q, got %q", tc.expectedEvent.EventID, result.EventID)
-			}
-			if result.CSP != tc.expectedEvent.CSP {
-				t.Errorf("CSP: expected %q, got %q", tc.expectedEvent.CSP, result.CSP)
-			}
-			if result.NodeName != tc.expectedEvent.NodeName {
-				t.Errorf("NodeName: expected %q, got %q", tc.expectedEvent.NodeName, result.NodeName)
-			}
-			if result.ResourceType != tc.expectedEvent.ResourceType {
-				t.Errorf("ResourceType: expected %q, got %q", tc.expectedEvent.ResourceType, result.ResourceType)
-			}
-			if result.ResourceID != tc.expectedEvent.ResourceID {
-				t.Errorf("ResourceID: expected %q, got %q", tc.expectedEvent.ResourceID, result.ResourceID)
-			}
-			if result.MaintenanceType != tc.expectedEvent.MaintenanceType {
-				t.Errorf(
-					"MaintenanceType: expected %q, got %q",
-					tc.expectedEvent.MaintenanceType,
-					result.MaintenanceType,
-				)
-			}
-			if result.CSPStatus != tc.expectedEvent.CSPStatus {
-				t.Errorf("CSPStatus: expected %q, got %q", tc.expectedEvent.CSPStatus, result.CSPStatus)
-			}
-			if result.Status != tc.expectedEvent.Status {
-				t.Errorf("Status: expected %q, got %q", tc.expectedEvent.Status, result.Status)
-			}
-			if result.ClusterName != tc.expectedEvent.ClusterName {
-				t.Errorf("ClusterName: expected %q, got %q", tc.expectedEvent.ClusterName, result.ClusterName)
-			}
+	ongoingTests := []gcpNormalizerTestCase{
+		{
+			name: "migrate on host maintenance - ONGOING - No Type in Metadata",
+			rawEvent: newTestLogEntry("mig1",
+				newTestAuditLog(GCPMethodMigrateOnHostMaintenance, "projects/p/zones/z/instances/i-2", "",
+					createBasicMaintenanceMetadata(string(model.CSPStatusActive))),
+				"gce_instance", map[string]string{"instance_id": "id-456"}),
+			additionalInfo:   []interface{}{"k8s-node-2", "test-cluster-mig"},
+			expectedEvent:    createExpectedMaintenanceEvent("mig1", "k8s-node-2", "id-456", "", model.CSPStatusActive, model.StatusMaintenanceOngoing, "test-cluster-mig", nil, nil),
+			checkActualTimes: true,
+		},
+		{
+			name: "ONGOING from metadata - Type from metadata",
+			rawEvent: newTestLogEntry("meta_ongoing",
+				newTestAuditLog("some.other.Method", "projects/p/zones/z/instances/i-meta", "",
+					createMaintenanceMetadataWithType(string(model.TypeScheduled), string(model.CSPStatusOngoing))),
+				"gce_instance", map[string]string{"instance_id": "id-meta-ongoing"}),
+			additionalInfo:   []interface{}{"k8s-node-meta-ongoing", "test-cluster-meta"},
+			expectedEvent:    createExpectedMaintenanceEvent("meta_ongoing", "k8s-node-meta-ongoing", "id-meta-ongoing", model.TypeScheduled, model.CSPStatusOngoing, model.StatusMaintenanceOngoing, "test-cluster-meta", nil, nil),
+			checkActualTimes: true,
+		},
+	}
 
-			if tc.checkScheduledTimes {
-				if (result.ScheduledStartTime == nil && tc.expectedEvent.ScheduledStartTime != nil) ||
-					(result.ScheduledStartTime != nil && tc.expectedEvent.ScheduledStartTime == nil) ||
-					(result.ScheduledStartTime != nil && tc.expectedEvent.ScheduledStartTime != nil && !result.ScheduledStartTime.Equal(*tc.expectedEvent.ScheduledStartTime)) {
-					t.Errorf(
-						"ScheduledStartTime: expected %v, got %v",
-						tc.expectedEvent.ScheduledStartTime,
-						result.ScheduledStartTime,
-					)
-				}
-				if (result.ScheduledEndTime == nil && tc.expectedEvent.ScheduledEndTime != nil) ||
-					(result.ScheduledEndTime != nil && tc.expectedEvent.ScheduledEndTime == nil) ||
-					(result.ScheduledEndTime != nil && tc.expectedEvent.ScheduledEndTime != nil && !result.ScheduledEndTime.Equal(*tc.expectedEvent.ScheduledEndTime)) {
-					t.Errorf(
-						"ScheduledEndTime: expected %v, got %v",
-						tc.expectedEvent.ScheduledEndTime,
-						result.ScheduledEndTime,
-					)
-				}
-			}
+	for _, tc := range ongoingTests {
+		runGCPNormalizerTestCase(t, normalizer, baseTime, tc)
+	}
+}
 
-			if tc.checkActualTimes {
-				if tc.expectedEvent.Status == model.StatusMaintenanceOngoing && result.ActualStartTime == nil {
-					t.Errorf("Expected ActualStartTime to be set for ONGOING status, but was nil")
-				}
-				if tc.expectedEvent.Status == model.StatusMaintenanceComplete && result.ActualEndTime == nil {
-					t.Errorf("Expected ActualEndTime to be set for COMPLETED status, but was nil")
-				}
-				// If status is not ongoing/complete, actual times should be nil unless already set from a previous state (not tested here)
-				if tc.expectedEvent.Status != model.StatusMaintenanceOngoing &&
-					tc.expectedEvent.Status != model.StatusMaintenanceComplete {
-					if result.ActualStartTime != nil && tc.expectedEvent.ActualStartTime == nil {
-						t.Errorf(
-							"ActualStartTime was set (%v) but not expected for status %s",
-							result.ActualStartTime,
-							tc.expectedEvent.Status,
-						)
-					}
-					if result.ActualEndTime != nil && tc.expectedEvent.ActualEndTime == nil {
-						t.Errorf(
-							"ActualEndTime was set (%v) but not expected for status %s",
-							result.ActualEndTime,
-							tc.expectedEvent.Status,
-						)
-					}
-				}
-			}
+func TestGCPNormalizer_Normalize_CompletedMaintenance(t *testing.T) {
+	normalizer := &GCPNormalizer{}
+	baseTime := time.Date(2023, 1, 15, 10, 0, 0, 0, time.UTC)
 
-			// Check EventReceivedTimestamp is set (should be close to baseTime used in entry creation)
-			if entry, ok := tc.rawEvent.(*logging.Entry); ok && entry != nil {
-				if result.EventReceivedTimestamp.Sub(entry.Timestamp) > time.Millisecond {
-					t.Errorf(
-						"EventReceivedTimestamp %v is not close to entry.Timestamp %v",
-						result.EventReceivedTimestamp,
-						entry.Timestamp,
-					)
-				}
-			} else if tc.rawEvent != nil { // if rawEvent is not nil and not an entry, it's an error case already handled
-				// if rawEvent is nil, result will be nil, also handled. This path for valid non-entry rawEvent if we add one.
-			}
+	completedTests := []gcpNormalizerTestCase{
+		{
+			name: "maintenance completion message - COMPLETED - No Type in Metadata",
+			rawEvent: newTestLogEntry(
+				"comp1",
+				newTestAuditLog(
+					GCPMethodUpcomingMaintenance,
+					"projects/p/zones/z/instances/i-3",
+					GCPMaintenanceCompletedMsg,
+					nil,
+				),
+				"gce_instance",
+				map[string]string{"instance_id": "id-789"},
+			),
+			additionalInfo:   []interface{}{"k8s-node-3", "test-cluster-comp"},
+			expectedEvent:    createExpectedMaintenanceEvent("comp1", "k8s-node-3", "id-789", "", model.CSPStatusCompleted, model.StatusMaintenanceComplete, "test-cluster-comp", nil, nil),
+			checkActualTimes: true,
+		},
+	}
 
-			// Check LastUpdatedTimestamp is recent
-			if time.Since(result.LastUpdatedTimestamp) > 5*time.Second {
-				t.Errorf("LastUpdatedTimestamp %v is too old", result.LastUpdatedTimestamp)
-			}
-		})
+	for _, tc := range completedTests {
+		runGCPNormalizerTestCase(t, normalizer, baseTime, tc)
+	}
+}
+
+func TestGCPNormalizer_Normalize_SpecialCases(t *testing.T) {
+	normalizer := &GCPNormalizer{}
+	baseTime := time.Date(2023, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	specialTests := []gcpNormalizerTestCase{
+		{
+			name: "gce_instance - resource name parsing - No Type in Metadata - ResourceID becomes defaultUnknown",
+			rawEvent: newTestLogEntry(
+				"fqn_test",
+				newTestAuditLog(
+					GCPMethodUpcomingMaintenance,
+					"projects/test-proj/zones/us-west1-b/instances/instance-from-fqn",
+					"",
+					nil,
+				),
+				"gce_instance",
+				map[string]string{},
+			),
+			additionalInfo: []interface{}{"k8s-node-fqn", "test-cluster-fqn"},
+			expectedEvent:  createExpectedMaintenanceEvent("fqn_test", "k8s-node-fqn", defaultUnknown, "", model.CSPStatusPending, model.StatusDetected, "test-cluster-fqn", nil, nil),
+		},
+	}
+
+	for _, tc := range specialTests {
+		runGCPNormalizerTestCase(t, normalizer, baseTime, tc)
 	}
 }

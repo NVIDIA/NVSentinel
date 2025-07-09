@@ -34,6 +34,24 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+const (
+	// Test AWS configuration constants
+	testRegion    = "us-east-1"
+	testService   = "EC2"
+	testAccountID = "123456789012"
+
+	// Test node and instance constants
+	testNodeName    = "test-node"
+	testNodeName1   = "test-node-1"
+	testNodeName2   = "test-node-2"
+	testInstanceID  = "i-0123456789abcdef0"
+	testInstanceID1 = "i-additional000000001"
+	testInstanceID2 = "i-additional000000002"
+
+	// Test event description
+	testEventDescription = "What do I need to do?\nWe recommend that you reboot the instance which will restart the instance."
+)
+
 var (
 	pollStartTime = time.Now().Add(-24 * time.Minute)
 )
@@ -77,10 +95,10 @@ func createTestClient(t *testing.T) (*AWSClient, *MockAWSHealthClient, *fake.Cli
 	// Create a node with AWS provider ID
 	node := &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
+			Name: testNodeName,
 		},
 		Spec: v1.NodeSpec{
-			ProviderID: "aws:///us-east-1/i-0123456789abcdef0",
+			ProviderID: "aws:///" + testRegion + "/" + testInstanceID,
 		},
 	}
 	_, err := fakeK8sClient.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
@@ -88,7 +106,7 @@ func createTestClient(t *testing.T) (*AWSClient, *MockAWSHealthClient, *fake.Cli
 
 	client := &AWSClient{
 		config: config.AWSConfig{
-			Region:                 "us-east-1",
+			Region:                 testRegion,
 			PollingIntervalSeconds: 60,
 			Enabled:                true,
 		},
@@ -106,22 +124,22 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 	// Setup test data
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
-	eventArn := "arn:aws:health:us-east-1::event/EC2/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1"
-	entityArn := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
+	eventArn := fmt.Sprintf("arn:aws:health:%s::event/%s/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1", testRegion, testService)
+	entityArn := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
 
 	// Setup AWS Health API mock responses
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:               aws.String(eventArn),
-				Service:           aws.String("EC2"),
+				Service:           aws.String(testService),
 				EventTypeCode:     aws.String("AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED"),
 				EventTypeCategory: types.EventTypeCategoryScheduledChange,
 				EventScopeCode:    types.EventScopeCodeAccountSpecific,
 				StatusCode:        types.EventStatusCodeUpcoming,
 				StartTime:         aws.Time(startTime),
 				EndTime:           aws.Time(endTime),
-				Region:            aws.String("us-east-1"),
+				Region:            aws.String(testRegion),
 			},
 		},
 	}, nil)
@@ -131,7 +149,7 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 			Entities: []types.AffectedEntity{
 				{
 					EntityArn:       aws.String(entityArn),
-					EntityValue:     aws.String("i-0123456789abcdef0"),
+					EntityValue:     aws.String(testInstanceID),
 					EventArn:        aws.String(eventArn),
 					StatusCode:      types.EntityStatusCodeImpaired,
 					LastUpdatedTime: aws.Time(time.Now().Add(-20 * time.Second)),
@@ -146,9 +164,7 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 					Arn: aws.String(eventArn),
 				},
 				EventDescription: &types.EventDescription{
-					LatestDescription: aws.String(
-						"What do I need to do?\nWe recommend that you reboot the instance which will restart the instance.",
-					),
+					LatestDescription: aws.String(testEventDescription),
 				},
 			},
 		},
@@ -156,7 +172,7 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function being tested
@@ -167,11 +183,11 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 	select {
 	case event := <-eventChan:
 		assert.Equal(t, entityArn, event.EventID)
-		assert.Equal(t, "test-node", event.NodeName)
-		assert.Equal(t, "i-0123456789abcdef0", event.ResourceID)
+		assert.Equal(t, testNodeName, event.NodeName)
+		assert.Equal(t, testInstanceID, event.ResourceID)
 		assert.Equal(t, model.StatusDetected, event.Status)
 		assert.Equal(t, model.TypeScheduled, event.MaintenanceType)
-		assert.Equal(t, "EC2", event.ResourceType)
+		assert.Equal(t, testService, event.ResourceType)
 		assert.Equal(t, startTime, *event.ScheduledStartTime)
 		assert.Equal(t, endTime, *event.ScheduledEndTime)
 		assert.Equal(t, pb.RecommenedAction_NODE_REBOOT.String(), event.RecommendedAction)
@@ -191,7 +207,7 @@ func TestNoMaintenanceEvents(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function being tested
@@ -215,13 +231,20 @@ func TestMultipleAffectedEntities(t *testing.T) {
 	client, mockAWSClient, fakeK8sClient := createTestClient(t)
 
 	// Create additional 3 nodes
-	for i := 1; i <= 2; i++ {
+	additionalNodes := []struct {
+		name, instanceID string
+	}{
+		{testNodeName1, testInstanceID1},
+		{testNodeName2, testInstanceID2},
+	}
+
+	for _, nodeData := range additionalNodes {
 		node := &v1.Node{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-node-" + string(rune('0'+i)),
+				Name: nodeData.name,
 			},
 			Spec: v1.NodeSpec{
-				ProviderID: "aws:///us-east-1/i-additional00000000" + string(rune('0'+i)),
+				ProviderID: "aws:///" + testRegion + "/" + nodeData.instanceID,
 			},
 		}
 		_, err := fakeK8sClient.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
@@ -231,24 +254,24 @@ func TestMultipleAffectedEntities(t *testing.T) {
 	// Setup test data
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
-	eventArn := "arn:aws:health:us-east-1::event/EC2/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1"
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
-	entityArn2 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000001"
-	entityArn3 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000002"
+	eventArn := fmt.Sprintf("arn:aws:health:%s::event/%s/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1", testRegion, testService)
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
+	entityArn2 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID1)
+	entityArn3 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID2)
 
 	// Setup AWS Health API mock responses
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:               aws.String(eventArn),
-				Service:           aws.String("EC2"),
+				Service:           aws.String(testService),
 				EventTypeCode:     aws.String("AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED"),
 				EventTypeCategory: types.EventTypeCategoryScheduledChange,
 				EventScopeCode:    types.EventScopeCodeAccountSpecific,
 				StatusCode:        types.EventStatusCodeUpcoming,
 				StartTime:         aws.Time(startTime),
 				EndTime:           aws.Time(endTime),
-				Region:            aws.String("us-east-1"),
+				Region:            aws.String(testRegion),
 			},
 		},
 	}, nil)
@@ -259,19 +282,19 @@ func TestMultipleAffectedEntities(t *testing.T) {
 			Entities: []types.AffectedEntity{
 				{
 					EntityArn:   aws.String(entityArn1),
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
 				{
 					EntityArn:   aws.String(entityArn2),
-					EntityValue: aws.String("i-additional000000001"),
+					EntityValue: aws.String(testInstanceID1),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
 				{
 					EntityArn:   aws.String(entityArn3),
-					EntityValue: aws.String("i-additional000000002"),
+					EntityValue: aws.String(testInstanceID2),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
@@ -286,9 +309,9 @@ func TestMultipleAffectedEntities(t *testing.T) {
 	// Setup test channel and instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0":   "test-node",
-		"i-additional000000001": "test-node-1",
-		"i-additional000000002": "test-node-2",
+		testInstanceID:  testNodeName,
+		testInstanceID1: testNodeName1,
+		testInstanceID2: testNodeName2,
 	}
 
 	// Call the function being tested
@@ -305,13 +328,14 @@ func TestMultipleAffectedEntities(t *testing.T) {
 		select {
 		case event := <-eventChan:
 			var expectedEntityArn string
-			if event.ResourceID == "i-0123456789abcdef0" {
+			switch event.ResourceID {
+			case testInstanceID:
 				expectedEntityArn = entityArn1
-			} else if event.ResourceID == "i-additional000000001" {
+			case testInstanceID1:
 				expectedEntityArn = entityArn2
-			} else if event.ResourceID == "i-additional000000002" {
+			case testInstanceID2:
 				expectedEntityArn = entityArn3
-			} else {
+			default:
 				assert.Fail(t, "Unexpected resource ID: %s", event.ResourceID)
 			}
 			receivedEvents++
@@ -343,29 +367,29 @@ func TestCompletedEvent(t *testing.T) {
 	eventEndTime := time.Now().Add(-1 * time.Hour)    // Ended an hour ago
 	lastUpdatedTime := time.Now().Add(-10 * time.Second)
 	// Setup test data
-	eventArn := "arn:aws:health:us-east-1::event/EC2/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1"
+	eventArn := fmt.Sprintf("arn:aws:health:%s::event/%s/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-1", testRegion, testService)
 
 	// Setup AWS Health API mock responses
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:               aws.String(eventArn),
-				Service:           aws.String("EC2"),
+				Service:           aws.String(testService),
 				EventTypeCode:     aws.String("AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED"),
 				EventTypeCategory: types.EventTypeCategoryScheduledChange,
 				EventScopeCode:    types.EventScopeCodeAccountSpecific,
 				StatusCode:        types.EventStatusCodeClosed,
 				StartTime:         aws.Time(eventStartTime),
 				EndTime:           aws.Time(eventEndTime),
-				Region:            aws.String("us-east-1"),
+				Region:            aws.String(testRegion),
 				LastUpdatedTime:   &lastUpdatedTime,
 			},
 		},
 	}, nil)
 
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
-	entityArn2 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000001"
-	entityArn3 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000002"
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
+	entityArn2 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID1)
+	entityArn3 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID2)
 
 	// Multiple affected instances for same event
 	mockAWSClient.On("DescribeAffectedEntities", mock.Anything, mock.Anything).
@@ -373,19 +397,19 @@ func TestCompletedEvent(t *testing.T) {
 			Entities: []types.AffectedEntity{
 				{
 					EntityArn:   aws.String(entityArn1),
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
 				{
 					EntityArn:   aws.String(entityArn2),
-					EntityValue: aws.String("i-additional000000001"),
+					EntityValue: aws.String(testInstanceID1),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
 				{
 					EntityArn:   aws.String(entityArn3),
-					EntityValue: aws.String("i-additional000000002"),
+					EntityValue: aws.String(testInstanceID2),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
@@ -399,9 +423,7 @@ func TestCompletedEvent(t *testing.T) {
 					Arn: aws.String(eventArn),
 				},
 				EventDescription: &types.EventDescription{
-					LatestDescription: aws.String(
-						"What do I need to do?\n'We recommend that you reboot the instance which will restart the instance.",
-					),
+					LatestDescription: aws.String(testEventDescription),
 				},
 			},
 		},
@@ -410,9 +432,9 @@ func TestCompletedEvent(t *testing.T) {
 	// Setup test channel and instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0":   "test-node",
-		"i-additional000000001": "test-node-1",
-		"i-additional000000002": "test-node-2",
+		testInstanceID:  testNodeName,
+		testInstanceID1: testNodeName1,
+		testInstanceID2: testNodeName2,
 	}
 
 	// Call the function being tested
@@ -424,16 +446,17 @@ func TestCompletedEvent(t *testing.T) {
 	case event := <-eventChan:
 		var expectedEntityArn string
 		var nodeName string
-		if event.ResourceID == "i-0123456789abcdef0" {
+		switch event.ResourceID {
+		case testInstanceID:
 			expectedEntityArn = entityArn1
-			nodeName = "test-node"
-		} else if event.ResourceID == "i-additional000000001" {
+			nodeName = testNodeName
+		case testInstanceID1:
 			expectedEntityArn = entityArn2
-			nodeName = "test-node-1"
-		} else if event.ResourceID == "i-additional000000002" {
+			nodeName = testNodeName1
+		case testInstanceID2:
 			expectedEntityArn = entityArn3
-			nodeName = "test-node-2"
-		} else {
+			nodeName = testNodeName2
+		default:
 			assert.Fail(t, "Unexpected resource ID: %s", event.ResourceID)
 		}
 		assert.Equal(t, expectedEntityArn, event.EventID)
@@ -458,7 +481,7 @@ func TestErrorScenario(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function being tested - should not panic but return error
@@ -502,7 +525,7 @@ func TestTimeWindowFiltering(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function being tested
@@ -525,17 +548,17 @@ func TestInstanceFiltering(t *testing.T) {
 	// Setup test data
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
-	eventArn := "arn:aws:health:us-east-1::event/EC2/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-4"
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
-	entityArn2 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000001"
-	entityArn3 := "arn:aws:ec2:us-east-1:123456789012:instance/i-additional000000002"
+	eventArn := fmt.Sprintf("arn:aws:health:%s::event/%s/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-4", testRegion, testService)
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
+	entityArn2 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID1)
+	entityArn3 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID2)
 
 	// Setup AWS Health API mock responses
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:            aws.String(eventArn),
-				Service:        aws.String("EC2"),
+				Service:        aws.String(testService),
 				EventTypeCode:  aws.String("AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED"),
 				EventScopeCode: types.EventScopeCodeAccountSpecific,
 				StatusCode:     types.EventStatusCodeUpcoming,
@@ -551,7 +574,7 @@ func TestInstanceFiltering(t *testing.T) {
 			Entities: []types.AffectedEntity{
 				{
 					// This entity is in our cluster
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EntityArn:   &entityArn1,
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
@@ -590,7 +613,7 @@ func TestInstanceFiltering(t *testing.T) {
 	// Setup test channel with our cluster's instance IDs only
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 		// External instances are deliberately not included
 	}
 
@@ -607,8 +630,8 @@ func TestInstanceFiltering(t *testing.T) {
 		case event := <-eventChan:
 			receivedEvents++
 			// Verify it's for our cluster's instance
-			assert.Equal(t, "i-0123456789abcdef0", event.ResourceID)
-			assert.Equal(t, "test-node", event.NodeName)
+			assert.Equal(t, testInstanceID, event.ResourceID)
+			assert.Equal(t, testNodeName, event.NodeName)
 		case <-timeout:
 			goto checkResults
 		default:
@@ -630,15 +653,15 @@ func TestInvalidEntityData(t *testing.T) {
 	// Setup test data
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
-	eventArn := "arn:aws:health:us-east-1::event/EC2/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-5"
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
+	eventArn := fmt.Sprintf("arn:aws:health:%s::event/%s/AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED/test-event-5", testRegion, testService)
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
 
 	// Setup AWS Health API mock responses
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:            aws.String(eventArn),
-				Service:        aws.String("EC2"),
+				Service:        aws.String(testService),
 				EventTypeCode:  aws.String("AWS_EC2_INSTANCE_REBOOT_MAINTENANCE_SCHEDULED"),
 				EventScopeCode: types.EventScopeCodeAccountSpecific,
 				StatusCode:     types.EventStatusCodeUpcoming,
@@ -660,13 +683,13 @@ func TestInvalidEntityData(t *testing.T) {
 				},
 				{
 					// Missing EventArn
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EventArn:    nil,
 					StatusCode:  types.EntityStatusCodeImpaired,
 				},
 				{
 					// Valid entity
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EntityArn:   aws.String(entityArn1),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
@@ -692,7 +715,7 @@ func TestInvalidEntityData(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function - should handle nil values without panicking
@@ -702,7 +725,7 @@ func TestInvalidEntityData(t *testing.T) {
 	// Should still receive event for the valid entity
 	select {
 	case event := <-eventChan:
-		assert.Equal(t, "i-0123456789abcdef0", event.ResourceID)
+		assert.Equal(t, testInstanceID, event.ResourceID)
 	default:
 		t.Error("Expected to receive an event for the valid entity, but none was received")
 	}
@@ -716,17 +739,17 @@ func TestInstanceRebootEvent(t *testing.T) {
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
 	eventArn := fmt.Sprintf(
-		"arn:aws:health:us-east-1::event/EC2/%s/test-event-reboot",
-		INSTANCE_REBOOT_MAINTENANCE_SCHEDULED,
+		"arn:aws:health:%s::event/%s/%s/test-event-reboot",
+		testRegion, testService, INSTANCE_REBOOT_MAINTENANCE_SCHEDULED,
 	)
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0"
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceID)
 
 	// Setup AWS Health API mock with an instance-reboot event
 	mockAWSClient.On("DescribeEvents", mock.Anything, mock.Anything).Return(&health.DescribeEventsOutput{
 		Events: []types.Event{
 			{
 				Arn:            aws.String(eventArn),
-				Service:        aws.String("EC2"),
+				Service:        aws.String(testService),
 				EventTypeCode:  aws.String(INSTANCE_REBOOT_MAINTENANCE_SCHEDULED), // instance-reboot event
 				EventScopeCode: types.EventScopeCodeAccountSpecific,
 				StatusCode:     types.EventStatusCodeUpcoming,
@@ -742,7 +765,7 @@ func TestInstanceRebootEvent(t *testing.T) {
 		Return(&health.DescribeAffectedEntitiesOutput{
 			Entities: []types.AffectedEntity{
 				{
-					EntityValue: aws.String("i-0123456789abcdef0"),
+					EntityValue: aws.String(testInstanceID),
 					EntityArn:   aws.String(entityArn1),
 					EventArn:    aws.String(eventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
@@ -767,7 +790,7 @@ func TestInstanceRebootEvent(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
+		testInstanceID: testNodeName,
 	}
 
 	// Call the function being tested
@@ -778,8 +801,8 @@ func TestInstanceRebootEvent(t *testing.T) {
 	select {
 	case event := <-eventChan:
 		assert.Equal(t, entityArn1, event.EventID)
-		assert.Equal(t, "test-node", event.NodeName)
-		assert.Equal(t, "i-0123456789abcdef0", event.ResourceID)
+		assert.Equal(t, testNodeName, event.NodeName)
+		assert.Equal(t, testInstanceID, event.ResourceID)
 		assert.Equal(t, model.StatusDetected, event.Status)
 		assert.Contains(t, event.Metadata["eventTypeCode"], "INSTANCE_REBOOT")
 		assert.Equal(t, pb.RecommenedAction_NODE_REBOOT.String(), event.RecommendedAction)
@@ -795,16 +818,18 @@ func TestIgnoredEventTypes(t *testing.T) {
 	// Setup test data for events that should be ignored
 	startTime := time.Now().Add(24 * time.Hour)
 	endTime := startTime.Add(2 * time.Hour)
-	entityArn1 := "arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef1"
+	testInstanceIDIgnored := "i-0123456789abcdef1"
+	testNodeNameIgnored := "test-node1"
+	entityArn1 := fmt.Sprintf("arn:aws:ec2:%s:%s:instance/%s", testRegion, testAccountID, testInstanceIDIgnored)
 
 	// Create two events that should be ignored
 	instanceStopEventArn := fmt.Sprintf(
-		"arn:aws:health:us-east-1::event/EC2/%s/test-event-stop",
-		"AWS_EC2_INSTANCE_STOP_SCHEDULED",
+		"arn:aws:health:%s::event/%s/%s/test-event-stop",
+		testRegion, testService, "AWS_EC2_INSTANCE_STOP_SCHEDULED",
 	)
 	instanceMaintenanceEventArn := fmt.Sprintf(
-		"arn:aws:health:us-east-1::event/EC2/%s/test-event-retire",
-		MAINTENANCE_SCHEDULED,
+		"arn:aws:health:%s::event/%s/%s/test-event-retire",
+		testRegion, testService, MAINTENANCE_SCHEDULED,
 	)
 
 	// Setup AWS Health API mock with events to be ignored
@@ -812,7 +837,7 @@ func TestIgnoredEventTypes(t *testing.T) {
 		Events: []types.Event{
 			{
 				Arn:               aws.String(instanceStopEventArn),
-				Service:           aws.String("EC2"),
+				Service:           aws.String(testService),
 				EventTypeCode:     aws.String("AWS_EC2_INSTANCE_STOP_SCHEDULED"), // Should be ignored
 				EventScopeCode:    types.EventScopeCodeAccountSpecific,
 				StatusCode:        types.EventStatusCodeUpcoming,
@@ -822,7 +847,7 @@ func TestIgnoredEventTypes(t *testing.T) {
 			},
 			{
 				Arn:               aws.String(instanceMaintenanceEventArn),
-				Service:           aws.String("EC2"),
+				Service:           aws.String(testService),
 				EventTypeCode:     aws.String(MAINTENANCE_SCHEDULED), // Should not be ignored
 				EventScopeCode:    types.EventScopeCodeAccountSpecific,
 				StatusCode:        types.EventStatusCodeUpcoming,
@@ -840,7 +865,7 @@ func TestIgnoredEventTypes(t *testing.T) {
 		Return(&health.DescribeAffectedEntitiesOutput{
 			Entities: []types.AffectedEntity{
 				{
-					EntityValue: aws.String("i-0123456789abcdef1"),
+					EntityValue: aws.String(testInstanceIDIgnored),
 					EntityArn:   aws.String(entityArn1),
 					EventArn:    aws.String(instanceMaintenanceEventArn),
 					StatusCode:  types.EntityStatusCodeImpaired,
@@ -867,8 +892,8 @@ func TestIgnoredEventTypes(t *testing.T) {
 	// Setup test channel and test instance IDs
 	eventChan := make(chan model.MaintenanceEvent, 10)
 	instanceIDs := map[string]string{
-		"i-0123456789abcdef0": "test-node",
-		"i-0123456789abcdef1": "test-node1",
+		testInstanceID:        testNodeName,
+		testInstanceIDIgnored: testNodeNameIgnored,
 	}
 
 	// Call the function being tested
@@ -879,8 +904,8 @@ func TestIgnoredEventTypes(t *testing.T) {
 	select {
 	case event := <-eventChan:
 		assert.Equal(t, entityArn1, event.EventID)
-		assert.Equal(t, "test-node1", event.NodeName)
-		assert.Equal(t, "i-0123456789abcdef1", event.ResourceID)
+		assert.Equal(t, testNodeNameIgnored, event.NodeName)
+		assert.Equal(t, testInstanceIDIgnored, event.ResourceID)
 		assert.Equal(t, model.StatusDetected, event.Status)
 	default:
 		// This is expected, no events should be present

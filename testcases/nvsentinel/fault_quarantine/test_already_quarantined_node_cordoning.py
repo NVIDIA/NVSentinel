@@ -64,11 +64,8 @@ class TestPreQuarantinedNodeCordoning(TestNVSentinelCaseBase):
     # ---------------------------------------------------
     @pytest.mark.author(email="tanishag@nvidia.com")
     @pytest.mark.faultquarantine
-    #def test_already_quarantined_node_cordoning(self, request, nvsentinel_autosync_disabled_enabled):
     def test_already_quarantined_node_cordoning(self, request):
         self.skip_if_fault_quarantine_deployment_not_found()
-        self.logger.info("Restart the fault-quarantine pod")
-        self.delete_fault_quarantine_pod()
 
         # Select gpu-health-monitor pod and node
         pods, _ = self.client.list_pods(self.nv_namespace, name_pattern="nvsentinel-gpu-health-monitor-dcgm*")

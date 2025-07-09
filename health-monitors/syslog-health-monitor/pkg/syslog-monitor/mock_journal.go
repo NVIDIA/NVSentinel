@@ -14,9 +14,12 @@
 package syslogmonitor
 
 import (
+	"errors"
 	"fmt"
 	"io"
 )
+
+const JOURNAL_CLOSED_ERROR = "journal is closed"
 
 // MockJournalEntry represents a single journal entry
 type MockJournalEntry struct {
@@ -47,7 +50,7 @@ type MockJournal struct {
 // AddMatch adds a match filter for journal entries
 func (j *MockJournal) AddMatch(match string) error {
 	if j.Closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	j.MatchFilters = append(j.MatchFilters, match)
 	return nil
@@ -62,7 +65,7 @@ func (j *MockJournal) Close() error {
 // GetBootID retrieves the current boot ID
 func (j *MockJournal) GetBootID() (string, error) {
 	if j.Closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailGetBootID {
 		return "", fmt.Errorf("forced GetBootID failure")
@@ -79,7 +82,7 @@ func (j *MockJournal) GetBootID() (string, error) {
 // GetCursor returns a cursor that can be used to seek to the current location
 func (j *MockJournal) GetCursor() (string, error) {
 	if j.Closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailGetCursor {
 		return "", fmt.Errorf("forced GetCursor failure")
@@ -96,7 +99,7 @@ func (j *MockJournal) GetCursor() (string, error) {
 // GetData retrieves a field from the current journal entry
 func (j *MockJournal) GetData(field string) (string, error) {
 	if j.Closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailGetData {
 		return "", fmt.Errorf("forced GetData failure")
@@ -119,7 +122,7 @@ func (j *MockJournal) GetData(field string) (string, error) {
 // Next moves to the next journal entry
 func (j *MockJournal) Next() (uint64, error) {
 	if j.Closed {
-		return 0, fmt.Errorf("journal is closed")
+		return 0, errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailNextEntry {
 		return 0, fmt.Errorf("forced Next failure")
@@ -134,7 +137,7 @@ func (j *MockJournal) Next() (uint64, error) {
 // Previous moves to the previous journal entry
 func (j *MockJournal) Previous() (uint64, error) {
 	if j.Closed {
-		return 0, fmt.Errorf("journal is closed")
+		return 0, errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	j.CurrentPosition--
 	if j.CurrentPosition < 0 {
@@ -147,7 +150,7 @@ func (j *MockJournal) Previous() (uint64, error) {
 // SeekCursor seeks to a position indicated by a cursor
 func (j *MockJournal) SeekCursor(cursor string) error {
 	if j.Closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailSeekCursor {
 		return fmt.Errorf("forced SeekCursor failure")
@@ -164,7 +167,7 @@ func (j *MockJournal) SeekCursor(cursor string) error {
 // SeekTail seeks to the end of the journal
 func (j *MockJournal) SeekTail() error {
 	if j.Closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
 	if j.FailSeekTail {
 		return fmt.Errorf("forced SeekTail failure")

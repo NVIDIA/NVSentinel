@@ -40,6 +40,16 @@ import (
 // mockNormalizer allows faking normalization behavior.
 // Duplicated from previous attempts as it's needed again.
 
+const (
+	ZONE                                      = "topology.kubernetes.io/zone"
+	UPCOMING_MAINTENANCE                      = "compute.instances.upcomingMaintenance"
+	POLL_SUCCESSFUL_ERROR_MESSAGE             = "pollSuccessful expected true, got false"
+	NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE  = "Normalizer.Normalize called %d times, expected 1"
+	RECEIVED_EVENT_NODE_NAME_ERROR_MESSAGE    = "Received event NodeName %s, expected %s"
+	RECEIVED_EVENT_CLUSTER_NAME_ERROR_MESSAGE = "Received event ClusterName %s, expected %s"
+	UNEXPECTED_ERROR_MESSAGE                  = "unexpected error: %v"
+)
+
 type mockNormalizer struct {
 	NormalizeFunc func(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error)
 	calls         []struct {
@@ -229,7 +239,7 @@ func TestProcessLogEntries_OneValidMappableEntry(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testPollLogsNodeName,
 			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{"topology.kubernetes.io/zone": testPollLogsZone},
+			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
 	fakeK8sCS.Tracker().Add(node)
@@ -248,7 +258,7 @@ func TestProcessLogEntries_OneValidMappableEntry(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"pending",
 		maintUpcoming,
 		entryTime,
@@ -265,10 +275,10 @@ func TestProcessLogEntries_OneValidMappableEntry(t *testing.T) {
 	)
 
 	if !pollSuccessful {
-		t.Error("pollSuccessful expected true, got false")
+		t.Error(POLL_SUCCESSFUL_ERROR_MESSAGE)
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 	call := mockNorm.calls[0]
 	if call.RawEvent.(*logging.Entry).InsertID != "insert-map-1" {
@@ -342,7 +352,7 @@ func TestProcessLogEntries_NormalizationError(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"pending",
 		nil,
 		entryTime,
@@ -366,7 +376,7 @@ func TestProcessLogEntries_NormalizationError(t *testing.T) {
 		t.Error("pollSuccessful expected true even with normalization error, got false")
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Errorf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Errorf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 	select {
 	case ev := <-eventChan:
@@ -388,7 +398,7 @@ func TestProcessLogEntries_ContextCancelledDuringProcessing(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		"name1",
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"p1",
 		nil,
 		entryTime1,
@@ -400,7 +410,7 @@ func TestProcessLogEntries_ContextCancelledDuringProcessing(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		"name2",
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"p2",
 		nil,
 		entryTime2,
@@ -467,7 +477,7 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testPollLogsNodeName,
 			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{"topology.kubernetes.io/zone": testPollLogsZone},
+			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
 	fakeK8sCS.Tracker().Add(node)
@@ -486,11 +496,11 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"pending",
 		maintUpcoming,
 		entryTime,
-		"compute.instances.upcomingMaintenance", /* operationProducer */
+		UPCOMING_MAINTENANCE, /* operationProducer */
 	) // Key addition
 	mockIter := &mockEntryIterator{entries: []*logging.Entry{logEntry}}
 
@@ -524,17 +534,17 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 	)
 
 	if !pollSuccessful {
-		t.Error("pollSuccessful expected true, got false")
+		t.Error(POLL_SUCCESSFUL_ERROR_MESSAGE)
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 	call := mockNorm.calls[0]
 	if call.RawEvent.(*logging.Entry).InsertID != "op-producer-1" {
 		t.Errorf("Normalizer called with wrong event. Got ID %s", call.RawEvent.(*logging.Entry).InsertID)
 	}
 	rawEntry := call.RawEvent.(*logging.Entry)
-	if rawEntry.Operation == nil || rawEntry.Operation.Producer != "compute.instances.upcomingMaintenance" {
+	if rawEntry.Operation == nil || rawEntry.Operation.Producer != UPCOMING_MAINTENANCE {
 		t.Errorf("Normalizer called with event missing expected Operation.Producer. Got: %v", rawEntry.Operation)
 	}
 
@@ -579,7 +589,7 @@ func TestProcessLogEntries_UnmappableInstance(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		"unmappable-instance-name",
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"pending",
 		maintUpcoming,
 		entryTime,
@@ -617,7 +627,7 @@ func TestProcessLogEntries_UnmappableInstance(t *testing.T) {
 		t.Error("pollSuccessful expected true for unmappable instance, got false")
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 
 	select {
@@ -645,7 +655,7 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testPollLogsNodeName,
 			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{"topology.kubernetes.io/zone": testPollLogsZone},
+			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
 	fakeK8sCS.Tracker().Add(node)
@@ -664,7 +674,7 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"ongoing",
 		maintUpcoming,
 		entryTime,
@@ -700,10 +710,10 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 	)
 
 	if !pollSuccessful {
-		t.Error("pollSuccessful expected true, got false")
+		t.Error(POLL_SUCCESSFUL_ERROR_MESSAGE)
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 
 	select {
@@ -712,10 +722,10 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 			t.Errorf("Received event ID %s, expected norm-ongoing-1", ev.EventID)
 		}
 		if ev.NodeName != testPollLogsNodeName {
-			t.Errorf("Received event NodeName %s, expected %s", ev.NodeName, testPollLogsNodeName)
+			t.Errorf(RECEIVED_EVENT_NODE_NAME_ERROR_MESSAGE, ev.NodeName, testPollLogsNodeName)
 		}
 		if ev.ClusterName != client.clusterName {
-			t.Errorf("Received event ClusterName %s, expected %s", ev.ClusterName, client.clusterName)
+			t.Errorf(RECEIVED_EVENT_CLUSTER_NAME_ERROR_MESSAGE, ev.ClusterName, client.clusterName)
 		}
 		if ev.CSPStatus != "ONGOING" {
 			t.Errorf("Received event CSPStatus %s, expected ONGOING", ev.CSPStatus)
@@ -734,7 +744,7 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testPollLogsNodeName,
 			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{"topology.kubernetes.io/zone": testPollLogsZone},
+			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
 	fakeK8sCS.Tracker().Add(node)
@@ -753,7 +763,7 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"completed",
 		maintUpcoming,
 		entryTime,
@@ -789,10 +799,10 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 	)
 
 	if !pollSuccessful {
-		t.Error("pollSuccessful expected true, got false")
+		t.Error(POLL_SUCCESSFUL_ERROR_MESSAGE)
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 
 	select {
@@ -801,10 +811,10 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 			t.Errorf("Received event ID %s, expected norm-completed-1", ev.EventID)
 		}
 		if ev.NodeName != testPollLogsNodeName {
-			t.Errorf("Received event NodeName %s, expected %s", ev.NodeName, testPollLogsNodeName)
+			t.Errorf(RECEIVED_EVENT_NODE_NAME_ERROR_MESSAGE, ev.NodeName, testPollLogsNodeName)
 		}
 		if ev.ClusterName != client.clusterName {
-			t.Errorf("Received event ClusterName %s, expected %s", ev.ClusterName, client.clusterName)
+			t.Errorf(RECEIVED_EVENT_CLUSTER_NAME_ERROR_MESSAGE, ev.ClusterName, client.clusterName)
 		}
 		if ev.CSPStatus != "COMPLETED" {
 			t.Errorf("Received event CSPStatus %s, expected COMPLETED", ev.CSPStatus)
@@ -823,7 +833,7 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        testPollLogsNodeName,
 			Annotations: map[string]string{gcpInstanceIDAnnotation: testPollLogsInstanceID},
-			Labels:      map[string]string{"topology.kubernetes.io/zone": testPollLogsZone},
+			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
 	fakeK8sCS.Tracker().Add(node)
@@ -842,7 +852,7 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 		testPollLogsProject,
 		testPollLogsZone,
 		testPollLogsInstanceName,
-		"compute.instances.upcomingMaintenance",
+		UPCOMING_MAINTENANCE,
 		"cancelled",
 		maintUpcoming,
 		entryTime,
@@ -878,10 +888,10 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 	)
 
 	if !pollSuccessful {
-		t.Error("pollSuccessful expected true, got false")
+		t.Error(POLL_SUCCESSFUL_ERROR_MESSAGE)
 	}
 	if len(mockNorm.calls) != 1 {
-		t.Fatalf("Normalizer.Normalize called %d times, expected 1", len(mockNorm.calls))
+		t.Fatalf(NORMALIZER_NORMALIZE_CALLS_ERROR_MESSAGE, len(mockNorm.calls))
 	}
 
 	select {
@@ -890,10 +900,10 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 			t.Errorf("Received event ID %s, expected norm-cancelled-1", ev.EventID)
 		}
 		if ev.NodeName != testPollLogsNodeName {
-			t.Errorf("Received event NodeName %s, expected %s", ev.NodeName, testPollLogsNodeName)
+			t.Errorf(RECEIVED_EVENT_NODE_NAME_ERROR_MESSAGE, ev.NodeName, testPollLogsNodeName)
 		}
 		if ev.ClusterName != client.clusterName {
-			t.Errorf("Received event ClusterName %s, expected %s", ev.ClusterName, client.clusterName)
+			t.Errorf(RECEIVED_EVENT_CLUSTER_NAME_ERROR_MESSAGE, ev.ClusterName, client.clusterName)
 		}
 		if ev.CSPStatus != "CANCELLED" {
 			t.Errorf("Received event CSPStatus %s, expected CANCELLED", ev.CSPStatus)
@@ -919,7 +929,7 @@ func TestMapGCPInstanceToNodeName(t *testing.T) {
 				gcpInstanceIDAnnotation: instanceID,
 			},
 			Labels: map[string]string{
-				"topology.kubernetes.io/zone": zone,
+				ZONE: zone,
 			},
 		},
 	}
@@ -928,7 +938,7 @@ func TestMapGCPInstanceToNodeName(t *testing.T) {
 	c := &Client{k8sClientset: fakeCS}
 	got, err := c.mapGCPInstanceToNodeName(context.Background(), instanceID, map[string]string{"gcp_zone": zone})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(UNEXPECTED_ERROR_MESSAGE, err)
 	}
 	if got != nodeName {
 		t.Fatalf("expected node %s, got %s", nodeName, got)
@@ -940,7 +950,7 @@ func TestMapGCPInstanceToNodeNameNotFound(t *testing.T) {
 	c := &Client{k8sClientset: fakeCS}
 	got, err := c.mapGCPInstanceToNodeName(context.Background(), "nonexistent", map[string]string{})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(UNEXPECTED_ERROR_MESSAGE, err)
 	}
 	if got != "" {
 		t.Fatalf("expected empty result, got %s", got)
@@ -966,7 +976,7 @@ func TestMapGCPInstanceToNodeNameNoZoneLabel(t *testing.T) {
 
 	got, err := c.mapGCPInstanceToNodeName(context.Background(), instanceID, map[string]string{})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf(UNEXPECTED_ERROR_MESSAGE, err)
 	}
 	if got != nodeName {
 		t.Fatalf("expected %s, got %s", nodeName, got)
@@ -992,7 +1002,7 @@ func TestMapGCPInstanceToNodeNameMultipleNodes(t *testing.T) {
 			Annotations: map[string]string{
 				gcpInstanceIDAnnotation: instanceID,
 			},
-			Labels: map[string]string{"topology.kubernetes.io/zone": "europe-west4-b"},
+			Labels: map[string]string{ZONE: "europe-west4-b"},
 		},
 	}
 	fakeCS := fake.NewSimpleClientset(node1, node2)

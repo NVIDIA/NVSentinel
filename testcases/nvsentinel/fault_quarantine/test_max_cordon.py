@@ -46,8 +46,8 @@ class TestMaxCordon(TestNVSentinelCaseBase):
     def test_max_cordon(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests:
-         1. When MaxPercentageOfNodesToCordon is 100, then all the nodes are cordoned
-         2. When MaxPercentageOfNodesToCordon is 50, then 50% of the nodes are cordoned
+         1. When MaxPercentageOfNodesToCordon is 100.0, then all the nodes are cordoned
+         2. When MaxPercentageOfNodesToCordon is 50.0, then 50% of the nodes are cordoned
             - Upon clearing the fatal error from one of the cordoned node, the node is uncordoned,
               and the other node which was not cordoned before but has the same fatal error, is cordoned
         """
@@ -62,7 +62,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
             os.getcwd(), "nvsentinel", "testcases", "data", "cli", "nvsentinel", "max-cordon.yaml"
         )
 
-        self.step_manager.print_header("Apply the new config map with maxPercentageOfNodesToCordon <= 100")
+        self.step_manager.print_header("Apply the new config map with maxPercentageOfNodesToCordon <= 100.0")
         self.client.apply_configmap(cm_yaml)
         self.logger.info("Restart the fault-quarantine pod")
         self.delete_fault_quarantine_pod()
@@ -95,7 +95,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
         assert all(node.spec.unschedulable is None for node in nodes), f"FAIL: Node is cordoned"
 
 
-        self.step_manager.print_header("Apply the new config map with maxPercentageOfNodesToCordon <= 50")
+        self.step_manager.print_header("Apply the new config map with maxPercentageOfNodesToCordon <= 50.0")
         self.apply_50_percent_cordon_configmap(cm_yaml)
 
         self.step_manager.print_header("Restart the fault-quarantine pod")
@@ -137,7 +137,7 @@ class TestMaxCordon(TestNVSentinelCaseBase):
         with open(cm_yaml, "r") as f:
             cm = yaml.safe_load(f)
         cm["data"]["config.toml"] = cm["data"]["config.toml"].replace(
-            "maxPercentageOfNodesToCordon <= 100", "maxPercentageOfNodesToCordon <= 50"
+            "maxPercentageOfNodesToCordon <= 100.0", "maxPercentageOfNodesToCordon <= 50.0"
         )
 
         temp_cm_path = "/tmp/immediate_fault_cm_temp.yaml"

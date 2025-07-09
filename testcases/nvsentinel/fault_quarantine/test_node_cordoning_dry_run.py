@@ -40,8 +40,7 @@ class TestNodeCordoningInDryRun(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="tanishag@nvidia.com")
     @pytest.mark.faultquarantine
-    #def test_node_cordoning_dry_run(self, request, nvsentinel_autosync_disabled_enabled):
-    def test_node_cordoning_dry_run(self, request):
+    def test_node_cordoning_dry_run(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Integration validation for Fault-Quarantine dry-run mode.
 

@@ -16,7 +16,7 @@ from gpu_health_monitor.dcgm_watcher import dcgm
 from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields, dcgm_field_helpers
 from threading import Event, Thread
-from ctypes import *
+from ctypes import pointer
 
 
 class FakeEventProcessorInTest(dcgm.types.CallbackInterface):

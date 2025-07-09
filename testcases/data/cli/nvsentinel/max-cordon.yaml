@@ -50,4 +50,4 @@ data:
 
       [[rule-sets.match.all]]
         kind = "MaxPercentageOfNodesToCordon"
-        expression = "maxPercentageOfNodesToCordon <= 100"
+        expression = "maxPercentageOfNodesToCordon <= 100.0"

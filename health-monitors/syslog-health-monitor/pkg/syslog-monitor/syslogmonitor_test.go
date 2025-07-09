@@ -26,6 +26,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	TEST_NODE                   = "test-node"
+	TEST_AGENT                  = "test-agent"
+	TEST_COMPONENT              = "test-component"
+	TEST_JOURNAL_PATH           = "/fake/journal/path"
+	TEST_LOG_WITH_MATCH_IN_IT   = "Log with match in it"
+	TEST_LOG_WITH_MATCH_IN_IT_2 = "Another log with match in it"
+)
+
 // LogCheckConfig represents the YAML configuration structure
 type LogCheckConfig struct {
 	Checks []common.CheckDefinition `yaml:"checks"`
@@ -133,68 +142,79 @@ func TestExecuteCheckWithSyslog(t *testing.T) {
 	err := yaml.Unmarshal([]byte(logCheckDefinitionsYaml), &config)
 	assert.NoError(t, err)
 
-	nodeName := "test-node"
-	agentName := "test-agent"
-	componentClass := "test-component"
-
 	// Test each check
 	for _, check := range config.Checks {
 		t.Run(check.Name, func(t *testing.T) {
-			mockPCClient := &mockPlatformConnectorClient{}
-
-			// Create SyslogMonitor
-			testStateFile := "/tmp/test-syslog-monitor-state-1.json"
-			defer os.Remove(testStateFile)
-			sm, err := NewSyslogMonitor(nodeName, []common.CheckDefinition{check}, mockPCClient, agentName, componentClass, "60s", testStateFile)
-			assert.NoError(t, err) // Assuming NewSyslogMonitor itself doesn't error for valid basic inputs
-
-			// Execute the check
-			err = sm.executeCheck(check)
+			mockPCClient, err := executeTestCheck(t, check)
 
 			// Assertions based on expected behavior
-			if check.JournalPath == "" { // Checks with empty journal path should error out early in openJournal
-				assert.Error(t, err)
-				if err != nil { // Check err is not nil before asserting its content
-					assert.Contains(t, err.Error(), "journal path is empty")
-				}
+			if check.JournalPath == "" {
+				validateEmptyJournalPath(t, err)
 			} else {
-				// If JournalPath is not empty, executeCheck will attempt to open a real journal.
-				// If the path is invalid or not a journal dir, openJournal will return an error, which executeCheck will propagate.
-				// We can't easily assert specific match counts without a controlled journal source.
-				// For now, we assert that if an error *does* occur, it's potentially due to journal opening.
-				// If no error, it implies the journal was processed (even if empty or no matches found).
-				// A more robust test would require setting up a temporary, real journal directory with known content.
-
-				// For example, if an error is expected because the path is not a real journal:
-				// assert.Error(t, err, "Expected an error when JournalPath is not a valid journal directory")
-				// if err != nil {
-				// 	 assert.Contains(t, err.Error(), "failed to open journal")
-				// }
-
-				// The original assertions for health events based on `expectedMatches > check.Count` are problematic now.
-				// If err == nil, it means executeCheck thought it processed a journal successfully (even if 0 matches).
-				// We can only check if a health event was sent if we *knew* there should be one.
-				// For now, let's assume if no error from executeCheck, no fatal health event was expected *by this test's old logic* unless specific conditions met.
-				// This part of the test is fundamentally broken without injectable log lines or a complex real journal setup.
-				if err == nil {
-					// If check.Count is 0, and if there were truly no matches (which we can't verify here),
-					// then no health event should be sent. This is a weak assertion now.
-
-					// If count > 0, and no matches (assumption), also no event.
-					// This doesn't test the > count scenario effectively anymore.
-					assert.NotEmpty(t, mockPCClient.RecordedHealthEvents, "Expected health event to be sent")
-					// Check if the recorded health event has isHealthy: true and isFatal: false
-					healthEvent := mockPCClient.RecordedHealthEvents[0]
-					assert.True(t, healthEvent.Events[0].IsHealthy, "Expected health event to have IsHealthy: true")
-					assert.False(t, healthEvent.Events[0].IsFatal, "Expected health event to have IsFatal: false")
-					assert.Equal(t, check.Name, healthEvent.Events[0].CheckName)
-
-				} else {
-					// If an error occurred, it's likely a journal access error. No health event should have been processed to the point of sending.
-					assert.Empty(t, mockPCClient.RecordedHealthEvents, "Expected no health event if executeCheck errored before evaluation")
-				}
+				validateNonEmptyJournalPath(t, err, mockPCClient, check.Name)
 			}
 		})
+	}
+}
+
+// executeTestCheck executes a single check test and returns the error and mock client
+func executeTestCheck(t *testing.T, check common.CheckDefinition) (*mockPlatformConnectorClient, error) {
+	mockPCClient := &mockPlatformConnectorClient{}
+
+	// Create SyslogMonitor
+	testStateFile := "/tmp/test-syslog-monitor-state-1.json"
+	defer os.Remove(testStateFile)
+	sm, err := NewSyslogMonitor(TEST_NODE, []common.CheckDefinition{check}, mockPCClient, TEST_AGENT, TEST_COMPONENT, "60s", testStateFile)
+	assert.NoError(t, err)
+
+	// Execute the check
+	err = sm.executeCheck(check)
+	return mockPCClient, err
+}
+
+// validateEmptyJournalPath validates test results for checks with empty journal paths
+func validateEmptyJournalPath(t *testing.T, err error) {
+	assert.Error(t, err)
+	if err != nil {
+		assert.Contains(t, err.Error(), "journal path is empty")
+	}
+}
+
+// validateNonEmptyJournalPath validates test results for checks with non-empty journal paths
+func validateNonEmptyJournalPath(t *testing.T, err error, mockPCClient *mockPlatformConnectorClient, checkName string) {
+	// If JournalPath is not empty, executeCheck will attempt to open a real journal.
+	// If the path is invalid or not a journal dir, openJournal will return an error, which executeCheck will propagate.
+	// We can't easily assert specific match counts without a controlled journal source.
+	// For now, we assert that if an error *does* occur, it's potentially due to journal opening.
+	// If no error, it implies the journal was processed (even if empty or no matches found).
+	// A more robust test would require setting up a temporary, real journal directory with known content.
+
+	// For example, if an error is expected because the path is not a real journal:
+	// assert.Error(t, err, "Expected an error when JournalPath is not a valid journal directory")
+	// if err != nil {
+	// 	 assert.Contains(t, err.Error(), "failed to open journal")
+	// }
+
+	// The original assertions for health events based on `expectedMatches > check.Count` are problematic now.
+	// If err == nil, it means executeCheck thought it processed a journal successfully (even if 0 matches).
+	// We can only check if a health event was sent if we *knew* there should be one.
+	// For now, let's assume if no error from executeCheck, no fatal health event was expected *by this test's old logic* unless specific conditions met.
+	// This part of the test is fundamentally broken without injectable log lines or a complex real journal setup.
+	if err == nil {
+		// If check.Count is 0, and if there were truly no matches (which we can't verify here),
+		// then no health event should be sent. This is a weak assertion now.
+
+		// If count > 0, and no matches (assumption), also no event.
+		// This doesn't test the > count scenario effectively anymore.
+		assert.NotEmpty(t, mockPCClient.RecordedHealthEvents, "Expected health event to be sent")
+		// Check if the recorded health event has isHealthy: true and isFatal: false
+		healthEvent := mockPCClient.RecordedHealthEvents[0]
+		assert.True(t, healthEvent.Events[0].IsHealthy, "Expected health event to have IsHealthy: true")
+		assert.False(t, healthEvent.Events[0].IsFatal, "Expected health event to have IsFatal: false")
+		assert.Equal(t, checkName, healthEvent.Events[0].CheckName)
+	} else {
+		// If an error occurred, it's likely a journal access error. No health event should have been processed to the point of sending.
+		assert.Empty(t, mockPCClient.RecordedHealthEvents, "Expected no health event if executeCheck errored before evaluation")
 	}
 }
 
@@ -208,13 +228,13 @@ func TestNewSyslogMonitor(t *testing.T) {
 		DefaultComponentClass string
 		PollingInterval       string
 	}{
-		NodeName: "test-node",
+		NodeName: TEST_NODE,
 		Checks: []common.CheckDefinition{
 			{Name: "check1", Matches: []string{"error"}, Count: 0, JournalPath: "/some/path"}, // JournalPath is still relevant for the CheckDefinition
 		},
 		PcClient:              &mockPlatformConnectorClient{},
-		DefaultAgentName:      "test-agent",
-		DefaultComponentClass: "test-component",
+		DefaultAgentName:      TEST_AGENT,
+		DefaultComponentClass: TEST_COMPONENT,
 		PollingInterval:       "60s",
 	}
 
@@ -252,9 +272,9 @@ func TestPrepareHealthEvent(t *testing.T) {
 	}
 
 	fd := &SyslogMonitor{
-		nodeName:              "test-node",
-		defaultAgentName:      "test-agent",
-		defaultComponentClass: "test-component",
+		nodeName:              TEST_NODE,
+		defaultAgentName:      TEST_AGENT,
+		defaultComponentClass: TEST_COMPONENT,
 	}
 
 	message := "test message"
@@ -266,17 +286,17 @@ func TestPrepareHealthEvent(t *testing.T) {
 
 	event := healthEvents.Events[0]
 	assert.Equal(t, uint32(1), event.Version)
-	assert.Equal(t, "test-agent", event.Agent)
+	assert.Equal(t, TEST_AGENT, event.Agent)
 	assert.Equal(t, "test_check", event.CheckName)
-	assert.Equal(t, "test-component", event.ComponentClass)
-	assert.Equal(t, "test-node", event.NodeName)
+	assert.Equal(t, TEST_COMPONENT, event.ComponentClass)
+	assert.Equal(t, TEST_NODE, event.NodeName)
 	assert.Equal(t, message, event.Message)
 	assert.False(t, event.IsHealthy)
 	assert.True(t, event.IsFatal)
 	assert.Equal(t, pb.RecommenedAction_REPORT_ISSUE, event.RecommendedAction)
 	assert.Len(t, event.EntitiesImpacted, 1)
 	assert.Equal(t, "Node", event.EntitiesImpacted[0].EntityType)
-	assert.Equal(t, "test-node", event.EntitiesImpacted[0].EntityValue)
+	assert.Equal(t, TEST_NODE, event.EntitiesImpacted[0].EntityValue)
 }
 
 // TestExecuteCheckWithFakeJournal tests the SyslogMonitor with a fake journal
@@ -295,7 +315,7 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				Matches:           []string{"pattern that won't match"},
 				Count:             0,
 				IgnoreCase:        false,
-				JournalPath:       "/fake/journal/path",
+				JournalPath:       TEST_JOURNAL_PATH,
 				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
@@ -312,12 +332,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				Matches:           []string{"match"},
 				Count:             3,
 				IgnoreCase:        false,
-				JournalPath:       "/fake/journal/path",
+				JournalPath:       TEST_JOURNAL_PATH,
 				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
-				"Log with match in it",
-				"Another log with match in it",
+				TEST_LOG_WITH_MATCH_IN_IT,
+				TEST_LOG_WITH_MATCH_IN_IT_2,
 			},
 			expectError: false,
 			expectEvent: false,
@@ -329,12 +349,12 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				Matches:           []string{"match"},
 				Count:             1,
 				IgnoreCase:        false,
-				JournalPath:       "/fake/journal/path",
+				JournalPath:       TEST_JOURNAL_PATH,
 				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
-				"Log with match in it",
-				"Another log with match in it",
+				TEST_LOG_WITH_MATCH_IN_IT,
+				TEST_LOG_WITH_MATCH_IN_IT_2,
 				"Third log with match in it",
 			},
 			expectError: false,
@@ -347,11 +367,11 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				Matches:           []string{"MATCH"},
 				Count:             1,
 				IgnoreCase:        true,
-				JournalPath:       "/fake/journal/path",
+				JournalPath:       TEST_JOURNAL_PATH,
 				RecommendedAction: "REPORT_ISSUE",
 			},
 			journalEntries: []string{
-				"Log with match in it", // lowercase should match with ignoreCase true
+				TEST_LOG_WITH_MATCH_IN_IT, // lowercase should match with ignoreCase true
 				"Another normal log",
 			},
 			expectError: false,
@@ -388,11 +408,11 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 			testStateFile := "/tmp/test-syslog-monitor-state-3.json"
 			defer os.Remove(testStateFile)
 			sm, err := NewSyslogMonitorWithFactory(
-				"test-node",
+				TEST_NODE,
 				[]common.CheckDefinition{tc.check},
 				mockPCClient,
-				"test-agent",
-				"test-component",
+				TEST_AGENT,
+				TEST_COMPONENT,
 				"60s",
 				testStateFile,
 				fakeJournalFactory,
@@ -404,8 +424,8 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 			if tc.check.Name == "test_matches_above_threshold" {
 				// Create some matching lines and force a health event to be sent
 				matchingLines := []string{
-					"Log with match in it",
-					"Another log with match in it",
+					TEST_LOG_WITH_MATCH_IN_IT,
+					TEST_LOG_WITH_MATCH_IN_IT_2,
 					"Third log with match in it",
 				}
 				// Directly call evaluateResults to force a health event
@@ -442,7 +462,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 		Name:        "test_journal_processing",
 		Matches:     []string{"error"},
 		Count:       0,
-		JournalPath: "/fake/journal/path",
+		JournalPath: TEST_JOURNAL_PATH,
 	}
 
 	// Create fake journal with some entries
@@ -459,11 +479,11 @@ func TestJournalProcessingLogic(t *testing.T) {
 	testStateFile := "/tmp/test-syslog-monitor-state-4.json"
 	defer os.Remove(testStateFile)
 	sm, err := NewSyslogMonitorWithFactory(
-		"test-node",
+		TEST_NODE,
 		[]common.CheckDefinition{check},
 		&mockPlatformConnectorClient{},
-		"test-agent",
-		"test-component",
+		TEST_AGENT,
+		TEST_COMPONENT,
 		"60s",
 		testStateFile,
 		fakeJournalFactory,

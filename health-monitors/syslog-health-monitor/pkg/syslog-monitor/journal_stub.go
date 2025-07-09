@@ -17,8 +17,12 @@
 package syslogmonitor
 
 import (
-	"fmt"
+	"errors"
 	"io"
+)
+
+const (
+	JOURNAL_CLOSED_ERROR_MESSAGE = "journal is closed"
 )
 
 // StubJournal is a no-op implementation of the Journal interface
@@ -29,7 +33,7 @@ type StubJournal struct {
 // AddMatch adds a match filter for journal entries
 func (j *StubJournal) AddMatch(match string) error {
 	if j.closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return nil
 }
@@ -43,7 +47,7 @@ func (j *StubJournal) Close() error {
 // GetBootID retrieves the current boot ID
 func (j *StubJournal) GetBootID() (string, error) {
 	if j.closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return "stub-boot-id", nil
 }
@@ -51,7 +55,7 @@ func (j *StubJournal) GetBootID() (string, error) {
 // GetCursor returns a cursor that can be used to seek to the current location
 func (j *StubJournal) GetCursor() (string, error) {
 	if j.closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return "stub-cursor", nil
 }
@@ -59,7 +63,7 @@ func (j *StubJournal) GetCursor() (string, error) {
 // GetData retrieves a field from the current journal entry
 func (j *StubJournal) GetData(field string) (string, error) {
 	if j.closed {
-		return "", fmt.Errorf("journal is closed")
+		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return "", nil
 }
@@ -67,7 +71,7 @@ func (j *StubJournal) GetData(field string) (string, error) {
 // Next moves to the next journal entry
 func (j *StubJournal) Next() (uint64, error) {
 	if j.closed {
-		return 0, fmt.Errorf("journal is closed")
+		return 0, errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return 0, io.EOF
 }
@@ -75,7 +79,7 @@ func (j *StubJournal) Next() (uint64, error) {
 // Previous moves to the previous journal entry
 func (j *StubJournal) Previous() (uint64, error) {
 	if j.closed {
-		return 0, fmt.Errorf("journal is closed")
+		return 0, errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return 0, io.EOF
 }
@@ -83,7 +87,7 @@ func (j *StubJournal) Previous() (uint64, error) {
 // SeekCursor seeks to a position indicated by a cursor
 func (j *StubJournal) SeekCursor(cursor string) error {
 	if j.closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return nil
 }
@@ -91,7 +95,7 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 // SeekTail seeks to the end of the journal
 func (j *StubJournal) SeekTail() error {
 	if j.closed {
-		return fmt.Errorf("journal is closed")
+		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 	return nil
 }
