@@ -158,13 +158,10 @@ func (r *Reconciler) Start(ctx context.Context) {
 		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesMap()
 		nodesCount := len(*quarantinedNodesMap)
 
-		// Increment metrics based on the count of quarantined nodes
-		for i := 0; i < nodesCount; i++ {
-			currentQuarantinedNodes.Inc()
-			totalNodesQuarantined.Inc()
-		}
+		// Set the gauge to the current number of quarantined nodes
+		currentQuarantinedNodes.Set(float64(nodesCount))
 
-		klog.Infof("Initial quarantinedNodesMap is: %+v", quarantinedNodesMap)
+		klog.Infof("Initial quarantinedNodesMap is: %+v, total of %d nodes", quarantinedNodesMap, nodesCount)
 	}
 
 	err = nodeInformer.Run(ctx.Done())
