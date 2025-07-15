@@ -100,7 +100,7 @@ func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context, n
 func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodeName string, timeout time.Duration) error {
 	pods, err := c.findAllPodsInNamespaceAndNode(ctx, namespace, nodeName)
 	if err != nil {
-		nodeDrainError.WithLabelValues("listing_pods_error").Inc()
+		nodeDrainError.WithLabelValues("listing_pods_error", nodeName).Inc()
 		return fmt.Errorf("error while fetching pods in namespace %s on node %s : %w", namespace, nodeName, err)
 	}
 
@@ -110,7 +110,7 @@ func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, nam
 
 	err = c.evictPodsInNamespaceAndNode(ctx, namespace, nodeName, timeout, pods)
 	if err != nil {
-		nodeDrainError.WithLabelValues("pods_eviction_error").Inc()
+		nodeDrainError.WithLabelValues("pods_eviction_error", nodeName).Inc()
 		return fmt.Errorf("error in evicting pods immediately in namespace %s: %w", namespace, err)
 	}
 
@@ -126,7 +126,7 @@ func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, nam
 		wg.Add(1)
 		go func(ctx context.Context, namespace, podName string, timeout time.Duration) {
 			defer wg.Done()
-			err := c.sendEvictionRequestForPod(ctx, namespace, timeout, podName)
+			err := c.sendEvictionRequestForPod(ctx, namespace, timeout, podName, nodeName)
 			if err != nil {
 				if errors.IsNotFound(err) {
 					// if the pod is already deleted, ignore the error
@@ -154,7 +154,7 @@ func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, nam
 }
 
 // evicts a pod
-func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, namespace string, timeout time.Duration, podName string) error {
+func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, namespace string, timeout time.Duration, podName string, nodeName string) error {
 	var err error
 	eviction := &policyv1.Eviction{
 		ObjectMeta: metav1.ObjectMeta{
@@ -176,7 +176,7 @@ func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, names
 
 		if errors.IsTooManyRequests(err) {
 			klog.Errorf("PDB blocking eviction, retrying in %s... ", retryDelay)
-			nodeDrainError.WithLabelValues("PDB_blocking_eviction_error").Inc()
+			nodeDrainError.WithLabelValues("PDB_blocking_eviction_error", nodeName).Inc()
 			time.Sleep(retryDelay)
 			continue
 		}
@@ -211,7 +211,7 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 		if !allEvicted {
 			err := c.forceDeletePods(ctx, remainingPods)
 			if err != nil {
-				nodeDrainError.WithLabelValues("force_deletion_error").Inc()
+				nodeDrainError.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
 				klog.Errorf("Failed to force delete pods on node %s: %+v\n", nodeName, err)
 				return false
 			}
@@ -237,7 +237,7 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 			FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
 		})
 		if err != nil {
-			nodeDrainError.WithLabelValues("listing_pods_error").Inc()
+			nodeDrainError.WithLabelValues("listing_pods_error", nodeName).Inc()
 			resultChan <- result{namespace: namespace, pods: nil, err: fmt.Errorf("failed to list pods in namespace %s on node %s: %w", namespace, nodeName, err)}
 			return
 		}
@@ -298,7 +298,7 @@ func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces [
 			return false
 		}
 		if time.Since(startTime) > timeout {
-			nodeDrainError.WithLabelValues("force_deletion_not_completed_error").Inc()
+			nodeDrainError.WithLabelValues("force_deletion_not_completed_error", nodeName).Inc()
 			klog.Errorf("Timeout exceeded while waiting for pods to be deleted in namespace %v on node %s", namespaces, nodeName)
 			return false
 		}
@@ -380,7 +380,7 @@ func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace 
 		case <-ticker.C:
 			podsList, err := c.findAllPodsInNamespaceAndNode(ctx, namespace, nodeName)
 			if err != nil {
-				nodeDrainError.WithLabelValues("listing_pods_error").Inc()
+				nodeDrainError.WithLabelValues("listing_pods_error", nodeName).Inc()
 				return fmt.Errorf("error in listing remaining pods in namespace %s on node %s", namespace, nodeName)
 			}
 

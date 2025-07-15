@@ -45,6 +45,9 @@ spec:
           imagePullPolicy: {{ .Values.global.nodeDrainerModule.image.pullPolicy }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+          - name: metrics
+            containerPort: {{ .Values.metricsPort }}
           args:
           - "--metrics-port={{ .Values.metricsPort }}"
           - "--config-path={{ .Values.configPath }}"

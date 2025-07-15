@@ -100,9 +100,11 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 			switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
 			case storeconnector.Quarantined:
-				unhealthyEvent.Inc()
+				unhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
+					healthEventWithStatus.HealthEvent.CheckName).Inc()
 			case storeconnector.UnQuarantined:
-				healthyEvent.Inc()
+				healthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
+					healthEventWithStatus.HealthEvent.CheckName).Inc()
 			}
 
 			err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
@@ -112,7 +114,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 			} else {
 
 				for i := 1; i <= maxRetries; i++ {
-					klog.Infof("Attempt %d, Processing health event with ID %v", i, document["_id"])
+					klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
 					err = r.handleEvent(ctx, document["_id"], healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
 					if err == nil {
 						totalEventsSuccessfullyProcessed.Inc()
@@ -201,7 +203,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 
 				select {
 				case <-ctx1.Done():
-					klog.Infof("Context cancelled for health event with ID %v", eventId)
+					klog.Infof("Context cancelled for health event: %+v", healthEventWithStatus)
 				default:
 				}
 
@@ -250,7 +252,7 @@ func (r *Reconciler) verifyEvictionCompleted(ctx context.Context, healthEventWit
 		if !allEvicted {
 			return fmt.Errorf("error in evicting all pods in namespace %v on node %s", nsWithImmediateMode, nodeName)
 		}
-		nodeDrainSuccess.Inc()
+		nodeDrainSuccess.WithLabelValues(nodeName).Inc()
 	}
 	return nil
 }
@@ -281,6 +283,6 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collec
 		return fmt.Errorf("error updating document with ID: %v, error: %w", document["_id"], err)
 	}
 
-	klog.Infof("Health event with ID %v has been updated with status %+v", document["_id"], userPodsEvictionStatus)
+	klog.Infof("Health event status has been updated , health event: %+v, status: %+v", event, userPodsEvictionStatus)
 	return nil
 }
