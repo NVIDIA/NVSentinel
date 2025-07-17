@@ -58,11 +58,37 @@ spec:
             - "{{ .Values.pollingInterval }}"
             - "--state-file"
             - "/var/run/syslog_monitor/state.json"
+            - "--metrics-port"
+            - "{{ .Values.metricsPort }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
             - name: metrics
               containerPort: {{ .Values.metricsPort }}
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.metricsPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.metricsPort }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.metricsPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           env: 
             - name: NODE_NAME
               valueFrom:

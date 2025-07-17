@@ -15,9 +15,12 @@ package main
 
 import (
 	"flag"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
@@ -30,8 +33,8 @@ import (
 
 const (
 	defaultAgentName       = "syslog-health-monitor"
-	defaultComponentClass  = "GPU" // Or a more specific class if applicable
-	defaultPollingInterval = "30m" // Added default polling interval
+	defaultComponentClass  = "GPU"                                // Or a more specific class if applicable
+	defaultPollingInterval = "30m"                                // Added default polling interval
 	defaultStateFilePath   = "/var/run/syslog_monitor/state.json" // Added default state file path
 )
 
@@ -41,16 +44,23 @@ type ConfigFile struct {
 }
 
 func main() {
+	// Initialize klog early to ensure logging works
 	klog.InitFlags(nil)
+	defer klog.Flush()
+
+	// Early startup logging to help diagnose issues
+	klog.Infof("Starting syslog-health-monitor...")
 
 	configFile := flag.String("config-file", "/etc/config/config.yaml", "Path to the YAML configuration file for log checks.")
 	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock", "Path to the platform-connector UDS socket.")
 	nodeNameEnv := flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
 	pollingIntervalFlag := flag.String("polling-interval", defaultPollingInterval, "Polling interval for health checks (e.g., 15m, 1h).") // Added polling interval flag
-	stateFileFlag := flag.String("state-file", defaultStateFilePath, "Path to state file for cursor persistence.") // Added state file flag
+	stateFileFlag := flag.String("state-file", defaultStateFilePath, "Path to state file for cursor persistence.")                        // Added state file flag
+	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 
-	defer klog.Flush()
 	flag.Parse()
+
+	klog.Infof("Parsed command line flags successfully")
 
 	nodeName := *nodeNameEnv
 	if nodeName == "" {
@@ -61,20 +71,82 @@ func main() {
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 
-	conn, err := grpc.NewClient(*platformConnectorSocket, opts...)
-	if err != nil {
-		klog.Errorf("Error creating gRPC client: %v", err)
-		os.Exit(1)
+	klog.Infof("Creating gRPC client to platform connector at: %s", *platformConnectorSocket)
+
+	// Add retry logic for platform connector socket with detailed diagnostics
+	var conn *grpc.ClientConn
+	var err error
+	maxRetries := 10
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		klog.Infof("Attempt %d/%d: Checking platform connector socket availability at %s", attempt, maxRetries, *platformConnectorSocket)
+
+		// Check if socket file exists before attempting connection
+		socketPath := strings.TrimPrefix(*platformConnectorSocket, "unix://")
+		if _, statErr := os.Stat(socketPath); statErr != nil {
+			klog.Warningf("Attempt %d/%d: Platform connector socket file does not exist: %v", attempt, maxRetries, statErr)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			klog.Errorf("Platform connector socket file not found after %d attempts: %s", maxRetries, socketPath)
+			os.Exit(1)
+		}
+
+		conn, err = grpc.NewClient(*platformConnectorSocket, opts...)
+		if err != nil {
+			klog.Warningf("Attempt %d/%d: Error creating gRPC client: %v", attempt, maxRetries, err)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			klog.Errorf("Failed to create gRPC client after %d attempts: %v", maxRetries, err)
+			os.Exit(1)
+		}
+
+		klog.Infof("Successfully connected to platform connector on attempt %d", attempt)
+		break
 	}
-	defer conn.Close()
+
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			klog.Errorf("Error closing gRPC connection: %v", closeErr)
+		}
+	}()
 
 	client := pb.NewPlatformConnectorClient(conn)
 
 	klog.Infof("Loading checks from config file: %s", *configFile)
-	yamlFile, err := os.ReadFile(*configFile)
-	if err != nil {
-		klog.Errorf("Error reading config file '%s': %v", *configFile, err)
-		os.Exit(1)
+
+	// Add retry logic for config file reading with detailed diagnostics
+	var yamlFile []byte
+	maxConfigRetries := 5
+	for attempt := 1; attempt <= maxConfigRetries; attempt++ {
+		klog.Infof("Attempt %d/%d: Reading config file: %s", attempt, maxConfigRetries, *configFile)
+
+		// Check if config file exists
+		if _, statErr := os.Stat(*configFile); statErr != nil {
+			klog.Warningf("Attempt %d/%d: Config file does not exist: %v", attempt, maxConfigRetries, statErr)
+			if attempt < maxConfigRetries {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			klog.Errorf("Config file not found after %d attempts: %s", maxConfigRetries, *configFile)
+			os.Exit(1)
+		}
+
+		yamlFile, err = os.ReadFile(*configFile)
+		if err != nil {
+			klog.Warningf("Attempt %d/%d: Error reading config file: %v", attempt, maxConfigRetries, err)
+			if attempt < maxConfigRetries {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
+			}
+			klog.Errorf("Failed to read config file after %d attempts: %v", maxConfigRetries, err)
+			os.Exit(1)
+		}
+
+		klog.Infof("Successfully read config file on attempt %d", attempt)
+		break
 	}
 
 	var config ConfigFile
@@ -89,6 +161,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	klog.Infof("Creating syslog monitor with %d checks", len(config.Checks))
 	fdHealthMonitor, err := fd.NewSyslogMonitor(nodeName, config.Checks, client, defaultAgentName, defaultComponentClass, *pollingIntervalFlag, *stateFileFlag)
 	if err != nil {
 		klog.Errorf("Error creating syslog health monitor: %v", err)
@@ -102,11 +175,23 @@ func main() {
 	}
 	klog.Infof("Polling every %v", pollingInterval)
 
+	// Start metrics server
+	klog.Infof("Starting metrics server on port %s", *metricsPort)
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+*metricsPort, nil)
+		if err != nil {
+			klog.Fatalf("Failed to start metrics server: %v", err)
+		}
+	}()
+
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
 	klog.Infof("config.checks: %v", config.Checks)
 
+	klog.Infof("Syslog health monitor initialization complete, starting polling loop...")
 	// Polling loop
 	for range ticker.C {
 		klog.Info("Performing scheduled health check run...")
@@ -114,5 +199,4 @@ func main() {
 			klog.Errorf("Error running syslog health monitor: %v", err)
 		}
 	}
-
 }

@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,11 +63,11 @@ func saveState(stateFilePath string, state syslogMonitorState) error {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(stateFilePath), 0755); err != nil {
-		log.Fatalf("failed to create state directory: %v", err)
+		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
 	if err := os.WriteFile(stateFilePath, data, 0600); err != nil {
-		log.Fatalf("failed to write state to file: %v", err)
+		return fmt.Errorf("failed to write state to file: %w", err)
 	}
 
 	return nil
