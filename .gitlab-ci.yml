@@ -134,9 +134,7 @@ workflow:
 
 .eks-runner-tags:
   tags:
-    - eks
-    - mk8s
-    - vault
+    - eks-build
 
 # =================================================================================================
 .dind-service:
@@ -144,10 +142,7 @@ workflow:
   services:
     - docker:28.1.1-dind
   tags:
-    - dind
-    - eks
-    - mk8s
-    - vault
+    - eks-dind
   variables:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_DRIVER: overlay2
