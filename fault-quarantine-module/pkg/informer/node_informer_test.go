@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,15 +139,15 @@ func TestNodeInformer_RunAndSync(t *testing.T) {
 	}
 
 	// Check initial counts after sync
-	total, unschedulable, err := ni.GetGpuNodeCounts()
+	total, unschedulableMap, err := ni.GetGpuNodeCounts()
 	if err != nil {
 		t.Errorf("GetGpuNodeCounts failed after sync: %v", err)
 	}
 	if total != 1 {
 		t.Errorf("Expected 1 total GPU node after sync, got %d", total)
 	}
-	if unschedulable != 0 {
-		t.Errorf("Expected 0 unschedulable GPU nodes after sync, got %d", unschedulable)
+	if len(unschedulableMap) != 0 {
+		t.Errorf("Expected 0 unschedulable GPU nodes after sync, got %d", len(unschedulableMap))
 	}
 
 	// Stop the informer and wait for Run goroutine to exit
@@ -214,12 +215,12 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	t.Log("Initial sync complete")
 
 	// Check initial state (0 nodes)
-	total, unschedulable, err := ni.GetGpuNodeCounts()
+	total, unschedulableMap, err := ni.GetGpuNodeCounts()
 	if err != nil {
 		t.Fatalf("GetGpuNodeCounts failed after initial sync: %v", err)
 	}
-	if total != 0 || unschedulable != 0 {
-		t.Fatalf("Expected 0 nodes initially, got total=%d, unschedulable=%d", total, unschedulable)
+	if total != 0 || len(unschedulableMap) != 0 {
+		t.Fatalf("Expected 0 nodes initially, got total=%d, unschedulable=%d", total, len(unschedulableMap))
 	}
 
 	// --- Test Add ---
@@ -231,9 +232,9 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	}
 	ni.handleAddNode(node1)                // Manually trigger handler
 	safeReceiveSignal(t, workSignal, true) // Expect signal, with timeout
-	total, unschedulable, err = ni.GetGpuNodeCounts()
-	if err != nil || total != 1 || unschedulable != 0 {
-		t.Errorf("After adding node1: expected total=1, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
+	total, unschedulableMap, err = ni.GetGpuNodeCounts()
+	if err != nil || total != 1 || len(unschedulableMap) != 0 {
+		t.Errorf("After adding node1: expected total=1, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, len(unschedulableMap), err)
 	}
 	// --- Test Update (Cordon) ---
 	node1Cordoned := newGpuNode("gpu-node-1", true) // Same node, now unschedulable
@@ -244,9 +245,9 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	}
 	ni.handleUpdateNode(node1, node1Cordoned) // Manually trigger handler
 	safeReceiveSignal(t, workSignal, true)    // Expect signal, with timeout
-	total, unschedulable, err = ni.GetGpuNodeCounts()
-	if err != nil || total != 1 || unschedulable != 1 {
-		t.Errorf("After cordoning node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
+	total, unschedulableMap, err = ni.GetGpuNodeCounts()
+	if err != nil || total != 1 || len(unschedulableMap) != 1 {
+		t.Errorf("After cordoning node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, len(unschedulableMap), err)
 	}
 
 	// --- Test Update (No relevant change) ---
@@ -260,9 +261,9 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	ni.handleUpdateNode(node1Cordoned, node1CordonedUpdated) // Manually trigger handler
 	// No signal expected for irrelevant updates
 	safeReceiveSignal(t, workSignal, false) // Don't expect signal, with timeout
-	total, unschedulable, err = ni.GetGpuNodeCounts()
-	if err != nil || total != 1 || unschedulable != 1 {
-		t.Errorf("After irrelevant update node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
+	total, unschedulableMap, err = ni.GetGpuNodeCounts()
+	if err != nil || total != 1 || len(unschedulableMap) != 1 {
+		t.Errorf("After irrelevant update node1: expected total=1, unschedulable=1, err=nil; got total=%d, unschedulable=%d, err=%v", total, len(unschedulableMap), err)
 	}
 
 	// --- Test Delete ---
@@ -273,9 +274,10 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	}
 	ni.handleDeleteNode(node1CordonedUpdated) // Manually trigger handler
 	safeReceiveSignal(t, workSignal, true)    // Expect signal, with timeout
-	total, unschedulable, err = ni.GetGpuNodeCounts()
-	if err != nil || total != 0 || unschedulable != 0 {
-		t.Errorf("After deleting node1: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
+
+	total, unschedulableMap, err = ni.GetGpuNodeCounts()
+	if err != nil || total != 0 || len(unschedulableMap) != 0 {
+		t.Errorf("After deleting node1: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, len(unschedulableMap), err)
 	}
 
 	// --- Test Delete (Tombstone) ---
@@ -289,9 +291,9 @@ func TestNodeInformer_EventHandlers(t *testing.T) {
 	store.Delete(node2)                    // Ensure it's removed from the store view for recalculate
 	ni.handleDeleteNode(tombstone)         // Trigger handler with tombstone
 	safeReceiveSignal(t, workSignal, true) // Expect signal, with timeout
-	total, unschedulable, err = ni.GetGpuNodeCounts()
-	if err != nil || total != 0 || unschedulable != 0 {
-		t.Errorf("After deleting node2 via tombstone: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, unschedulable, err)
+	total, unschedulableMap, err = ni.GetGpuNodeCounts()
+	if err != nil || total != 0 || len(unschedulableMap) != 0 {
+		t.Errorf("After deleting node2 via tombstone: expected total=0, unschedulable=0, err=nil; got total=%d, unschedulable=%d, err=%v", total, len(unschedulableMap), err)
 	}
 
 	// The deferred close(stopCh) will signal the Run goroutine to stop.
@@ -307,7 +309,7 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 	// Pre-populate nodes directly (won't trigger handlers)
 	node1 := newGpuNode("gpu-node-1", true)
 	node2 := newGpuNode("gpu-node-2", true)
-	node3 := newGpuNode("gpu-node-3", true)
+	node3 := newGpuNode("gpu-node-3", false)
 
 	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
 	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
@@ -322,9 +324,9 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 
 	// Manually mark the nodes as quarantined in the nodeInfo cache
 	// since the handleAddNode isn't being called
-	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-1", true)
-	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-2", true)
-	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-3", false)
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-1", true, true)
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-2", true, true)
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-3", false, true)
 
 	// Run recalculate directly
 	_, err = ni.recalculateCounts() // Assign both bool and error, ignore bool
@@ -342,7 +344,7 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 		t.Errorf("Expected totalGpuNodes=3, got %d", total)
 	}
 	if unschedulable != 2 {
-		t.Errorf("Expected unschedulableGpuNodes=3, got %d", unschedulable)
+		t.Errorf("Expected unschedulableGpuNodes=2, got %d", unschedulable)
 	}
 }
 
@@ -371,4 +373,88 @@ func TestNodeInformer_SignalWork(t *testing.T) {
 	niNil := &NodeInformer{workSignal: nil}
 	// Should not panic
 	niNil.signalWork()
+}
+
+func TestNodeInformer_OnQuarantinedNodeDeletedCallback(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	workSignal := make(chan struct{}, 1)
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+	if err != nil {
+		t.Fatalf("NewNodeInformer failed: %v", err)
+	}
+
+	// Set up callback to track calls
+	var callbackCalled bool
+	var callbackNodeName string
+	ni.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
+		callbackCalled = true
+		callbackNodeName = nodeName
+	})
+
+	// Test 1: Delete a quarantined node with annotation - callback should be called
+	node1 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-1",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+			Annotations: map[string]string{
+				common.QuarantineHealthEventIsCordonedAnnotationKey: common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+			},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true,
+		},
+	}
+
+	// Simulate the node being in quarantine cache
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-1", true, true)
+
+	// Handle delete
+	ni.handleDeleteNode(node1)
+
+	if !callbackCalled {
+		t.Error("Expected callback to be called for quarantined node with annotation")
+	}
+	if callbackNodeName != "gpu-node-1" {
+		t.Errorf("Expected callback node name to be gpu-node-1, got %s", callbackNodeName)
+	}
+
+	// Test 2: Delete a quarantined node without annotation - callback should NOT be called
+	callbackCalled = false
+	callbackNodeName = ""
+
+	node2 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-2",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true,
+		},
+	}
+
+	// Simulate the node being in quarantine cache but without annotation
+	nodeInfo.MarkNodeQuarantineStatusCache("gpu-node-2", true, false)
+
+	// Handle delete
+	ni.handleDeleteNode(node2)
+
+	// Test 3: Delete a non-quarantined node - callback should NOT be called
+	node3 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-3",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: false,
+		},
+	}
+
+	// Handle delete (node not in quarantine cache)
+	ni.handleDeleteNode(node3)
+
+	if callbackCalled {
+		t.Error("Expected callback NOT to be called for non-quarantined node")
+	}
 }

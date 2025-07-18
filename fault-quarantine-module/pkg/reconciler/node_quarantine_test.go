@@ -317,7 +317,10 @@ func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 
 	nodeName := "no-change-node"
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
@@ -345,8 +348,11 @@ func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 
 	nodeName := "no-change-untaint-node"
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
-		Spec:       v1.NodeSpec{Unschedulable: false},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
+		Spec: v1.NodeSpec{Unschedulable: false},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 
@@ -376,7 +382,10 @@ func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 
 	nodeName := "partial-taint-removal-node"
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
 		Spec: v1.NodeSpec{
 			Unschedulable: true,
 			Taints: []v1.Taint{
@@ -465,7 +474,10 @@ func TestTaintAndCordonNode_AlreadyTaintedCOrdonned(t *testing.T) {
 	nodeName := "already-tainted-cordoned-node"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
 		Spec: v1.NodeSpec{
 			Unschedulable: true,
 			Taints: []v1.Taint{
@@ -498,8 +510,11 @@ func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 	nodeName := "already-untainted-uncordoned-node"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
-		Spec:       v1.NodeSpec{Unschedulable: false},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
+		Spec: v1.NodeSpec{Unschedulable: false},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	k8sClient := &FaultQuarantineClient{clientset: clientset}
@@ -524,7 +539,10 @@ func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 	nodeName := "invalid-effect-node"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
 	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	k8sClient := &FaultQuarantineClient{clientset: clientset}
@@ -577,7 +595,10 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	nodeName := "non-existent-taint-removal-node"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
 		Spec: v1.NodeSpec{
 			Taints: []v1.Taint{
 				{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
@@ -637,7 +658,12 @@ func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	nodeName := "empty-taint-key-value-node"
 
-	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
+	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	k8sClient := &FaultQuarantineClient{clientset: clientset}
 
@@ -664,7 +690,12 @@ func TestTaintAndCordonNode_EmptyAnnotationKey(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	nodeName := "empty-annotation-key-node"
 
-	node := &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nodeName,
+			Labels: map[string]string{},
+		},
+	}
 	clientset.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
 	k8sClient := &FaultQuarantineClient{clientset: clientset}
 

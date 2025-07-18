@@ -195,11 +195,13 @@ func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
 	event *platformconnectorprotos.HealthEvent,
 ) (common.RuleEvaluationResult, error) {
 	// Get counts directly from the informer
-	totalNodes, cordonedNodes, err := nc.nodeInformer.GetGpuNodeCounts()
+	totalNodes, cordonedNodesMap, err := nc.nodeInformer.GetGpuNodeCounts()
 	if err != nil {
 		// Handle cases where the informer might not be synced yet or other errors
 		return common.RuleEvaluationErroredOut, fmt.Errorf("failed to get GPU node counts from informer: %w", err)
 	}
+
+	cordonedNodes := len(cordonedNodesMap)
 
 	klog.V(3).Infof("Got counts from NodeInformer: Total=%d, Cordoned=%d", totalNodes, cordonedNodes)
 
@@ -210,8 +212,13 @@ func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
 		// Let's treat it as Failed for now, as the condition technically can't be met.
 		return common.RuleEvaluationFailed, fmt.Errorf("no GPU nodes found in the cluster (reported by informer)")
 	}
-	// Calculate percentage if we cordon one more node
-	potentialPercentage := ((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))
+	// If node is already cordoned, don't add +1 to the calculation
+	potentialPercentage := 0.0
+	if v, exists := cordonedNodesMap[event.NodeName]; exists && v {
+		potentialPercentage = ((float64(cordonedNodes) * 100.0) / float64(totalNodes))
+	} else {
+		potentialPercentage = ((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))
+	}
 
 	// Evaluate the expression with the calculated percentage
 	out, _, err := nc.program.Eval(map[string]interface{}{

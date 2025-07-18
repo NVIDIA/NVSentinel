@@ -60,12 +60,14 @@ func (n *NodeInfo) BuildQuarantinedNodesMap(k8sClient kubernetes.Interface) erro
 	return nil
 }
 
-func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined bool) {
+func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined bool, annotationExist bool) {
 	n.mutex.Lock()
 
 	if isQuarantined {
 		n.quarantinedNodesMap[nodeName] = true
-	} else {
+	} else if !annotationExist {
+		// this is a case where a node is uncordoned  manually, but annotation is still present.
+		// So, we should not remove it from the cache.
 		delete(n.quarantinedNodesMap, nodeName)
 	}
 

@@ -309,7 +309,7 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 	// Initialize label keys
 	r.SetLabelKeys("k88s.nvidia.com/")
 
-	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
 
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName:         "node1",
@@ -363,7 +363,7 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 	// Initialize label keys
 	r.SetLabelKeys("k88s.nvidia.com/")
 
-	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, false)
 
 	event := &platformconnectorprotos.HealthEvent{
 		NodeName:  "node1",
@@ -379,6 +379,97 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 	}
 	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
 		t.Errorf("quarantinedNodesMap[node1] should still be true")
+	}
+}
+
+// Test: Node is first uncordoned (manually), then a health event is sent, and annotation should be removed.
+func TestHandleEvent_ManualUncordonThenHealthEvent(t *testing.T) {
+	ctx := context.Background()
+
+	// Step 1: Node is cordoned and annotation is set (simulate FQM quarantine)
+	originalEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+	annotationPayload, _ := json.Marshal(originalEvent)
+	annotationsMap := map[string]string{
+		quarantineHealthEventAnnotationKey:              string(annotationPayload),
+		quarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
+		quarantineHealthEventIsCordonedAnnotationKey:    "True",
+	}
+
+	// Step 2: Node is manually uncordoned (simulate by setting Unschedulable=false and annotation still present)
+	annotationRemoved := false
+	var removedAnnotationKeys []string
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// Simulate annotation still present after manual uncordon
+			return annotationsMap, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			annotationRemoved = true
+			removedAnnotationKeys = annotationKeys
+			return nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			// Should not be called in this scenario
+			t.Errorf("TaintAndCordonNodeAndSetAnnotations should not be called in manual uncordon/annotation removal test")
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+	r.SetLabelKeys("k88s.nvidia.com/")
+
+	// Step 3: Node is manually uncordoned (simulate by removing from cache)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", false, false)
+
+	// Step 4: Health event is sent (simulate a healthy event matching the annotation)
+	healthEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      true,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: healthEvent}
+
+	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
+
+	if status == nil {
+		t.Fatalf("Expected non-nil status when node is manually uncordoned and annotation should be removed")
+	}
+	if *status != store.UnQuarantined {
+		t.Errorf("Expected status UnQuarantined after manual uncordon and annotation removal, got %v", *status)
+	}
+	if !annotationRemoved {
+		t.Errorf("Expected UnTaintAndUnCordonNodeAndRemoveAnnotations to be called to remove annotation")
+	}
+	expectedKeys := map[string]bool{
+		quarantineHealthEventAnnotationKey:              true,
+		quarantineHealthEventAppliedTaintsAnnotationKey: true,
+		quarantineHealthEventIsCordonedAnnotationKey:    true,
+	}
+	for _, k := range removedAnnotationKeys {
+		if !expectedKeys[k] {
+			t.Errorf("Unexpected annotation key removed: %s", k)
+		}
+	}
+	// The cache must reflect that the node is no longer quarantined
+	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+		t.Errorf("Expected node to be removed from quarantined cache after annotation removal")
 	}
 }
 
@@ -614,7 +705,7 @@ func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
 	r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
 
 	// Simulate that the node has been cordoned manually (unschedulable) but NOT by FQM
-	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, false)
 
 	// Prepare the evaluator which will return success so taint should be applied
 	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
@@ -647,8 +738,8 @@ func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
 		t.Fatalf("Expected non-nil status returned from handleEvent")
 	}
 
-	if *status != store.AlreadyQuarantined {
-		t.Errorf("Expected status to be AlreadyQuarantined, got %v", *status)
+	if *status != store.Quarantined {
+		t.Errorf("Expected status to be Quarantined, got %v", *status)
 	}
 
 	if len(taintsSeen) == 0 {
@@ -702,7 +793,7 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined(t *testing.T) {
 
 	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
 	// Mark node as cordoned/quarantined in the cache to satisfy nodeAlreadyCordoned check
-	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, false)
 
 	// Initialize label keys so that handleQuarantinedNode may construct labels correctly if needed.
 	r.SetLabelKeys("k88s.nvidia.com/")
@@ -778,7 +869,7 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 
 	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
 	// Mark node as currently quarantined
-	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, false)
 	r.SetLabelKeys("k88s.nvidia.com/")
 
 	// Incoming *healthy* event that matches annotation ‑- should trigger un-quarantine

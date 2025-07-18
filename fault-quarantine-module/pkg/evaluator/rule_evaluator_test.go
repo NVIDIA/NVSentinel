@@ -225,17 +225,17 @@ func TestRoundTrip(t *testing.T) {
 
 // Mock NodeInfoProvider for testing MaxPercentage rule
 type mockNodeInfoProvider struct {
-	TotalNodes     int
-	CordonedNodes  int
-	Err            error
-	InformerSynced bool
+	TotalNodes       int
+	CordonedNodesMap map[string]bool
+	Err              error
+	InformerSynced   bool
 }
 
-func (m *mockNodeInfoProvider) GetGpuNodeCounts() (int, int, error) {
+func (m *mockNodeInfoProvider) GetGpuNodeCounts() (int, map[string]bool, error) {
 	if !m.InformerSynced {
-		return 0, 0, fmt.Errorf("informer not synced") // Simulate not synced error
+		return 0, nil, fmt.Errorf("informer not synced") // Simulate not synced error
 	}
-	return m.TotalNodes, m.CordonedNodes, m.Err
+	return m.TotalNodes, m.CordonedNodesMap, m.Err
 }
 
 func (m *mockNodeInfoProvider) HasSynced() bool {
@@ -279,9 +279,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			name:       "Zero Total Nodes",
 			expression: "maxPercentageOfNodesToCordon <= 50.0",
 			mockProvider: &mockNodeInfoProvider{
-				InformerSynced: true,
-				TotalNodes:     0,
-				CordonedNodes:  0,
+				InformerSynced:   true,
+				TotalNodes:       0,
+				CordonedNodesMap: map[string]bool{},
 			},
 			expectedResult:      common.RuleEvaluationFailed, // As per current logic
 			expectError:         true,                        // Error is returned in this case too
@@ -291,9 +291,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			name:       "Cordon Allowed (0/10 nodes -> 10% <= 50%)",
 			expression: "maxPercentageOfNodesToCordon <= 50.0",
 			mockProvider: &mockNodeInfoProvider{
-				InformerSynced: true,
-				TotalNodes:     10,
-				CordonedNodes:  0, // (0+1)/10 = 10%
+				InformerSynced:   true,
+				TotalNodes:       10,
+				CordonedNodesMap: map[string]bool{}, // (0+1)/10 = 10%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,
@@ -304,7 +304,12 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     10,
-				CordonedNodes:  4, // (4+1)/10 = 50%
+				CordonedNodesMap: map[string]bool{
+					"node-1": false,
+					"node-2": false,
+					"node-3": false,
+					"node-4": false,
+				}, // (4+1)/10 = 50%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,
@@ -315,7 +320,13 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     10,
-				CordonedNodes:  5, // (5+1)/10 = 60%
+				CordonedNodesMap: map[string]bool{
+					"node-1": false,
+					"node-2": false,
+					"node-3": false,
+					"node-4": false,
+					"node-5": false,
+				}, // (5+1)/10 = 60%
 			},
 			// Current logic returns RetryAgainInFuture when disallowed
 			expectedResult: common.RuleEvaluationRetryAgainInFuture,
@@ -327,7 +338,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     1,
-				CordonedNodes:  1,
+				CordonedNodesMap: map[string]bool{
+					"node-1": true,
+				},
 			},
 			expectedResult: common.RuleEvaluationRetryAgainInFuture,
 			expectError:    false,
@@ -336,9 +349,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			name:       "Cordon Allowed (0/1 node -> 100% - But rule uses <= 50%, so this case should retry)",
 			expression: "maxPercentageOfNodesToCordon <= 50.0",
 			mockProvider: &mockNodeInfoProvider{
-				InformerSynced: true,
-				TotalNodes:     1,
-				CordonedNodes:  0, // (0+1)/1 = 100%
+				InformerSynced:   true,
+				TotalNodes:       1,
+				CordonedNodesMap: map[string]bool{}, // (0+1)/1 = 100%
 			},
 			expectedResult: common.RuleEvaluationRetryAgainInFuture,
 			expectError:    false,
@@ -347,9 +360,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			name:       "Cordon Allowed (0/2 nodes -> 50% <= 50%)",
 			expression: "maxPercentageOfNodesToCordon <= 50.0",
 			mockProvider: &mockNodeInfoProvider{
-				InformerSynced: true,
-				TotalNodes:     2,
-				CordonedNodes:  0, // (0+1)/2 = 50%
+				InformerSynced:   true,
+				TotalNodes:       2,
+				CordonedNodesMap: map[string]bool{}, // (0+1)/2 = 50%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,
@@ -360,7 +373,9 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     2,
-				CordonedNodes:  1, // (1+1)/2 = 100%
+				CordonedNodesMap: map[string]bool{
+					"node-1": false,
+				}, // (1+1)/2 = 100%
 			},
 			expectedResult: common.RuleEvaluationRetryAgainInFuture,
 			expectError:    false,
@@ -371,7 +386,25 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     343,
-				CordonedNodes:  17, // (17+1)/343 = ~5.25%
+				CordonedNodesMap: map[string]bool{
+					"node-1":  false,
+					"node-2":  false,
+					"node-3":  false,
+					"node-4":  false,
+					"node-5":  false,
+					"node-6":  false,
+					"node-7":  false,
+					"node-8":  false,
+					"node-9":  false,
+					"node-10": false,
+					"node-11": false,
+					"node-12": false,
+					"node-13": false,
+					"node-14": false,
+					"node-15": false,
+					"node-16": false,
+					"node-17": false,
+				}, // (17+1)/343 = ~5.25%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,
@@ -382,7 +415,25 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     343,
-				CordonedNodes:  17, // (17+1)/343 = ~5.25%
+				CordonedNodesMap: map[string]bool{
+					"node-1":  false,
+					"node-2":  false,
+					"node-3":  false,
+					"node-4":  false,
+					"node-5":  false,
+					"node-6":  false,
+					"node-7":  false,
+					"node-8":  false,
+					"node-9":  false,
+					"node-10": false,
+					"node-11": false,
+					"node-12": false,
+					"node-13": false,
+					"node-14": false,
+					"node-15": false,
+					"node-16": false,
+					"node-17": false,
+				}, // (17+1)/343 = ~5.25%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,
@@ -393,7 +444,25 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     343,
-				CordonedNodes:  17, // (17+1)/343 = ~5.25%
+				CordonedNodesMap: map[string]bool{
+					"node-1":  false,
+					"node-2":  false,
+					"node-3":  false,
+					"node-4":  false,
+					"node-5":  false,
+					"node-6":  false,
+					"node-7":  false,
+					"node-8":  false,
+					"node-9":  false,
+					"node-10": false,
+					"node-11": false,
+					"node-12": false,
+					"node-13": false,
+					"node-14": false,
+					"node-15": false,
+					"node-16": false,
+					"node-17": false,
+				}, // (17+1)/343 = ~5.25%
 			},
 			expectedResult: common.RuleEvaluationRetryAgainInFuture,
 			expectError:    false,
@@ -404,7 +473,25 @@ func TestMaxPercentageOfNodesToCordonRuleEvaluator_Evaluate(t *testing.T) {
 			mockProvider: &mockNodeInfoProvider{
 				InformerSynced: true,
 				TotalNodes:     343,
-				CordonedNodes:  17, // (17+1)/343 = ~5.25%
+				CordonedNodesMap: map[string]bool{
+					"node-1":  false,
+					"node-2":  false,
+					"node-3":  false,
+					"node-4":  false,
+					"node-5":  false,
+					"node-6":  false,
+					"node-7":  false,
+					"node-8":  false,
+					"node-9":  false,
+					"node-10": false,
+					"node-11": false,
+					"node-12": false,
+					"node-13": false,
+					"node-14": false,
+					"node-15": false,
+					"node-16": false,
+					"node-17": false,
+				}, // (17+1)/343 = ~5.25%
 			},
 			expectedResult: common.RuleEvaluationSuccess,
 			expectError:    false,

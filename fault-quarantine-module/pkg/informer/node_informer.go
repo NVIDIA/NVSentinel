@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,7 +40,7 @@ const (
 type NodeInfoProvider interface {
 	// GetGpuNodeCounts returns the total number of nodes with the GpuNodeLabel
 	// and the number of those nodes that are currently unschedulable (cordoned).
-	GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuNodes int, err error)
+	GetGpuNodeCounts() (totalGpuNodes int, cordonedNodesMap map[string]bool, err error)
 	// HasSynced returns true if the underlying informer cache has synced.
 	HasSynced() bool
 }
@@ -61,6 +62,9 @@ type NodeInformer struct {
 
 	// nodeInfo is used to store the node quarantine status
 	nodeInfo *nodeinfo.NodeInfo
+
+	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
+	onQuarantinedNodeDeleted func(nodeName string)
 }
 
 // Lister returns the informer's node lister.
@@ -138,15 +142,15 @@ func (ni *NodeInformer) HasSynced() bool {
 }
 
 // GetGpuNodeCounts returns the current counts of total and unschedulable GPU nodes.
-func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, unschedulableGpuNodes int, err error) {
+func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, cordonedNodesMap map[string]bool, err error) {
 	if !ni.HasSynced() {
-		return 0, 0, fmt.Errorf("node informer cache not synced yet")
+		return 0, nil, fmt.Errorf("node informer cache not synced yet")
 	}
 
 	ni.mutex.RLock()
 	defer ni.mutex.RUnlock()
 
-	return ni.totalGpuNodes, len(*ni.nodeInfo.GetQuarantinedNodesMap()), nil
+	return ni.totalGpuNodes, *ni.nodeInfo.GetQuarantinedNodesMap(), nil
 }
 
 // handleAddNode recalculates counts when a node is added.
@@ -163,15 +167,20 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 
 	ni.totalGpuNodes++
 
-	// Mark as quarantined if the node is unschedulable
-	if node.Spec.Unschedulable {
-		if !ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name) {
-			ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, true)
+	annotationExist := false
+
+	if !ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name) {
+		if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+			annotationExist = true
 		}
 	}
-	ni.mutex.Unlock()
 
-	// Always signal when a node is added
+	// Mark as quarantined if the node is unschedulable or has the quarantine annotation
+	if node.Spec.Unschedulable || annotationExist {
+		ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, true, annotationExist)
+	}
+
+	ni.mutex.Unlock()
 	ni.signalWork()
 }
 
@@ -185,14 +194,18 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Only process if unschedulable status changed
-	if oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable {
+	// Only process if unschedulable status changed or if the quarantine annotation is present.
+	// the reason it needs to be checked for quarantine annotation is because in dryrun node,
+	// node is not marked as unschedulable but still annotation will be present, so we need to track those nodes as well.
+	if oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable ||
+		oldNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] !=
+			newNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] {
 		klog.V(4).Infof("Node updated: %s (Unschedulable: %t -> %t)", newNode.Name,
 			oldNode.Spec.Unschedulable, newNode.Spec.Unschedulable)
 		ni.updateNodeQuarantineStatus(newNode)
 		ni.signalWork()
 	} else {
-		klog.V(5).Infof("Node update ignored (no relevant change): %s", newNode.Name)
+		klog.V(4).Infof("Node update ignored (no relevant change): %s", newNode.Name)
 	}
 }
 
@@ -208,11 +221,23 @@ func (ni *NodeInformer) updateNodeQuarantineStatus(node *v1.Node) bool {
 
 	// Only update if there's a difference between current and desired state
 	if currentlyQuarantined != shouldBeQuarantined {
-		ni.nodeInfo.MarkNodeQuarantineStatusCache(nodeName, shouldBeQuarantined)
+		annotationExist := false
+
+		if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+			annotationExist = true
+		}
+
+		ni.nodeInfo.MarkNodeQuarantineStatusCache(nodeName, shouldBeQuarantined, annotationExist)
+
 		return true
 	}
 
 	return false
+}
+
+// SetOnQuarantinedNodeDeletedCallback sets the callback function for when a quarantined node is deleted
+func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeName string)) {
+	ni.onQuarantinedNodeDeleted = callback
 }
 
 // handleDeleteNode recalculates counts when a node is deleted.
@@ -233,18 +258,36 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		}
 	}
 
-	klog.V(4).Infof("Node deleted: %s", node.Name)
+	klog.Infof("Node deleted: %s", node.Name)
 
 	ni.mutex.Lock()
 
-	if node.Spec.Unschedulable {
-		if exists := ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name); exists {
-			ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, false)
+	// Check if the node was quarantined and had the quarantine annotation
+	hadQuarantineAnnotation := false
+
+	if ni.nodeInfo.GetNodeQuarantineStatusCache(node.Name) {
+		if _, exists := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+			hadQuarantineAnnotation = true
 		}
+
+		// Update the cache and delete the node name from the map if the annotation is present
+		ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, false, false)
+	}
+
+	// handle a case where a node is cordoned but not by nvsentinel, then if its entry is there in the cache,
+	// we need to remove it
+	if node.Spec.Unschedulable {
+		ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, false, false)
 	}
 
 	ni.totalGpuNodes--
 	ni.mutex.Unlock()
+
+	// If the node was quarantined and had the annotation, call the callback so that
+	// currentQuarantinedNodes metric is decremented
+	if hadQuarantineAnnotation && ni.onQuarantinedNodeDeleted != nil {
+		ni.onQuarantinedNodeDeleted(node.Name)
+	}
 
 	ni.signalWork()
 }
@@ -267,6 +310,8 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 			total++
 
 			if node.Spec.Unschedulable {
+				ni.nodeInfo.MarkNodeQuarantineStatusCache(node.Name, true, false)
+
 				unschedulable++
 			}
 		} else {

@@ -228,7 +228,7 @@ func TestMarkNodeQuarantineStatusCache(t *testing.T) {
 			}
 
 			// Call the method
-			nodeInfo.MarkNodeQuarantineStatusCache(tt.nodeToMark, tt.isQuarantined)
+			nodeInfo.MarkNodeQuarantineStatusCache(tt.nodeToMark, tt.isQuarantined, false)
 
 			// Check the map was updated correctly
 			if len(nodeInfo.quarantinedNodesMap) != len(tt.expectedMap) {

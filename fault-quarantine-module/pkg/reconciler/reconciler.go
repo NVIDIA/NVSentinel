@@ -98,6 +98,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Fatalf("failed to initialize node informer: %+v", err)
 	}
 
+	// Set the callback to decrement the metric when a quarantined node with annotations is deleted
+	nodeInformer.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
+		currentQuarantinedNodes.Dec()
+		klog.Infof("Decremented currentQuarantinedNodes metric for deleted quarantined node: %s", nodeName)
+	})
+
 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
 		r.config.K8sClient.GetK8sClient(), nodeInformer)
 	if err != nil {
@@ -346,12 +352,6 @@ func (r *Reconciler) handleEvent(
 		return &status, common.RuleEvaluationNotApplicable
 	}
 
-	// A node should be considered "already quarantined" for status reporting
-	// if it is already marked as quarantined in our in-memory cache (e.g. it
-	// was cordoned manually) even though the FQM annotation is not present
-	// yet.
-	treatStatusAsAlreadyQuarantined := r.nodeInfo.GetNodeQuarantineStatusCache(event.HealthEvent.NodeName)
-
 	type keyValTaint struct {
 		Key   string
 		Value string
@@ -530,7 +530,7 @@ func (r *Reconciler) handleEvent(
 			currentQuarantinedNodes.Inc()
 
 			// update the map here so that later we can refer to it and update the quarantined nodes
-			r.nodeInfo.MarkNodeQuarantineStatusCache(event.HealthEvent.NodeName, isNodeQuarantined)
+			r.nodeInfo.MarkNodeQuarantineStatusCache(event.HealthEvent.NodeName, isNodeQuarantined, true)
 
 			for _, taint := range taintsToBeApplied {
 				taintsApplied.WithLabelValues(taint.Key, taint.Effect).Inc()
@@ -546,11 +546,6 @@ func (r *Reconciler) handleEvent(
 		status = storeconnector.Quarantined
 	} else {
 		status = storeconnector.UnQuarantined
-	}
-
-	// Override status if node was already cordoned manually (no FQM annotation)
-	if treatStatusAsAlreadyQuarantined {
-		status = storeconnector.AlreadyQuarantined
 	}
 
 	return &status, common.RuleEvaluationNotApplicable
@@ -633,7 +628,7 @@ func (r *Reconciler) handleQuarantinedNode(
 			currentQuarantinedNodes.Dec()
 
 			// Update the quarantinedNodesMap to reflect the node is no longer quarantined
-			r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false)
+			r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false, false)
 			for _, taint := range taintsToBeRemoved {
 				taintsRemoved.WithLabelValues(taint.Key, taint.Effect).Inc()
 			}

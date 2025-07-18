@@ -234,11 +234,6 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 		// uncordon check
 		if isUnCordon {
-			if !node.Spec.Unschedulable && !c.dryRunMode {
-				klog.Infof("Node is already uncordoned: %s", nodename)
-				return nil
-			}
-
 			klog.Infof("Uncordoning node %s", nodename)
 
 			if !c.dryRunMode {
