@@ -369,7 +369,7 @@ func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) 
 
 // monitor the pods to complete their execution in allow completion mode
 func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodeName string) error {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {

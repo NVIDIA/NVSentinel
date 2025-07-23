@@ -24,8 +24,6 @@ items:
       nodeSelector:
         kubernetes.io/hostname: $NODE_NAME_1
       tolerations:
-        - effect: NoExecute
-          operator: Exists
         - key: "nvidia.com/gpu"
           operator: "Exists"
           effect: "NoSchedule"
@@ -42,8 +40,6 @@ items:
       nodeSelector:
         kubernetes.io/hostname: $NODE_NAME_2
       tolerations:
-        - effect: NoExecute
-          operator: Exists
         - key: "nvidia.com/gpu"
           operator: "Exists"
           effect: "NoSchedule"
@@ -64,8 +60,6 @@ items:
         - key: "nvidia.com/gpu"
           operator: "Exists"
           effect: "NoSchedule"
-        - effect: NoExecute
-          operator: Exists
       containers:
         - name: busybox
           image: busybox

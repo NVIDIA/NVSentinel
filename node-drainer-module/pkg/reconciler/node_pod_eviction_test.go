@@ -237,7 +237,7 @@ func TestMonitorPodCompletionWithContextCancelled(t *testing.T) {
 	mockEvictionClient.EvictedPods = sync.Map{}
 
 	go func() {
-		time.Sleep(10 * time.Second)
+		time.Sleep(15 * time.Second)
 		cancel()
 	}()
 

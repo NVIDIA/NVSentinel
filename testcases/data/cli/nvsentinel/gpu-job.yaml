@@ -29,13 +29,11 @@ spec:
             nvidia.com/gpu: 1
       restartPolicy: Never
       tolerations:
-        - effect: NoExecute
-          operator: Exists
         - effect: NoSchedule
           key: nvidia.com/gpu
           value: present
           operator: Equal
-        - effect: NoSchedule
+        - effect: NoExecute
           key: dedicated
           value: user-workload
           operator: Equal

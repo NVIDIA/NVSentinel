@@ -103,7 +103,7 @@ func TestHandleEvent(t *testing.T) {
 		},
 	}
 	r := NewReconciler(cfg, false)
-	err = r.handleEvent(ctx, "123", "node1", healthEvent)
+	err = r.handleEvent(ctx, "node1", healthEvent)
 
 	if err != nil {
 		t.Errorf("Pods are not evicted completely: %v", err)
@@ -169,7 +169,7 @@ func TestHandleEventWithError(t *testing.T) {
 	}
 	r := NewReconciler(cfg, false)
 
-	err = r.handleEvent(ctx, "123", "node1", healthEvent)
+	err = r.handleEvent(ctx, "node1", healthEvent)
 
 	if err == nil {
 		t.Errorf("Expected an error for eviction of pods in immediate mode but got nil")
@@ -191,7 +191,7 @@ func TestHandleEventWithError(t *testing.T) {
 		return false
 	}
 
-	err = r.handleEvent(ctx, "123", "node1", healthEvent)
+	err = r.handleEvent(ctx, "node1", healthEvent)
 
 	if err == nil {
 		t.Errorf("Expected an error for eviction of pods in Allow completion mode but got nil")
@@ -258,7 +258,7 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 	r.NodeEvictionContext.Store("node1-nvsentinel", &EvictionContext{
 		cancel: cancel,
 	})
-	err = r.handleEvent(ctx, "123", "node1", healthEvent)
+	err = r.handleEvent(ctx, "node1", healthEvent)
 
 	if err != nil {
 		t.Errorf("Expected nil but found error %s", err)
@@ -321,7 +321,7 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 	}
 
 	r := NewReconciler(cfg, false) // DryRun is false
-	err := r.handleEvent(ctx, "event-id-invalid-mode", "node-for-invalid-mode", healthEvent)
+	err := r.handleEvent(ctx, "node-for-invalid-mode", healthEvent)
 
 	assert.Error(t, err, "Expected an error for invalid eviction mode")
 	if err != nil {

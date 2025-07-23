@@ -69,6 +69,20 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Fatalf("error initializing collection client with config %+v for mongodb: %+v", r.Config.MongoConfig, err)
 	}
 
+	oldEvents, err := r.getInProgressEvents(ctx, collection)
+	if err != nil {
+		klog.Errorf("Failed to get in-progress events: %v", err)
+	} else {
+		for _, event := range oldEvents {
+			go func(event bson.M) {
+				wrappedEvent := bson.M{
+					"fullDocument": event,
+				}
+				r.processEvents(ctx, wrappedEvent, collection)
+			}(event)
+		}
+	}
+
 	watcher.Start(ctx)
 
 	klog.Infoln("Listening for events on the channel...")
@@ -77,79 +91,78 @@ func (r *Reconciler) Start(ctx context.Context) {
 		totalEventsReceived.Inc()
 
 		go func(event bson.M) {
-			startTime := time.Now()
-			document := event["fullDocument"].(bson.M)
-			healthEventWithStatus := storeconnector.HealthEventWithStatus{}
-			if err := storewatcher.UnmarshalFullDocumentFromEvent(
-				event,
-				&healthEventWithStatus,
-			); err != nil {
-				totalEventProcessingError.WithLabelValues("unmarshal_doc_error").Inc()
-				klog.Errorf("Failed to unmarshal event: %+v", err)
-				if err := watcher.MarkProcessed(ctx); err != nil {
-					totalEventProcessingError.WithLabelValues("mark_processed_error").Inc()
-					klog.Errorf("Error updating resume token: %+v", err)
-				}
-				return
-			}
-
-			klog.Infof("Received an event with ID %v", document["_id"])
-			// set the user pod eviction status to in-progress
-			podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
-			podsEvictionStatus.Status = storeconnector.StatusInProgress
-
-			switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
-			case storeconnector.Quarantined:
-				unhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
-					healthEventWithStatus.HealthEvent.CheckName).Inc()
-			case storeconnector.UnQuarantined:
-				healthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
-					healthEventWithStatus.HealthEvent.CheckName).Inc()
-			}
-
-			err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
-			if err != nil {
-				totalEventProcessingError.WithLabelValues("update_status_error").Inc()
-				klog.Errorf("Error in updating the health event with ID %v:, error: %+v", document["_id"], err)
-			} else {
-
-				for i := 1; i <= maxRetries; i++ {
-					klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
-					err = r.handleEvent(ctx, document["_id"], healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
-					if err == nil {
-						totalEventsSuccessfullyProcessed.Inc()
-
-						podsEvictionStatus.Status = storeconnector.StatusSucceeded
-						break
-					}
-					klog.Errorf("Error in processing the event with ID %v:, error: %+v", document["_id"], err)
-					totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
-					time.Sleep(retryDelay)
-				}
-
-				if err != nil {
-					klog.Errorf("Max attempt reached, error in handling the health event with ID %v:, error: %+v", document["_id"], err)
-					podsEvictionStatus.Status = storeconnector.StatusFailed
-					podsEvictionStatus.Message = err.Error()
-				}
-
-				if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
-					totalEventProcessingError.WithLabelValues("update_status_error").Inc()
-					klog.Errorf("Error in updating the user pods eviction status for node: %+v", err)
-				}
-			}
+			r.processEvents(ctx, event, collection)
 			if err := watcher.MarkProcessed(ctx); err != nil {
 				totalEventProcessingError.WithLabelValues("mark_processed_error").Inc()
 				klog.Errorf("Error updating resume token: %+v", err)
 			}
-			duration := time.Since(startTime).Seconds()
-
-			eventHandlingDuration.Observe(duration)
 		}(event)
 	}
 }
 
-func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
+func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection *mongo.Collection) {
+	startTime := time.Now()
+	document := event["fullDocument"].(bson.M)
+	healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+	if err := storewatcher.UnmarshalFullDocumentFromEvent(
+		event,
+		&healthEventWithStatus,
+	); err != nil {
+		totalEventProcessingError.WithLabelValues("unmarshal_doc_error").Inc()
+		klog.Errorf("Failed to unmarshal event with ID %v: %+v", document["_id"], err)
+		return
+	}
+
+	klog.Infof("Received event:\nHealth Event: %+v", healthEventWithStatus.HealthEvent)
+	// set the user pod eviction status to in-progress
+	podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = storeconnector.StatusInProgress
+
+	switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
+	case storeconnector.Quarantined:
+		unhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
+			healthEventWithStatus.HealthEvent.CheckName).Inc()
+	case storeconnector.UnQuarantined:
+		healthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
+			healthEventWithStatus.HealthEvent.CheckName).Inc()
+	}
+
+	err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
+	if err != nil {
+		totalEventProcessingError.WithLabelValues("update_status_error").Inc()
+		klog.Errorf("Error in updating the health event with ID %v:, error: %+v", document["_id"], err)
+	} else {
+
+		for i := 1; i <= maxRetries; i++ {
+			klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
+			err = r.handleEvent(ctx, healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
+			if err == nil {
+				totalEventsSuccessfullyProcessed.Inc()
+
+				podsEvictionStatus.Status = storeconnector.StatusSucceeded
+				break
+			}
+			klog.Errorf("Error in processing the event with ID %v:, error: %+v", document["_id"], err)
+			totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
+			time.Sleep(retryDelay)
+		}
+
+		if err != nil {
+			klog.Errorf("Max attempt reached, error in handling the health event with ID %v:, error: %+v", document["_id"], err)
+			podsEvictionStatus.Status = storeconnector.StatusFailed
+			podsEvictionStatus.Message = err.Error()
+		}
+
+		if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
+			totalEventProcessingError.WithLabelValues("update_status_error").Inc()
+			klog.Errorf("Error in updating the user pods eviction status for node: %+v", err)
+		}
+	}
+	duration := time.Since(startTime).Seconds()
+
+	eventHandlingDuration.Observe(duration)
+}
+func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
 
 	namespaceMap := r.getMatchingNamespace(ctx)
 	var mu sync.Mutex
@@ -194,12 +207,12 @@ func (r *Reconciler) handleEvent(ctx context.Context, eventId interface{}, nodeN
 						errChan <- err
 					}
 
-					r.NodeEvictionContext.Delete(nsWithNode)
-
 				default:
 					klog.Errorf("Invalid mode of eviction: %s", mode)
 					errChan <- fmt.Errorf("invalid mode of eviction: %s", mode)
 				}
+
+				r.NodeEvictionContext.Delete(nsWithNode)
 
 				select {
 				case <-ctx1.Done():
@@ -242,6 +255,27 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 		}
 	}
 	return namespaceMap
+}
+
+// getInProgressEvents is used to get the in-progress events from the collection
+func (r *Reconciler) getInProgressEvents(ctx context.Context, collection *mongo.Collection) ([]bson.M, error) {
+	filter := bson.M{
+		"healtheventstatus.userpodsevictionstatus.status": storeconnector.StatusInProgress,
+	}
+
+	cursor, err := collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("error finding in-progress events: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var events []bson.M
+	if err := cursor.All(ctx, &events); err != nil {
+		return nil, fmt.Errorf("error decoding in-progress events: %w", err)
+	}
+
+	klog.Infof("Found %d in-progress events to process", len(events))
+	return events, nil
 }
 
 func (r *Reconciler) verifyEvictionCompleted(ctx context.Context, healthEventWithStatus *storeconnector.HealthEventWithStatus, nodeName string, nsWithImmediateMode []string) error {
