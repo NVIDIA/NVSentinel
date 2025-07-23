@@ -153,29 +153,61 @@ var (
 	})
 )
 
-func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent, nodeName string) *pb.HealthEvents {
+// determineCheckName determines the appropriate check name based on link layer, monitor type, and NIC type
+func determineCheckName(nicEvent nic.NicHealthEvent, monitorNetworkType nic.MonitorNetworkType) string {
+	// First check LinkLayer if available
+	switch nicEvent.LinkLayer {
+	case "InfiniBand":
+		return INFINIBAND_CHECK_NAME
+	case "Ethernet":
+		return ETHERNET_CHECK_NAME
+	case nic.UNKNOWN_LINK_LAYER, "":
+		// LinkLayer is unknown or empty, fall back to monitorNetworkType
+		return checkNameFromMonitorType(monitorNetworkType, nicEvent.NicType)
+	default:
+		// Unknown LinkLayer value, fall back to NicType
+		return checkNameFromNicType(nicEvent.NicType)
+	}
+}
+
+func checkNameFromMonitorType(monitorNetworkType nic.MonitorNetworkType, nicType nic.NicType) string {
+	switch monitorNetworkType {
+	case nic.MonitorNetworkTypeInfiniBand:
+		return INFINIBAND_CHECK_NAME
+	case nic.MonitorNetworkTypeRoCE:
+		return ETHERNET_CHECK_NAME
+	case nic.MonitorNetworkTypeAll:
+		// For MonitorNetworkTypeAll, fall back to NicType
+		return checkNameFromNicType(nicType)
+	default:
+		// Unknown monitor type, fall back to NicType
+		return checkNameFromNicType(nicType)
+	}
+}
+
+func checkNameFromNicType(nicType nic.NicType) string {
+	switch nicType {
+	case nic.Infiniband:
+		return INFINIBAND_CHECK_NAME
+	case nic.Ethernet:
+		return ETHERNET_CHECK_NAME
+	default:
+		// Default to InfiniBand for unknown NIC types
+		return INFINIBAND_CHECK_NAME
+	}
+}
+
+func NicEvent2HealthEvents(nicEvents *[]nic.NicHealthEvent, nodeName string,
+	monitorNetworkType nic.MonitorNetworkType) *pb.HealthEvents {
 	healthEvents := pb.HealthEvents{Version: 1, Events: make([]*pb.HealthEvent, 0)}
 
 	for _, nicEvent := range *nicEvents {
-		var checkname, componentClass string
-		componentClass = COMPONENT_CLASS
-
-		// Determine check name based on link layer instead of NicType
-		// Treat "unknown" link layer as Ethernet
-		switch nicEvent.LinkLayer {
-		case "InfiniBand":
-			checkname = INFINIBAND_CHECK_NAME
-		case "Ethernet", nic.UNKNOWN_LINK_LAYER, "":
-			checkname = ETHERNET_CHECK_NAME
-		default:
-			// Fallback to original logic for backward compatibility
-			switch nicEvent.NicType {
-			case nic.Infiniband:
-				checkname = INFINIBAND_CHECK_NAME
-			case nic.Ethernet:
-				checkname = ETHERNET_CHECK_NAME
-			}
-		}
+		// Determine check name with proper fallback:
+		// 1. First check LinkLayer if available
+		// 2. Then fall back to monitorNetworkType
+		// 3. Finally fall back to NicType
+		checkname := determineCheckName(nicEvent, monitorNetworkType)
+		componentClass := COMPONENT_CLASS
 
 		isHealthy := nicEvent.IsHealthyEvent
 		isFatal := !isHealthy
@@ -537,7 +569,7 @@ func main() {
 		case err := <-errChan:
 			panic(err)
 		case nicEvent := <-nicHealthMonitor.EventChan:
-			healthEvents := NicEvent2HealthEvents(nicEvent, nodeName)
+			healthEvents := NicEvent2HealthEvents(nicEvent, nodeName, nicConfig.MonitorNetworkType)
 			if len(healthEvents.Events) == 0 {
 				continue
 			}

@@ -131,7 +131,12 @@ func getLinkLayer(config *NicMonitorConfig, ibDeviceName string, portName string
 		return "", fmt.Errorf("failed to read link_layer for %s port %s: %w", ibDeviceName, portName, err)
 	}
 
-	return strings.TrimSpace(string(content)), nil
+	linkLayer := strings.TrimSpace(string(content))
+	if linkLayer == "" || strings.ToLower(linkLayer) == "unknown" {
+		return UNKNOWN_LINK_LAYER, nil
+	}
+
+	return linkLayer, nil
 }
 
 // hasMatchingRoCEInterface checks if an IB device has any network interfaces
@@ -173,6 +178,19 @@ func hasMatchingRoCEInterface(
 	}
 
 	return false, nil
+}
+
+// getDeviceLinkLayer returns a representative link_layer for the device by checking its ports.
+// If multiple ports exist, it returns the link_layer from the first port it can successfully read.
+// If no ports can be read, it returns UNKNOWN_LINK_LAYER.
+func getDeviceLinkLayer(config *NicMonitorConfig, device InfiniBandDevice) string {
+	for portName := range device.Ports {
+		if linkLayer, err := getLinkLayer(config, device.Name, portName); err == nil {
+			return linkLayer
+		}
+	}
+
+	return UNKNOWN_LINK_LAYER
 }
 
 // nolint: gocognit, cyclop
@@ -263,12 +281,13 @@ func (m *InfinibandDeviceMonitor) monitorDevices(
 		oldDevice, oldDeviceExist := m.Devices[deviceName]
 
 		if !oldDeviceExist {
+			deviceLinkLayer := getDeviceLinkLayer(config, device)
 			events = append(events, NicHealthEvent{
 				NicType:        Infiniband,
 				Name:           device.Name,
 				Message:        nicIsDetected,
 				IsHealthyEvent: true,
-				LinkLayer:      UNKNOWN_LINK_LAYER, // Device-level event, no specific port
+				LinkLayer:      deviceLinkLayer, // Device-level event, no specific port
 			})
 		}
 
