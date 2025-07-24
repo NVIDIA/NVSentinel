@@ -65,6 +65,9 @@ type NodeInformer struct {
 
 	// onQuarantinedNodeDeleted is called when a quarantined node with annotations is deleted
 	onQuarantinedNodeDeleted func(nodeName string)
+
+	// onNodeAnnotationsChanged is called when a node's annotations change
+	onNodeAnnotationsChanged func(nodeName string, annotations map[string]string)
 }
 
 // Lister returns the informer's node lister.
@@ -150,7 +153,50 @@ func (ni *NodeInformer) GetGpuNodeCounts() (totalGpuNodes int, cordonedNodesMap 
 	ni.mutex.RLock()
 	defer ni.mutex.RUnlock()
 
-	return ni.totalGpuNodes, *ni.nodeInfo.GetQuarantinedNodesMap(), nil
+	return ni.totalGpuNodes, ni.nodeInfo.GetQuarantinedNodesCopy(), nil
+}
+
+// hasQuarantineAnnotationsChanged checks if any of the quarantine-related annotations have changed
+func hasQuarantineAnnotationsChanged(oldAnnotations, newAnnotations map[string]string) bool {
+	// List of annotation keys we care about
+	quarantineKeys := []string{
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+	}
+
+	// Check if any of the quarantine annotation values have changed
+	for _, key := range quarantineKeys {
+		oldValue := oldAnnotations[key]
+		newValue := newAnnotations[key]
+
+		if oldValue != newValue {
+			return true
+		}
+	}
+
+	return false
+}
+
+// getQuarantineAnnotations extracts only the quarantine-related annotations from a node's annotations
+func getQuarantineAnnotations(annotations map[string]string) map[string]string {
+	quarantineAnnotations := make(map[string]string)
+
+	// List of annotation keys we care about
+	quarantineKeys := []string{
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+	}
+
+	// Extract only the quarantine annotations
+	for _, key := range quarantineKeys {
+		if value, exists := annotations[key]; exists {
+			quarantineAnnotations[key] = value
+		}
+	}
+
+	return quarantineAnnotations
 }
 
 // handleAddNode recalculates counts when a node is added.
@@ -181,6 +227,14 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	}
 
 	ni.mutex.Unlock()
+
+	// Notify about the node's quarantine annotations (including empty ones)
+	// This ensures all nodes get cached, preventing API calls for clean nodes
+	if ni.onNodeAnnotationsChanged != nil {
+		quarantineAnnotations := getQuarantineAnnotations(node.Annotations)
+		ni.onNodeAnnotationsChanged(node.Name, quarantineAnnotations)
+	}
+
 	ni.signalWork()
 }
 
@@ -194,6 +248,9 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 		return
 	}
 
+	// Check if quarantine annotations have changed
+	quarantineAnnotationsChanged := hasQuarantineAnnotationsChanged(oldNode.Annotations, newNode.Annotations)
+
 	// Only process if unschedulable status changed or if the quarantine annotation is present.
 	// the reason it needs to be checked for quarantine annotation is because in dryrun node,
 	// node is not marked as unschedulable but still annotation will be present, so we need to track those nodes as well.
@@ -206,6 +263,12 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 		ni.signalWork()
 	} else {
 		klog.V(4).Infof("Node update ignored (no relevant change): %s", newNode.Name)
+	}
+
+	// Notify about quarantine annotation changes
+	if quarantineAnnotationsChanged && ni.onNodeAnnotationsChanged != nil {
+		quarantineAnnotations := getQuarantineAnnotations(newNode.Annotations)
+		ni.onNodeAnnotationsChanged(newNode.Name, quarantineAnnotations)
 	}
 }
 
@@ -238,6 +301,12 @@ func (ni *NodeInformer) updateNodeQuarantineStatus(node *v1.Node) bool {
 // SetOnQuarantinedNodeDeletedCallback sets the callback function for when a quarantined node is deleted
 func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeName string)) {
 	ni.onQuarantinedNodeDeleted = callback
+}
+
+// SetOnNodeAnnotationsChangedCallback sets the callback function for when a node's annotations change
+func (ni *NodeInformer) SetOnNodeAnnotationsChangedCallback(callback func(nodeName string,
+	annotations map[string]string)) {
+	ni.onNodeAnnotationsChanged = callback
 }
 
 // handleDeleteNode recalculates counts when a node is deleted.
@@ -289,6 +358,12 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		ni.onQuarantinedNodeDeleted(node.Name)
 	}
 
+	// Notify about node deletion to clear from annotations cache
+	if ni.onNodeAnnotationsChanged != nil {
+		// Pass nil to indicate the node has been deleted
+		ni.onNodeAnnotationsChanged(node.Name, nil)
+	}
+
 	ni.signalWork()
 }
 
@@ -320,7 +395,8 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 	}
 
 	ni.mutex.Lock()
-	changed := ni.totalGpuNodes != total || len(*ni.nodeInfo.GetQuarantinedNodesMap()) != unschedulable
+	quarantinedCount := ni.nodeInfo.GetQuarantinedNodesCount()
+	changed := ni.totalGpuNodes != total || quarantinedCount != unschedulable
 	ni.totalGpuNodes = total
 	ni.mutex.Unlock()
 

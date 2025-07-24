@@ -16,6 +16,7 @@ package informer
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -337,8 +338,8 @@ func TestNodeInformer_RecalculateCounts(t *testing.T) {
 	// Check internal counts directly
 	ni.mutex.RLock()
 	total := ni.totalGpuNodes
-	unschedulable := len(*ni.nodeInfo.GetQuarantinedNodesMap())
 	ni.mutex.RUnlock()
+	unschedulable := ni.nodeInfo.GetQuarantinedNodesCount()
 
 	if total != 3 {
 		t.Errorf("Expected totalGpuNodes=3, got %d", total)
@@ -456,5 +457,470 @@ func TestNodeInformer_OnQuarantinedNodeDeletedCallback(t *testing.T) {
 
 	if callbackCalled {
 		t.Error("Expected callback NOT to be called for non-quarantined node")
+	}
+}
+
+func TestNodeInformer_OnNodeAnnotationsChangedCallback(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	workSignal := make(chan struct{}, 1)
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+	if err != nil {
+		t.Fatalf("NewNodeInformer failed: %v", err)
+	}
+
+	// Set up callback to track calls
+	var callbackCalls []struct {
+		nodeName    string
+		annotations map[string]string
+	}
+	var mu sync.Mutex
+
+	ni.SetOnNodeAnnotationsChangedCallback(func(nodeName string, annotations map[string]string) {
+		mu.Lock()
+		defer mu.Unlock()
+		// Make a copy of annotations to avoid race conditions
+		annotationsCopy := make(map[string]string)
+		if annotations != nil {
+			for k, v := range annotations {
+				annotationsCopy[k] = v
+			}
+		}
+		callbackCalls = append(callbackCalls, struct {
+			nodeName    string
+			annotations map[string]string
+		}{nodeName: nodeName, annotations: annotationsCopy})
+	})
+
+	// Test 1: Add a node with quarantine annotations - callback should be called
+	node1 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-1",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+			Annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+				"other-annotation":                        "should-be-ignored",
+			},
+		},
+	}
+
+	ni.handleAddNode(node1)
+
+	// Check callback was called
+	mu.Lock()
+	if len(callbackCalls) != 1 {
+		t.Errorf("Expected 1 callback call after add, got %d", len(callbackCalls))
+	} else {
+		call := callbackCalls[0]
+		if call.nodeName != "gpu-node-1" {
+			t.Errorf("Expected node name gpu-node-1, got %s", call.nodeName)
+		}
+		if len(call.annotations) != 1 {
+			t.Errorf("Expected 1 annotation, got %d", len(call.annotations))
+		}
+		if call.annotations[common.QuarantineHealthEventAnnotationKey] != "event-data" {
+			t.Errorf("Expected quarantine annotation value 'event-data', got %s",
+				call.annotations[common.QuarantineHealthEventAnnotationKey])
+		}
+		if _, exists := call.annotations["other-annotation"]; exists {
+			t.Error("Non-quarantine annotation should not be included")
+		}
+	}
+	mu.Unlock()
+
+	// Test 2: Add a node without quarantine annotations - callback should be called with empty map
+	node2 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-2",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+			Annotations: map[string]string{
+				"other-annotation": "value",
+			},
+		},
+	}
+
+	ni.handleAddNode(node2)
+
+	mu.Lock()
+	if len(callbackCalls) != 2 {
+		t.Errorf("Expected 2 callback calls (including empty annotations), got %d", len(callbackCalls))
+	} else {
+		call := callbackCalls[1]
+		if call.nodeName != "gpu-node-2" {
+			t.Errorf("Expected node name gpu-node-2, got %s", call.nodeName)
+		}
+		if len(call.annotations) != 0 {
+			t.Errorf("Expected 0 quarantine annotations for clean node, got %d", len(call.annotations))
+		}
+	}
+	mu.Unlock()
+
+	// Test 3: Update node with changed quarantine annotations - callback should be called
+	node1Updated := node1.DeepCopy()
+	node1Updated.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] = common.QuarantineHealthEventIsCordonedAnnotationValueTrue
+	node1Updated.Annotations["other-annotation"] = "new-value" // This change should be ignored
+
+	ni.handleUpdateNode(node1, node1Updated)
+
+	mu.Lock()
+	if len(callbackCalls) != 3 {
+		t.Errorf("Expected 3 callback calls after update, got %d", len(callbackCalls))
+	} else {
+		call := callbackCalls[2]
+		if call.nodeName != "gpu-node-1" {
+			t.Errorf("Expected node name gpu-node-1, got %s", call.nodeName)
+		}
+		if len(call.annotations) != 2 {
+			t.Errorf("Expected 2 annotations, got %d", len(call.annotations))
+		}
+		if call.annotations[common.QuarantineHealthEventAnnotationKey] != "event-data" {
+			t.Errorf("Expected quarantine annotation value 'event-data', got %s",
+				call.annotations[common.QuarantineHealthEventAnnotationKey])
+		}
+		if call.annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] != common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
+			t.Errorf("Expected cordoned annotation value 'True', got %s",
+				call.annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
+		}
+	}
+	mu.Unlock()
+
+	// Test 4: Update node with only non-quarantine annotation changes - callback should NOT be called
+	node1UpdatedAgain := node1Updated.DeepCopy()
+	node1UpdatedAgain.Annotations["other-annotation"] = "another-value"
+	node1UpdatedAgain.Spec.Unschedulable = true // Change something else
+
+	ni.handleUpdateNode(node1Updated, node1UpdatedAgain)
+
+	mu.Lock()
+	if len(callbackCalls) != 3 {
+		t.Errorf("Expected still 3 callback calls (no new call for non-quarantine changes), got %d", len(callbackCalls))
+	}
+	mu.Unlock()
+
+	// Test 5: Delete node - callback should be called with nil annotations
+	ni.handleDeleteNode(node1UpdatedAgain)
+
+	mu.Lock()
+	if len(callbackCalls) != 4 {
+		t.Errorf("Expected 4 callback calls after delete, got %d", len(callbackCalls))
+	} else {
+		call := callbackCalls[3]
+		if call.nodeName != "gpu-node-1" {
+			t.Errorf("Expected node name gpu-node-1, got %s", call.nodeName)
+		}
+		if call.annotations != nil && len(call.annotations) > 0 {
+			t.Errorf("Expected nil or empty annotations for deleted node, got %v", call.annotations)
+		}
+	}
+	mu.Unlock()
+
+	// Test 6: Update to remove quarantine annotations - callback should be called
+	node3 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "gpu-node-3",
+			Labels: map[string]string{GpuNodeLabel: "true"},
+			Annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+			},
+		},
+	}
+	node3Updated := node3.DeepCopy()
+	delete(node3Updated.Annotations, common.QuarantineHealthEventAnnotationKey)
+
+	// Reset callback calls
+	mu.Lock()
+	callbackCalls = callbackCalls[:0]
+	mu.Unlock()
+
+	ni.handleAddNode(node3)
+	ni.handleUpdateNode(node3, node3Updated)
+
+	mu.Lock()
+	if len(callbackCalls) != 2 {
+		t.Errorf("Expected 2 callback calls (add + update with annotation removal), got %d", len(callbackCalls))
+	} else {
+		// First call should have the annotation
+		if len(callbackCalls[0].annotations) != 1 {
+			t.Errorf("Expected 1 annotation in first call, got %d", len(callbackCalls[0].annotations))
+		}
+		// Second call should have empty annotations (all quarantine annotations removed)
+		if len(callbackCalls[1].annotations) != 0 {
+			t.Errorf("Expected 0 annotations in second call, got %d", len(callbackCalls[1].annotations))
+		}
+	}
+	mu.Unlock()
+}
+
+// Test edge cases for quarantine annotation tracking
+func TestHasQuarantineAnnotationsChanged_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		oldAnnotations map[string]string
+		newAnnotations map[string]string
+		expectChanged  bool
+	}{
+		{
+			name:           "nil to nil annotations",
+			oldAnnotations: nil,
+			newAnnotations: nil,
+			expectChanged:  false,
+		},
+		{
+			name:           "nil to empty annotations",
+			oldAnnotations: nil,
+			newAnnotations: map[string]string{},
+			expectChanged:  false,
+		},
+		{
+			name:           "empty to nil annotations",
+			oldAnnotations: map[string]string{},
+			newAnnotations: nil,
+			expectChanged:  false,
+		},
+		{
+			name:           "nil to quarantine annotations",
+			oldAnnotations: nil,
+			newAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+			},
+			expectChanged: true,
+		},
+		{
+			name: "quarantine annotations to nil",
+			oldAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+			},
+			newAnnotations: nil,
+			expectChanged:  true,
+		},
+		{
+			name: "only non-quarantine annotations change",
+			oldAnnotations: map[string]string{
+				"other-annotation":                        "value1",
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+			},
+			newAnnotations: map[string]string{
+				"other-annotation":                        "value2",
+				common.QuarantineHealthEventAnnotationKey: "event-data",
+			},
+			expectChanged: false,
+		},
+		{
+			name: "quarantine annotation value changes",
+			oldAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data-1",
+			},
+			newAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event-data-2",
+			},
+			expectChanged: true,
+		},
+		{
+			name: "multiple quarantine annotations, one changes",
+			oldAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:              "event-data",
+				common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
+				common.QuarantineHealthEventAppliedTaintsAnnotationKey: "[taint1]",
+			},
+			newAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:              "event-data",
+				common.QuarantineHealthEventIsCordonedAnnotationKey:    "False", // changed
+				common.QuarantineHealthEventAppliedTaintsAnnotationKey: "[taint1]",
+			},
+			expectChanged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			changed := hasQuarantineAnnotationsChanged(tt.oldAnnotations, tt.newAnnotations)
+			if changed != tt.expectChanged {
+				t.Errorf("hasQuarantineAnnotationsChanged() = %v, want %v", changed, tt.expectChanged)
+			}
+		})
+	}
+}
+
+// Test race conditions in annotation change callbacks
+func TestNodeInformer_AnnotationCallbackRaceCondition(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	workSignal := make(chan struct{}, 100) // larger buffer for concurrent events
+	nodeInfo := nodeinfo.NewNodeInfo(workSignal)
+
+	ni, err := NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+	if err != nil {
+		t.Fatalf("NewNodeInformer failed: %v", err)
+	}
+
+	// Track callback invocations with thread-safe access
+	var mu sync.Mutex
+	callbackInvocations := make(map[string][]map[string]string)
+
+	ni.SetOnNodeAnnotationsChangedCallback(func(nodeName string, annotations map[string]string) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Deep copy annotations to avoid race conditions
+		annotationsCopy := make(map[string]string)
+		if annotations != nil {
+			for k, v := range annotations {
+				annotationsCopy[k] = v
+			}
+		}
+
+		callbackInvocations[nodeName] = append(callbackInvocations[nodeName], annotationsCopy)
+	})
+
+	// Create multiple goroutines that concurrently update nodes
+	var wg sync.WaitGroup
+	nodeCount := 10
+	updateCount := 5
+
+	for i := 0; i < nodeCount; i++ {
+		nodeName := fmt.Sprintf("node-%d", i)
+
+		// Initial node
+		node := &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   nodeName,
+				Labels: map[string]string{GpuNodeLabel: "true"},
+			},
+		}
+
+		wg.Add(1)
+		go func(n *v1.Node) {
+			defer wg.Done()
+
+			// Add node
+			ni.handleAddNode(n)
+
+			// Perform multiple concurrent updates
+			for j := 0; j < updateCount; j++ {
+				oldNode := n.DeepCopy()
+				newNode := n.DeepCopy()
+
+				// Alternate between adding and removing quarantine annotations
+				if j%2 == 0 {
+					newNode.Annotations = map[string]string{
+						common.QuarantineHealthEventAnnotationKey: fmt.Sprintf("event-%d", j),
+					}
+				} else {
+					newNode.Annotations = map[string]string{}
+				}
+
+				ni.handleUpdateNode(oldNode, newNode)
+				n = newNode
+			}
+
+			// Delete node
+			ni.handleDeleteNode(n)
+		}(node)
+	}
+
+	wg.Wait()
+
+	// Verify callback was called correct number of times for each node
+	mu.Lock()
+	defer mu.Unlock()
+
+	for i := 0; i < nodeCount; i++ {
+		nodeName := fmt.Sprintf("node-%d", i)
+		invocations := callbackInvocations[nodeName]
+
+		// Expected: 1 add + updateCount updates + 1 delete
+		expectedCallbacks := 1 + updateCount + 1
+
+		if len(invocations) != expectedCallbacks {
+			t.Errorf("Node %s: expected %d callbacks, got %d", nodeName, expectedCallbacks, len(invocations))
+		}
+
+		// Verify last invocation is for deletion (nil or empty map)
+		lastInvocation := invocations[len(invocations)-1]
+		if lastInvocation != nil && len(lastInvocation) > 0 {
+			t.Errorf("Node %s: expected last callback to be for deletion (empty annotations), got %v",
+				nodeName, lastInvocation)
+		}
+	}
+}
+
+// Test that getQuarantineAnnotations filters correctly
+func TestGetQuarantineAnnotations(t *testing.T) {
+	tests := []struct {
+		name           string
+		allAnnotations map[string]string
+		expectedResult map[string]string
+	}{
+		{
+			name:           "nil annotations",
+			allAnnotations: nil,
+			expectedResult: map[string]string{},
+		},
+		{
+			name:           "empty annotations",
+			allAnnotations: map[string]string{},
+			expectedResult: map[string]string{},
+		},
+		{
+			name: "only quarantine annotations",
+			allAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:              "event1",
+				common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
+				common.QuarantineHealthEventAppliedTaintsAnnotationKey: "[taint]",
+			},
+			expectedResult: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:              "event1",
+				common.QuarantineHealthEventIsCordonedAnnotationKey:    "True",
+				common.QuarantineHealthEventAppliedTaintsAnnotationKey: "[taint]",
+			},
+		},
+		{
+			name: "mixed annotations",
+			allAnnotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:           "event1",
+				"kubernetes.io/some-annotation":                     "value",
+				"custom-annotation":                                 "custom-value",
+				common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+			},
+			expectedResult: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:           "event1",
+				common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+			},
+		},
+		{
+			name: "no quarantine annotations",
+			allAnnotations: map[string]string{
+				"kubernetes.io/annotation1": "value1",
+				"custom-annotation":         "value2",
+			},
+			expectedResult: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getQuarantineAnnotations(tt.allAnnotations)
+
+			if len(result) != len(tt.expectedResult) {
+				t.Errorf("Expected %d quarantine annotations, got %d",
+					len(tt.expectedResult), len(result))
+			}
+
+			for key, expectedValue := range tt.expectedResult {
+				if actualValue, exists := result[key]; !exists {
+					t.Errorf("Expected annotation %s not found in result", key)
+				} else if actualValue != expectedValue {
+					t.Errorf("Annotation %s: expected value %s, got %s",
+						key, expectedValue, actualValue)
+				}
+			}
+
+			// Ensure no extra annotations
+			for key := range result {
+				if _, expected := tt.expectedResult[key]; !expected {
+					t.Errorf("Unexpected annotation %s in result", key)
+				}
+			}
+		})
 	}
 }

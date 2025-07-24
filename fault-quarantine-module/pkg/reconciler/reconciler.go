@@ -34,6 +34,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
 )
 
@@ -58,6 +59,10 @@ type Reconciler struct {
 	nodeInfo          *nodeinfo.NodeInfo
 	// workSignal acts as a semaphore to wake up the reconcile loop
 	workSignal chan struct{}
+	// nodeAnnotationsCache caches node annotations to avoid repeated K8s API calls
+	nodeAnnotationsCache sync.Map // map[string]map[string]string
+	// cacheMutex protects cache operations during refresh to ensure consistency
+	cacheMutex sync.RWMutex
 }
 
 var (
@@ -103,6 +108,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 		currentQuarantinedNodes.Dec()
 		klog.Infof("Decremented currentQuarantinedNodes metric for deleted quarantined node: %s", nodeName)
 	})
+
+	// Set the callback to update the annotations cache when node annotations change
+	nodeInformer.SetOnNodeAnnotationsChangedCallback(r.handleNodeAnnotationChange)
 
 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
 		r.config.K8sClient.GetK8sClient(), nodeInformer)
@@ -161,8 +169,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 	if err != nil {
 		klog.Fatalf("error fetching quarantined nodes: %+v", err)
 	} else {
-		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesMap()
-		nodesCount := len(*quarantinedNodesMap)
+		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesCopy()
+		nodesCount := len(quarantinedNodesMap)
 
 		// Set the gauge to the current number of quarantined nodes
 		currentQuarantinedNodes.Set(float64(nodesCount))
@@ -186,6 +194,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 		case <-time.After(5 * time.Second): // Check periodically
 			klog.Infof("NodeInformer cache is not synced yet, waiting for 5 seconds")
 		}
+	}
+
+	// Build initial node annotations cache
+	if err := r.buildNodeAnnotationsCache(ctx); err != nil {
+		// Continue anyway, individual API calls will be made as fallback
+		klog.Errorf("Failed to build initial node annotations cache: %v", err)
 	}
 
 	watcher.Start(ctx)
@@ -325,11 +339,14 @@ func (r *Reconciler) handleEvent(
 
 	quarantineAnnotationExists := false
 
-	annotations, annErr := r.config.K8sClient.GetNodeAnnotations(ctx, event.HealthEvent.NodeName)
+	// Get quarantine annotations from cache or API fallback
+	annotations, annErr := r.getNodeQuarantineAnnotations(ctx, event.HealthEvent.NodeName)
 	if annErr != nil {
 		klog.Errorf("failed to fetch annotations for node %s: %+v",
 			event.HealthEvent.NodeName, annErr)
-	} else {
+	}
+
+	if annErr == nil && annotations != nil {
 		annotationVal, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
 		if exists && annotationVal != "" {
@@ -529,6 +546,10 @@ func (r *Reconciler) handleEvent(
 			totalNodesQuarantined.Inc()
 			currentQuarantinedNodes.Inc()
 
+			// Update cache with the new annotations that were just added to the node
+			// This ensures subsequent events in the same batch see the updated annotations
+			r.updateCacheWithQuarantineAnnotations(event.HealthEvent.NodeName, annotationsMap)
+
 			// update the map here so that later we can refer to it and update the quarantined nodes
 			r.nodeInfo.MarkNodeQuarantineStatusCache(event.HealthEvent.NodeName, isNodeQuarantined, true)
 
@@ -556,7 +577,8 @@ func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *platformconnectorprotos.HealthEvent,
 ) bool {
-	annotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, event.NodeName)
+	// Get quarantine annotations from cache or API fallback
+	annotations, err := r.getNodeQuarantineAnnotations(ctx, event.NodeName)
 	if err != nil {
 		klog.Errorf("error while getting node annotations for event: %+v: %+v", event, err)
 		processingErrors.WithLabelValues("get_node_annotations_error").Inc()
@@ -626,6 +648,10 @@ func (r *Reconciler) handleQuarantinedNode(
 
 			totalNodesUnquarantined.Inc()
 			currentQuarantinedNodes.Dec()
+
+			// Update cache by removing the annotations that were just removed from the node
+			// This ensures subsequent events in the same batch see the updated annotations
+			r.updateCacheWithUnquarantineAnnotations(event.NodeName, annotationsToBeRemoved)
 
 			// Update the quarantinedNodesMap to reflect the node is no longer quarantined
 			r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false, false)
@@ -747,4 +773,207 @@ func formatCordonOrUncordonReasonValue(input string, length int) string {
 	formatted = strings.Trim(formatted, "-")
 
 	return formatted
+}
+
+// getNodeQuarantineAnnotations retrieves quarantine annotations from cache or API fallback
+func (r *Reconciler) getNodeQuarantineAnnotations(ctx context.Context, nodeName string) (map[string]string, error) {
+	// Try to get annotations from cache first
+	r.cacheMutex.RLock()
+	cached, ok := r.nodeAnnotationsCache.Load(nodeName)
+	r.cacheMutex.RUnlock()
+
+	if ok {
+		orig := cached.(map[string]string)
+		// Create a defensive copy to prevent external mutations
+		dup := make(map[string]string, len(orig))
+		for k, v := range orig {
+			dup[k] = v
+		}
+
+		klog.V(5).Infof("Using cached annotations for node %s", nodeName)
+
+		return dup, nil
+	}
+
+	// Fall back to API call if not in cache
+	return r.fetchAndCacheQuarantineAnnotations(ctx, nodeName)
+}
+
+// fetchAndCacheQuarantineAnnotations fetches all annotations from API and caches only quarantine ones
+func (r *Reconciler) fetchAndCacheQuarantineAnnotations(ctx context.Context,
+	nodeName string) (map[string]string, error) {
+	allAnnotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, nodeName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract and store only quarantine annotations in cache
+	quarantineAnnotations := make(map[string]string)
+	quarantineKeys := []string{
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+	}
+
+	for _, key := range quarantineKeys {
+		if value, exists := allAnnotations[key]; exists {
+			quarantineAnnotations[key] = value
+		}
+	}
+
+	// Store all nodes in cache (even with empty quarantine annotations)
+	// This prevents repeated API calls for the same node
+	r.cacheMutex.Lock()
+	r.nodeAnnotationsCache.Store(nodeName, quarantineAnnotations)
+	r.cacheMutex.Unlock()
+
+	if len(quarantineAnnotations) > 0 {
+		klog.V(4).Infof("Cached quarantine annotations for node %s", nodeName)
+	}
+
+	// Return a defensive copy to prevent external mutations of the cached map
+	returnCopy := make(map[string]string, len(quarantineAnnotations))
+	for k, v := range quarantineAnnotations {
+		returnCopy[k] = v
+	}
+
+	return returnCopy, nil
+}
+
+// handleNodeAnnotationChange updates the cached annotations for a node when notified by the informer
+func (r *Reconciler) handleNodeAnnotationChange(nodeName string, annotations map[string]string) {
+	r.cacheMutex.Lock()
+	defer r.cacheMutex.Unlock()
+
+	if annotations == nil {
+		// Node was deleted, remove from cache
+		r.nodeAnnotationsCache.Delete(nodeName)
+		klog.V(4).Infof("Removed annotations from cache for deleted node %s", nodeName)
+
+		return
+	}
+
+	// Since we only cache quarantine annotations and the informer only sends quarantine annotations,
+	// we can simply replace the entire cache entry
+	// Store all nodes in cache (even with empty quarantine annotations) to prevent API calls
+	r.nodeAnnotationsCache.Store(nodeName, annotations)
+
+	if len(annotations) > 0 {
+		klog.V(4).Infof("Updated quarantine annotations in cache for node %s", nodeName)
+	} else {
+		klog.V(4).Infof("Updated cache for node %s (no quarantine annotations)", nodeName)
+	}
+}
+
+// updateCacheWithQuarantineAnnotations updates the cached annotations for a node
+// after quarantine annotations have been added to the actual node
+func (r *Reconciler) updateCacheWithQuarantineAnnotations(nodeName string, newAnnotations map[string]string) {
+	r.cacheMutex.Lock()
+	defer r.cacheMutex.Unlock()
+
+	if cached, ok := r.nodeAnnotationsCache.Load(nodeName); ok {
+		// Create a copy of the existing cached annotations
+		annotations := make(map[string]string)
+		for k, v := range cached.(map[string]string) {
+			annotations[k] = v
+		}
+
+		// Add the new quarantine annotations
+		for key, value := range newAnnotations {
+			annotations[key] = value
+		}
+
+		// Update the cache with the modified annotations
+		r.nodeAnnotationsCache.Store(nodeName, annotations)
+		klog.V(4).Infof("Updated cache for node %s with quarantine annotations: %v", nodeName, newAnnotations)
+	} else {
+		// If not in cache, store a copy of the new annotations to prevent external mutations
+		annotationsCopy := make(map[string]string, len(newAnnotations))
+		for k, v := range newAnnotations {
+			annotationsCopy[k] = v
+		}
+
+		r.nodeAnnotationsCache.Store(nodeName, annotationsCopy)
+		klog.V(4).Infof("Stored new annotations in cache for node %s: %v", nodeName, newAnnotations)
+	}
+}
+
+// updateCacheWithUnquarantineAnnotations updates the cached annotations for a node
+// after quarantine annotations have been removed from the actual node
+func (r *Reconciler) updateCacheWithUnquarantineAnnotations(nodeName string, removedAnnotationKeys []string) {
+	r.cacheMutex.Lock()
+	defer r.cacheMutex.Unlock()
+
+	if cached, ok := r.nodeAnnotationsCache.Load(nodeName); ok {
+		// Create a copy of the existing cached annotations
+		annotations := make(map[string]string)
+		for k, v := range cached.(map[string]string) {
+			annotations[k] = v
+		}
+
+		// Remove the specified annotation keys
+		for _, key := range removedAnnotationKeys {
+			delete(annotations, key)
+		}
+
+		// Update the cache with the modified annotations
+		r.nodeAnnotationsCache.Store(nodeName, annotations)
+		klog.V(4).Infof("Updated cache for node %s, removed annotation keys: %v", nodeName, removedAnnotationKeys)
+	} else {
+		// If not in cache, nothing to remove - this shouldn't happen in normal flow
+		klog.V(4).Infof("No cache entry found for node %s during unquarantine annotation update", nodeName)
+	}
+}
+
+// buildNodeAnnotationsCache fetches all nodes and their annotations to populate the cache
+func (r *Reconciler) buildNodeAnnotationsCache(ctx context.Context) error {
+	klog.Info("Building node annotations cache...")
+
+	startTime := time.Now()
+
+	nodeList, err := r.config.K8sClient.GetK8sClient().CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	// List of quarantine annotation keys we care about
+	quarantineKeys := []string{
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+	}
+
+	// Use write lock for bulk cache population
+	r.cacheMutex.Lock()
+	defer r.cacheMutex.Unlock()
+
+	nodeCount := 0
+
+	for _, node := range nodeList.Items {
+		// Extract only the quarantine annotations
+		quarantineAnnotations := make(map[string]string)
+
+		if node.Annotations != nil {
+			for _, key := range quarantineKeys {
+				if value, exists := node.Annotations[key]; exists {
+					quarantineAnnotations[key] = value
+				}
+			}
+		}
+
+		// Store all nodes in cache (even with empty quarantine annotations)
+		// This prevents API calls for nodes without quarantine annotations
+		r.nodeAnnotationsCache.Store(node.Name, quarantineAnnotations)
+
+		if len(quarantineAnnotations) > 0 {
+			klog.V(4).Infof("Cached quarantine annotations for node %s: %v", node.Name, quarantineAnnotations)
+		}
+
+		nodeCount++
+	}
+
+	fetchDuration := time.Since(startTime)
+	klog.Infof("Successfully built cache with quarantine annotations for %d nodes in %v", nodeCount, fetchDuration)
+
+	return nil
 }

@@ -37,8 +37,25 @@ func NewNodeInfo(workSignal chan struct{}) *NodeInfo {
 	}
 }
 
-func (n *NodeInfo) GetQuarantinedNodesMap() *map[string]bool {
-	return &n.quarantinedNodesMap
+// GetQuarantinedNodesCount returns the number of quarantined nodes in a thread-safe manner
+func (n *NodeInfo) GetQuarantinedNodesCount() int {
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
+	return len(n.quarantinedNodesMap)
+}
+
+// GetQuarantinedNodesCopy returns a copy of the quarantined nodes map in a thread-safe manner
+func (n *NodeInfo) GetQuarantinedNodesCopy() map[string]bool {
+	n.mutex.RLock()
+	defer n.mutex.RUnlock()
+
+	copy := make(map[string]bool)
+	for k, v := range n.quarantinedNodesMap {
+		copy[k] = v
+	}
+
+	return copy
 }
 
 func (n *NodeInfo) BuildQuarantinedNodesMap(k8sClient kubernetes.Interface) error {
@@ -62,6 +79,7 @@ func (n *NodeInfo) BuildQuarantinedNodesMap(k8sClient kubernetes.Interface) erro
 
 func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined bool, annotationExist bool) {
 	n.mutex.Lock()
+	defer n.mutex.Unlock()
 
 	if isQuarantined {
 		n.quarantinedNodesMap[nodeName] = true
@@ -72,7 +90,7 @@ func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined 
 	}
 
 	klog.V(3).Infof("Quarantined nodes map: %+v, Total length: %d", n.quarantinedNodesMap, len(n.quarantinedNodesMap))
-	n.mutex.Unlock()
+
 	n.signalWork()
 }
 

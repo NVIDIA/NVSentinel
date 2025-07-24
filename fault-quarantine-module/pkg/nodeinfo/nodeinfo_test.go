@@ -32,16 +32,19 @@ func TestGetQuarantinedNodesMap(t *testing.T) {
 	nodeInfo := NewNodeInfo(make(chan struct{}, 1))
 	nodeInfo.quarantinedNodesMap["node1"] = true
 
-	mapPtr := nodeInfo.GetQuarantinedNodesMap()
-	if mapPtr == nil {
-		t.Fatal("GetQuarantinedNodesMap returned nil")
+	// Test GetQuarantinedNodesCount
+	count := nodeInfo.GetQuarantinedNodesCount()
+	if count != 1 {
+		t.Errorf("Expected count to be 1, got %d", count)
 	}
 
-	if len(*mapPtr) != 1 {
-		t.Errorf("Expected map to have 1 entry, got %d", len(*mapPtr))
+	// Test GetQuarantinedNodesCopy
+	mapCopy := nodeInfo.GetQuarantinedNodesCopy()
+	if len(mapCopy) != 1 {
+		t.Errorf("Expected map to have 1 entry, got %d", len(mapCopy))
 	}
 
-	if !(*mapPtr)["node1"] {
+	if !mapCopy["node1"] {
 		t.Error("Expected node1 to be in the map with value true")
 	}
 }
@@ -396,4 +399,154 @@ func (m *MockNodeClient) List(ctx context.Context, opts metav1.ListOptions) (*v1
 		return nil, errors.New("mock error")
 	}
 	return &v1.NodeList{}, nil
+}
+
+// TestMarkNodeQuarantineStatusCache_ManualUncordon tests the specific scenario
+// where a node is manually uncordoned but still has quarantine annotations
+func TestMarkNodeQuarantineStatusCache_ManualUncordon(t *testing.T) {
+	workSignal := make(chan struct{}, 10)
+	nodeInfo := NewNodeInfo(workSignal)
+
+	// Step 1: Node is quarantined by FQM
+	nodeInfo.MarkNodeQuarantineStatusCache("test-node", true, true)
+
+	// Verify node is in quarantine map
+	if !nodeInfo.GetNodeQuarantineStatusCache("test-node") {
+		t.Fatal("Expected node to be quarantined after initial quarantine")
+	}
+
+	// Drain any existing signals
+	for {
+		select {
+		case <-workSignal:
+			// keep draining
+		default:
+			goto done
+		}
+	}
+done:
+
+	// Step 2: Node is manually uncordoned (isQuarantined=false) but annotation still exists
+	nodeInfo.MarkNodeQuarantineStatusCache("test-node", false, true)
+
+	// Verify node is STILL in quarantine map because annotation exists
+	if !nodeInfo.GetNodeQuarantineStatusCache("test-node") {
+		t.Error("Expected node to remain in quarantine map when manually uncordoned but annotation exists")
+	}
+
+	// Verify the internal map still has the node
+	nodeInfo.mutex.RLock()
+	_, exists := nodeInfo.quarantinedNodesMap["test-node"]
+	nodeInfo.mutex.RUnlock()
+
+	if !exists {
+		t.Error("Expected node to remain in internal quarantinedNodesMap when annotation exists")
+	}
+
+	// Verify work signal was sent
+	select {
+	case <-workSignal:
+		// Good, signal was sent
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected work signal when marking manual uncordon")
+	}
+
+	// Step 3: Annotation is removed (proper cleanup)
+	nodeInfo.MarkNodeQuarantineStatusCache("test-node", false, false)
+
+	// Now node should be removed from quarantine map
+	if nodeInfo.GetNodeQuarantineStatusCache("test-node") {
+		t.Error("Expected node to be removed from quarantine map when annotation is removed")
+	}
+
+	// Verify work signal was sent for cleanup
+	select {
+	case <-workSignal:
+		// Good, signal was sent
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Expected work signal when removing from quarantine")
+	}
+}
+
+// TestMarkNodeQuarantineStatusCache_EdgeCases tests various edge cases
+func TestMarkNodeQuarantineStatusCache_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name            string
+		nodeName        string
+		isQuarantined   bool
+		annotationExist bool
+		expectedInMap   bool
+		description     string
+	}{
+		{
+			name:            "Quarantine with annotation",
+			nodeName:        "node1",
+			isQuarantined:   true,
+			annotationExist: true,
+			expectedInMap:   true,
+			description:     "Normal quarantine operation",
+		},
+		{
+			name:            "Quarantine without annotation (edge case)",
+			nodeName:        "node2",
+			isQuarantined:   true,
+			annotationExist: false,
+			expectedInMap:   true,
+			description:     "Quarantine even without annotation",
+		},
+		{
+			name:            "Unquarantine without annotation",
+			nodeName:        "node3",
+			isQuarantined:   false,
+			annotationExist: false,
+			expectedInMap:   false,
+			description:     "Normal unquarantine operation",
+		},
+		{
+			name:            "Manual uncordon (annotation exists)",
+			nodeName:        "node4",
+			isQuarantined:   false,
+			annotationExist: true,
+			expectedInMap:   true,
+			description:     "Node manually uncordoned but annotation remains",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workSignal := make(chan struct{}, 1)
+			nodeInfo := NewNodeInfo(workSignal)
+
+			// If testing unquarantine or manual uncordon, first quarantine the node
+			if !tt.isQuarantined || tt.name == "Manual uncordon (annotation exists)" {
+				nodeInfo.MarkNodeQuarantineStatusCache(tt.nodeName, true, true)
+				// Drain signal
+				select {
+				case <-workSignal:
+					// drained
+				default:
+					// nothing to drain - continue safely
+				}
+			}
+
+			// Perform the test operation
+			nodeInfo.MarkNodeQuarantineStatusCache(tt.nodeName, tt.isQuarantined, tt.annotationExist)
+
+			// Check if node is in map
+			isInMap := nodeInfo.GetNodeQuarantineStatusCache(tt.nodeName)
+
+			if isInMap != tt.expectedInMap {
+				t.Errorf("%s: expected node in map = %v, got %v. %s",
+					tt.name, tt.expectedInMap, isInMap, tt.description)
+			}
+
+			// Verify work signal was sent
+			select {
+			case <-workSignal:
+				// Good
+			case <-time.After(100 * time.Millisecond):
+				t.Errorf("%s: expected work signal to be sent", tt.name)
+			}
+		})
+	}
 }

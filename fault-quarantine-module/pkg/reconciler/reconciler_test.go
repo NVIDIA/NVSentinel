@@ -17,7 +17,11 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
@@ -25,7 +29,10 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 var (
@@ -194,7 +201,8 @@ func TestHandleEvent(t *testing.T) {
 		t.Errorf("Unexpected rule kind result: %v", ruleEvalResult)
 	}
 
-	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if !quarantinedNodes["node1"] {
 		t.Errorf("Expected quarantinedNodesMap[node1] to be true")
 	}
 }
@@ -325,7 +333,8 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 	if isQuarantined {
 		t.Errorf("Expected node to be unquarantined")
 	}
-	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if quarantinedNodes["node1"] {
 		t.Errorf("quarantinedNodesMap[node1] should be false after unquarantine")
 	}
 }
@@ -377,7 +386,8 @@ func TestHandleQuarantinedNodeNoUnquarantine(t *testing.T) {
 	if !isQuarantined {
 		t.Errorf("Expected node to remain quarantined")
 	}
-	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if !quarantinedNodes["node1"] {
 		t.Errorf("quarantinedNodesMap[node1] should still be true")
 	}
 }
@@ -468,7 +478,8 @@ func TestHandleEvent_ManualUncordonThenHealthEvent(t *testing.T) {
 		}
 	}
 	// The cache must reflect that the node is no longer quarantined
-	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if quarantinedNodes["node1"] {
 		t.Errorf("Expected node to be removed from quarantined cache after annotation removal")
 	}
 }
@@ -595,7 +606,8 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Node should NOT be in quarantined map
-		if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+		quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+		if quarantinedNodes["node1"] {
 			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture")
 		}
 	})
@@ -647,7 +659,8 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Node should NOT be in quarantined map
-		if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+		quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+		if quarantinedNodes["node1"] {
 			t.Errorf("Expected node NOT to be in quarantined map when rule evaluation is RetryAgainInFuture (with error)")
 		}
 	})
@@ -819,7 +832,8 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined(t *testing.T) {
 	}
 
 	// The cache should still indicate the node is quarantined
-	if !(*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if !quarantinedNodes["node1"] {
 		t.Errorf("Expected node to remain quarantined in cache")
 	}
 }
@@ -902,7 +916,657 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 	}
 
 	// The cache must reflect that the node is no longer quarantined
-	if (*r.nodeInfo.GetQuarantinedNodesMap())["node1"] {
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if quarantinedNodes["node1"] {
 		t.Errorf("Expected node to be removed from quarantined cache after unquarantine")
+	}
+}
+
+// Test cache consistency during quarantine and unquarantine operations
+func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
+	ctx := context.Background()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name: "ruleset-1",
+				Taint: config.Taint{
+					Key:    "key1",
+					Value:  "val1",
+					Effect: "NoSchedule",
+				},
+				Cordon:   config.Cordon{ShouldCordon: true},
+				Priority: 1,
+			},
+		},
+	}
+
+	// Track API calls
+	apiCallCount := 0
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			apiCallCount++
+			// Return empty annotations initially
+			return map[string]string{}, nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string,
+			taints []config.Taint, isCordon bool,
+			annotations map[string]string, labelsMap map[string]string) error {
+			return nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string,
+			taints []config.Taint, isUncordon bool,
+			annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			return nil
+		},
+		getK8sClientFn: func() kubernetes.Interface {
+			// Return a fake client for buildNodeAnnotationsCache
+			return fake.NewSimpleClientset()
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		TomlConfig: tomlConfig,
+		K8sClient:  k8sMock,
+	}
+
+	// Create work signal for proper nodeInfo initialization
+	workSignal := make(chan struct{}, 10)
+	r := NewReconciler(ctx, cfg, workSignal)
+	r.SetLabelKeys(cfg.TomlConfig.LabelPrefix)
+
+	// Build initial cache
+	err := r.buildNodeAnnotationsCache(ctx)
+	if err != nil {
+		t.Fatalf("Failed to build initial cache: %v", err)
+	}
+
+	// Pre-populate cache for node1 with empty annotations to avoid API call
+	r.nodeAnnotationsCache.Store("node1", map[string]string{})
+
+	// Test 1: First event - should use cache (empty annotations)
+	event1 := &platformconnectorprotos.HealthEvent{NodeName: "node1"}
+	healthEventWithStatus1 := &store.HealthEventWithStatus{HealthEvent: event1}
+
+	// Mock evaluator that returns success
+	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
+		&mockEvaluator{name: "ruleset-1", ruleEvalResult: common.RuleEvaluationSuccess},
+	}
+
+	apiCallCount = 0 // Reset counter after initial cache build
+	status1, _ := r.handleEvent(ctx, healthEventWithStatus1, ruleSetEvals, rulesetsConfig{
+		TaintConfigMap:  map[string]*config.Taint{"ruleset-1": &tomlConfig.RuleSets[0].Taint},
+		CordonConfigMap: map[string]bool{"ruleset-1": true},
+	})
+
+	if apiCallCount != 0 {
+		t.Errorf("Expected 0 API calls (should use cache), got %d", apiCallCount)
+	}
+
+	if status1 == nil || *status1 != store.Quarantined {
+		t.Errorf("Expected Quarantined status, got %v", status1)
+	}
+
+	// Verify cache was updated with quarantine annotations
+	cached, ok := r.nodeAnnotationsCache.Load("node1")
+	if !ok {
+		t.Fatal("Expected node1 to be in cache after quarantine")
+	}
+
+	cachedAnnotations := cached.(map[string]string)
+	if _, exists := cachedAnnotations[common.QuarantineHealthEventAnnotationKey]; !exists {
+		t.Error("Expected quarantine annotation in cache after quarantine operation")
+	}
+
+	// Test 2: Second event on same node - should use updated cache
+	event2 := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		IsHealthy:      true,
+		Agent:          event1.Agent,
+		CheckName:      event1.CheckName,
+		ComponentClass: event1.ComponentClass,
+		Version:        event1.Version,
+	}
+	healthEventWithStatus2 := &store.HealthEventWithStatus{HealthEvent: event2}
+
+	// Update mock to return quarantine annotations if API is called (shouldn't be)
+	k8sMock.getNodeAnnotationsFn = func(ctx context.Context, nodeName string) (map[string]string, error) {
+		apiCallCount++
+		t.Error("API should not be called - cache should be used")
+		return cachedAnnotations, nil
+	}
+
+	status2, _ := r.handleEvent(ctx, healthEventWithStatus2, nil, rulesetsConfig{})
+
+	if apiCallCount != 0 {
+		t.Errorf("Expected 0 API calls for second event (should use cache), got %d", apiCallCount)
+	}
+
+	if status2 == nil || *status2 != store.UnQuarantined {
+		t.Errorf("Expected UnQuarantined status, got %v", status2)
+	}
+
+	// Verify cache was updated to remove quarantine annotations
+	cached2, ok2 := r.nodeAnnotationsCache.Load("node1")
+	if !ok2 {
+		t.Fatal("Expected node1 to still be in cache after unquarantine")
+	}
+
+	cachedAnnotations2 := cached2.(map[string]string)
+	if len(cachedAnnotations2) != 0 {
+		t.Errorf("Expected empty annotations in cache after unquarantine, got %v", cachedAnnotations2)
+	}
+}
+
+// Test cache fallback behavior when node not in cache
+func TestCacheFallbackForUncachedNode(t *testing.T) {
+	ctx := context.Background()
+
+	apiCallCount := 0
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			apiCallCount++
+			return map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "existing-event",
+			}, nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	// Don't build initial cache - simulate a new node
+	annotations, err := r.getNodeQuarantineAnnotations(ctx, "new-node")
+
+	if err != nil {
+		t.Fatalf("Expected successful API fallback, got error: %v", err)
+	}
+
+	if apiCallCount != 1 {
+		t.Errorf("Expected 1 API call for uncached node, got %d", apiCallCount)
+	}
+
+	if annotations[common.QuarantineHealthEventAnnotationKey] != "existing-event" {
+		t.Errorf("Expected quarantine annotation from API, got %v", annotations)
+	}
+
+	// Verify node was added to cache
+	cached, ok := r.nodeAnnotationsCache.Load("new-node")
+	if !ok {
+		t.Fatal("Expected new-node to be cached after API call")
+	}
+
+	cachedAnnotations := cached.(map[string]string)
+	if cachedAnnotations[common.QuarantineHealthEventAnnotationKey] != "existing-event" {
+		t.Error("Expected API result to be cached")
+	}
+
+	// Second call should use cache
+	apiCallCount = 0
+	annotations2, err2 := r.getNodeQuarantineAnnotations(ctx, "new-node")
+
+	if err2 != nil {
+		t.Fatalf("Expected successful cache hit, got error: %v", err2)
+	}
+
+	if apiCallCount != 0 {
+		t.Errorf("Expected 0 API calls (should use cache), got %d", apiCallCount)
+	}
+
+	if annotations2[common.QuarantineHealthEventAnnotationKey] != "existing-event" {
+		t.Errorf("Expected cached annotation, got %v", annotations2)
+	}
+}
+
+// Test manual uncordon scenario with cache
+func TestManualUncordonWithCache(t *testing.T) {
+	ctx := context.Background()
+
+	originalEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+	annotationPayload, _ := json.Marshal(originalEvent)
+
+	apiCallCount := 0
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			apiCallCount++
+			// Should not be called if cache is working
+			t.Error("API should not be called when cache has the data")
+			return map[string]string{
+				quarantineHealthEventAnnotationKey: string(annotationPayload),
+			}, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string,
+			taints []config.Taint, isUncordon bool,
+			annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+	r.SetLabelKeys("k8s.nvidia.com/")
+
+	// Pre-populate cache with quarantine annotations (simulating node was quarantined)
+	r.nodeAnnotationsCache.Store("node1", map[string]string{
+		quarantineHealthEventAnnotationKey:              string(annotationPayload),
+		quarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
+		quarantineHealthEventIsCordonedAnnotationKey:    "True",
+	})
+
+	// Simulate manual uncordon by updating nodeInfo
+	// (In reality, this would be done by the node informer)
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", false, true)
+
+	// Send healthy event that matches the quarantine
+	healthyEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      true,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: healthyEvent}
+
+	apiCallCount = 0 // Reset counter
+	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
+
+	if apiCallCount != 0 {
+		t.Errorf("Expected 0 API calls (should use cache), got %d", apiCallCount)
+	}
+
+	if status == nil || *status != store.UnQuarantined {
+		t.Errorf("Expected UnQuarantined status after manual uncordon + healthy event, got %v", status)
+	}
+
+	// Verify cache was updated to remove annotations
+	cached, ok := r.nodeAnnotationsCache.Load("node1")
+	if !ok {
+		t.Fatal("Expected node1 to still be in cache")
+	}
+
+	cachedAnnotations := cached.(map[string]string)
+	if len(cachedAnnotations) != 0 {
+		t.Errorf("Expected empty annotations in cache after cleanup, got %v", cachedAnnotations)
+	}
+}
+
+// Test concurrent cache access
+func TestConcurrentCacheAccess(t *testing.T) {
+	ctx := context.Background()
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// Simulate some delay
+			time.Sleep(10 * time.Millisecond)
+			return map[string]string{
+				common.QuarantineHealthEventAnnotationKey: nodeName + "-event",
+			}, nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	// Pre-populate cache with some nodes
+	for i := 0; i < 10; i++ {
+		nodeName := fmt.Sprintf("node%d", i)
+		r.nodeAnnotationsCache.Store(nodeName, map[string]string{
+			common.QuarantineHealthEventAnnotationKey: nodeName + "-cached",
+		})
+	}
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 100)
+
+	// Concurrent readers
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(nodeNum int) {
+			defer wg.Done()
+			nodeName := fmt.Sprintf("node%d", nodeNum%10)
+			annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
+			if err != nil {
+				errors <- fmt.Errorf("reader error for %s: %v", nodeName, err)
+				return
+			}
+			// Check if we got the expected value (might be updated by concurrent writers)
+			actual := annotations[common.QuarantineHealthEventAnnotationKey]
+			// Accept either the original cached value or an updated value from concurrent writers
+			if actual != nodeName+"-cached" && !strings.HasPrefix(actual, nodeName+"-updated-") {
+				errors <- fmt.Errorf("expected %s-cached or %s-updated-*, got %s",
+					nodeName, nodeName, actual)
+			}
+		}(i)
+	}
+
+	// Concurrent writers (updating cache)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(nodeNum int) {
+			defer wg.Done()
+			nodeName := fmt.Sprintf("node%d", nodeNum%10)
+			newAnnotations := map[string]string{
+				common.QuarantineHealthEventAnnotationKey: nodeName + "-updated-" + fmt.Sprintf("%d", nodeNum),
+			}
+			r.updateCacheWithQuarantineAnnotations(nodeName, newAnnotations)
+		}(i)
+	}
+
+	// Concurrent deleters - only delete from specific nodes to avoid conflicts
+	for i := 20; i < 25; i++ {
+		wg.Add(1)
+		go func(nodeNum int) {
+			defer wg.Done()
+			nodeName := fmt.Sprintf("node%d", nodeNum)
+			// Pre-populate these nodes for deletion
+			r.nodeAnnotationsCache.Store(nodeName, map[string]string{
+				common.QuarantineHealthEventAnnotationKey: nodeName + "-to-delete",
+			})
+			// Then delete the annotation
+			r.updateCacheWithUnquarantineAnnotations(nodeName,
+				[]string{common.QuarantineHealthEventAnnotationKey})
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for any errors
+	var errorCount int
+	for err := range errors {
+		t.Errorf("Concurrent access error: %v", err)
+		errorCount++
+	}
+
+	if errorCount > 0 {
+		t.Fatalf("Had %d errors during concurrent access", errorCount)
+	}
+}
+
+// Test cache behavior when annotations change externally
+func TestCacheUpdateFromNodeInformer(t *testing.T) {
+	ctx := context.Background()
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// Should not be called if cache is properly updated by informer
+			t.Error("API should not be called when cache is updated by informer")
+			return nil, nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	// Simulate node informer callback with new annotations
+	newAnnotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:              "external-event",
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"external","Value":"taint"}]`,
+	}
+	r.handleNodeAnnotationChange("node1", newAnnotations)
+
+	// Try to get annotations - should come from cache
+	annotations, err := r.getNodeQuarantineAnnotations(ctx, "node1")
+	if err != nil {
+		t.Fatalf("Expected successful cache hit, got error: %v", err)
+	}
+
+	if annotations[common.QuarantineHealthEventAnnotationKey] != "external-event" {
+		t.Errorf("Expected externally updated annotation, got %v", annotations)
+	}
+
+	// Simulate node deletion
+	r.handleNodeAnnotationChange("node1", nil)
+
+	// Verify node was removed from cache
+	_, ok := r.nodeAnnotationsCache.Load("node1")
+	if ok {
+		t.Error("Expected node1 to be removed from cache after deletion")
+	}
+}
+
+// Test buildNodeAnnotationsCache with various node states
+func TestBuildNodeAnnotationsCacheWithVariousStates(t *testing.T) {
+	ctx := context.Background()
+
+	// Create fake k8s client with various nodes
+	node1 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node1",
+			Annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event1",
+				"other-annotation":                        "ignored",
+			},
+		},
+	}
+
+	node2 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node2",
+			Annotations: map[string]string{
+				common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+			},
+		},
+	}
+
+	node3 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "node3",
+			Annotations: map[string]string{}, // No quarantine annotations
+		},
+	}
+
+	node4 := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node4",
+			// No annotations at all
+		},
+	}
+
+	fakeClient := fake.NewSimpleClientset(node1, node2, node3, node4)
+
+	k8sMock := &mockK8sClient{
+		getK8sClientFn: func() kubernetes.Interface {
+			return fakeClient
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	err := r.buildNodeAnnotationsCache(ctx)
+	if err != nil {
+		t.Fatalf("Failed to build cache: %v", err)
+	}
+
+	// Verify all nodes are in cache
+	tests := []struct {
+		nodeName        string
+		expectedAnns    map[string]string
+		expectedInCache bool
+	}{
+		{
+			nodeName: "node1",
+			expectedAnns: map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "event1",
+			},
+			expectedInCache: true,
+		},
+		{
+			nodeName: "node2",
+			expectedAnns: map[string]string{
+				common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+			},
+			expectedInCache: true,
+		},
+		{
+			nodeName:        "node3",
+			expectedAnns:    map[string]string{},
+			expectedInCache: true,
+		},
+		{
+			nodeName:        "node4",
+			expectedAnns:    map[string]string{},
+			expectedInCache: true,
+		},
+	}
+
+	for _, tt := range tests {
+		cached, ok := r.nodeAnnotationsCache.Load(tt.nodeName)
+		if ok != tt.expectedInCache {
+			t.Errorf("Node %s: expected in cache = %v, got %v", tt.nodeName, tt.expectedInCache, ok)
+			continue
+		}
+
+		if !ok {
+			continue
+		}
+
+		cachedAnns := cached.(map[string]string)
+		if len(cachedAnns) != len(tt.expectedAnns) {
+			t.Errorf("Node %s: expected %d annotations, got %d", tt.nodeName,
+				len(tt.expectedAnns), len(cachedAnns))
+		}
+
+		for key, expectedVal := range tt.expectedAnns {
+			if cachedAnns[key] != expectedVal {
+				t.Errorf("Node %s: expected annotation %s=%s, got %s",
+					tt.nodeName, key, expectedVal, cachedAnns[key])
+			}
+		}
+
+		// Verify non-quarantine annotations are not cached
+		if _, exists := cachedAnns["other-annotation"]; exists {
+			t.Errorf("Node %s: non-quarantine annotation should not be cached", tt.nodeName)
+		}
+	}
+}
+
+// Test cache performance with many events
+func TestCachePerformanceWithManyEvents(t *testing.T) {
+	ctx := context.Background()
+
+	apiCallCount := 0
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			apiCallCount++
+			// Simulate API latency
+			time.Sleep(5 * time.Millisecond)
+			return map[string]string{}, nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string,
+			taints []config.Taint, isCordon bool,
+			annotations map[string]string, labelsMap map[string]string) error {
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	// Pre-populate cache with 100 nodes
+	for i := 0; i < 100; i++ {
+		nodeName := fmt.Sprintf("node%d", i)
+		r.nodeAnnotationsCache.Store(nodeName, map[string]string{})
+	}
+
+	// Process 1000 events across 100 nodes
+	startTime := time.Now()
+	for i := 0; i < 1000; i++ {
+		nodeName := fmt.Sprintf("node%d", i%100)
+		event := &platformconnectorprotos.HealthEvent{NodeName: nodeName}
+		healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: event}
+
+		// Mock evaluator that returns not applicable
+		ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
+			&mockEvaluator{name: "ruleset-1", ruleEvalResult: common.RuleEvaluationNotApplicable},
+		}
+
+		r.handleEvent(ctx, healthEventWithStatus, ruleSetEvals, rulesetsConfig{})
+	}
+	duration := time.Since(startTime)
+
+	if apiCallCount > 0 {
+		t.Errorf("Expected 0 API calls with cache, got %d", apiCallCount)
+	}
+
+	// With cache, 1000 events should process in under 100ms
+	if duration > 100*time.Millisecond {
+		t.Errorf("Processing 1000 events took too long: %v", duration)
+	}
+
+	t.Logf("Processed 1000 events in %v with cache (0 API calls)", duration)
+}
+
+// Test that mutations to returned maps don't affect the cache
+func TestCacheReturnsCopyNotReference(t *testing.T) {
+	ctx := context.Background()
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			return map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "original-value",
+				"other-annotation":                        "should-be-ignored",
+			}, nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+
+	// Test 1: fetchAndCacheQuarantineAnnotations returns a copy
+	annotations1, err := r.fetchAndCacheQuarantineAnnotations(ctx, "test-node")
+	if err != nil {
+		t.Fatalf("Expected successful fetch, got error: %v", err)
+	}
+
+	// Mutate the returned map
+	annotations1[common.QuarantineHealthEventAnnotationKey] = "mutated-value"
+	annotations1["new-key"] = "new-value"
+
+	// Get from cache again (should use cached version)
+	annotations2, err := r.getNodeQuarantineAnnotations(ctx, "test-node")
+	if err != nil {
+		t.Fatalf("Expected successful cache hit, got error: %v", err)
+	}
+
+	// Verify the cached value wasn't mutated
+	if annotations2[common.QuarantineHealthEventAnnotationKey] != "original-value" {
+		t.Errorf("Cache was mutated! Expected 'original-value', got '%s'",
+			annotations2[common.QuarantineHealthEventAnnotationKey])
+	}
+
+	if _, exists := annotations2["new-key"]; exists {
+		t.Error("Cache was mutated! Unexpected key 'new-key' found in cache")
+	}
+
+	// Test 2: getNodeQuarantineAnnotations also returns a copy
+	annotations3, err := r.getNodeQuarantineAnnotations(ctx, "test-node")
+	if err != nil {
+		t.Fatalf("Expected successful cache hit, got error: %v", err)
+	}
+
+	// Mutate this map too
+	annotations3[common.QuarantineHealthEventAnnotationKey] = "another-mutation"
+
+	// Get from cache once more
+	annotations4, err := r.getNodeQuarantineAnnotations(ctx, "test-node")
+	if err != nil {
+		t.Fatalf("Expected successful cache hit, got error: %v", err)
+	}
+
+	// Verify the cached value still wasn't mutated
+	if annotations4[common.QuarantineHealthEventAnnotationKey] != "original-value" {
+		t.Errorf("Cache was mutated! Expected 'original-value', got '%s'",
+			annotations4[common.QuarantineHealthEventAnnotationKey])
 	}
 }
