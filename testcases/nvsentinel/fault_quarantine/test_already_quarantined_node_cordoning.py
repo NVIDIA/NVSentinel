@@ -65,6 +65,18 @@ class TestPreQuarantinedNodeCordoning(TestNVSentinelCaseBase):
     @pytest.mark.author(email="tanishag@nvidia.com")
     @pytest.mark.faultquarantine
     def test_already_quarantined_node_cordoning(self, request):
+        """
+        Validates the Fault-Quarantine module behaviour when it encounters
+        a node that has already been manually cordoned and tainted 
+
+        The test ensures that:
+        1. The existing cordon state is preserved (the node remains
+           unschedulable).
+        2. The quarantine taint and annotations are added or retained as
+           expected.
+        3. Prometheus metrics for current and total quarantined nodes are
+           incremented accordingly
+        """
         self.skip_if_fault_quarantine_deployment_not_found()
 
         # Select gpu-health-monitor pod and node
