@@ -49,3 +49,6 @@ dependencies:
   - name: syslog-health-monitor
     version: "0.1.0"
     condition: global.syslogHealthMonitor.enabled
+  - name: dca-health-monitor
+    version: "0.1.0"
+    condition: global.dcaHealthMonitor.enabled

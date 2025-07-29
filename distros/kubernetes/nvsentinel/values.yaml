@@ -84,6 +84,12 @@ global:
     image:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor
       pullPolicy: IfNotPresent
+
+  dcaHealthMonitor:
+    enabled: false
+    image:
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-nvs_healthcheck-dev
+      pullPolicy: IfNotPresent
   
   cspHealthMonitor:
     enabled: false
