@@ -58,6 +58,11 @@ type TokenConfig struct {
 	TokenCollection string
 }
 
+// Struct for ResumeToken retrieval
+type TokenDoc struct {
+	ResumeToken bson.Raw `bson:"resumeToken"`
+}
+
 type ChangeStreamWatcher struct {
 	client                    *mongo.Client
 	changeStream              *mongo.ChangeStream
@@ -121,13 +126,14 @@ func NewChangeStreamWatcher(
 
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 
-	var storedToken bson.M
+	var storedToken TokenDoc
+
 	// Check if the resume token exists
 	err = tokenColl.FindOne(ctx, bson.M{"clientName": tokenConfig.ClientName}).Decode(&storedToken)
 	if err == nil {
-		if token, ok := storedToken["resumeToken"].(bson.M); ok && token != nil && len(token) > 0 {
-			klog.Infof("Valid resume token found, starting stream from the token: %s", token)
-			opts.SetResumeAfter(token)
+		if len(storedToken.ResumeToken) > 0 {
+			klog.Infof("ResumeToken is: %+v", storedToken.ResumeToken)
+			opts.SetResumeAfter(storedToken.ResumeToken)
 		} else {
 			klog.Info("No valid resume token found, starting stream from the beginning..")
 		}
