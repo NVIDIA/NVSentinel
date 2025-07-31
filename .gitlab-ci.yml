@@ -42,7 +42,7 @@ variables:
   # This instructs Docker not to start over TLS.
   DOCKER_TLS_CERTDIR: ""
 
-image: $CI_REGISTRY_IMAGE/ci:latest
+image: $CI_REGISTRY_IMAGE/ci:29082025
 
 include:
   - project: dgxcloud/mk8s/gitlab-templates

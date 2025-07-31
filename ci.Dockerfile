@@ -30,7 +30,7 @@ RUN go install github.com/boumenot/gocover-cobertura@latest && \
 RUN wget https://github.com/protocolbuffers/protobuf/releases/download/v27.1/protoc-27.1-linux-x86_64.zip && \
     unzip protoc-27.1-linux-x86_64.zip -d protoc-27.1-linux-x86_64 && \
     cp protoc-27.1-linux-x86_64/bin/protoc /usr/local/bin/ && mkdir -p /usr/local/bin/include/google && cp -r protoc-27.1-linux-x86_64/include/google /usr/local/bin/include && \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1 && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2 && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6 && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0 && \
     python3 -m pip install --break-system-packages grpcio grpcio-tools
 
 RUN apt-get update && apt-get install -y wget && \
