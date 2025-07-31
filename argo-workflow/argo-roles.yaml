@@ -1,0 +1,70 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvsentinel-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nvsentinel-workflow-sa
+  namespace: nvsentinel-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nvsentinel-workflow-role
+rules:
+# Essential Argo Workflows permissions
+- apiGroups: ["argoproj.io"]
+  resources: 
+    - "workflows"
+    - "workflowtemplates"
+    - "workflowtaskresults"
+    - "workflowtasksets"
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+# Pod permissions (workflows create pods to run steps)
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+
+# ConfigMap permissions for state management
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+# Secret permissions for authentication
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+
+# Events permissions for status updates
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nvsentinel-workflow-binding
+subjects:
+- kind: ServiceAccount
+  name: nvsentinel-workflow-sa
+  namespace: nvsentinel-system
+roleRef:
+  kind: ClusterRole
+  name: nvsentinel-workflow-role
+  apiGroup: rbac.authorization.k8s.io

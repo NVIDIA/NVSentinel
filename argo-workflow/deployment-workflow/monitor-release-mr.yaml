@@ -1,0 +1,59 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: nvsentinel-monitor-release-mr
+  namespace: nvsentinel-system
+spec:
+  serviceAccountName: nvsentinel-workflow-sa
+  imagePullSecrets:
+  - name: nvidia-ngcuser-pull-secret
+  templates:
+  - name: monitor-release-mr
+    inputs:
+      parameters:
+      - name: version
+      - name: mr-data
+    outputs:
+      parameters:
+      - name: monitoring-result
+        valueFrom:
+          path: /tmp/monitoring-result.json
+    
+    container:
+      image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
+      command: ["python3", "-u","/scripts/monitor-release-mr.py"]
+      volumeMounts:
+      - name: monitor-release-mr-script-volume
+        mountPath: /scripts
+      env:
+      - name: NVSENTINEL_COMPONENT_GITLAB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: nvsentinel-component-token
+      - name: GITLAB_URL
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: url
+      - name: MR_VERSION
+        value: "{{inputs.parameters.version}}"
+      - name: MR_DATA
+        value: "{{inputs.parameters.mr-data}}"
+    volumes:
+    - name: monitor-release-mr-script-volume
+      configMap:
+        name: monitor-release-mr-script
