@@ -7,8 +7,8 @@ require (
 	github.com/prometheus/client_golang v1.20.4
 	github.com/stretchr/testify v1.10.0
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250326070254-068ef4e9b24f
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250326070254-068ef4e9b24f
-	go.mongodb.org/mongo-driver v1.17.3
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250731144825-3656dccab484
+	go.mongodb.org/mongo-driver v1.17.4
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.36.1
 	k8s.io/apimachinery v0.30.2
