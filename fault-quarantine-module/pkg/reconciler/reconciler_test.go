@@ -408,9 +408,8 @@ func TestHandleEvent_ManualUncordonThenHealthEvent(t *testing.T) {
 			{EntityType: "GPU", EntityValue: "0"},
 		},
 	}
-	annotationPayload, _ := json.Marshal(originalEvent)
 	annotationsMap := map[string]string{
-		quarantineHealthEventAnnotationKey:              string(annotationPayload),
+		quarantineHealthEventAnnotationKey:              func() string { b, _ := json.Marshal(originalEvent); return string(b) }(),
 		quarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
 		quarantineHealthEventIsCordonedAnnotationKey:    "True",
 	}
@@ -526,6 +525,122 @@ func TestCompareHealthEventWithAnnotationEventToCheckUnQuarantine(t *testing.T) 
 }
 
 // TestHandleEventRuleEvaluationRetry tests handleEvent when an evaluator returns RuleEvaluationRetryAgainInFuture
+// TestHandleHealthyEventWithoutQuarantineAnnotation tests that healthy events
+// without existing quarantine annotations are skipped
+func TestHandleHealthyEventWithoutQuarantineAnnotation(t *testing.T) {
+	ctx := context.Background()
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// No quarantine annotations exist
+			return map[string]string{}, nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			t.Error("TaintAndCordonNode should not be called for healthy events without quarantine annotation")
+			return nil
+		},
+	}
+
+	mockEvaluator := &mockEvaluator{
+		name:           "test-eval",
+		ok:             true,
+		ruleEvalResult: common.RuleEvaluationSuccess,
+		priority:       1,
+		version:        "v1",
+	}
+
+	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{mockEvaluator}
+
+	rulesetsConfig := rulesetsConfig{
+		TaintConfigMap:     map[string]*config.Taint{"test-eval": {Key: "test", Value: "test", Effect: "NoSchedule"}},
+		CordonConfigMap:    map[string]bool{"test-eval": true},
+		RuleSetPriorityMap: map[string]int{"test-eval": 1},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{
+		K8sClient: k8sMock,
+	}, nil)
+
+	// Healthy event
+	event := &store.HealthEventWithStatus{
+		HealthEvent: &platformconnectorprotos.HealthEvent{
+			NodeName:  "node1",
+			IsHealthy: true,
+		},
+	}
+
+	status, ruleEval := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
+
+	// Status should be nil for healthy events without quarantine annotation
+	if status != nil {
+		t.Errorf("Expected nil status for healthy event without quarantine annotation, got %v", status)
+	}
+
+	if ruleEval != common.RuleEvaluationNotApplicable {
+		t.Errorf("Expected RuleEvaluationNotApplicable, got %v", ruleEval)
+	}
+}
+
+// TestHandleUnhealthyEventWithoutQuarantineAnnotation tests that unhealthy events
+// without existing quarantine annotations are still processed
+func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
+	ctx := context.Background()
+
+	taintAndCordonCalled := false
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// No quarantine annotations exist
+			return map[string]string{}, nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			taintAndCordonCalled = true
+			return nil
+		},
+	}
+
+	mockEvaluator := &mockEvaluator{
+		name:           "test-eval",
+		ok:             true,
+		ruleEvalResult: common.RuleEvaluationSuccess,
+		priority:       1,
+		version:        "v1",
+	}
+
+	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{mockEvaluator}
+
+	rulesetsConfig := rulesetsConfig{
+		TaintConfigMap:     map[string]*config.Taint{"test-eval": {Key: "test", Value: "test", Effect: "NoSchedule"}},
+		CordonConfigMap:    map[string]bool{"test-eval": true},
+		RuleSetPriorityMap: map[string]int{"test-eval": 1},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{
+		K8sClient: k8sMock,
+	}, nil)
+
+	// Initialize label keys
+	r.SetLabelKeys("k88s.nvidia.com/")
+
+	// Unhealthy event
+	event := &store.HealthEventWithStatus{
+		HealthEvent: &platformconnectorprotos.HealthEvent{
+			NodeName:  "node1",
+			IsHealthy: false,
+		},
+	}
+
+	status, _ := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
+
+	// Status should be Quarantined for unhealthy events that trigger rules
+	if status == nil || *status != store.Quarantined {
+		t.Errorf("Expected Quarantined status for unhealthy event, got %v", status)
+	}
+
+	if !taintAndCordonCalled {
+		t.Error("Expected TaintAndCordonNode to be called for unhealthy event")
+	}
+}
+
 func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 	ctx := context.Background()
 
@@ -783,10 +898,9 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined(t *testing.T) {
 		// The original event that quarantined the node was unhealthy
 		IsHealthy: false,
 	}
-	annotationPayload, _ := json.Marshal(originalEvent)
 
 	annotationMap := map[string]string{
-		quarantineHealthEventAnnotationKey: string(annotationPayload),
+		quarantineHealthEventAnnotationKey: func() string { b, _ := json.Marshal(originalEvent); return string(b) }(),
 	}
 
 	k8sMock := &mockK8sClient{
@@ -853,10 +967,9 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 		Version:        1,
 		IsHealthy:      false,
 	}
-	annotationPayload, _ := json.Marshal(originalEvent)
 
 	annotationMap := map[string]string{
-		quarantineHealthEventAnnotationKey:              string(annotationPayload),
+		quarantineHealthEventAnnotationKey:              func() string { b, _ := json.Marshal(originalEvent); return string(b) }(),
 		quarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
 		quarantineHealthEventIsCordonedAnnotationKey:    "True",
 	}

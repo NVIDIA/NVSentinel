@@ -280,25 +280,34 @@ func (r *Reconciler) Start(ctx context.Context) {
 					continue
 				}
 
-				if isNodeQuarantined != nil {
+				if isNodeQuarantined == nil {
+					// Status is nil, meaning we intentionally skipped processing this event
+					// (e.g., healthy event without quarantine annotation)
+					// This was already counted as skipped in handleEvent, so don't count again
+					klog.V(2).Infof("Skipped processing event for node %s, no status update needed",
+						healthEventWithStatus.HealthEvent.NodeName)
+
 					currentEventInfo.HasProcessed = true
+					duration := time.Since(startTime).Seconds()
+					eventHandlingDuration.Observe(duration)
+
+					continue
 				}
 
-				errFlag := false
+				// Process events with status
+				currentEventInfo.HasProcessed = true
 
-				if err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, eventBson, isNodeQuarantined); err != nil {
+				err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, eventBson, isNodeQuarantined)
+				if err != nil {
 					klog.Errorf("Error updating Node quarantine status: %+v", err)
 					processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
-
-					errFlag = true
-				}
-
-				if !errFlag {
+				} else if *isNodeQuarantined == storeconnector.Quarantined || *isNodeQuarantined == storeconnector.UnQuarantined {
+					// Only count as successfully processed if there was an actual state change
+					// AlreadyQuarantined means the event was skipped (already counted in handleEvent)
 					totalEventsSuccessfullyProcessed.Inc()
 				}
 
 				duration := time.Since(startTime).Seconds()
-
 				eventHandlingDuration.Observe(duration)
 			}
 		}
@@ -367,6 +376,16 @@ func (r *Reconciler) handleEvent(
 		}
 
 		return &status, common.RuleEvaluationNotApplicable
+	}
+
+	// For healthy events, if there's no existing quarantine annotation,
+	// skip processing as there's no transition from unhealthy to healthy
+	if event.HealthEvent.IsHealthy && !quarantineAnnotationExists {
+		klog.Infof("Skipping healthy event for node %s as there's no existing quarantine annotation, Event: %+v",
+			event.HealthEvent.NodeName, event.HealthEvent)
+		totalEventsSkipped.Inc()
+
+		return nil, common.RuleEvaluationNotApplicable
 	}
 
 	type keyValTaint struct {
