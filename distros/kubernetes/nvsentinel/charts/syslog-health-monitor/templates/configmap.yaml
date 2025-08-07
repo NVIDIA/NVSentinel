@@ -28,7 +28,7 @@ data:
     checks:
       - name: "SysLogsDriverVersionMismatch"
         matches:
-          - 'Version mismatch'
+          - 'Failed to initialize NVML: Driver/library version mismatch'
         count: 0
         ignoreCase: false # Assuming default if not specified, original snippet doesn't show for this
         tags: []
