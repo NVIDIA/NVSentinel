@@ -101,6 +101,7 @@ mongodb:
   auth:
     enabled: true
     rootUser: root
+    replicaSetKey: "nvsentinelMongoDBReplicaSetKey"
 
   tls:
     enabled: true
