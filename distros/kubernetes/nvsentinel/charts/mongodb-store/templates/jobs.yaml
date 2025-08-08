@@ -13,6 +13,36 @@
 # limitations under the License.
 {{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mongodb-job-sa
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mongodb-job-role
+  namespace: {{ .Release.Namespace }}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mongodb-job-rolebinding
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mongodb-job-role
+subjects:
+- kind: ServiceAccount
+  name: mongodb-job-sa
+  namespace: {{ .Release.Namespace }}
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,10 +53,25 @@ spec:
   activeDeadlineSeconds: 600
   template:
     spec:
+      serviceAccountName: mongodb-job-sa
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+      - name: wait-for-mongodb-secret
+        image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MongoDB secret to be available..."
+          while ! kubectl get secret nvsentinel-mongodb -n {{ .Release.Namespace }} >/dev/null 2>&1; do
+            echo "Secret nvsentinel-mongodb not found yet, waiting..."
+            sleep 5
+          done
+          echo "Secret nvsentinel-mongodb is available, proceeding..."
       containers:
       - name: mongo-client
         image: "{{ .Values.global.mongodbStore.images.mongosh.repository }}:{{ .Values.global.mongodbStore.images.mongosh.tag }}"
@@ -59,29 +104,58 @@ spec:
               --tls \
               --tlsCAFile /certs/ca.crt \
               --tlsCertificateKeyFile /tmp/tls.pem \
-              --eval "
-                db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
-                db.createCollection('$MONGODB_COLLECTION_NAME');
-                db.createCollection('$MONGODB_TOKEN_COLLECTION_NAME');
-                db.$MONGODB_COLLECTION_NAME.createIndex(
-                  { 'createdAt': 1 },                 
-                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }      
-                );
-                db.createCollection('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
-                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
-                  { 'actualEndTime': 1 },    
-                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }                  
-                );
-                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
-                  { 'scheduledStartTime': 1 },
-                );
-                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
-                  { 'cspStatus': 1 },
-                );
-                db.getSiblingDB('\$external').runCommand({
-                  createUser: '$MONGODB_APPLICATION_USER_DN',
-                  roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
-                });"
+                              --eval "
+                  db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
+                  
+                  // Create collections if they don't exist
+                  if (!db.getCollectionNames().includes('$MONGODB_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_COLLECTION_NAME');
+                  }
+                  
+                  if (!db.getCollectionNames().includes('$MONGODB_TOKEN_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_TOKEN_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_TOKEN_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_TOKEN_COLLECTION_NAME');
+                  }
+                  
+                  if (!db.getCollectionNames().includes('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                  }
+                  
+                  // Create indexes (MongoDB handles duplicates gracefully)
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    { 'createdAt': 1 },
+                    { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'actualEndTime': 1 },
+                    { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'scheduledStartTime': 1 },
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'cspStatus': 1 },
+                  );
+                // Check if user exists before creating
+                var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
+                if (userExists) {
+                  print('User already exists, skipping creation.');
+                } else {
+                  print('Creating new user...');
+                  db.getSiblingDB('\$external').runCommand({
+                    createUser: '$MONGODB_APPLICATION_USER_DN',
+                    roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('User created successfully.');
+                }"
             do
               echo "Waiting for mongodb to be ready...";
               sleep 5;
@@ -94,7 +168,7 @@ spec:
           - name: MONGODB_ROOT_PASSWORD
             valueFrom:
               secretKeyRef:
-                name: {{ .Release.Name }}-mongodb
+                name: nvsentinel-mongodb
                 key: mongodb-root-password
           - name: MONGODB_APPLICATION_USER_DN
             value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
