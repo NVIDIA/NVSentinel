@@ -100,7 +100,7 @@ include:
       gitlab_token: $DGXC_RELEASE_BOT_TOKEN
       allow_failure: true
 
-  - component: gitlab-master.nvidia.com/dgxcloud/release-automation/gitlab-components/nspect/nspect-program-version@main
+  - component: gitlab-master.nvidia.com/dgxcloud/release-automation/gitlab-components/nspect/nspect-program-version@1.0.8
     inputs:
       stage: "release"
       nspect_id: $NSPECT_ID
@@ -110,7 +110,9 @@ include:
       source_details:
         - sourcePointer: "${CI_PROJECT_URL}.git"
           componentName: "${CI_PROJECT_NAME}"
+          branch: "$CI_COMMIT_BRANCH"
       program_version: "${CI_COMMIT_TAG}"
+
       gitlab_token: $DGXC_RELEASE_BOT_TOKEN
       rules: 
         - if: $CI_COMMIT_TAG
@@ -131,7 +133,7 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
+    
 .eks-runner-tags:
   tags:
     - eks-build
