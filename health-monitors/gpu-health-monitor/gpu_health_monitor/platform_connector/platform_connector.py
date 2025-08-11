@@ -117,6 +117,42 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def _build_cache_key(self, check_name: str, entity_type: str, entity_value: str) -> str:
         return f"{check_name}|{entity_type}|{entity_value}"
 
+    def clear_dcgm_connectivity_failure(self, timestamp: Timestamp):
+        """Clear DCGM connectivity failure events if connectivity has been restored."""
+        health_events = []
+        check_name = "GpuDcgmConnectivityFailure"
+
+        key = self._build_cache_key(check_name, self._component_class, "")
+        if key not in self.entity_cache or not self.entity_cache[key].isHealthy:
+            self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
+            log.info(f"Updated cache for key {key} with connectivity failure")
+
+            health_event = platformconnector_pb2.HealthEvent(
+                version=self._version,
+                agent=self._agent,
+                componentClass=self._component_class,
+                checkName=check_name,
+                generatedTimestamp=timestamp,
+                isFatal=False,
+                isHealthy=True,
+                errorCode=[],
+                entitiesImpacted=[],
+                message="DCGM connectivity reported no errors",
+                recommendedAction=platformconnector_pb2.NONE,
+                nodeName=self._node_name,
+                metadata={"SerialNumber": ""},
+            )
+            health_events.append(health_event)
+
+            # Clear metric for connectivity failure
+            metrics.dcgm_health_events_fatal_health_events.labels(event_type=check_name, gpu_id="").set(0)
+
+        if len(health_events):
+            try:
+                self.send_health_event_with_retries(health_events)
+            except Exception as e:
+                log.error(f"Exception while sending DCGM connectivity restored events: {e}")
+
     def health_event_occurred(
         self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list, serials: dict[int, str]
     ):
@@ -126,6 +162,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.debug("received callback for health event")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
+
+            # First, check if we need to clear any previous connectivity failure events
+            self.clear_dcgm_connectivity_failure(timestamp)
 
             health_events = []
             for watch_name, details in health_details.items():
@@ -239,7 +278,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 ).set(0)
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
-                self.send_health_event_with_retries(health_events)
+                try:
+                    self.send_health_event_with_retries(health_events)
+                except Exception as e:
+                    log.error(f"Exception while sending health events: {e}. Events will be retried in next cycle.")
+                    # Don't crash - continue monitoring
 
     def clear_xid_errors(self, gpu_ids: list, gpu_serials: dict[int, str]):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
@@ -393,3 +436,43 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         if match:
             return match.group(1)
         return None
+
+    def dcgm_connectivity_failed(self):
+        """Handle DCGM connectivity failure event."""
+        with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
+            "dcgm_connectivity_failure_to_grpc_channel"
+        ).time():
+            log.error("DCGM connectivity failure detected, sending GpuDcgmConnectivityFailure health event")
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+
+            health_events = []
+            check_name = "GpuDcgmConnectivityFailure"
+            key = self._build_cache_key(check_name, self._component_class, "")
+            if key not in self.entity_cache or self.entity_cache[key].isHealthy:
+                self.entity_cache[key] = CachedEntityState(isFatal=True, isHealthy=False)
+                log.info(f"Updated cache for key {key} with connectivity failure")
+
+                health_event = platformconnector_pb2.HealthEvent(
+                    version=self._version,
+                    agent=self._agent,
+                    componentClass=self._component_class,
+                    checkName=check_name,
+                    generatedTimestamp=timestamp,
+                    isFatal=True,
+                    isHealthy=False,
+                    errorCode=["DCGM_CONNECTIVITY_ERROR"],
+                    entitiesImpacted=[],
+                    message="Failed to connect to DCGM for health check",
+                    recommendedAction=platformconnector_pb2.REPORT_ISSUE,
+                    nodeName=self._node_name,
+                    metadata={"SerialNumber": ""},
+                )
+                health_events.append(health_event)
+
+            if len(health_events):
+                try:
+                    self.send_health_event_with_retries(health_events)
+                except Exception as e:
+                    log.error(f"Exception while sending DCGM connectivity failure events: {e}")
+                    # Don't crash - continue monitoring

@@ -45,14 +45,6 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      initContainers:
-        - name: wait-for-dcgm-pod-to-run
-          image: {{ .Values.global.gpuHealthMonitor.busybox.image.repository }}:{{ .Values.global.gpuHealthMonitor.busybox.image.tag }}
-          imagePullPolicy: {{ .Values.global.gpuHealthMonitor.busybox.image.pullPolicy }}
-          command: ["/bin/sh", "/etc/dcgmhealth/is-dcgm-reachable.sh"]
-          volumeMounts:
-            - name: config-vol
-              mountPath: /etc/dcgmhealth
       containers:
         - name: {{ .Chart.Name }}
           command: ["gpu_health_monitor"]

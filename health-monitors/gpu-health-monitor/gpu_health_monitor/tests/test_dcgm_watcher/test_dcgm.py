@@ -26,6 +26,7 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.error_num = None
         self.serial = None
         self.fields_changes = None
+        self.connectivity_failed_called = False
 
     def health_event_occurred(
         self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int], serials: dict[int, str]
@@ -40,6 +41,9 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
 
     def clear_all_xid_errors(self, gpu_ids: list, gpu_serials: dict[int, str]):
         pass
+
+    def dcgm_connectivity_failed(self):
+        self.connectivity_failed_called = True
 
 
 class TestDCGMHealthChecks:
@@ -146,9 +150,10 @@ class TestDCGMHealthChecks:
         mock_response.incidents = dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS
         dcgm_group_mock.health.Check.return_value = mock_response()
 
-        response = watcher._perform_health_check(dcgm_group_mock)
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
         expected_response = watcher._get_health_status_dict()
         assert response == expected_response
+        assert connectivity_success == True
 
     def test_perform_health_check_one_watch_fail_single_entity_failure(self):
         watcher = dcgm.DCGMWatcher(
@@ -166,7 +171,7 @@ class TestDCGMHealthChecks:
         mock_response.incidents[0] = self._get_pcie_incident(0, 1)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
-        response = watcher._perform_health_check(dcgm_group_mock)
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
         expected_response = watcher._get_health_status_dict()
         expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
@@ -178,6 +183,7 @@ class TestDCGMHealthChecks:
             },
         )
         assert response == expected_response
+        assert connectivity_success == True
 
     def test_perform_health_check_one_watch_fail_multiple_entity_failure(self):
         watcher = dcgm.DCGMWatcher(
@@ -196,7 +202,7 @@ class TestDCGMHealthChecks:
         mock_response.incidents[1] = self._get_pcie_incident(0, 2)
         dcgm_group_mock.health.Check.return_value = mock_response()
 
-        response = watcher._perform_health_check(dcgm_group_mock)
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
         expected_response = watcher._get_health_status_dict()
         expected_response["DCGM_HEALTH_WATCH_PCIE"] = dcgm.types.HealthDetails(
             status=dcgm.types.HealthStatus.WARN,
@@ -213,6 +219,7 @@ class TestDCGMHealthChecks:
         )
 
         assert response == expected_response
+        assert connectivity_success == True
 
     @patch("pydcgm.DcgmGroup.__new__")
     def test_register_xid_callback_on_all_gpus(self, mock_dcgm_group):
@@ -300,3 +307,74 @@ class TestDCGMHealthChecks:
         assert event_processor_test.health_details == expected_response
         assert event_processor_test.gpu_id == 0
         assert event_processor_test.error_num == 13
+
+    def test_perform_health_check_connectivity_failure_timeout(self):
+        """Test that connectivity failure is detected when DCGM health check times out."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        # Simulate timeout exception - DCGMError_Timeout doesn't take message parameter
+        dcgm_group_mock.health.Check.side_effect = dcgm_structs.DCGMError_Timeout()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        expected_response = watcher._get_health_status_dict()
+
+        assert response == expected_response  # Should return empty health status
+        assert connectivity_success == False  # Should indicate connectivity failure
+
+    def test_perform_health_check_connectivity_failure_generic_error(self):
+        """Test that connectivity failure is detected when DCGM health check raises generic exception."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        # Simulate generic exception
+        dcgm_group_mock.health.Check.side_effect = Exception("Connection refused")
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        expected_response = watcher._get_health_status_dict()
+
+        assert response == expected_response  # Should return empty health status
+        assert connectivity_success == False  # Should indicate connectivity failure
+
+    @patch("pydcgm.DcgmHandle")
+    @patch("pydcgm.DcgmGroup")
+    def test_initialize_dcgm_monitoring(self, mock_dcgm_group, mock_dcgm_handle):
+        """Test that _initialize_dcgm_monitoring properly sets up monitoring components."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+        # Setup mocks
+        dcgm_handle_mock = MagicMock()
+        dcgm_group_mock = MagicMock()
+        dcgm_group_mock.GetGpuIds.return_value = [0, 1, 2, 3]
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        # Mock system and discovery
+        dcgm_system_mock = MagicMock()
+        dcgm_system_mock.discovery.GetEntityGroupEntities.return_value = [0, 1, 2, 3]
+        dcgm_system_mock.discovery.GetGpuAttributes.return_value = MagicMock(
+            identifiers=MagicMock(serial="TEST_SERIAL")
+        )
+        dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
+
+        # Call the method
+        group, gpu_ids, gpu_serials, xid_groups = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
+
+        # Verify results
+        assert group == dcgm_group_mock
+        assert gpu_ids == [0, 1, 2, 3]
+        assert len(gpu_serials) == 4
+        assert len(xid_groups) == 4
+        dcgm_group_mock.health.Set.assert_called_once()

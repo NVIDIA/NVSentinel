@@ -159,22 +159,41 @@ class DCGMWatcher:
 
         return gpu_serials
 
-    def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> dict[str, types.HealthDetails]:
-        with metrics.dcgm_api_latency.labels("health_check").time():
-            health_details = dcgm_group.health.Check()
-        log.debug(f"initial health status is {health_details}")
+    def _perform_health_check(self, dcgm_group: pydcgm.DcgmGroup) -> tuple[dict[str, types.HealthDetails], bool]:
+        """
+        Perform DCGM health check.
 
-        health_status = self._get_health_status_dict()
-        for i in range(health_details.incidentCount):
-            incident = health_details.incidents[i]
-            health_status[self._health_watches[incident.system]].status = types.HealthStatus(int(incident.health))
-            gpu_id = incident.entityInfo.entityId
-            health_status[self._health_watches[incident.system]].entity_failures[gpu_id] = types.ErrorDetails(
-                message=incident.error.msg, code=self._error_codes[incident.error.code]
-            )
-            log.debug(f"incident.error.code is {incident.error.code} and error msg is {incident.error.msg}")
-        log.debug(f"filled in health details is {health_status}")
-        return health_status
+        Returns:
+            A tuple of (health_status, connectivity_success)
+            - health_status: dict of health details for each watch
+            - connectivity_success: True if DCGM connection is successful, False otherwise
+        """
+        try:
+            with metrics.dcgm_api_latency.labels("health_check").time():
+                health_details = dcgm_group.health.Check()
+            log.debug(f"initial health status is {health_details}")
+
+            health_status = self._get_health_status_dict()
+            for i in range(health_details.incidentCount):
+                incident = health_details.incidents[i]
+                health_status[self._health_watches[incident.system]].status = types.HealthStatus(int(incident.health))
+                gpu_id = incident.entityInfo.entityId
+                health_status[self._health_watches[incident.system]].entity_failures[gpu_id] = types.ErrorDetails(
+                    message=incident.error.msg, code=self._error_codes[incident.error.code]
+                )
+                log.debug(f"incident.error.code is {incident.error.code} and error msg is {incident.error.msg}")
+            log.debug(f"filled in health details is {health_status}")
+            return health_status, True
+        except dcgm_structs.DCGMError_Timeout as e:
+            log.error(f"DCGM health check timed out: {e}. Indicating connectivity failure.")
+            metrics.dcgm_api_failures.labels("health_check_timeout").inc()
+            # Return empty health status with connectivity failure flag
+            return self._get_health_status_dict(), False
+        except Exception as e:
+            log.error(f"Unexpected error during DCGM health check: {e}. Indicating connectivity failure.")
+            metrics.dcgm_api_failures.labels("health_check_error").inc()
+            # Return empty health status with connectivity failure flag
+            return self._get_health_status_dict(), False
 
     def _xid_event_callback_func(self, gpu_id, data, serial_number):
         if os.getenv("PYTHONPATH") == DCGM_4_PYTHON_PATH:
@@ -237,7 +256,7 @@ class DCGMWatcher:
         # Since there is no python SDK API to clear a dcgmi policy, hence directly using the dcgmi policy command to do
         # that. In case Python SDK API is found, we can move the below command to DCGM Api
         if self._dcgm_k8s_service_enabled:
-            command = f"/bin/bash -c 'dcgmi policy --host {self._dcgm_k8s_service_url} --clear'"
+            command = f"/bin/bash -c 'dcgmi policy --host {self._addr} --clear'"
         else:
             command = "/bin/bash -c 'dcgmi policy --clear'"
         try:
@@ -248,23 +267,27 @@ class DCGMWatcher:
             log.info(f"Unregistering XID callback from {dcgm_group.GetId()}")
             dcgm_group.policy.Unregister(condition=dcgm_structs.DCGM_POLICY_COND_XID)
 
-    def start(self, fields_to_monitor: list[str], exit: Event) -> None:
-        dcgm_handle = None
-        delay = DELAY
-        while dcgm_handle is None:
-            try:
-                if self._dcgm_k8s_service_enabled:
-                    log.info(f"DCGM k8s service enabled. Using {self._addr}")
-                else:
-                    log.info(f"DCGM k8s service disabled. Using {self._addr}")
-                dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
-            except Exception as e:
-                log.error(f"Error creating DCGM handle: {e}")
-                metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
-                time.sleep(delay)
-                delay = min(delay * MULTIPLIER, MAX_DELAY)
-        dcgm_system = dcgm_handle.GetSystem()
+    def _get_dcgm_handle(self) -> pydcgm.DcgmHandle:
 
+        try:
+            if self._dcgm_k8s_service_enabled:
+                log.info(f"DCGM k8s service enabled. Using {self._addr}")
+            else:
+                log.info(f"DCGM k8s service disabled. Using {self._addr}")
+            dcgm_handle = pydcgm.DcgmHandle(ipAddress=self._addr, opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+            log.info("Successfully created DCGM handle")
+            return dcgm_handle
+        except Exception as e:
+            log.error(f"Error creating DCGM handle: {e}")
+            metrics.dcgm_api_failures.labels("ErrorInitDCGMHandle").inc()
+            return None
+
+    def _initialize_dcgm_monitoring(self, dcgm_handle: pydcgm.DcgmHandle) -> tuple:
+        """Initialize DCGM monitoring components.
+
+        Returns:
+            A tuple of (dcgm_group, gpu_ids, gpu_serials, dcgm_groups_with_xid_policy)
+        """
         dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
         with metrics.dcgm_api_latency.labels("group_health_set").time():
             dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
@@ -274,20 +297,73 @@ class DCGMWatcher:
         log.info(f"dcgm gpu_id are {gpu_ids}")
         dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
 
-        for callback in self._callbacks:
-            if hasattr(callback, "clear_all_xid_errors"):
-                callback.clear_all_xid_errors(gpu_ids, gpu_serials)
+        return dcgm_group, gpu_ids, gpu_serials, dcgm_groups_with_xid_policy
 
+    def _cleanup_dcgm_resources(
+        self,
+        dcgm_group: pydcgm.DcgmGroup,
+        dcgm_groups_with_xid_policy: list[pydcgm.DcgmGroup],
+        dcgm_handle: pydcgm.DcgmHandle,
+    ):
+        """Clean up DCGM resources safely."""
+        try:
+            if dcgm_groups_with_xid_policy:
+                self._unregister_xid_callbacks(dcgm_groups_with_xid_policy)
+        except Exception as e:
+            log.error(f"Error unregistering XID callbacks: {e}")
+
+        try:
+            if dcgm_group:
+                dcgm_group.Delete()
+                dcgm_group = None
+            if dcgm_handle:
+                # Clean up the handle
+                del dcgm_handle
+        except Exception as e:
+            log.error(f"Error cleaning up DCGM handle: {e}")
+
+    def start(self, fields_to_monitor: list[str], exit: Event) -> None:
+        dcgm_handle = None
+        dcgm_group = None
+        gpu_ids = []
+        gpu_serials = {}
+        dcgm_groups_with_xid_policy = []
+
+        # Initial DCGM handle and monitoring setup
         while not exit.is_set():
             with metrics.overall_reconcile_loop_time.time():
-                log.debug("Running health check")
-                health_status = self._perform_health_check(dcgm_group)
-                self._fire_callback_funcs(
-                    types.CallbackInterface.health_event_occurred.__name__, [health_status, gpu_ids, gpu_serials]
-                )
+                if dcgm_handle is None:
+                    try:
+                        dcgm_handle = self._get_dcgm_handle()
+                        dcgm_group, gpu_ids, gpu_serials, dcgm_groups_with_xid_policy = (
+                            self._initialize_dcgm_monitoring(dcgm_handle)
+                        )
+                    except Exception as e:
+                        log.error(f"Error getting DCGM handle: {e}")
+                        self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                        self._cleanup_dcgm_resources(dcgm_group, dcgm_groups_with_xid_policy, dcgm_handle)
+                else:
+                    log.debug("Running health check")
+                    health_status, connectivity_success = self._perform_health_check(dcgm_group)
+
+                    if not connectivity_success:
+                        log.warning("DCGM connectivity failure detected")
+                        dcgm_handle = None
+                        dcgm_group = None
+                        gpu_ids = []
+                        gpu_serials = {}
+                        dcgm_groups_with_xid_policy = []
+                    else:
+                        log.debug("Publish DCGM health checks")
+                        self._fire_callback_funcs(
+                            types.CallbackInterface.health_event_occurred.__name__,
+                            [health_status, gpu_ids, gpu_serials],
+                        )
 
             log.debug("Waiting till next cycle")
             exit.wait(self._poll_interval_seconds)
 
-        self._unregister_xid_callbacks(dcgm_groups_with_xid_policy)
+        # Cleanup on exit
+        self._cleanup_dcgm_resources(dcgm_group, dcgm_groups_with_xid_policy, dcgm_handle)
+
         self._callback_thread_pool.shutdown(cancel_futures=True)

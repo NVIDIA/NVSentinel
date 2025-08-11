@@ -25,7 +25,7 @@ from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, platformconnector_pb2_grpc
 from gpu_health_monitor.nvml_parser.nvml_xid_parser import DummyNvmlXidParser
-
+from google.protobuf.timestamp_pb2 import Timestamp
 
 socket_path = "/tmp/nvsentinel.sock"
 node_name = "node1"
@@ -256,11 +256,136 @@ class TestPlatformConnectors(unittest.TestCase):
         assert health_event.metadata["SerialNumber"] == "1650924060039"
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
-        platform_connector_test.clear_all_xid_errors([0], gpu_serials)
+        # Call clear_xid_errors directly since clear_all_xid_errors only works when boot ID changes
+        platform_connector_test.clear_xid_errors([0], gpu_serials)
         health_events = healthEventProcessor.health_events
         health_event = health_events[0]
         assert health_event.checkName == "GpuXidError"
         assert health_event.errorCode == []
         assert health_event.entitiesImpacted == [platformconnector_pb2.Entity(entityType="GPU", entityValue="0")]
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE
+        server.stop(0)
+
+    def test_dcgm_connectivity_failed(self):
+        """Test that GpuDcgmConnectivityFailure health event is sent when DCGM connectivity fails."""
+        import tempfile
+        import os
+
+        # Create a temporary state file with test boot ID
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+
+        try:
+            healthEventProcessor = PlatformConnectorServicer()
+            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+            platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+            server.add_insecure_port(f"unix://{socket_path}")
+            server.start()
+
+            exit = Event()
+
+            xid_errors_info_dict = {}
+            dcgm_errors_info_dict = {}
+            gpu_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+            dcgm_health_conditions_categorization_mapping_config = {
+                "DCGM_HEALTH_WATCH_PCIE": "Fatal",
+                "DCGM_HEALTH_WATCH_NVLINK": "Fatal",
+            }
+
+            nvml_xid_parser = DummyNvmlXidParser()
+            platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=socket_path,
+                node_name=node_name,
+                exit=exit,
+                xid_errors_info_dict=xid_errors_info_dict,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
+                xid_errors_batch_processing_interval=10,
+                xid_errors_batch_processing_enabled=False,
+                nvml_xid_parser=nvml_xid_parser,
+                state_file_path=state_file_path,
+                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+            )
+
+            # Trigger connectivity failure
+            platform_connector_processor.dcgm_connectivity_failed()
+            time.sleep(1)  # Allow time for event to be sent
+
+            # Verify the health events
+            health_events = healthEventProcessor.health_events
+            assert len(health_events) == 1
+
+            for i, event in enumerate(health_events):
+                assert event.checkName == "GpuDcgmConnectivityFailure"
+                assert event.isFatal == True
+                assert event.isHealthy == False
+                assert event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+                assert event.message == "Failed to connect to DCGM for health check"
+                assert event.recommendedAction == platformconnector_pb2.REPORT_ISSUE
+                assert event.nodeName == node_name
+                assert event.entitiesImpacted == []
+                assert event.metadata["SerialNumber"] == ""
+
+            server.stop(0)
+        finally:
+            # Clean up the temporary state file
+            if os.path.exists(state_file_path):
+                os.unlink(state_file_path)
+
+    def test_dcgm_connectivity_restored(self):
+        """Test that connectivity restored event is sent when DCGM connectivity is restored."""
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+        exit = Event()
+
+        xid_errors_info_dict = {}
+        dcgm_errors_info_dict = {}
+        gpu_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+        dcgm_health_conditions_categorization_mapping_config = {
+            "DCGM_HEALTH_WATCH_PCIE": "Fatal",
+        }
+
+        nvml_xid_parser = DummyNvmlXidParser()
+        platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+            socket_path=socket_path,
+            node_name=node_name,
+            exit=exit,
+            xid_errors_info_dict=xid_errors_info_dict,
+            dcgm_errors_info_dict=dcgm_errors_info_dict,
+            gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
+            xid_errors_batch_processing_interval=10,
+            xid_errors_batch_processing_enabled=False,
+            nvml_xid_parser=nvml_xid_parser,
+            state_file_path="statefile",
+            dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+        )
+
+        timestamp = Timestamp()
+        timestamp.GetCurrentTime()
+        platform_connector_processor.clear_dcgm_connectivity_failure(timestamp)
+        time.sleep(1)
+
+        # The events should include connectivity restored
+        health_events = healthEventProcessor.health_events
+
+        # Find the connectivity restored event
+        restored_event = None
+        for event in health_events:
+            if event.checkName == "GpuDcgmConnectivityFailure" and event.isHealthy == True:
+                restored_event = event
+                break
+
+        assert (
+            restored_event is not None
+        ), f"No restored event found. Events: {[f'{e.checkName}:{e.isHealthy}' for e in health_events]}"
+        assert restored_event.isFatal == False
+        assert restored_event.isHealthy == True
+        assert restored_event.errorCode == []
+        assert restored_event.message == "DCGM connectivity reported no errors"
+        assert restored_event.recommendedAction == platformconnector_pb2.NONE
+
         server.stop(0)

@@ -52,3 +52,8 @@ class CallbackInterface(abc.ABC):
     @abc.abstractmethod
     def clear_all_xid_errors(self, gpu_ids: list[int], gpu_serials: dict[int, str]):
         pass
+
+    @abc.abstractmethod
+    def dcgm_connectivity_failed(self):
+        """Called when DCGM connectivity fails during health check."""
+        pass
