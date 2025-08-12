@@ -93,17 +93,23 @@ def nvsentinel_autosync_disabled_enabled():
             switch_context(tenant_context, tenant_profile, cloud_provider)
             client = KubernetesClient()
 
-        client.rollout_daemonset(
-            "nvsentinel-gpu-health-monitor-dcgm-3.x", namespace=nvsentinel_namespace
-        )
-        client.rollout_daemonset(
-            "nvsentinel-gpu-health-monitor-dcgm-4.x", namespace=nvsentinel_namespace
-        )
-        client.rollout_daemonset("nvsentinel-nic-health-monitor", namespace=nvsentinel_namespace)
-        client.rollout_daemonset(
-            "nvsentinel-nvswitch-health-monitor", namespace=nvsentinel_namespace
-        )
-        client.rollout_daemonset("nvsentinel-platform-connector", namespace=nvsentinel_namespace)
+        # Rollout restart DaemonSets that exist
+        daemonsets_to_restart = [
+            "nvsentinel-gpu-health-monitor-dcgm-3.x",
+            "nvsentinel-gpu-health-monitor-dcgm-4.x",
+            "nvsentinel-nic-health-monitor",
+            "nvsentinel-nvswitch-health-monitor",
+            "nvsentinel-platform-connector"
+        ]
+        
+        for ds_name in daemonsets_to_restart:
+            try:
+                client.rollout_daemonset(ds_name, namespace=nvsentinel_namespace)
+            except Exception as e:
+                if "not found" in str(e).lower() or "404" in str(e):
+                    logger.warning(f"DaemonSet {ds_name} not found in namespace {nvsentinel_namespace}, skipping rollout")
+                else:
+                    logger.error(f"Failed to rollout DaemonSet {ds_name}: {e}")
 
 def switch_context(context_name, profile_name, cloud_provider):
     """Helper to switch both kubectl context and CSP profile"""

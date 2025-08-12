@@ -82,7 +82,7 @@ class TestKernelMessageFiltering(SyslogMockTestBase):
         """Write a kernel message using direct write to /dev/kmsg"""
         
         # Write kernel message directly to /dev/kmsg to create a real kernel message
-        cmd = ["/bin/sh", "-c", 'chroot /host sh -c \'echo "<6>Version mismatch" > /dev/kmsg\'']
+        cmd = ["/bin/sh", "-c", 'chroot /host sh -c \'echo "<6>Failed to initialize NVML: Driver/library version mismatch" > /dev/kmsg\'']
         output, err_msg = self.client.exec_command_in_pod(self.debug_pod, cmd, timeout=30)
         
         if err_msg:
