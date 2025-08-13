@@ -30,46 +30,67 @@ MAX_RETRIES = 5
 RETRY_DELAY = 1
 
 
+def get_dcgm_version_from_pod(pod):
+    """Extract DCGM version from pod's container image."""
+    dcgm_images = [x.image for x in pod.spec.containers if re.match(r".+?dcgm:.*", x.image)]
+    if dcgm_images:
+        if re.match(r".+?dcgm:4.*", dcgm_images[0]):
+            return "4.x"
+        elif re.match(r".+?dcgm:3.*", dcgm_images[0]):
+            return "3.x"
+        else:
+            logger.error(f"Unsupported DCGM version: {dcgm_images[0]}")
+            return None
+    return None
+
+
 def pod_event_callback(event):
     event_type = event["type"]
     pod = event["object"]
     pod_name = pod.metadata.name
-    logger.info(f"Event: {event_type} - Pod: {pod_name}")
+    logger.debug(f"Event: {event_type} - Pod: {pod_name}")
     node_name = pod.spec.node_name
 
-    if event_type == "ADDED":
-        time.sleep(30)  # wait for the pod to be ready
-        dcgm_version = [x.image for x in pod.spec.containers if re.match(r".+?dcgm:.*", x.image)]
-        if dcgm_version:
-            if re.match(r".+?dcgm:4.*", dcgm_version[0]):
-                label_value = "4.x"
-            elif re.match(r".+?dcgm:3.*", dcgm_version[0]):
-                label_value = "3.x"
-            else:
-                logger.error(f"Unsupported DCGM version: {dcgm_version[0]}")
-                return
+    if not node_name:
+        logger.debug(f"Pod {pod_name} has no node assigned yet")
+        return
 
-            if node_name not in node_pod_map or node_pod_map[node_name] != label_value:
+    if event_type == "ADDED" or event_type == "MODIFIED":
+        label_value = get_dcgm_version_from_pod(pod)
+        if label_value:
+            # Check if the label needs to be updated
+            current_label = node_pod_map.get(node_name)
+            if current_label != label_value:
+                logger.info(f"Updating node {node_name} from {current_label} to {label_value} (Event: {event_type})")
                 node_pod_map[node_name] = label_value
                 update_node_label(node_name, label_value)
             else:
-                logger.info(f"Node {node_name} already has the label {label_value}")
+                logger.debug(f"Node {node_name} already has the correct label {label_value}")
+
     elif event_type == "DELETED":
         if node_name in node_pod_map:
+            logger.info(f"DCGM pod deleted from node {node_name}, removing label")
             del node_pod_map[node_name]
+            # Only try to remove label if node still exists
             update_node_label(node_name, None)
-    else:
-        logger.debug(f"Event: {event_type} - Pod: {pod_name}")
 
 
 def update_node_label(node_name, label_value):
-    """Update the label of the node."""
+    """Update the label of the node. If label_value is None, remove the label."""
     inital_delay = RETRY_DELAY
     v1 = client.CoreV1Api()
     for _ in range(MAX_RETRIES):
         try:
-            v1.patch_node(name=node_name, body={"metadata": {"labels": {"dcgm.version": label_value}}})
-            logger.info(f"Node {node_name} has been updated to {label_value}")
+            if label_value is None:
+                # Remove the label using strategic merge patch
+                # Setting to None in strategic merge patch removes the label
+                body = {"metadata": {"labels": {"dcgm.version": None}}}
+                v1.patch_node(name=node_name, body=body)
+                logger.info(f"Removed dcgm.version label from node {node_name}")
+            else:
+                # Add or update the label
+                v1.patch_node(name=node_name, body={"metadata": {"labels": {"dcgm.version": label_value}}})
+                logger.info(f"Node {node_name} label updated to dcgm.version={label_value}")
             return
         except client.rest.ApiException as e:
             if e.status == 409:
@@ -77,14 +98,26 @@ def update_node_label(node_name, label_value):
                 time.sleep(inital_delay)
                 inital_delay *= 2
             elif e.status == 404:
-                logger.error(f"Node {node_name} not found")
+                # This is expected when a node is deleted - not an error
+                logger.info(f"Node {node_name} no longer exists (likely deleted)")
+                return
+            elif e.status == 422 and label_value is None:
+                # Label doesn't exist, can't remove it - this is fine
+                logger.info(f"Label dcgm.version doesn't exist on node {node_name}, nothing to remove")
                 return
             else:
-                raise e
+                logger.error(f"Failed to update node {node_name}: {e}")
+                sys.exit(1)
 
 
 def main():
-    config.load_incluster_config()
+    try:
+        config.load_incluster_config()
+        logger.info("Using in-cluster configuration")
+    except config.ConfigException:
+        logger.error("Failed to load in-cluster configuration")
+        sys.exit(1)
+
     v1 = client.CoreV1Api()
     w = watch.Watch()
 
@@ -96,6 +129,7 @@ def main():
                 label_selector="app=nvidia-dcgm",
             ):
                 pod_event_callback(event)
+
         except urllib3.exceptions.ProtocolError:
             logger.error("Protocol error")
             time.sleep(RETRY_DELAY)
