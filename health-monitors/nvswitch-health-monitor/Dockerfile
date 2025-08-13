@@ -14,6 +14,7 @@
 
 # syntax=docker/dockerfile:1.6
 
+ARG DCGM_VERSION="4.2.0-1-ubuntu22.04"
 FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ENV CGO_ENABLED=0
@@ -33,14 +34,10 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nvswitch-health-monitor cmd/nv
 RUN go build -o clear_fatal_errors clear-nvswitch-fatal-errors/clear_fatal_errors.go
 
 
-FROM debian:bullseye-slim
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
-RUN apt-get update && apt-get install -y pciutils curl
-
-RUN update-pciids
-
-RUN apt-get install -y --no-install-recommends \
-    e2fsprogs=1.46.2-2+deb11u1 && \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    e2fsprogs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

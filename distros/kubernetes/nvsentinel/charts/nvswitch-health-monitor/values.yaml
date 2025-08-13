@@ -23,9 +23,8 @@ podAnnotations: {}
 podSecurityContext: {}
 
 securityContext:
+  privileged: true
   runAsUser: 0
-  capabilities:
-    add: ["SYSLOG"]
 
 resources: 
   limits:

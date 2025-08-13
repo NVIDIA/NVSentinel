@@ -17,12 +17,12 @@ package main
 import (
 	"context"
 	"encoding/csv"
-	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,31 +160,101 @@ func (cm *connectionManager) close() {
 	}
 }
 
-func GetGPUID(nvswitch, nvlink int) (int, error) {
-	dgxType := lsnvlink.GetDGXType()
+func GetGPUID(pciAddress string, nvswitch, nvlink int) (int, error) {
+	provider := lsnvlink.GetTopologyProvider()
 
-	if dgxType == lsnvlink.DGX_TYPE_A100 {
-		return lsnvlink.DGX_A100{}.GetGpuFromNVSwitchNVLink(nvswitch, nvlink)
-	} else if dgxType == lsnvlink.DGX_TYPE_H100 {
-		return lsnvlink.DGX_H100{}.GetGpuFromNVSwitchNVLink(nvswitch, nvlink)
+	if !provider.HasNVSwitch() {
+		return -1, fmt.Errorf("no NVSwitches present in system")
 	}
 
-	return -1, errors.New("failed to get gpu id associated, dgx type is unknown")
+	// Try dynamic topology using PCI address
+	gpuID, err := provider.GetGPUFromPCINVLink(pciAddress, nvlink)
+	if err != nil {
+		klog.V(4).Infof("Dynamic topology lookup failed for PCI %s: %v", pciAddress, err)
+		return -1, err
+	}
+
+	return gpuID, nil
 }
 
-func GetEntityIDsForDGXType() (nvswitchIds, nvlinkIds, gpuIds []int, err error) {
-	dgxType := lsnvlink.GetDGXType()
-
-	if dgxType == lsnvlink.DGX_TYPE_A100 {
-		dgx := lsnvlink.DGX_A100{}
-		return dgx.GetAllNVSwitchIds(), dgx.GetAllNVLinkIds(), dgx.GetAllGPUIds(), nil
-	} else if dgxType == lsnvlink.DGX_TYPE_H100 {
-		dgx := lsnvlink.DGX_H100{}
-		return dgx.GetAllNVSwitchIds(), dgx.GetAllNVLinkIds(), dgx.GetAllGPUIds(), nil
+func buildUnhealthyEventEntities(sxidEvent *sxid.SXIDErrorEvent) []*pb.Entity {
+	entitiesImpacted := []*pb.Entity{
+		{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidEvent.NVSwitch)},
+		{EntityType: "PCI", EntityValue: sxidEvent.PCI},
+		{EntityType: "NVLINK", EntityValue: strconv.Itoa(sxidEvent.Link)},
 	}
 
-	return nil, nil, nil,
-		errors.New("failed to get entity ids associated, dgx type is unknown")
+	start := time.Now()
+	// Normalize PCI address to lowercase to match stored topology
+	gpuID, err := GetGPUID(strings.ToLower(sxidEvent.PCI), sxidEvent.NVSwitch, sxidEvent.Link)
+	duration := float64(time.Since(start).Milliseconds())
+
+	if err == nil {
+		gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
+		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
+			EntityType:  "GPU",
+			EntityValue: strconv.Itoa(gpuID),
+		})
+	} else {
+		klog.Errorf("Error computing GPU ID for NVSwitch %d and NVLINK %d: %v",
+			sxidEvent.NVSwitch, sxidEvent.Link, err)
+	}
+
+	return entitiesImpacted
+}
+
+func buildHealthyEventEntitiesFromTopology(provider *lsnvlink.DynamicTopologyProvider) []*pb.Entity {
+	entitiesImpacted := []*pb.Entity{}
+	pciAddresses := provider.GetNVSwitchPCIAddresses()
+
+	// Add NVSWITCH entities using integer IDs (0 to N-1)
+	for i := 0; i < len(pciAddresses); i++ {
+		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
+			EntityType:  "NVSWITCH",
+			EntityValue: strconv.Itoa(i),
+		})
+	}
+
+	// Extract GPU IDs and unique NVLink ports from topology
+	gpuSet := make(map[int]bool)
+	nvlinkSet := make(map[int]bool)
+
+	if topology := provider.GetTopology(); topology != nil {
+		for gpuIDStr, gpuTopo := range topology.Topology {
+			if gpuID, err := strconv.Atoi(gpuIDStr); err == nil {
+				gpuSet[gpuID] = true
+			}
+			for _, link := range gpuTopo.Links {
+				nvlinkSet[link.RemoteLink] = true
+			}
+		}
+	}
+
+	// Add NVLink entities
+	for nvlink := range nvlinkSet {
+		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
+			EntityType:  "NVLINK",
+			EntityValue: strconv.Itoa(nvlink),
+		})
+	}
+
+	// Add GPU entities
+	for gpu := range gpuSet {
+		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
+			EntityType:  "GPU",
+			EntityValue: strconv.Itoa(gpu),
+		})
+	}
+
+	// Add PCI entities
+	for _, pciAddress := range pciAddresses {
+		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
+			EntityType:  "PCI",
+			EntityValue: pciAddress,
+		})
+	}
+
+	return entitiesImpacted
 }
 
 func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string,
@@ -205,71 +275,24 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string,
 	}
 
 	if !sxidEvent.IsHealthy {
-		entitiesImpacted := []*pb.Entity{
-			{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidEvent.NVSwitch)},
-			{EntityType: "PCI", EntityValue: sxidEvent.PCI},
-			{EntityType: "NVLINK", EntityValue: strconv.Itoa(sxidEvent.Link)},
-		}
-		start := time.Now()
-
-		gpuID, err := GetGPUID(sxidEvent.NVSwitch, sxidEvent.Link)
-
-		duration := float64(time.Since(start).Milliseconds())
-
-		if err == nil {
-			gpuIdCalculationDuration.With(prometheus.Labels{"gpu_id": fmt.Sprint(gpuID)}).Observe(duration)
-			entitiesImpacted = append(entitiesImpacted, &pb.Entity{EntityType: "GPU", EntityValue: strconv.Itoa(gpuID)})
-		} else {
-			klog.Errorf("Error occurred while computing GPU ID for NVSwitch ID %d and NVLINK ID %d: %v",
-				sxidEvent.NVSwitch, sxidEvent.Link, err)
-		}
-
-		event.EntitiesImpacted = entitiesImpacted
-
+		event.EntitiesImpacted = buildUnhealthyEventEntities(sxidEvent)
 		event.ErrorCode = []string{fmt.Sprint(sxidEvent.ErrorNum)}
 	} else {
-		// if this is a healthy event then the node has rebooted, so all
-		// entities need to be broadcasted as being healthy initially
-		nvswitchIds, nvlinkIds, gpuIds, err := GetEntityIDsForDGXType()
-		if err != nil {
-			klog.Fatalf("Error occurred while getting entity IDs for DGX type: %v", err)
+		// Healthy event - broadcast all entities as healthy
+		provider := lsnvlink.GetTopologyProvider()
+
+		if !provider.HasNVSwitch() {
+			// No NVSwitches present - don't generate any entities
+			klog.Infof("No NVSwitches present, skipping entity generation")
+			event.EntitiesImpacted = []*pb.Entity{}
+		} else {
+			// NVSwitches are present - use topology entities
+			klog.V(2).Infof("Using dynamic topology for healthy event entities")
+			event.EntitiesImpacted = buildHealthyEventEntitiesFromTopology(provider)
 		}
-
-		entitiesImpacted := []*pb.Entity{}
-
-		for _, id := range nvswitchIds {
-			entitiesImpacted = append(
-				entitiesImpacted,
-				&pb.Entity{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(id)},
-			)
-		}
-
-		for _, id := range nvlinkIds {
-			entitiesImpacted = append(
-				entitiesImpacted,
-				&pb.Entity{EntityType: "NVLINK", EntityValue: strconv.Itoa(id)},
-			)
-		}
-
-		for _, id := range gpuIds {
-			entitiesImpacted = append(
-				entitiesImpacted,
-				&pb.Entity{EntityType: "GPU", EntityValue: strconv.Itoa(id)},
-			)
-		}
-
-		for _, pciAddress := range lsnvlink.GetNVSwitchPCIAddresses() {
-			entitiesImpacted = append(
-				entitiesImpacted,
-				&pb.Entity{EntityType: "PCI", EntityValue: pciAddress},
-			)
-		}
-
-		event.EntitiesImpacted = entitiesImpacted
 	}
 
 	healthEvents.Events = append(healthEvents.Events, &event)
-
 	return &healthEvents
 }
 
@@ -354,9 +377,10 @@ func main() {
 		panic(err)
 	}
 
-	klog.Infof("NVSwitch Monitor will poll every %d milliseconds\n", nvswitchConfig.PollingIntervalInMilliseconds)
+	klog.Infof("NVSwitch Monitor will poll every %d milliseconds\n",
+		nvswitchConfig.SxidEventMonitorConfig.PollingIntervalInMilliseconds)
 
-	nvswitchConfig.StateFilePath = defaultStateFilePath
+	nvswitchConfig.SxidEventMonitorConfig.StateFilePath = defaultStateFilePath
 
 	cm := newConnectionManager(*socket)
 	defer cm.close()
@@ -367,6 +391,9 @@ func main() {
 	if err != nil {
 		klog.Fatalf("failed to get xid error mapping: %v", err)
 	}
+
+	provider := lsnvlink.GetTopologyProvider()
+	klog.Infof("Topology provider initialized: HasNVSwitch=%v", provider.HasNVSwitch())
 
 	sxidErrorMonitor, err := sxid.NewSxidEventMonitor(nvswitchConfig.SxidEventMonitorConfig)
 	if err != nil {
