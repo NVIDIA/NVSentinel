@@ -60,8 +60,8 @@ mongodb:
 
   initContainers:
     - name: create-mongodb-credentials
-      image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
-      imagePullPolicy: IfNotPresent
+      image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+      imagePullPolicy: "{{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}"
       command:
         - sh
         - -c
@@ -99,8 +99,8 @@ mongodb:
           echo "=============================="
     
     - name: create-certmanager-resources
-      image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
-      imagePullPolicy: IfNotPresent
+      image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+      imagePullPolicy: "{{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}"
       command:
         - sh
         - -c

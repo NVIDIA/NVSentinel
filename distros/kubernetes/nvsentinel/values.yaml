@@ -112,6 +112,10 @@ global:
 
   mongodbStore:
     images:
+      kubectl:
+        repository: nvcr.io/nv-ngc-devops/bitnami-kubectl
+        tag: "1.30.6"
+        pullPolicy: IfNotPresent
       mongosh:
         repository: nvcr.io/nv-ngc-devops/rtsp-mongosh
         tag: "2.5.2"

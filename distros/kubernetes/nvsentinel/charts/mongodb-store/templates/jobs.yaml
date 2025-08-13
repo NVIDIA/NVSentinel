@@ -60,8 +60,8 @@ spec:
       {{- end }}
       initContainers:
       - name: wait-for-mongodb-secret
-        image: nvcr.io/nv-ngc-devops/bitnami-kubectl:1.30.6
-        imagePullPolicy: IfNotPresent
+        image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+        imagePullPolicy: {{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}
         command:
         - sh
         - -c
