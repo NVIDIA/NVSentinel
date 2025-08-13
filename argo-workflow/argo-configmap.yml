@@ -62,7 +62,6 @@ data:
               [[userNamespaces]]
                 name = "runai*"
                 mode = "AllowCompletion"
-
       - name: "aws-non-prod"
         include: "(t3141592-dgxc-k8s-runai-aws-use1-dev0)$"
         exclude: ""
@@ -109,8 +108,771 @@ data:
               [[userNamespaces]]
                 name = "runai*"
                 mode = "AllowCompletion"
+      - name: "gcp-prod-b3202842"
+        include: "(b3202842-dgxc-runai-gcp-cmh-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "gcp-prod-b7587830"
+        include: "(b7587830-dgxc-runai-gcp-cmh-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "gcp-prod-b8721236"
+        include: "(b8721236-dgxc-runai-gcp-dsm-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "gcp-prod-c14351744"
+        include: "(c14351744-dgxc-runai-gcp-grq-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "gcp-prod-t3839459"
+        include: "(t3839459-dgxc-runai-gcp-dsm-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "gcp-prod-t8392104"
+        include: "(t8392104-dgxc-runai-gcp-cmh-prd0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+      - name: "aws-prod-t2686563"
+        include: "(t2686563-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
               
-      
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t38198176"
+        include: "(t38198176-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t3896839"
+        include: "(t3896839-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t55550000"
+        include: "(t55550000-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t6259784"
+        include: "(t6259784-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t8014311"
+        include: "(t8014311-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-t9921533"
+        include: "(t9921533-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-ta107395"
+        include: "(ta107395-dgxc-k8s-runai-aws-us-east-1-prod)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-ta121237"
+        include: "(ta121237-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-ta151862"
+        include: "(ta151862-dgxc-k8s-runai-aws-us-east-1-prod)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+      - name: "aws-prod-ta235757"
+        include: "(ta235757-dgxc-k8s-runai-aws-use1-prod0)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"  
+  
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -152,3 +152,28 @@ config: |
 
     [rule-sets.cordon]
       shouldCordon = true
+
+  [[rule-sets]]
+    version = "1"
+    name = "Syslog fatal error ruleset"
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent"
+      expression = "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU'"
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent"
+      expression = "event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
+    [[rule-sets.match.all]]
+      kind = "MaxPercentageOfNodesToCordon"
+      expression = "maxPercentageOfNodesToCordon <= 100.0"
+
+    [rule-sets.cordon]
+      shouldCordon = true
