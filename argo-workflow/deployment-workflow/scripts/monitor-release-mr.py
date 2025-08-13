@@ -129,8 +129,9 @@ def main():
                     monitoring_result['message'] = f"MR is {state}"
                     monitoring_result['mr_state'] = state
                     monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
-                    manage_tag(project, version, ref=branch_name)
-                    print(f"[monitor-mr] Tag {version} created")
+                    tag_ref = 'main' if state == 'merged' else branch_name
+                    manage_tag(project, version, ref=tag_ref)
+                    print(f"[monitor-mr] Tag {version} created from {tag_ref}")
                     break
 
                 print(f"[monitor-mr] Still {state}; waiting 60s …")

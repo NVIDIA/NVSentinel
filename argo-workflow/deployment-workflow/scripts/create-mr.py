@@ -161,6 +161,10 @@ def main():
 
             # Update spec sections
             spec_section = doc.setdefault('spec', {})
+            
+            if pattern_spec:
+                _merge(spec_section, pattern_spec)
+
             templates_section = spec_section.setdefault('templates', {})
             include_list = templates_section.setdefault('include', [])
 
@@ -172,9 +176,6 @@ def main():
             include_list[:] = [item for item in include_list 
                                 if not (isinstance(item, dict) and item.get('release') == 'nvsentinel')]
             include_list.append(nvsentinel_entry)
-
-            if pattern_spec:
-                _merge(spec_section, pattern_spec)
             
             print(f"[create-mr] Saving changes to {file_path}")
             with open(file_path, 'w') as f:
@@ -200,7 +201,7 @@ def main():
             description_lines.extend([
                 "",
                 "Feature Flags Configuration:",
-                "The following flags will be set/updated as per pattern configuration:"
+                "The following configurations will be set/updated as per pattern configuration:"
             ])
             for flag_name, flag_value in pattern_feature_flags.items():
                 description_lines.append(f"- {flag_name}: {flag_value}")
@@ -208,6 +209,11 @@ def main():
                 "",
                 "Note: Existing feature flags not listed above will be preserved."
             ])
+
+        description_lines.extend([
+            "",
+            "JIRA: NO-REF"
+        ])
 
         mr_data = {
             'source_branch': branch_name,

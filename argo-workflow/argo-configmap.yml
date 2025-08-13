@@ -19,56 +19,98 @@ metadata:
 data:
   clusters.yaml: |
     patterns:
-      - name: "non-prod"
-        include: "(tg220000-dgxc-runai-gcp-cmh-dev0|tagb200qs2-dgxc-k8s-aws-usw2-dev0)$"
+      - name: "gcp-non-prod"
+        include: "(tg220000-dgxc-runai-gcp-cmh-dev0)$"
         exclude: ""
         spec:
+          templates:
+            include:
+              - release: gcp-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+
           featureFlags:
-            dgxcJanitorEnabled: true
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
             enableSysLogHealthMonitor: true
-            enableCSPHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              cloud.google.com/gke-nodepool: system
+            tolerations:
+              - key: "components.gke.io/gke-managed-components"
+                operator: "Equal"
+                value: "true"
+                effect: "NoExecute"
+
           nvsentinel:
-            faultQuarantineConfig: |
-              label-prefix = "k8saas.nvidia.com/"
-      
-              [[rule-sets]]
-                version = "1"
-                name = "NIC fatal error ruleset"                  # an admin friendly name for the rule set, used only for logging
-
-                [[rule-sets.match.all]]
-                  kind = "HealthEvent"                   # the kind of rule (the evaluator to use)
-                  expression = "event.agent == 'nic-health-monitor' && event.componentClass == 'NIC'"
-
-                [[rule-sets.match.all]]
-                  kind = "HealthEvent" 
-                  expression = "event.isFatal == true"
-
-                [[rule-sets.match.all]]
-                  kind = "Node"
-                  expression = '''
-                      !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
-                  '''
-                [[rule-sets.match.all]]
-                  kind = "MaxPercentageOfNodesToCordon"
-                  expression = "maxPercentageOfNodesToCordon <= 100.0"
-              
-                [rule-sets.cordon]
-                  shouldCordon = true
+            faultHandlingDryRun: true
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
-                name = "runai-non-prod"
+                name = "runai*"
                 mode = "AllowCompletion"
 
-
-      - name: "GCP-QA"
-        include: "(tg440000-dgxc-runai-gcp-cmh-qa1)$"
+      - name: "aws-non-prod"
+        include: "(t3141592-dgxc-k8s-runai-aws-use1-dev0)$"
         exclude: ""
         spec:
+          templates:
+            include:
+              - release: aws-runai
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
           featureFlags:
-            dgxcJanitorEnabled: true
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
             enableSysLogHealthMonitor: true
-            enableCSPHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: false
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            tolerations:
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoSchedule"
+
+              - key: "dedicated"
+                operator: "Equal"
+                value: "system-workload"
+                effect: "NoExecute"
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "runai*"
+                mode = "AllowCompletion"
+              
+      
 ---
 apiVersion: v1
 kind: ConfigMap
