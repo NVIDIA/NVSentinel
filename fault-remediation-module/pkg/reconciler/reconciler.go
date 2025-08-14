@@ -52,11 +52,24 @@ func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
 }
 
 func (r *Reconciler) shouldSkipEvent(healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
-	if healthEventWithStatus.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE {
-		klog.Infof("Skipping event for node: %s, recommended action is NONE", healthEventWithStatus.HealthEvent.NodeName)
+	action := healthEventWithStatus.HealthEvent.RecommendedAction
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+
+	switch action {
+	case platformconnector.RecommenedAction_NONE:
+		// NONE means no remediation needed
+		klog.Infof("Skipping event for node: %s, recommended action is NONE (no remediation needed)", nodeName)
+		return true
+	case platformconnector.RecommenedAction_NODE_REBOOT:
+		// NODE_REBOOT is supported - process this event
+		return false
+	default:
+		// All other actions are currently unsupported
+		klog.Infof("Unsupported recommended action %s for node %s. Only NODE_REBOOT is currently supported",
+			action.String(), nodeName)
+		totalUnsupportedRemediationActions.WithLabelValues(action.String(), nodeName).Inc()
 		return true
 	}
-	return false
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -102,14 +115,16 @@ func (r *Reconciler) Start(ctx context.Context) {
 		}
 
 		nodeRemediatedStatus := false
+
 		for i := 1; i <= maxRetries; i++ {
 			klog.Infof("Attempt %d, handle event for node: %s", i, healthEventWithStatus.HealthEvent.NodeName)
 			if r.handleEvent(ctx, healthEventWithStatus.HealthEvent) {
 				nodeRemediatedStatus = true
 				break
 			}
-
-			time.Sleep(retryDelay)
+			if i < maxRetries {
+				time.Sleep(retryDelay)
+			}
 		}
 
 		if err := r.updateNodeRemediatedStatus(ctx, collection, event, nodeRemediatedStatus); err != nil {
@@ -122,6 +137,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 }
 
 func (r *Reconciler) handleEvent(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+	// This method is only called for supported actions (currently only NODE_REBOOT)
+	klog.Infof("Processing %s action for node %s", healthEvent.RecommendedAction.String(), healthEvent.NodeName)
 	return r.Config.K8sClient.CreateMaintenanceResource(ctx, healthEvent)
 }
 

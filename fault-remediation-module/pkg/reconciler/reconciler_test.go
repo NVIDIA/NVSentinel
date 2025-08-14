@@ -92,22 +92,22 @@ func TestHandleEvent(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name          string
-		nodeName      string
-		shouldSucceed bool
-		expectedError bool
+		name              string
+		nodeName          string
+		recommendedAction platformconnector.RecommenedAction
+		shouldSucceed     bool
 	}{
 		{
-			name:          "Successful maintenance creation",
-			nodeName:      "node1",
-			shouldSucceed: true,
-			expectedError: false,
+			name:              "Successful NODE_REBOOT action",
+			nodeName:          "node1",
+			recommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			shouldSucceed:     true,
 		},
 		{
-			name:          "Failed maintenance creation",
-			nodeName:      "node2",
-			shouldSucceed: false,
-			expectedError: true,
+			name:              "Failed NODE_REBOOT action",
+			nodeName:          "node2",
+			recommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			shouldSucceed:     false,
 		},
 	}
 
@@ -116,6 +116,7 @@ func TestHandleEvent(t *testing.T) {
 			k8sClient := &MockK8sClient{
 				createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
 					assert.Equal(t, tt.nodeName, healthEvent.NodeName)
+					assert.Equal(t, tt.recommendedAction, healthEvent.RecommendedAction)
 					return tt.shouldSucceed
 				},
 			}
@@ -126,37 +127,70 @@ func TestHandleEvent(t *testing.T) {
 
 			r := NewReconciler(cfg, false)
 			healthEvent := &platformconnector.HealthEvent{
-				NodeName: tt.nodeName,
+				NodeName:          tt.nodeName,
+				RecommendedAction: tt.recommendedAction,
 			}
+			// handleEvent is now only called for supported actions
 			result := r.handleEvent(ctx, healthEvent)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
 }
 
-func TestSkipEventWithNoneRecommendedAction(t *testing.T) {
-	// Create a health event with NONE recommended action
-	healthEvent := &platformconnector.HealthEvent{
-		NodeName:          "test-node",
-		RecommendedAction: platformconnector.RecommenedAction_NONE,
-	}
-
-	// Create a health event with status
-	healthEventWithStatus := storeconnector.HealthEventWithStatus{
-		HealthEvent: healthEvent,
-	}
-
-	// Create a reconciler
+func TestShouldSkipEvent(t *testing.T) {
 	r := NewReconciler(ReconcilerConfig{}, false)
 
-	t.Logf("Testing event with NONE recommended action")
-	// Test that the event should be skipped
-	assert.True(t, r.shouldSkipEvent(healthEventWithStatus), "Event with NONE recommended action should be skipped")
+	tests := []struct {
+		name              string
+		nodeName          string
+		recommendedAction platformconnector.RecommenedAction
+		shouldSkip        bool
+		description       string
+	}{
+		{
+			name:              "Skip NONE action",
+			nodeName:          "test-node-1",
+			recommendedAction: platformconnector.RecommenedAction_NONE,
+			shouldSkip:        true,
+			description:       "NONE actions should be skipped",
+		},
+		{
+			name:              "Process NODE_REBOOT action",
+			nodeName:          "test-node-2",
+			recommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			shouldSkip:        false,
+			description:       "NODE_REBOOT actions should not be skipped",
+		},
+		{
+			name:              "Skip REPORT_ISSUE action",
+			nodeName:          "test-node-3",
+			recommendedAction: platformconnector.RecommenedAction_REPORT_ISSUE,
+			shouldSkip:        true,
+			description:       "Unsupported REPORT_ISSUE action should be skipped",
+		},
+		{
+			name:              "Skip unknown action",
+			nodeName:          "test-node-4",
+			recommendedAction: platformconnector.RecommenedAction(999),
+			shouldSkip:        true,
+			description:       "Unknown actions should be skipped",
+		},
+	}
 
-	t.Logf("Testing event with NODE_REBOOT recommended action")
-	// Test with a non-NONE recommended action
-	healthEvent.RecommendedAction = platformconnector.RecommenedAction_NODE_REBOOT
-	assert.False(t, r.shouldSkipEvent(healthEventWithStatus), "Event with non-NONE recommended action should not be skipped")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			healthEvent := &platformconnector.HealthEvent{
+				NodeName:          tt.nodeName,
+				RecommendedAction: tt.recommendedAction,
+			}
+			healthEventWithStatus := storeconnector.HealthEventWithStatus{
+				HealthEvent: healthEvent,
+			}
+
+			result := r.shouldSkipEvent(healthEventWithStatus)
+			assert.Equal(t, tt.shouldSkip, result, tt.description)
+		})
+	}
 }
 
 func TestUpdateNodeRemediatedStatus(t *testing.T) {

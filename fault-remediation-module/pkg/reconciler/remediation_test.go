@@ -240,28 +240,31 @@ func TestNewK8sClient(t *testing.T) {
 
 func TestCreateRebootNodeResource(t *testing.T) {
 	tests := []struct {
-		name          string
-		nodeName      string
-		dryRun        bool
-		shouldSucceed bool
-		expectedError bool
-		shouldCreate  bool
+		name              string
+		nodeName          string
+		dryRun            bool
+		recommendedAction platformconnector.RecommenedAction
+		shouldSucceed     bool
+		expectedError     bool
+		shouldCreate      bool
 	}{
 		{
-			name:          "Successful rebootnode creation",
-			nodeName:      "test-node-1",
-			dryRun:        false,
-			shouldSucceed: true,
-			expectedError: false,
-			shouldCreate:  true,
+			name:              "Successful rebootnode creation",
+			nodeName:          "test-node-1",
+			dryRun:            false,
+			recommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			shouldSucceed:     true,
+			expectedError:     false,
+			shouldCreate:      true,
 		},
 		{
-			name:          "Skip rebootnode creation with dry run",
-			nodeName:      "test-node-2",
-			dryRun:        true,
-			shouldSucceed: true,
-			expectedError: false,
-			shouldCreate:  false,
+			name:              "Skip rebootnode creation with dry run",
+			nodeName:          "test-node-2",
+			dryRun:            true,
+			recommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			shouldSucceed:     true,
+			expectedError:     false,
+			shouldCreate:      false,
 		},
 	}
 
@@ -317,13 +320,14 @@ spec:
 
 			// Create a HealthEvent object
 			healthEvent := &platformconnector.HealthEvent{
-				NodeName: tt.nodeName,
+				NodeName:          tt.nodeName,
+				RecommendedAction: tt.recommendedAction,
 			}
 
 			// Test CreateMaintenanceResource
 			result := client.CreateMaintenanceResource(context.Background(), healthEvent)
 			assert.Equal(t, tt.shouldSucceed, result)
-			assert.Equal(t, tt.shouldCreate, createCalled, "Create function should only be called when not in dry-run mode")
+			assert.Equal(t, tt.shouldCreate, createCalled, "Create function call expectation mismatch")
 		})
 	}
 }

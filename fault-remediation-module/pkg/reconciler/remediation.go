@@ -126,7 +126,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return true
 	}
 
-	log.Printf("Creating CR for node: %s", healthEvent.NodeName)
+	log.Printf("Creating RebootNode CR for node: %s", healthEvent.NodeName)
 	c.templateData.NodeName = healthEvent.NodeName
 	c.templateData.RecommendedAction = healthEvent.RecommendedAction
 

@@ -40,4 +40,11 @@ var (
 		},
 		[]string{"error_type", "node_name"},
 	)
+	totalUnsupportedRemediationActions = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_remediation_unsupported_actions_total",
+			Help: "Total number of health events with currently unsupported remediation actions.",
+		},
+		[]string{"action", "node_name"},
+	)
 )
