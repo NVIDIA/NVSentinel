@@ -56,6 +56,9 @@ spec:
           args:
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--dry-run={{ .Values.global.dryRun }}"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
           volumeMounts:
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
