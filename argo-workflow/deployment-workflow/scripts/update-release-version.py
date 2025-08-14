@@ -17,6 +17,15 @@ from datetime import datetime, timezone
 import sys
 import base64
 import gitlab
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('update-release-version')
 
 def save_result(result):
     """Save result to the output file"""
@@ -59,10 +68,10 @@ def main():
 
         try:
             project.branches.get(branch_name)
-            print(f"[update-release-version] Branch {branch_name} already exists")
+            logger.info(f"Branch {branch_name} already exists")
         except gitlab.exceptions.GitlabGetError:
             project.branches.create({'branch': branch_name, 'ref': 'main'})
-            print(f"[update-release-version] Created branch {branch_name} from main")
+            logger.info(f"Created branch {branch_name} from main")
 
         # Build release file content
         release_content = get_release_file(version)
@@ -76,7 +85,7 @@ def main():
             existing_content = base64.b64decode(f.content).decode()
             if existing_content.strip() == release_content.strip():
                 needs_commit = False
-                print("[update-release-version] No changes detected in release file")
+                logger.info("No changes detected in release file")
         except gitlab.exceptions.GitlabGetError:
             pass
 
@@ -92,7 +101,7 @@ def main():
                 f.save(branch=branch_name, commit_message=commit_message)
             else:
                 project.files.create(file_data)
-            print("[update-release-version] Release file committed")
+            logger.info("Release file committed")
 
 
         # Create or retrieve merge request
@@ -122,12 +131,12 @@ def main():
             'created_at': datetime.now(timezone.utc).isoformat() + 'Z'
         }
         save_result(result)
-        print(f"[update-release-version] Result saved: {status}")
+        logger.info(f"Result saved: {status}")
         if status == 'failed':
             sys.exit(1)
 
     except Exception as e:
-        print(f"[update-release-version] Exception encountered: {e}")
+        logger.error(f"Exception encountered: {e}")
         error_result = {
             'status': 'failed',
             'message': str(e),
@@ -136,7 +145,7 @@ def main():
         }
         save_result(error_result)
         sys.exit(1)
-    print(f"[update-release-version] Finished with output: {result}")
+    logger.info(f"Finished with output: {result}")
 
 
 if __name__ == '__main__':

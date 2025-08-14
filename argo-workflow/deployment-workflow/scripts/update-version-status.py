@@ -17,11 +17,20 @@ import subprocess
 from datetime import datetime, timezone
 import shutil
 import sys
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from typing import List
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('update-version-status')
 
 class MRStatus(Enum):
     CLOSED = 'closed'
@@ -58,8 +67,8 @@ def run_command(cmd: List[str], check: bool = True) -> str:
         )
         return process.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {' '.join(cmd)}")
-        print(f"Error output: {e.stderr}")
+        logger.error(f"Error running command: {' '.join(cmd)}")
+        logger.error(f"Error output: {e.stderr}")
         if check:
             raise
         return ""
@@ -72,10 +81,10 @@ def ensure_kubectl() -> bool:
     """Install kubectl if it's not already available in the container.
     Uses Python's urllib so we don't rely on curl/wget binaries."""
     if shutil.which('kubectl'):
-        print("kubectl already present – skipping installation")
+        logger.info("kubectl already present – skipping installation")
         return True
 
-    print("kubectl not found – downloading stable release …")
+    logger.info("kubectl not found – downloading stable release …")
     import urllib.request, os, stat
 
     # Determine version (fallback to hard-coded stable if network to txt fails)
@@ -83,7 +92,7 @@ def ensure_kubectl() -> bool:
         with urllib.request.urlopen('https://dl.k8s.io/release/stable.txt', timeout=10) as r:
             version = r.read().decode().strip()
     except Exception as e:
-        print(f"Warning: could not fetch stable.txt: {e}; using v1.29.0")
+        logger.warning(f"Could not fetch stable.txt: {e}; using v1.29.0")
         version = 'v1.29.0'
 
     url = f"https://dl.k8s.io/release/{version}/bin/linux/amd64/kubectl"
@@ -91,7 +100,7 @@ def ensure_kubectl() -> bool:
     tmp_path = '/tmp/kubectl'
 
     try:
-        print(f"Downloading {url} …")
+        logger.info(f"Downloading {url} …")
         with urllib.request.urlopen(url, timeout=30) as resp, open(tmp_path, 'wb') as out:
             shutil.copyfileobj(resp, out)
 
@@ -100,10 +109,10 @@ def ensure_kubectl() -> bool:
                             stat.S_IRGRP | stat.S_IXGRP |
                             stat.S_IROTH | stat.S_IXOTH)
         shutil.move(tmp_path, dest)
-        print(f"kubectl {version} installed at {dest}")
+        logger.info(f"kubectl {version} installed at {dest}")
         return True
     except Exception as e:
-        print(f"Failed to install kubectl: {e}")
+        logger.error(f"Failed to install kubectl: {e}")
         return False
 
 def load_k8s_config() -> None:
@@ -120,7 +129,7 @@ def summarize_mr_results(mr_results_json: str) -> StatusSummary:
     try:
         results = json.loads(mr_results_json)
         if not isinstance(results, list):
-            print("Warning: MR results is not a list")
+            logger.warning("MR results is not a list")
             return summary
 
         summary.total = len(results)
@@ -136,9 +145,9 @@ def summarize_mr_results(mr_results_json: str) -> StatusSummary:
                 summary.timeout += 1
 
     except json.JSONDecodeError as e:
-        print(f"Error parsing MR results JSON: {e}")
+        logger.error(f"Error parsing MR results JSON: {e}")
     except Exception as e:
-        print(f"Error processing MR results: {e}")
+        logger.error(f"Error processing MR results: {e}")
 
     return summary
 
@@ -167,10 +176,10 @@ def update_processed_tags(version: str, timestamp: str) -> bool:
         )
         return True
     except ApiException as e:
-        print(f"Failed to update processed tags ConfigMap: {e}")
+        logger.error(f"Failed to update processed tags ConfigMap: {e}")
         return False
     except Exception as e:
-        print(f"Unexpected error updating ConfigMap: {e}")
+        logger.error(f"Unexpected error updating ConfigMap: {e}")
         return False
 
 def label_workflow(workflow_name: str, version: str, timestamp: str) -> bool:
@@ -195,10 +204,10 @@ def label_workflow(workflow_name: str, version: str, timestamp: str) -> bool:
         )
         return True
     except ApiException as e:
-        print(f"Failed to label workflow: {e}")
+        logger.error(f"Failed to label workflow: {e}")
         return False
     except Exception as e:
-        print(f"Unexpected error labeling workflow: {e}")
+        logger.error(f"Unexpected error labeling workflow: {e}")
         return False
 
 def main():
@@ -206,7 +215,7 @@ def main():
     try:
         load_k8s_config()
     except Exception as e:
-        print(f"Failed to load Kubernetes configuration: {e}")
+        logger.error(f"Failed to load Kubernetes configuration: {e}")
         sys.exit(1)
 
     # Get environment variables
@@ -215,26 +224,26 @@ def main():
     workflow_name = os.environ.get('WORKFLOW_NAME')
 
     if not all([version, mr_results, workflow_name]):
-        print("Missing required environment variables")
+        logger.error("Missing required environment variables")
         sys.exit(1)
 
     # Process MR results
     summary = summarize_mr_results(mr_results)
-    print(summary)
+    logger.info(summary)
 
     # Get current timestamp
     timestamp = get_current_timestamp()
 
     # Update processed tags
     if not update_processed_tags(version, timestamp):
-        print("Warning: Failed to update processed tags")
+        logger.warning("Failed to update processed tags")
 
     # Label workflow
     if not label_workflow(workflow_name, version, timestamp):
-        print("Warning: Failed to label workflow")
+        logger.warning("Failed to label workflow")
 
-    print(f"Version {version} marked as completed")
-    print("All MRs have been processed successfully!")
+    logger.info(f"Version {version} marked as completed")
+    logger.info("All MRs have been processed successfully!")
 
 if __name__ == '__main__':
     main()

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import os
 import subprocess
 import sys
@@ -21,6 +22,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import yaml
 import re
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('find-clusters')
 
 def run_command(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -> str:
     """Run a command and return its output"""
@@ -34,8 +43,8 @@ def run_command(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -
         )
         return process.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {' '.join(cmd)}")
-        print(f"Error output: {e.stderr}")
+        logger.error(f"Error running command: {' '.join(cmd)}")
+        logger.error(f"Error output: {e.stderr}")
         if check:
             raise
         return ""
@@ -47,10 +56,10 @@ def main():
     gitlab_url = os.environ.get('GITLAB_URL')
 
     if not all([version, gitlab_token, gitlab_url]):
-        print("[find-clusters] ERROR:Missing required environment variables")
+        logger.error("ERROR:Missing required environment variables")
         sys.exit(1)
 
-    print(f"[find-clusters] Start version={version}")
+    logger.info(f"Start version={version}")
 
     def get_cluster_patterns() -> List[Dict[str, Any]]:
         """
@@ -60,7 +69,7 @@ def main():
 
         try:
             if not os.path.isfile(config_path):
-                print(f"[find-clusters] ERROR: Config file {config_path} does not exist")
+                logger.error(f"Config file {config_path} does not exist")
                 return []
 
             with open(config_path, 'r') as f:
@@ -71,7 +80,7 @@ def main():
             return patterns
 
         except Exception as e:
-            print(f"[find-clusters] Config load error: {e}")
+            logger.error(f"Config load error: {e}")
             sys.exit(1)
 
     def find_cluster_specs(repo_dir: str) -> List[str]:
@@ -122,7 +131,7 @@ def main():
                 if match_cluster_to_pattern(cluster_name, include_pattern, exclude_pattern):
                     relative_path = os.path.relpath(spec_file, repo_dir)
                     pattern_name = pattern.get('name', 'Unknown')
-                    print(f"[find-clusters] Match {cluster_name} → {pattern_name}")
+                    logger.info(f"Match {cluster_name} → {pattern_name}")
                     
                     return {
                         'pattern_name': pattern_name,
@@ -133,7 +142,7 @@ def main():
                     }
 
         except Exception as e:
-            print(f"[find-clusters] Error reading {spec_file}: {e}")
+            logger.error(f"Error reading {spec_file}: {e}")
 
         return None
 
@@ -148,19 +157,19 @@ def main():
     # Clone and process repository
     repo_url = f"{gitlab_url}/dgxcloud/mk8s/manifests.git"
     auth_url = repo_url.replace('https://', f'https://oauth2:{gitlab_token}@')
-    print("[find-clusters] Cloning manifests repo...")
+    logger.info("Cloning manifests repo...")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         # Clone repository
         try:
             run_command(['git', 'clone', '--depth', '1', auth_url, temp_dir])
         except Exception as e:
-            print(f"[find-clusters] Clone failed: {e}")
+            logger.error(f"Clone failed: {e}")
             sys.exit(1)
 
         # Find and process cluster specs
         spec_files = find_cluster_specs(temp_dir)
-        print(f"[find-clusters] Found {len(spec_files)} cluster-spec.yaml files")
+        logger.info(f"Found {len(spec_files)} cluster-spec.yaml files")
 
         for spec_file in spec_files:
             result = process_cluster_spec(spec_file, patterns, temp_dir)
@@ -183,15 +192,13 @@ def main():
                 'clusters': pattern_groups[pattern_name]
             }
             result.append(pattern_data)
-            print(f"[find-clusters] Pattern {pattern_name}: {len(pattern_groups[pattern_name])} clusters")
+            logger.info(f"Pattern {pattern_name}: {len(pattern_groups[pattern_name])} clusters")
 
-    print(f"[find-clusters] Total patterns with matches: {len(result)}")
+    logger.info(f"Total patterns with matches: {len(result)}")
 
     # Save results
     with open('/tmp/clusters.json', 'w') as f:
         json.dump(result, f, indent=2)
-
-    print("[find-clusters] Done")
 
 if __name__ == '__main__':
     main()

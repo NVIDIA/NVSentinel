@@ -41,6 +41,22 @@ configMapGenerator:
       app.kubernetes.io/name: nvsentinel
       app.kubernetes.io/component: workflow
       app.kubernetes.io/part-of: nvsentinel-deployment
+- name: update-sbom-version-script
+  files:
+  - scripts/update-sbom-version.py
+  options:
+    labels:
+      app.kubernetes.io/name: nvsentinel
+      app.kubernetes.io/component: workflow
+      app.kubernetes.io/part-of: nvsentinel-deployment
+- name: monitor-sbom-mr-script
+  files:
+  - scripts/monitor-sbom-mr.py
+  options:
+    labels:
+      app.kubernetes.io/name: nvsentinel
+      app.kubernetes.io/component: workflow
+      app.kubernetes.io/part-of: nvsentinel-deployment
 - name: find-clusters-script
   files:
   - scripts/find-clusters.py
@@ -77,6 +93,9 @@ resources:
 - check-existing-workflow.yaml
 - update-release-version.yaml
 - monitor-release-mr.yaml
+- update-sbom-version.yaml
+- monitor-ace-mr.yaml
+- monitor-manifest-template-mr.yaml
 - find-clusters.yaml
 - create-mr.yaml
 - monitor-mrs.yaml

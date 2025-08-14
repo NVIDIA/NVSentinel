@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-import logging
 import os
 import requests
 import time
 import sys
 from datetime import datetime, timezone
+
+import logging
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +26,7 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('monitor-mr')
+logger = logging.getLogger('monitor-sbom-mr')
 
 def main():
     """Monitor the status of a GitLab merge request created for a deployment pattern.
@@ -34,6 +35,9 @@ def main():
     # Parse input parameters from environment
     version = os.getenv('MR_VERSION')
     raw_mr_data = os.getenv('MR_DATA')
+    project_path = os.getenv('PROJECT_PATH')
+    gitlab_token = os.getenv('GITLAB_TOKEN')
+    gitlab_url = os.getenv('GITLAB_URL')
 
     logger.info(f"Version: {version}")
 
@@ -44,8 +48,6 @@ def main():
     except Exception as e:
         logger.error(f"Error parsing MR data: {e}")
         result = {
-            'pattern_name': 'unknown',
-            'clusters': [],
             'version': version,
             'mr_iid': None,
             'mr_url': '',
@@ -59,22 +61,13 @@ def main():
             json.dump(result, f, indent=2)
         sys.exit(0)
 
-    # Extract MR information (now pattern-based, not cluster-based)
-    pattern_name = mr_data.get('pattern_name', 'unknown')
-    clusters = mr_data.get('clusters', [])
+    # Extract MR information
     mr_iid = mr_data.get('mr_iid')
     mr_url = mr_data.get('mr_url', '')
     mr_status = mr_data.get('status', 'unknown')
 
-    cluster_count = len(clusters)
-    cluster_names_str = ', '.join(clusters[:3]) + ('...' if len(clusters) > 3 else '')
-
-    logger.info(f"Pattern: {pattern_name} | Clusters: {cluster_count} ({cluster_names_str}) | MR: !{mr_iid}")
-
     # Initialize monitoring result
     monitoring_result = {
-        'pattern_name': pattern_name,
-        'clusters': clusters,
         'version': version,
         'mr_iid': mr_iid,
         'mr_url': mr_url,
@@ -83,6 +76,15 @@ def main():
         'message': 'unknown',
         'started_at': datetime.now(timezone.utc).isoformat() + 'Z'
     }
+
+    if not all([gitlab_token, gitlab_url]):
+        logger.error("Missing GitLab credentials")
+        monitoring_result['final_status'] = 'failed'
+        monitoring_result['message'] = 'Missing GitLab credentials'
+        monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
+        with open('/tmp/monitoring-result.json', 'w') as f:
+            json.dump(monitoring_result, f, indent=2)
+        sys.exit(1)
 
     # Skip monitoring if MR creation failed
     if mr_status in ['failed', 'error'] or not mr_iid:
@@ -94,21 +96,7 @@ def main():
             json.dump(monitoring_result, f, indent=2)
         sys.exit(0)
 
-    # Get GitLab credentials
-    gitlab_token = os.getenv('MANIFEST_GITLAB_TOKEN')
-    gitlab_url = os.getenv('GITLAB_URL')
-
-    if not all([gitlab_token, gitlab_url]):
-        logger.error("Missing GitLab credentials")
-        monitoring_result['final_status'] = 'failed'
-        monitoring_result['message'] = 'Missing GitLab credentials'
-        monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
-        with open('/tmp/monitoring-result.json', 'w') as f:
-            json.dump(monitoring_result, f, indent=2)
-        sys.exit(0)
-
     # Setup GitLab API
-    project_path = "dgxcloud%2Fmk8s%2Fmanifests"
     headers = {
         'PRIVATE-TOKEN': gitlab_token,
         'Content-Type': 'application/json'

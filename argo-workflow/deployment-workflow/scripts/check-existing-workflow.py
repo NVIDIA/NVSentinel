@@ -11,11 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import os
 from datetime import datetime, timezone
 import sys
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('check-existing-workflow')
 
 def load_k8s_config():
     """Load Kubernetes configuration (in-cluster preferred)."""
@@ -29,17 +39,17 @@ def main():
     try:
         load_k8s_config()
     except Exception as e:
-        print(f"[check-existing-workflow] ERROR: Failed to load Kubernetes configuration: {e}")
+        logger.error(f"Failed to load Kubernetes configuration: {e}")
         sys.exit(1)
 
     v1 = client.CoreV1Api()
 
     VERSION = os.environ.get('VERSION')
     if not VERSION:
-        print("[check-existing-workflow] ERROR: VERSION environment variable not set")
+        logger.error("VERSION environment variable not set")
         sys.exit(1)
 
-    print(f"[check-existing-workflow] Checking processed tags ConfigMap for version {VERSION}")
+    logger.info(f"Checking processed tags ConfigMap for version {VERSION}")
 
     # Retrieve processed tags via Kubernetes API
     try:
@@ -50,29 +60,29 @@ def main():
             cm = None
             processed_tags = ""
         else:
-            print(f"[check-existing-workflow] ERROR: Unable to read ConfigMap: {e}")
+            logger.error(f"Unable to read ConfigMap: {e}")
             sys.exit(1)
 
     for line in processed_tags.splitlines():
         if line.startswith(f"{VERSION}:") and line.endswith(":completed"):
-            print(f"[check-existing-workflow] WARNING: Version {VERSION} already completed (found in processed tags)")
+            logger.warning(f"WARNING: Version {VERSION} already completed (found in processed tags)")
             with open('/tmp/should-proceed.txt', 'w') as f:
                 f.write("false")
             with open('/tmp/message.txt', 'w') as f:
                 f.write(f"Version {VERSION} already completed")
-            print("[check-existing-workflow] ABORT: Skipping deployment - version already completed")
+            logger.error("ABORT: Skipping deployment - version already completed")
             sys.exit(1)
         if line.startswith(f"{VERSION}:") and line.endswith(":in-progress"):
-            print(f"[check-existing-workflow] WARNING: Version {VERSION} already in-progress (found in processed tags)")
+            logger.warning(f"WARNING: Version {VERSION} already in-progress (found in processed tags)")
             with open('/tmp/should-proceed.txt', 'w') as f:
                 f.write("false")
             with open('/tmp/message.txt', 'w') as f:
                 f.write(f"Version {VERSION} already being processed")
-            print("[check-existing-workflow] ABORT: Skipping deployment - version already in-progress")
+            logger.error("ABORT: Skipping deployment - version already in-progress")
             sys.exit(1)
 
     # Update ConfigMap to mark as in-progress
-    print(f"[check-existing-workflow] Marking version {VERSION} as in-progress...")
+    logger.info(f"Marking version {VERSION} as in-progress...")
 
     lines = [line for line in processed_tags.splitlines() if not line.startswith(f"{VERSION}:")]
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -97,14 +107,14 @@ def main():
                 ),
             )
     except ApiException as e:
-        print(f"[check-existing-workflow] WARNING: Failed to update processed tags ConfigMap: {e}")
+        logger.error(f"Failed to update processed tags ConfigMap: {e}")
         sys.exit(1)
 
     with open('/tmp/should-proceed.txt', 'w') as f:
         f.write("true")
     with open('/tmp/message.txt', 'w') as f:
         f.write(f"Proceeding with deployment for version {VERSION}")
-    print("[check-existing-workflow] SUCCESS: Proceeding with deployment") 
+    logger.info("SUCCESS: Proceeding with deployment") 
 
 if __name__ == "__main__":
     main()

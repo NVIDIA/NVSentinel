@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import os
 import subprocess
 import json
@@ -25,6 +26,15 @@ from ruamel.yaml.scalarstring import PreservedScalarString
 import re
 import unicodedata
 
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('create-mr')
+
 def run_command(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -> str:
     """Run a command and return its output"""
     try:
@@ -37,8 +47,8 @@ def run_command(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -
         )
         return process.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"Error running command: {' '.join(cmd)}")
-        print(f"Error output: {e.stderr}")
+        logger.error(f"Error running command: {' '.join(cmd)}")
+        logger.error(f"Error output: {e.stderr}")
         if check:
             raise
         return ""
@@ -52,13 +62,13 @@ def main():
     clusters_json = os.environ.get('CLUSTERS')
 
     if not all([version, gitlab_token, gitlab_url, clusters_json]):
-        print("Missing required environment variables")
+        logger.error("Missing required environment variables")
         return
 
     try:
         pattern_data_list = json.loads(clusters_json)
     except json.JSONDecodeError as e:
-        print(f"Failed to parse clusters JSON: {e}")
+        logger.error(f"Failed to parse clusters JSON: {e}")
         return
 
     def _preserve_scalar(val):
@@ -105,7 +115,7 @@ def main():
     def setup_branch(repo_dir: str, branch_name: str):
         """Checkout <branch_name> based on current main. If branch exists remotely it is reset to origin/main to pick up new files."""
         try:
-            print("[create-mr] Checking out and updating main branch …")
+            logger.info("Checking out and updating main branch …")
             run_command(['git', 'checkout', 'main'], cwd=repo_dir)
             run_command(['git', 'pull', '--ff-only', 'origin', 'main'], cwd=repo_dir)
 
@@ -113,27 +123,27 @@ def main():
             run_command(['git', 'branch', '-D', branch_name], cwd=repo_dir, check=False)
 
             branch_exists = check_branch_exists(repo_dir, branch_name)
-            print(f"[create-mr] Branch {branch_name} exists remotely: {branch_exists}")
+            logger.info(f"Branch {branch_name} exists remotely: {branch_exists}")
 
             if branch_exists:
                 # Create local branch that tracks the remote and hard-reset it to origin/main
                 run_command(['git', 'checkout', '-B', branch_name, f'origin/{branch_name}'], cwd=repo_dir)
-                print(f"[create-mr] Resetting {branch_name} to origin/main …")
+                logger.info(f"Resetting {branch_name} to origin/main …")
                 run_command(['git', 'reset', '--hard', 'origin/main'], cwd=repo_dir)
             else:
                 run_command(['git', 'checkout', '-b', branch_name], cwd=repo_dir)
 
             current_branch = run_command(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=repo_dir)
-            print(f"[create-mr] Currently on branch: {current_branch}")
+            logger.info(f"Currently on branch: {current_branch}")
         except Exception as e:
-            print(f"[create-mr] Error in setup_branch: {e}")
+            logger.error(f"Error in setup_branch: {e}")
             raise
 
     def update_cluster_spec(file_path, version, pattern_spec):
         """Update a cluster spec file with NVSentinel configurations
         """
         try:
-            print(f"[create-mr] Processing spec file: {file_path}")
+            logger.info(f"Processing spec file: {file_path}")
             yaml_rt = YAML()
             yaml_rt.preserve_quotes = True
             yaml_rt.indent(mapping=2, sequence=4, offset=2)
@@ -149,14 +159,14 @@ def main():
             }
 
             if not Path(file_path).exists():
-                print(f"[create-mr] Spec missing: {file_path}")
+                logger.error(f"Spec missing: {file_path}")
                 return False
 
             with open(file_path, 'r') as f:
                 doc = yaml_rt.load(f)
 
             if not isinstance(doc, dict):
-                print(f"[create-mr] Skipping non-yaml file: {file_path}")
+                logger.warning(f"Skipping non-yaml file: {file_path}")
                 return False
 
             # Update spec sections
@@ -177,12 +187,12 @@ def main():
                                 if not (isinstance(item, dict) and item.get('release') == 'nvsentinel')]
             include_list.append(nvsentinel_entry)
             
-            print(f"[create-mr] Saving changes to {file_path}")
+            logger.info(f"Saving changes to {file_path}")
             with open(file_path, 'w') as f:
                 yaml_rt.dump(doc, f)
             return True
         except Exception as e:
-            print(f"[create-mr] Error updating cluster spec {file_path}: {str(e)}")
+            logger.error(f"Error updating cluster spec {file_path}: {str(e)}")
             raise
 
     def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str],
@@ -282,7 +292,7 @@ def main():
     auth_url = repo_url.replace('https://', f'https://oauth2:{gitlab_token}@')
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        print("[create-mr] Cloning manifests repository …")
+        logger.info("Cloning manifests repository …")
         run_command(['git', 'clone', auth_url, temp_dir])
         setup_git(temp_dir)
 
@@ -295,7 +305,7 @@ def main():
             cluster_names = [c['name'] for c in clusters]
             spec_paths = [c.get('spec_file_path') for c in clusters if c.get('spec_file_path')]
 
-            print(f"[create-mr] Processing pattern: {pattern_name} ({len(cluster_names)} clusters)")
+            logger.info(f"Processing pattern: {pattern_name} ({len(cluster_names)} clusters)")
 
             if not spec_paths:
                 mr_results.append({
@@ -315,18 +325,18 @@ def main():
                 if not isinstance(pattern_spec, dict):
                     raise TypeError(f"pattern_info.spec must be a dict, got {type(pattern_spec).__name__}")
                 
-                print(f"[create-mr] Processing {len(spec_paths)} spec files")
+                logger.info(f"Processing {len(spec_paths)} spec files")
                 for spec_path in spec_paths:
                     full_path = os.path.join(temp_dir, spec_path)
                     if update_cluster_spec(full_path, version, pattern_spec):
-                        print(f"[create-mr] Adding modified file to git: {spec_path}")
+                        logger.info(f"Adding modified file to git: {spec_path}")
                         run_command(['git', 'add', spec_path], cwd=temp_dir)
 
                 # Check for changes
                 git_status = run_command(['git', 'status', '--porcelain'], cwd=temp_dir, check=False)
                 
                 if not git_status:
-                    print("[create-mr] No changes detected in git status")
+                    logger.info("No changes detected in git status")
                     mr_results.append({
                         'pattern_name': pattern_name,
                         'clusters': cluster_names,
@@ -338,36 +348,36 @@ def main():
 
                 # Commit changes
                 commit_msg = f"chore: Update NVSentinel to {version} (pattern: {pattern_name})"
-                print(f"[create-mr] Committing changes with message: {commit_msg}")
+                logger.info(f"Committing changes with message: {commit_msg}")
                 run_command(['git', 'commit', '-m', commit_msg], cwd=temp_dir)
 
                 # Push changes
                 try:
-                    print(f"[create-mr] Pushing branch {branch_name}")
+                    logger.info(f"Pushing branch {branch_name}")
                     run_command(['git', 'push', '--force', 'origin', branch_name], cwd=temp_dir)
                 except subprocess.CalledProcessError as e:
                     if "non-fast-forward" in str(e.stderr):
-                        print("[create-mr] Non-fast-forward push detected – remote branch is ahead/diverged")
-                        print("[create-mr] Deleting remote branch and retrying push …")
+                        logger.info("Non-fast-forward push detected – remote branch is ahead/diverged")
+                        logger.info("Deleting remote branch and retrying push …")
                         # Delete the remote branch first to avoid divergence, then push fresh copy
                         run_command(['git', 'push', 'origin', '--delete', branch_name], cwd=temp_dir)
-                        print("[create-mr] Remote branch deleted; pushing clean branch …")
+                        logger.info("Remote branch deleted; pushing clean branch …")
                         run_command(['git', 'push', 'origin', branch_name], cwd=temp_dir)
                     else:
                         raise
 
                 # Create or find MR
-                print("[create-mr] Creating or finding merge request")
+                logger.info("Creating or finding merge request")
                 mr_result = create_or_find_mr(
                     gitlab_url, project_path, headers,
                     branch_name, pattern_name, version,
                     cluster_names, pattern_spec
                 )
                 mr_results.append(mr_result)
-                print(f"[create-mr] MR result: {mr_result}")
+                logger.info(f"MR result: {mr_result}")
 
             except Exception as e:
-                print(f"[create-mr] Error processing pattern {pattern_name}: {str(e)}")
+                logger.error(f"Error processing pattern {pattern_name}: {str(e)}")
                 mr_results.append({
                     'pattern_name': pattern_name,
                     'clusters': cluster_names,
@@ -381,11 +391,10 @@ def main():
     with open('/tmp/mr-results.json', 'w') as f:
         json.dump(mr_results, f, indent=2)
 
-    # Print summary
     created = len([r for r in mr_results if r['status'] == 'created'])
     existing = len([r for r in mr_results if r['status'] == 'existing'])
     failed = len([r for r in mr_results if r['status'] == 'failed'])
-    print(f"[create-mr] Completed: {created} created, {existing} existing, {failed} failed")
+    logger.info(f"Completed: {created} created, {existing} existing, {failed} failed")
 
 if __name__ == '__main__':
     main() 

@@ -17,6 +17,15 @@ import time
 import sys
 from datetime import datetime, timezone
 import gitlab
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('monitor-release-mr')
 
 def manage_tag(project, tag_name, ref):
     """Create or force-update a tag in the given project."""
@@ -34,14 +43,14 @@ def main():
     version = os.getenv('MR_VERSION')
     raw_mr_data = os.getenv('MR_DATA')
     
-    print(f"[monitor-mr] Version: {version}")
+    logger.info(f"Version: {version}")
 
     # Parse MR data
     try:
         mr_data = json.loads(raw_mr_data)
-        print("[monitor-mr] MR data JSON parsed successfully")
+        logger.info("MR data JSON parsed successfully")
     except Exception as e:
-        print(f"[monitor-mr] Error parsing MR data: {e}")
+        logger.error(f"Error parsing MR data: {e}")
         result = {
             'version': version,
             'mr_iid': None,
@@ -77,7 +86,7 @@ def main():
     gitlab_url = os.getenv('GITLAB_URL')
     
     if not all([gitlab_token, gitlab_url]):
-        print("[monitor-mr] ERROR: Missing GitLab credentials")
+        logger.error("ERROR: Missing GitLab credentials")
         monitoring_result['final_status'] = 'failed'
         monitoring_result['message'] = 'Missing GitLab credentials'
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
@@ -97,60 +106,60 @@ def main():
         # Handle case with no MR immediately
         if not mr_iid:
             manage_tag(project, version, ref=branch_name)
-            print(f"[monitor-mr] Tag {version} created (no MR)")
+            logger.info(f"Tag {version} created (no MR)")
             monitoring_result['final_status'] = 'completed'
             monitoring_result['message'] = 'No MR created; tag pushed'
             monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
         else:
-            print(f"[monitor-mr] Monitoring MR at: {mr_url}")
+            logger.info(f"Monitoring MR at: {mr_url}")
             for check_count in range(max_checks):
-                print(f"[monitor-mr] Polling status ...", flush=True)
+                logger.info(f"Polling status ...")
                 try:
                     mr_obj = project.mergerequests.get(mr_iid)
                 except gitlab.exceptions.GitlabGetError as e:
                     if e.response_code == 404:
-                        print(f"MR !{mr_iid} not found - may have been deleted")
+                        logger.warning(f"MR !{mr_iid} not found - may have been deleted")
                         monitoring_result['final_status'] = 'failed'
                         monitoring_result['message'] = 'MR not found'
                         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
                         break
                     else:
-                        print(f"[monitor-mr] GitLab error {e.response_code}; retrying …")
+                        logger.warning(f"GitLab error {e.response_code}; retrying …")
                         time.sleep(60)
                         continue
 
                 state = mr_obj.state
                 merge_status = getattr(mr_obj, 'merge_status', 'unknown')
-                print(f"[monitor-mr] Status: {state} (merge_status: {merge_status})")
+                logger.info(f"Status: {state} (merge_status: {merge_status})")
 
                 if state in ['merged', 'closed']:
-                    print(f"[monitor-mr] Completed: {state}")
+                    logger.info(f"Completed: {state}")
                     monitoring_result['final_status'] = 'completed'
                     monitoring_result['message'] = f"MR is {state}"
                     monitoring_result['mr_state'] = state
                     monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
                     tag_ref = 'main' if state == 'merged' else branch_name
                     manage_tag(project, version, ref=tag_ref)
-                    print(f"[monitor-mr] Tag {version} created from {tag_ref}")
+                    logger.info(f"Tag {version} created from {tag_ref}")
                     break
 
-                print(f"[monitor-mr] Still {state}; waiting 60s …")
+                logger.info(f"Still {state}; waiting 60s …")
                 time.sleep(60)
             else:
-                print(f"[monitor-mr] Timeout after {max_checks} minutes")
+                logger.warning(f"Timeout after {max_checks} minutes")
                 monitoring_result['final_status'] = 'timeout'
                 monitoring_result['message'] = 'Timeout reached'
                 monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
 
     except Exception as e:
-        print(f"[monitor-mr] Exception: {str(e)}")
+        logger.error(f"Exception: {str(e)}")
         sys.exit(1)
 
     # Save final result
     with open('/tmp/monitoring-result.json', 'w') as f:
         json.dump(monitoring_result, f, indent=2)
 
-    print(f"[monitor-mr] Finished with status: {monitoring_result['final_status']}")
+    logger.info(f"Finished with status: {monitoring_result['final_status']}")
 
 if __name__ == "__main__":
     main()
