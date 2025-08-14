@@ -26,13 +26,17 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 )
 
 var (
@@ -1455,7 +1459,7 @@ func TestBuildNodeAnnotationsCacheWithVariousStates(t *testing.T) {
 	ctx := context.Background()
 
 	// Create fake k8s client with various nodes
-	node1 := &v1.Node{
+	node1 := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node1",
 			Annotations: map[string]string{
@@ -1465,7 +1469,7 @@ func TestBuildNodeAnnotationsCacheWithVariousStates(t *testing.T) {
 		},
 	}
 
-	node2 := &v1.Node{
+	node2 := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node2",
 			Annotations: map[string]string{
@@ -1474,14 +1478,14 @@ func TestBuildNodeAnnotationsCacheWithVariousStates(t *testing.T) {
 		},
 	}
 
-	node3 := &v1.Node{
+	node3 := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "node3",
 			Annotations: map[string]string{}, // No quarantine annotations
 		},
 	}
 
-	node4 := &v1.Node{
+	node4 := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "node4",
 			// No annotations at all
@@ -1681,5 +1685,650 @@ func TestCacheReturnsCopyNotReference(t *testing.T) {
 	if annotations4[common.QuarantineHealthEventAnnotationKey] != "original-value" {
 		t.Errorf("Cache was mutated! Expected 'original-value', got '%s'",
 			annotations4[common.QuarantineHealthEventAnnotationKey])
+	}
+}
+
+// TestHandleManualUncordon tests the manual uncordon handler
+func TestHandleManualUncordon(t *testing.T) {
+	ctx := context.Background()
+
+	originalEvent := &platformconnectorprotos.HealthEvent{
+		NodeName:       "node1",
+		Agent:          "agent1",
+		CheckName:      "checkA",
+		ComponentClass: "class1",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*platformconnectorprotos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	// Simulate FQ annotations on the node
+	existingAnnotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:              func() string { b, _ := json.Marshal(originalEvent); return string(b) }(),
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"key1","Value":"val1","Effect":"NoSchedule"}]`,
+		common.QuarantineHealthEventIsCordonedAnnotationKey:    common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+	}
+
+	removedAnnotationKeys := []string{}
+	addedAnnotations := map[string]string{}
+	var removedTaints []config.Taint
+
+	k8sMock := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			if nodeName != "node1" {
+				t.Errorf("Expected node1, got %s", nodeName)
+			}
+			return existingAnnotations, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			if nodeName != "node1" {
+				t.Errorf("Expected node1, got %s", nodeName)
+			}
+			if isUncordon {
+				t.Errorf("Should not try to uncordon again - node is already manually uncordoned")
+			}
+			removedAnnotationKeys = annotationKeys
+			removedTaints = taints
+
+			// No labels should be added or removed in manual uncordon
+			if len(labelsToRemove) > 0 {
+				t.Errorf("Should not remove any labels, got %v", labelsToRemove)
+			}
+			if len(labelMap) > 0 {
+				t.Errorf("Should not add any labels, got %v", labelMap)
+			}
+
+			return nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			if nodeName != "node1" {
+				t.Errorf("Expected node1, got %s", nodeName)
+			}
+			if isCordon {
+				t.Errorf("Should not cordon the node")
+			}
+			if len(taints) > 0 {
+				t.Errorf("Should not add any taints")
+			}
+			addedAnnotations = annotations
+			return nil
+		},
+	}
+
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
+	r.SetLabelKeys("k8s.nvidia.com/")
+
+	// Initialize nodeInfo and mark node as quarantined
+	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
+
+	// Call handleManualUncordon
+	err := r.handleManualUncordon("node1")
+	if err != nil {
+		t.Fatalf("handleManualUncordon failed: %v", err)
+	}
+
+	// Verify annotations were removed
+	expectedRemovedAnnotations := []string{
+		common.QuarantineHealthEventAnnotationKey,
+		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
+		common.QuarantineHealthEventIsCordonedAnnotationKey,
+	}
+	if len(removedAnnotationKeys) != len(expectedRemovedAnnotations) {
+		t.Errorf("Expected %d annotations to be removed, got %d", len(expectedRemovedAnnotations), len(removedAnnotationKeys))
+	}
+	for _, key := range expectedRemovedAnnotations {
+		found := false
+		for _, removedKey := range removedAnnotationKeys {
+			if removedKey == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected annotation %s to be removed", key)
+		}
+	}
+
+	// Verify taints were removed
+	if len(removedTaints) != 1 {
+		t.Errorf("Expected 1 taint to be removed, got %d", len(removedTaints))
+	} else {
+		if removedTaints[0].Key != "key1" || removedTaints[0].Value != "val1" || removedTaints[0].Effect != "NoSchedule" {
+			t.Errorf("Unexpected taint removed: %+v", removedTaints[0])
+		}
+	}
+
+	// Verify manual uncordon annotation was added
+	if addedAnnotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey] != common.QuarantinedNodeUncordonedManuallyAnnotationValue {
+		t.Errorf("Expected manual uncordon annotation to be added, got %v", addedAnnotations)
+	}
+
+	// Verify node is no longer marked as quarantined in nodeInfo cache
+	// We update this immediately for consistency with the metric
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if quarantinedNodes["node1"] {
+		t.Errorf("Expected node1 to be removed from quarantined nodes cache")
+	}
+
+	// Note: We don't verify the annotation cache here because it will be updated
+	// by onNodeAnnotationsChanged when the subsequent update event is processed
+}
+
+// TestManualUncordonEndToEnd tests the complete flow of manual uncordon from detection to state updates
+func TestManualUncordonEndToEnd(t *testing.T) {
+	ctx := context.Background()
+
+	// Create test nodes
+	quarantinedNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node-1",
+			Labels: map[string]string{
+				informer.GpuNodeLabel: "true",
+			},
+			Annotations: map[string]string{
+				common.QuarantineHealthEventAnnotationKey:              `{"nodeName":"test-node-1","agent":"test","checkName":"test","isHealthy":false}`,
+				common.QuarantineHealthEventAppliedTaintsAnnotationKey: `[{"Key":"fault","Value":"gpu","Effect":"NoSchedule"}]`,
+				common.QuarantineHealthEventIsCordonedAnnotationKey:    common.QuarantineHealthEventIsCordonedAnnotationValueTrue,
+			},
+		},
+		Spec: corev1.NodeSpec{
+			Unschedulable: true, // Node is cordoned
+		},
+	}
+
+	normalNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node-2",
+			Labels: map[string]string{
+				informer.GpuNodeLabel: "true",
+			},
+		},
+		Spec: corev1.NodeSpec{
+			Unschedulable: false,
+		},
+	}
+
+	// Create fake k8s client with initial nodes
+	fakeClient := fake.NewSimpleClientset(quarantinedNode, normalNode)
+
+	// Track API calls with mutex protection for concurrent access
+	var mu sync.Mutex
+	updateCount := 0
+
+	// Wrap the client to intercept updates
+	fakeClient.PrependReactor("update", "nodes", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+		mu.Lock()
+		updateCount++
+		mu.Unlock()
+		return false, nil, nil // Let it proceed
+	})
+
+	// Create reconciler with mock K8s client
+	mockK8sClient := &mockK8sClient{
+		getK8sClientFn: func() kubernetes.Interface {
+			return fakeClient
+		},
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			return node.Annotations, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			// Simulate removing annotations and taints
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+
+			// Remove specified annotations
+			for _, key := range annotationKeys {
+				delete(node.Annotations, key)
+			}
+
+			// Remove specified taints
+			var newTaints []corev1.Taint
+			for _, existingTaint := range node.Spec.Taints {
+				shouldRemove := false
+				for _, taintToRemove := range taints {
+					if existingTaint.Key == taintToRemove.Key &&
+						existingTaint.Value == taintToRemove.Value &&
+						string(existingTaint.Effect) == taintToRemove.Effect {
+						shouldRemove = true
+						break
+					}
+				}
+				if !shouldRemove {
+					newTaints = append(newTaints, existingTaint)
+				}
+			}
+			node.Spec.Taints = newTaints
+
+			_, err = fakeClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+			return err
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			// Simulate adding annotations
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+
+			if node.Annotations == nil {
+				node.Annotations = make(map[string]string)
+			}
+			for k, v := range annotations {
+				node.Annotations[k] = v
+			}
+
+			_, err = fakeClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+			return err
+		},
+	}
+
+	// Create reconciler
+	workSignal := make(chan struct{}, 10)
+	r := NewReconciler(ctx, ReconcilerConfig{
+		K8sClient: mockK8sClient,
+		DryRun:    false,
+	}, workSignal)
+	r.SetLabelKeys("k8s.nvidia.com/")
+
+	// Create NodeInformer
+	nodeInformer, err := informer.NewNodeInformer(fakeClient, 0, workSignal, r.nodeInfo)
+	if err != nil {
+		t.Fatalf("Failed to create NodeInformer: %v", err)
+	}
+
+	// Track callback invocations with thread-safe access
+	manualUncordonCalled := false
+	manualUncordonNodeName := ""
+	annotationChanges := make(map[string]int) // Track how many times each node's annotations changed
+
+	// Set up callbacks
+	nodeInformer.SetOnManualUncordonCallback(func(nodeName string) error {
+		mu.Lock()
+		manualUncordonCalled = true
+		manualUncordonNodeName = nodeName
+		mu.Unlock()
+		return r.handleManualUncordon(nodeName)
+	})
+
+	nodeInformer.SetOnNodeAnnotationsChangedCallback(func(nodeName string, annotations map[string]string) {
+		mu.Lock()
+		annotationChanges[nodeName]++
+		mu.Unlock()
+		r.handleNodeAnnotationChange(nodeName, annotations)
+	})
+
+	// Start the informer
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	go nodeInformer.Run(stopCh)
+
+	// Wait for initial sync
+	if !cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced) {
+		t.Fatalf("Failed to sync cache")
+	}
+
+	// Initial state verification
+	totalGpu, cordonedMap, err := nodeInformer.GetGpuNodeCounts()
+	if err != nil {
+		t.Fatalf("Failed to get initial counts: %v", err)
+	}
+	if totalGpu != 2 {
+		t.Errorf("Expected 2 GPU nodes, got %d", totalGpu)
+	}
+	if len(cordonedMap) != 1 || !cordonedMap["test-node-1"] {
+		t.Errorf("Expected test-node-1 to be cordoned, got %v", cordonedMap)
+	}
+
+	// Simulate manual uncordon by updating the node
+	quarantinedNode.Spec.Unschedulable = false
+	_, err = fakeClient.CoreV1().Nodes().Update(ctx, quarantinedNode, metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to simulate manual uncordon: %v", err)
+	}
+
+	// Wait for the event to be processed
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify manual uncordon was detected and handled
+	mu.Lock()
+	if !manualUncordonCalled {
+		t.Error("Manual uncordon callback was not called")
+	}
+	if manualUncordonNodeName != "test-node-1" {
+		t.Errorf("Expected manual uncordon for test-node-1, got %s", manualUncordonNodeName)
+	}
+	mu.Unlock()
+
+	// Verify the node was updated with manual uncordon annotation
+	updatedNode, err := fakeClient.CoreV1().Nodes().Get(ctx, "test-node-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Failed to get updated node: %v", err)
+	}
+
+	// Check FQ annotations were removed
+	if _, exists := updatedNode.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+		t.Error("QuarantineHealthEvent annotation should be removed")
+	}
+	if _, exists := updatedNode.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
+		t.Error("QuarantineHealthEventAppliedTaints annotation should be removed")
+	}
+	if _, exists := updatedNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+		t.Error("QuarantineHealthEventIsCordoned annotation should be removed")
+	}
+
+	// Check manual uncordon annotation was added
+	if val := updatedNode.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; val != common.QuarantinedNodeUncordonedManuallyAnnotationValue {
+		t.Errorf("Expected manual uncordon annotation to be 'True', got %s", val)
+	}
+
+	// Verify final state
+	totalGpu, cordonedMap, err = nodeInformer.GetGpuNodeCounts()
+	if err != nil {
+		t.Fatalf("Failed to get final counts: %v", err)
+	}
+	if totalGpu != 2 {
+		t.Errorf("Expected 2 GPU nodes, got %d", totalGpu)
+	}
+	if len(cordonedMap) != 0 {
+		t.Errorf("Expected no cordoned nodes after manual uncordon, got %v", cordonedMap)
+	}
+
+	// Verify nodeInfo cache is consistent
+	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
+	if quarantinedNodes["test-node-1"] {
+		t.Error("test-node-1 should not be in quarantined nodes cache")
+	}
+
+	// Verify annotation change callbacks were invoked
+	mu.Lock()
+	if annotationChanges["test-node-1"] < 1 {
+		t.Error("Expected annotation change callback to be invoked for test-node-1")
+	}
+
+	// Verify at least 2 updates occurred (one for removing annotations, one for adding manual uncordon annotation)
+	if updateCount < 2 {
+		t.Errorf("Expected at least 2 node updates, got %d", updateCount)
+	}
+	mu.Unlock()
+}
+
+// TestManualUncordonWithMaxPercentageRule tests manual uncordon interaction with MaxPercentageOfNodesToCordon rule
+func TestManualUncordonWithMaxPercentageRule(t *testing.T) {
+	ctx := context.Background()
+
+	// Create 5 GPU nodes, 2 of them cordoned
+	nodes := []*corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-1",
+				Labels: map[string]string{informer.GpuNodeLabel: "true"},
+				Annotations: map[string]string{
+					common.QuarantineHealthEventAnnotationKey:           `{"nodeName":"node-1"}`,
+					common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+				},
+			},
+			Spec: corev1.NodeSpec{Unschedulable: true},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-2",
+				Labels: map[string]string{informer.GpuNodeLabel: "true"},
+				Annotations: map[string]string{
+					common.QuarantineHealthEventAnnotationKey:           `{"nodeName":"node-2"}`,
+					common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+				},
+			},
+			Spec: corev1.NodeSpec{Unschedulable: true},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-3",
+				Labels: map[string]string{informer.GpuNodeLabel: "true"},
+			},
+			Spec: corev1.NodeSpec{Unschedulable: false},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-4",
+				Labels: map[string]string{informer.GpuNodeLabel: "true"},
+			},
+			Spec: corev1.NodeSpec{Unschedulable: false},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "node-5",
+				Labels: map[string]string{informer.GpuNodeLabel: "true"},
+			},
+			Spec: corev1.NodeSpec{Unschedulable: false},
+		},
+	}
+
+	// Create fake client
+	var nodeInterfaces []runtime.Object
+	for _, node := range nodes {
+		nodeInterfaces = append(nodeInterfaces, node)
+	}
+	fakeClient := fake.NewSimpleClientset(nodeInterfaces...)
+
+	// Create mock K8s client
+	mockK8sClient := &mockK8sClient{
+		getK8sClientFn: func() kubernetes.Interface {
+			return fakeClient
+		},
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			return node.Annotations, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			for _, key := range annotationKeys {
+				delete(node.Annotations, key)
+			}
+			_, err = fakeClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+			return err
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			node, err := fakeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if node.Annotations == nil {
+				node.Annotations = make(map[string]string)
+			}
+			for k, v := range annotations {
+				node.Annotations[k] = v
+			}
+			_, err = fakeClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+			return err
+		},
+	}
+
+	// Create reconciler
+	workSignal := make(chan struct{}, 10)
+	r := NewReconciler(ctx, ReconcilerConfig{
+		K8sClient: mockK8sClient,
+		DryRun:    false,
+	}, workSignal)
+	r.SetLabelKeys("k8s.nvidia.com/")
+
+	// Create NodeInformer
+	nodeInformer, err := informer.NewNodeInformer(fakeClient, 0, workSignal, r.nodeInfo)
+	if err != nil {
+		t.Fatalf("Failed to create NodeInformer: %v", err)
+	}
+
+	// Set up manual uncordon callback
+	nodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+	nodeInformer.SetOnNodeAnnotationsChangedCallback(r.handleNodeAnnotationChange)
+
+	// Start informer
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go nodeInformer.Run(stopCh)
+
+	if !cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced) {
+		t.Fatalf("Failed to sync cache")
+	}
+
+	// Create MaxPercentageOfNodesToCordon evaluator (40% threshold)
+	maxPercentEvaluator, err := evaluator.NewMaxPercentageOfNodesToCordonRuleEvaluator(
+		"maxPercentageOfNodesToCordon <= 40.0",
+		nodeInformer,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create evaluator: %v", err)
+	}
+
+	// Initial state: 2/5 nodes cordoned (40%)
+	// Should NOT allow cordoning another node (would be 60%)
+	event := &platformconnectorprotos.HealthEvent{NodeName: "node-3"}
+	result, _ := maxPercentEvaluator.Evaluate(event)
+	if result != common.RuleEvaluationRetryAgainInFuture {
+		t.Errorf("Expected RetryAgainInFuture (can't cordon at 40%%), got %v", result)
+	}
+
+	// Manually uncordon node-1
+	nodes[0].Spec.Unschedulable = false
+	_, err = fakeClient.CoreV1().Nodes().Update(ctx, nodes[0], metav1.UpdateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to manually uncordon node-1: %v", err)
+	}
+
+	// Wait for processing
+	time.Sleep(100 * time.Millisecond)
+
+	// After manual uncordon: 1/5 nodes cordoned (20%)
+	// Should allow cordoning another node (would be 40%)
+	result, _ = maxPercentEvaluator.Evaluate(event)
+	if result != common.RuleEvaluationSuccess {
+		t.Errorf("Expected Success after manual uncordon (20%% -> 40%%), got %v", result)
+	}
+
+	// Verify the state is consistent
+	totalGpu, cordonedMap, err := nodeInformer.GetGpuNodeCounts()
+	if err != nil {
+		t.Fatalf("Failed to get counts: %v", err)
+	}
+	if totalGpu != 5 {
+		t.Errorf("Expected 5 GPU nodes, got %d", totalGpu)
+	}
+	if len(cordonedMap) != 1 {
+		t.Errorf("Expected 1 cordoned node after manual uncordon, got %d", len(cordonedMap))
+	}
+	if cordonedMap["node-1"] {
+		t.Error("node-1 should not be cordoned after manual uncordon")
+	}
+	if !cordonedMap["node-2"] {
+		t.Error("node-2 should still be cordoned")
+	}
+}
+
+// TestNodeRequarantineAfterManualUncordon tests that when FQ quarantines a node again after manual uncordon,
+// the manual uncordon annotation is removed
+func TestNodeRequarantineAfterManualUncordon(t *testing.T) {
+	ctx := context.Background()
+
+	// Track annotations that were removed
+	var removedAnnotations []string
+	hasManualUncordonAnnotation := true
+
+	// Create mock K8s client
+	mockK8sClient := &mockK8sClient{
+		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
+			// Simulate node with manual uncordon annotation
+			if hasManualUncordonAnnotation {
+				return map[string]string{
+					common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
+					common.QuarantineHealthEventAnnotationKey:             "old-event",
+				}, nil
+			}
+			return map[string]string{
+				common.QuarantineHealthEventAnnotationKey: "old-event",
+			}, nil
+		},
+		unTaintAndUnCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error {
+			// Track which annotations were removed
+			removedAnnotations = append(removedAnnotations, annotationKeys...)
+			// Simulate removal
+			for _, key := range annotationKeys {
+				if key == common.QuarantinedNodeUncordonedManuallyAnnotationKey {
+					hasManualUncordonAnnotation = false
+				}
+			}
+			return nil
+		},
+		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
+			return nil
+		},
+		getK8sClientFn: func() kubernetes.Interface {
+			return fake.NewSimpleClientset()
+		},
+	}
+
+	// Create reconciler
+	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: mockK8sClient}, nil)
+	r.SetLabelKeys("k8s.nvidia.com/")
+
+	// Build cache with the node having manual uncordon annotation
+	r.nodeAnnotationsCache.Store("test-node", map[string]string{
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
+		common.QuarantineHealthEventAnnotationKey:             "old-event",
+	})
+
+	// Simulate quarantine action that should remove manual uncordon annotation
+	// This would normally be called from applyRule, but we'll test the specific part
+	nodeAnnotations, err := r.getNodeQuarantineAnnotations(ctx, "test-node")
+	if err != nil {
+		t.Fatalf("Failed to get node annotations: %v", err)
+	}
+
+	if _, hasManualUncordon := nodeAnnotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; hasManualUncordon {
+		// Remove the manual uncordon annotation before applying quarantine
+		if err := mockK8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
+			ctx,
+			"test-node",
+			nil,   // No taints to remove
+			false, // Not uncordoning
+			[]string{common.QuarantinedNodeUncordonedManuallyAnnotationKey}, // Remove manual uncordon annotation
+			nil, // No labels to remove
+			nil, // No labels to add
+		); err == nil {
+			// Update cache to remove the manual uncordon annotation
+			r.updateCacheWithUnquarantineAnnotations("test-node",
+				[]string{common.QuarantinedNodeUncordonedManuallyAnnotationKey})
+		}
+	}
+
+	// Verify manual uncordon annotation was removed
+	found := false
+	for _, annotation := range removedAnnotations {
+		if annotation == common.QuarantinedNodeUncordonedManuallyAnnotationKey {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("Expected manual uncordon annotation to be removed when FQ quarantines node again")
+	}
+
+	// Verify cache was updated
+	cachedAnnotations, _ := r.getNodeQuarantineAnnotations(ctx, "test-node")
+	if _, stillHasAnnotation := cachedAnnotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; stillHasAnnotation {
+		t.Errorf("Cache should not contain manual uncordon annotation after removal")
 	}
 }

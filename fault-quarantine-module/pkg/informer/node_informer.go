@@ -68,6 +68,9 @@ type NodeInformer struct {
 
 	// onNodeAnnotationsChanged is called when a node's annotations change
 	onNodeAnnotationsChanged func(nodeName string, annotations map[string]string)
+
+	// onManualUncordon is called when a node is manually uncordoned while having FQ annotations
+	onManualUncordon func(nodeName string) error
 }
 
 // Lister returns the informer's node lister.
@@ -163,6 +166,7 @@ func hasQuarantineAnnotationsChanged(oldAnnotations, newAnnotations map[string]s
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
 	}
 
 	// Check if any of the quarantine annotation values have changed
@@ -187,6 +191,7 @@ func getQuarantineAnnotations(annotations map[string]string) map[string]string {
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
 	}
 
 	// Extract only the quarantine annotations
@@ -238,6 +243,34 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	ni.signalWork()
 }
 
+// detectAndHandleManualUncordon checks if a node was manually uncordoned and handles it
+func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node) bool {
+	// Check if node transitioned from unschedulable to schedulable
+	if !(oldNode.Spec.Unschedulable && !newNode.Spec.Unschedulable) {
+		return false
+	}
+
+	// Check if node has FQ quarantine annotations
+	_, hasCordonAnnotation := newNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+	if !hasCordonAnnotation {
+		return false
+	}
+
+	klog.Infof("Detected manual uncordon of FQ-quarantined node: %s", newNode.Name)
+
+	// Call the manual uncordon handler if registered
+	if ni.onManualUncordon != nil {
+		if err := ni.onManualUncordon(newNode.Name); err != nil {
+			klog.Errorf("Failed to handle manual uncordon for node %s: %v", newNode.Name, err)
+		}
+	} else {
+		klog.Warningf("Manual uncordon callback not registered for node %s - manual uncordon will not be handled",
+			newNode.Name)
+	}
+
+	return true
+}
+
 // handleUpdateNode recalculates counts when a node is updated.
 func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 	oldNode, okOld := oldObj.(*v1.Node)
@@ -250,6 +283,12 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 
 	// Check if quarantine annotations have changed
 	quarantineAnnotationsChanged := hasQuarantineAnnotationsChanged(oldNode.Annotations, newNode.Annotations)
+
+	// Check for manual uncordon and handle it
+	if ni.detectAndHandleManualUncordon(oldNode, newNode) {
+		// Return early as the manual uncordon handler will take care of everything
+		return
+	}
 
 	// Only process if unschedulable status changed or if the quarantine annotation is present.
 	// the reason it needs to be checked for quarantine annotation is because in dryrun node,
@@ -307,6 +346,11 @@ func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeNa
 func (ni *NodeInformer) SetOnNodeAnnotationsChangedCallback(callback func(nodeName string,
 	annotations map[string]string)) {
 	ni.onNodeAnnotationsChanged = callback
+}
+
+// SetOnManualUncordonCallback sets the callback function for when a node is manually uncordoned
+func (ni *NodeInformer) SetOnManualUncordonCallback(callback func(nodeName string) error) {
+	ni.onManualUncordon = callback
 }
 
 // handleDeleteNode recalculates counts when a node is deleted.

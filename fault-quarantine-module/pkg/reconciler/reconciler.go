@@ -112,6 +112,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 	// Set the callback to update the annotations cache when node annotations change
 	nodeInformer.SetOnNodeAnnotationsChangedCallback(r.handleNodeAnnotationChange)
 
+	// Set the callback to handle manual uncordon of quarantined nodes
+	nodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+
 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
 		r.config.K8sClient.GetK8sClient(), nodeInformer)
 	if err != nil {
@@ -548,6 +551,9 @@ func (r *Reconciler) handleEvent(
 			return true
 		})
 
+		// Remove manual uncordon annotation if present before applying new quarantine
+		r.removeManualUncordonAnnotationIfPresent(ctx, event.HealthEvent.NodeName, annotations)
+
 		if err := r.config.K8sClient.TaintAndCordonNodeAndSetAnnotations(
 			ctx,
 			event.HealthEvent.NodeName,
@@ -832,6 +838,7 @@ func (r *Reconciler) fetchAndCacheQuarantineAnnotations(ctx context.Context,
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
 	}
 
 	for _, key := range quarantineKeys {
@@ -960,6 +967,7 @@ func (r *Reconciler) buildNodeAnnotationsCache(ctx context.Context) error {
 		common.QuarantineHealthEventAnnotationKey,
 		common.QuarantineHealthEventAppliedTaintsAnnotationKey,
 		common.QuarantineHealthEventIsCordonedAnnotationKey,
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey,
 	}
 
 	// Use write lock for bulk cache population
@@ -993,6 +1001,125 @@ func (r *Reconciler) buildNodeAnnotationsCache(ctx context.Context) error {
 
 	fetchDuration := time.Since(startTime)
 	klog.Infof("Successfully built cache with quarantine annotations for %d nodes in %v", nodeCount, fetchDuration)
+
+	return nil
+}
+
+// removeManualUncordonAnnotationIfPresent removes the manual uncordon annotation from a node
+// if it exists. This is called before applying a new quarantine to ensure clean state.
+func (r *Reconciler) removeManualUncordonAnnotationIfPresent(ctx context.Context, nodeName string,
+	annotations map[string]string) {
+	if annotations == nil {
+		return
+	}
+
+	if _, hasManualUncordon := annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; hasManualUncordon {
+		klog.Infof("Removing manual uncordon annotation from node %s before applying new quarantine", nodeName)
+
+		// Remove the manual uncordon annotation before applying quarantine
+		if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
+			ctx,
+			nodeName,
+			nil,   // No taints to remove
+			false, // Not uncordoning
+			[]string{common.QuarantinedNodeUncordonedManuallyAnnotationKey}, // Remove manual uncordon annotation
+			nil, // No labels to remove
+			nil, // No labels to add
+		); err != nil {
+			klog.Errorf("Failed to remove manual uncordon annotation from node %s: %v", nodeName, err)
+		} else {
+			// Update cache to remove the manual uncordon annotation
+			r.updateCacheWithUnquarantineAnnotations(nodeName,
+				[]string{common.QuarantinedNodeUncordonedManuallyAnnotationKey})
+		}
+	}
+}
+
+// handleManualUncordon handles the case when a node is manually uncordoned while having FQ annotations
+func (r *Reconciler) handleManualUncordon(nodeName string) error {
+	ctx := context.Background()
+
+	klog.Infof("Handling manual uncordon for node: %s", nodeName)
+
+	// Get the current annotations from cache or API fallback
+	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
+	if err != nil {
+		klog.Errorf("Failed to get annotations for manually uncordoned node %s: %v", nodeName, err)
+		return err
+	}
+
+	// Check which FQ annotations exist and need to be removed
+	annotationsToRemove := []string{}
+
+	var taintsToRemove []config.Taint
+
+	// Check for taints annotation
+	taintsKey := common.QuarantineHealthEventAppliedTaintsAnnotationKey
+	if taintsStr, exists := annotations[taintsKey]; exists && taintsStr != "" {
+		annotationsToRemove = append(annotationsToRemove, taintsKey)
+
+		// Parse taints to remove them
+		if err := json.Unmarshal([]byte(taintsStr), &taintsToRemove); err != nil {
+			klog.Errorf("Failed to unmarshal taints for manually uncordoned node %s: %v", nodeName, err)
+		}
+	}
+
+	// Remove all FQ-related annotations
+	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAnnotationKey)
+	}
+
+	if _, exists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventIsCordonedAnnotationKey)
+	}
+
+	// Add the manual uncordon annotation
+	newAnnotations := map[string]string{
+		common.QuarantinedNodeUncordonedManuallyAnnotationKey: common.QuarantinedNodeUncordonedManuallyAnnotationValue,
+	}
+
+	// Update the node: remove FQ annotations and any remaining taints
+	if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
+		ctx,
+		nodeName,
+		taintsToRemove,
+		false, // Node is already uncordoned manually, so we don't need to uncordon again
+		annotationsToRemove,
+		nil, // No labels to remove
+		nil, // No labels to add
+	); err != nil {
+		klog.Errorf("Failed to clean up annotations for manually uncordoned node %s: %v", nodeName, err)
+		processingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()
+
+		return err
+	}
+
+	// Add the new annotation
+	if err := r.config.K8sClient.TaintAndCordonNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,   // No taints to add
+		false, // No cordon to add
+		newAnnotations,
+		nil, // No labels to add
+	); err != nil {
+		klog.Errorf("Failed to add manual uncordon annotation to node %s: %v", nodeName, err)
+		return err
+	}
+
+	currentQuarantinedNodes.Dec()
+
+	// Update internal state immediately to be consistent with the metric.
+	// This ensures the state is correct even before the subsequent update event is processed.
+	// Note: The subsequent update event will call updateNodeQuarantineStatus, but it won't
+	// actually update the cache since we've already set it to the correct state here.
+	r.nodeInfo.MarkNodeQuarantineStatusCache(nodeName, false, false)
+
+	// Note: We don't need to manually update the annotation cache here because
+	// after we update the node, it will trigger another update event in the NodeInformer
+	// which will call onNodeAnnotationsChanged to update the cache
+
+	klog.Infof("Successfully handled manual uncordon for node %s", nodeName)
 
 	return nil
 }

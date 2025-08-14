@@ -155,10 +155,12 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 		}
 
 		// Labels check
-		klog.Infof("Adding labels on node %s", nodename)
+		if len(labels) > 0 {
+			klog.Infof("Adding labels on node %s", nodename)
 
-		for k, v := range labels {
-			node.Labels[k] = v
+			for k, v := range labels {
+				node.Labels[k] = v
+			}
 		}
 
 		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
@@ -240,19 +242,22 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 				node.Spec.Unschedulable = false
 			}
 
-			klog.Infof("Adding labels on node %s", nodename)
+			// Only add labels if labels map is provided (non-nil and non-empty)
+			if len(labels) > 0 {
+				klog.Infof("Adding labels on node %s", nodename)
 
-			for k, v := range labels {
-				node.Labels[k] = v
+				for k, v := range labels {
+					node.Labels[k] = v
+				}
+
+				uncordonReason := node.Labels[cordonedReasonLabelKey]
+
+				if len(uncordonReason) > 55 {
+					uncordonReason = uncordonReason[:55]
+				}
+
+				node.Labels[uncordonedReasonLabelkey] = uncordonReason + "-removed"
 			}
-
-			uncordonReason := node.Labels[cordonedReasonLabelKey]
-
-			if len(uncordonReason) > 55 {
-				uncordonReason = uncordonReason[:55]
-			}
-
-			node.Labels[uncordonedReasonLabelkey] = uncordonReason + "-removed"
 		}
 
 		// Annotation check
