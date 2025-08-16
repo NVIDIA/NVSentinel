@@ -60,12 +60,17 @@ func (r *Reconciler) shouldSkipEvent(healthEventWithStatus storeconnector.Health
 		// NONE means no remediation needed
 		klog.Infof("Skipping event for node: %s, recommended action is NONE (no remediation needed)", nodeName)
 		return true
-	case platformconnector.RecommenedAction_NODE_REBOOT:
-		// NODE_REBOOT is supported - process this event
+	case platformconnector.RecommenedAction_NODE_REBOOT,
+		platformconnector.RecommenedAction_COMPONENT_RESET,
+		platformconnector.RecommenedAction_RESTART_VM,
+		platformconnector.RecommenedAction_RESET_FABRIC,
+		platformconnector.RecommenedAction_RESET_GPU,
+		platformconnector.RecommenedAction_RESTART_BM:
+		// need to reboot the node, hence process this event
 		return false
 	default:
 		// All other actions are currently unsupported
-		klog.Infof("Unsupported recommended action %s for node %s. Only NODE_REBOOT is currently supported",
+		klog.Infof("Unsupported recommended action %s for node %s. Only NODE_REBOOT, COMPONENT_RESET, RESTART_VM, RESET_FABRIC, RESET_GPU and RESTART_BM are supported",
 			action.String(), nodeName)
 		totalUnsupportedRemediationActions.WithLabelValues(action.String(), nodeName).Inc()
 		return true
