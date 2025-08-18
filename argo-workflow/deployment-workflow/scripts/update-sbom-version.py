@@ -15,24 +15,21 @@ from __future__ import annotations
 import base64
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from io import StringIO
 from typing import Any, Dict
 import gitlab
 import logging
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 
-
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger('update-sbom-version')
-from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
 
 
 def _save_result(path:str, data: dict) -> None:
@@ -264,8 +261,8 @@ def raise_ace_mr(version: str, ace_token: str, gitlab_url: str)-> Dict[str, Any]
         if not _branch_has_changes(project, base_ref, branch_name):
             logger.info(f"No differences between {base_ref} and {branch_name} – skipping MR")
             return {
-                    "status": "no-changes",
-                    "message": "No updates were necessary",
+                    "status": 'no-changes',
+                    "message": 'No changes to commit',
                     "version": version,
                     "branch": branch_name,
                 }
@@ -333,8 +330,8 @@ def raise_manifest_template_mr(version: str, manifest_template_token: str, gitla
                 f"No differences between {base_ref} and {branch_name} – exiting early"
             )
             return{
-                    "status": "no-changes",
-                    "message": "No updates were necessary",
+                    "status": 'no-changes',
+                    "message": 'No changes to commit',
                     "version": version,
                     "branch": branch_name,
                 }

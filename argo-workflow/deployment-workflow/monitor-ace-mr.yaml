@@ -37,9 +37,9 @@ spec:
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
       command: ["sh", "-c"]
-      args: ["pip install -q requests && python3 /scripts/monitor-sbom-mr.py"]
+      args: ["pip install -q requests && python3 /scripts/monitor-mr.py"]
       volumeMounts:
-      - name: monitor-mrs-script-volume
+      - name: monitor-mr-script-volume
         mountPath: /scripts
       env:
       - name: GITLAB_TOKEN
@@ -59,6 +59,6 @@ spec:
       - name: MR_DATA
         value: "{{inputs.parameters.mr-data}}"
     volumes:
-    - name: monitor-mrs-script-volume
+    - name: monitor-mr-script-volume
       configMap:
-        name: monitor-sbom-mr-script
+        name: monitor-mr-script

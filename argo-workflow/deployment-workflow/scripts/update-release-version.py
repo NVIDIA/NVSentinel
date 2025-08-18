@@ -104,35 +104,50 @@ def main():
             logger.info("Release file committed")
 
 
-        # Create or retrieve merge request
-        mrs = project.mergerequests.list(source_branch=branch_name, state='opened')
-        if mrs:
-            mr = mrs[0]
-            status = 'already-exists'
-            message = 'Existing MR found'
+            # Create or retrieve merge request
+            mrs = project.mergerequests.list(source_branch=branch_name, state='opened')
+            if mrs:
+                mr = mrs[0]
+                status = 'already-exists'
+                message = 'Existing MR found'
+                result = {
+                    'version': version,
+                    'status': status,
+                    'message': message,
+                    'mr_url': mr.web_url,
+                    'mr_iid': mr.iid,
+                    'branch': branch_name,
+                    'created_at': datetime.now(timezone.utc).isoformat() + 'Z'
+                }
+            else:
+                mr = project.mergerequests.create({
+                    'source_branch': branch_name,
+                    'target_branch': 'main',
+                    'title': f'chore: Update nvsentinel version to {version}',
+                    'description': f'This MR updates the nvsentinel version to {version}.',
+                    'remove_source_branch': True
+                })
+                status = 'created'
+                message = 'Successfully created MR'
+                result = {
+                    'version': version,
+                    'status': status,
+                    'message': message,
+                    'mr_url': mr.web_url,
+                    'mr_iid': mr.iid,
+                    'branch': branch_name,
+                    'created_at': datetime.now(timezone.utc).isoformat() + 'Z'
+                }
         else:
-            mr = project.mergerequests.create({
-                'source_branch': branch_name,
-                'target_branch': 'main',
-                'title': f'chore: Update nvsentinel version to {version}',
-                'description': f'This MR updates the nvsentinel version to {version}.',
-                'remove_source_branch': True
-            })
-            status = 'created'
-            message = 'Successfully created MR'
-
-        result = {
-            'version': version,
-            'status': status,
-            'message': message,
-            'mr_url': mr.web_url,
-            'mr_iid': mr.iid,
-            'branch': branch_name,
-            'created_at': datetime.now(timezone.utc).isoformat() + 'Z'
-        }
+            result = {
+                'version': version,
+                'status': 'no-changes',
+                'message': 'No changes to commit',
+            }
+            
         save_result(result)
-        logger.info(f"Result saved: {status}")
-        if status == 'failed':
+        logger.info(f"Result saved: {result.get('status')}")
+        if result.get('status') == 'failed':
             sys.exit(1)
 
     except Exception as e:

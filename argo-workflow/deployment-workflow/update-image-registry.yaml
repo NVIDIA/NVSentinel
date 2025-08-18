@@ -14,49 +14,62 @@
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: nvsentinel-monitor-mrs
+  name: nvsentinel-update-image-registry
   namespace: nvsentinel-system
 spec:
   serviceAccountName: nvsentinel-workflow-sa
   imagePullSecrets:
   - name: nvidia-ngcuser-pull-secret
   templates:
-  # Monitor single MR until completion
-  - name: monitor-mr
+  # Update release-nvsentinel.yaml in nvsentinel/{version} branch
+  - name: update-image-registry
     inputs:
       parameters:
       - name: version
-      - name: mr-data
     
     outputs:
       parameters:
-      - name: monitoring-result
+      - name: ace-image-sync-mr-result
         valueFrom:
-          path: /tmp/monitoring-result.json
+          path: /tmp/ace-image-sync-mr-result
+      - name: nvcr-registry-mr-result
+        valueFrom:
+          path: /tmp/nvcr-registry-mr-result
+      - name: bcp-registry-mr-result
+        valueFrom:
+          path: /tmp/bcp-registry-mr-result
     
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
       command: ["sh", "-c"]
-      args: ["pip install -q requests && python3 /scripts/monitor-mrs.py"]
+      args: ["apk add --no-cache git curl && python3 -m pip install --quiet ruamel.yaml && python3 /scripts/image-sync.py"]
       volumeMounts:
-      - name: monitor-mrs-script-volume
+      - name: image-sync-volume
         mountPath: /scripts
       env:
-      - name: MANIFEST_GITLAB_TOKEN
+      - name: ACE_GITLAB_TOKEN
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
-            key: manifest-token
+            key: ace-token
+      - name: NVCR_REGISTRY_GITLAB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: nvcr-registry-token
+      - name: BCP_REGISTRY_GITLAB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: bcp-registry-token
       - name: GITLAB_URL
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
             key: url
-      - name: MR_VERSION
+      - name: VERSION
         value: "{{inputs.parameters.version}}"
-      - name: MR_DATA
-        value: "{{inputs.parameters.mr-data}}"
     volumes:
-    - name: monitor-mrs-script-volume
+    - name: image-sync-volume
       configMap:
-        name: monitor-mrs-script
+        name: image-sync-script

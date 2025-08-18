@@ -25,7 +25,7 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger('monitor-mr')
+logger = logging.getLogger('monitor-cluster-mr')
 
 def main():
     """Monitor the status of a GitLab merge request created for a deployment pattern.

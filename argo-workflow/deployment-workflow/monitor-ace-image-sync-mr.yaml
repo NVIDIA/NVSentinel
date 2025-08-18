@@ -14,18 +14,20 @@
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: nvsentinel-monitor-release-mr
+  name: nvsentinel-monitor-ace-image-sync-mr
   namespace: nvsentinel-system
 spec:
   serviceAccountName: nvsentinel-workflow-sa
   imagePullSecrets:
   - name: nvidia-ngcuser-pull-secret
   templates:
-  - name: monitor-release-mr
+  # Monitor single MR until completion
+  - name: monitor-mr 
     inputs:
       parameters:
       - name: version
       - name: mr-data
+    
     outputs:
       parameters:
       - name: monitoring-result
@@ -34,31 +36,29 @@ spec:
     
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
-      command: ["python3", "-u","/scripts/monitor-release-mr.py"]
+      command: ["sh", "-c"]
+      args: ["pip install -q requests && python3 /scripts/monitor-mr.py"]
       volumeMounts:
-      - name: monitor-release-mr-script-volume
+      - name: monitor-mr-script-volume
         mountPath: /scripts
       env:
-      - name: NVSENTINEL_COMPONENT_GITLAB_TOKEN
+      - name: GITLAB_TOKEN
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
-            key: nvsentinel-component-token
+            key: ace-token
       - name: GITLAB_URL
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
             key: url
+      - name: PROJECT_PATH
+        value: "dgxcloud%2Fplatform%2Frelease%2Face"
       - name: MR_VERSION
         value: "{{inputs.parameters.version}}"
       - name: MR_DATA
         value: "{{inputs.parameters.mr-data}}"
-      - name: MAX_TIMEOUT_IN_MINUTES
-        valueFrom:
-          configMapKeyRef:
-            name: nvsentinel-cluster-patterns
-            key: maxTimeoutInMinutes
     volumes:
-    - name: monitor-release-mr-script-volume
+    - name: monitor-mr-script-volume
       configMap:
-        name: monitor-release-mr-script
+        name: monitor-mr-script

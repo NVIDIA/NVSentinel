@@ -17,6 +17,7 @@ metadata:
   name: nvsentinel-cluster-patterns
   namespace: nvsentinel-system
 data:
+  maxTimeoutInMinutes: "10080"
   clusters.yaml: |
     patterns:
       - name: "gcp-non-prod"

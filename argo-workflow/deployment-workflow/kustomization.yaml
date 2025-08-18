@@ -49,9 +49,17 @@ configMapGenerator:
       app.kubernetes.io/name: nvsentinel
       app.kubernetes.io/component: workflow
       app.kubernetes.io/part-of: nvsentinel-deployment
-- name: monitor-sbom-mr-script
+- name: monitor-mr-script
   files:
-  - scripts/monitor-sbom-mr.py
+  - scripts/monitor-mr.py
+  options:
+    labels:
+      app.kubernetes.io/name: nvsentinel
+      app.kubernetes.io/component: workflow
+      app.kubernetes.io/part-of: nvsentinel-deployment
+- name: image-sync-script
+  files:
+  - scripts/image-sync.py
   options:
     labels:
       app.kubernetes.io/name: nvsentinel
@@ -73,9 +81,9 @@ configMapGenerator:
       app.kubernetes.io/name: nvsentinel
       app.kubernetes.io/component: workflow
       app.kubernetes.io/part-of: nvsentinel-deployment
-- name: monitor-mrs-script
+- name: monitor-cluster-mr-script
   files:
-  - scripts/monitor-mrs.py
+  - scripts/monitor-cluster-mr.py
   options:
     labels:
       app.kubernetes.io/name: nvsentinel
@@ -96,7 +104,11 @@ resources:
 - update-sbom-version.yaml
 - monitor-ace-mr.yaml
 - monitor-manifest-template-mr.yaml
+- update-image-registry.yaml
+- monitor-ace-image-sync-mr.yaml
+- monitor-nvcr-registry-mr.yaml
+- monitor-bcp-registry-mr.yaml
 - find-clusters.yaml
 - create-mr.yaml
-- monitor-mrs.yaml
+- monitor-cluster-mr.yaml
 - update-version-status.yaml
