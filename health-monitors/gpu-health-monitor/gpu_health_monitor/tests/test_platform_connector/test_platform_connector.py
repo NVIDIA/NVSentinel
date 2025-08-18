@@ -177,6 +177,11 @@ class TestPlatformConnectors(unittest.TestCase):
                 )
             },
         )
+        fatal_dcgm_health_events_length = 0
+        for watch_name in dcgm_health_events.keys():
+            if dcgm_health_conditions_categorization_mapping_config[watch_name] == "Fatal":
+                fatal_dcgm_health_events_length += 1
+
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
         health_events = healthEventProcessor.health_events
@@ -188,7 +193,7 @@ class TestPlatformConnectors(unittest.TestCase):
             else:
                 assert event.isHealthy == True
                 assert event.checkName != ""
-                assert len(dcgm_health_events) * len(gpu_ids) == len(health_events)
+                assert fatal_dcgm_health_events_length * len(gpu_ids) == len(health_events)
 
         # check if cache is not updated with change no in event
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(

@@ -42,14 +42,14 @@ gpu_health_monitor_xid_errors = Gauge(
     labelnames=["node_name", "serial_number"],  # Labels
 )
 
-dcgm_health_events_non_fatal_health_events = Gauge(
-    "dcgm_health_events_non_fatal_count",
-    "Total number of non-fatal health events",
+dcgm_health_active_non_fatal_health_events = Gauge(
+    "dcgm_health_active_non_fatal_health_events",
+    "Total number of active non-fatal health events at any given time",
     labelnames=["event_type", "gpu_id"],
 )
 
-dcgm_health_events_fatal_health_events = Gauge(
-    "dcgm_health_events_fatal_count",
-    "Total number of fatal health events",
+dcgm_health_active_fatal_health_events = Gauge(
+    "dcgm_health_active_fatal_health_events",
+    "Total number of active fatal health events at any given time",
     labelnames=["event_type", "gpu_id"],
 )

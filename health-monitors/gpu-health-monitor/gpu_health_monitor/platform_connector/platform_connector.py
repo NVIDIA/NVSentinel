@@ -145,7 +145,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events.append(health_event)
 
             # Clear metric for connectivity failure
-            metrics.dcgm_health_events_fatal_health_events.labels(event_type=check_name, gpu_id="").set(0)
+            metrics.dcgm_health_active_fatal_health_events.labels(event_type=check_name, gpu_id="").set(0)
 
         if len(health_events):
             try:
@@ -231,14 +231,15 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                 )
                             )
                             if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
-                                metrics.dcgm_health_events_non_fatal_health_events.labels(
+                                metrics.dcgm_health_active_non_fatal_health_events.labels(
                                     event_type=check_name, gpu_id=gpu_id
                                 ).set(1)
                             else:
-                                metrics.dcgm_health_events_fatal_health_events.labels(
+                                metrics.dcgm_health_active_fatal_health_events.labels(
                                     event_type=check_name, gpu_id=gpu_id
                                 ).set(1)
                     else:
+
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
                         entities_impacted.append(entity)
@@ -251,29 +252,35 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
                             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
-                            health_events.append(
-                                platformconnector_pb2.HealthEvent(
-                                    version=self._version,
-                                    agent=self._agent,
-                                    componentClass=self._component_class,
-                                    checkName=check_name,
-                                    generatedTimestamp=timestamp,
-                                    isFatal=False,
-                                    isHealthy=True,
-                                    errorCode=[],
-                                    entitiesImpacted=entities_impacted,
-                                    message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
-                                    recommendedAction=platformconnector_pb2.NONE,
-                                    nodeName=self._node_name,
-                                    metadata={"SerialNumber": serials[gpu_id]},
-                                )
-                            )
+                            # Don't send health events for non-fatal health conditions when they are healthy
+                            # they will get published as node conditions which we don't want to do to have
+                            # consistency in the health events publishing logic
                             if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
-                                metrics.dcgm_health_events_non_fatal_health_events.labels(
+                                log.debug(f"Skipping non-fatal health event for watch {watch_name}")
+                            else:
+                                health_events.append(
+                                    platformconnector_pb2.HealthEvent(
+                                        version=self._version,
+                                        agent=self._agent,
+                                        componentClass=self._component_class,
+                                        checkName=check_name,
+                                        generatedTimestamp=timestamp,
+                                        isFatal=False,
+                                        isHealthy=True,
+                                        errorCode=[],
+                                        entitiesImpacted=entities_impacted,
+                                        message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                                        recommendedAction=platformconnector_pb2.NONE,
+                                        nodeName=self._node_name,
+                                        metadata={"SerialNumber": serials[gpu_id]},
+                                    )
+                                )
+                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
+                                metrics.dcgm_health_active_non_fatal_health_events.labels(
                                     event_type=check_name, gpu_id=gpu_id
                                 ).set(0)
                             else:
-                                metrics.dcgm_health_events_fatal_health_events.labels(
+                                metrics.dcgm_health_active_fatal_health_events.labels(
                                     event_type=check_name, gpu_id=gpu_id
                                 ).set(0)
             log.debug(f"dcgm health event is {health_events}")
@@ -287,6 +294,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def clear_xid_errors(self, gpu_ids: list, gpu_serials: dict[int, str]):
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             for gpu_id in gpu_ids:
+
                 serial = gpu_serials[gpu_id]
                 log.info("received callback for for clearing of xid errors")
                 timestamp = Timestamp()
@@ -469,6 +477,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     metadata={"SerialNumber": ""},
                 )
                 health_events.append(health_event)
+                metrics.dcgm_health_active_fatal_health_events.labels(event_type=check_name, gpu_id="").set(1)
 
             if len(health_events):
                 try:
