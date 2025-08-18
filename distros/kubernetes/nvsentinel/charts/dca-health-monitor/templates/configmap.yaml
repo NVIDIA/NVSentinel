@@ -20,8 +20,22 @@ metadata:
   labels:
     {{- include "dca-health-monitor.labels" . | nindent 4 }}
 data:
-  healthcheck_config: |
-    {{ .Values.clusterName }}:
+  fars_roles: |
+    DRACO_CLUSTER_GPU-H100
+    GPU-H100
+  healthcheck_conf: |
+    fars_host_endpoint: "localhost"
+    fars_cache_file: "/tmp/farsroles.txt"
+    fars_file_uid: 34000
+    fars_file_gid: 30
+    fars_static_file: "/etc/healthcheck/default/farsroles.txt"
+  cluster_conf: |
+    DRACO_CLUSTER_GPU-H100:
+      _is_slurm_node: false
+      _cluster:
+          name: GPU-H100
+
+    GPU-H100:
       hw_drv_gpu_bar1_util:
         max_util: 64
         timeout: 60

@@ -55,8 +55,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - "/opt/bin/nvsentinel/healthcheck_monitor"
-            - "-socket"
-            - {{ .Values.socketPath | quote }}
           env:
             - name: CLUSTER_NAME
               value: {{ .Values.clusterName }}
@@ -82,8 +80,15 @@ spec:
               mountPath: /dev/mem
               readOnly: true
             # Configuration files
-            - name: dca-health-monitor-config
-              mountPath: /etc/dca-health-monitor/healthcheck_config.yaml
+            - name: cluster-config-vol
+              mountPath: /etc/healthcheck/default/clusters/conf_hc_DRACO_CLUSTER_GPU-H100.yml
+              subPath: conf_hc_DRACO_CLUSTER_GPU-H100.yml
+            - name: fars-config-vol
+              mountPath: /etc/healthcheck/default/farsroles.txt
+              subPath: farsroles.txt
+            - name: hc-config-vol
+              mountPath: /etc/healthcheck/default/healthcheck.conf
+              subPath: healthcheck.conf
       volumes:
         - name: var-run-vol
           hostPath:
@@ -106,12 +111,28 @@ spec:
           hostPath:
             path: /dev/mem
         # Configuration volumes
-        - name: dca-health-monitor-config
+
+        # Cluster configuration
+        - name: cluster-config-vol
           configMap:
             name: dca-health-monitor-config
             items:
-            - key: healthcheck_config
-              path: healthcheck_config.yaml
+            - key: "cluster_conf"
+              path: "conf_hc_DRACO_CLUSTER_GPU-H100.yml"
+        # FARS configuration
+        - name: fars-config-vol
+          configMap:
+            name: dca-health-monitor-config
+            items:
+            - key: "fars_roles"
+              path: "farsroles.txt"
+        # Healthcheck configuration
+        - name: hc-config-vol
+          configMap:
+            name: dca-health-monitor-config
+            items:
+            - key: "healthcheck_conf"
+              path: "healthcheck.conf"
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

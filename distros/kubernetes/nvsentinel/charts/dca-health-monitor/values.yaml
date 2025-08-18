@@ -43,10 +43,10 @@ podSecurityContext: {}
   # fsGroup: 2000
 
 securityContext:
-  runAsUser: 0
-  privileged: true
-  capabilities:
-    add: ["SYSLOG"]
+   runAsUser: 0
+#  privileged: true
+#  capabilities:
+#    add: ["SYSLOG"]
 
 resources:
   limits:
