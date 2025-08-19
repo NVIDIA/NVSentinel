@@ -18,6 +18,7 @@ metadata:
   namespace: nvsentinel-system
 data:
   maxTimeoutInMinutes: "10080"
+  sbomReleaseBranch: "release/1.8.x"
   clusters.yaml: |
     patterns:
       - name: "gcp-non-prod"

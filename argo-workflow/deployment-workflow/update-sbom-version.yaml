@@ -59,6 +59,11 @@ spec:
             key: url
       - name: VERSION
         value: "{{inputs.parameters.version}}"
+      - name: SBOM_RELEASE_BRANCH
+        valueFrom:
+          configMapKeyRef:
+            name: nvsentinel-cluster-patterns
+            key: sbomReleaseBranch
     volumes:
     - name: update-sbom-version-script-volume
       configMap:
