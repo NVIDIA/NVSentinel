@@ -41,14 +41,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -59,6 +51,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -84,14 +78,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -105,6 +91,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -130,14 +118,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -148,6 +128,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -173,14 +155,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -191,6 +165,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -216,14 +192,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -234,6 +202,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -259,14 +229,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -277,6 +239,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -302,14 +266,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -320,6 +276,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -345,14 +303,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: cloud.google.com/gke-nodepool
-                    operator: In
-                    values:
-                      - customer-gpu
             nodeSelector:
               cloud.google.com/gke-nodepool: system
             tolerations:
@@ -363,6 +313,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -388,14 +340,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -409,6 +353,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -434,14 +380,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -455,6 +393,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -480,14 +420,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -501,6 +433,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -526,14 +460,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -547,6 +473,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -572,14 +500,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -593,6 +513,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -618,14 +540,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -639,6 +553,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -664,14 +580,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -685,6 +593,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -710,14 +620,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -731,6 +633,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -756,14 +660,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -777,6 +673,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -802,14 +700,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -823,6 +713,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]
@@ -848,14 +740,6 @@ data:
             enableNicHealthMonitor: false
           
           dgxcJanitor:
-            autotest:
-              allowed: true
-              nodeSelector:
-                matchExpressions:
-                  - key: nodeGroup
-                    operator: In
-                    values:
-                      - customer-gpu
             tolerations:
               - key: "dedicated"
                 operator: "Equal"
@@ -869,6 +753,8 @@ data:
 
           nvsentinel:
             faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
             nodeDrainerConfig: |
               evictionTimeoutInSeconds = "60"
               [[userNamespaces]]

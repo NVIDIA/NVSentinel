@@ -25,6 +25,7 @@ spec:
     inputs:
       parameters:
       - name: version
+      - name: user_id
     outputs:
       parameters:
       - name: ace-mr-result
@@ -59,11 +60,8 @@ spec:
             key: url
       - name: VERSION
         value: "{{inputs.parameters.version}}"
-      - name: SBOM_RELEASE_BRANCH
-        valueFrom:
-          configMapKeyRef:
-            name: nvsentinel-cluster-patterns
-            key: sbomReleaseBranch
+      - name: USER_ID
+        value: "{{inputs.parameters.user_id}}"
     volumes:
     - name: update-sbom-version-script-volume
       configMap:

@@ -35,7 +35,8 @@ spec:
     - name: timestamp
       description: "Deployment timestamp"
       default: "unknown"
-      
+    - name: user_id
+      description: "User who triggered the deployment"      
   templates:
   # Main deployment orchestration with duplicate check
   - name: deploy-nvsentinel
@@ -60,6 +61,8 @@ spec:
           parameters:
           - name: version
             value: "{{workflow.parameters.version}}"
+          - name: user_id
+            value: "{{workflow.parameters.user_id}}"
         depends: "check-existing-workflow"
         
       # Step 3: Monitor MR raised in nvsentinel-component repo
@@ -84,6 +87,8 @@ spec:
           parameters:
           - name: version
             value: "{{workflow.parameters.version}}"
+          - name: user_id
+            value: "{{workflow.parameters.user_id}}"
         depends: "monitor-release-mr"
 
       # Step 5: Monitor ACE MR
@@ -121,6 +126,8 @@ spec:
           parameters:
           - name: version
             value: "{{workflow.parameters.version}}"
+          - name: user_id
+            value: "{{workflow.parameters.user_id}}"
         depends: 'monitor-ace-mr.Succeeded && monitor-manifest-template-mr.Succeeded'
       
       # Step 8: Monitor ACE MR
@@ -182,6 +189,8 @@ spec:
           parameters:
           - name: version
             value: "{{workflow.parameters.version}}"
+          - name: user_id
+            value: "{{workflow.parameters.user_id}}"
           - name: clusters
             value: "{{tasks.find-clusters.outputs.parameters.clusters}}"
         depends: "find-clusters"

@@ -108,6 +108,7 @@ def _create_or_reuse_mr(
     base_ref: str,
     title: str,
     description: str,
+    user_id: str,
 ):
     """Create a new MR or reuse an open one for *branch_name* → *base_ref*."""
 
@@ -125,6 +126,7 @@ def _create_or_reuse_mr(
                 "title": title,
                 "description": description,
                 "remove_source_branch": True,
+                "assignee_id": user_id,
             }
         )
         status = "created"
@@ -343,7 +345,7 @@ def _update_bcp_images_file(original: str, version: str) -> str:
     yaml_rt.dump(doc, buf)
     return buf.getvalue()
 
-def raise_ace_mr(version: str, gitlab_token: str, gitlab_url: str) -> Dict[str, Any]:
+def raise_ace_mr(version: str, gitlab_token: str, gitlab_url: str, user_id: str) -> Dict[str, Any]:
     """Perform update flow and return MR metadata for the workflow."""
 
     project_path = "dgxcloud/platform/release/ace"
@@ -398,7 +400,7 @@ def raise_ace_mr(version: str, gitlab_token: str, gitlab_url: str) -> Dict[str, 
             f"version {version}. "
             "JIRA: NO-REF"
         )
-        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description)
+        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description, user_id)
 
         return {
             "version": version,
@@ -418,7 +420,7 @@ def raise_ace_mr(version: str, gitlab_token: str, gitlab_url: str) -> Dict[str, 
         )
         sys.exit(1)
 
-def raise_nvcr_registry_mr(version: str, gitlab_token: str, gitlab_url: str) -> Dict[str, Any]:
+def raise_nvcr_registry_mr(version: str, gitlab_token: str, gitlab_url: str, user_id: str) -> Dict[str, Any]:
     """Update charts.yaml and images.yaml in the nvcr-registry repo and open a MR."""
 
     project_path = "dgxcloud/mk8s/runai/nvcr-registry"
@@ -477,7 +479,7 @@ def raise_nvcr_registry_mr(version: str, gitlab_token: str, gitlab_url: str) -> 
             f"{version}."
             "JIRA: NO-REF"
         )
-        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description)
+        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description, user_id)
 
         return {
             "version": version,
@@ -497,7 +499,7 @@ def raise_nvcr_registry_mr(version: str, gitlab_token: str, gitlab_url: str) -> 
         )
         sys.exit(1)
 
-def raise_bcp_next_registry_mr(version: str, gitlab_token: str, gitlab_url: str) -> Dict[str, Any]:
+def raise_bcp_next_registry_mr(version: str, gitlab_token: str, gitlab_url: str, user_id: str) -> Dict[str, Any]:
     project_path = "ngcc/bcp-dot-next-registry"
     branch_name = f"nvsentinel-images/{version}"
     images_file_path = "images.yaml"
@@ -535,7 +537,7 @@ def raise_bcp_next_registry_mr(version: str, gitlab_token: str, gitlab_url: str)
             f"{version}."
             "JIRA: NO-REF"
         )
-        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description)
+        mr, status, message = _create_or_reuse_mr(project, branch_name, base_ref, title, description, user_id)
 
         return {
             "version": version,
@@ -555,7 +557,6 @@ def raise_bcp_next_registry_mr(version: str, gitlab_token: str, gitlab_url: str)
         )
         sys.exit(1)
 
-
 def main() -> None:  # noqa: C901 (complexity)
     """Entry-point when executed as a script."""
 
@@ -564,37 +565,38 @@ def main() -> None:  # noqa: C901 (complexity)
     ace_token = _get_env("ACE_GITLAB_TOKEN")
     nvcr_registry_token = _get_env("NVCR_REGISTRY_GITLAB_TOKEN")
     bcp_registry_token = _get_env("BCP_REGISTRY_GITLAB_TOKEN")
+    user_id = _get_env("USER_ID")
 
-    if not version or not gitlab_url or not ace_token or not nvcr_registry_token or not bcp_registry_token:
+    if not version or not gitlab_url or not ace_token or not nvcr_registry_token or not bcp_registry_token or not user_id:
         logger.error(
-            "[image-sync] ERROR: Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN)"
+            "[image-sync] ERROR: Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN, USER_ID)"
         )
         _save_result(
             "/tmp/image-sync-mr-result",
             {
                 "status": "failed",
-                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN)",
+                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN, USER_ID)",
             },
         )
         _save_result(
             "/tmp/runai-charts-mr-result",
             {
                 "status": "failed",
-                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN)",
+                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN, USER_ID)",
             },
         )
         _save_result(
             "/tmp/bcp-next-registry-mr-result",
             {
                 "status": "failed",
-                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN)",
+                "error": "Missing required environment variables (VERSION, GITLAB_URL, ACE_GITLAB_TOKEN, NVCR_REGISTRY_GITLAB_TOKEN, BCP_REGISTRY_GITLAB_TOKEN, USER_ID)",
             },
         )
         sys.exit(1)
 
-    image_sync_result = raise_ace_mr(version, ace_token, gitlab_url)
-    charts_result = raise_nvcr_registry_mr(version, nvcr_registry_token, gitlab_url)
-    bcp_result = raise_bcp_next_registry_mr(version, bcp_registry_token, gitlab_url)
+    image_sync_result = raise_ace_mr(version, ace_token, gitlab_url, user_id)
+    charts_result = raise_nvcr_registry_mr(version, nvcr_registry_token, gitlab_url, user_id)
+    bcp_result = raise_bcp_next_registry_mr(version, bcp_registry_token, gitlab_url, user_id)
 
     _save_result("/tmp/ace-image-sync-mr-result", image_sync_result)
     _save_result("/tmp/nvcr-registry-mr-result", charts_result)

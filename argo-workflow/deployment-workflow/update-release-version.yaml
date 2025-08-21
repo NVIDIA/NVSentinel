@@ -26,6 +26,7 @@ spec:
     inputs:
       parameters:
       - name: version
+      - name: user_id
     
     outputs:
       parameters:
@@ -52,6 +53,8 @@ spec:
             key: url
       - name: VERSION
         value: "{{inputs.parameters.version}}"
+      - name: USER_ID
+        value: "{{inputs.parameters.user_id}}"
     volumes:
     - name: update-release-version-script-volume
       configMap:

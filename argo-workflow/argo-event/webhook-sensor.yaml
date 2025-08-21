@@ -64,6 +64,8 @@ spec:
                   value: "gitlab-webhook"
                 - name: timestamp
                   value: ""
+                - name: user_id
+                  value: ""
               ttlStrategy:
                 secondsAfterCompletion: 86400
               podGC:
@@ -85,3 +87,7 @@ spec:
             dependencyName: gitlab-tag-dep
             dataTemplate: "{{ .Input.body.timestamp | default now }}"
           dest: spec.arguments.parameters.3.value
+        - src:
+            dependencyName: gitlab-tag-dep
+            dataKey: body.user_id
+          dest: spec.arguments.parameters.4.value

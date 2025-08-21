@@ -79,7 +79,6 @@ def _update_yaml_content(original: str, version: str) -> str:
     source_map["revision"] = version
     source_map["url"] = "https://gitlab-master.nvidia.com/dgxcloud/mk8s/components/nvsentinel.git"
     nvsentinel_new["source"] = source_map
-
     infra["nvsentinel"] = nvsentinel_new
 
     # Dump back to string preserving formatting
@@ -143,6 +142,7 @@ def _create_or_reuse_mr(
     base_ref: str,
     title: str,
     description: str,
+    user_id: str,
 ):
     """Create a new MR or reuse an open one for *branch_name* → *base_ref*."""
 
@@ -160,6 +160,7 @@ def _create_or_reuse_mr(
                 "title": title,
                 "description": description,
                 "remove_source_branch": True,
+                "assignee_id": user_id,
             }
         )
         status = "created"
@@ -169,35 +170,32 @@ def _create_or_reuse_mr(
     logger.info(f"MR URL: {mr.web_url}")
     return mr, status, message
 
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:  # noqa: C901 (complexity) – acceptable for script entry
     version = _get_env("VERSION")
     gitlab_url = _get_env("GITLAB_URL")
     manifest_template_token = _get_env("MANIFEST_TEMPLATE_GITLAB_TOKEN")
     ace_token = _get_env("ACE_GITLAB_TOKEN")
-    sbom_release_branch = _get_env("SBOM_RELEASE_BRANCH")
+    user_id = _get_env("USER_ID")
     
-    if not version or not gitlab_url or not manifest_template_token or not ace_token or not sbom_release_branch:
-        logger.error(f"[update-sbom-version] ERROR: Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, SBOM_RELEASE_BRANCH)")
+    if not version or not gitlab_url or not manifest_template_token or not ace_token or not user_id:
+        logger.error(f"[update-sbom-version] ERROR: Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, USER_ID)")
         _save_result("/tmp/ace-mr-result",
             {
                 "status": "failed",
-                "error": "Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, SBOM_RELEASE_BRANCH)",
+                "error": "Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, USER_ID)",
             }
         )
         _save_result("/tmp/manifest-template-mr-result",
             {
                 "status": "failed",
-                "error": "Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, SBOM_RELEASE_BRANCH)",
+                "error": "Missing required environment variables (VERSION, GITLAB_URL, *_GITLAB_TOKEN, USER_ID)",
             }
         )
         sys.exit(1)
 
     # Run the two update flows sequentially – failures will exit immediately
-    ace_mr = raise_ace_mr(version, ace_token, gitlab_url)
-    manifest_mr = raise_manifest_template_mr(version, manifest_template_token, gitlab_url, sbom_release_branch)
+    ace_mr = raise_ace_mr(version, ace_token, gitlab_url, user_id)
+    manifest_mr = raise_manifest_template_mr(version, manifest_template_token, gitlab_url, user_id)
     _save_result("/tmp/ace-mr-result", ace_mr)
     _save_result("/tmp/manifest-template-mr-result", manifest_mr)
 
@@ -235,7 +233,7 @@ def _update_ace_manifest_content(original: str, version: str) -> str:
     return buf.getvalue()
 
 
-def raise_ace_mr(version: str, ace_token: str, gitlab_url: str)-> Dict[str, Any]:
+def raise_ace_mr(version: str, ace_token: str, gitlab_url: str, user_id: str)-> Dict[str, Any]:
     project_path = "dgxcloud/platform/release/ace"
     branch_name = f"nvsentinel/{version}"
 
@@ -278,6 +276,7 @@ def raise_ace_mr(version: str, ace_token: str, gitlab_url: str)-> Dict[str, Any]
             base_ref,
             title,
             description,
+            user_id,
         )
 
         return {
@@ -301,13 +300,13 @@ def raise_ace_mr(version: str, ace_token: str, gitlab_url: str)-> Dict[str, Any]
         sys.exit(1)
 
 
-def raise_manifest_template_mr(version: str, manifest_template_token: str, gitlab_url: str, release_branch: str)-> Dict[str, Any]:
+def raise_manifest_template_mr(version: str, manifest_template_token: str, gitlab_url: str, user_id: str)-> Dict[str, Any]:
     project_path = "dgxcloud/mk8s/dgxc/manifests-templates"
     branch_name = f"nvsentinel-{version}"
 
     try:
         project = _get_project(gitlab_url, manifest_template_token, project_path)
-        base_ref = release_branch
+        base_ref = "main"
         _ensure_branch(project, branch_name, base_ref)
 
         release_files = ["release-dgxc.yaml"]
@@ -347,6 +346,7 @@ def raise_manifest_template_mr(version: str, manifest_template_token: str, gitla
             base_ref,
             title,
             description,
+            user_id,
         )
 
         return  {

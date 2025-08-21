@@ -27,6 +27,7 @@ spec:
       parameters:
       - name: version
       - name: clusters
+      - name: user_id
     
     outputs:
       parameters:
@@ -56,6 +57,8 @@ spec:
         value: "{{inputs.parameters.version}}"
       - name: CLUSTERS
         value: "{{inputs.parameters.clusters}}"
+      - name: USER_ID
+        value: "{{inputs.parameters.user_id}}"
     volumes:
     - name: create-mr-script-volume
       configMap:
