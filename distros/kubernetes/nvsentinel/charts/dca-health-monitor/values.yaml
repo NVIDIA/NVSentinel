@@ -44,7 +44,7 @@ podSecurityContext: {}
 
 securityContext:
    runAsUser: 0
-#  privileged: true
+   privileged: true
 #  capabilities:
 #    add: ["SYSLOG"]
 

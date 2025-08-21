@@ -75,9 +75,9 @@ spec:
               mountPath: /nvsentinel/sys
             - name: proc-vol
               mountPath: /nvsentinel/proc
-            # For dmidecode
-            - name: dev-mem
-              mountPath: /dev/mem
+            # For nvme drives read
+            - name: dev
+              mountPath: /dev
               readOnly: true
             # Configuration files
             - name: cluster-config-vol
@@ -106,10 +106,11 @@ spec:
           hostPath:
             path: /proc
             type: Directory
-        # For dmidecode
-        - name: dev-mem
+        # For nvme drives read
+        - name: dev
           hostPath:
-            path: /dev/mem
+            path: /dev
+            type: Directory
         # Configuration volumes
 
         # Cluster configuration
