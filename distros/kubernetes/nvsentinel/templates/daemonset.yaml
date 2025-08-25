@@ -102,6 +102,8 @@ spec:
           secret:
             secretName: mongo-app-client-cert-secret
             optional: true
+      {{- with .Values.tolerations }}
       tolerations:
-        - operator: Exists
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 

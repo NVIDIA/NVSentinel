@@ -196,10 +196,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- end }}
+      {{- with .Values.mongodb.jobTolerations }}
       tolerations:
-        - effect: NoSchedule
-          operator: Exists
-        - effect: NoExecute
-          operator: Exists
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       restartPolicy: OnFailure
 {{ end }}

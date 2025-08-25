@@ -172,11 +172,9 @@ mongodb:
     - "--setParameter"
     - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
 
-  tolerations:
-    - effect: NoSchedule
-      operator: Exists
-    - effect: NoExecute
-      operator: Exists
+  tolerations: []
+      
+  jobTolerations: []
 
   arbiter:
     enabled: false

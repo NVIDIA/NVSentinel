@@ -35,14 +35,9 @@ serviceAccount:
   annotations: {}
   name: ""
 
-nodeSelector:
-  nodeGroup: "system-cpu"
+nodeSelector: {}
 
-tolerations:
-  - effect: NoSchedule
-    operator: Exists
-  - effect: NoExecute
-    operator: Exists
+tolerations: []
 
 metricsPort: 2112
 

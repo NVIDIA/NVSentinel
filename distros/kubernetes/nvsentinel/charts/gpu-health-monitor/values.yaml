@@ -33,19 +33,13 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-nodeSelector:
-  nvidia.com/gpu.present: "true"
+nodeSelector: {}
 
-tolerations: 
-  - effect: NoSchedule
-    operator: Exists
-  - effect: NoExecute
-    operator: Exists
+tolerations: []
 
 affinity: {}
 
 metricsPort: 2112
 stateFilePath: "/var/run/statefile"
 
-systemNodeSelector:
-  nodeGroup: "system-cpu"
+systemNodeSelector: {}

@@ -48,14 +48,9 @@ serviceAccount:
   annotations: {}
   name: ""
   
-nodeSelector:
-  nodeGroup: "system-cpu"
+nodeSelector: {}
 
-tolerations:
-  - effect: NoSchedule
-    operator: Exists
-  - effect: NoExecute
-    operator: Exists
+tolerations: []
 
 # Port for the main CSP Health Monitor's Prometheus metrics endpoint
 metricsPort: 2112
