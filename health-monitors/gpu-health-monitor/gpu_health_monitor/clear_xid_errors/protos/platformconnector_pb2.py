@@ -26,7 +26,7 @@ from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17platformconnector.proto\x12\x11platformconnector\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"O\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12.\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x1e.platformconnector.HealthEvent\"1\n\x06\x45ntity\x12\x12\n\nentityType\x18\x01 \x01(\t\x12\x13\n\x0b\x65ntityValue\x18\x02 \x01(\t\"\xd0\x03\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12>\n\x11recommendedAction\x18\x08 \x01(\x0e\x32#.platformconnector.RecommenedAction\x12\x11\n\terrorCode\x18\t \x03(\t\x12\x33\n\x10\x65ntitiesImpacted\x18\n \x03(\x0b\x32\x19.platformconnector.Entity\x12>\n\x08metadata\x18\x0b \x03(\x0b\x32,.platformconnector.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x10\n\x08nodeName\x18\r \x01(\t\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01*\xc3\x04\n\x10RecommenedAction\x12\x08\n\x04NONE\x10\x00\x12\x0f\n\x0bNODE_REBOOT\x10\x01\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x19\n\x15\x43OMPONENT_REPLACEMENT\x10\x03\x12\x17\n\x13\x41PPLICATION_RESTART\x10\x04\x12\x10\n\x0cREPORT_ISSUE\x10\x05\x12\x11\n\rRUN_FIELDDIAG\x10\x06\x12\x16\n\x12WORKFLOW_XID_13_31\x10\x07\x12\x19\n\x15WORKFLOW_ECC_DBE_SRAM\x10\x08\x12\x18\n\x14WORKFLOW_NVLINK5_ERR\x10\t\x12\x13\n\x0fWORKFLOW_XID_45\x10\n\x12\x13\n\x0fWORKFLOW_XID_48\x10\x0b\x12\x15\n\x11\x43HECK_MECHANICALS\x10\x0c\x12\x17\n\x13WORKFLOW_NVLINK_ERR\x10\r\x12\x0f\n\x0bUPDATE_SWFW\x10\x0e\x12\x0e\n\nRESTART_VM\x10\x0f\x12\x10\n\x0cRESET_FABRIC\x10\x10\x12(\n$WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR\x10\x11\x12\x13\n\x0f\x43HECK_FM_CONFIG\x10\x12\x12\x12\n\x0e\x43HECK_THERMALS\x10\x13\x12\r\n\tRESET_GPU\x10\x14\x12%\n!CHECK_LINK_MECHANICAL_CONNECTIONS\x10\x15\x12\x17\n\x13INVESTIGATE_LINK_SI\x10\x16\x12\r\n\tCHECK_UVM\x10\x17\x12\x0e\n\nRESTART_BM\x10\x18\x12\x0b\n\x07UNKNOWN\x10\x63\x32\x66\n\x11PlatformConnector\x12Q\n\x14HealthEventOccuredV1\x12\x1f.platformconnector.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00\x42RZPgitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectorsb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17platformconnector.proto\x12\x11platformconnector\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"O\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12.\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x1e.platformconnector.HealthEvent\"1\n\x06\x45ntity\x12\x12\n\nentityType\x18\x01 \x01(\t\x12\x13\n\x0b\x65ntityValue\x18\x02 \x01(\t\"\xd3\x04\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12>\n\x11recommendedAction\x18\x08 \x01(\x0e\x32#.platformconnector.RecommenedAction\x12\x11\n\terrorCode\x18\t \x03(\t\x12\x33\n\x10\x65ntitiesImpacted\x18\n \x03(\x0b\x32\x19.platformconnector.Entity\x12>\n\x08metadata\x18\x0b \x03(\x0b\x32,.platformconnector.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x10\n\x08nodeName\x18\r \x01(\t\x12\x42\n\x13quarantineOverrides\x18\x0e \x01(\x0b\x32%.platformconnector.BehaviourOverrides\x12=\n\x0e\x64rainOverrides\x18\x0f \x01(\x0b\x32%.platformconnector.BehaviourOverrides\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"1\n\x12\x42\x65haviourOverrides\x12\r\n\x05\x66orce\x18\x01 \x01(\x08\x12\x0c\n\x04skip\x18\x02 \x01(\x08*\xc3\x04\n\x10RecommenedAction\x12\x08\n\x04NONE\x10\x00\x12\x0f\n\x0bNODE_REBOOT\x10\x01\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x19\n\x15\x43OMPONENT_REPLACEMENT\x10\x03\x12\x17\n\x13\x41PPLICATION_RESTART\x10\x04\x12\x10\n\x0cREPORT_ISSUE\x10\x05\x12\x11\n\rRUN_FIELDDIAG\x10\x06\x12\x16\n\x12WORKFLOW_XID_13_31\x10\x07\x12\x19\n\x15WORKFLOW_ECC_DBE_SRAM\x10\x08\x12\x18\n\x14WORKFLOW_NVLINK5_ERR\x10\t\x12\x13\n\x0fWORKFLOW_XID_45\x10\n\x12\x13\n\x0fWORKFLOW_XID_48\x10\x0b\x12\x15\n\x11\x43HECK_MECHANICALS\x10\x0c\x12\x17\n\x13WORKFLOW_NVLINK_ERR\x10\r\x12\x0f\n\x0bUPDATE_SWFW\x10\x0e\x12\x0e\n\nRESTART_VM\x10\x0f\x12\x10\n\x0cRESET_FABRIC\x10\x10\x12(\n$WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR\x10\x11\x12\x13\n\x0f\x43HECK_FM_CONFIG\x10\x12\x12\x12\n\x0e\x43HECK_THERMALS\x10\x13\x12\r\n\tRESET_GPU\x10\x14\x12%\n!CHECK_LINK_MECHANICAL_CONNECTIONS\x10\x15\x12\x17\n\x13INVESTIGATE_LINK_SI\x10\x16\x12\r\n\tCHECK_UVM\x10\x17\x12\x0e\n\nRESTART_BM\x10\x18\x12\x0b\n\x07UNKNOWN\x10\x63\x32\x66\n\x11PlatformConnector\x12Q\n\x14HealthEventOccuredV1\x12\x1f.platformconnector.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00\x42RZPgitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectorsb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,16 +36,18 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._serialized_options = b'ZPgitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors'
   _globals['_HEALTHEVENT_METADATAENTRY']._loaded_options = None
   _globals['_HEALTHEVENT_METADATAENTRY']._serialized_options = b'8\001'
-  _globals['_RECOMMENEDACTION']._serialized_start=708
-  _globals['_RECOMMENEDACTION']._serialized_end=1287
+  _globals['_RECOMMENEDACTION']._serialized_start=890
+  _globals['_RECOMMENEDACTION']._serialized_end=1469
   _globals['_HEALTHEVENTS']._serialized_start=108
   _globals['_HEALTHEVENTS']._serialized_end=187
   _globals['_ENTITY']._serialized_start=189
   _globals['_ENTITY']._serialized_end=238
   _globals['_HEALTHEVENT']._serialized_start=241
-  _globals['_HEALTHEVENT']._serialized_end=705
-  _globals['_HEALTHEVENT_METADATAENTRY']._serialized_start=658
-  _globals['_HEALTHEVENT_METADATAENTRY']._serialized_end=705
-  _globals['_PLATFORMCONNECTOR']._serialized_start=1289
-  _globals['_PLATFORMCONNECTOR']._serialized_end=1391
+  _globals['_HEALTHEVENT']._serialized_end=836
+  _globals['_HEALTHEVENT_METADATAENTRY']._serialized_start=789
+  _globals['_HEALTHEVENT_METADATAENTRY']._serialized_end=836
+  _globals['_BEHAVIOUROVERRIDES']._serialized_start=838
+  _globals['_BEHAVIOUROVERRIDES']._serialized_end=887
+  _globals['_PLATFORMCONNECTOR']._serialized_start=1471
+  _globals['_PLATFORMCONNECTOR']._serialized_end=1573
 # @@protoc_insertion_point(module_scope)

@@ -83,7 +83,7 @@ class Entity(_message.Message):
     def __init__(self, entityType: _Optional[str] = ..., entityValue: _Optional[str] = ...) -> None: ...
 
 class HealthEvent(_message.Message):
-    __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName")
+    __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName", "quarantineOverrides", "drainOverrides")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -104,6 +104,8 @@ class HealthEvent(_message.Message):
     METADATA_FIELD_NUMBER: _ClassVar[int]
     GENERATEDTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     NODENAME_FIELD_NUMBER: _ClassVar[int]
+    QUARANTINEOVERRIDES_FIELD_NUMBER: _ClassVar[int]
+    DRAINOVERRIDES_FIELD_NUMBER: _ClassVar[int]
     version: int
     agent: str
     componentClass: str
@@ -117,4 +119,14 @@ class HealthEvent(_message.Message):
     metadata: _containers.ScalarMap[str, str]
     generatedTimestamp: _timestamp_pb2.Timestamp
     nodeName: str
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ...) -> None: ...
+    quarantineOverrides: BehaviourOverrides
+    drainOverrides: BehaviourOverrides
+    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...) -> None: ...
+
+class BehaviourOverrides(_message.Message):
+    __slots__ = ("force", "skip")
+    FORCE_FIELD_NUMBER: _ClassVar[int]
+    SKIP_FIELD_NUMBER: _ClassVar[int]
+    force: bool
+    skip: bool
+    def __init__(self, force: bool = ..., skip: bool = ...) -> None: ...

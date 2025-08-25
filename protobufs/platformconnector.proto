@@ -81,4 +81,11 @@ message HealthEvent {
   map<string, string> metadata = 11;
   google.protobuf.Timestamp generatedTimestamp = 12;
   string nodeName = 13;
+  BehaviourOverrides quarantineOverrides = 14;
+  BehaviourOverrides drainOverrides = 15;
+}
+
+message BehaviourOverrides {
+  bool force = 1;
+  bool skip = 2;
 }
