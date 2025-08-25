@@ -29,6 +29,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"k8s.io/klog/v2"
 )
@@ -113,7 +114,10 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
-	coll := client.Database(mongoConfig.Database).Collection(mongoConfig.Collection)
+	// Set read preference to SecondaryPreferred for change streams
+	// This allows reading from secondaries while falling back to primary if needed
+	collOpts := options.Collection().SetReadPreference(readpref.SecondaryPreferred())
+	coll := client.Database(mongoConfig.Database).Collection(mongoConfig.Collection, collOpts)
 
 	// Confirm connectivity to the token database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, tokenConfig.TokenDatabase,
@@ -122,8 +126,14 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
-	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection)
+	// Use majority write concern for resume tokens to ensure consistency across replicas
+	// This is critical when reading change streams from secondaries
+	wc := writeconcern.Majority()
+	rc := readconcern.Majority()
+	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc)
+	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
+	// Change streams will inherit the read preference from the collection (SecondaryPreferred)
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 
 	var storedToken TokenDoc

@@ -57,6 +57,9 @@ mongodb:
     resourcePolicy: "keep"
   
   automountServiceAccountToken: true
+  
+  pdb:
+    minAvailable: 2  # At least 2 replicas must be available (ensures quorum)
 
   initContainers:
     - name: create-mongodb-credentials
@@ -187,5 +190,10 @@ mongodb:
       tag: 0.41.2-debian-12-r1
       pullSecrets:
       - nvidia-ngcuser-pull-secret
+    command:
+      - /bin/bash
+      - -ec
     args:
-      - "/bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address \":9216\" --mongodb.uri \"mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r \"s/@/%40/g;s/:/%3A/g\")@nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert\""
+      - |
+        export HOSTNAME=$(hostname)
+        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
