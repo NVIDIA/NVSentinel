@@ -98,6 +98,162 @@ data:
               [[userNamespaces]]
                 name = "runai*"
                 mode = "AllowCompletion"
+      - name: "osmo-non-prod"
+        include: "(osmogroot-dgxc-k8s-dev1)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: true
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - gpu
+            nodeSelector:
+              nodeGroup: monitoring
+            serviceAccount:
+              annotations:
+                azure.workload.identity/client-id: 6d7529ef-faa1-4078-9e0c-313a350e9a7e
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "osmo*"
+                mode = "AllowCompletion"
+      - name: "nvs-dev3-non-prod"
+        include: "(nvs-dgxc-k8s-oci-lhr-dev3)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: true
+          
+          dgxcJanitor:
+            nodeSelector:
+              nodeGroup: monitoring
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "nvs*"
+                mode = "AllowCompletion"
+      - name: "nvs-dev1-non-prod"
+        include: "(nvs-dgxc-k8s-oci-ord-dev1)$"
+        exclude: ""
+        spec:
+          templates:
+            include:
+              - release: dgxc-janitor
+                revision: janitor/1.20.0-1.24.3
+              
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            dgxcJanitorEnabled: true
+            enableNicHealthMonitor: true
+          
+          dgxcJanitor:
+            autotest:
+              allowed: true
+              nodeSelector:
+                matchExpressions:
+                  - key: nodeGroup
+                    operator: In
+                    values:
+                      - customer-gpu
+            nodeSelector:
+              nodeGroup: system-cpu
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "nvs*"
+                mode = "AllowCompletion"
+      - name: "t3141592-non-prod"
+        include: "(t3141592-dgxc-k8s-runai-aws-use1-dev0)$"
+        exclude: ""
+        spec:  
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            enableNicHealthMonitor: true
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "aws*"
+                mode = "AllowCompletion"
+      
+      - name: "nvs-oci-dev1-non-prod"
+        include: "(nvs-dgxc-k8s-azr-scus-dev1)$"
+        exclude: ""
+        spec:
+          featureFlags:
+            enableFaultQuarantineModule: true
+            enableMongodbStore: true
+            enableSysLogHealthMonitor: true
+            enableNodeDrainerModule: true
+            enableFaultRemediationModule: true
+            enableNicHealthMonitor: true
+
+          nvsentinel:
+            faultHandlingDryRun: true
+            nodeSelector:
+              nodeGroup: "system-cpu"
+            nodeDrainerConfig: |
+              evictionTimeoutInSeconds = "60"
+              [[userNamespaces]]
+                name = "nvs*"
+                mode = "AllowCompletion"
+      
       - name: "gcp-prod-b3202842"
         include: "(b3202842-dgxc-runai-gcp-cmh-prd0)$"
         exclude: ""

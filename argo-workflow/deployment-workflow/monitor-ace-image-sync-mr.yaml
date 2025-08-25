@@ -58,6 +58,11 @@ spec:
         value: "{{inputs.parameters.version}}"
       - name: MR_DATA
         value: "{{inputs.parameters.mr-data}}"
+      - name: MAX_TIMEOUT_IN_MINUTES
+        valueFrom:
+          configMapKeyRef:
+            name: nvsentinel-cluster-patterns
+            key: maxTimeoutInMinutes
     volumes:
     - name: monitor-mr-script-volume
       configMap:

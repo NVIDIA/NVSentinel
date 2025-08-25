@@ -14,56 +14,46 @@
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
-  name: nvsentinel-monitor-ace-mr
+  name: nvsentinel-run-autotest
   namespace: nvsentinel-system
 spec:
   serviceAccountName: nvsentinel-workflow-sa
   imagePullSecrets:
   - name: nvidia-ngcuser-pull-secret
   templates:
-  # Monitor single MR until completion
-  - name: monitor-mr
+  - name: run-autotest
     inputs:
       parameters:
       - name: version
-      - name: mr-data
-    
+      - name: cluster-data
     outputs:
       parameters:
-      - name: monitoring-result
+      - name: autotest-result
         valueFrom:
-          path: /tmp/monitoring-result.json
+          path: /tmp/autotest-result.json
     
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
-      command: ["sh", "-c"]
-      args: ["pip install -q requests && python3 /scripts/monitor-mr.py"]
+      command: ["python3", "-u","/scripts/run-autotest.py"]
       volumeMounts:
-      - name: monitor-mr-script-volume
+      - name: run-autotest-script-volume
         mountPath: /scripts
       env:
       - name: GITLAB_TOKEN
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
-            key: ace-token
+            key: autotest-token
       - name: GITLAB_URL
         valueFrom:
           secretKeyRef:
             name: gitlab-credentials
             key: url
-      - name: PROJECT_PATH
-        value: "dgxcloud%2Fplatform%2Frelease%2Face"
       - name: MR_VERSION
         value: "{{inputs.parameters.version}}"
-      - name: MR_DATA
-        value: "{{inputs.parameters.mr-data}}"
-      - name: MAX_TIMEOUT_IN_MINUTES
-        valueFrom:
-          configMapKeyRef:
-            name: nvsentinel-cluster-patterns
-            key: maxTimeoutInMinutes
+      - name: CLUSTER_DATA
+        value: "{{inputs.parameters.cluster-data}}"
     volumes:
-    - name: monitor-mr-script-volume
+    - name: run-autotest-script-volume
       configMap:
-        name: monitor-mr-script
+        name: run-autotest-script

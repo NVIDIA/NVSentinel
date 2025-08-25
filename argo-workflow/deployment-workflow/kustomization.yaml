@@ -65,6 +65,14 @@ configMapGenerator:
       app.kubernetes.io/name: nvsentinel
       app.kubernetes.io/component: workflow
       app.kubernetes.io/part-of: nvsentinel-deployment
+- name: run-autotest-script
+  files:
+  - scripts/run-autotest.py
+  options:
+    labels:
+      app.kubernetes.io/name: nvsentinel
+      app.kubernetes.io/component: workflow
+      app.kubernetes.io/part-of: nvsentinel-deployment
 - name: find-clusters-script
   files:
   - scripts/find-clusters.py
@@ -108,6 +116,8 @@ resources:
 - monitor-ace-image-sync-mr.yaml
 - monitor-nvcr-registry-mr.yaml
 - monitor-bcp-registry-mr.yaml
+- create-non-prod-mrs.yaml
+- run-autotest.yaml
 - find-clusters.yaml
 - create-mr.yaml
 - monitor-cluster-mr.yaml

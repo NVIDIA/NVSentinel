@@ -42,6 +42,7 @@ def main():
     # Parse input parameters from environment
     version = os.getenv('MR_VERSION')
     raw_mr_data = os.getenv('MR_DATA')
+    max_checks = int(os.getenv('MAX_TIMEOUT_IN_MINUTES', '60'))
     
     logger.info(f"Version: {version}")
 
@@ -99,8 +100,6 @@ def main():
     gl = gitlab.Gitlab(gitlab_url, private_token=gitlab_token)
     project = gl.projects.get(project_path)
     branch_name = mr_data.get('branch') or f"nvsentinel/{version}"
-
-    max_checks = 10080  # 7 days maximum (10080 * 1 minute)
     
     try:
         # Handle case with no MR immediately

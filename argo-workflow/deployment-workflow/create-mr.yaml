@@ -59,6 +59,8 @@ spec:
         value: "{{inputs.parameters.clusters}}"
       - name: USER_ID
         value: "{{inputs.parameters.user_id}}"
+      - name: DEPLOY_TYPE
+        value: "prod"
     volumes:
     - name: create-mr-script-volume
       configMap:

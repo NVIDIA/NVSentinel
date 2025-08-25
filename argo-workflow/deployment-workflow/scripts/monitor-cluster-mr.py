@@ -28,24 +28,25 @@ logging.basicConfig(
 logger = logging.getLogger('monitor-cluster-mr')
 
 def main():
-    """Monitor the status of a GitLab merge request created for a deployment pattern.
+    """
+        Monitor the status of a GitLab merge request created for a deployment pattern.
     """
 
     # Parse input parameters from environment
     version = os.getenv('MR_VERSION')
     raw_mr_data = os.getenv('MR_DATA')
-
+    max_checks = int(os.getenv('MAX_TIMEOUT_IN_MINUTES', '60'))
     logger.info(f"Version: {version}")
 
     # Parse MR data
     try:
         mr_data = json.loads(raw_mr_data)
-        logger.info("MR data JSON parsed successfully")
+        logger.debug("MR data JSON parsed successfully")
     except Exception as e:
         logger.error(f"Error parsing MR data: {e}")
         result = {
             'pattern_name': 'unknown',
-            'clusters': [],
+            'clusters': {},
             'version': version,
             'mr_iid': None,
             'mr_url': '',
@@ -57,17 +58,17 @@ def main():
         }
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(result, f, indent=2)
-        sys.exit(0)
+        sys.exit(1)
 
     # Extract MR information (now pattern-based, not cluster-based)
     pattern_name = mr_data.get('pattern_name', 'unknown')
-    clusters = mr_data.get('clusters', [])
+    clusters = mr_data.get('clusters', {})
     mr_iid = mr_data.get('mr_iid')
     mr_url = mr_data.get('mr_url', '')
     mr_status = mr_data.get('status', 'unknown')
 
     cluster_count = len(clusters)
-    cluster_names_str = ', '.join(clusters[:3]) + ('...' if len(clusters) > 3 else '')
+    cluster_names_str = ', '.join(clusters.keys())
 
     logger.info(f"Pattern: {pattern_name} | Clusters: {cluster_count} ({cluster_names_str}) | MR: !{mr_iid}")
 
@@ -85,14 +86,19 @@ def main():
     }
 
     # Skip monitoring if MR creation failed
-    if mr_status in ['failed', 'error'] or not mr_iid:
-        logger.info(f"Skipping monitoring - MR creation failed or no MR ID")
-        monitoring_result['final_status'] = 'failed'
+    if mr_status in ['failed', 'error', 'skipped'] or not mr_iid:
+        logger.error("Skipping monitoring - MR creation failed or no MR ID")
+        monitoring_result['final_status'] = mr_status
         monitoring_result['message'] = 'MR creation failed or no MR ID'
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(monitoring_result, f, indent=2)
-        sys.exit(0)
+        with open('/tmp/cluster-data.json', 'w') as f:
+            json.dump([], f, indent=2)
+        if mr_status == 'skipped':
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
     # Get GitLab credentials
     gitlab_token = os.getenv('MANIFEST_GITLAB_TOKEN')
@@ -105,7 +111,7 @@ def main():
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(monitoring_result, f, indent=2)
-        sys.exit(0)
+        sys.exit(1)
 
     # Setup GitLab API
     project_path = "dgxcloud%2Fmk8s%2Fmanifests"
@@ -117,11 +123,8 @@ def main():
     api_url = f"{api_url_base}?include_diverged_commits_count=true"
 
     logger.info(f"Monitoring MR at: {mr_url}")
-    logger.info(f"API URL: {api_url}")
-
-    # Monitor MR status
-    max_checks = 10080  # 7 days maximum (10080 * 1 minute)
-
+    logger.debug(f"API URL: {api_url}")
+    
     for check_count in range(max_checks):
         try:
             logger.info(f"Check {check_count + 1}/{max_checks}: polling status ...")
@@ -139,7 +142,7 @@ def main():
                 if state in ['merged', 'closed']:
                     logger.info(f"Completed: {state}")
 
-                    monitoring_result['final_status'] = state
+                    monitoring_result['final_status'] = "success"
                     monitoring_result['message'] = f"MR is {state}"
                     monitoring_result['mr_state'] = state
                     monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
@@ -169,7 +172,7 @@ def main():
                 time.sleep(60)
 
             elif response.status_code == 404:
-                logger.warning(f"MR !{mr_iid} not found - may have been deleted")
+                logger.error(f"MR !{mr_iid} not found - may have been deleted")
                 monitoring_result['final_status'] = 'failed'
                 monitoring_result['message'] = 'MR not found'
                 monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
@@ -183,8 +186,7 @@ def main():
             logger.error(f"Exception: {str(e)}; retrying in 60s …")
             time.sleep(60)
 
-    else:
-        # Timeout reached
+    else :
         logger.warning(f"Timeout after {max_checks} minutes")
         monitoring_result['final_status'] = 'timeout'
         monitoring_result['message'] = 'Timeout reached'
@@ -193,10 +195,16 @@ def main():
     # Save final result
     with open('/tmp/monitoring-result.json', 'w') as f:
         json.dump(monitoring_result, f, indent=2)
+    
+    # Transform clusters dict into list of objects with name and spec-path
+    cluster_data = [{"name": name, "spec-path": path} for name, path in clusters.items()]
+    with open('/tmp/cluster-data.json', 'w') as f:
+        json.dump(cluster_data, f, indent=2)
 
     logger.info(f"Finished with status: {monitoring_result['final_status']}")
 
-    return monitoring_result
+    if monitoring_result['final_status'] != 'success':
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

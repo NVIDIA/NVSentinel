@@ -38,6 +38,7 @@ def main():
     project_path = os.getenv('PROJECT_PATH')
     gitlab_token = os.getenv('GITLAB_TOKEN')
     gitlab_url = os.getenv('GITLAB_URL')
+    max_checks = int(os.getenv('MAX_TIMEOUT_IN_MINUTES', '60'))
 
     logger.info(f"Version: {version}")
 
@@ -105,10 +106,7 @@ def main():
 
     logger.info(f"Monitoring MR at: {mr_url}")
     logger.info(f"API URL: {api_url}")
-
-    # Monitor MR status
-    max_checks = 10080  # 7 days maximum (10080 * 1 minute)
-
+    
     for check_count in range(max_checks):
         try:
             logger.info(f"Check {check_count + 1}/{max_checks}: polling status ...")

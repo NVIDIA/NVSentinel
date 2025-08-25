@@ -179,6 +179,49 @@ spec:
           - name: version
             value: "{{workflow.parameters.version}}"
         depends: 'monitor-ace-image-sync-mr.Succeeded && monitor-nvcr-registry-mr.Succeeded && monitor-bcp-registry-mr.Succeeded'
+      
+      # Step 4: Update non prod clusters with new version and config
+      - name: create-non-prod-mr
+        templateRef:
+          name: nvsentinel-create-non-prod-mr
+          template: create-mr
+        arguments:
+          parameters:
+          - name: version
+            value: "{{workflow.parameters.version}}"
+          - name: clusters
+            value: "{{tasks.find-clusters.outputs.parameters.clusters}}"
+          - name: user_id
+            value: "{{workflow.parameters.user_id}}"
+        depends: "find-clusters"
+        
+      # Step 5: Monitor non-prod clusters MR
+      - name: monitor-non-prod-clusters
+        templateRef:
+          name: nvsentinel-monitor-cluster-mr
+          template: monitor-mr
+        arguments:
+          parameters:
+          - name: version
+            value: "{{workflow.parameters.version}}"
+          - name: mr-data
+            value: "{{item}}"
+        withParam: "{{tasks.create-non-prod-mr.outputs.parameters.result}}"
+        depends: "create-non-prod-mr"
+        
+      # Step 5: Run autotest for non-prod clusters
+      - name: run-autotest
+        templateRef:
+          name: nvsentinel-run-autotest
+          template: run-autotest
+        arguments:
+          parameters:
+          - name: version
+            value: "{{workflow.parameters.version}}"
+          - name: cluster-data
+            value: "{{item}}"
+        withParam: "{{tasks.monitor-non-prod-clusters.outputs.parameters.cluster-data}}"
+        depends: "monitor-non-prod-clusters"
 
       # Step 12: Create all MRs
       - name: create-mrs
@@ -193,7 +236,7 @@ spec:
             value: "{{workflow.parameters.user_id}}"
           - name: clusters
             value: "{{tasks.find-clusters.outputs.parameters.clusters}}"
-        depends: "find-clusters"
+        depends: 'run-autotest.Succeeded && find-clusters.Succeeded'
 
       # Step 13: Monitor each MR individually
       - name: monitor-cluster-mr

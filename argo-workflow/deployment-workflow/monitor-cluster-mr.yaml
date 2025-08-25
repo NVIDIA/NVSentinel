@@ -33,6 +33,9 @@ spec:
       - name: monitoring-result
         valueFrom:
           path: /tmp/monitoring-result.json
+      - name: cluster-data
+        valueFrom:
+          path: /tmp/cluster-data.json
     
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine

@@ -20,6 +20,9 @@ spec:
   eventBusName: default
   template:
     serviceAccountName: nvsentinel-workflow-sa
+  eventCorrelation:
+    strategy: "Expression"
+    expression: "{{ .Input.body.after }}"
   dependencies:
   - name: gitlab-tag-dep
     eventSourceName: nvsentinel-gitlab-events
@@ -47,7 +50,7 @@ spec:
         value: ["success"]
       - path: body.object_attributes.tag
         type: bool
-        value: ["true"]
+        value: [true]
 
   circuit: false
   dependencyGroups:

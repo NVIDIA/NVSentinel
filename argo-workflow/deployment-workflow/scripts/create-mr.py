@@ -15,8 +15,9 @@ import logging
 import os
 import subprocess
 import json
+import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import requests
@@ -179,7 +180,8 @@ def update_cluster_spec(file_path, version, pattern_spec):
 
 def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str],
                     branch_name: str, user_id: str, pattern_name: str, version: str,
-                    cluster_names: List[str], pattern_spec: Dict[str, Any]) -> Dict[str, Any]:
+                    cluster_names: List[str], cluster_specs: Dict[str, str],
+                    pattern_spec: Dict[str, Any]) -> Dict[str, Any]:
     """Create or find an existing merge request"""
     description_lines = [
         f"NVSentinel Update → {version}",
@@ -225,13 +227,13 @@ def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str
         mr_info = response.json()
         return {
             'pattern_name': pattern_name,
-            'clusters': cluster_names,
+            'clusters': cluster_specs,
             'version': version,
             'status': 'created',
             'mr_url': mr_info.get('web_url'),
             'mr_iid': mr_info.get('iid'),
             'branch': branch_name,
-            'created_at': datetime.utcnow().isoformat() + 'Z'
+            'created_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         }
     elif response.status_code == 409:
         # Find existing MR
@@ -246,7 +248,7 @@ def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str
                 mr_info = existing_mrs[0]
                 return {
                     'pattern_name': pattern_name,
-                    'clusters': cluster_names,
+                    'clusters': cluster_specs,
                     'version': version,
                     'status': 'existing',
                     'mr_url': mr_info.get('web_url'),
@@ -257,7 +259,7 @@ def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str
 
     return {
         'pattern_name': pattern_name,
-        'clusters': cluster_names,
+        'clusters': cluster_specs,
         'version': version,
         'status': 'failed',
         'error': f"HTTP {response.status_code} - Failed to create MR",
@@ -271,16 +273,17 @@ def main():
     gitlab_url = os.environ.get('GITLAB_URL')
     clusters_json = os.environ.get('CLUSTERS')
     user_id = os.environ.get('USER_ID')
+    deploy_type = os.environ.get('DEPLOY_TYPE', 'prod')
 
-    if not all([version, gitlab_token, gitlab_url, clusters_json, user_id]):
+    if not all([version, gitlab_token, gitlab_url, clusters_json, user_id, deploy_type]):
         logger.error("Missing required environment variables")
-        return
+        sys.exit(1)
 
     try:
         pattern_data_list = json.loads(clusters_json)
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse clusters JSON: {e}")
-        return
+        sys.exit(1)
 
     project_path = "dgxcloud%2Fmk8s%2Fmanifests"
     headers = {
@@ -297,7 +300,33 @@ def main():
         run_command(['git', 'clone', auth_url, temp_dir])
         setup_git(temp_dir)
 
+        # Filter patterns based on deploy_type
+        filtered_patterns = []
         for pattern_data in pattern_data_list:
+            pattern_name = pattern_data.get('pattern_name', 'unknown')
+
+            if deploy_type == 'non-prod':
+                if "-non-prod" in pattern_name.lower():
+                    filtered_patterns.append(pattern_data)
+            else:  # prod
+                if "-non-prod" not in pattern_name.lower():
+                    filtered_patterns.append(pattern_data)
+
+        if not filtered_patterns:
+            logger.info(f"No {deploy_type} patterns found")
+            mr_results.append({
+                'pattern_name': 'unknown',
+                'clusters': {},
+                'version': version,
+                'status': 'skipped',
+                'message': f'No {deploy_type} patterns found'
+            })
+            with open('/tmp/mr-results.json', 'w') as f:
+                json.dump(mr_results, f, indent=2)
+            return
+
+        logger.info(f"Processing {len(filtered_patterns)} {deploy_type} patterns")
+        for pattern_data in filtered_patterns:
             pattern_name = pattern_data.get('pattern_name', 'unknown')
             pattern_info = pattern_data.get('pattern_info', {})
             clusters = pattern_data.get('clusters', [])
@@ -305,13 +334,15 @@ def main():
             branch_name = pattern_to_branch(pattern_name, version)
             cluster_names = [c['name'] for c in clusters]
             spec_paths = [c.get('spec_file_path') for c in clusters if c.get('spec_file_path')]
+            cluster_specs = {c['name']: c.get('spec_file_path', '') for c in clusters}
 
             logger.info(f"Processing pattern: {pattern_name} ({len(cluster_names)} clusters)")
 
             if not spec_paths:
+                logger.warning(f"No spec file paths provided for pattern {pattern_name}")
                 mr_results.append({
                     'pattern_name': pattern_name,
-                    'clusters': cluster_names,
+                    'clusters': cluster_specs,
                     'version': version,
                     'status': 'failed',
                     'error': 'No spec file paths provided'
@@ -340,7 +371,7 @@ def main():
                     logger.info("No changes detected in git status")
                     mr_results.append({
                         'pattern_name': pattern_name,
-                        'clusters': cluster_names,
+                        'clusters': cluster_specs,
                         'version': version,
                         'status': 'no-changes',
                         'message': 'No changes to commit'
@@ -372,7 +403,7 @@ def main():
                 mr_result = create_or_find_mr(
                     gitlab_url, project_path, headers,
                     branch_name, user_id, pattern_name, version,
-                    cluster_names, pattern_spec
+                    cluster_names, cluster_specs, pattern_spec
                 )
                 mr_results.append(mr_result)
                 logger.info(f"MR result: {mr_result}")
@@ -381,7 +412,7 @@ def main():
                 logger.error(f"Error processing pattern {pattern_name}: {str(e)}")
                 mr_results.append({
                     'pattern_name': pattern_name,
-                    'clusters': cluster_names,
+                    'clusters': cluster_specs,
                     'version': version,
                     'status': 'failed',
                     'error': safe_json_string(str(e)),
