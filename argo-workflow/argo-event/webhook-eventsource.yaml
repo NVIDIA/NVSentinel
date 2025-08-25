@@ -24,25 +24,34 @@ spec:
       targetPort: 12000
   gitlab:
     nvsentinel-tags:
-      # GitLab API token for webhook management
       accessToken:
         name: gitlab-credentials
         key: nvsentinel-token
-      # GitLab instance URL
       gitlabBaseURL: "https://gitlab-master.nvidia.com"
-      # Projects to monitor (can use project ID or path)
       projects:
       - "dgxcloud/mk8s/k8s-addons/nvsentinel"
-      # Events to listen for
       events:
       - "TagPushEvents"
-      # Webhook configuration
       webhook:
         endpoint: "/push"
         method: "POST"
         port: "12000"
-        # Public URL that GitLab will call
         url: "https://nvsentinel-kube-001/eventsources/nvsentinel-gitlab-events"
-      # Security options
+      enableSSLVerification: false
+      deleteHookOnFinish: true
+    nvsentinel-pipelines:
+      accessToken:
+        name: gitlab-credentials
+        key: nvsentinel-token
+      gitlabBaseURL: "https://gitlab-master.nvidia.com"
+      projects:
+      - "dgxcloud/mk8s/k8s-addons/nvsentinel"
+      events:
+      - "PipelineEvents"
+      webhook:
+        endpoint: "/pipeline"
+        method: "POST"
+        port: "12000"
+        url: "https://nvsentinel-kube-001/eventsources/nvsentinel-gitlab-events"
       enableSSLVerification: false
       deleteHookOnFinish: true

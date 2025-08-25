@@ -192,14 +192,13 @@ def create_or_find_mr(gitlab_url: str, project_path: str, headers: Dict[str, str
     if pattern_spec:
         description_lines.extend([
             "",
-            "Feature Flags Configuration:",
             "The following configurations will be set/updated as per pattern configuration:"
         ])
         for flag_name, flag_value in pattern_spec.items():
             description_lines.append(f"- {flag_name}: {flag_value}")
         description_lines.extend([
             "",
-            "Note: Existing feature flags not listed above will be preserved."
+            "Note: Existing configurations not mentioned above will be preserved."
         ])
 
     description_lines.extend([

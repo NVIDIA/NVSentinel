@@ -113,7 +113,8 @@ def main():
         'PRIVATE-TOKEN': gitlab_token,
         'Content-Type': 'application/json'
     }
-    api_url = f"{gitlab_url}/api/v4/projects/{project_path}/merge_requests/{mr_iid}"
+    api_url_base = f"{gitlab_url}/api/v4/projects/{project_path}/merge_requests/{mr_iid}"
+    api_url = f"{api_url_base}?include_diverged_commits_count=true"
 
     logger.info(f"Monitoring MR at: {mr_url}")
     logger.info(f"API URL: {api_url}")
@@ -144,7 +145,26 @@ def main():
                     monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
                     break
 
-                # Continue monitoring
+                diverged_commits = mr_info.get('diverged_commits_count', 0)
+                rebase_in_progress = mr_info.get('rebase_in_progress', False)
+                project_id = mr_info.get('project_id')
+                logger.info(f"diverged_commits_count: {diverged_commits}, rebase_in_progress: {rebase_in_progress}, project_id: {project_id}")
+                if diverged_commits is None:
+                    diverged_commits = 0
+                if diverged_commits > 0 and not rebase_in_progress:
+                    rebase_url = f"{api_url_base}/rebase"
+                    logger.info(f"Attempting rebase via PUT {rebase_url}")
+                    try:
+                        resp = requests.put(rebase_url, headers=headers, timeout=30)
+                        if resp.status_code in [200, 201, 202]:
+                            logger.info(f"Triggered rebase (diverged commits: {diverged_commits})")
+                        elif resp.status_code == 409:
+                            logger.info("Rebase already in progress or not possible (409)")
+                        else:
+                            logger.warning(f"Failed to trigger rebase: HTTP {resp.status_code} {resp.text}")
+                    except Exception as rebase_exc:
+                        logger.error(f"Exception when attempting rebase: {rebase_exc}")
+
                 logger.info(f"Still {state}; waiting 60s …")
                 time.sleep(60)
 

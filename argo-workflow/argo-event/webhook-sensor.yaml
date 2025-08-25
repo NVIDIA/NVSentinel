@@ -26,16 +26,35 @@ spec:
     eventName: nvsentinel-tags
     filters:
       data:
-      # Only trigger on tag push events
       - path: body.object_kind
         type: string
         value:
         - "tag_push"
-      # Only trigger on tag creation (not deletion)
       - path: body.before
         type: string
         value:
         - "0000000000000000000000000000000000000000"
+  - name: gitlab-pipeline-success-dep
+    eventSourceName: nvsentinel-gitlab-events
+    eventName: nvsentinel-pipelines
+    filters:
+      data:
+      - path: body.object_kind
+        type: string
+        value: ["pipeline"]
+      - path: body.object_attributes.status
+        type: string
+        value: ["success"]
+      - path: body.object_attributes.tag
+        type: bool
+        value: ["true"]
+
+  circuit: false
+  dependencyGroups:
+  - name: tag-and-pipeline-ok
+    dependencies:
+    - gitlab-tag-dep
+    - gitlab-pipeline-success-dep
   triggers:
   - template:
       name: nvsentinel-deployment-trigger
