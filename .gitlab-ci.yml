@@ -80,13 +80,15 @@ include:
           optional: true
         - job: fault-remediation-module-container-publish
           optional: true
+        - job: health-event-client-container-publish
+          optional: true
         - job: node-health-events-uds-connector-container-publish
           optional: true
         - job: kubernetes-distro-helm-publish
           optional: true
       nspect_id: NSPECT-JRZ4-EI8F
       policy: "container_scan_policy.json"
-      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/rtsp-mongosh"]
+      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/nvsentinel-health-event-client", "nvcr.io/nv-ngc-devops/rtsp-mongosh"]
       is_release: false
       allow_failure: true
       platform_archs: ["linux/amd64"]
@@ -473,7 +475,59 @@ csp-health-monitor-container-publish:
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
     - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} . 
 
+health-event-client-lint:
+  stage: lint
+  extends:
+    - .eks-runner-tags
+  script:
+    - cd health-event-client
+    - go vet ./...
+    - golangci-lint run
+  after_script:
+    - rm -f ~/.netrc
+  artifacts:
+    when: always
+    reports:
+      codequality: health-event-client/code-quality-report.json
+    paths:
+      - health-event-client/code-quality-report.json
 
+health-event-client-test:
+  stage: test
+  extends:
+    - .eks-runner-tags
+  script:
+    - cd health-event-client
+    - gotestsum --junitfile report.xml -- -race -short $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: health-event-client/coverage.xml
+      junit: health-event-client/report.xml
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+health-event-client-container-publish:
+  stage: publish
+  extends:
+    - .dind-service
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+  script:
+    - cd health-event-client
+    - docker context create builder
+    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-event-client:${SAFE_REF_NAME} .
 
 platform-connectors-lint:
   stage: lint
