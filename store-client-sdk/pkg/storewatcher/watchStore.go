@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
@@ -73,6 +74,9 @@ type ChangeStreamWatcher struct {
 	mu                        sync.Mutex
 	resumeTokenUpdateTimeout  time.Duration
 	resumeTokenUpdateInterval time.Duration
+	// Store database and collection for monitoring queries
+	database   string
+	collection string
 }
 
 // nolint: cyclop
@@ -130,7 +134,10 @@ func NewChangeStreamWatcher(
 	// This is critical when reading change streams from secondaries
 	wc := writeconcern.Majority()
 	rc := readconcern.Majority()
-	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc)
+	// Use Primary read preference for resume tokens to ensure consistency
+	// Even though change streams use SecondaryPreferred, resume tokens must be read from primary
+	rp := readpref.Primary()
+	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
 	// Change streams will inherit the read preference from the collection (SecondaryPreferred)
@@ -166,6 +173,8 @@ func NewChangeStreamWatcher(
 		clientName:                tokenConfig.ClientName,
 		resumeTokenUpdateTimeout:  totalTimeout,
 		resumeTokenUpdateInterval: interval,
+		database:                  mongoConfig.Database,
+		collection:                mongoConfig.Collection,
 	}
 
 	return watcher, nil
@@ -231,6 +240,34 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
 
 func (w *ChangeStreamWatcher) Events() <-chan bson.M {
 	return w.eventChannel
+}
+
+// GetUnprocessedEventCount returns the count of events inserted after the given ObjectID.
+// This leverages MongoDB's default index on _id for efficient querying.
+// Pass in the ObjectID of the event currently being processed.
+// Optional additionalFilters can be provided to further filter the events.
+func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, lastProcessedID primitive.ObjectID,
+	additionalFilters ...bson.M) (int64, error) {
+	filter := bson.M{"_id": bson.M{"$gt": lastProcessedID}}
+
+	for _, additionalFilter := range additionalFilters {
+		for key, value := range additionalFilter {
+			filter[key] = value
+		}
+	}
+
+	coll := w.client.Database(w.database).Collection(w.collection)
+
+	count, err := coll.CountDocuments(ctx,
+		filter,
+		options.Count().SetLimit(1000000),
+	)
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to count unprocessed events with filter %v: %w", filter, err)
+	}
+
+	return count, nil
 }
 
 func (w *ChangeStreamWatcher) Close(ctx context.Context) error {
@@ -322,7 +359,9 @@ func GetCollectionClient(
 	// For strong consistency, we need the majority of replicas to ack reads and writes
 	wc := writeconcern.Majority()
 	rc := readconcern.Majority()
-	collOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc)
+	// Use Primary read preference for strong consistency guarantees
+	rp := readpref.Primary()
+	collOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 
 	return client.Database(mongoConfig.Database).Collection(mongoConfig.Collection, collOpts), nil
 }
