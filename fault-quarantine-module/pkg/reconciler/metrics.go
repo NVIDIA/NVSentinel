@@ -126,4 +126,12 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+
+	// Event Processing Metrics
+	EventBacklogSize = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "fault_quarantine_event_backlog_count",
+			Help: "Number of health events which fault quarantine is yet to process.",
+		},
+	)
 )

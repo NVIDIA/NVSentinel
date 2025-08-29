@@ -33,18 +33,20 @@ import (
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
 )
 
 type ReconcilerConfig struct {
-	TomlConfig                       config.TomlConfig
-	MongoHealthEventCollectionConfig storewatcher.MongoDBConfig
-	TokenConfig                      storewatcher.TokenConfig
-	MongoPipeline                    mongo.Pipeline
-	K8sClient                        K8sClientInterface
-	DryRun                           bool
+	TomlConfig                            config.TomlConfig
+	MongoHealthEventCollectionConfig      storewatcher.MongoDBConfig
+	TokenConfig                           storewatcher.TokenConfig
+	MongoPipeline                         mongo.Pipeline
+	K8sClient                             K8sClientInterface
+	DryRun                                bool
+	UnprocessedEventsMetricUpdateInterval time.Duration
 }
 
 type rulesetsConfig struct {
@@ -62,7 +64,8 @@ type Reconciler struct {
 	// nodeAnnotationsCache caches node annotations to avoid repeated K8s API calls
 	nodeAnnotationsCache sync.Map // map[string]map[string]string
 	// cacheMutex protects cache operations during refresh to ensure consistency
-	cacheMutex sync.RWMutex
+	cacheMutex            sync.RWMutex
+	lastProcessedObjectID atomic.Value // stores primitive.ObjectID
 }
 
 var (
@@ -211,6 +214,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	go r.watchEvents(watcher)
 
+	// Start a goroutine to periodically update the unprocessed events metric
+	go r.updateUnprocessedEventsMetric(ctx, watcher)
+
 	// Process events in the main goroutine
 	for {
 		select {
@@ -291,6 +297,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 						healthEventWithStatus.HealthEvent.NodeName)
 
 					currentEventInfo.HasProcessed = true
+
+					r.storeEventObjectID(eventBson)
+
 					duration := time.Since(startTime).Seconds()
 					eventHandlingDuration.Observe(duration)
 
@@ -299,6 +308,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 				// Process events with status
 				currentEventInfo.HasProcessed = true
+
+				r.storeEventObjectID(eventBson)
 
 				err := r.updateNodeQuarantineStatus(ctx, healthEventCollection, eventBson, isNodeQuarantined)
 				if err != nil {
@@ -313,6 +324,50 @@ func (r *Reconciler) Start(ctx context.Context) {
 				duration := time.Since(startTime).Seconds()
 				eventHandlingDuration.Observe(duration)
 			}
+		}
+	}
+}
+
+// storeEventObjectID extracts the ObjectID from the event and stores it for metric tracking
+func (r *Reconciler) storeEventObjectID(eventBson bson.M) {
+	if fullDoc, ok := eventBson["fullDocument"].(bson.M); ok {
+		if objID, ok := fullDoc["_id"].(primitive.ObjectID); ok {
+			r.lastProcessedObjectID.Store(objID)
+		}
+	}
+}
+
+// updateUnprocessedEventsMetric periodically updates the EventBacklogSize metric
+// based on the ObjectID of the last processed event
+func (r *Reconciler) updateUnprocessedEventsMetric(ctx context.Context,
+	watcher *storewatcher.ChangeStreamWatcher) {
+	ticker := time.NewTicker(r.config.UnprocessedEventsMetricUpdateInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			lastObjID := r.lastProcessedObjectID.Load()
+			if lastObjID == nil {
+				continue
+			}
+
+			objID, ok := lastObjID.(primitive.ObjectID)
+			if !ok {
+				continue
+			}
+
+			unprocessedCount, err := watcher.GetUnprocessedEventCount(ctx, objID)
+			if err != nil {
+				klog.V(3).Infof("Failed to get unprocessed event count: %v", err)
+				continue
+			}
+
+			EventBacklogSize.Set(float64(unprocessedCount))
+			klog.V(3).Infof("Updated unprocessed events metric: %d events after ObjectID %v",
+				unprocessedCount, objID.Hex())
 		}
 	}
 }

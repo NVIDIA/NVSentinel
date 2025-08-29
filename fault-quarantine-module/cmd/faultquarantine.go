@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
@@ -100,6 +101,12 @@ func main() {
 		klog.Fatalf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
 	}
 
+	unprocessedEventsMetricUpdateIntervalSeconds, err :=
+		getEnvAsInt("UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS", 25)
+	if err != nil {
+		klog.Fatalf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %v", err)
+	}
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
@@ -158,6 +165,8 @@ func main() {
 		MongoPipeline:                    pipeline,
 		K8sClient:                        k8sClient,
 		DryRun:                           *dryRun,
+		UnprocessedEventsMetricUpdateInterval: time.Duration(unprocessedEventsMetricUpdateIntervalSeconds) *
+			time.Second,
 	}
 
 	// Create the work signal channel (buffered channel acting as semaphore)
