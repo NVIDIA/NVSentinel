@@ -22,15 +22,8 @@ import pytest
 import requests
 from testcases.common.base import Base
 from kubernetes import client
-import string
-import yaml
-import tempfile
 from testcases.utils.kubernetes_utils import KubernetesClient
-from kubernetes.client import CustomObjectsApi
-import psutil
-import copy
-import signal
-import logging
+from datetime import datetime, timezone
 
 
 class TestNVSentinelCaseBase(Base):
@@ -1527,4 +1520,43 @@ class TestNVSentinelCaseBase(Base):
         # Wait for rollout to complete
         time.sleep(10)
 
-    
+    def skip_if_kata_mode_disabled(self):
+        """Skip the test if kata mode is disabled"""
+        if not self.client.get_deployments(self.nv_namespace, "nvsentinel-platform-connector"):
+            pytest.skip("Kata mode is disabled")
+
+    def reboot_forge_node(self, node_name, wait_second = 1800):
+        """Reboot the node by setting nke.nvidia.com/reboot=nvsentinel-integration-test-reboot to the node"""
+
+        value, err_msg = self.client.get_label_on_node(node_name, "nke.nvidia.com/reboot")
+        if err_msg:
+            pytest.fail(f"Failed to get label: {err_msg}")
+        current_time = datetime.now(timezone.utc)
+        if value:
+            self.logger.info(f"Reboot already in progress for node {node_name}")
+        else:
+            _, err_msg = self.client.add_label_to_node(node_name, "nke.nvidia.com/reboot", "nvsentinel-integration-test-reboot")
+            if err_msg:
+                pytest.fail(f"Failed to add label: {err_msg}")
+
+        for _ in range(0, wait_second, 50):
+            time.sleep(50)
+            value, err_msg = self.client.get_label_on_node(node_name, "nke.nvidia.com/last-completed-reboot")
+            if err_msg:
+                pytest.fail(f"Failed to get label: {err_msg}")
+            if value:
+                timestamp = datetime.strptime(value, "%Y-%m-%dT%H-%M-%SZ").replace(tzinfo=timezone.utc)
+                if timestamp > current_time:
+                    self.logger.info(f"Reboot completed for node {node_name} at {timestamp}")
+                    return
+
+            reboot_attempt, err_msg = self.client.get_label_on_node(node_name, "nke.nvidia.com/reboot-attempt")
+            if err_msg:
+                pytest.fail(f"Failed to get label: {err_msg}")
+            reboot_started, err_msg = self.client.get_label_on_node(node_name, "nke.nvidia.com/reboot-started")
+            if err_msg:
+                pytest.fail(f"Failed to get label: {err_msg}")
+            self.logger.info(f"Reboot attempt {reboot_attempt} for node {node_name} at {reboot_started} UTC")
+
+        self.logger.info(f"Reboot did not complete for node {node_name} after {wait_second} seconds")
+        pytest.fail(f"Reboot did not complete for node {node_name} after {wait_second} seconds")

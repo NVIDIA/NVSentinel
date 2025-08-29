@@ -729,7 +729,7 @@ class KubernetesClient(object):
                 time.sleep(3)
             except ApiException as e:
                 if e.status == 404:
-                    LOGGER.error("Pod %s has been deleted", pod.metadata.name)
+                    LOGGER.error("Pod %s has been deleted", pod_name)
                     self._remove_resource_info(pod_name, namespace)
                     return CommonResult(None)
                 error_msg = f"Exception when calling CoreV1Api->read_namespaced_pod: {e}"

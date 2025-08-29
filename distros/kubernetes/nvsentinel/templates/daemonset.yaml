@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- if (ne .Values.global.kata.enabled true) }}
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -56,12 +58,12 @@ spec:
           image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
           args:
+          - "--config=/etc/config/config.json"
           - "--metrics-port={{ .Values.platformConnector.metricsPort }}"
           - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
-          - -socket
-          - {{ .Values.socketPath }}
-          - -nodehealtheventssocket
-          - {{ .Values.nodeHealthEventsSocketPath }}
+          - "--transport=uds"
+          - "--socket={{ .Values.socketPath }}"
+          - "--nodehealtheventssocket={{ .Values.nodeHealthEventsSocketPath }}"
           resources:
             {{- toYaml .Values.platformConnector.resources | nindent 12 }}
           volumeMounts:
@@ -107,3 +109,5 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
+
+{{- end }}

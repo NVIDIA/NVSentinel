@@ -105,6 +105,7 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-syslog-health-monitor
       pullPolicy: IfNotPresent
 
+
   imagePullSecrets:
     - name: nvidia-ngcuser-pull-secret
 
@@ -123,12 +124,24 @@ global:
 
   clusterType: standalone # standalone|mgmt|tenant
 
+  kata:
+    enabled: false
+    port:
+      servicePort: 9090
+      metricsPort: 2112
+
+    tls:
+      secretName: nvsentinel-pc-tls
+      caSecretName: mongo-root-ca-secret
+      mountPath: "/etc/nvsentinel/certs"
+
+
 platformConnector:
   image:
     repository: nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors
     pullPolicy: IfNotPresent
 
-  resources: 
+  resources:
     limits:
       cpu: 200m
       memory: 512Mi
@@ -141,7 +154,7 @@ platformConnector:
     capabilities:
       drop:
       - ALL
-      
+
   metricsPort: 2112
 
   mongodbStore:
@@ -157,6 +170,13 @@ platformConnector:
     enabled: true
     qps: 5.0
     burst: 10
+
+  kataModeDeployment:
+    nodeSelector: {}
+    nodeAffinity: {}
+    tolerations: {}
+
+
 nameOverride: ""
 fullnameOverride: ""
 

@@ -11,55 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
----
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: selfsigned-ca-issuer
-  namespace: {{ .Release.Namespace }}
 
-  # annotations:
-  #   helm.sh/resource-policy: keep # As the cert-manager is not configured to delete secrets associated with the certificates, we need to retain the certs
-spec:
-  selfSigned: {}
-
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: mongo-root-ca
-  namespace: {{ .Release.Namespace }}
-
-  # annotations:
-  #   helm.sh/resource-policy: keep
-spec:
-  isCA: true
-  commonName: mongo-root-ca
-  secretName: mongo-root-ca-secret
-  duration: 87600h   # 10 years
-  renewBefore: 720h  # 30 days before expiration
-  privateKey:
-    algorithm: RSA
-    size: 4096
-  issuerRef:
-    name: selfsigned-ca-issuer
-    kind: Issuer
-
----
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: mongo-ca-issuer
-  namespace: {{ .Release.Namespace }}
-
-  # annotations:
-  #   helm.sh/resource-policy: keep
-spec:
-  ca:
-    secretName: mongo-root-ca-secret
-
----
+{{- if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
+# MongoDB Server Certificates
 {{- $replicaCount := int .Values.mongodb.replicaCount }}
 {{- range $i := until $replicaCount }}
 apiVersion: cert-manager.io/v1
@@ -67,9 +21,6 @@ kind: Certificate
 metadata:
   name: mongo-server-cert-{{ $i }}
   namespace: {{ $.Release.Namespace }}
-
-  # annotations:
-  #   helm.sh/resource-policy: keep
 spec:
   secretName: mongo-server-cert-{{ $i }}
   duration: 8760h   # 1 year
@@ -86,18 +37,15 @@ spec:
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
-
 ---
 {{- end }}
 
+# MongoDB Client Certificate
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-app-client-cert
   namespace: {{ .Release.Namespace }}
-
-  # annotations:
-  #   helm.sh/resource-policy: keep
 spec:
   secretName: mongo-app-client-cert-secret
   duration: 8760h

@@ -26,6 +26,17 @@ data:
   # or scripts.
   log_check_definitions.yaml: |
     checks:
+{{- if .Values.global.kata.enabled }}
+      - name: "SysLogsXIDError"
+        matches:
+          - 'NVRM: Xid'
+        count: 0
+        ignoreCase: true
+        tags:
+          - "-u containerd.service"
+        journalPath: "/nvsentinel/var/log/journal/"
+        boot: false
+{{- else }}
       - name: "SysLogsDriverVersionMismatch"
         matches:
           - 'Failed to initialize NVML: Driver/library version mismatch'
@@ -120,4 +131,12 @@ data:
         journalPath: "/nvsentinel/var/log/journal/"
         boot: true
         recommended_action: REPORT_ISSUE
+{{- end }}
+
+  # XID error mappings (shared with GPU health monitor from main chart)
+{{ (.Files.Glob "files/xiderrorsmapping.csv").AsConfig | indent 2 }}
+
+  # Action to platform connector code mapping (shared with GPU health monitor)
+{{ (.Files.Glob "files/actionmapping.ini").AsConfig | indent 2 }}
+
 {{ end }}

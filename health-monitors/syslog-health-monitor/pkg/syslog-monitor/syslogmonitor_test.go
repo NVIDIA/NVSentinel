@@ -15,7 +15,9 @@ package syslogmonitor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,9 +164,19 @@ func executeTestCheck(t *testing.T, check common.CheckDefinition) (*mockPlatform
 	mockPCClient := &mockPlatformConnectorClient{}
 
 	// Create SyslogMonitor
+	xidFilePath, actionMappingPath, err := moveXIDAndActionMappingToTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		if err := os.Remove(xidFilePath); err != nil {
+			t.Logf("Failed to remove XID file %s: %v", xidFilePath, err)
+		}
+		if err := os.Remove(actionMappingPath); err != nil {
+			t.Logf("Failed to remove action mapping file %s: %v", actionMappingPath, err)
+		}
+	}()
 	testStateFile := "/tmp/test-syslog-monitor-state-1.json"
 	defer os.Remove(testStateFile)
-	sm, err := NewSyslogMonitor(TEST_NODE, []common.CheckDefinition{check}, mockPCClient, TEST_AGENT, TEST_COMPONENT, "60s", testStateFile)
+	sm, err := NewSyslogMonitor(TEST_NODE, []common.CheckDefinition{check}, mockPCClient, TEST_AGENT, TEST_COMPONENT, "60s", testStateFile, xidFilePath, actionMappingPath)
 	assert.NoError(t, err)
 
 	// Execute the check
@@ -219,6 +231,16 @@ func validateNonEmptyJournalPath(t *testing.T, err error, mockPCClient *mockPlat
 }
 
 func TestNewSyslogMonitor(t *testing.T) {
+	xidFilePath, actionMappingPath, err := moveXIDAndActionMappingToTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		if err := os.Remove(xidFilePath); err != nil {
+			t.Logf("Failed to remove XID file %s: %v", xidFilePath, err)
+		}
+		if err := os.Remove(actionMappingPath); err != nil {
+			t.Logf("Failed to remove action mapping file %s: %v", actionMappingPath, err)
+		}
+	}()
 	// Define test arguments
 	args := struct {
 		NodeName              string
@@ -242,7 +264,8 @@ func TestNewSyslogMonitor(t *testing.T) {
 	testStateFile := "/tmp/test-syslog-monitor-state.json"
 	defer os.Remove(testStateFile) // Cleanup
 
-	monitor, err := NewSyslogMonitor(args.NodeName, args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile)
+	monitor, err := NewSyslogMonitor(args.NodeName,
+	args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile, xidFilePath, actionMappingPath)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, args.NodeName, monitor.nodeName)
@@ -259,7 +282,8 @@ func TestNewSyslogMonitor(t *testing.T) {
 	testStateFile2 := "/tmp/test-syslog-monitor-state2.json"
 	defer os.Remove(testStateFile2) // Cleanup
 
-	monitor, err = NewSyslogMonitorWithFactory(args.NodeName, args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile2, fakeJournalFactory)
+	monitor, err = NewSyslogMonitorWithFactory(args.NodeName,
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, testStateFile2, xidFilePath, actionMappingPath, fakeJournalFactory)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, fakeJournalFactory, monitor.journalFactory)
@@ -278,7 +302,8 @@ func TestPrepareHealthEvent(t *testing.T) {
 	}
 
 	message := "test message"
-	healthEvents := fd.prepareHealthEvent(check, message, false, true)
+	recommendedAction, _ := fd.determineRecommendedAction(check)
+	healthEvents := fd.prepareHealthEventWithAction(check, message, false, true, recommendedAction)
 
 	assert.NotNil(t, healthEvents)
 	assert.Equal(t, uint32(1), healthEvents.Version)
@@ -293,7 +318,7 @@ func TestPrepareHealthEvent(t *testing.T) {
 	assert.Equal(t, message, event.Message)
 	assert.False(t, event.IsHealthy)
 	assert.True(t, event.IsFatal)
-	assert.Equal(t, pb.RecommenedAction_REPORT_ISSUE, event.RecommendedAction)
+	assert.Equal(t, recommendedAction, event.RecommendedAction)
 	assert.Len(t, event.EntitiesImpacted, 1)
 	assert.Equal(t, "Node", event.EntitiesImpacted[0].EntityType)
 	assert.Equal(t, TEST_NODE, event.EntitiesImpacted[0].EntityValue)
@@ -301,6 +326,16 @@ func TestPrepareHealthEvent(t *testing.T) {
 
 // TestExecuteCheckWithFakeJournal tests the SyslogMonitor with a fake journal
 func TestExecuteCheckWithFakeJournal(t *testing.T) {
+	xidFilePath, actionMappingPath, err := moveXIDAndActionMappingToTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		if err := os.Remove(xidFilePath); err != nil {
+			t.Logf("Failed to remove XID file %s: %v", xidFilePath, err)
+		}
+		if err := os.Remove(actionMappingPath); err != nil {
+			t.Logf("Failed to remove action mapping file %s: %v", actionMappingPath, err)
+		}
+	}()
 	testCases := []struct {
 		name           string
 		check          common.CheckDefinition
@@ -415,6 +450,8 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 				TEST_COMPONENT,
 				"60s",
 				testStateFile,
+				xidFilePath,
+				actionMappingPath,
 				fakeJournalFactory,
 			)
 			assert.NoError(t, err)
@@ -457,6 +494,16 @@ func TestExecuteCheckWithFakeJournal(t *testing.T) {
 
 // TestJournalProcessingLogic tests specific journal cursor handling logic
 func TestJournalProcessingLogic(t *testing.T) {
+	xidFilePath, actionMappingPath, err := moveXIDAndActionMappingToTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		if err := os.Remove(xidFilePath); err != nil {
+			t.Logf("Failed to remove XID file %s: %v", xidFilePath, err)
+		}
+		if err := os.Remove(actionMappingPath); err != nil {
+			t.Logf("Failed to remove action mapping file %s: %v", actionMappingPath, err)
+		}
+	}()
 	// Create a check definition
 	check := common.CheckDefinition{
 		Name:        "test_journal_processing",
@@ -486,6 +533,8 @@ func TestJournalProcessingLogic(t *testing.T) {
 		TEST_COMPONENT,
 		"60s",
 		testStateFile,
+		xidFilePath,
+		actionMappingPath,
 		fakeJournalFactory,
 	)
 	assert.NoError(t, err)
@@ -513,4 +562,242 @@ func TestJournalProcessingLogic(t *testing.T) {
 
 	// Since we have new entries with errors and count=0, we should get a health event
 	assert.NotEmpty(t, mockPCClient.RecordedHealthEvents, "Health event should be sent for entries above threshold")
+}
+
+func TestXIDErrorHandling(t *testing.T) {
+	xidFilePath, actionMappingPath, err := moveXIDAndActionMappingToTempDir()
+	assert.NoError(t, err)
+	defer func() {
+		if err := os.Remove(xidFilePath); err != nil {
+			t.Logf("Failed to remove XID file %s: %v", xidFilePath, err)
+		}
+		if err := os.Remove(actionMappingPath); err != nil {
+			t.Logf("Failed to remove action mapping file %s: %v", actionMappingPath, err)
+		}
+	}()
+	testCases := []struct {
+		name           string
+		message        string
+		expectedCode   int
+		expectMatch    bool
+		expectedAction pb.RecommenedAction
+		expectedFatal  bool
+	}{
+		{
+			name:           "Valid XID Error",
+			message:        "NVRM: Xid (PCI:0000:00:08.0): 79, GPU has fallen off the bus",
+			expectedCode:   79,
+			expectMatch:    true,
+			expectedAction: pb.RecommenedAction_RESTART_BM,
+			expectedFatal:  true,
+		},
+		{
+			name:           "Invalid XID Format",
+			message:        "NVRM: Some other error message",
+			expectedCode:   0,
+			expectMatch:    false,
+			expectedAction: pb.RecommenedAction_REPORT_ISSUE,
+			expectedFatal:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test XID code extraction
+			code, ok := extractXidCode(tc.message)
+			assert.Equal(t, tc.expectMatch, ok)
+			if ok {
+				assert.Equal(t, tc.expectedCode, code)
+			}
+
+			// Create SyslogMonitor with XID check
+			check := common.CheckDefinition{
+				Name:    XIDErrorCheck,
+				Matches: []string{"Xid"},
+				Count:   0,
+			}
+
+			testStateFile := "/tmp/test-syslog-monitor-state-xid.json"
+			defer func() {
+				if err := os.Remove(testStateFile); err != nil {
+					t.Logf("Failed to remove test state file %s: %v", testStateFile, err)
+				}
+			}()
+
+			mockPCClient := &mockPlatformConnectorClient{}
+			sm, err := NewSyslogMonitorWithFactory(
+				TEST_NODE,
+				[]common.CheckDefinition{check},
+				mockPCClient,
+				TEST_AGENT,
+				TEST_COMPONENT,
+				"60s",
+				testStateFile,
+				xidFilePath,
+				actionMappingPath,
+				NewFakeJournalFactory(),
+			)
+			assert.NoError(t, err)
+
+			// Test XID action determination
+			action, fatal := sm.determineXIDRecommendedAction([]string{tc.message})
+			assert.Equal(t, tc.expectedAction, action, "Expected action %v, got %v", tc.expectedAction, action)
+			assert.Equal(t, tc.expectedFatal, fatal, "Expected fatal %v, got %v", tc.expectedFatal, fatal)
+		})
+	}
+}
+
+func TestPCIGPUUUIDMapping(t *testing.T) {
+	testCases := []struct {
+		name              string
+		message           string
+		expectedPCI       string
+		expectedGPUUUID   string
+		expectParsedPCI   bool
+		expectParsedUUID  bool
+		normalizedPCI     string
+		expectedEvaluated string
+	}{
+		{
+			name:              "Valid XID with Mapped GPU",
+			message:           "NVRM: Xid (PCI:0000:00:08): 79, GPU has fallen off the bus",
+			expectedPCI:       "0000:00:08",
+			expectedGPUUUID:   "GPU-123456789",
+			expectParsedPCI:   true,
+			expectParsedUUID:  false,
+			normalizedPCI:     "0000:00:08",
+			expectedEvaluated: "NVRM: Xid (PCI:0000:00:08): 79, GPU has fallen off the bus [GPU UUID: GPU-123456789]",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test PCI/GPU parsing
+			pci, uuid := parseNVRMGPUMapLine(tc.message)
+			if tc.expectParsedUUID {
+				assert.Equal(t, tc.expectedPCI, pci)
+				assert.Equal(t, tc.expectedGPUUUID, uuid)
+			}
+
+			// Test PCI parsing from XID
+			xidPCI := parseNVRMXidPCI(tc.message)
+			if tc.expectParsedPCI {
+				assert.Equal(t, tc.expectedPCI, xidPCI)
+			}
+
+			// Test PCI normalization
+			if tc.expectParsedPCI {
+				normalized := normalizePCI(tc.expectedPCI)
+				assert.Equal(t, tc.normalizedPCI, normalized)
+			}
+
+			// Create SyslogMonitor and test message evaluation
+			sm := &SyslogMonitor{
+				pciToGPUUUID: map[string]string{
+					"0000:00:08": "GPU-123456789",
+				},
+			}
+
+			lineToEvaluate := tc.message
+			if xidPCI := parseNVRMXidPCI(tc.message); xidPCI != "" {
+				normPCI := normalizePCI(xidPCI)
+				if uuid, ok := sm.pciToGPUUUID[normPCI]; ok && uuid != "" {
+					lineToEvaluate = fmt.Sprintf("%s [GPU UUID: %s]", tc.message, uuid)
+				} else {
+					lineToEvaluate = fmt.Sprintf("%s [PCI: %s]", tc.message, normPCI)
+				}
+			}
+			assert.Equal(t, tc.expectedEvaluated, lineToEvaluate)
+		})
+	}
+}
+
+func TestActionMapping(t *testing.T) {
+	testCases := []struct {
+		name          string
+		actionStr     string
+		expectedCode  int
+		expectMapping bool
+	}{
+		{
+			name:          "Valid Action",
+			actionStr:     "NODE_REBOOT",
+			expectedCode:  int(pb.RecommenedAction_NODE_REBOOT),
+			expectMapping: true,
+		},
+		{
+			name:          "Unknown Action",
+			actionStr:     "UNKNOWN_ACTION",
+			expectedCode:  int(pb.RecommenedAction_REPORT_ISSUE),
+			expectMapping: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			sm := &SyslogMonitor{
+				actionMappings: map[string]int{
+					"NODE_REBOOT": int(pb.RecommenedAction_NODE_REBOOT),
+				},
+			}
+
+			action, ok := sm.mapActionStringToProto(tc.actionStr)
+			assert.Equal(t, tc.expectMapping, ok)
+			assert.Equal(t, pb.RecommenedAction(tc.expectedCode), action)
+		})
+	}
+}
+
+// moveXIDAndActionMappingToTempDir moves the XID and action mapping files to a temporary directory
+func moveXIDAndActionMappingToTempDir() (string, string, error) {
+	tempDir := "/tmp/test-syslog-monitor/"
+	xidFilePath := filepath.Join(tempDir, "xiderrormappings.csv")
+
+	// Create temp directory
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", "", fmt.Errorf("failed to create temp directory: %v", err)
+	}
+
+	xidContent := `
+78,VGPU_START_ERROR,UPDATE_SWFW,FATAL
+79,ROBUST_CHANNEL_GPU_HAS_FALLEN_OFF_THE_BUS,RESTART_BM,FATAL
+13,ROBUST_CHANNEL_GR_EXCEPTION / ROBUST_CHANNEL_GR_ERROR_SW_NOTIFY,RESTART_APP,NONFATAL
+136,ALI_TRAINING_FAIL,RESET_GPU,FATAL
+`
+
+	actionMappingPath := filepath.Join(tempDir, "actionmapping.ini")
+	actionFilePathContent := `
+	[gpuerrorrecommendactiontoplatformconnectormapping]
+		NODE_REBOOT = 1
+		UNEXPECTED_ERR_REPORT_ISSUE = 5
+		WORKFLOW_XID_13_31 = 7
+		IGNORE = 0
+		WORKFLOW_ECC_DBE_SRAM = 8
+		REPORT_ISSUE = 5
+		RUN_FIELDDIAG = 6
+		RESTART_APP = 4
+		RESET_GPU = 2
+		RESOLUTION_BUCKET_TBD = 99
+		WORKFLOW_NVLINK5_ERR = 9
+		WORKFLOW_XID_45 = 10
+		WORKFLOW_XID_48 = 11
+		CHECK_MECHANICALS = 12
+		WORKFLOW_NVLINK_ERR = 13
+		UPDATE_SWFW = 14
+		RESTART_VM = 15
+		CHECK_THERMALS = 19
+		CHECK_FM_CONFIG = 18
+		RESTART_BM = 24
+		CHECK_UVM = 23
+	`
+
+	// Write files
+	if err := os.WriteFile(xidFilePath, []byte(xidContent), 0644); err != nil {
+		return "", "", fmt.Errorf("failed to write XID file: %v", err)
+	}
+	if err := os.WriteFile(actionMappingPath, []byte(actionFilePathContent), 0644); err != nil {
+		return "", "", fmt.Errorf("failed to write action mapping file: %v", err)
+	}
+
+	return xidFilePath, actionMappingPath, nil
 }

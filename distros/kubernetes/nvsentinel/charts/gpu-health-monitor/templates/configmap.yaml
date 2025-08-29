@@ -44,29 +44,8 @@ data:
     XidErrorsSlidingWindowSize = 3
     XidErrorsBatchProcessingInterval = 10
 
-    [gpuerrorrecommendactiontoplatformconnectormapping]
-    NODE_REBOOT = 1
-    UNEXPECTED_ERR_REPORT_ISSUE = 5
-    WORKFLOW_XID_13_31 = 7
-    IGNORE = 0
-    WORKFLOW_ECC_DBE_SRAM = 8
-    REPORT_ISSUE = 5
-    RUN_FIELDDIAG = 6
-    RESTART_APP = 4
-    RESET_GPU = 2
-    RESOLUTION_BUCKET_TBD = 99
-    WORKFLOW_NVLINK5_ERR = 9
-    WORKFLOW_XID_45 = 10
-    WORKFLOW_XID_48 = 11
-    CHECK_MECHANICALS = 12
-    WORKFLOW_NVLINK_ERR = 13
-    UPDATE_SWFW = 14
-    RESTART_VM = 15
-    CHECK_THERMALS = 19
-    CHECK_FM_CONFIG = 18
-    RESTART_BM = 24
-    CHECK_UVM = 23
-
+    {{ $actionMapping := .Files.Get "files/actionmapping.ini" }}
+    {{- $actionMapping }}
 
     [DCGMHealthConditionsCategorizationMapping]
     DCGM_HEALTH_WATCH_THERMAL=NonFatal
@@ -87,7 +66,7 @@ data:
 
   # The below tables should map to the xid error spreadsheet https://docs.google.com/spreadsheets/d/1t6PpsC5TXiNl4JMBuHlFIjmSbjLZ2ik0Sz3DLw8cLmE/edit?gid=121017179#gid=121017179
   # ordering of below columns => xiderrorno,xiderrorname,xiderrorrecommendedaction,FATAL/NONFATAL errors
-{{ (.Files.Glob "xiderrorsmapping.csv").AsConfig | indent 2 }}
+{{ (.Files.Glob "files/xiderrorsmapping.csv").AsConfig | indent 2 }}
 
 
 {{ (.Files.Glob "dcgmerrorsmapping.csv").AsConfig | indent 2 }}

@@ -15,6 +15,7 @@ package syslogmonitor
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,11 +25,14 @@ import (
 	"strings"
 	"time"
 
+	"strconv"
+
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"gopkg.in/ini.v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
 )
@@ -46,6 +50,9 @@ const (
 	FieldMessage        = "MESSAGE"
 	FieldSyslogFacility = "SYSLOG_FACILITY"
 	FieldSystemdUnit    = "_SYSTEMD_UNIT"
+
+	XIDErrorCheck = "SysLogsXIDError"
+	ActionMappingSection = "gpuerrorrecommendactiontoplatformconnectormapping"
 )
 
 // syslogMonitorState represents the persistent state of the syslog monitor
@@ -53,6 +60,7 @@ type syslogMonitorState struct {
 	Version          int               `json:"version"`
 	BootID           string            `json:"boot_id"`
 	CheckLastCursors map[string]string `json:"check_last_cursors"`
+	PCIToGPUUUID     map[string]string `json:"pci_to_gpu_uuid"`
 }
 
 // saveState saves the monitor state to a file
@@ -85,6 +93,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 				Version:          stateFileVersion,
 				BootID:           "",
 				CheckLastCursors: make(map[string]string),
+				PCIToGPUUUID:     make(map[string]string),
 			}, nil
 		}
 		return state, fmt.Errorf("failed to read state from file: %w", err)
@@ -97,6 +106,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 			Version:          stateFileVersion,
 			BootID:           "",
 			CheckLastCursors: make(map[string]string),
+			PCIToGPUUUID:     make(map[string]string),
 		}, nil
 	}
 
@@ -106,6 +116,7 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 			Version:          stateFileVersion,
 			BootID:           "",
 			CheckLastCursors: make(map[string]string),
+			PCIToGPUUUID:     make(map[string]string),
 		}, nil
 	}
 
@@ -126,9 +137,12 @@ func loadState(stateFilePath string) (syslogMonitorState, error) {
 		return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
 	}
 
-	// Ensure CheckLastCursors is not nil
+	// Ensure maps are not nil
 	if state.CheckLastCursors == nil {
 		state.CheckLastCursors = make(map[string]string)
+	}
+	if state.PCIToGPUUUID == nil {
+		state.PCIToGPUUUID = make(map[string]string)
 	}
 
 	return state, nil
@@ -157,19 +171,25 @@ type SyslogMonitor struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	pollingInterval       string
-	checkLastCursors      map[string]string // Map of check name to last processed cursor
-	journalFactory        JournalFactory    // Factory for creating Journal instances
-	stateFilePath         string            // Path to state file for persistence
-	currentBootID         string            // Current system boot ID
+	checkLastCursors      map[string]string           // Map of check name to last processed cursor
+	journalFactory        JournalFactory              // Factory for creating Journal instances
+	stateFilePath         string                      // Path to state file for persistence
+	currentBootID         string                      // Current system boot ID
+	pciToGPUUUID          map[string]string           // Runtime map of PCI ID -> GPU UUID
+	xidActionMap          map[int]pb.RecommenedAction // Map of Xid code -> RecommendedAction
+	xidFatalMap           map[int]bool                // Map of Xid code -> Fatal flag
+	actionMappings        map[string]int              // Map of action name -> platform connector code
+	xidMappingPath        string                      // Path to XID error mappings file
+	actionMappingPath     string                      // Path to action mappings file
 }
 
 // NewSyslogMonitor creates a new SyslogMonitor instance
-func NewSyslogMonitor(nodeName string, checks []common.CheckDefinition, pcClient pb.PlatformConnectorClient, defaultAgentName string, defaultComponentClass string, pollingInterval string, stateFilePath string) (*SyslogMonitor, error) {
-	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName, defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory())
+func NewSyslogMonitor(nodeName string, checks []common.CheckDefinition, pcClient pb.PlatformConnectorClient, defaultAgentName string, defaultComponentClass string, pollingInterval string, stateFilePath string, xidMappingPath string, actionMappingPath string) (*SyslogMonitor, error) {
+	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName, defaultComponentClass, pollingInterval, stateFilePath, xidMappingPath, actionMappingPath, GetDefaultJournalFactory())
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
-func NewSyslogMonitorWithFactory(nodeName string, checks []common.CheckDefinition, pcClient pb.PlatformConnectorClient, defaultAgentName string, defaultComponentClass string, pollingInterval string, stateFilePath string, journalFactory JournalFactory) (*SyslogMonitor, error) {
+func NewSyslogMonitorWithFactory(nodeName string, checks []common.CheckDefinition, pcClient pb.PlatformConnectorClient, defaultAgentName string, defaultComponentClass string, pollingInterval string, stateFilePath string, xidMappingPath string, actionMappingPath string, journalFactory JournalFactory) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
 	if err != nil {
@@ -194,8 +214,24 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []common.CheckDefinitio
 		journalFactory:        journalFactory,
 		stateFilePath:         stateFilePath,
 		currentBootID:         currentBootID,
+		pciToGPUUUID:          state.PCIToGPUUUID,
+		xidMappingPath:        xidMappingPath,
+		actionMappingPath:     actionMappingPath,
+	}
+	if sm.pciToGPUUUID == nil {
+		sm.pciToGPUUUID = make(map[string]string)
 	}
 
+	// Load action mappings from INI file
+	sm.actionMappings, err = sm.loadActionMappings()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load action mappings: %w", err)
+	}
+	// Load Xid action mappings from CSV if available
+	sm.xidActionMap, sm.xidFatalMap, err = sm.loadXidActionMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load Xid action mappings: %w", err)
+	}
 	// Handle boot ID changes (system reboot detection)
 	if err := sm.handleBootIDChange(state.BootID, currentBootID); err != nil {
 		return nil, fmt.Errorf("failed to handle boot ID change: %w", err)
@@ -215,11 +251,15 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 			delete(sm.checkLastCursors, checkName)
 		}
 
+		// Clear mapping on reboot to avoid stale correlations
+		sm.pciToGPUUUID = make(map[string]string)
+
 		// Save updated state
 		state := syslogMonitorState{
 			Version:          stateFileVersion,
 			BootID:           newBootID,
 			CheckLastCursors: sm.checkLastCursors,
+			PCIToGPUUUID:     sm.pciToGPUUUID,
 		}
 
 		if err := saveState(sm.stateFilePath, state); err != nil {
@@ -232,7 +272,8 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 		if sm.pcClient != nil {
 			for _, check := range sm.checks {
 				message := "No Health Failures"
-				healthEvents := sm.prepareHealthEvent(check, message, true, false)
+				recommendedAction, _ := sm.determineRecommendedAction(check)
+				healthEvents := sm.prepareHealthEventWithAction(check, message, true, false, recommendedAction)
 				sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
 				klog.Infof("Published healthy event for check '%s' after system reboot", check.Name)
 			}
@@ -250,6 +291,7 @@ func (sm *SyslogMonitor) saveCurrentState() error {
 		Version:          stateFileVersion,
 		BootID:           sm.currentBootID,
 		CheckLastCursors: sm.checkLastCursors,
+		PCIToGPUUUID:     sm.pciToGPUUUID,
 	}
 
 	return saveState(sm.stateFilePath, state)
@@ -267,7 +309,11 @@ func (sm *SyslogMonitor) executeCheck(check common.CheckDefinition) error {
 	if err != nil {
 		return err
 	}
-	defer journal.Close()
+	defer func() {
+		if cerr := journal.Close(); cerr != nil {
+			klog.Warningf("Check '%s': error closing journal: %v", check.Name, cerr)
+		}
+	}()
 
 	if err := sm.configureTagFilters(journal, check); err != nil {
 		return err
@@ -336,7 +382,7 @@ func (sm *SyslogMonitor) openJournal(check common.CheckDefinition) (Journal, err
 		}
 		return journal, nil
 	} else {
-		return nil, fmt.Errorf("check '%s': journal path is empty. Path-specific journal expected for checks.", check.Name)
+		return nil, fmt.Errorf("check '%s': journal path is empty. Path-specific journal expected for checks", check.Name)
 	}
 }
 
@@ -529,13 +575,30 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, patterns []*rege
 			continue
 		}
 
+		message = normalizeJournalMessage(message)
+
 		if message == "" {
 			// Successfully read an empty message. This entry is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
 			klog.Infof("Check '%s': Empty message at cursor %s. Stored cursor for next run. Advancing.", check.Name, currentEntryCursor)
 		} else {
-			if sm.messageMatchesPatterns(message, patterns) {
-				matchingLines = append(matchingLines, message)
+			lineToEvaluate := message
+
+			if pciID, gpuUUID := parseNVRMGPUMapLine(message); pciID != "" && gpuUUID != "" {
+				normPCI := normalizePCI(pciID)
+				sm.pciToGPUUUID[normPCI] = gpuUUID
+				klog.Infof("Updated PCI->GPU UUID mapping: %s -> %s", normPCI, gpuUUID)
+			}
+			if xidPCI := parseNVRMXidPCI(message); xidPCI != "" {
+				normPCI := normalizePCI(xidPCI)
+				if uuid, ok := sm.pciToGPUUUID[normPCI]; ok && uuid != "" {
+					lineToEvaluate = fmt.Sprintf("%s [GPU UUID: %s]", message, uuid)
+				} else {
+					lineToEvaluate = fmt.Sprintf("%s [PCI: %s]", message, normPCI)
+				}
+			}
+			if sm.messageMatchesPatterns(lineToEvaluate, patterns) {
+				matchingLines = append(matchingLines, lineToEvaluate)
 			}
 			// This entry (matched or not) is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
@@ -558,6 +621,42 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, patterns []*rege
 	finalCursor := sm.checkLastCursors[check.Name] // Should always exist if we passed initialization.
 	klog.Infof("Check '%s': Finished processing journal entries for this cycle. Found %d matches. Next run will start after cursor: %s", check.Name, len(matchingLines), finalCursor)
 	return matchingLines, nil
+}
+
+func normalizePCI(pci string) string {
+	if idx := strings.Index(pci, "."); idx != -1 {
+		return pci[:idx]
+	}
+	return pci
+}
+
+var (
+	reNvrmMap = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:]+): (GPU-[0-9a-fA-F-]+)`)
+	reNvrmXid = regexp.MustCompile(`NVRM: Xid \(PCI:([0-9a-fA-F:]+)\): (\d+),?\s*(.*)`)
+	reXidCode = regexp.MustCompile(`Xid \([^)]*\):\s*(\d+)`)
+)
+
+func parseNVRMGPUMapLine(message string) (string, string) {
+	m := reNvrmMap.FindStringSubmatch(message)
+	if len(m) >= 3 {
+		return m[1], m[2]
+	}
+	return "", ""
+}
+
+func parseNVRMXidPCI(message string) string {
+	m := reNvrmXid.FindStringSubmatch(message)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func normalizeJournalMessage(message string) string {
+	if m := reNvrmXid.FindStringSubmatch(message); len(m) > 0 {
+		return m[0]
+	}
+	return message
 }
 
 // getJournalMessage attempts to read a message from the journal with retry logic
@@ -621,6 +720,19 @@ func (sm *SyslogMonitor) evaluateResults(check common.CheckDefinition, matchingL
 	klog.Infof("Check '%s': Found %d matching lines (threshold: %d).", check.Name, numMatches, check.Count)
 
 	if numMatches > check.Count {
+		if check.Name == XIDErrorCheck {
+			for _, line := range matchingLines {
+				if _, ok := extractXidCode(line); ok {
+					recommendedAction, fatal := sm.determineXIDRecommendedAction([]string{line})
+					if sm.pcClient != nil {
+						healthEvents := sm.prepareHealthEventWithAction(check, line, false, fatal, recommendedAction)
+						sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
+					}
+				}
+			}
+			return nil
+		}
+
 		klog.Errorf("Error for check '%s': Found %d lines, which is more than the allowed count of %d.", check.Name, numMatches, check.Count)
 		klog.Errorln("Matching lines:")
 		for _, line := range matchingLines {
@@ -628,7 +740,9 @@ func (sm *SyslogMonitor) evaluateResults(check common.CheckDefinition, matchingL
 		}
 
 		errMsg := fmt.Sprintf("Found %d matches, threshold is %d. Lines: %s", numMatches, check.Count, strings.Join(matchingLines, "\\n"))
-		healthEvents := sm.prepareHealthEvent(check, errMsg, false, true)
+
+		recommendedAction, fatal := sm.determineRecommendedAction(check)
+		healthEvents := sm.prepareHealthEventWithAction(check, errMsg, false, fatal, recommendedAction)
 
 		if sm.pcClient != nil {
 			sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
@@ -651,7 +765,11 @@ func (sm *SyslogMonitor) getCurrentBootID() string {
 		klog.Warningf("Failed to open system journal for boot ID: %v", err)
 		return ""
 	}
-	defer journal.Close()
+	defer func() {
+		if cerr := journal.Close(); cerr != nil {
+			klog.Warningf("Error closing system journal after getting boot ID: %v", cerr)
+		}
+	}()
 
 	bootID, err := journal.GetBootID()
 	if err != nil {
@@ -661,25 +779,138 @@ func (sm *SyslogMonitor) getCurrentBootID() string {
 	return bootID
 }
 
-// prepareHealthEvent creates a health event for reporting
-func (sm *SyslogMonitor) prepareHealthEvent(check common.CheckDefinition, message string, isHealthy bool, isFatal bool) *pb.HealthEvents {
-	klog.Infof("Preparing health event for check '%s': Message: %s, Healthy: %t, Fatal: %t", check.Name, message, isHealthy, isFatal)
+func (sm *SyslogMonitor) determineXIDRecommendedAction(lines []string) (pb.RecommenedAction, bool) {
+	for _, line := range lines {
+		if code, ok := extractXidCode(line); ok {
+			klog.Infof("Found XID code %d in line %s", code, line)
+			if action, found := sm.xidActionMap[code]; found {
+				klog.Infof("Found action %s for XID code %d", action, code)
+				return action, sm.xidFatalMap[code]
+			}
+		}
+	}
+	klog.Infof("No action found for XID codes")
+	return pb.RecommenedAction_REPORT_ISSUE, true
+}
 
-	// Default to REPORT_ISSUE if RecommendedAction is not specified
+func (sm *SyslogMonitor) determineRecommendedAction(check common.CheckDefinition) (pb.RecommenedAction, bool) {
 	recommendedAction := pb.RecommenedAction_REPORT_ISSUE
 
 	// Parse the RecommendedAction from the check definition if it's specified
 	if check.RecommendedAction != "" {
-		switch check.RecommendedAction {
-		case "NODE_REBOOT":
-			recommendedAction = pb.RecommenedAction_NODE_REBOOT
-		case "REPORT_ISSUE":
-			recommendedAction = pb.RecommenedAction_REPORT_ISSUE
-		default:
+		if action, ok := sm.mapActionStringToProto(check.RecommendedAction); ok {
+			recommendedAction = action
+		} else {
 			klog.Warningf("Unknown RecommendedAction '%s' for check '%s', defaulting to REPORT_ISSUE",
 				check.RecommendedAction, check.Name)
 		}
 	}
+	return recommendedAction, true
+}
+
+func (sm *SyslogMonitor) loadXidActionMap() (map[int]pb.RecommenedAction, map[int]bool, error) {
+	result := make(map[int]pb.RecommenedAction)
+	fatalMap := make(map[int]bool)
+	f, err := os.Open(sm.xidMappingPath)
+	if err != nil {
+		klog.Errorf("Xid mapping file not found at %s; defaulting to REPORT_ISSUE", sm.xidMappingPath)
+		return result, fatalMap, fmt.Errorf("xid mapping file not found at %s", sm.xidMappingPath)
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			klog.Errorf("Error closing Xid mapping file: %v", cerr)
+		}
+	}()
+
+	reader := csv.NewReader(f)
+	reader.Comment = '#'
+	reader.FieldsPerRecord = 4 // Always expect exactly 4 fields: XID code, description, recommended action, fatality
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			klog.Errorf("Error reading CSV record: %v", err)
+			continue
+		}
+
+		codeStr := strings.TrimSpace(record[0])
+		actionStr := strings.TrimSpace(record[2])
+		fatalStr := strings.TrimSpace(record[3])
+
+		code, err := strconv.Atoi(codeStr)
+		if err != nil {
+			klog.Errorf("Error parsing XID code %s: %v", codeStr, err)
+			continue
+		}
+		action, ok := sm.mapActionStringToProto(actionStr)
+		if ok {
+			result[code] = action
+		}
+
+		if fatalStr == "FATAL" {
+			fatalMap[code] = true
+		} else {
+			fatalMap[code] = false
+		}
+	}
+	return result, fatalMap, nil
+}
+
+func (sm *SyslogMonitor) loadActionMappings() (map[string]int, error) {
+	result := make(map[string]int)
+
+	cfg, err := ini.Load(sm.actionMappingPath)
+	if err != nil {
+		klog.Errorf("Action mapping INI file not found at %s; no action mappings loaded", sm.actionMappingPath)
+		return result, fmt.Errorf("action mapping INI file not found at %s: %w", sm.actionMappingPath, err)
+	}
+
+	section := cfg.Section(ActionMappingSection)
+	if section == nil {
+		klog.Errorf("Section '%s' not found in INI file", ActionMappingSection)
+		return result, fmt.Errorf("section '%s' not found in INI file", ActionMappingSection)
+	}
+
+	for _, key := range section.Keys() {
+		actionName := key.Name()
+		codeValue, err := key.Int()
+		if err != nil {
+			klog.Warningf("Invalid integer value for action '%s': %v", actionName, err)
+			continue
+		}
+		result[actionName] = codeValue
+	}
+
+	klog.Infof("Loaded %d action mappings from INI file", len(result))
+	return result, nil
+}
+
+func (sm *SyslogMonitor) mapActionStringToProto(s string) (pb.RecommenedAction, bool) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if code, ok := sm.actionMappings[s]; ok {
+		return pb.RecommenedAction(code), true
+	}
+	return pb.RecommenedAction_REPORT_ISSUE, false
+}
+
+func extractXidCode(line string) (int, bool) {
+	m := reXidCode.FindStringSubmatch(line)
+	if len(m) < 2 {
+		return 0, false
+	}
+	code, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
+}
+
+// prepareHealthEventWithAction creates a health event with an explicit RecommendedAction
+func (sm *SyslogMonitor) prepareHealthEventWithAction(check common.CheckDefinition, message string, isHealthy bool, isFatal bool, recommendedAction pb.RecommenedAction) *pb.HealthEvents {
+	klog.Infof("Preparing health event (override action) for check '%s': Message: %s, Healthy: %t, Fatal: %t, Action: %s", check.Name, message, isHealthy, isFatal, recommendedAction)
 
 	event := &pb.HealthEvent{
 		Version:            1,
