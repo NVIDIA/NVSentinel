@@ -86,4 +86,13 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+
+	// This metric tracks which nodes are currently being drained (1 = draining, 0 = not draining)
+	nodeDrainStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "node_drainer_node_drain_status",
+			Help: "Shows if a node is currently being drained (1) or not (0).",
+		},
+		[]string{"node"},
+	)
 )

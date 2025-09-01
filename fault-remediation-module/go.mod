@@ -8,7 +8,7 @@ require (
 	github.com/prometheus/client_golang v1.20.2
 	github.com/stretchr/testify v1.10.0
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250814120636-3db849da7cc7
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250829092039-62d081c46041
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
 	k8s.io/apimachinery v0.32.2
 	k8s.io/client-go v0.32.2
 )

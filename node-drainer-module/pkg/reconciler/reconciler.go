@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
+	multierror "github.com/hashicorp/go-multierror"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
@@ -171,6 +171,15 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(r.Config.TomlConfig.UserNamespaces))
 
+	// Set metric based on node quarantine status
+	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
+		// Node is healthy/unquarantined - set metric to 0
+		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
+	} else {
+		// Node is quarantined - set metric to 1 to indicate draining started
+		nodeDrainStatus.WithLabelValues(nodeName).Set(1)
+	}
+
 	for ns, mode := range namespaceMap {
 		nsWithNode := fmt.Sprintf("%s-%s", nodeName, ns)
 		if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
@@ -235,7 +244,14 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		return mErr
 	}
 
-	return r.verifyEvictionCompleted(ctx, healthEventWithStatus, nodeName, nsWithImmediateMode)
+	err := r.verifyEvictionCompleted(ctx, healthEventWithStatus, nodeName, nsWithImmediateMode)
+
+	// Set metric to 0 only after successful completion of draining
+	if err == nil && *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
+		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
+	}
+
+	return err
 }
 
 func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config.EvictMode {
