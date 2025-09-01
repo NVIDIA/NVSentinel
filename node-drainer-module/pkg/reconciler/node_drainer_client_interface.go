@@ -20,7 +20,7 @@ import (
 )
 
 type NodeDrainerClientInterface interface {
-	GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error)
+	GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error)
 	MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error
 	EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timout time.Duration) error
 	CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool

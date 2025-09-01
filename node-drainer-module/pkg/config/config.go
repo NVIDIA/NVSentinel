@@ -40,6 +40,7 @@ type UserNamespace struct {
 
 type TomlConfig struct {
 	EvictionTimeoutInSeconds Duration        `toml:"evictionTimeoutInSeconds"`
+	SystemNamespaces         string          `toml:"systemNamespaces"`
 	UserNamespaces           []UserNamespace `toml:"userNamespaces"`
 }
 

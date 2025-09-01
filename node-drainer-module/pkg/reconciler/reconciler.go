@@ -265,8 +265,9 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 
 func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config.EvictMode {
 	namespaceMap := make(map[string]config.EvictMode)
+	systemNamespaces := r.Config.TomlConfig.SystemNamespaces
 	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
-		matchedNamespaces, err := r.Config.K8sClient.GetNamespacesMatchingPattern(ctx, userNamespace.Name)
+		matchedNamespaces, err := r.Config.K8sClient.GetNamespacesMatchingPattern(ctx, userNamespace.Name, systemNamespaces)
 		if err != nil {
 			klog.Errorf("Error while matching namespaces with pattern %s: %+v", userNamespace.Name, err)
 			continue

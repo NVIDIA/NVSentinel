@@ -21,7 +21,7 @@ import yaml
 
 class TestNodeDrainerRestart(TestNVSentinelCaseBase):
     """
-    Class for test case of NVsentinel Fault Notification: Node drainer after restart should pick up old already started eviction events
+    Class for test case of NVsentinel Node Drainer: Node drainer after restart should pick up old already started eviction events
     """
 
     backup_cm_path = "node-drainer-config-backup.yaml"

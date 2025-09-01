@@ -21,7 +21,7 @@ import yaml
 default_namespace = "default"
 class TestNodeRecoveryDuringEvictionProcessAfterPodShifted(TestNVSentinelCaseBase):
     """
-    Class for test case of NVsentinel Fault Notification: Node recovery during pod eviction process after the pod is shifted to another node
+    Class for test case of NVsentinel Node Drainer: Node recovery during pod eviction process after the pod is shifted to another node
     """
 
     backup_cm_path = "node-drainer-config-backup.yaml"

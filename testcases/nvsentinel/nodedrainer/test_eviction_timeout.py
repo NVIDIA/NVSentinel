@@ -21,19 +21,19 @@ import yaml
 
 class TestEvictionTimeout(TestNVSentinelCaseBase):
     """
-    Class for test case of NVsentinel Fault Notification: Eviction timeout
+    Class for test case of NVsentinel Node Drainer: Eviction timeout
     """
 
     template_id = "4998191"
-    backup_cm_path = "fault-notification-config-backup.yaml"
+    backup_cm_path = "node-drainer-config-backup.yaml"
 
     @pytest.fixture(autouse=True)
     def setup_fault_notification(self, setup_runai_test):
-        self.logger.info("[Setup] Fault Notification Pod")
+        self.logger.info("[Setup] Node Drainer Pod")
         try:
             yield
         finally:
-            self.logger.info("[Teardown] Fault Notification Pod")
+            self.logger.info("[Teardown] Node Drainer Pod")
             node_drainer_deployment = self.client.get_deployments(self.nv_namespace, "nvsentinel-node-drainer")
             if not node_drainer_deployment:
                 return
@@ -42,7 +42,7 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
             self.clear_gpu_fatal_error(self.node_name, "GpuInforomWatch")
             if error:
                 self.logger.error(
-                    f"Failed to restore fault-notification configmap: {error}"
+                    f"Failed to restore node-drainer configmap: {error}"
                 )
 
     @pytest.mark.author(email="ajmishra@nvidia.com")

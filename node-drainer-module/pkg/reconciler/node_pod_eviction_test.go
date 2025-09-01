@@ -89,7 +89,7 @@ func TestMain(m *testing.M) {
 		eviction:  mockEvictionClient,
 	}
 
-	namespaces := []string{"runai", "nvsentinel"}
+	namespaces := []string{"runai", "nvsentinel", "runai-prod", "runai-dev"}
 
 	for _, ns := range namespaces {
 		_, err := Client.CoreV1().Namespaces().Create(context.TODO(), &v1.Namespace{
@@ -360,6 +360,18 @@ func createDaemonSet(ctx context.Context, namespace, name string) {
 	if err != nil {
 		log.Fatalf("Failed to create DaemonSet pod %s: %v", name, err)
 	}
+}
+
+func TestGetNamespacesMatchingPattern(t *testing.T) {
+	ctx := context.Background()
+	namespaces, err := k8sClient.GetNamespacesMatchingPattern(ctx, "runai*", ".*ai-prod$")
+	assert.NoError(t, err, "Error in getting namespaces matching pattern")
+	assert.Equal(t, []string{"runai", "runai-dev"}, namespaces, "Namespaces matching pattern mismatch")
+
+	namespaces2, err := k8sClient.GetNamespacesMatchingPattern(ctx, "runai*", "")
+	assert.NoError(t, err, "Error in getting namespaces matching pattern")
+	assert.Equal(t, []string{"runai", "runai-dev", "runai-prod"}, namespaces2, "Namespaces matching pattern mismatch")
+
 }
 
 func TearDownResources() {

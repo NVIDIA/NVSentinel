@@ -51,6 +51,7 @@ configPath: "/etc/config/config.toml"
 
 config: |
   evictionTimeoutInSeconds = "60"
+  systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage)$"
   [[userNamespaces]]
-  name = "runai-*"
+  name = "runai*"
   mode = "AllowCompletion"

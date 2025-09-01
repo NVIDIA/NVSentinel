@@ -29,14 +29,14 @@ import (
 )
 
 type MockNodeDrainerClient struct {
-	getNamespacesMatchingPatternFn func(ctx context.Context, pattern string) ([]string, error)
+	getNamespacesMatchingPatternFn func(ctx context.Context, includePattern string, excludePattern string) ([]string, error)
 	monitorPodCompletionFn         func(ctx context.Context, namespace string, nodename string) error
 	evictAllPodsImmediatelyFn      func(ctx context.Context, namespace string, nodename string, timeout time.Duration) error
 	checkIfAllPodsAreEvictedFn     func(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool
 }
 
-func (c *MockNodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
-	return c.getNamespacesMatchingPatternFn(ctx, pattern)
+func (c *MockNodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+	return c.getNamespacesMatchingPatternFn(ctx, includePattern, excludePattern)
 }
 func (c *MockNodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error {
 	return c.monitorPodCompletionFn(ctx, namespace, nodename)
@@ -64,13 +64,14 @@ func TestHandleEvent(t *testing.T) {
 			}},
 	}
 	k8sClient := &MockNodeDrainerClient{
-		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
-			if pattern == "*ai" {
+		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+			switch includePattern {
+			case "*ai":
 				return []string{"runai"}, nil
-			} else if pattern == "*sentin*" {
+			case "*sentin*":
 				return []string{"nvsentinel"}, nil
-			} else {
-				return []string{}, fmt.Errorf("Unexpected %s pattern passed", pattern)
+			default:
+				return []string{}, fmt.Errorf("Unexpected %s pattern passed", includePattern)
 			}
 		},
 		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
@@ -128,13 +129,14 @@ func TestHandleEventWithError(t *testing.T) {
 
 	// eviction of pods in immediate mode with error
 	k8sClient := &MockNodeDrainerClient{
-		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
-			if pattern == "*ai" {
+		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+			switch includePattern {
+			case "*ai":
 				return []string{"runai"}, nil
-			} else if pattern == "*sentin*" {
+			case "*sentin*":
 				return []string{"nvsentinel"}, nil
-			} else {
-				return []string{}, fmt.Errorf("Unexpected %s pattern passed", pattern)
+			default:
+				return []string{}, fmt.Errorf("Unexpected %s pattern passed", includePattern)
 			}
 		},
 		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
@@ -214,13 +216,14 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 			}},
 	}
 	k8sClient := &MockNodeDrainerClient{
-		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
-			if pattern == "*ai" {
+		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+			switch includePattern {
+			case "*ai":
 				return []string{"runai"}, nil
-			} else if pattern == "*sentin*" {
+			case "*sentin*":
 				return []string{"nvsentinel"}, nil
-			} else {
-				return []string{}, fmt.Errorf("Unexpected %s pattern passed", pattern)
+			default:
+				return []string{}, fmt.Errorf("Unexpected %s pattern passed", includePattern)
 			}
 		},
 		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
@@ -282,11 +285,11 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 	}
 
 	k8sClient := &MockNodeDrainerClient{
-		getNamespacesMatchingPatternFn: func(ctx context.Context, pattern string) ([]string, error) {
-			if pattern == "test-ns" || pattern == "test-ns-actual" {
+		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+			if includePattern == "test-ns" || includePattern == "test-ns-actual" {
 				return []string{"test-ns-actual"}, nil
 			}
-			return []string{}, fmt.Errorf("Unexpected pattern %s passed", pattern)
+			return []string{}, fmt.Errorf("Unexpected pattern %s passed", includePattern)
 		},
 		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
 			// This should not be called

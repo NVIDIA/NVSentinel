@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -316,19 +317,38 @@ func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces [
 }
 
 // get namespaces that matches the given pattern
-func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, pattern string) ([]string, error) {
+func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
 	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w", err)
 	}
 
+	// Compile exclude regex once
+	var excludeRegex *regexp.Regexp
+	if excludePattern != "" {
+		excludeRegex, err = regexp.Compile(excludePattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid exclude regex %s: %w", excludePattern, err)
+		}
+	}
+
 	var matchedNamespaces []string
 	for _, ns := range namespaces.Items {
-		if matched, err := filepath.Match(pattern, ns.Name); err != nil {
-			return nil, fmt.Errorf("error matching pattern: %w", err)
-		} else if matched {
-			matchedNamespaces = append(matchedNamespaces, ns.Name)
+		// If excludeRegex is supplied and it matches, skip
+		if excludeRegex != nil && excludeRegex.MatchString(ns.Name) {
+			continue
 		}
+
+		// Match include glob pattern first
+		includeMatches, err := filepath.Match(includePattern, ns.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error matching include pattern %s: %w", includePattern, err)
+		}
+		if !includeMatches {
+			continue
+		}
+
+		matchedNamespaces = append(matchedNamespaces, ns.Name)
 	}
 
 	return matchedNamespaces, nil
