@@ -124,6 +124,8 @@ global:
 
   clusterType: standalone # standalone|mgmt|tenant
 
+  inclusterFileServer:
+    enabled: false
   kata:
     enabled: false
     port:

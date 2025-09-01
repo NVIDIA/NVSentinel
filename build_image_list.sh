@@ -48,6 +48,7 @@ declare -a dynamic_images=(
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME}"
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${SAFE_REF_NAME}"
   "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"
+  "${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME}"
 )
 
 # Write dynamic images to output file
@@ -69,7 +70,7 @@ static_tmp=$(mktemp)
 # This awk script:
 # 1. Extracts repository and tag information from values.yaml
 # 2. Cleans up whitespace and quotes
-# 3. Formats the output with the static prefix
+# 3. Formats the output using the configured static prefix
 awk -v prefix="$static_prefix" '
   function clean(v) {
     gsub(/^[ \t]*"/, "", v)

@@ -66,6 +66,8 @@ include:
       needs: 
         - prepare-vars
         - build-image-list
+        - job: log-collector-container-publish
+          optional: true
         - job: nic-health-monitor-container-publish
           optional: true
         - job: nvswitch-health-monitor-container-publish
@@ -88,7 +90,7 @@ include:
           optional: true
       nspect_id: NSPECT-JRZ4-EI8F
       policy: "container_scan_policy.json"
-      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/nvsentinel-health-event-client", "nvcr.io/nv-ngc-devops/rtsp-mongosh"]
+      image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/nvsentinel-health-event-client", "nvcr.io/nv-ngc-devops/rtsp-mongosh", "nvcr.io/nv-ngc-devops/nvsentinel-log-collector"]
       is_release: false
       allow_failure: true
       platform_archs: ["linux/amd64"]
@@ -945,6 +947,7 @@ generate-manifests:
       - manifests/tenant/resources.yaml
     expire_in: 1 day
 
+
 kubernetes-distro-helm-publish:
   stage: publish
   rules:
@@ -959,3 +962,30 @@ kubernetes-distro-helm-publish:
     - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
     - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
     - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
+
+log-collector-container-publish:
+  stage: publish
+  extends:
+    - .dind-service
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+  script:
+    - cd collector
+    - docker context create builder
+    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
+    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} .
+log-collector-lint:
+  stage: lint
+  image: koalaman/shellcheck-alpine:stable
+  extends:
+    - .eks-runner-tags
+  script:
+    - cd collector
+    - shellcheck entrypoint.sh 

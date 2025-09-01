@@ -52,3 +52,6 @@ dependencies:
   - name: dca-health-monitor
     version: "0.1.0"
     condition: global.dcaHealthMonitor.enabled
+  - name: incluster-file-server
+    version: "0.1.0"
+    condition: global.inclusterFileServer.enabled

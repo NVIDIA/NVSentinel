@@ -1,0 +1,55 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-file-server-nginx-conf
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+      charset utf-8;
+
+      access_log /dev/stdout;
+      error_log /dev/stderr info;
+
+      client_max_body_size 0;
+
+      # Health endpoint for k8s probes (no auth)
+      location = /healthz {
+        access_log off;
+        return 200;
+      }
+
+      location / {
+        root /usr/share/nginx/html;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+      }
+
+      # Upload endpoint for collectors (no auth; restrict via NetworkPolicy)
+      location /upload/ {
+        root /usr/share/nginx/html;
+        client_max_body_size 0;
+        create_full_put_path on;
+        dav_methods PUT DELETE MKCOL;
+        dav_access user:rw group:rw all:r;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+        disable_symlinks if_not_owner from=/usr/share/nginx/html;
+      }
+    }
