@@ -215,7 +215,9 @@ func TestRoundTrip(t *testing.T) {
 			"seconds": float64(eventTime.GetSeconds()),
 			"nanos":   float64(eventTime.GetNanos()),
 		},
-		"nodeName": "test-node",
+		"nodeName":            "test-node",
+		"quarantineOverrides": nil,
+		"drainOverrides":      nil,
 	}
 
 	if !reflect.DeepEqual(result, expectedMap) {

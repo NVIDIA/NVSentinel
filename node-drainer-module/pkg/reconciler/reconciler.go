@@ -165,6 +165,15 @@ func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection
 func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
 
 	namespaceMap := r.getMatchingNamespace(ctx)
+
+	// If DrainOverrides.Force is true, override all namespaces to use immediate eviction
+	if healthEventWithStatus.HealthEvent.DrainOverrides != nil && healthEventWithStatus.HealthEvent.DrainOverrides.Force {
+		klog.Infof("DrainOverrides.Force is true, forcing immediate eviction for all namespaces")
+		for ns := range namespaceMap {
+			namespaceMap[ns] = config.ModeImmediateEvict
+		}
+	}
+
 	var mu sync.Mutex
 	nsWithImmediateMode := []string{}
 

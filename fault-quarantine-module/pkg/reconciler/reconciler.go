@@ -395,7 +395,7 @@ func (r *Reconciler) watchEvents(watcher *storewatcher.ChangeStreamWatcher) {
 	}
 }
 
-// nolint: cyclop, gocognit //fix this as part of NGCC-21793
+//nolint:cyclop,gocognit,nestif //fix this as part of NGCC-21793
 func (r *Reconciler) handleEvent(
 	ctx context.Context,
 	event *storeconnector.HealthEventWithStatus,
@@ -476,74 +476,82 @@ func (r *Reconciler) handleEvent(
 
 	var wg sync.WaitGroup
 
-	// Evaluate each ruleset in parallel
-	for _, eval := range ruleSetEvals {
-		wg.Add(1)
+	if event.HealthEvent.QuarantineOverrides == nil ||
+		!event.HealthEvent.QuarantineOverrides.Force {
+		// Evaluate each ruleset in parallel
+		for _, eval := range ruleSetEvals {
+			wg.Add(1)
 
-		go func(eval evaluator.RuleSetEvaluatorIface) {
-			defer wg.Done()
-			klog.Infof("Handling event: %+v for ruleset: %+v", event, eval.GetName())
+			go func(eval evaluator.RuleSetEvaluatorIface) {
+				defer wg.Done()
+				klog.Infof("Handling event: %+v for ruleset: %+v", event, eval.GetName())
 
-			rulesetEvaluations.WithLabelValues(eval.GetName()).Inc()
+				rulesetEvaluations.WithLabelValues(eval.GetName()).Inc()
 
-			ruleEvaluatedResult, err := eval.Evaluate(event.HealthEvent)
-			//nolint //ignore complex nesting blocks //fix this as part of NGCC-21793
-			if ruleEvaluatedResult == common.RuleEvaluationSuccess {
-				rulesetPassed.WithLabelValues(eval.GetName()).Inc()
+				ruleEvaluatedResult, err := eval.Evaluate(event.HealthEvent)
+				//nolint //ignore complex nesting blocks //fix this as part of NGCC-21793
+				if ruleEvaluatedResult == common.RuleEvaluationSuccess {
+					rulesetPassed.WithLabelValues(eval.GetName()).Inc()
 
-				if shouldCordon := rulesetsConfig.CordonConfigMap[eval.GetName()]; shouldCordon {
-					isCordoned.Store(true)
+					if shouldCordon := rulesetsConfig.CordonConfigMap[eval.GetName()]; shouldCordon {
+						isCordoned.Store(true)
 
-					newCordonReason := eval.GetName()
+						newCordonReason := eval.GetName()
 
-					if _, exist := labelsMap.Load(cordonedReasonLabelKey); exist {
-						oldCordonReason, _ := labelsMap.Load(cordonedReasonLabelKey)
-						newCordonReason = oldCordonReason.(string) + "-" + newCordonReason
+						if _, exist := labelsMap.Load(cordonedReasonLabelKey); exist {
+							oldCordonReason, _ := labelsMap.Load(cordonedReasonLabelKey)
+							newCordonReason = oldCordonReason.(string) + "-" + newCordonReason
+						}
+
+						labelsMap.Store(cordonedReasonLabelKey, formatCordonOrUncordonReasonValue(newCordonReason, 63))
 					}
 
-					labelsMap.Store(cordonedReasonLabelKey, formatCordonOrUncordonReasonValue(newCordonReason, 63))
-				}
+					taintConfig := rulesetsConfig.TaintConfigMap[eval.GetName()]
+					// Apply taint and cordon based on configuration, if it is not already applied
+					if taintConfig != nil {
+						keyVal := keyValTaint{Key: taintConfig.Key, Value: taintConfig.Value}
 
-				taintConfig := rulesetsConfig.TaintConfigMap[eval.GetName()]
-				// Apply taint and cordon based on configuration, if it is not already applied
-				if taintConfig != nil {
-					keyVal := keyValTaint{Key: taintConfig.Key, Value: taintConfig.Value}
+						currentVal, _ := taintAppliedMap.Load(keyVal)
+						currentEffect := currentVal.(string)
 
-					currentVal, _ := taintAppliedMap.Load(keyVal)
-					currentEffect := currentVal.(string)
+						currentPriorityVal, _ := taintEffectPriorityMap.Load(keyVal)
+						currentPriority := currentPriorityVal.(int)
 
-					currentPriorityVal, _ := taintEffectPriorityMap.Load(keyVal)
-					currentPriority := currentPriorityVal.(int)
+						newPriority := rulesetsConfig.RuleSetPriorityMap[eval.GetName()]
 
-					newPriority := rulesetsConfig.RuleSetPriorityMap[eval.GetName()]
-
-					// Update if no effect set yet or new priority is higher
-					if currentEffect == "" || (currentEffect != "" && newPriority > currentPriority) {
-						taintEffectPriorityMap.Store(keyVal, newPriority)
-						taintAppliedMap.Store(keyVal, taintConfig.Effect)
+						// Update if no effect set yet or new priority is higher
+						if currentEffect == "" || (currentEffect != "" && newPriority > currentPriority) {
+							taintEffectPriorityMap.Store(keyVal, newPriority)
+							taintAppliedMap.Store(keyVal, taintConfig.Effect)
+						}
 					}
+				} else if err != nil {
+					klog.Errorf("error while evaluating for event: %+v for ruleset: %+v: %+v", event.HealthEvent, eval.GetName(), err)
+
+					processingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
+
+					rulesetFailed.WithLabelValues(eval.GetName()).Inc()
+				} else if ruleEvaluatedResult == common.RuleEvaluationRetryAgainInFuture {
+
+					klog.V(2).Infof("RuleEvaluation not succeeded , will revaluate it in next iteration \n%+v", event.HealthEvent)
+					ruleEvaluationRetryInFuture = true
+
+				} else {
+					rulesetFailed.WithLabelValues(eval.GetName()).Inc()
 				}
-			} else if err != nil {
-				klog.Errorf("error while evaluating for event: %+v for ruleset: %+v: %+v", event.HealthEvent, eval.GetName(), err)
+			}(eval)
+		}
 
-				processingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
+		wg.Wait()
 
-				rulesetFailed.WithLabelValues(eval.GetName()).Inc()
-			} else if ruleEvaluatedResult == common.RuleEvaluationRetryAgainInFuture {
-
-				klog.V(2).Infof("RuleEvaluation not succeeded , will revaluate it in next iteration \n%+v", event.HealthEvent)
-				ruleEvaluationRetryInFuture = true
-
-			} else {
-				rulesetFailed.WithLabelValues(eval.GetName()).Inc()
-			}
-		}(eval)
-	}
-
-	wg.Wait()
-
-	if ruleEvaluationRetryInFuture {
-		return nil, common.RuleEvaluationRetryAgainInFuture
+		if ruleEvaluationRetryInFuture {
+			return nil, common.RuleEvaluationRetryAgainInFuture
+		}
+	} else {
+		isCordoned.Store(true)
+		labelsMap.LoadOrStore(cordonedByLabelKey, event.HealthEvent.Agent+"-"+event.HealthEvent.Metadata["creator_id"])
+		labelsMap.Store(cordonedReasonLabelKey,
+			formatCordonOrUncordonReasonValue(event.HealthEvent.Message, 63))
 	}
 
 	taintsToBeApplied := []config.Taint{}
@@ -581,7 +589,8 @@ func (r *Reconciler) handleEvent(
 		annotationsMap[common.QuarantineHealthEventIsCordonedAnnotationKey] =
 			common.QuarantineHealthEventIsCordonedAnnotationValueTrue
 
-		labelsMap.Store(cordonedByLabelKey, common.ServiceName)
+		labelsMap.LoadOrStore(cordonedByLabelKey, common.ServiceName)
+
 		labelsMap.Store(cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
 	}
 
