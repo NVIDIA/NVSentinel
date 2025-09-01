@@ -211,6 +211,19 @@ license-headers-lint:
   script:
     - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv .
 
+argo-workflow-test:
+  stage: test
+  extends:
+    - .eks-runner-tags
+  script:
+    - apt-get update -qq
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+    - python3 -m venv /tmp/venv
+    - . /tmp/venv/bin/activate
+    - pip install --quiet pytest ruamel.yaml python-gitlab
+    - cd argo-workflow
+    - python -m pytest deployment-workflow/scripts/tests/
+
 gpu-health-monitor-lint:
   stage: lint
   extends:

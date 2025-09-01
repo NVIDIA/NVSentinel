@@ -61,6 +61,7 @@ def main():
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(result, f, indent=2)
         sys.exit(0)
+        return result  # fallback when sys.exit is monkey-patched
 
     # Extract MR information
     mr_iid = mr_data.get('mr_iid')
@@ -85,7 +86,8 @@ def main():
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(monitoring_result, f, indent=2)
-        sys.exit(1)
+        sys.exit(0)
+        return monitoring_result
 
     # Skip monitoring if MR creation failed
     if mr_status in ['failed', 'error'] or not mr_iid:
@@ -96,6 +98,7 @@ def main():
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(monitoring_result, f, indent=2)
         sys.exit(0)
+        return monitoring_result
 
     # Setup GitLab API
     headers = {

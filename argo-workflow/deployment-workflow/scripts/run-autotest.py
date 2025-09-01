@@ -221,6 +221,9 @@ def main():
         logger.error("Error: Invalid JSON in CLUSTER_DATA")
         sys.exit(1)
 
+    # wait for the deployment to be completed
+    logger.info("Deployment completed, waiting 10 minutes before running autotest pipelines")
+    time.sleep(600)
     try:
         results = []
         all_success = True

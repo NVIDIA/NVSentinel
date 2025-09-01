@@ -94,16 +94,18 @@ def _get_project(gitlab_url: str, token: str, project_path: str):
     return gl.projects.get(project_path)
 
 
-def _ensure_branch(project, branch_name: str, base_ref: str,) -> None:
-    """Ensure *branch_name* exists – create it from *base_ref* when missing."""
-
+def _ensure_branch(project, branch_name: str, base_ref: str) -> None:
     try:
         project.branches.get(branch_name)
-        logger.info(f"Branch {branch_name} already exists")
+        logger.info("Branch %s already exists; resetting to %s", branch_name, base_ref)
+        try:
+            project.branches.delete(branch_name)
+        except gitlab.exceptions.GitlabDeleteError as exc:
+            logger.warning("Failed to delete branch %s (may already be gone): %s", branch_name, exc)
+        project.branches.create({"branch": branch_name, "ref": base_ref})
     except gitlab.exceptions.GitlabGetError:
         project.branches.create({"branch": branch_name, "ref": base_ref})
-        logger.info(f"Created branch {branch_name} from {base_ref}")
-
+        logger.info("Created branch %s from %s", branch_name, base_ref)
 
 def _update_file_in_branch(
     project,
