@@ -43,14 +43,16 @@ type MongoDBClientTLSCertConfig struct {
 
 // MongoDBConfig holds the MongoDB connection configuration.
 type MongoDBConfig struct {
-	URI                        string
-	Database                   string
-	Collection                 string
-	ClientTLSCertConfig        MongoDBClientTLSCertConfig
-	TotalPingTimeoutSeconds    int
-	TotalPingIntervalSeconds   int
-	TotalCACertTimeoutSeconds  int
-	TotalCACertIntervalSeconds int
+	URI                              string
+	Database                         string
+	Collection                       string
+	ClientTLSCertConfig              MongoDBClientTLSCertConfig
+	TotalPingTimeoutSeconds          int
+	TotalPingIntervalSeconds         int
+	TotalCACertTimeoutSeconds        int
+	TotalCACertIntervalSeconds       int
+	ChangeStreamRetryDeadlineSeconds int
+	ChangeStreamRetryIntervalSeconds int
 }
 
 // TokenConfig holds the token-specific configuration.
@@ -118,10 +120,7 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
-	// Set read preference to SecondaryPreferred for change streams
-	// This allows reading from secondaries while falling back to primary if needed
-	collOpts := options.Collection().SetReadPreference(readpref.SecondaryPreferred())
-	coll := client.Database(mongoConfig.Database).Collection(mongoConfig.Collection, collOpts)
+	// Decide read preference for the change stream after determining whether a resume token exists.
 
 	// Confirm connectivity to the token database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, tokenConfig.TokenDatabase,
@@ -140,10 +139,12 @@ func NewChangeStreamWatcher(
 	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
-	// Change streams will inherit the read preference from the collection (SecondaryPreferred)
+	// Change stream options
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 
 	var storedToken TokenDoc
+
+	hasResumeToken := false
 
 	// Check if the resume token exists
 	err = tokenColl.FindOne(ctx, bson.M{"clientName": tokenConfig.ClientName}).Decode(&storedToken)
@@ -151,6 +152,8 @@ func NewChangeStreamWatcher(
 		if len(storedToken.ResumeToken) > 0 {
 			klog.Infof("ResumeToken is: %+v", storedToken.ResumeToken)
 			opts.SetResumeAfter(storedToken.ResumeToken)
+
+			hasResumeToken = true
 		} else {
 			klog.Info("No valid resume token found, starting stream from the beginning..")
 		}
@@ -160,9 +163,10 @@ func NewChangeStreamWatcher(
 			tokenConfig.TokenDatabase, tokenConfig.TokenCollection, err)
 	}
 
-	cs, err := coll.Watch(ctx, pipeline, opts)
+	// Open the change stream with appropriate read preference based on resume token presence
+	cs, err := openChangeStream(ctx, client, mongoConfig, pipeline, opts, hasResumeToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start change stream: %w", err)
+		return nil, err
 	}
 
 	watcher := &ChangeStreamWatcher{
@@ -178,6 +182,100 @@ func NewChangeStreamWatcher(
 	}
 
 	return watcher, nil
+}
+
+// openChangeStream opens a change stream with the appropriate read preference based on whether
+// a resume token is present. When resuming, it attempts SecondaryPreferred with bounded retries
+// before falling back to Primary. When starting fresh, it uses SecondaryPreferred directly.
+func openChangeStream(
+	ctx context.Context,
+	client *mongo.Client,
+	mongoConfig MongoDBConfig,
+	pipeline mongo.Pipeline,
+	opts *options.ChangeStreamOptions,
+	hasResumeToken bool,
+) (*mongo.ChangeStream, error) {
+	// Set default values if not configured
+	retryDeadlineSeconds := mongoConfig.ChangeStreamRetryDeadlineSeconds
+	if retryDeadlineSeconds <= 0 {
+		retryDeadlineSeconds = 60 // Default to 1 minute
+	}
+
+	retryIntervalSeconds := mongoConfig.ChangeStreamRetryIntervalSeconds
+	if retryIntervalSeconds <= 0 {
+		retryIntervalSeconds = 3 // Default to 3 seconds
+	}
+
+	if hasResumeToken {
+		return openChangeStreamWithRetry(ctx, client, mongoConfig, pipeline, opts,
+			retryDeadlineSeconds, retryIntervalSeconds)
+	}
+
+	// No resume token, open on SecondaryPreferred directly
+	collSP := client.Database(mongoConfig.Database).Collection(
+		mongoConfig.Collection, options.Collection().SetReadPreference(readpref.SecondaryPreferred()))
+
+	cs, err := collSP.Watch(ctx, pipeline, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start change stream: %w", err)
+	}
+
+	return cs, nil
+}
+
+// openChangeStreamWithRetry attempts to open a change stream with retries on SecondaryPreferred
+// before falling back to Primary. This is used when resuming from a stored token.
+func openChangeStreamWithRetry(
+	ctx context.Context,
+	client *mongo.Client,
+	mongoConfig MongoDBConfig,
+	pipeline mongo.Pipeline,
+	opts *options.ChangeStreamOptions,
+	retryDeadlineSeconds int,
+	retryIntervalSeconds int,
+) (*mongo.ChangeStream, error) {
+	// Try SecondaryPreferred first with bounded retries
+	collSP := client.Database(mongoConfig.Database).Collection(
+		mongoConfig.Collection, options.Collection().SetReadPreference(readpref.SecondaryPreferred()))
+
+	deadline := time.Now().Add(time.Duration(retryDeadlineSeconds) * time.Second)
+
+	for {
+		cs, openErr := collSP.Watch(ctx, pipeline, opts)
+		if openErr == nil {
+			return cs, nil
+		}
+
+		// If context was cancelled, return immediately
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		if time.Now().After(deadline) {
+			klog.Warningf("Change stream open on SecondaryPreferred failed for %d seconds; falling back to Primary: %v",
+				retryDeadlineSeconds, openErr)
+
+			collP := client.Database(mongoConfig.Database).Collection(
+				mongoConfig.Collection, options.Collection().SetReadPreference(readpref.Primary()))
+
+			cs, err := collP.Watch(ctx, pipeline, opts)
+			if err != nil {
+				return nil, fmt.Errorf("failed to start change stream on primary after retries: %w", err)
+			}
+
+			return cs, nil
+		}
+
+		klog.Warningf("Failed to open change stream on SecondaryPreferred while resuming; retrying in %d seconds: %v",
+			retryIntervalSeconds, openErr)
+
+		// Use select with timer to make sleep interruptible by context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(retryIntervalSeconds) * time.Second):
+		}
+	}
 }
 
 func (w *ChangeStreamWatcher) Start(ctx context.Context) {
