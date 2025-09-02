@@ -338,6 +338,14 @@ class DCGMWatcher:
                         dcgm_group, gpu_ids, gpu_serials, dcgm_groups_with_xid_policy = (
                             self._initialize_dcgm_monitoring(dcgm_handle)
                         )
+                        for callback in self._callbacks:
+                            if hasattr(callback, "clear_all_xid_errors"):
+                                try:
+                                    callback.clear_all_xid_errors(gpu_ids, gpu_serials)
+                                except Exception as e:
+                                    log.fatal(
+                                        f"Error clearing XID errors for callback {callback.__class__.__name__}: {e}"
+                                    )
                     except Exception as e:
                         log.error(f"Error getting DCGM handle: {e}")
                         self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])

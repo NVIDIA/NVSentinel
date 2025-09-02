@@ -93,7 +93,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         except IOError:
             log.fatal(f"failed to read the data from file {self.node_bootid_path}")
 
-        log.info(f"current bootid is {bootid} and old_bootid is {self.old_bootid}")
+        log.info(f"Evaluating XID Clearance conditions. Current bootid is {bootid} and old_bootid is {self.old_bootid}")
         if self.old_bootid != bootid:
             log.info(f"clearing the xid errors as current_bootId {bootid} is not matching with {self.old_bootid}")
             self.old_bootid = bootid
