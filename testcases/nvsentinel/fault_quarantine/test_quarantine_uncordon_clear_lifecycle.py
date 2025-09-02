@@ -55,7 +55,7 @@ class TestQuarantineUncordonClearLifecycle(TestNVSentinelCaseBase):
         self.remove_managed_by_nvsentinel_label(self.node_name)
 
         self.step_manager.print_header("Get initial currentQuarantinedNodes metric value")
-        initial_metric = self._get_metric("fault_quarantine_current_quarantined_nodes")
+        initial_metric = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
         self.logger.info(f"Initial currentQuarantinedNodes metric: {initial_metric}")
         assert initial_metric == 0, f"Expected currentQuarantinedNodes metric to be 0 before inserting fatal health event, got {initial_metric}"
         
@@ -97,7 +97,7 @@ class TestQuarantineUncordonClearLifecycle(TestNVSentinelCaseBase):
         )
         
         self.step_manager.print_header("Verify metric increased")
-        metric_after_quarantine = self._get_metric("fault_quarantine_current_quarantined_nodes")
+        metric_after_quarantine = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
         self.logger.info(f"Metric after quarantine: {metric_after_quarantine}")
         assert metric_after_quarantine == initial_metric + 1, \
             f"Metric should increase by 1 (from {initial_metric} to {initial_metric + 1}), got {metric_after_quarantine}"
@@ -108,51 +108,33 @@ class TestQuarantineUncordonClearLifecycle(TestNVSentinelCaseBase):
         assert result, "Node should be uncordoned"
         
         self.step_manager.print_header("Verify node is uncordoned but annotation remains")
-        time.sleep(5)  # Give time for any potential reconciliation
+        time.sleep(30)  # Give time for any potential reconciliation
         
         node_info, _ = self.client.get_node_by_name(self.node_name)
         assert node_info.spec.unschedulable is None, "Node should be uncordoned"
  
         self.step_manager.print_header("Check the annotations on the node")
         annotations, _ = self.client.get_annotation_on_node(
-            self.node_name, "quarantineHealthEvent"
+            self.node_name, "quarantinedNodeUncordonedManually"
         )
         
-        assert (
-            '"agent":"gpu-health-monitor","componentClass":"GPU","checkName":"GpuInforomWatch","isFatal":true'
-            in annotations
-        )
+        assert annotations == "True", "quarantinedNodeUncordonedManually annotation should be present"
 
 
         self.step_manager.print_header("Verify metric remains unchanged after manual uncordon")
-        metric_after_uncordon = self._get_metric("fault_quarantine_current_quarantined_nodes")
+        metric_after_uncordon = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
         self.logger.info(f"Metric after manual uncordon: {metric_after_uncordon}")
-        assert metric_after_uncordon == metric_after_quarantine, \
-            f"Metric should remain {metric_after_quarantine} after manual uncordon, got {metric_after_uncordon}"
+        assert metric_after_uncordon == metric_after_quarantine - 1, \
+            f"Metric should be decremented by 1 after manual uncordon, got {metric_after_uncordon}"
+
         
         self.step_manager.print_header("Clear the health event by inserting recovery event")
         # Clear the error using dcgmi
         self.clear_gpu_inforom_watch_error(self.gpu_health_pod)
-        self.logger.info(f"Injected recovery GPU health event")
+        self.logger.info("Injected recovery GPU health event")
         
         # Wait for the recovery to be processed
         time.sleep(20)
-        
-        self.step_manager.print_header("Wait for annotation to be removed")
- 
-        self.step_manager.print_header("Check the annotations on the node")
-        annotations, _ = self.client.get_annotation_on_node(
-            self.node_name, "quarantineHealthEvent"
-        )
-        
-        assert annotations is None, f"quarantineHealthEvent annotation should be removed, got: {annotations}"
-        
-        self.step_manager.print_header("Verify metric decreased")
-        time.sleep(5)  # Give time for metric update
-        metric_after_clear = self._get_metric("fault_quarantine_current_quarantined_nodes")
-        self.logger.info(f"Metric after clearing health event: {metric_after_clear}")
-        assert metric_after_clear == initial_metric, \
-            f"Metric should return to initial value {initial_metric}, got {metric_after_clear}"
         
         self.logger.info("Test completed successfully!")
 

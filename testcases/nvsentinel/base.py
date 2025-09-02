@@ -20,6 +20,8 @@ import threading
 import time
 import pytest
 import requests
+import psutil
+import signal
 from testcases.common.base import Base
 from kubernetes import client
 from testcases.utils.kubernetes_utils import KubernetesClient
@@ -61,15 +63,6 @@ class TestNVSentinelCaseBase(Base):
             if self.debug_pod:
                 self.client.delete_pod(pod=self.debug_pod)
             if self.node_name:
-                self.client.remove_annotation_on_node(
-                    self.node_name, "quarantineHealthEventAppliedTaints"
-                )
-                self.client.remove_annotation_on_node(
-                    self.node_name, "quarantineHealthEventIsCordoned"
-                )
-                self.client.remove_annotation_on_node(
-                    self.node_name, "quarantineHealthEvent"
-                )
                 self.client.remove_taint_on_node(self.node_name, "AggregatedNodeHealth")
                 self.client.remove_taint_on_node(self.node_name, "GPUError")
                 self.client.remove_taint_on_node(self.node_name, "GPUError")

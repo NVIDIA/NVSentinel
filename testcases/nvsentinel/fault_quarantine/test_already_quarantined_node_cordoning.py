@@ -103,8 +103,8 @@ class TestPreQuarantinedNodeCordoning(TestNVSentinelCaseBase):
         time.sleep(10)
         self.logger.info("Get the metric baseline")
         # Baseline metrics
-        cur_before = self._get_metric("fault_quarantine_current_quarantined_nodes")
-        total_before = self._get_metric("fault_quarantine_nodes_quarantined_total")
+        cur_before = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
+        total_before = self._get_metric("fault_quarantine_nodes_quarantined_total{node='%s'}" % self.node_name)
         
         self.step_manager.print_header(f"Inject GPU Inforom fatal error on {self.gpu_healthy_pod.metadata.name}")
         self.inject_gpu_inforom_watch_error(self.gpu_healthy_pod)
@@ -145,8 +145,8 @@ class TestPreQuarantinedNodeCordoning(TestNVSentinelCaseBase):
         )
 
         self.step_manager.print_header("Check the metric after injecting the GPU Inforom fatal error")
-        cur_after = self._get_metric("fault_quarantine_current_quarantined_nodes")
-        total_after = self._get_metric("fault_quarantine_nodes_quarantined_total")
+        cur_after = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
+        total_after = self._get_metric("fault_quarantine_nodes_quarantined_total{node='%s'}" % self.node_name)
         
         assert cur_after >= cur_before + 1, "current_quarantined gauge not incremented"
         assert total_after >= total_before, "nodes_quarantined_total counter not incremented"

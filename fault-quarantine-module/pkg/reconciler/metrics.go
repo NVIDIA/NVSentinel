@@ -48,23 +48,26 @@ var (
 	)
 
 	// Node Quarantine Metrics
-	totalNodesQuarantined = promauto.NewCounter(
+	totalNodesQuarantined = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_quarantined_total",
 			Help: "Total number of nodes quarantined.",
 		},
+		[]string{"node"},
 	)
-	totalNodesUnquarantined = promauto.NewCounter(
+	totalNodesUnquarantined = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_unquarantined_total",
 			Help: "Total number of nodes unquarantined.",
 		},
+		[]string{"node"},
 	)
-	currentQuarantinedNodes = promauto.NewGauge(
+	currentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",
 			Help: "Current number of quarantined nodes.",
 		},
+		[]string{"node"},
 	)
 
 	// Taint and Cordon Metrics

@@ -76,7 +76,7 @@ class TestNodeCordoningInDryRun(TestNVSentinelCaseBase):
         request.addfinalizer(partial(self.stop_port_forward_prometheus))
         # Metric baseline
         self.logger.info("Get the metric baseline")
-        q_before = self._get_metric("fault_quarantine_current_quarantined_nodes")
+        q_before = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
 
         self.step_manager.print_header("inject GPU Inforom fatal error on clean node")
         self.inject_gpu_inforom_watch_error(self.gpu_healthy_pod)
@@ -108,6 +108,6 @@ class TestNodeCordoningInDryRun(TestNVSentinelCaseBase):
 
         self.step_manager.print_header("Check the metric after injecting the GPU Inforom fatal error")
 
-        q_after = self._get_metric("fault_quarantine_current_quarantined_nodes")
+        q_after = self._get_metric("fault_quarantine_current_quarantined_nodes{node='%s'}" % self.node_name)
 
         assert q_after >= q_before + 1, "current quarantined gauge did not increase as expected"

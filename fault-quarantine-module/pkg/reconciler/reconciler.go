@@ -108,7 +108,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	// Set the callback to decrement the metric when a quarantined node with annotations is deleted
 	nodeInformer.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
-		currentQuarantinedNodes.Dec()
+		currentQuarantinedNodes.WithLabelValues(nodeName).Dec()
 		klog.Infof("Decremented currentQuarantinedNodes metric for deleted quarantined node: %s", nodeName)
 	})
 
@@ -176,12 +176,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Fatalf("error fetching quarantined nodes: %+v", err)
 	} else {
 		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesCopy()
-		nodesCount := len(quarantinedNodesMap)
 
-		// Set the gauge to the current number of quarantined nodes
-		currentQuarantinedNodes.Set(float64(nodesCount))
+		for nodeName := range quarantinedNodesMap {
+			currentQuarantinedNodes.WithLabelValues(nodeName).Inc()
+		}
 
-		klog.Infof("Initial quarantinedNodesMap is: %+v, total of %d nodes", quarantinedNodesMap, nodesCount)
+		klog.Infof("Initial quarantinedNodesMap is: %+v, total of %d nodes", quarantinedNodesMap, len(quarantinedNodesMap))
 	}
 
 	err = nodeInformer.Run(ctx.Done())
@@ -632,8 +632,8 @@ func (r *Reconciler) handleEvent(
 
 			isNodeQuarantined = false
 		} else {
-			totalNodesQuarantined.Inc()
-			currentQuarantinedNodes.Inc()
+			totalNodesQuarantined.WithLabelValues(event.HealthEvent.NodeName).Inc()
+			currentQuarantinedNodes.WithLabelValues(event.HealthEvent.NodeName).Inc()
 
 			// Update cache with the new annotations that were just added to the node
 			// This ensures subsequent events in the same batch see the updated annotations
@@ -735,8 +735,9 @@ func (r *Reconciler) handleQuarantinedNode(
 				return true
 			}
 
-			totalNodesUnquarantined.Inc()
-			currentQuarantinedNodes.Dec()
+			totalNodesUnquarantined.WithLabelValues(event.NodeName).Inc()
+			currentQuarantinedNodes.WithLabelValues(event.NodeName).Dec()
+			klog.Infof("Decremented currentQuarantinedNodes metric for unquarantined node: %s", event.NodeName)
 
 			// Update cache by removing the annotations that were just removed from the node
 			// This ensures subsequent events in the same batch see the updated annotations
@@ -1171,7 +1172,8 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		return err
 	}
 
-	currentQuarantinedNodes.Dec()
+	currentQuarantinedNodes.WithLabelValues(nodeName).Dec()
+	klog.Infof("Decremented currentQuarantinedNodes metric for manually uncordoned node: %s", nodeName)
 
 	// Update internal state immediately to be consistent with the metric.
 	// This ensures the state is correct even before the subsequent update event is processed.
