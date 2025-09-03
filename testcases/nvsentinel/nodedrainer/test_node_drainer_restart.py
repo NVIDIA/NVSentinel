@@ -165,6 +165,8 @@ class TestNodeDrainerRestart(TestNVSentinelCaseBase):
         self.logger.info("Last 5 logs from node-drainer pod after restart:")
         for log in last_5_logs:
             self.logger.info(log)
+
+        self.verify_node_drainer_pod_log(expected_messages)
             
         self.logger.info("[PASS] Node drainer successfully maintained eviction state after restart")
         self.logger.info(f"[PASS] Continued monitoring pod {job_pod_name} in namespace {job_namespace} on node {self.node_name}")

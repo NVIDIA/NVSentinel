@@ -88,8 +88,10 @@ func TestMain(m *testing.M) {
 		clientset: Client,
 		eviction:  mockEvictionClient,
 	}
+	// Reduce the NotReady timeout so tests complete quickly (1 minute)
+	k8sClient.notReadyTimeoutMinutes = ptr.To(1)
 
-	namespaces := []string{"runai", "nvsentinel", "runai-prod", "runai-dev"}
+	namespaces := []string{"runai", "nvsentinel", "runai-prod", "runai-dev", "testing-ns"}
 
 	for _, ns := range namespaces {
 		_, err := Client.CoreV1().Namespaces().Create(context.TODO(), &v1.Namespace{
@@ -104,6 +106,9 @@ func TestMain(m *testing.M) {
 	createTestPod(ctx, "runai", "pod2", "node1")
 	createTestPod(ctx, "runai", "pod3", "node2")
 	createTestPod(ctx, "nvsentinel", "pod5", "node2")
+
+	markPodHealthy(ctx, "runai", []string{"pod1", "pod2", "pod3"})
+	markPodHealthy(ctx, "nvsentinel", []string{"pod5"})
 
 	jobPod1 := &v1.Pod{
 		ObjectMeta: metaV1.ObjectMeta{
@@ -167,10 +172,8 @@ func TestMain(m *testing.M) {
 		log.Fatalf("error occured while creating pod %s in namespace %s on node %s: %v", "job-pod2", "nvsentinel", "node1", err)
 	}
 	jobPod2.Status.Phase = v1.PodRunning
-	_, err = Client.CoreV1().Pods("nvsentinel").UpdateStatus(ctx, jobPod2, metaV1.UpdateOptions{})
-	if err != nil {
-		log.Fatalf("Failed to update pod status: %v", err)
-	}
+	// Mark job-pod2 as healthy (Running & Ready)
+	markPodHealthy(ctx, "nvsentinel", []string{"job-pod2"})
 
 	createDaemonSet(ctx, "nvsentinel", "daemonset1")
 	createDaemonSet(ctx, "runai", "daemonset2")
@@ -189,7 +192,7 @@ func TestFindAllPodsInNamespaceAndNode(t *testing.T) {
 	}{
 		{"runai", "node1", []string{"pod1", "pod2"}},
 		{"runai", "node2", []string{"pod3"}},
-		{"nvsentinel", "node1", []string{"job-pod1", "job-pod2"}},
+		{"nvsentinel", "node1", []string{"job-pod2"}}, // skip job-pod1 as it is in failed state
 		{"nvsentinel", "node2", []string{"pod5"}},
 	}
 
@@ -301,6 +304,186 @@ func TestCheckIfAllPodsAreEvictedInImmediateMode(t *testing.T) {
 	assertPodDeleted(ctx, t, "runai", "pod2")
 }
 
+func TestPodStuckInTerminatingState(t *testing.T) {
+	ctx := context.TODO()
+	namespace := "testing-ns"
+
+	// create a pod marked for deletion in the past (stuck terminating)
+	grace := int64(1)
+	pod := &v1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:      "terminating-pod",
+			Namespace: namespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName:                      "node1",
+			TerminationGracePeriodSeconds: &grace,
+			Containers:                    []v1.Container{{Name: "pause", Image: "k8s.gcr.io/pause:3.1"}},
+		},
+		Status: v1.PodStatus{Phase: v1.PodRunning},
+	}
+
+	pod, err := Client.CoreV1().Pods(namespace).Create(ctx, pod, metaV1.CreateOptions{})
+	assert.NoError(t, err)
+
+	// Issue a delete with the same grace period to set DeletionTimestamp
+	err = Client.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metaV1.DeleteOptions{GracePeriodSeconds: &grace})
+	assert.NoError(t, err)
+
+	// Wait for grace period to elapse so that pod is considered stuck
+	time.Sleep(2 * time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		_ = k8sClient.MonitorPodCompletion(ctx, namespace, "node1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success - returned without waiting forever
+	case <-time.After(12 * time.Second):
+		t.Fatalf("MonitorPodCompletion did not return in expected time for terminating pod")
+	}
+}
+
+func TestPodStuckInPendingState(t *testing.T) {
+	ctx := context.TODO()
+	namespace := "testing-ns"
+
+	start := metaV1.NewTime(time.Now().Add(-3 * time.Minute))
+	pod := &v1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:      "pending-pod",
+			Namespace: namespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName:   "node1",
+			Containers: []v1.Container{{Name: "pause", Image: "k8s.gcr.io/pause:3.1"}},
+		},
+		Status: v1.PodStatus{Phase: v1.PodPending, StartTime: &start},
+	}
+
+	_, err := Client.CoreV1().Pods(namespace).Create(ctx, pod, metaV1.CreateOptions{})
+	assert.NoError(t, err)
+
+	// Update status with NotReady condition so MonitorPodCompletion can skip it immediately
+	pod.Status = v1.PodStatus{
+		Phase:      v1.PodPending,
+		StartTime:  &start,
+		Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse, LastTransitionTime: start}},
+	}
+	_, err = Client.CoreV1().Pods(namespace).UpdateStatus(ctx, pod, metaV1.UpdateOptions{})
+	assert.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		_ = k8sClient.MonitorPodCompletion(ctx, namespace, "node1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(12 * time.Second):
+		t.Fatalf("MonitorPodCompletion did not return in expected time for pending pod")
+	}
+}
+
+func TestPodStuckInCrashLoopBackOffState(t *testing.T) {
+	ctx := context.TODO()
+	namespace := "testing-ns"
+
+	pod := &v1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:      "crash-pod",
+			Namespace: namespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName:   "node1",
+			Containers: []v1.Container{{Name: "pause", Image: "k8s.gcr.io/pause:3.1"}},
+		},
+	}
+
+	pod, err := Client.CoreV1().Pods(namespace).Create(ctx, pod, metaV1.CreateOptions{})
+	assert.NoError(t, err)
+	// UpdateStatus to reflect CrashLoopBackOff state
+	old := metaV1.NewTime(time.Now().Add(-2 * time.Minute))
+	pod.Status = v1.PodStatus{
+		Phase:      v1.PodRunning,
+		Conditions: []v1.PodCondition{{Type: v1.PodReady, Status: v1.ConditionFalse, LastTransitionTime: old}},
+		ContainerStatuses: []v1.ContainerStatus{{
+			Name:         "pause",
+			RestartCount: 5,
+			State:        v1.ContainerState{Waiting: &v1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+		}},
+	}
+	_, err = Client.CoreV1().Pods(namespace).UpdateStatus(ctx, pod, metaV1.UpdateOptions{})
+	assert.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		_ = k8sClient.MonitorPodCompletion(ctx, namespace, "node1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(12 * time.Second):
+		t.Fatalf("MonitorPodCompletion did not return in expected time for CrashLoopBackOff pod")
+	}
+}
+
+func TestPodStuckInNotReadyState(t *testing.T) {
+	ctx := context.TODO()
+	namespace := "testing-ns"
+
+	lastTransition := metaV1.NewTime(time.Now().Add(-3 * time.Minute))
+	pod := &v1.Pod{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:      "notready-pod",
+			Namespace: namespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName:   "node1",
+			Containers: []v1.Container{{Name: "pause", Image: "k8s.gcr.io/pause:3.1"}},
+		},
+		Status: v1.PodStatus{
+			Phase: v1.PodRunning,
+			Conditions: []v1.PodCondition{{
+				Type:               v1.PodReady,
+				Status:             v1.ConditionFalse,
+				LastTransitionTime: lastTransition,
+			}},
+		},
+	}
+
+	pod, err := Client.CoreV1().Pods(namespace).Create(ctx, pod, metaV1.CreateOptions{})
+	assert.NoError(t, err)
+	// Need to set status via UpdateStatus; the API ignores status on Create
+	pod.Status = v1.PodStatus{
+		Phase: v1.PodRunning,
+		Conditions: []v1.PodCondition{{
+			Type:               v1.PodReady,
+			Status:             v1.ConditionFalse,
+			LastTransitionTime: lastTransition,
+		}},
+	}
+	_, err = Client.CoreV1().Pods(namespace).UpdateStatus(ctx, pod, metaV1.UpdateOptions{})
+	assert.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		_ = k8sClient.MonitorPodCompletion(ctx, namespace, "node1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(12 * time.Second):
+		t.Fatalf("MonitorPodCompletion did not return in expected time for NotReady pod")
+	}
+}
+
 func assertPodDeleted(ctx context.Context, t *testing.T, namespace, podName string) {
 	time.Sleep(500 * time.Millisecond) // Allow API server time to update state
 	_, err := Client.CoreV1().Pods(namespace).Get(ctx, podName, metaV1.GetOptions{})
@@ -372,6 +555,37 @@ func TestGetNamespacesMatchingPattern(t *testing.T) {
 	assert.NoError(t, err, "Error in getting namespaces matching pattern")
 	assert.Equal(t, []string{"runai", "runai-dev", "runai-prod"}, namespaces2, "Namespaces matching pattern mismatch")
 
+}
+
+func markPodHealthy(ctx context.Context, namespace string, podNames []string) {
+	for _, name := range podNames {
+		pod, err := Client.CoreV1().Pods(namespace).Get(ctx, name, metaV1.GetOptions{})
+		if err != nil {
+			log.Fatalf("failed to get pod %s/%s: %v", namespace, name, err)
+		}
+
+		pod.Status.Phase = v1.PodRunning
+		pod.Status.Conditions = []v1.PodCondition{
+			{
+				Type:               v1.PodReady,
+				Status:             v1.ConditionTrue,
+				LastProbeTime:      metaV1.Now(),
+				LastTransitionTime: metaV1.Now(),
+			},
+		}
+		pod.Status.ContainerStatuses = []v1.ContainerStatus{
+			{
+				Name:  "pause",
+				Ready: true,
+				State: v1.ContainerState{Running: &v1.ContainerStateRunning{}},
+			},
+		}
+
+		_, err = Client.CoreV1().Pods(namespace).UpdateStatus(ctx, pod, metaV1.UpdateOptions{})
+		if err != nil {
+			log.Fatalf("failed to update pod status for %s/%s: %v", namespace, name, err)
+		}
+	}
 }
 
 func TearDownResources() {

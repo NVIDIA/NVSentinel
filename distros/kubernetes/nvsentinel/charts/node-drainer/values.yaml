@@ -52,6 +52,11 @@ configPath: "/etc/config/config.toml"
 config: |
   evictionTimeoutInSeconds = "60"
   systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage)$"
+  
+  # Time after which a pod in NotReady state is considered stuck (in minutes)
+  notReadyTimeoutMinutes = 5
+  
+  # User namespace configuration with eviction modes
   [[userNamespaces]]
   name = "runai*"
   mode = "AllowCompletion"

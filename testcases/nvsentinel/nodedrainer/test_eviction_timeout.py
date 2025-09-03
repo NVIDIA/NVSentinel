@@ -181,15 +181,8 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
         )
         assert len(pods) > 0, "GPU health monitor pod not found"
         gpu_health_monitor_pod = pods[0]
-        command = [
-            "/bin/sh",
-            "-c",
-             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 2 -f 84 -v 0",
-        ]
-        output, error = self.client.exec_command_in_pod(
-            gpu_health_monitor_pod, command=command
-        )
-        assert "Successfully injected" in output, "Failed to inject error"
+        self.inject_gpu_inforom_watch_error(gpu_health_monitor_pod)
+
         self.step_manager.print_header("Check the node is cordoned")
         success, err = self.client.check_node_cordoned(self.node_name)
         if err:
@@ -214,15 +207,7 @@ class TestEvictionTimeout(TestNVSentinelCaseBase):
         self.step_manager.print_header(
             "Clear the inject error in step 5 and check the node is uncordoned"
         )
-        command = [
-            "/bin/sh",
-            "-c",
-             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 2 -f 84 -v 1",
-        ]
-        output, error = self.client.exec_command_in_pod(
-            gpu_health_monitor_pod, command=command
-        )
-        assert "Successfully injected" in output, "Failed to inject error"
+        self.clear_gpu_inforom_watch_error(gpu_health_monitor_pod)
         success, error = self.client.check_node_ready(self.node_name)
         assert (
             success

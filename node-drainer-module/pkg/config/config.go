@@ -39,9 +39,11 @@ type UserNamespace struct {
 }
 
 type TomlConfig struct {
-	EvictionTimeoutInSeconds Duration        `toml:"evictionTimeoutInSeconds"`
+	EvictionTimeoutInSeconds Duration `toml:"evictionTimeoutInSeconds"`
 	SystemNamespaces         string          `toml:"systemNamespaces"`
-	UserNamespaces           []UserNamespace `toml:"userNamespaces"`
+	// NotReadyTimeoutMinutes is the time after which a pod in NotReady state is considered stuck
+	NotReadyTimeoutMinutes int             `toml:"notReadyTimeoutMinutes"`
+	UserNamespaces         []UserNamespace `toml:"userNamespaces"`
 }
 
 func (d *Duration) UnmarshalTOML(text interface{}) error {
@@ -65,5 +67,28 @@ func LoadTomlConfig(path string) (*TomlConfig, error) {
 		return nil, err
 	}
 
-	return &config, nil
+	return validateAndSetDefaults(&config)
+}
+
+// LoadTomlConfigFromString loads configuration from a TOML string (for Helm chart usage)
+func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
+	var config TomlConfig
+	if _, err := toml.Decode(configString, &config); err != nil {
+		return nil, fmt.Errorf("failed to decode TOML config string: %w", err)
+	}
+
+	return validateAndSetDefaults(&config)
+}
+
+// validateAndSetDefaults validates the configuration and sets default values
+func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	// Set default values for pod timeout configuration if not specified
+	if config.NotReadyTimeoutMinutes == 0 {
+		config.NotReadyTimeoutMinutes = 5 // Default: 5 minutes
+	}
+	// Validate timeout values
+	if config.NotReadyTimeoutMinutes <= 0 {
+		return nil, fmt.Errorf("notReadyTimeoutMinutes must be a positive integer")
+	}
+	return config, nil
 }

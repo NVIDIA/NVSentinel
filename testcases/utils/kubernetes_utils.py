@@ -23,6 +23,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream, portforward
 import pytest
+import kubernetes.client as k8s
 
 LOGGER = logging.getLogger(__name__)
 
@@ -5225,3 +5226,39 @@ class KubernetesClient(object):
         except Exception as e:
             error_msg = f"Unexpected error deleting job {job_name} in namespace {namespace}: {str(e)}"
             return CommonResult(None, error_msg)
+    
+    def force_delete_pod(self, namespace: str, pod_name: str):
+        """
+        Remove all finalizers from the pod and delete it immediately.
+        Safe to call even if the pod is already gone.
+        """
+        LOGGER.info(f"Force-deleting pod {namespace}/{pod_name}")
+
+        core = self.coreV1Api
+        try:
+            # 1. Clear finalizers - first check if they exist to avoid patch errors
+            pod = core.read_namespaced_pod(name=pod_name, namespace=namespace)
+            if pod.metadata.finalizers:
+                patch_body = [
+                    {"op": "remove", "path": "/metadata/finalizers"}
+                ]
+                core.patch_namespaced_pod(
+                    name=pod_name,
+                    namespace=namespace,
+                    body=patch_body
+                )
+                
+            # 2. Delete with zero grace so it disappears right away
+            core.delete_namespaced_pod(
+                name=pod_name,
+                namespace=namespace,
+                grace_period_seconds=0,
+                propagation_policy="Foreground"
+            )
+            LOGGER.info(f"Force-deleted pod {namespace}/{pod_name}")
+        except ApiException as e:
+            if e.status == 404:
+                # pod already gone – fine
+                LOGGER.debug(f"Pod {namespace}/{pod_name} already deleted")
+            else:
+                raise

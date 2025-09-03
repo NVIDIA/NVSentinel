@@ -21,6 +21,7 @@ data:
   config.toml: |2
 
     evictionTimeoutInSeconds = "60"
+    notReadyTimeoutMinutes = 1
     [[userNamespaces]]
     name = "runai-qa-automation-test"
     mode = "AllowCompletion"

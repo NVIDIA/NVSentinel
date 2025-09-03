@@ -149,8 +149,8 @@ func main() {
 		klog.Info("Running in dry-run mode")
 	}
 
-	// Initialize the k8s client
-	k8sClient, err := reconciler.NewNodeDrainerClient(*kubeconfigPath, *dryRun)
+	// Initialize the k8s client with pod timeout configuration
+	k8sClient, err := reconciler.NewNodeDrainerClient(*kubeconfigPath, *dryRun, &tomlCfg.NotReadyTimeoutMinutes)
 	if err != nil {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}

@@ -36,30 +36,35 @@ import (
 )
 
 type NodeDrainerClient struct {
-	clientset  kubernetes.Interface
-	eviction   policyv1client.PolicyV1Interface
-	dryRunMode []string
+	clientset              kubernetes.Interface
+	eviction               policyv1client.PolicyV1Interface
+	dryRunMode             []string
+	notReadyTimeoutMinutes *int
 }
 
-func NewNodeDrainerClient(kubeconfig string, dryRun bool) (*NodeDrainerClient, error) {
-	config, err := rest.InClusterConfig()
+func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes *int) (*NodeDrainerClient, error) {
+	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
 			return nil, fmt.Errorf("kubeconfig is not set")
 		}
 
 		// build config from kubeconfig file
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		k8sConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			return nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
 		}
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
-	client := &NodeDrainerClient{clientset: clientset, eviction: clientset.PolicyV1()}
+	client := &NodeDrainerClient{
+		clientset:              clientset,
+		eviction:               clientset.PolicyV1(),
+		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
+	}
 	if dryRun {
 		client.dryRunMode = []string{metav1.DryRunAll}
 	} else {
@@ -80,21 +85,82 @@ func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context, n
 		klog.Infof("No pods present in namespace %s on node %s\n", namespace, nodeName)
 	}
 
-	// ignore daemonset pods
+	// ignore daemonset pods and other pods that should be ignored
+	filteredPods := c.findRemainingPods(pods.Items, namespace, nodeName)
+	return filteredPods, nil
+}
+
+// isPodStuckInTerminating checks if a pod is stuck in terminating state beyond its grace period
+func (c *NodeDrainerClient) isPodStuckInTerminating(pod *v1.Pod) bool {
+	// Check if pod is marked for deletion
+	if pod.DeletionTimestamp == nil {
+		return false
+	}
+
+	timeoutThreshold := pod.DeletionTimestamp.Add(time.Duration(*pod.Spec.TerminationGracePeriodSeconds) * time.Second)
+
+	// If current time is beyond the timeout threshold, pod is considered stuck
+	if time.Now().After(timeoutThreshold) {
+		klog.Infof("Pod %s in namespace %s is stuck in terminating state - deletion timestamp: %v, grace period: %ds, timeout threshold: %v",
+			pod.Name, pod.Namespace, pod.DeletionTimestamp, *pod.Spec.TerminationGracePeriodSeconds, timeoutThreshold)
+		return true
+	}
+
+	return false
+}
+
+func (c *NodeDrainerClient) findRemainingPods(pods []v1.Pod, namespace string, nodeName string) []v1.Pod {
 	filteredPods := []v1.Pod{}
-	for _, pod := range pods.Items {
-		isDaemonSet := false
-		for _, owner := range pod.OwnerReferences {
-			if owner.Kind == "DaemonSet" {
-				isDaemonSet = true
-				break
+	for _, pod := range pods {
+		// Skip DaemonSet pods
+		if c.isDaemonSetPod(&pod, namespace, nodeName) {
+			continue
+		}
+
+		// Skip completed pods (Succeeded or Failed)
+		if pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed {
+			klog.Infof("Ignoring completed pod %s in namespace %s on node %s (status: %s) during eviction check",
+				pod.Name, namespace, nodeName, pod.Status.Phase)
+			continue
+		}
+
+		// skip long stuck pods
+		if c.isPodStuckInTerminating(&pod) || c.isPodNotReady(&pod) {
+			klog.Infof("Ignoring pod %s in namespace %s on node %s", pod.Name, namespace, nodeName)
+			continue
+		}
+
+		klog.InfoS("Pod not evicted", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
+		filteredPods = append(filteredPods, pod)
+	}
+	return filteredPods
+}
+
+// Implementing a custom function
+// instead of using https://pkg.go.dev/k8s.io/kubernetes/pkg/api/v1/pod#IsPodReady
+// because it doesn't consider timeout for condition checking
+// isPodNotReady checks if a pod is in NotReady state
+func (c *NodeDrainerClient) isPodNotReady(pod *v1.Pod) bool {
+	// Get timeout values from configuration, with defaults
+	notReadyTimeout := 5 * time.Minute
+
+	if c.notReadyTimeoutMinutes != nil {
+		notReadyTimeout = time.Duration(*c.notReadyTimeoutMinutes) * time.Minute
+	}
+
+	// Check if pod has any NotReady conditions
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == v1.PodReady && condition.Status == v1.ConditionFalse {
+			// Additional check: if the pod has been in NotReady state for the configured time
+			if condition.LastTransitionTime.Add(notReadyTimeout).Before(time.Now()) {
+				klog.Infof("Pod %s in namespace %s is in NotReady state since %v (timeout: %v)",
+					pod.Name, pod.Namespace, condition.LastTransitionTime, notReadyTimeout)
+				return true
 			}
 		}
-		if !isDaemonSet {
-			filteredPods = append(filteredPods, pod)
-		}
 	}
-	return filteredPods, nil
+
+	return false
 }
 
 // gracefully evicts all pods in a namespace
@@ -243,20 +309,8 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 			return
 		}
 		if len(pods.Items) > 0 {
-			var remainingPods []v1.Pod
-			for _, pod := range pods.Items {
-				isDaemonSet := false
-				for _, owner := range pod.OwnerReferences {
-					if owner.Kind == "DaemonSet" {
-						isDaemonSet = true
-						break
-					}
-				}
-				if !isDaemonSet {
-					klog.InfoS("Pod not evicted", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
-					remainingPods = append(remainingPods, pod)
-				}
-			}
+			remainingPods := c.findRemainingPods(pods.Items, namespace, nodeName)
+
 			resultChan <- result{namespace: namespace, pods: remainingPods, err: nil}
 			return
 		}
@@ -288,6 +342,18 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 
 	close(resultChan)
 	return allEvicted, remainingPods
+}
+
+func (c *NodeDrainerClient) isDaemonSetPod(pod *v1.Pod, namespace string, nodeName string) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "DaemonSet" {
+			klog.Infof("Ignoring DaemonSet pod %s in namespace %s on node %s during eviction check",
+				pod.Name, namespace, nodeName)
+			return true
+		}
+	}
+
+	return false
 }
 
 // verify if all pods are deleted after force deletion
