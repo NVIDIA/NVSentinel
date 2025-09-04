@@ -42,3 +42,18 @@ tolerations: []
 affinity: {}
 
 metricsPort: 2112
+
+systemNodeSelector: {}
+
+systemNodeTolerations: []
+
+# Driver watcher configuration
+driverWatcher:
+  logLevel: 2
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi

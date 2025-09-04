@@ -43,3 +43,5 @@ metricsPort: 2112
 stateFilePath: "/var/run/statefile"
 
 systemNodeSelector: {}
+
+systemNodeTolerations: []

@@ -1,0 +1,71 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nvswitch-health-monitor.fullname" . }}-driver-watcher
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nvswitch-health-monitor.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "nvswitch-health-monitor.selectorLabels" . | nindent 6 }}-driver-watcher
+  template:
+    metadata:
+      labels:
+        {{- include "nvswitch-health-monitor.selectorLabels" . | nindent 8 }}-driver-watcher
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nvswitch-health-monitor.fullname" . }}-driver-watcher
+      containers:
+        - name: driver-watcher
+          image: "{{ .Values.global.nvSwitchHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.nvSwitchHealthMonitor.image.pullPolicy }}
+          command: ["/app/driver-watcher"]
+          args:
+            - --v={{ .Values.driverWatcher.logLevel | default 2 }}
+          resources:
+            {{- toYaml .Values.driverWatcher.resources | nindent 12 }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+        {{- if eq .Values.global.clusterType "mgmt" }}
+            - name: KUBERNETES_CLUSTER_DOMAIN
+              value: "cluster.local"
+            - name: KUBERNETES_SERVICE_HOST
+              value: "apiserver-portal"
+            - name: KUBERNETES_SERVICE_PORT_HTTPS
+              value: "443"
+        {{- end }}
+      {{- with .Values.systemNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.systemNodeTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{ end }}

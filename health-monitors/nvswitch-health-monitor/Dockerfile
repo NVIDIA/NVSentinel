@@ -14,7 +14,7 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG DCGM_VERSION="4.2.0-1-ubuntu22.04"
+ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
 FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
 
 ENV CGO_ENABLED=0
@@ -30,11 +30,14 @@ COPY . .
 
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
+# build the driver-watcher binary
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o driver-watcher ./cmd/driver-watcher
+
 # build the clear_fatal_errors utility for testing
 RUN go build -o clear_fatal_errors clear-nvswitch-fatal-errors/clear_fatal_errors.go
 
 
-FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
+FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     e2fsprogs && \
@@ -42,6 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /go/src/nvswitch-health-monitor/nvswitch-health-monitor /app/nvswitch-health-monitor
+
+# copy the driver-watcher binary
+COPY --from=builder /go/src/nvswitch-health-monitor/driver-watcher /app/driver-watcher
 
 # binary is used for testing
 COPY --from=builder /go/src/nvswitch-health-monitor/clear_fatal_errors /usr/local/bin/clear_fatal_errors
