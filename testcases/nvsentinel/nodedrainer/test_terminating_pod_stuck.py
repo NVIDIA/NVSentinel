@@ -23,18 +23,6 @@ class TestTerminatingPodStuck(TestNVSentinelCaseBase):
     Class for test case of NVsentinel Node drainer
     """
 
-    """
-    pod stuck in terminating state
-    steps1 : check node-drainer pod is running
-    steps2 : create a pod with finalizer enabled
-    steps3 : update the config to add a namespace for testing, the terminating pod should be in same namespace
-    steps4 : inject an error in the gpu pod
-    steps5 : check the node-drainer pod logs, it should be waiting for that pod to finish
-    steps6 : should check after the grace time period, there should be no new logs where node-drainer is waiting for that pod to finish
-    steps7 : clean up the pod, namespace and config
-    steps8 : clear the injected error
-    """
-
     backup_cm_path = "node-drainer-config-backup.yaml"
     
     @pytest.fixture(autouse=True)
@@ -58,7 +46,9 @@ class TestTerminatingPodStuck(TestNVSentinelCaseBase):
     @pytest.mark.author(email="tanishag@nvidia.com")
     @pytest.mark.nodedrainer
     def test_terminating_pod_stuck(self, request, nvsentinel_autosync_disabled_enabled):
-        
+        """
+        Test case for node drainer handling stuck terminating pod: the pod should not be monitored if its stuck in terminating state
+        """
         self.skip_if_node_drainer_deployment_not_found()
         self.step_manager.print_header("Check the node-drainer pod is running")
         self.wait_for_node_drainer_pod_to_start()
@@ -200,4 +190,3 @@ class TestTerminatingPodStuck(TestNVSentinelCaseBase):
         self.verify_node_drainer_pod_log([final_expected_msg])
 
         self.logger.info("[PASS] Node-drainer handled stuck terminating pod correctly")
-

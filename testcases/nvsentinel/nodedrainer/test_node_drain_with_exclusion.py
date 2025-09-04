@@ -27,6 +27,10 @@ class TestNodeDrainWithExclusion(TestNVSentinelCaseBase):
     @pytest.mark.author(email="tanishag@nvidia.com")
     @pytest.mark.nodedrainer
     def test_node_drain_with_exclusion(self, request, nvsentinel_autosync_disabled_enabled):
+        """
+        Test case for node drainer with exclusion to exclude monitoring pods in system namespaces
+        """
+
         self.skip_if_node_drainer_deployment_not_found()
         self.step_manager.print_header("Check the node drainer pod is running")
 
