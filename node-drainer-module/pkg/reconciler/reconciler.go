@@ -30,8 +30,15 @@ import (
 )
 
 const (
-	maxRetries = 5
-	retryDelay = 10 * time.Second
+	maxRetries        = 5
+	retryDelay        = 10 * time.Second
+	NodeDrainLabelKey = "nvsentinel.dgxc.nvidia.com/node-drain-status"
+)
+
+type NodeDrainLabelValue string
+
+const (
+	InProgress NodeDrainLabelValue = "IN_PROGRESS"
 )
 
 type ReconcilerConfig struct {
@@ -162,6 +169,7 @@ func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection
 
 	eventHandlingDuration.Observe(duration)
 }
+
 func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
 
 	namespaceMap := r.getMatchingNamespace(ctx)
@@ -185,6 +193,12 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		// Node is healthy/unquarantined - set metric to 0
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 	} else {
+		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, true)
+		if err != nil {
+			klog.Errorf("Error updating node label: %+v", err)
+		} else {
+			klog.Infof("Node drainer status label updated for node %s", nodeName)
+		}
 		// Node is quarantined - set metric to 1 to indicate draining started
 		nodeDrainStatus.WithLabelValues(nodeName).Set(1)
 	}
@@ -203,10 +217,13 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 			}
 		} else {
 			wg.Add(1)
-			ctx1, cancel := context.WithCancel(ctx)
-			r.NodeEvictionContext.Store(nsWithNode, &EvictionContext{cancel: cancel})
-			go func(ctx1 context.Context, mode config.EvictMode, nodeName string, ns string, nsWithNode string) {
-				defer wg.Done()
+			go func(ctx context.Context, mode config.EvictMode, nodeName string, ns string, nsWithNode string) {
+				ctx1, cancel := context.WithCancel(ctx)
+
+				defer func() {
+					cancel()
+					wg.Done()
+				}()
 				switch mode {
 				case config.ModeImmediateEvict:
 					klog.Infof("Evicting pods from namespace %s in %s mode", ns, mode)
@@ -219,6 +236,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 						errChan <- err
 					}
 				case config.ModeAllowCompletion:
+					r.NodeEvictionContext.Store(nsWithNode, &EvictionContext{cancel: cancel})
 					klog.Infof("Monitoring pods for completion in namespace %s in %s mode", ns, mode)
 					if err := r.Config.K8sClient.MonitorPodCompletion(ctx1, ns, nodeName); err != nil {
 						klog.Infof("error while monitoring pods to complete in namespace %s on node %s: %+v\n", ns, nodeName, err)
@@ -226,8 +244,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 					}
 
 				default:
-					klog.Errorf("Invalid mode of eviction: %s", mode)
-					errChan <- fmt.Errorf("invalid mode of eviction: %s", mode)
+					klog.Errorf("Invalid mode of eviction; ignoring pods in namespace %s in %s mode", ns, mode)
 				}
 
 				r.NodeEvictionContext.Delete(nsWithNode)
@@ -238,7 +255,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 				default:
 				}
 
-			}(ctx1, mode, nodeName, ns, nsWithNode)
+			}(ctx, mode, nodeName, ns, nsWithNode)
 		}
 	}
 
@@ -250,6 +267,13 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		for err := range errChan {
 			mErr = multierror.Append(mErr, err)
 		}
+		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
+		if err != nil {
+			klog.Errorf("Error updating node label: %+v", err)
+		} else {
+			klog.Infof("Node drainer status label updated for node %s", nodeName)
+		}
+		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 		return mErr
 	}
 
@@ -257,6 +281,12 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 
 	// Set metric to 0 only after successful completion of draining
 	if err == nil && *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
+		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
+		if err != nil {
+			klog.Errorf("Error updating node label: %+v", err)
+		} else {
+			klog.Infof("Node drainer status label updated for node %s", nodeName)
+		}
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 	}
 

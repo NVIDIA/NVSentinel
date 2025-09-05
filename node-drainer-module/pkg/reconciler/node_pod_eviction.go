@@ -31,6 +31,7 @@ import (
 	policyv1client "k8s.io/client-go/kubernetes/typed/policy/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 )
@@ -322,9 +323,7 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 	resultChan := make(chan result, len(namespaces))
 
 	for _, ns := range namespaces {
-		go func(namespace string) {
-			checkNamespace(namespace, resultChan)
-		}(ns)
+		checkNamespace(ns, resultChan)
 	}
 
 	for i := 0; i < len(namespaces); i++ {
@@ -481,4 +480,30 @@ func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace 
 			}
 		}
 	}
+}
+
+func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string, isDraining bool) error {
+	return retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
+		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		currentValue, exists := node.Labels[NodeDrainLabelKey]
+		if isDraining {
+			if exists && currentValue == string(InProgress) {
+				// Desired label already set – skip the update call.
+				return nil
+			}
+			node.Labels[NodeDrainLabelKey] = string(InProgress)
+		} else {
+			if !exists {
+				// Label already absent – skip the update call.
+				return nil
+			}
+			delete(node.Labels, NodeDrainLabelKey)
+		}
+
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+		return err
+	})
 }

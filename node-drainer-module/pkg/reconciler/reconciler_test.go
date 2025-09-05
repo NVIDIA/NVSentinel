@@ -33,19 +33,27 @@ type MockNodeDrainerClient struct {
 	monitorPodCompletionFn         func(ctx context.Context, namespace string, nodename string) error
 	evictAllPodsImmediatelyFn      func(ctx context.Context, namespace string, nodename string, timeout time.Duration) error
 	checkIfAllPodsAreEvictedFn     func(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool
+	updateNodeLabelFn              func(ctx context.Context, nodeName string, isDraining bool) error
 }
 
 func (c *MockNodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
 	return c.getNamespacesMatchingPatternFn(ctx, includePattern, excludePattern)
 }
+
 func (c *MockNodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodename string) error {
 	return c.monitorPodCompletionFn(ctx, namespace, nodename)
 }
+
 func (c *MockNodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timeout time.Duration) error {
 	return c.evictAllPodsImmediatelyFn(ctx, namespace, nodename, timeout)
 }
+
 func (c *MockNodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
 	return c.checkIfAllPodsAreEvictedFn(ctx, namespaces, nodeName, timeout)
+}
+
+func (c *MockNodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string, isDraining bool) error {
+	return c.updateNodeLabelFn(ctx, nodeName, isDraining)
 }
 
 func TestHandleEvent(t *testing.T) {
@@ -63,6 +71,7 @@ func TestHandleEvent(t *testing.T) {
 				Mode: "AllowCompletion",
 			}},
 	}
+	count := 0
 	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
 			switch includePattern {
@@ -86,6 +95,20 @@ func TestHandleEvent(t *testing.T) {
 		},
 		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
 			return true
+		},
+		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
+				return nil
+			case 2:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, false, isDraining, "Expected isDraining to be false but found %s", isDraining)
+				return nil
+			}
+			return nil
 		},
 	}
 
@@ -126,7 +149,7 @@ func TestHandleEventWithError(t *testing.T) {
 				Mode: "AllowCompletion",
 			}},
 	}
-
+	count := 0
 	// eviction of pods in immediate mode with error
 	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
@@ -153,6 +176,20 @@ func TestHandleEventWithError(t *testing.T) {
 			t.Errorf("Didn't expect this function to be called in error state")
 			return false
 		},
+		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
+				return nil
+			case 2:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, false, isDraining, "Expected Failed label value but found %s", isDraining)
+				return nil
+			}
+			return nil
+		},
 	}
 
 	cfg := ReconcilerConfig{
@@ -176,7 +213,7 @@ func TestHandleEventWithError(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected an error for eviction of pods in immediate mode but got nil")
 	}
-
+	count = 0
 	//eviction of pods in allow completion mode with error
 	k8sClient.monitorPodCompletionFn = func(ctx context.Context, namespace, nodename string) error {
 		assert.Equal(t, "nvsentinel", namespace, "Expected nvsentinel namespace pods to be passed in Allow completion mode eviction but found %s", namespace)
@@ -191,6 +228,20 @@ func TestHandleEventWithError(t *testing.T) {
 	k8sClient.checkIfAllPodsAreEvictedFn = func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
 		t.Errorf("Didn't expect this function to be called in error state")
 		return false
+	}
+	k8sClient.updateNodeLabelFn = func(ctx context.Context, nodeName string, isDraining bool) error {
+		count++
+		switch count {
+		case 1:
+			assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+			assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
+			return nil
+		case 2:
+			assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+			assert.Equal(t, false, isDraining, "Expected Failed label value but found %s", isDraining)
+			return nil
+		}
+		return nil
 	}
 
 	err = r.handleEvent(ctx, "node1", healthEvent)
@@ -238,6 +289,10 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 			t.Errorf("Check for eviction of pod should not be done for healthy event")
 			return false
 		},
+		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+			t.Errorf("UpdateNodeLabel should not be called for healthy event")
+			return nil
+		},
 	}
 
 	cfg := ReconcilerConfig{
@@ -283,7 +338,7 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 			},
 		},
 	}
-
+	count := 0
 	k8sClient := &MockNodeDrainerClient{
 		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
 			if includePattern == "test-ns" || includePattern == "test-ns-actual" {
@@ -302,9 +357,21 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 			return nil
 		},
 		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
-			// This should not be called
-			t.Errorf("CheckIfAllPodsAreEvictedInImmediateMode should not be called for invalid mode")
-			return false
+			return true
+		},
+		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node-for-invalid-mode", nodeName, "Expected node-for-invalid-mode to be updated but found %s", nodeName)
+				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
+				return nil
+			case 2:
+				assert.Equal(t, "node-for-invalid-mode", nodeName, "Expected node-for-invalid-mode to be updated but found %s", nodeName)
+				assert.Equal(t, false, isDraining, "Expected isDraining to be false but found %s", isDraining)
+				return nil
+			}
+			return nil
 		},
 	}
 
@@ -325,9 +392,7 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 
 	r := NewReconciler(cfg, false) // DryRun is false
 	err := r.handleEvent(ctx, "node-for-invalid-mode", healthEvent)
-
-	assert.Error(t, err, "Expected an error for invalid eviction mode")
 	if err != nil {
-		assert.Contains(t, err.Error(), "invalid mode of eviction: Immiediate", "Error message mismatch")
+		t.Errorf("Expected nil but found error %s", err)
 	}
 }

@@ -41,4 +41,12 @@ rules:
   - namespaces
   verbs:
   - list
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - patch
+  - update
 {{ end }}

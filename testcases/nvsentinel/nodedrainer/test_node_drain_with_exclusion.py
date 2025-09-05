@@ -17,7 +17,6 @@ import pytest
 from testcases.nvsentinel.base import TestNVSentinelCaseBase
 import time
 import os
-import yaml
 
 class TestNodeDrainWithExclusion(TestNVSentinelCaseBase):
     """

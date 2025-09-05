@@ -5262,3 +5262,26 @@ class KubernetesClient(object):
                 LOGGER.debug(f"Pod {namespace}/{pod_name} already deleted")
             else:
                 raise
+            
+    def get_node_labels(self, node_name: str) -> CommonResult[Dict[str, Any], str]:
+        """
+        Get the labels of a Kubernetes node.
+
+        Args:
+            node_name (str): Name of the node to retrieve labels from
+
+        Returns:
+            CommonResult: Operation result containing:
+                - Dict[str, Any]: Dictionary of node labels if successful
+                - str: Error message if an exception occurred
+        """
+        try:
+            node = self.coreV1Api.read_node(name=node_name)
+            return CommonResult(node.metadata.labels)
+        except ApiException as e:
+            error_msg = f"Failed to get labels for node {node_name}: {str(e)}"
+            return CommonResult(None, error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error getting labels for node {node_name}: {str(e)}"
+            return CommonResult(None, error_msg)
+        
