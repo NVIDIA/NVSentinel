@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 kind: ServiceAccount
 apiVersion: v1
 metadata:
@@ -80,14 +80,29 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if not (eq .Values.global.clusterType "mgmt") }}
       serviceAccountName: {{ include "gpu-health-monitor.fullname" . }}
+      {{- else }}
+      serviceAccountName: dgxc-system
+      {{- end }}
       containers:
         - name: gpu-health-monitor
           image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-4.x"
           command: ["python3", "node_watcher.py"]
+          {{- if eq .Values.global.clusterType "mgmt" }}
+          env:
+            - name: KUBERNETES_CLUSTER_DOMAIN
+              value: "cluster.local"
+            - name: KUBERNETES_SERVICE_HOST
+              value: "apiserver-portal"
+            - name: KUBERNETES_SERVICE_PORT_HTTPS
+              value: "443"
+        {{- end }}
+      {{- if not (eq .Values.global.clusterType "mgmt") }}
       {{- with .Values.systemNodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:

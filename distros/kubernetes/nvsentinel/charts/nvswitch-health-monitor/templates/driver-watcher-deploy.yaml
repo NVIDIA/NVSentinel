@@ -33,7 +33,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if not (eq .Values.global.clusterType "mgmt") }}
       serviceAccountName: {{ include "nvswitch-health-monitor.fullname" . }}-driver-watcher
+      {{- else }}
+      serviceAccountName: dgxc-system
+      {{- end }}
       containers:
         - name: driver-watcher
           image: "{{ .Values.global.nvSwitchHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
@@ -56,9 +60,11 @@ spec:
             - name: KUBERNETES_SERVICE_PORT_HTTPS
               value: "443"
         {{- end }}
+      {{- if not (eq .Values.global.clusterType "mgmt") }}
       {{- with .Values.systemNodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:

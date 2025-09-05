@@ -83,7 +83,7 @@ spec:
           configMap:
             name: {{ include "nvswitch-health-monitor.fullname" . }}
       nodeSelector:
-        nvidia.com/driver.installed: "true"
+        nvsentinel.dgxc.nvidia.com/driver.installed: "true"
         {{- with .Values.nodeSelector }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

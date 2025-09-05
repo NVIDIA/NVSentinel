@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -129,5 +130,6 @@ spec:
       storage: {{ .Values.persistence.size }}
 {{- if .Values.persistence.storageClassName }}
   storageClassName: {{ .Values.persistence.storageClassName | quote }}
+{{- end }}
 {{- end }}
 {{- end }}

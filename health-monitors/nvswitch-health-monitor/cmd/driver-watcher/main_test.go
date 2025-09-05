@@ -39,12 +39,12 @@ func TestDriverWatcher_buildPatchData(t *testing.T) {
 		{
 			name:        "add label",
 			shouldLabel: true,
-			expected:    `{"metadata":{"labels":{"nvidia.com/driver.installed":"true"}}}`,
+			expected:    `{"metadata":{"labels":{"nvsentinel.dgxc.nvidia.com/driver.installed":"true"}}}`,
 		},
 		{
 			name:        "remove label",
 			shouldLabel: false,
-			expected:    `{"metadata":{"labels":{"nvidia.com/driver.installed":null}}}`,
+			expected:    `{"metadata":{"labels":{"nvsentinel.dgxc.nvidia.com/driver.installed":null}}}`,
 		},
 	}
 

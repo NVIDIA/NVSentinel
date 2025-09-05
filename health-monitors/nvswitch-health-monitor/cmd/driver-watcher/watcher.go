@@ -34,10 +34,9 @@ import (
 )
 
 const (
-	driverLabelKey   = "nvidia.com/driver.installed"
+	driverLabelKey   = "nvsentinel.dgxc.nvidia.com/driver.installed"
 	driverLabelValue = "true"
 	appLabelSelector = "app=nvidia-driver-daemonset"
-	namespace        = "gpu-operator"
 )
 
 // EventType represents the type of Kubernetes resource event
@@ -59,7 +58,6 @@ func (w *DriverWatcher) Run(ctx context.Context) {
 
 	// Create informer for watching pods - this automatically handles initial sync
 	factory := informers.NewSharedInformerFactoryWithOptions(w.clientset, time.Minute,
-		informers.WithNamespace(namespace),
 		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
 			options.LabelSelector = appLabelSelector
 		}))
