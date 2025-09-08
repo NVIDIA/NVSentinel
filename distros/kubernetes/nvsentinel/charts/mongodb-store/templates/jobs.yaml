@@ -48,7 +48,8 @@ kind: Job
 metadata:
   name: create-mongodb-database
   namespace: {{ .Release.Namespace }}
-
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   activeDeadlineSeconds: 600
   template:
