@@ -51,6 +51,10 @@ type mockK8sClient struct {
 	taintAndCordonNodeFn     func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error
 	unTaintAndUnCordonNodeFn func(ctx context.Context, nodeName string, taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string, labelMap map[string]string) error
 	getK8sClientFn           func() kubernetes.Interface
+	ensureConfigMapFn        func(ctx context.Context, name, namespace string, initialStatus string) error
+	readCBStateFn            func(ctx context.Context, name, namespace string) (string, error)
+	writeCBStateFn           func(ctx context.Context, name, namespace, status string) error
+	getTotalGpuNodesFn       func(ctx context.Context) (int, error)
 }
 
 func (m *mockK8sClient) GetNodeAnnotations(ctx context.Context, nodeName string) (map[string]string, error) {
@@ -68,6 +72,34 @@ func (m *mockK8sClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.C
 
 func (m *mockK8sClient) GetK8sClient() kubernetes.Interface {
 	return m.getK8sClientFn()
+}
+
+func (m *mockK8sClient) EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus string) error {
+	if m.ensureConfigMapFn != nil {
+		return m.ensureConfigMapFn(ctx, name, namespace, initialStatus)
+	}
+	return nil
+}
+
+func (m *mockK8sClient) ReadCircuitBreakerState(ctx context.Context, name, namespace string) (string, error) {
+	if m.readCBStateFn != nil {
+		return m.readCBStateFn(ctx, name, namespace)
+	}
+	return "", nil
+}
+
+func (m *mockK8sClient) WriteCircuitBreakerState(ctx context.Context, name, namespace, status string) error {
+	if m.writeCBStateFn != nil {
+		return m.writeCBStateFn(ctx, name, namespace, status)
+	}
+	return nil
+}
+
+func (m *mockK8sClient) GetTotalGpuNodes(ctx context.Context) (int, error) {
+	if m.getTotalGpuNodesFn != nil {
+		return m.getTotalGpuNodesFn(ctx)
+	}
+	return 10, nil // Default value for tests
 }
 
 type mockEvaluator struct {
@@ -124,9 +156,16 @@ func TestHandleEvent(t *testing.T) {
 		},
 	}
 
-	cfg := ReconcilerConfig{
-		TomlConfig: tomlConfig,
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "nvsentinel",
+		Name:       "fault-quarantine-circuit-breaker",
+		Percentage: 50,
+		Duration:   5 * time.Minute,
+	}
 
+	cfg := ReconcilerConfig{
+		TomlConfig:     tomlConfig,
+		CircuitBreaker: circuitBreakerConfig,
 		K8sClient: &mockK8sClient{
 			getNodesWithAnnotationFn: func(ctx context.Context, annotationKey string) ([]string, error) {
 				// Initially no quarantined nodes
@@ -618,8 +657,16 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 		RuleSetPriorityMap: map[string]int{"test-eval": 1},
 	}
 
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "nvsentinel",
+		Name:       "fault-quarantine-circuit-breaker",
+		Percentage: 50,
+		Duration:   5 * time.Minute,
+	}
+
 	r := NewReconciler(ctx, ReconcilerConfig{
-		K8sClient: k8sMock,
+		K8sClient:      k8sMock,
+		CircuitBreaker: circuitBreakerConfig,
 	}, nil)
 
 	// Initialize label keys
@@ -828,9 +875,17 @@ func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
 		},
 	}
 
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "nvsentinel",
+		Name:       "fault-quarantine-circuit-breaker",
+		Percentage: 50,
+		Duration:   5 * time.Minute,
+	}
+
 	cfg := ReconcilerConfig{
-		TomlConfig: tomlConfig,
-		K8sClient:  k8sMock,
+		TomlConfig:     tomlConfig,
+		K8sClient:      k8sMock,
+		CircuitBreaker: circuitBreakerConfig,
 	}
 
 	r := NewReconciler(ctx, cfg, nil)
@@ -1084,9 +1139,17 @@ func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
 		},
 	}
 
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "nvsentinel",
+		Name:       "fault-quarantine-circuit-breaker",
+		Percentage: 50,
+		Duration:   5 * time.Minute,
+	}
+
 	cfg := ReconcilerConfig{
-		TomlConfig: tomlConfig,
-		K8sClient:  k8sMock,
+		TomlConfig:     tomlConfig,
+		K8sClient:      k8sMock,
+		CircuitBreaker: circuitBreakerConfig,
 	}
 
 	// Create work signal for proper nodeInfo initialization
@@ -2330,5 +2393,255 @@ func TestNodeRequarantineAfterManualUncordon(t *testing.T) {
 	cachedAnnotations, _ := r.getNodeQuarantineAnnotations(ctx, "test-node")
 	if _, stillHasAnnotation := cachedAnnotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; stillHasAnnotation {
 		t.Errorf("Cache should not contain manual uncordon annotation after removal")
+	}
+}
+
+// TestCircuitBreakerBasicFunctionality tests basic circuit breaker operations
+func TestCircuitBreakerBasicFunctionality(t *testing.T) {
+	ctx := context.Background()
+
+	// Mock circuit breaker state storage
+	breakerState := "CLOSED"
+	cbStateReadCount := 0
+	cbStateWriteCount := 0
+
+	mockK8sClient := &mockK8sClient{
+		ensureConfigMapFn: func(ctx context.Context, name, namespace string, initialStatus string) error {
+			if initialStatus != "CLOSED" {
+				t.Errorf("Expected initial state to be CLOSED, got %s", initialStatus)
+			}
+			return nil
+		},
+		readCBStateFn: func(ctx context.Context, name, namespace string) (string, error) {
+			cbStateReadCount++
+			return breakerState, nil
+		},
+		writeCBStateFn: func(ctx context.Context, name, namespace, status string) error {
+			cbStateWriteCount++
+			breakerState = status
+			return nil
+		},
+		getTotalGpuNodesFn: func(ctx context.Context) (int, error) {
+			return 10, nil // 10 total nodes for testing
+		},
+	}
+
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "test-namespace",
+		Name:       "test-circuit-breaker",
+		Percentage: 50, // 50% threshold
+		Duration:   5 * time.Minute,
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:             mockK8sClient,
+		CircuitBreakerEnabled: true,
+		CircuitBreaker:        circuitBreakerConfig,
+	}
+
+	r := NewReconciler(ctx, cfg, nil)
+
+	// Test 1: Circuit breaker should be initialized in CLOSED state
+	if r.cb == nil {
+		t.Fatal("Circuit breaker should be initialized when enabled")
+	}
+
+	currentState := r.cb.CurrentState()
+	if currentState != "CLOSED" {
+		t.Errorf("Expected initial state to be CLOSED, got %s", currentState)
+	}
+
+	// Test 2: Circuit breaker should not be tripped initially
+	isTripped, err := r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if isTripped {
+		t.Error("Circuit breaker should not be tripped initially")
+	}
+
+	// Test 3: Add cordon events below threshold (4 out of 10 nodes = 40% < 50%)
+	for i := 0; i < 4; i++ {
+		r.cb.AddCordonEvent(fmt.Sprintf("node-%d", i))
+	}
+
+	isTripped, err = r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if isTripped {
+		t.Error("Circuit breaker should not be tripped at 40% threshold")
+	}
+
+	// Test 4: Add one more cordon event to reach threshold (5 out of 10 nodes = 50%)
+	r.cb.AddCordonEvent("node-4")
+
+	isTripped, err = r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if !isTripped {
+		t.Error("Circuit breaker should be tripped at 50% threshold")
+	}
+
+	// Test 5: Verify state was persisted
+	if cbStateWriteCount == 0 {
+		t.Error("Circuit breaker state should have been written to ConfigMap")
+	}
+	if breakerState != "TRIPPED" {
+		t.Errorf("Expected persisted state to be TRIPPED, got %s", breakerState)
+	}
+
+	// Test 6: Force state back to CLOSED
+	err = r.cb.ForceState(ctx, "CLOSED")
+	if err != nil {
+		t.Fatalf("Error forcing circuit breaker state: %v", err)
+	}
+
+	currentState = r.cb.CurrentState()
+	if currentState != "CLOSED" {
+		t.Errorf("Expected state to be CLOSED after forcing, got %s", currentState)
+	}
+
+	// Note: IsTripped() will automatically trip the breaker again if the threshold is still exceeded
+	// So we just verify the current state is CLOSED, but IsTripped() will return true due to the
+	// cordon events still being in the sliding window
+	isTripped, err = r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	// The breaker will be tripped again because the cordon events are still within the sliding window
+	if !isTripped {
+		t.Error("Circuit breaker should be tripped again due to cordon events still in sliding window")
+	}
+}
+
+// TestCircuitBreakerSlidingWindow tests sliding window behavior
+func TestCircuitBreakerSlidingWindow(t *testing.T) {
+	ctx := context.Background()
+
+	mockK8sClient := &mockK8sClient{
+		ensureConfigMapFn: func(ctx context.Context, name, namespace string, initialStatus string) error {
+			return nil
+		},
+		readCBStateFn: func(ctx context.Context, name, namespace string) (string, error) {
+			return "CLOSED", nil
+		},
+		writeCBStateFn: func(ctx context.Context, name, namespace, status string) error {
+			return nil
+		},
+		getTotalGpuNodesFn: func(ctx context.Context) (int, error) {
+			return 10, nil // 10 total nodes
+		},
+	}
+
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "test-namespace",
+		Name:       "test-circuit-breaker",
+		Percentage: 50,              // 50% threshold
+		Duration:   2 * time.Second, // Short window for testing
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:             mockK8sClient,
+		CircuitBreakerEnabled: true,
+		CircuitBreaker:        circuitBreakerConfig,
+	}
+
+	r := NewReconciler(ctx, cfg, nil)
+
+	// Add cordon events to reach threshold
+	for i := 0; i < 5; i++ {
+		r.cb.AddCordonEvent(fmt.Sprintf("node-%d", i))
+	}
+
+	// Should be tripped immediately
+	isTripped, err := r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if !isTripped {
+		t.Error("Circuit breaker should be tripped after reaching threshold")
+	}
+
+	// Force state back to CLOSED to test sliding window
+	err = r.cb.ForceState(ctx, "CLOSED")
+	if err != nil {
+		t.Fatalf("Error forcing circuit breaker state: %v", err)
+	}
+
+	// Wait for sliding window to expire (events should age out)
+	time.Sleep(3 * time.Second)
+
+	// Should not be tripped anymore due to sliding window
+	isTripped, err = r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if isTripped {
+		t.Error("Circuit breaker should not be tripped after sliding window expires")
+	}
+}
+
+// TestCircuitBreakerUniqueNodeTracking tests that duplicate cordon events for same node are handled correctly
+func TestCircuitBreakerUniqueNodeTracking(t *testing.T) {
+	ctx := context.Background()
+
+	mockK8sClient := &mockK8sClient{
+		ensureConfigMapFn: func(ctx context.Context, name, namespace string, initialStatus string) error {
+			return nil
+		},
+		readCBStateFn: func(ctx context.Context, name, namespace string) (string, error) {
+			return "CLOSED", nil
+		},
+		writeCBStateFn: func(ctx context.Context, name, namespace, status string) error {
+			return nil
+		},
+		getTotalGpuNodesFn: func(ctx context.Context) (int, error) {
+			return 10, nil // 10 total nodes
+		},
+	}
+
+	circuitBreakerConfig := CircuitBreakerConfig{
+		Namespace:  "test-namespace",
+		Name:       "test-circuit-breaker",
+		Percentage: 50, // 50% threshold (5 out of 10 nodes)
+		Duration:   5 * time.Minute,
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:             mockK8sClient,
+		CircuitBreakerEnabled: true,
+		CircuitBreaker:        circuitBreakerConfig,
+	}
+
+	r := NewReconciler(ctx, cfg, nil)
+
+	// Add same node multiple times - should only count once
+	for i := 0; i < 10; i++ {
+		r.cb.AddCordonEvent("node-1")
+	}
+
+	// Should not be tripped because only 1 unique node was cordoned
+	isTripped, err := r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if isTripped {
+		t.Error("Circuit breaker should not be tripped with only 1 unique node cordoned")
+	}
+
+	// Add 4 more unique nodes to reach threshold
+	for i := 2; i <= 5; i++ {
+		r.cb.AddCordonEvent(fmt.Sprintf("node-%d", i))
+	}
+
+	// Now should be tripped (5 unique nodes = 50%)
+	isTripped, err = r.cb.IsTripped(ctx)
+	if err != nil {
+		t.Fatalf("Error checking if circuit breaker is tripped: %v", err)
+	}
+	if !isTripped {
+		t.Error("Circuit breaker should be tripped with 5 unique nodes cordoned")
 	}
 }

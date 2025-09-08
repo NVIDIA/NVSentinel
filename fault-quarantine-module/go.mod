@@ -13,6 +13,7 @@ require (
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250901064035-448ac86146d3
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
 	go.mongodb.org/mongo-driver v1.17.4
+	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc
 	google.golang.org/protobuf v1.36.6
 	k8s.io/api v0.30.2
 	k8s.io/apimachinery v0.30.2
@@ -61,7 +62,6 @@ require (
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.35.0 // indirect
-	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc // indirect
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/oauth2 v0.21.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect

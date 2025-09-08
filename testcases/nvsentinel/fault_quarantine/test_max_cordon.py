@@ -147,18 +147,6 @@ class TestMaxCordon(TestNVSentinelCaseBase):
 
         
 
-    def inject_gpu_inforom_on_all_nodes(self, gpu_health_monitor_pods):
-        for pod in gpu_health_monitor_pods:
-            assert pod.status.phase == "Running", f"FAIL: Pod {pod.metadata.name} is not running"
-
-            self.inject_gpu_inforom_watch_error(pod)
-
-    def clear_gpu_inforom_on_all_nodes(self, gpu_health_monitor_pods):
-        for pod in gpu_health_monitor_pods:
-            assert pod.status.phase == "Running", f"FAIL: Pod {pod.metadata.name} is not running"
-
-            self.clear_gpu_inforom_watch_error(pod)
-
     def remove_managed_by_nvsentinel_label_from_all_nodes(self, nodes):
         self.node_to_label_map = {}
         for node in nodes:

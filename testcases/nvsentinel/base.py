@@ -26,6 +26,7 @@ from testcases.common.base import Base
 from kubernetes import client
 from testcases.utils.kubernetes_utils import KubernetesClient
 from datetime import datetime, timezone
+import tempfile
 
 
 class TestNVSentinelCaseBase(Base):
@@ -1553,3 +1554,66 @@ class TestNVSentinelCaseBase(Base):
 
         self.logger.info(f"Reboot did not complete for node {node_name} after {wait_second} seconds")
         pytest.fail(f"Reboot did not complete for node {node_name} after {wait_second} seconds")
+
+    def read_circuit_breaker_state(self):
+        """Read the circuit breaker state"""
+        cm, err = self.client.get_configmap(self.nv_namespace, "fault-quarantine-circuit-breaker")
+        if err:
+            pytest.fail(f"Failed to get circuit breaker state: {err}")
+        return cm.data["status"]
+
+    def change_circuit_breaker_state(self, state):
+        """Change the circuit breaker state"""
+        cm, err = self.client.get_configmap(self.nv_namespace, "fault-quarantine-circuit-breaker")
+        if err:
+            pytest.fail(f"Failed to get circuit breaker state: {err}")
+
+        cm.data["status"] = state
+        configmap_yaml = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "fault-quarantine-circuit-breaker",
+                "namespace": self.nv_namespace
+            },
+            "data": cm.data
+        }
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as temp_configmap_file:
+            yaml.dump(configmap_yaml, temp_configmap_file, default_flow_style=False)
+            temp_configmap_file_name = temp_configmap_file.name
+
+        success, err_msg = self.client.apply_configmap(temp_configmap_file_name)
+        if not success:
+            pytest.fail(f"Failed to apply updated ConfigMap: {err_msg}")
+        os.unlink(temp_configmap_file_name)
+
+    def inject_gpu_inforom_on_all_nodes(self, gpu_health_monitor_pods):
+        for pod in gpu_health_monitor_pods:
+            assert pod.status.phase == "Running", f"FAIL: Pod {pod.metadata.name} is not running"
+            self.inject_gpu_inforom_watch_error(pod)
+
+    def clear_gpu_inforom_on_all_nodes(self, gpu_health_monitor_pods):
+        for pod in gpu_health_monitor_pods:
+            assert pod.status.phase == "Running", f"FAIL: Pod {pod.metadata.name} is not running"
+
+            self.clear_gpu_inforom_watch_error(pod)
+
+    def copy_file_to_pod(self, source, destination):
+        copy_command = [
+            "kubectl",
+            "cp",
+            source,
+            destination,
+        ]
+        try:
+            result = subprocess.run(copy_command, check=True, capture_output=True, text=True)
+            self.logger.info(f"Successfully copied {source} to {destination}")
+            return result
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to copy {source} to {destination}: {e.stderr}")
+            raise
+
+    def skip_if_circuit_breaker_disabled(self):
+        """Skip the test if circuit breaker is disabled"""
+        if not self.client.get_configmap(self.nv_namespace, "fault-quarantine-circuit-breaker"):
+            pytest.skip("Circuit breaker is disabled")

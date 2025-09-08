@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/breaker"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
@@ -39,6 +40,13 @@ import (
 	"k8s.io/klog"
 )
 
+type CircuitBreakerConfig struct {
+	Namespace  string
+	Name       string
+	Percentage int
+	Duration   time.Duration
+}
+
 type ReconcilerConfig struct {
 	TomlConfig                            config.TomlConfig
 	MongoHealthEventCollectionConfig      storewatcher.MongoDBConfig
@@ -46,7 +54,9 @@ type ReconcilerConfig struct {
 	MongoPipeline                         mongo.Pipeline
 	K8sClient                             K8sClientInterface
 	DryRun                                bool
+	CircuitBreakerEnabled                 bool
 	UnprocessedEventsMetricUpdateInterval time.Duration
+	CircuitBreaker                        CircuitBreakerConfig
 }
 
 type rulesetsConfig struct {
@@ -66,6 +76,7 @@ type Reconciler struct {
 	// cacheMutex protects cache operations during refresh to ensure consistency
 	cacheMutex            sync.RWMutex
 	lastProcessedObjectID atomic.Value // stores primitive.ObjectID
+	cb                    breaker.CircuitBreaker
 }
 
 var (
@@ -80,12 +91,50 @@ var (
 )
 
 func NewReconciler(ctx context.Context, cfg ReconcilerConfig, workSignal chan struct{}) *Reconciler {
-	return &Reconciler{
+	r := &Reconciler{
 		config:            cfg,
 		healthEventBuffer: common.NewHealthEventBuffer(ctx),
 		nodeInfo:          nodeinfo.NewNodeInfo(workSignal),
 		workSignal:        workSignal, // Store the signal channel
 	}
+
+	if cfg.CircuitBreakerEnabled {
+		klog.Infof("Initializing circuit breaker with config map %s in namespace %s",
+			cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace)
+
+		cb, err := breaker.NewSlidingWindowBreaker(ctx, breaker.Config{
+			Window:         cfg.CircuitBreaker.Duration,
+			TripPercentage: float64(cfg.CircuitBreaker.Percentage),
+			GetTotalNodes:  cfg.K8sClient.GetTotalGpuNodes,
+			EnsureConfigMap: func(c context.Context, initial breaker.State) error {
+				return cfg.K8sClient.EnsureCircuitBreakerConfigMap(c,
+					cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace, string(initial))
+			},
+			ReadStateFn: func(c context.Context) (breaker.State, error) {
+				val, err := cfg.K8sClient.ReadCircuitBreakerState(c, cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace)
+				if err != nil {
+					klog.Errorf("Error reading circuit breaker state from config map %s in namespace %s: %v",
+						cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace, err)
+					return breaker.State(""), err
+				}
+				return breaker.State(val), err
+			},
+			WriteStateFn: func(c context.Context, s breaker.State) error {
+				return cfg.K8sClient.WriteCircuitBreakerState(c, cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace, string(s))
+			},
+		})
+		if err != nil {
+			klog.Fatalf("Failed to initialize circuit breaker: %v", err)
+		}
+
+		r.cb = cb
+	} else {
+		klog.Infof("Circuit breaker is disabled, skipping initialization")
+
+		r.cb = nil
+	}
+
+	return r
 }
 
 func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
@@ -117,6 +166,10 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	// Set the callback to handle manual uncordon of quarantined nodes
 	nodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+
+	if fqClient, ok := r.config.K8sClient.(*FaultQuarantineClient); ok {
+		fqClient.SetNodeInformer(nodeInformer)
+	}
 
 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
 		r.config.K8sClient.GetK8sClient(), nodeInformer)
@@ -208,6 +261,21 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Errorf("Failed to build initial node annotations cache: %v", err)
 	}
 
+	// If breaker is enabled and already tripped at startup, halt until restart/manual close
+	if r.config.CircuitBreakerEnabled {
+		if tripped, err := r.cb.IsTripped(ctx); err != nil {
+			klog.Errorf("Error checking if circuit breaker is tripped: %v", err)
+			<-ctx.Done()
+
+			return
+		} else if tripped {
+			klog.Errorf("Fault Quarantine circuit breaker is TRIPPED. Halting event dequeuing indefinitely.")
+			<-ctx.Done()
+
+			return
+		}
+	}
+
 	watcher.Start(ctx)
 
 	klog.Info("Listening for events on the channel...")
@@ -224,6 +292,20 @@ func (r *Reconciler) Start(ctx context.Context) {
 			klog.Info("Context canceled. Exiting fault-quarantine event consumer.")
 			return
 		case <-r.workSignal: // Wait for a signal (semaphore acquired)
+			// Only check circuit breaker if it's enabled
+			if r.config.CircuitBreakerEnabled {
+				if tripped, err := r.cb.IsTripped(ctx); err != nil {
+					klog.Errorf("Error checking if circuit breaker is tripped: %v", err)
+					<-ctx.Done()
+
+					return
+				} else if tripped {
+					klog.Errorf("Circuit breaker TRIPPED. Halting event processing until restart and breaker reset.")
+					<-ctx.Done()
+
+					return
+				}
+			}
 			// Get current queue length
 			healthEventBufferLength := r.healthEventBuffer.Length()
 			if healthEventBufferLength == 0 {
@@ -598,6 +680,11 @@ func (r *Reconciler) handleEvent(
 
 	//nolint //ignore complex nested block //fix this as part of NGCC-21793
 	if isNodeQuarantined {
+		// Record an event to sliding window before actually quarantining
+		if r.config.CircuitBreakerEnabled && (event.HealthEvent.QuarantineOverrides == nil ||
+			!event.HealthEvent.QuarantineOverrides.Force) {
+			r.cb.AddCordonEvent(event.HealthEvent.NodeName)
+		}
 		eventJsonStr, err := json.Marshal(event.HealthEvent)
 		if err != nil {
 			klog.Errorf("error while marshalling event %+v: %+v", event.HealthEvent, err)
@@ -617,6 +704,10 @@ func (r *Reconciler) handleEvent(
 
 		// Remove manual uncordon annotation if present before applying new quarantine
 		r.removeManualUncordonAnnotationIfPresent(ctx, event.HealthEvent.NodeName, annotations)
+
+		if !r.config.CircuitBreakerEnabled {
+			klog.Infof("Circuit breaker is disabled, proceeding with quarantine action for node %s without circuit breaker protection", event.HealthEvent.NodeName)
+		}
 
 		if err := r.config.K8sClient.TaintAndCordonNodeAndSetAnnotations(
 			ctx,
@@ -720,6 +811,10 @@ func (r *Reconciler) handleQuarantinedNode(
 
 		if len(taintsToBeRemoved) > 0 || isUnCordon {
 			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAnnotationKey)
+
+			if !r.config.CircuitBreakerEnabled {
+				klog.Infof("Circuit breaker is disabled, proceeding with unquarantine action for node %s", event.NodeName)
+			}
 
 			if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
 				ctx,

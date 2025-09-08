@@ -21,6 +21,7 @@ import (
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,8 +43,15 @@ var customBackoff = wait.Backoff{
 
 type FaultQuarantineClient struct {
 	// client is the Kubernetes client
-	clientset  kubernetes.Interface
-	dryRunMode bool
+	clientset    kubernetes.Interface
+	dryRunMode   bool
+	nodeInformer NodeInfoProvider
+}
+
+// NodeInfoProvider defines the interface for getting node counts efficiently
+type NodeInfoProvider interface {
+	GetGpuNodeCounts() (totalGpuNodes int, cordonedNodesMap map[string]bool, err error)
+	HasSynced() bool
 }
 
 func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineClient, error) {
@@ -75,6 +83,104 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool) (*FaultQuarantineC
 
 func (c *FaultQuarantineClient) GetK8sClient() kubernetes.Interface {
 	return c.clientset
+}
+
+func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
+	name, namespace string, initialStatus string) error {
+	klog.Infof("Ensuring circuit breaker config map %s in namespace %s with initial status %s",
+		name, namespace, initialStatus)
+
+	cmClient := c.clientset.CoreV1().ConfigMaps(namespace)
+
+	_, err := cmClient.Get(ctx, name, metav1.GetOptions{})
+	if err == nil {
+		klog.Infof("Circuit breaker config map %s in namespace %s already exists", name, namespace)
+		return nil
+	}
+
+	if !errors.IsNotFound(err) {
+		klog.Errorf("Error getting circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+		return err
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Data:       map[string]string{"status": initialStatus},
+	}
+
+	_, err = cmClient.Create(ctx, cm, metav1.CreateOptions{})
+	if err != nil {
+		klog.Errorf("Error creating circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+	}
+
+	return err
+}
+
+func (c *FaultQuarantineClient) GetTotalGpuNodes(ctx context.Context) (int, error) {
+	// Use NodeInformer lister if available and synced (much more efficient)
+	if c.nodeInformer.HasSynced() {
+		totalNodes, _, err := c.nodeInformer.GetGpuNodeCounts()
+		if err == nil {
+			klog.V(4).Infof("Got %d total GPU nodes from NodeInformer lister", totalNodes)
+			return totalNodes, nil
+		}
+
+		klog.V(2).Infof("NodeInformer failed, falling back to API: %v", err)
+	}
+
+	nodes, err := c.clientset.CoreV1().Nodes().List(ctx,
+		metav1.ListOptions{LabelSelector: "nvidia.com/gpu.present=true"})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list GPU nodes: %w", err)
+	}
+
+	klog.V(4).Infof("Got %d total GPU nodes from K8s API", len(nodes.Items))
+
+	return len(nodes.Items), nil
+}
+
+func (c *FaultQuarantineClient) SetNodeInformer(nodeInformer NodeInfoProvider) {
+	c.nodeInformer = nodeInformer
+}
+
+func (c *FaultQuarantineClient) ReadCircuitBreakerState(ctx context.Context, name, namespace string) (string, error) {
+	klog.Infof("Reading circuit breaker state from config map %s in namespace %s", name, namespace)
+
+	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	if cm.Data == nil {
+		return "", nil
+	}
+
+	return cm.Data["status"], nil
+}
+
+func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, name, namespace, status string) error {
+	cmClient := c.clientset.CoreV1().ConfigMaps(namespace)
+
+	return retry.OnError(customBackoff, errors.IsConflict, func() error {
+		cm, err := cmClient.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			klog.Errorf("Error getting circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+			return err
+		}
+
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+
+		cm.Data["status"] = status
+
+		_, err = cmClient.Update(ctx, cm, metav1.UpdateOptions{})
+		if err != nil {
+			klog.Errorf("Error updating circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+		}
+
+		return err
+	})
 }
 
 // nolint: cyclop,gocognit //fix this as part of NGCC-21793

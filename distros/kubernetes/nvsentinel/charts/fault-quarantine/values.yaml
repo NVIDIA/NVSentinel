@@ -45,6 +45,11 @@ logLevel: 1
 
 clientCertMountPath: "/etc/ssl/mongo-client"
 
+circuitBreaker:
+  enabled: true
+  percentage: 50
+  duration: 5m
+
 config: |
   label-prefix = "k8saas.nvidia.com/"
   
@@ -60,7 +65,7 @@ config: |
       kind = "HealthEvent" 
       expression = "event.isFatal == true"
 
-    [[rule-sets.match.all]]
+    [[rule-sets.match.all]]w
       kind = "Node"
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")

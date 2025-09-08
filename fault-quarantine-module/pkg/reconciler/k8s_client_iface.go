@@ -31,4 +31,8 @@ type K8sClientInterface interface {
 		taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string,
 		labelMap map[string]string) error
 	GetK8sClient() kubernetes.Interface
+	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus string) error
+	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (string, error)
+	WriteCircuitBreakerState(ctx context.Context, name, namespace, status string) error
+	GetTotalGpuNodes(ctx context.Context) (int, error)
 }

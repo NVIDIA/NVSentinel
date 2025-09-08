@@ -50,11 +50,25 @@ func main() {
 
 	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
+	var circuitBreakerPercentage = flag.Int("circuit-breaker-percentage",
+		50, "percentage of nodes to cordon before tripping the circuit breaker")
+
+	var circuitBreakerDuration = flag.Duration("circuit-breaker-duration",
+		5*time.Minute, "duration of the circuit breaker window")
+
+	var circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
+		"enable or disable fault quarantine circuit breaker")
+
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
 	defer klog.Flush()
 	flag.Parse()
+
+	namespace := os.Getenv("POD_NAMESPACE")
+	if namespace == "" {
+		klog.Fatalf("POD_NAMESPACE is not provided")
+	}
 
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
@@ -165,8 +179,15 @@ func main() {
 		MongoPipeline:                    pipeline,
 		K8sClient:                        k8sClient,
 		DryRun:                           *dryRun,
+		CircuitBreakerEnabled:            *circuitBreakerEnabled,
 		UnprocessedEventsMetricUpdateInterval: time.Duration(unprocessedEventsMetricUpdateIntervalSeconds) *
 			time.Second,
+		CircuitBreaker: reconciler.CircuitBreakerConfig{
+			Namespace:  namespace,
+			Name:       "fault-quarantine-circuit-breaker",
+			Percentage: *circuitBreakerPercentage,
+			Duration:   *circuitBreakerDuration,
+		},
 	}
 
 	// Create the work signal channel (buffered channel acting as semaphore)

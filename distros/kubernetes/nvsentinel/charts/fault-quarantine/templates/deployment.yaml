@@ -49,6 +49,9 @@ spec:
           - "--metrics-port={{ .Values.metricsPort }}"
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--dry-run={{ .Values.global.dryRun }}"
+          - "--circuit-breaker-percentage={{ .Values.circuitBreaker.percentage }}"
+          - "--circuit-breaker-duration={{ .Values.circuitBreaker.duration }}"
+          - "--circuit-breaker-enabled={{ .Values.circuitBreaker.enabled }}"
           - "-v={{ .Values.logLevel }}"
           ports:
             - name: metrics
@@ -60,6 +63,11 @@ spec:
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           envFrom:
             - configMapRef:
                 name: mongodb-config
