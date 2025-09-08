@@ -950,7 +950,7 @@ log-collector-container-publish:
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
   script:
-    - cd collector
+    - cd nvsentinel-log-collector
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
     - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} .
@@ -961,5 +961,5 @@ log-collector-lint:
   extends:
     - .eks-runner-tags
   script:
-    - cd collector
+    - cd nvsentinel-log-collector
     - shellcheck entrypoint.sh 

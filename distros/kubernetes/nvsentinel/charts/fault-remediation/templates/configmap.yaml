@@ -23,4 +23,8 @@ metadata:
 data:
   {{ .Values.maintenanceResource.template.fileName }}: |
     {{- .Files.Get "files/maintenance.yaml" | nindent 4 }}
+  {{ if .Values.logCollector.enabled }}
+  {{ .Values.logCollector.manifestFileName }}: |
+    {{- tpl (.Files.Get "files/log-collector-job.yaml") . | nindent 4 }}
+  {{ end }}
 {{ end }}

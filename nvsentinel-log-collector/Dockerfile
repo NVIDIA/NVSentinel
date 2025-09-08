@@ -37,14 +37,14 @@ RUN curl -fsSL -o /usr/local/bin/kubectl https://storage.googleapis.com/kubernet
   && kubectl version --client=true --output=yaml || true
 
 # Create non-root user (optional; container runs privileged in Job context)
-RUN useradd -u 10001 -m collector
+RUN useradd -u 10001 -m nvsentinel
 
-WORKDIR /opt/collector
+WORKDIR /opt/nvsentinel-log-collector
 
-COPY entrypoint.sh /opt/collector/entrypoint.sh
-RUN chmod +x /opt/collector/entrypoint.sh
+COPY entrypoint.sh /opt/nvsentinel-log-collector/entrypoint.sh
+RUN chmod +x /opt/nvsentinel-log-collector/entrypoint.sh
 
-ENV PATH="/opt/collector:${PATH}"
+ENV PATH="/opt/nvsentinel-log-collector:${PATH}"
 
 # Artifacts directory inside the container
 # - /artifacts/<NODE_NAME>/<TIMESTAMP>
@@ -56,4 +56,4 @@ ENV PATH="/opt/collector:${PATH}"
 # - UPLOAD_URL_BASE (optional; if set, artifacts are PUT to this base URL)
 # - COLLECTION_TIMEOUT_SECONDS (optional; default: 900)
 
-ENTRYPOINT ["/opt/collector/entrypoint.sh"]
+ENTRYPOINT ["/opt/nvsentinel-log-collector/entrypoint.sh"]

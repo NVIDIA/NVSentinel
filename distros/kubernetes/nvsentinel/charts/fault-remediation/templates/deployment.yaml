@@ -50,7 +50,7 @@ spec:
             value: {{ .Values.maintenanceResource.apiGroup }}
 
           image: "{{ .Values.global.faultRemediationModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.global.faultRemediationModule.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.global.faultRemediationModule.image.pullPolicy | default "IfNotPresent" }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           args:
@@ -76,6 +76,10 @@ spec:
             value: {{ .Values.maintenanceResource.template.mountPath }}
           - name: TEMPLATE_FILE_NAME
             value: {{ .Values.maintenanceResource.template.fileName }}
+          - name: ENABLE_LOG_COLLECTOR
+            value: "{{ .Values.logCollector.enabled }}"
+          - name: LOG_COLLECTOR_MANIFEST_PATH
+            value: {{ .Values.maintenanceResource.template.mountPath }}/{{ .Values.logCollector.manifestFileName }}
           envFrom:
             - configMapRef:
                 name: mongodb-config
@@ -88,6 +92,13 @@ spec:
       - name: templates
         configMap:
           name: fault-remediation-templates
+          items:
+            - key: {{ .Values.maintenanceResource.template.fileName }}
+              path: {{ .Values.maintenanceResource.template.fileName }}
+            {{- if .Values.logCollector.enabled }}
+            - key: {{ .Values.logCollector.manifestFileName }}
+              path: {{ .Values.logCollector.manifestFileName }}
+            {{- end }}
       restartPolicy: Always
       {{- if not (eq .Values.global.clusterType "mgmt") }}
       {{- with .Values.nodeSelector }}

@@ -43,6 +43,7 @@ type config struct {
 	mongoClientCertMountPath string
 	kubeconfigPath           string
 	dryRun                   bool
+	enableLogCollector       bool
 }
 
 func parseFlags() *config {
@@ -74,6 +75,11 @@ func getRequiredEnvVars() (*config, error) {
 		if *ptr == "" {
 			return nil, fmt.Errorf("%s is not provided", envVar)
 		}
+	}
+
+	// Feature flag: default disabled; only "true" enables it
+	if v := os.Getenv("ENABLE_LOG_COLLECTOR"); v == "true" {
+		cfg.enableLogCollector = true
 	}
 
 	log.Printf("namespace: %s, version: %s, apigroup: %s, templateMountPath: %s, templateFileName: %s",
@@ -226,10 +232,11 @@ func main() {
 
 	// Initialize and start reconciler
 	reconcilerCfg := reconciler.ReconcilerConfig{
-		MongoConfig:   *mongoConfig,
-		TokenConfig:   *tokenConfig,
-		MongoPipeline: pipeline,
-		K8sClient:     k8sClient,
+		MongoConfig:        *mongoConfig,
+		TokenConfig:        *tokenConfig,
+		MongoPipeline:      pipeline,
+		K8sClient:          k8sClient,
+		EnableLogCollector: envCfg.enableLogCollector,
 	}
 
 	reconciler := reconciler.NewReconciler(reconcilerCfg, cfg.dryRun)

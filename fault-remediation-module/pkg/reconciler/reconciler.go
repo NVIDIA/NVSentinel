@@ -35,10 +35,11 @@ const (
 )
 
 type ReconcilerConfig struct {
-	MongoConfig   storewatcher.MongoDBConfig
-	TokenConfig   storewatcher.TokenConfig
-	MongoPipeline mongo.Pipeline
-	K8sClient     FaultRemediationClientInterface
+	MongoConfig        storewatcher.MongoDBConfig
+	TokenConfig        storewatcher.TokenConfig
+	MongoPipeline      mongo.Pipeline
+	K8sClient          FaultRemediationClientInterface
+	EnableLogCollector bool
 }
 
 type Reconciler struct {
@@ -115,6 +116,16 @@ func (r *Reconciler) Start(ctx context.Context) {
 			}
 			continue
 		}
+
+		// Run log collector for all non-NONE actions if enabled
+		if healthEventWithStatus.HealthEvent.RecommendedAction != platformconnector.RecommenedAction_NONE && r.Config.EnableLogCollector {
+			klog.Infof("Log collector feature enabled; running log collector for node %s", healthEventWithStatus.HealthEvent.NodeName)
+			if err := r.Config.K8sClient.RunLogCollectorJob(ctx, healthEventWithStatus.HealthEvent.NodeName); err != nil {
+				klog.Errorf("Log collector job failed for node %s: %v", healthEventWithStatus.HealthEvent.NodeName, err)
+			}
+		}
+
+		// Check if we should skip this event (NONE actions or unsupported actions)
 		if r.shouldSkipEvent(healthEventWithStatus) {
 			continue
 		}

@@ -29,4 +29,14 @@ rules:
   - get
   - list
   - create
+- apiGroups:
+  - "batch"
+  resources:
+  - "jobs"
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
 {{ end }}

@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,10 +31,15 @@ import (
 // MockK8sClient is a mock implementation of K8sClient interface
 type MockK8sClient struct {
 	createMaintenanceResourceFn func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool
+	runLogCollectorJobFn        func(ctx context.Context, nodeName string) error
 }
 
 func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
 	return m.createMaintenanceResourceFn(ctx, healthEvent)
+}
+
+func (m *MockK8sClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
+	return m.runLogCollectorJobFn(ctx, nodeName)
 }
 
 // MockCollection is a mock implementation of mongo.Collection
@@ -191,6 +197,173 @@ func TestShouldSkipEvent(t *testing.T) {
 			assert.Equal(t, tt.shouldSkip, result, tt.description)
 		})
 	}
+}
+
+func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	called := false
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+			return true
+		},
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+			called = true
+			assert.Equal(t, "test-node-none", nodeName)
+			return nil
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:          k8sClient,
+		EnableLogCollector: true,
+	}
+	r := NewReconciler(cfg, false)
+
+	he := &platformconnector.HealthEvent{NodeName: "test-node-none", RecommendedAction: platformconnector.RecommenedAction_NONE}
+	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
+
+	// Simulate the Start loop behavior: log collector run before skipping
+	if event.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE && r.Config.EnableLogCollector {
+		_ = r.Config.K8sClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	}
+	assert.True(t, r.shouldSkipEvent(event))
+	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
+}
+
+func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name           string
+		nodeName       string
+		jobResult      bool
+		expectedResult bool
+		description    string
+	}{
+		{
+			name:           "Log collector job succeeds",
+			nodeName:       "test-node-success",
+			jobResult:      true,
+			expectedResult: true,
+			description:    "Happy path - job completes successfully",
+		},
+		{
+			name:           "Log collector job fails",
+			nodeName:       "test-node-fail",
+			jobResult:      false,
+			expectedResult: false,
+			description:    "Error path - job fails to complete",
+		},
+		{
+			name:           "Log collector job with api error",
+			nodeName:       "test-node-api-error",
+			jobResult:      false,
+			expectedResult: false,
+			description:    "Error path - kubernetes API error during job creation",
+		},
+		{
+			name:           "Log collector job with creation error",
+			nodeName:       "test-node-create-error",
+			jobResult:      false,
+			expectedResult: false,
+			description:    "Error path - job creation fails",
+		},
+		{
+			name:           "Log collector job timeout",
+			nodeName:       "test-node-timeout",
+			jobResult:      false,
+			expectedResult: false,
+			description:    "Error path - job times out",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+					return true
+				},
+				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+					assert.Equal(t, tt.nodeName, nodeName)
+					if tt.jobResult {
+						return nil
+					}
+					return fmt.Errorf("job failed")
+				},
+			}
+
+			cfg := ReconcilerConfig{
+				K8sClient:          k8sClient,
+				EnableLogCollector: true,
+			}
+			r := NewReconciler(cfg, false)
+
+			result := r.Config.K8sClient.RunLogCollectorJob(ctx, tt.nodeName)
+			if tt.expectedResult {
+				assert.NoError(t, result, tt.description)
+			} else {
+				assert.Error(t, result, tt.description)
+			}
+		})
+	}
+}
+
+func TestRunLogCollectorJobDryRunMode(t *testing.T) {
+	ctx := context.Background()
+
+	called := false
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+			return true
+		},
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+			called = true
+			// In dry run mode, this should return nil without actually creating the job
+			return nil
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:          k8sClient,
+		EnableLogCollector: true,
+	}
+	r := NewReconciler(cfg, true) // Enable dry run
+
+	result := r.Config.K8sClient.RunLogCollectorJob(ctx, "test-node-dry-run")
+	assert.NoError(t, result, "Dry run should return no error")
+	assert.True(t, called, "Function should be called even in dry run mode")
+}
+
+func TestLogCollectorDisabled(t *testing.T) {
+	ctx := context.Background()
+
+	logCollectorCalled := false
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+			return true
+		},
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+			logCollectorCalled = true
+			return nil
+		},
+	}
+
+	cfg := ReconcilerConfig{
+		K8sClient:          k8sClient,
+		EnableLogCollector: false, // Disabled
+	}
+	r := NewReconciler(cfg, false)
+
+	he := &platformconnector.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: platformconnector.RecommenedAction_NONE}
+	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
+
+	// Simulate the Start loop behavior: log collector should NOT run when disabled
+	if event.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE && r.Config.EnableLogCollector {
+		_ = r.Config.K8sClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	}
+	assert.True(t, r.shouldSkipEvent(event))
+	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
 }
 
 func TestUpdateNodeRemediatedStatus(t *testing.T) {

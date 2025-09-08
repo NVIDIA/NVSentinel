@@ -56,3 +56,12 @@ maintenanceResource:
   template:
     mountPath: /etc/fault-remediation/templates
     fileName: maintenance-template.yaml
+
+logCollector:
+  enabled: false
+  manifestFileName: log-collector-job.yaml
+  image:
+    repository: nvcr.io/nv-ngc-devops/nvsentinel-log-collector
+    pullPolicy: Always
+  uploadURL: "http://nvsentinel-file-server.nvsentinel.svc.cluster.local/upload"
+  gpuOperatorNamespaces: "gpu-operator"

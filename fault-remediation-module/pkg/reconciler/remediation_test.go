@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 )
@@ -306,6 +307,7 @@ spec:
 			mockMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 			client := &FaultRemediationClient{
 				clientset:  mockClient,
+				kubeClient: nil, // Not needed for this test since it only tests maintenance resource creation
 				restMapper: mockMapper,
 				dryRunMode: []string{},
 				template:   tmpl,
@@ -330,4 +332,107 @@ spec:
 			assert.Equal(t, tt.shouldCreate, createCalled, "Create function call expectation mismatch")
 		})
 	}
+}
+
+func TestRunLogCollectorJob(t *testing.T) {
+	tests := []struct {
+		name           string
+		nodeName       string
+		expectedResult bool
+		description    string
+	}{
+		{
+			name:           "Missing manifest file",
+			nodeName:       "test-node-no-manifest",
+			expectedResult: false,
+			description:    "Should return false when log collector manifest file is missing",
+		},
+		{
+			name:           "Dry run mode",
+			nodeName:       "test-node-dry-run",
+			expectedResult: false,
+			description:    "Should return false in dry run mode since no manifest file exists",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a fake Kubernetes client
+			fakeClient := fake.NewSimpleClientset()
+
+			// Create FaultRemediationClient with fake client
+			client := &FaultRemediationClient{
+				kubeClient: fakeClient,
+			}
+
+			ctx := context.Background()
+
+			// Test RunLogCollectorJob - this will fail because manifest file doesn't exist in test
+			result := client.RunLogCollectorJob(ctx, tt.nodeName)
+
+			// Since manifest file doesn't exist in test environment, it should return an error
+			if tt.expectedResult {
+				assert.NoError(t, result, tt.description)
+			} else {
+				assert.Error(t, result, tt.description)
+			}
+		})
+	}
+}
+
+func TestLogCollectorJobErrorHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		nodeName    string
+		description string
+	}{
+		{
+			name:        "Invalid node name",
+			nodeName:    "",
+			description: "Should handle empty node name gracefully",
+		},
+		{
+			name:        "Long node name",
+			nodeName:    "very-long-node-name-that-exceeds-kubernetes-limits-for-testing-purposes-and-should-be-handled-gracefully",
+			description: "Should handle very long node names",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a fake Kubernetes client
+			fakeClient := fake.NewSimpleClientset()
+
+			// Create FaultRemediationClient
+			client := &FaultRemediationClient{
+				kubeClient: fakeClient,
+			}
+
+			ctx := context.Background()
+
+			// Test RunLogCollectorJob with edge cases
+			result := client.RunLogCollectorJob(ctx, tt.nodeName)
+
+			// Should return error since manifest file doesn't exist in test environment
+			assert.Error(t, result, tt.description)
+		})
+	}
+}
+
+func TestRunLogCollectorJobDryRun(t *testing.T) {
+	// Create a fake Kubernetes client
+	fakeClient := fake.NewSimpleClientset()
+
+	// Create FaultRemediationClient with dry run mode
+	client := &FaultRemediationClient{
+		kubeClient: fakeClient,
+		dryRunMode: []string{metav1.DryRunAll},
+	}
+
+	ctx := context.Background()
+	result := client.RunLogCollectorJob(ctx, "test-node-dry-run")
+
+	// In dry run mode, it returns nil (no error) as it skips execution
+	// but doesn't actually create the job
+	assert.NoError(t, result, "Dry run should return no error as it skips execution")
 }

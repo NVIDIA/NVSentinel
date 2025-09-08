@@ -22,4 +22,5 @@ import (
 
 type FaultRemediationClientInterface interface {
 	CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool
+	RunLogCollectorJob(ctx context.Context, nodeName string) error
 }

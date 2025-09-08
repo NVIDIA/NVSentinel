@@ -22,21 +22,32 @@ import (
 	"os"
 	"path/filepath"
 	"text/template"
+	"time"
 
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
 )
 
+const (
+	// Environment variable names
+	LogCollectorManifestPathEnv = "LOG_COLLECTOR_MANIFEST_PATH"
+)
+
 type FaultRemediationClient struct {
 	clientset    dynamic.Interface
+	kubeClient   kubernetes.Interface
 	restMapper   *restmapper.DeferredDiscoveryRESTMapper
 	dryRunMode   []string
 	template     *template.Template
@@ -73,6 +84,12 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
+	// Create typed Kubernetes client for Jobs
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("error creating kubernetes client: %w", err)
+	}
+
 	// Create discovery client for RESTMapper
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
@@ -105,6 +122,7 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 
 	client := &FaultRemediationClient{
 		clientset:    clientset,
+		kubeClient:   kubeClient,
 		restMapper:   mapper,
 		template:     tmpl,
 		templateData: templateData,
@@ -168,4 +186,104 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 
 	log.Printf("Created Maintenance CR successfully for node %s", healthEvent.NodeName)
 	return true
+}
+
+// RunLogCollectorJob creates a log collector Job and waits for completion.
+func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
+	if len(c.dryRunMode) > 0 {
+		log.Printf("DRY-RUN: Skipping log collector job for node %s", nodeName)
+		return nil
+	}
+
+	// Read Job manifest
+	manifestPath := os.Getenv(LogCollectorManifestPathEnv)
+	if manifestPath == "" {
+		manifestPath = filepath.Join(c.templateData.TemplateMountPath, "log-collector-job.yaml")
+	}
+
+	content, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("failed to read log collector manifest: %w", err)
+	}
+
+	// Create Job from manifest using strong types
+	job := &batchv1.Job{}
+	if err := yaml.Unmarshal(content, job); err != nil {
+		return fmt.Errorf("failed to unmarshal Job manifest: %w", err)
+	}
+
+	// Set target node
+	job.Spec.Template.Spec.NodeName = nodeName
+
+	// Create Job using typed client
+	created, err := c.kubeClient.BatchV1().Jobs(job.Namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to create Job: %w", err)
+	}
+
+	// Wait for completion using typed client with proper watching
+	log.Printf("Waiting for log collector job %s to complete", created.Name)
+
+	// Use a context with timeout for the watch
+	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Use SharedInformerFactory for efficient job status monitoring with filtering
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(
+		c.kubeClient,
+		30*time.Second, // resync period
+		informers.WithNamespace(created.Namespace),
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			// Filter jobs by name to avoid processing irrelevant jobs
+			options.FieldSelector = fmt.Sprintf("metadata.name=%s", created.Name)
+		}),
+	)
+
+	jobInformer := informerFactory.Batch().V1().Jobs()
+
+	// Channel to signal job completion
+	done := make(chan error, 1)
+
+	// Add event handler (no need to filter by name since informer is already filtered)
+	_, err = jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			job, ok := newObj.(*batchv1.Job)
+			if !ok {
+				return
+			}
+
+			// Check completion status
+			if job.Status.Succeeded > 0 {
+				log.Printf("Log collector job %s succeeded", created.Name)
+				done <- nil // Success - no error
+			} else if job.Status.Failed > 0 {
+				log.Printf("Log collector job %s failed", created.Name)
+				done <- fmt.Errorf("log collector job %s failed", created.Name)
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add event handler for job %s: %w", created.Name, err)
+	}
+
+	// Start the informer
+	stopCh := make(chan struct{})
+
+	informerFactory.Start(stopCh)
+
+	// Wait for cache to sync
+	if !cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced) {
+		close(stopCh) // Stop informer on sync failure
+		return fmt.Errorf("failed to sync cache for job informer")
+	}
+
+	// Wait for completion or timeout
+	select {
+	case <-watchCtx.Done():
+		close(stopCh)
+		return fmt.Errorf("timeout waiting for log collector job %s to complete", created.Name)
+	case result := <-done:
+		close(stopCh)
+		return result
+	}
 }
