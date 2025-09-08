@@ -65,4 +65,30 @@ spec:
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
+---
+# MongoDB DGXCOPS Client Certificate
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-dgxcops-client-cert
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretName: mongo-dgxcops-client-cert-secret
+  duration: 8760h
+  renewBefore: 360h
+  commonName: mongo-dgxcops-client
+  subject:
+    organizations:
+      - Nvidia
+    organizationalUnits:
+      - DGXC
+    localities:
+      - SantaClara
+    provinces:
+      - California
+    countries:
+      - US
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
 {{ end }}
