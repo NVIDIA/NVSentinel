@@ -920,33 +920,6 @@ kubernetes-distro-lint:
     - cd distros/kubernetes
     - helm lint nvsentinel/
 
-# this job is not needed as it was for MCP
-# generate-manifests:
-#   stage: generate
-#   image:
-#     name: alpine/helm:latest
-#     entrypoint: [""]
-#   before_script:
-#     - apk add --no-cache gettext zip jq
-#     - YQ_VERSION=v4.44.3
-#     - wget https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64 -O /usr/local/bin/yq
-#     - chmod +x /usr/local/bin/yq
-#     - yq --version
-#     - KUBECONFORM_VERSION=v0.6.7
-#     - wget "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" -O kubeconform.tar.gz
-#     - tar xzf kubeconform.tar.gz kubeconform
-#     - mv kubeconform /usr/local/bin/
-#     - rm kubeconform.tar.gz
-#     - kubeconform -v
-#     - chmod +x $CI_PROJECT_DIR/split_manifests.sh
-#     - chmod +x $CI_PROJECT_DIR/generate_manifests.sh
-#   script:
-#     - $CI_PROJECT_DIR/generate_manifests.sh
-#   artifacts:
-#     paths:
-#       - manifests/mgmt/resources.yaml
-#       - manifests/tenant/resources.yaml
-#     expire_in: 1 day
 
 kubernetes-distro-helm-publish:
   stage: publish
@@ -981,6 +954,7 @@ log-collector-container-publish:
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
     - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} .
+
 log-collector-lint:
   stage: lint
   image: koalaman/shellcheck-alpine:stable
