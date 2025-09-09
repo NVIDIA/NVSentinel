@@ -26,7 +26,8 @@ ARG TARGETARCH
 WORKDIR /go/src/health-event-client
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 

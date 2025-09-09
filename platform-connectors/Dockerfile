@@ -27,7 +27,8 @@ RUN mkdir -p /etc/config
 WORKDIR /go/src/platform-connectors
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 

@@ -23,7 +23,9 @@ ARG KUBECTL_VERSION=v1.28.3
 
 # Minimal runtime deps for entrypoint.sh
 # (bash is present in base; install curl/tar/gzip and CA certs for HTTPS)
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     tar \

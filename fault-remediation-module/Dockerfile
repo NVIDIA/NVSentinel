@@ -38,7 +38,8 @@ WORKDIR /go/src/fault-remediation
 COPY go.mod go.sum ./
 
 # download dependencies with authentication
-RUN --mount=type=secret,id=gitlab_token \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=secret,id=gitlab_token \
     GITLAB_TOKEN=$(cat /run/secrets/gitlab_token) && \
     echo "machine ${GITLAB_HOST} login ${GITLAB_LOGIN} password ${GITLAB_TOKEN}" > ~/.netrc && \
     chmod 600 ~/.netrc && \
@@ -47,7 +48,8 @@ RUN --mount=type=secret,id=gitlab_token \
 
 COPY . .
 
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o faultremediation cmd/fault-remediation/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o faultremediation cmd/fault-remediation/main.go
 
 FROM ${IMG}:${TAG}
 

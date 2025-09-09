@@ -24,7 +24,8 @@ ARG TARGETARCH
 WORKDIR /go/src/nvswitch-health-monitor
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 
@@ -39,7 +40,9 @@ RUN go build -o clear_fatal_errors clear-nvswitch-fatal-errors/clear_fatal_error
 
 FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     e2fsprogs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

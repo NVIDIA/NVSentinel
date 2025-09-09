@@ -131,8 +131,7 @@ include:
 stages:
   - .pre
   - check
-  - lint
-  - test
+  - lint-test
   - generate
   - publish
   - deploy
@@ -158,6 +157,26 @@ workflow:
     DOCKER_TLS_VERIFY: true
     DOCKER_TLS_CERTDIR: /builds/certs
     DOCKER_CERT_PATH: /builds/certs/client
+    BUILDX_BUILDER: nvsentinel-builder
+    DOCKER_BUILDKIT: 1
+    BUILDKIT_PROGRESS: plain
+
+.container-publish-base:
+  extends:
+    - .dind-service
+  timeout: 15 minutes
+  retry:
+    max: 2
+    when:
+      - job_execution_timeout
+      - script_failure
+  before_script:
+    - docker info
+    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - docker context create ${BUILDX_BUILDER}-context || true
+    - docker buildx create --name ${BUILDX_BUILDER} ${BUILDX_BUILDER}-context --driver docker-container --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host'
+    - docker buildx use ${BUILDX_BUILDER}
+    - docker buildx inspect --bootstrap
 
 
 prepare-vars:
@@ -188,12 +207,12 @@ build-image-list:
     - prepare-vars
 
 mrcop:
-  stage: check
+  stage: .pre
   extends:
     .mrcop
 
 protos-lint:
-  stage: lint
+  stage: lint-test
   script:
     - protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
     - protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
@@ -208,7 +227,7 @@ protos-lint:
     - '[ -z "$(git status --porcelain --untracked-files=no)" ]'
 
 license-headers-lint:
-  stage: lint
+  stage: lint-test
   script:
     - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv .
 
@@ -223,18 +242,13 @@ license-headers-lint:
 #     - cd argo-workflow
 #     - python -m pytest deployment-workflow/scripts/tests/
 
-gpu-health-monitor-lint:
-  stage: lint
+gpu-health-monitor-lint-test:
+  stage: lint-test
   script:
     - cd health-monitors/gpu-health-monitor
+    - poetry config virtualenvs.in-project true  # Create .venv in project
     - poetry install
     - poetry run black --check .
-
-gpu-health-monitor-test:
-  stage: test
-  script:
-    - cd health-monitors/gpu-health-monitor
-    - poetry install
     - poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml
     - poetry run coverage xml || true
     - poetry run coverage report || true
@@ -247,172 +261,170 @@ gpu-health-monitor-test:
         path: health-monitors/gpu-health-monitor/coverage.xml
   coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
 
-gpu-health-monitor-container-publish:
+gpu-health-monitor-container-publish-3:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - gpu-health-monitor-lint-test
   script:
     - cd health-monitors/gpu-health-monitor
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x --build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 --build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 . -f Dockerfile
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host  --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x . -f Dockerfile 
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-3 \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-3,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x \
+        --build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
+        --build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
+        -f Dockerfile \
+        .
 
-nic-health-monitor-lint:
-  stage: lint
+gpu-health-monitor-container-publish-4:
+  stage: publish
+  extends:
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - gpu-health-monitor-lint-test
+  script:
+    - cd health-monitors/gpu-health-monitor
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-4 \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-4,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x \
+        -f Dockerfile \
+        . 
+
+nic-health-monitor-lint-test:
+  stage: lint-test
   script:
     - cd health-monitors/nic-health-monitor
     - go vet ./...
     - golangci-lint run
-  artifacts:
-    when: always
-    reports:
-      codequality: nic-health-monitor/code-quality-report.json
-    paths:
-      - nic-health-monitor/code-quality-report.json
-
-nic-health-monitor-test:
-  stage: test
-  script:
-    - cd health-monitors/nic-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: health-monitors/nic-health-monitor/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
-        path: nic-health-monitor/coverage.xml
-      junit: nic-health-monitor/report.xml
+        path: health-monitors/nic-health-monitor/coverage.xml
+      junit: health-monitors/nic-health-monitor/report.xml
+    paths:
+      - health-monitors/nic-health-monitor/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 nic-health-monitor-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - nic-health-monitor-lint-test
   script:
     - cd health-monitors/nic-health-monitor
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${SAFE_REF_NAME} . 
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nic-health-monitor \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nic-health-monitor,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${SAFE_REF_NAME} \
+        . 
   
-syslog-health-monitor-lint:
-  stage: lint
+syslog-health-monitor-lint-test:
+  stage: lint-test
   script:
     - cd health-monitors/syslog-health-monitor
     - go vet ./...
     - golangci-lint run
-  artifacts:
-    when: always
-    reports:
-      codequality: syslog-health-monitor/code-quality-report.json
-    paths:
-      - syslog-health-monitor/code-quality-report.json
-
-syslog-health-monitor-test:
-  stage: test
-  script:
-    - cd health-monitors/syslog-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: health-monitors/syslog-health-monitor/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
-        path: syslog-health-monitor/coverage.xml
-      junit: syslog-health-monitor/report.xml
+        path: health-monitors/syslog-health-monitor/coverage.xml
+      junit: health-monitors/syslog-health-monitor/report.xml
+    paths:
+      - health-monitors/syslog-health-monitor/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 syslog-health-monitor-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - syslog-health-monitor-lint-test
   script:
     - cd health-monitors/syslog-health-monitor
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:syslog-health-monitor \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:syslog-health-monitor,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME} \
+        .
     
-nvswitch-health-monitor-lint:
-  stage: lint
+nvswitch-health-monitor-lint-test:
+  stage: lint-test
   script:
     - cd health-monitors/nvswitch-health-monitor
     - go vet ./...
     - golangci-lint run
-  artifacts:
-    when: always
-    reports:
-      codequality: nvswitch-health-monitor/code-quality-report.json
-    paths:
-      - nvswitch-health-monitor/code-quality-report.json
-
-nvswitch-health-monitor-test:
-  stage: test
-  script:
-    - cd health-monitors/nvswitch-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: health-monitors/nvswitch-health-monitor/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
-        path: nvswitch-health-monitor/coverage.xml
-      junit: nvswitch-health-monitor/report.xml
+        path: health-monitors/nvswitch-health-monitor/coverage.xml
+      junit: health-monitors/nvswitch-health-monitor/report.xml
+    paths:
+      - health-monitors/nvswitch-health-monitor/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 nvswitch-health-monitor-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - nvswitch-health-monitor-lint-test
   script:
     - cd health-monitors/nvswitch-health-monitor
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${SAFE_REF_NAME} . 
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nvswitch-health-monitor \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${SAFE_REF_NAME} \
+        . 
 
-csp-health-monitor-lint:
-  stage: lint
+csp-health-monitor-lint-test:
+  stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -421,155 +433,129 @@ csp-health-monitor-lint:
     - cd health-monitors/csp-health-monitor
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
-      codequality: health-monitors/csp-health-monitor/code-quality-report.json
-    paths:
-      - health-monitors/csp-health-monitor/code-quality-report.json
-
-csp-health-monitor-test:
-  stage: test
-  variables:
-    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
-  script:
-    - cd health-monitors/csp-health-monitor
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: health-monitors/csp-health-monitor/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
-        path: csp-health-monitor/coverage.xml
-      junit: csp-health-monitor/report.xml
+        path: health-monitors/csp-health-monitor/coverage.xml
+      junit: health-monitors/csp-health-monitor/report.xml
+    paths:
+      - health-monitors/csp-health-monitor/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 csp-health-monitor-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - csp-health-monitor-lint-test
   script:
     - cd health-monitors/csp-health-monitor
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} . 
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:csp-health-monitor \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:csp-health-monitor,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} \
+        . 
 
-health-event-client-lint:
-  stage: lint
+health-event-client-lint-test:
+  stage: lint-test
   script:
     - cd health-event-client
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
-      codequality: health-event-client/code-quality-report.json
-    paths:
-      - health-event-client/code-quality-report.json
-
-health-event-client-test:
-  stage: test
-  script:
-    - cd health-event-client
     - gotestsum --junitfile report.xml -- -race -short $(go list ./...) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: health-event-client/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
         path: health-event-client/coverage.xml
       junit: health-event-client/report.xml
+    paths:
+      - health-event-client/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 health-event-client-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - health-event-client-lint-test
   script:
     - cd health-event-client
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-event-client:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-event-client \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-event-client,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-event-client:${SAFE_REF_NAME} \
+        .
 
-platform-connectors-lint:
-  stage: lint
+platform-connectors-lint-test:
+  stage: lint-test
   script:
     - cd platform-connectors
     - go vet ./...
     - golangci-lint run
-  artifacts:
-    when: always
-    reports:
-      codequality: platform-connectors/code-quality-report.json
-    paths:
-      - platform-connectors/code-quality-report.json
-
-platform-connectors-test:
-  stage: test
-  script:
-    - cd platform-connectors
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: platform-connectors/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
         path: platform-connectors/coverage.xml
       junit: platform-connectors/report.xml
+    paths:
+      - platform-connectors/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 platform-connectors-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - platform-connectors-lint-test
   script:
     - cd platform-connectors
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME} . 
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:platform-connectors \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:platform-connectors,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME} \
+        . 
 
 
-health-event-analyzer-lint:
-  stage: lint
+health-event-analyzer-lint-test:
+  stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -578,59 +564,46 @@ health-event-analyzer-lint:
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
       codequality: health-events-analyzer/code-quality-report.json
-    paths:
-      - health-events-analyzer/code-quality-report.json
-
-health-event-analyzer-test:
-  stage: test
-  variables:
-    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
-  script:
-    - cd health-events-analyzer
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
       coverage_report:
         coverage_format: cobertura
-        path: health-evens-analyzer/coverage.xml
+        path: health-events-analyzer/coverage.xml
       junit: health-events-analyzer/report.xml
+    paths:
+      - health-events-analyzer/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 health-event-analyzer-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - health-event-analyzer-lint-test
   script:
     - cd health-events-analyzer
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-events-analyzer \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-events-analyzer,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME} \
+        .
 
 
-fault-quarantine-module-lint:
-  stage: lint
+fault-quarantine-module-lint-test:
+  stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -639,59 +612,46 @@ fault-quarantine-module-lint:
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
       codequality: fault-quarantine-module/code-quality-report.json
-    paths:
-      - fault-quarantine-module/code-quality-report.json
-
-fault-quarantine-module-test:
-  stage: test
-  variables:
-    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
-  script:
-    - cd fault-quarantine-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
       coverage_report:
         coverage_format: cobertura
         path: fault-quarantine-module/coverage.xml
       junit: fault-quarantine-module/report.xml
+    paths:
+      - fault-quarantine-module/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 fault-quarantine-module-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - fault-quarantine-module-lint-test
   script:
     - cd fault-quarantine-module
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-quarantine-module \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-quarantine-module,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} \
+        .
 
 
-node-drainer-module-lint:
-  stage: lint
+node-drainer-module-lint-test:
+  stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -700,62 +660,49 @@ node-drainer-module-lint:
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
-      codequality: node-drainer-module/code-quality-report.json
-    paths:
-      - node-drainer-module/code-quality-report.json
-
-node-drainer-module-test:
-  stage: test
-  variables:
-    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
-  script:
-    - cd node-drainer-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - export PATH="$GOPATH/bin:$PATH"
     - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
     - export KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.30.0)
     - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
-  after_script:
-    - rm -f ~/.netrc
   artifacts:
     when: always
     reports:
+      codequality: node-drainer-module/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
         path: node-drainer-module/coverage.xml
       junit: node-drainer-module/report.xml
+    paths:
+      - node-drainer-module/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 node-drainer-module-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - node-drainer-module-lint-test
   script:
     - cd node-drainer-module
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:node-drainer-module \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:node-drainer-module,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME} \
+        .
 
     
-fault-remediation-module-lint:
-  stage: lint
+fault-remediation-module-lint-test:
+  stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -764,109 +711,68 @@ fault-remediation-module-lint:
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     - golangci-lint run
-  after_script:
-    - rm -f ~/.netrc
-  artifacts:
-    when: always
-    reports:
-      codequality: fault-remediation-module/code-quality-report.json
-    paths:
-      - fault-remediation-module/code-quality-report.json
-
-fault-remediation-module-test:
-  stage: test
-  variables:
-    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
-  script:
-    - cd fault-remediation-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
     - export KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.30.0)
     - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
-  after_script:
-    - rm -f ~/.netrc
   artifacts:
     when: always
     reports:
+      codequality: fault-remediation-module/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
         path: fault-remediation-module/coverage.xml
       junit: fault-remediation-module/report.xml
+    paths:
+      - fault-remediation-module/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 fault-remediation-module-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - fault-remediation-module-lint-test
   script:
     - cd fault-remediation-module
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --build-arg GITLAB_HOST=gitlab-master.nvidia.com --build-arg GITLAB_LOGIN=gitlab-ci-token --secret id=gitlab_token,env=CI_JOB_TOKEN --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-remediation-module \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-remediation-module,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME} \
+        .
 
-
-node-health-events-uds-connector-container-publish:
-  stage: publish
-  extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
-  script:
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -f distros/container/nvsentinel-node-health-events-distro/Dockerfile -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-health-events-uds-connector-server:${SAFE_REF_NAME} . 
-
-
-store-client-sdk-lint:
-  stage: lint
+store-client-sdk-lint-test:
+  stage: lint-test
   script:
     - cd store-client-sdk
     - go vet ./...
     - golangci-lint run
-  artifacts:
-    when: always
-    reports:
-      codequality: store-client-sdk/code-quality-report.json
-    paths:
-      - store-client-sdk/code-quality-report.json
-
-store-client-sdk-test:
-  stage: test
-  script:
-    - cd store-client-sdk
     - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
     - go tool cover -func coverage.txt 
     - gocover-cobertura < coverage.txt > coverage.xml
   artifacts:
     when: always
     reports:
+      codequality: store-client-sdk/code-quality-report.json
       coverage_report:
         coverage_format: cobertura
         path: store-client-sdk/coverage.xml
       junit: store-client-sdk/report.xml
+    paths:
+      - store-client-sdk/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
 kubernetes-distro-lint:
-  stage: lint
+  stage: lint-test
   script:
     - cd distros/kubernetes
     - helm lint nvsentinel/
@@ -890,24 +796,24 @@ kubernetes-distro-helm-publish:
 log-collector-container-publish:
   stage: publish
   extends:
-    - .dind-service
-  timeout: 15 minutes
-  retry:
-    max: 2
-    when:
-      - job_execution_timeout
-      - script_failure
-  before_script:
-    - docker info
-    - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - log-collector-lint
   script:
     - cd nvsentinel-log-collector
-    - docker context create builder
-    - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
-    - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} .
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:log-collector \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:log-collector,mode=max \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} \
+        .
 
 log-collector-lint:
-  stage: lint
+  stage: lint-test
   image: koalaman/shellcheck-alpine:stable
   script:
     - cd nvsentinel-log-collector

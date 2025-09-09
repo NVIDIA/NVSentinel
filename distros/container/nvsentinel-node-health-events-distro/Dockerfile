@@ -27,7 +27,8 @@ ARG TARGETARCH
 
 RUN mkdir -p /etc/config
 
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 RUN go mod tidy
 
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o platform-connector main.go
@@ -38,7 +39,8 @@ FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0 AS build
 RUN mkdir -p /app
 COPY health-monitors/gpu-health-monitor /app/gpu-health-monitor
 WORKDIR /app/gpu-health-monitor
-RUN pip install poetry==1.8.2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install poetry==1.8.2
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \
@@ -54,7 +56,9 @@ FROM nvcr.io/nvidia/cloud-native/dcgm:3.3.7-1-ubuntu22.04
 WORKDIR /app
 
 # Update package list and install Python and pip
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
     apt-get install -y python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
@@ -65,7 +69,8 @@ COPY --from=build /app/gpu-health-monitor/dist/*.whl /app/
 COPY --from=build /app/gpu-health-monitor/constraints.txt /app/
 
 # Install gpu-health-monitor
-RUN pip install /app/gpu_health_monitor*.whl --constraint /app/constraints.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /app/gpu_health_monitor*.whl --constraint /app/constraints.txt
 
 # Copy the built Go application from the builder stage
 COPY --from=builder /app/platform-connectors/platform-connector /app/

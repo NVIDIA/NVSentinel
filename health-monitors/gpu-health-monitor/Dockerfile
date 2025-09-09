@@ -15,7 +15,8 @@
 ARG DCGM_VERSION="4.2.0-1-ubuntu22.04"
 FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0 AS build
 
-RUN pip install poetry==1.8.2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install poetry==1.8.2
 
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=1 \
@@ -25,7 +26,8 @@ ENV POETRY_NO_INTERACTION=1 \
 WORKDIR /app
 
 COPY . .
-RUN poetry build --format wheel 
+RUN --mount=type=cache,target=/tmp/poetry_cache \
+    poetry build --format wheel 
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
 
@@ -33,7 +35,9 @@ FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
 
 RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99disable-cert-check
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
         ca-certificates \
@@ -47,10 +51,12 @@ ENV PYTHONPATH=${PYTHONPATH} \
 
 COPY --from=build /app/dist/*.whl ./
 COPY --from=build /app/constraints.txt ./
-RUN pip install ./gpu_health_monitor*.whl --constraint constraints.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ./gpu_health_monitor*.whl --constraint constraints.txt
 
 # Copy the proto file and the Python script
 COPY gpu_health_monitor/clear_xid_errors/clear_xid_error_health_event.py .
 COPY gpu_health_monitor/clear_xid_errors/protos/ protos/
-RUN pip install kubernetes==28.1.0
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install kubernetes==28.1.0
 COPY gpu_health_monitor/node_watcher/src.py node_watcher.py

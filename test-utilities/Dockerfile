@@ -15,7 +15,9 @@
 FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0
 
 # Install protobuf compiler and related tools
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     protobuf-compiler \
     python3-protobuf \
     && rm -rf /var/lib/apt/lists/*
@@ -29,4 +31,5 @@ COPY send_health_event.py .
 COPY protos/ protos/
 
 # Install grpcio-tools for generating Python code from .proto
-RUN pip install grpcio-tools
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install grpcio-tools

@@ -18,13 +18,16 @@ WORKDIR /go/src/syslog-health-monitor
 
 # Copy go.mod and go.sum first to leverage Docker cache
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 
 ENV CGO_ENABLED=1
 # Install systemd development headers and pkg-config
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     libsystemd-dev \
     pkg-config \
     --no-install-recommends \
