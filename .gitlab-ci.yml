@@ -44,6 +44,11 @@ variables:
 
 image: $CI_REGISTRY_IMAGE/ci:29082025
 
+
+default:
+  tags:
+    - "eks-build"
+
 include:
   - project: dgxcloud/mk8s/gitlab-templates
     ref: main
@@ -59,6 +64,8 @@ include:
       stage: "security"
       allow_failure: true
       scan_directory: "."
+      tags:
+        - "eks-build"
 
   # - component: gitlab-master.nvidia.com/dgxcloud/release-automation/gitlab-components/security-scans/container-scan@main
   #   inputs:
@@ -137,10 +144,6 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    
-.eks-runner-tags:
-  tags:
-    - eks-build
 
 # =================================================================================================
 .dind-service:
@@ -191,8 +194,6 @@ mrcop:
 
 protos-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
     - protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
@@ -208,15 +209,11 @@ protos-lint:
 
 license-headers-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv .
 
 # argo-workflow-test:
 #   stage: test
-#   extends:
-#     - .eks-runner-tags
 #   script:
 #     - apt-get update -qq
 #     - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
@@ -228,8 +225,6 @@ license-headers-lint:
 
 gpu-health-monitor-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/gpu-health-monitor
     - poetry install
@@ -237,8 +232,6 @@ gpu-health-monitor-lint:
 
 gpu-health-monitor-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/gpu-health-monitor
     - poetry install
@@ -276,8 +269,6 @@ gpu-health-monitor-container-publish:
 
 nic-health-monitor-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/nic-health-monitor
     - go vet ./...
@@ -291,8 +282,6 @@ nic-health-monitor-lint:
 
 nic-health-monitor-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/nic-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
@@ -373,13 +362,9 @@ syslog-health-monitor-container-publish:
     - docker context create builder
     - docker buildx create builder --driver-opt network=host --buildkitd-flags '--allow-insecure-entitlement network.host' --use
     - docker buildx build --platform linux/arm64,linux/amd64 --network=host --push -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME} .
-  tags:
-    - dind
     
 nvswitch-health-monitor-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/nvswitch-health-monitor
     - go vet ./...
@@ -393,8 +378,6 @@ nvswitch-health-monitor-lint:
 
 nvswitch-health-monitor-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-monitors/nvswitch-health-monitor
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
@@ -430,8 +413,6 @@ nvswitch-health-monitor-container-publish:
 
 csp-health-monitor-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -451,8 +432,6 @@ csp-health-monitor-lint:
 
 csp-health-monitor-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -492,8 +471,6 @@ csp-health-monitor-container-publish:
 
 health-event-client-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-event-client
     - go vet ./...
@@ -509,8 +486,6 @@ health-event-client-lint:
 
 health-event-client-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd health-event-client
     - gotestsum --junitfile report.xml -- -race -short $(go list ./...) -coverprofile=coverage.txt -covermode atomic
@@ -546,8 +521,6 @@ health-event-client-container-publish:
 
 platform-connectors-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd platform-connectors
     - go vet ./...
@@ -561,8 +534,6 @@ platform-connectors-lint:
 
 platform-connectors-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd platform-connectors
     - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic
@@ -599,8 +570,6 @@ platform-connectors-container-publish:
 
 health-event-analyzer-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -620,8 +589,6 @@ health-event-analyzer-lint:
 
 health-event-analyzer-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -664,8 +631,6 @@ health-event-analyzer-container-publish:
 
 fault-quarantine-module-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -685,8 +650,6 @@ fault-quarantine-module-lint:
 
 fault-quarantine-module-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -729,8 +692,6 @@ fault-quarantine-module-container-publish:
 
 node-drainer-module-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -750,8 +711,6 @@ node-drainer-module-lint:
 
 node-drainer-module-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -797,8 +756,6 @@ node-drainer-module-container-publish:
     
 fault-remediation-module-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -881,8 +838,6 @@ node-health-events-uds-connector-container-publish:
 
 store-client-sdk-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd store-client-sdk
     - go vet ./...
@@ -896,8 +851,6 @@ store-client-sdk-lint:
 
 store-client-sdk-test:
   stage: test
-  extends:
-    - .eks-runner-tags
   script:
     - cd store-client-sdk
     - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
@@ -914,8 +867,6 @@ store-client-sdk-test:
 
 kubernetes-distro-lint:
   stage: lint
-  extends:
-    - .eks-runner-tags
   script:
     - cd distros/kubernetes
     - helm lint nvsentinel/
@@ -958,8 +909,6 @@ log-collector-container-publish:
 log-collector-lint:
   stage: lint
   image: koalaman/shellcheck-alpine:stable
-  extends:
-    - .eks-runner-tags
   script:
     - cd nvsentinel-log-collector
     - shellcheck entrypoint.sh 
