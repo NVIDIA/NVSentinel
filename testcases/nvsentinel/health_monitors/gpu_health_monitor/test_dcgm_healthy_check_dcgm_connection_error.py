@@ -18,7 +18,7 @@ from testcases.nvsentinel.health_monitors.gpu_health_monitor.base import (
     GPUHealthMonitorBase,
 )
 import pytest
-
+import random
 
 class TestDCGMHealthyCheckDCGMConnectionError(GPUHealthMonitorBase):
     """
@@ -42,8 +42,12 @@ class TestDCGMHealthyCheckDCGMConnectionError(GPUHealthMonitorBase):
         )
         assert pods, f"No gpu-health-monitor pods found in {self.nv_namespace} namespace"
         
+
+        self.set_managed_by_nvsentinel_label_to_false_for_all_nodes()
+        request.addfinalizer(self.restore_managed_by_nvsentinel_label_for_all_nodes)
+
         # Select the first pod for testing
-        test_pod = pods[0]
+        test_pod = random.choice(pods)
         self.node_name = test_pod.spec.node_name
         self.logger.info(f"Selected Pod   Name: {test_pod.metadata.name}")
         self.logger.info(f"Selected Node  Name: {self.node_name}")
@@ -53,9 +57,12 @@ class TestDCGMHealthyCheckDCGMConnectionError(GPUHealthMonitorBase):
         assert health_status, f"POD: {test_pod.metadata.name} is not healthy before test"
         
         self.step_manager.print_header(
-            "Break DCGM communication by changing the DCGM service port"
+            "Break DCGM communication by scaling gpu-operator to 0 and changing the DCGM service port"
         )
-        
+
+        self.client.scale_deployment("gpu-operator", 0, self.gpu_operator_namespace)
+        request.addfinalizer(lambda: self.client.scale_deployment("gpu-operator", 1, self.gpu_operator_namespace))
+
         # Store the original port for cleanup
         svc_yaml, _ = self.client.get_service_yaml(self.gpu_operator_namespace, "nvidia-dcgm")
         original_port = svc_yaml.get("spec", {}).get("ports", [{}])[0].get("targetPort", 5555)

@@ -1617,3 +1617,50 @@ class TestNVSentinelCaseBase(Base):
         """Skip the test if circuit breaker is disabled"""
         if not self.client.get_configmap(self.nv_namespace, "fault-quarantine-circuit-breaker"):
             pytest.skip("Circuit breaker is disabled")
+
+    def set_managed_by_nvsentinel_label_to_false_for_all_nodes(self):
+        """
+        Set label k8saas.nvidia.com/ManagedByNVSentinel=false on all GPU-present nodes
+        (nodes with label nvidia.com/gpu.present=true), backing up original values
+        for later restoration.
+        """
+        target_node_names, _ = self.client.get_node_names_by_label(label_selector="nvidia.com/gpu.present=true")
+
+        if not hasattr(self, "_managed_by_nv_backup"):
+            self._managed_by_nv_backup = {}
+
+        for node_name in target_node_names:
+            prev_val, _ = self.client.get_label_on_node(node_name, "k8saas.nvidia.com/ManagedByNVSentinel")
+            self._managed_by_nv_backup[node_name] = prev_val
+            success, err = self.client.add_label_to_node(
+                node_name,
+                "k8saas.nvidia.com/ManagedByNVSentinel",
+                "false",
+            )
+            assert success, (
+                f"Failed to set k8saas.nvidia.com/ManagedByNVSentinel=false on node {node_name}: {err}"
+            )
+
+    def restore_managed_by_nvsentinel_label_for_all_nodes(self):
+        """
+        Restore the label k8saas.nvidia.com/ManagedByNVSentinel on all nodes that were
+
+        modified by set_managed_by_nvsentinel_label_to_false_for_all_nodes().
+
+        """
+        if not hasattr(self, "_managed_by_nv_backup") or not self._managed_by_nv_backup:
+            return
+
+        for node_name, prev_val in self._managed_by_nv_backup.items():
+            if prev_val:
+                self.client.add_label_to_node(
+                    node_name,
+                    "k8saas.nvidia.com/ManagedByNVSentinel",
+                    prev_val,
+                )
+            else:
+                self.client.remove_label_from_node(
+                    node_name, "k8saas.nvidia.com/ManagedByNVSentinel"
+                )
+
+        self._managed_by_nv_backup = {}
