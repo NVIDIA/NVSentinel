@@ -55,21 +55,18 @@ config: |
   
   [[rule-sets]]
     version = "1"
-    name = "NIC fatal error ruleset"                  # an admin friendly name for the rule set, used only for logging
+    name = "NIC fatal error ruleset"
 
     [[rule-sets.match.all]]
-      kind = "HealthEvent"                   # the kind of rule (the evaluator to use)
-      expression = "event.agent == 'nic-health-monitor' && event.componentClass == 'NIC'"
+      kind = "HealthEvent"
+      expression = "event.agent == 'nic-health-monitor' && event.componentClass == 'NIC' && event.isFatal == true"
 
     [[rule-sets.match.all]]
-      kind = "HealthEvent" 
-      expression = "event.isFatal == true"
-
-    [[rule-sets.match.all]]w
       kind = "Node"
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
+
     [[rule-sets.match.all]]
       kind = "MaxPercentageOfNodesToCordon"
       expression = "maxPercentageOfNodesToCordon <= 100.0"
@@ -83,12 +80,7 @@ config: |
 
     [[rule-sets.match.all]]
       kind = "HealthEvent"                 
-      expression = "event.isFatal == true && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"  # We need to exclude DCGM error DCGM_FR_CLOCK_THROTTLE_POWER due to a bug in driver R550: https://nvbugspro.nvidia.com/bug/4838367
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent"
-      expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && (event.errorCode == null || !event.errorCode.exists(e, e == 'DCGM_FR_CLOCK_THROTTLE_POWER'))"
-
+      expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
 
     [[rule-sets.match.all]]
       kind = "Node"
@@ -109,11 +101,7 @@ config: |
 
     [[rule-sets.match.all]]
       kind = "HealthEvent" 
-      expression = "event.agent == 'nvswitch-health-monitor' && event.checkName == 'NvswitchErrorFromKmsgWatch'"
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent" 
-      expression = "event.isFatal == true"
+      expression = "event.agent == 'nvswitch-health-monitor' && event.checkName == 'NvswitchErrorFromKmsgWatch' && event.isFatal == true"
 
     [[rule-sets.match.all]]
       kind = "Node"
@@ -134,11 +122,7 @@ config: |
 
     [[rule-sets.match.all]]
       kind = "HealthEvent" 
-      expression = "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance'"
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent" 
-      expression = "event.isFatal == true"
+      expression = "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
 
     [[rule-sets.match.all]]
       kind = "Node"
@@ -159,11 +143,7 @@ config: |
 
     [[rule-sets.match.all]]
       kind = "HealthEvent"
-      expression = "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU'"
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent"
-      expression = "event.isFatal == true"
+      expression = "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
 
     [[rule-sets.match.all]]
       kind = "Node"
