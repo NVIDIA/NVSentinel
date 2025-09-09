@@ -26,6 +26,7 @@ class TestNicExclusionRegex(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nichealthmonitor
+    @pytest.mark.skip(reason="nic health monitor is disabled globally")
     def test_nic_exclusion_regex_for_nic_name(self, request, nvsentinel_autosync_disabled_enabled):
         """
         Tests if the regex exclusion for NIC name is working correctly

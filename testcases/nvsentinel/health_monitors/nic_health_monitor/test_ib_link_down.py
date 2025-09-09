@@ -25,6 +25,7 @@ class TestInfiniBandLinkDown(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nichealthmonitor
+    @pytest.mark.skip(reason="nic health monitor is disabled globally")
     def test_infini_band_link_down(self, request):
         """
         Tests if the InfiniBandErrorCheck condition is set correctly when the InfiniBand link is down

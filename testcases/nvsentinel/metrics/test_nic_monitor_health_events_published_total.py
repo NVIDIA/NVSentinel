@@ -30,6 +30,7 @@ class TestNicMonitorHealthEventsPublishedTotal(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.metrics
+    @pytest.mark.skip(reason="nic health monitor is disabled globally")
     def test_nic_monitor_health_events_published_total(self, request):
         """
         Test case of NVsentinel Metrics: NIC health monitor metric: nic_monitor_health_events_published_total

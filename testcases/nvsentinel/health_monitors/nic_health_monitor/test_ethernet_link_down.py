@@ -27,6 +27,7 @@ class TestEthernetLinkDown(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.nichealthmonitor
+    @pytest.mark.skip(reason="nic health monitor is disabled globally")
     def test_ethernet_link_down(self, request):
         """
         Tests if the EthernetErrorCheck condition is set correctly when the ethernet link is down

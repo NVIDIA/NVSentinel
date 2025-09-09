@@ -28,6 +28,7 @@ class TestNICHealthFatalError(TestNVSentinelCaseBase):
 
     @pytest.mark.author(email="ajmishra@nvidia.com")
     @pytest.mark.faultquarantine
+    @pytest.mark.skip(reason="nic health monitor is disabled globally")
     def test_nic_health_fatal_error(self, request):
         """NIC fatal error test supporting both AWS (mock) and CSP workflows."""
 

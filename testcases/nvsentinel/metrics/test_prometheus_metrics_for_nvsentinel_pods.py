@@ -62,12 +62,12 @@ class TestNVSentinelMetricsPrometheus(TestNVSentinelCaseBase):
             query_params="nic_monitor_health_events_published_total"
         )
 
-        self.step_manager.print_header(
-            "Make sure that the number of lines matches the number of nic monitor pods."
-        )
-        self.verify_lines_and_pods(
-            response=response, pod_regex="nvsentinel-nic-health-monitor.*"
-        )
+        # self.step_manager.print_header(
+        #     "Make sure that the number of lines matches the number of nic monitor pods."
+        # )
+        # self.verify_lines_and_pods(
+        #     response=response, pod_regex="nvsentinel-nic-health-monitor.*"
+        # )
 
         self.step_manager.print_header("Check nvswitch monitor metrics")
         response = self.query_metrics(

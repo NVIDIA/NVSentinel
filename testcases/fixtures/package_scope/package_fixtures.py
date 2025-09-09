@@ -97,7 +97,6 @@ def nvsentinel_autosync_disabled_enabled():
         daemonsets_to_restart = [
             "nvsentinel-gpu-health-monitor-dcgm-3.x",
             "nvsentinel-gpu-health-monitor-dcgm-4.x",
-            "nvsentinel-nic-health-monitor",
             "nvsentinel-nvswitch-health-monitor",
             "nvsentinel-platform-connector"
         ]

@@ -36,7 +36,6 @@ class TestPodsAreCorrectlyDeployed(TestNVSentinelCaseBase):
 
         self.logger.print_header("Check daemonsets exist.")
         daemonset_to_check = [
-            "nvsentinel-nic-health-monitor",
             "nvsentinel-nvswitch-health-monitor",
             "nvsentinel-platform-connector",
         ]
