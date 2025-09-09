@@ -84,6 +84,8 @@ include:
   #       - job: health-event-analyzer-container-publish
   #         optional: true
   #       - job: fault-quarantine-module-container-publish
+  #        optional: true
+  #      - job: labeler-module-container-publish
   #         optional: true
   #       - job: node-drainer-module-container-publish
   #         optional: true
@@ -97,7 +99,7 @@ include:
   #         optional: true
   #     nspect_id: NSPECT-JRZ4-EI8F
   #     policy: "container_scan_policy.json"
-  #     image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/nvsentinel-health-event-client", "nvcr.io/nv-ngc-devops/rtsp-mongosh", "nvcr.io/nv-ngc-devops/nvsentinel-log-collector"]
+  #     image_names: ["nvcr.io/nv-ngc-devops/nvsentinel-gpu-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nic-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-nvswitch-health-monitor", "nvcr.io/nv-ngc-devops/nvsentinel-platform-connectors", "nvcr.io/nv-ngc-devops/nvsentinel-fault-quarantine-module", "nvcr.io/nv-ngc-devops/nvsentinel-labeler-module", "nvcr.io/nv-ngc-devops/nvsentinel-node-health-events-uds-connector-server", "nvcr.io/nv-ngc-devops/busybox", "nvcr.io/nv-ngc-devops/nvsentinel-health-events-analyzer", "nvcr.io/nv-ngc-devops/nvsentinel-node-drainer-module", "nvcr.io/nv-ngc-devops/nvsentinel-fault-remediation-module", "nvcr.io/nv-ngc-devops/nvsentinel-health-event-client", "nvcr.io/nv-ngc-devops/rtsp-mongosh", "nvcr.io/nv-ngc-devops/nvsentinel-log-collector"]
   #     is_release: false
   #     allow_failure: true
   #     platform_archs: ["linux/amd64"]
@@ -647,6 +649,54 @@ fault-quarantine-module-container-publish:
         --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} \
+        .
+
+
+labeler-module-lint-test:
+  stage: lint-test
+  variables:
+    GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
+  script:
+    - cd labeler-module
+    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
+    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
+    - go vet ./...
+    - golangci-lint run
+    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
+    - go tool cover -func coverage.txt 
+    - gocover-cobertura < coverage.txt > coverage.xml
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: labeler-module/coverage.xml
+      junit: labeler-module/report.xml
+      codequality: labeler-module/code-quality-report.json
+    paths:
+      - labeler-module/code-quality-report.json
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
+labeler-module-container-publish:
+  stage: publish
+  extends:
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - labeler-module-lint-test
+  script:
+    - cd labeler-module
+    - |
+      docker buildx build \
+        --platform linux/arm64,linux/amd64 \
+        --network=host \
+        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:labeler-module \
+        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:labeler-module,mode=max \
+        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+        --build-arg GITLAB_LOGIN=gitlab-ci-token \
+        --secret id=gitlab_token,env=CI_JOB_TOKEN \
+        --push \
+        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME} \
         .
 
 
