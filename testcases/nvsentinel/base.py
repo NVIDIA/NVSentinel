@@ -13,6 +13,7 @@ Module for base class of Functional Nvsentinel testing
 
 import random
 import re
+import string
 import os
 import subprocess
 import yaml

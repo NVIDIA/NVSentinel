@@ -38,8 +38,16 @@ spec:
             path: tls.key
           - key: ca.crt
             path: ca.crt
-  nodeSelector:
-    nodeGroup: "customer-cpu"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: nodeGroup
+                operator: In
+                values:
+                  - monitoring
+                  - customer-cpu
   tolerations:
     - effect: NoSchedule
       operator: Exists

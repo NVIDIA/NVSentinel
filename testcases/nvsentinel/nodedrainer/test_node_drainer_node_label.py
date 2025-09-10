@@ -24,7 +24,7 @@ class TestNodeDrainerNodeLabeling(TestNVSentinelCaseBase):
     """
     Class for test case of NVsentinel Node Drainer: Node drainer node label
     """
-    node_drain_label_key = "nvsentinel.nvidia.com/node-drain"
+    node_drain_label_key = "nvsentinel.dgxc.nvidia.com/node-drain-status"
     node_drain_label_value = "IN_PROGRESS"
     backup_cm_path = "node-drainer-config-backup.yaml"
     

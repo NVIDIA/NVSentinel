@@ -26,6 +26,10 @@ items:
         - key: "nvidia.com/gpu"
           operator: "Exists"
           effect: "NoSchedule"
+        - key: "dedicated"
+          operator: "Equal"
+          value: "user-workload"
+          effect: "NoExecute"
       containers:
         - name: busybox
           image: busybox

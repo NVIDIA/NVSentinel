@@ -373,8 +373,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 				if isNodeQuarantined == nil {
 					// Status is nil, meaning we intentionally skipped processing this event
-					// (e.g., healthy event without quarantine annotation)
-					// This was already counted as skipped in handleEvent, so don't count again
+					// (e.g., healthy event without quarantine annotation or rule evaluation failed)
 					klog.V(2).Infof("Skipped processing event for node %s, no status update needed",
 						healthEventWithStatus.HealthEvent.NodeName)
 
@@ -384,6 +383,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 					duration := time.Since(startTime).Seconds()
 					eventHandlingDuration.Observe(duration)
+					totalEventsSkipped.Inc()
 
 					continue
 				}
@@ -523,7 +523,6 @@ func (r *Reconciler) handleEvent(
 	if event.HealthEvent.IsHealthy && !quarantineAnnotationExists {
 		klog.Infof("Skipping healthy event for node %s as there's no existing quarantine annotation, Event: %+v",
 			event.HealthEvent.NodeName, event.HealthEvent)
-		totalEventsSkipped.Inc()
 
 		return nil, common.RuleEvaluationNotApplicable
 	}
@@ -746,7 +745,7 @@ func (r *Reconciler) handleEvent(
 	if isNodeQuarantined {
 		status = storeconnector.Quarantined
 	} else {
-		status = storeconnector.UnQuarantined
+		return nil, common.RuleEvaluationNotApplicable
 	}
 
 	return &status, common.RuleEvaluationNotApplicable

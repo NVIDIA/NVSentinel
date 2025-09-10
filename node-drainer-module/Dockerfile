@@ -42,8 +42,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GITLAB_TOKEN=$(cat /run/secrets/gitlab_token) && \
     echo "machine ${GITLAB_HOST} login ${GITLAB_LOGIN} password ${GITLAB_TOKEN}" > ~/.netrc && \
     chmod 600 ~/.netrc && \
-    go mod download && \
-    rm ~/.netrc
+    go mod download
 
     
 COPY . .

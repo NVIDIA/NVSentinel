@@ -110,7 +110,7 @@ class TestComplexRuleset(TestNVSentinelCaseBase):
 
             
         self.step_manager.print_header(
-            f"Inject a fatal error of {errorcode} on a GPU node which doesn't match with any rule"
+            f"Inject a fatal error of 153 on a GPU node which doesn't match with any rule"
         )
 
         command = [

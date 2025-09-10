@@ -40,7 +40,7 @@ type UserNamespace struct {
 
 type TomlConfig struct {
 	EvictionTimeoutInSeconds Duration `toml:"evictionTimeoutInSeconds"`
-	SystemNamespaces         string          `toml:"systemNamespaces"`
+	SystemNamespaces         string   `toml:"systemNamespaces"`
 	// NotReadyTimeoutMinutes is the time after which a pod in NotReady state is considered stuck
 	NotReadyTimeoutMinutes int             `toml:"notReadyTimeoutMinutes"`
 	UserNamespaces         []UserNamespace `toml:"userNamespaces"`
@@ -82,11 +82,10 @@ func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 
 // validateAndSetDefaults validates the configuration and sets default values
 func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
-	// Set default values for pod timeout configuration if not specified
 	if config.NotReadyTimeoutMinutes == 0 {
 		config.NotReadyTimeoutMinutes = 5 // Default: 5 minutes
 	}
-	// Validate timeout values
+
 	if config.NotReadyTimeoutMinutes <= 0 {
 		return nil, fmt.Errorf("notReadyTimeoutMinutes must be a positive integer")
 	}

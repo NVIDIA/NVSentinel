@@ -292,12 +292,8 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 		RuleSetPriorityMap: map[string]int{},
 	})
 
-	if isQuarantined == nil {
-		t.Errorf("Expected isQuarantined to be non-nil")
-	}
-
-	if isQuarantined != nil && *isQuarantined == store.Quarantined {
-		t.Errorf("Expected node not to be quarantined when no rules triggered")
+	if isQuarantined != nil {
+		t.Errorf("Expected isQuarantined to be nil")
 	}
 
 	if ruleEvalResult != common.RuleEvaluationNotApplicable {

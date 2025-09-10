@@ -81,12 +81,10 @@ func (r *Reconciler) Start(ctx context.Context) {
 		klog.Errorf("Failed to get in-progress events: %v", err)
 	} else {
 		for _, event := range oldEvents {
-			go func(event bson.M) {
-				wrappedEvent := bson.M{
-					"fullDocument": event,
-				}
-				r.processEvents(ctx, wrappedEvent, collection)
-			}(event)
+			wrappedEvent := bson.M{
+				"fullDocument": event,
+			}
+			r.startEventProcessing(ctx, wrappedEvent, collection)
 		}
 	}
 
@@ -97,26 +95,29 @@ func (r *Reconciler) Start(ctx context.Context) {
 	for event := range watcher.Events() {
 		totalEventsReceived.Inc()
 
-		go func(event bson.M) {
-			r.processEvents(ctx, event, collection)
-			if err := watcher.MarkProcessed(ctx); err != nil {
-				totalEventProcessingError.WithLabelValues("mark_processed_error").Inc()
-				klog.Errorf("Error updating resume token: %+v", err)
-			}
-		}(event)
+		r.startEventProcessing(ctx, event, collection)
+
+		if err := watcher.MarkProcessed(ctx); err != nil {
+			totalEventProcessingError.WithLabelValues("mark_processed_error").Inc()
+			klog.Errorf("Error updating resume token: %+v", err)
+		}
 	}
 }
 
-func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection *mongo.Collection) {
-	startTime := time.Now()
-	document := event["fullDocument"].(bson.M)
+func (r *Reconciler) startEventProcessing(ctx context.Context, event bson.M, collection *mongo.Collection) {
 	healthEventWithStatus := storeconnector.HealthEventWithStatus{}
 	if err := storewatcher.UnmarshalFullDocumentFromEvent(
 		event,
 		&healthEventWithStatus,
 	); err != nil {
 		totalEventProcessingError.WithLabelValues("unmarshal_doc_error").Inc()
-		klog.Errorf("Failed to unmarshal event with ID %v: %+v", document["_id"], err)
+		klog.Errorf("Failed to unmarshal health event: \n%v; \nError:%+v", event, err)
+		return
+	}
+
+	currentStatus := healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status
+	if currentStatus == storeconnector.StatusSucceeded || currentStatus == storeconnector.StatusFailed {
+		klog.Infof("Skipping health event as its already in terminal state, \nHealth event: %+v", healthEventWithStatus.HealthEvent)
 		return
 	}
 
@@ -137,33 +138,43 @@ func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection
 	err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
 	if err != nil {
 		totalEventProcessingError.WithLabelValues("update_status_error").Inc()
-		klog.Errorf("Error in updating the health event with ID %v:, error: %+v", document["_id"], err)
-	} else {
+		klog.Errorf("Error in updating health event: \n%+v:, \nerror: %+v", healthEventWithStatus.HealthEvent.NodeName, err)
+	}
 
-		for i := 1; i <= maxRetries; i++ {
-			klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
-			err = r.handleEvent(ctx, healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
-			if err == nil {
-				totalEventsSuccessfullyProcessed.Inc()
+	go func(event bson.M) {
+		r.processEvents(ctx, event, collection, healthEventWithStatus)
+	}(event)
+}
 
-				podsEvictionStatus.Status = storeconnector.StatusSucceeded
-				break
-			}
-			klog.Errorf("Error in processing the event with ID %v:, error: %+v", document["_id"], err)
-			totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
-			time.Sleep(retryDelay)
+func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection *mongo.Collection, healthEventWithStatus storeconnector.HealthEventWithStatus) {
+	startTime := time.Now()
+	var err error
+
+	podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
+
+	for i := 1; i <= maxRetries; i++ {
+		klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
+		err = r.handleEvent(ctx, healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
+		if err == nil {
+			totalEventsSuccessfullyProcessed.Inc()
+
+			podsEvictionStatus.Status = storeconnector.StatusSucceeded
+			break
 		}
+		klog.Errorf("Error in processing the event:\n%+v, error is : \n%+v", healthEventWithStatus.HealthEvent, err)
+		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
+		time.Sleep(retryDelay)
+	}
 
-		if err != nil {
-			klog.Errorf("Max attempt reached, error in handling the health event with ID %v:, error: %+v", document["_id"], err)
-			podsEvictionStatus.Status = storeconnector.StatusFailed
-			podsEvictionStatus.Message = err.Error()
-		}
+	if err != nil {
+		klog.Errorf("Max attempt reached, error in handling health event: \n%+v:, \nerror: %+v", healthEventWithStatus.HealthEvent, err)
+		podsEvictionStatus.Status = storeconnector.StatusFailed
+		podsEvictionStatus.Message = err.Error()
+	}
 
-		if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
-			totalEventProcessingError.WithLabelValues("update_status_error").Inc()
-			klog.Errorf("Error in updating the user pods eviction status for node: %+v", err)
-		}
+	if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
+		totalEventProcessingError.WithLabelValues("update_status_error").Inc()
+		klog.Errorf("Error in updating the user pods eviction status for node: %+v", err)
 	}
 	duration := time.Since(startTime).Seconds()
 
@@ -313,7 +324,7 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 	return namespaceMap
 }
 
-// getInProgressEvents is used to get the in-progress events from the collection
+// getInProgressEvents to get the events for which draining was already started
 func (r *Reconciler) getInProgressEvents(ctx context.Context, collection *mongo.Collection) ([]bson.M, error) {
 	filter := bson.M{
 		"healtheventstatus.userpodsevictionstatus.status": storeconnector.StatusInProgress,

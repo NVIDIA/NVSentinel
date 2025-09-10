@@ -193,18 +193,17 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
             gpu_monitor_pod_name
         ), f"Cannot find the nvsentinel-gpu-health-monitor pod of the node {self.node_name}"
 
-        self.step_manager.print_header("Inject a gpu fatal error on the node")
         pods, _ = self.client.list_pods(
             namespace=self.nv_namespace, name_pattern=gpu_monitor_pod_name
         )
         assert len(pods) > 0, "GPU health monitor pod not found"
         gpu_health_monitor_pod = pods[0]
-        command = [
-            "/bin/sh",
-            "-c",
-             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 0",
-        ]
-        self.client.exec_command_in_pod(gpu_health_monitor_pod, command=command)
+        
+        self.step_manager.print_header(f"Inject a gpu fatal error on the node {gpu_health_monitor_pod.metadata.name}")
+        
+        self.inject_gpu_inforom_watch_error(gpu_health_monitor_pod)
+        request.addfinalizer(lambda: self.clear_gpu_inforom_watch_error(gpu_health_monitor_pod))
+        time.sleep(10)
 
         self.step_manager.print_header("Check the node is cordoned")
         success, error = self.client.check_node_cordoned(self.node_name)
@@ -231,12 +230,8 @@ class TestNodeRecoveryDuringEvictionProcess(TestNVSentinelCaseBase):
         self.step_manager.print_header(
             "Clear the inject error in step 5 and check the node is uncordoned"
         )
-        command = [
-            "/bin/sh",
-            "-c",
-             f"dcgmi test --host nvidia-dcgm.{self.gpu_operator_namespace}.svc:5555 --inject --gpuid 0 -f 84 -v 1",
-        ]
-        self.client.exec_command_in_pod(gpu_health_monitor_pod, command=command)
+        self.clear_gpu_inforom_watch_error(gpu_health_monitor_pod)
+        time.sleep(10)
         success, error = self.client.check_node_ready(self.node_name)
         assert (
             success
