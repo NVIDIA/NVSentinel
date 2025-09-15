@@ -163,9 +163,9 @@ class TestMonitorReleaseMR:
         monkeypatch.setenv("MAX_CHECKS", "2")
         return data
 
-    # 1. merged/closed path should create tag
+    # 1. MR state handling: merged should create tag; closed should exit without tag
     @pytest.mark.parametrize("state", ["merged", "closed"])
-    def test_completed_creates_tag(self, monkeypatch, mock_result_file, state):
+    def test_mr_state_handling(self, monkeypatch, mock_result_file, state):
         tags_mgr = _TagManager()
         mr_mgr = _MergeRequestManager([_MR(state)])
         proj = _Project(tags_mgr, mr_mgr)
@@ -176,12 +176,22 @@ class TestMonitorReleaseMR:
         monkeypatch.setenv("MAX_TIMEOUT_IN_MINUTES", "1")
 
         mod = load_module()
-        mod.main()
-        result = read_result(mock_result_file)
-        assert result["final_status"] == "completed"
-        # ensure tag created with correct ref
-        expected_ref = "main" if state == "merged" else "nvsentinel/1.0.0"
-        assert ("v1.0.0", expected_ref) in tags_mgr.created
+        if state == "merged":
+            # Expect normal completion
+            mod.main()
+            result = read_result(mock_result_file)
+            assert result["final_status"] == "completed"
+            expected_ref = "main"
+            assert ("v1.0.0", expected_ref) in tags_mgr.created
+        elif state == "closed":  # state == "closed"
+            with pytest.raises(SystemExit):
+                mod.main()
+            result = read_result(mock_result_file)
+            assert result["final_status"] == "failed"
+            # Tag should NOT have been created
+            assert tags_mgr.created == []
+        else:
+            raise ValueError(f"Invalid state: {state}")
 
     # 2. timeout case: MR remains opened
     def test_timeout(self, monkeypatch, mock_result_file):
@@ -195,9 +205,11 @@ class TestMonitorReleaseMR:
         monkeypatch.setenv("MAX_TIMEOUT_IN_MINUTES", "2")
 
         mod = load_module()
-        mod.main()
-        res = read_result(mock_result_file)
-        assert res["final_status"] == "timeout"
+        with pytest.raises(SystemExit):
+                mod.main()
+        result = read_result(mock_result_file)
+        assert result["final_status"] == "failed"
+        assert result["message"] == "MR is not merged or closed after 2 minutes"
         assert tags_mgr.created == []
 
     # 3. Missing credentials env
@@ -217,7 +229,7 @@ class TestMonitorReleaseMR:
         assert "Missing GitLab credentials" in res["message"]
 
     # 4. GitLab 404 and 500 errors
-    @pytest.mark.parametrize("code, expected_status, expected_msg", [(404, "failed", "MR not found"), (500, "timeout", "Timeout reached")])
+    @pytest.mark.parametrize("code, expected_status, expected_msg", [(404, "failed", "MR not found"), (500, "failed", "MR is not merged or closed after 2 minutes")])
     def test_gitlab_errors(self, monkeypatch, mock_result_file, code, expected_status, expected_msg):
         # Setup MR manager to raise error then remain opened
         err = _GitlabGetError(code)
@@ -231,7 +243,8 @@ class TestMonitorReleaseMR:
         self._set_basic_env(monkeypatch, status="created", mr_iid=4)
         monkeypatch.setenv("MAX_TIMEOUT_IN_MINUTES", "2")
         mod = load_module()
-        mod.main()
+        with pytest.raises(SystemExit):
+                mod.main()
         res = read_result(mock_result_file)
         assert res["final_status"] == expected_status
         assert expected_msg in res["message"]
@@ -287,8 +300,8 @@ class TestMonitorReleaseMR:
         mod = load_module()
         with pytest.raises(SystemExit):
             mod.main()
-        # Tag deletion should have been attempted
-        assert "v1.0.0" in tags_mgr.deleted
+        # Tag deletion should not have been attempted
+        assert "v1.0.0" not in tags_mgr.deleted
         # Tag list unchanged (creation failed)
         assert len(tags_mgr.created) == 1
         assert tags_mgr.created[0] == ("v1.0.0", "some/old/ref")

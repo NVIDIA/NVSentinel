@@ -318,7 +318,7 @@ def main():
                 'pattern_name': 'unknown',
                 'clusters': {},
                 'version': version,
-                'status': 'skipped',
+                'status': 'failed',
                 'message': f'No {deploy_type} patterns found'
             })
             with open('/tmp/mr-results.json', 'w') as f:
@@ -426,7 +426,8 @@ def main():
     created = len([r for r in mr_results if r['status'] == 'created'])
     existing = len([r for r in mr_results if r['status'] == 'existing'])
     failed = len([r for r in mr_results if r['status'] == 'failed'])
-    logger.info(f"Completed: {created} created, {existing} existing, {failed} failed")
+    no_changes = len([r for r in mr_results if r['status'] == 'no-changes'])
+    logger.info(f"Completed: {created} created, {existing} existing, {failed} failed, {no_changes} no-changes")
 
 if __name__ == '__main__':
     main() 

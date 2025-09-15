@@ -154,9 +154,9 @@ def main():
 
     else:
         # Timeout reached
-        logger.warning(f"Timeout after {max_checks} minutes")
-        monitoring_result['final_status'] = 'timeout'
-        monitoring_result['message'] = 'Timeout reached'
+        logger.error(f"Timeout after {max_checks} minutes")
+        monitoring_result['final_status'] = 'failed'
+        monitoring_result['message'] = f'MR is not merged or closed after {max_checks} minutes'
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
 
     # Save final result
@@ -165,7 +165,8 @@ def main():
 
     logger.info(f"Finished with status: {monitoring_result['final_status']}")
 
-    return monitoring_result
+    if monitoring_result['final_status'] == 'failed':
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

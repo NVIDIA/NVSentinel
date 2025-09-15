@@ -28,6 +28,7 @@ spec:
       - name: version
       - name: clusters
       - name: user_id
+      - name: deploy_type
     
     outputs:
       parameters:
@@ -38,7 +39,12 @@ spec:
     container:
       image: nvcr.io/nv-ngc-devops/python:3.12-slim
       command: ["sh", "-c"]
-      args: ["apt-get -qq update && apt-get install -qq -y git curl && pip install --quiet requests ruamel.yaml && python3 -u /scripts/create-mr.py"]
+      args: [
+        "apt-get -qq update &&
+         apt-get install -qq -y git curl && 
+         pip install --quiet requests ruamel.yaml &&
+         python3 -u /scripts/create-mr.py"
+      ]
       volumeMounts:
       - name: create-mr-script-volume
         mountPath: /scripts
@@ -60,7 +66,7 @@ spec:
       - name: USER_ID
         value: "{{inputs.parameters.user_id}}"
       - name: DEPLOY_TYPE
-        value: "prod"
+        value: "{{inputs.parameters.deploy_type}}"
     volumes:
     - name: create-mr-script-volume
       configMap:

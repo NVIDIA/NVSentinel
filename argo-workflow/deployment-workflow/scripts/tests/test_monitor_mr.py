@@ -159,4 +159,5 @@ def test_timeout(monkeypatch, _redirect_result):
     mod = _load_module()
     mod.main()
     res = json.loads(_redirect_result.read_text())
-    assert res["final_status"] == "timeout"
+    assert res["final_status"] == "failed"
+    assert res["message"] == "MR is not merged or closed after 1 minutes"

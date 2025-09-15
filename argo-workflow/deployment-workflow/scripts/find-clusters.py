@@ -187,7 +187,7 @@ def main():
                 'pattern_name': pattern_name,
                 'pattern_info': {
                     'version': version,
-                    'spec': pattern.get('spec', '')
+                    'spec': pattern.get('spec', {})
                 },
                 'clusters': pattern_groups[pattern_name]
             }

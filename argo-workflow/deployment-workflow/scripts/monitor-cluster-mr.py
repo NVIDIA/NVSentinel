@@ -86,19 +86,29 @@ def main():
     }
 
     # Skip monitoring if MR creation failed
-    if mr_status in ['failed', 'error', 'skipped'] or not mr_iid:
-        logger.error("Skipping monitoring - MR creation failed or no MR ID")
-        monitoring_result['final_status'] = mr_status
-        monitoring_result['message'] = 'MR creation failed or no MR ID'
+    if mr_status == 'no-changes':
+        logger.info("Skipping monitoring - MR not raised")
+        monitoring_result['final_status'] = 'success'
+        monitoring_result['message'] = 'MR not raised'
+        monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
+        with open('/tmp/monitoring-result.json', 'w') as f:
+            json.dump(monitoring_result, f, indent=2)
+        
+        cluster_data = [{"name": name, "spec-path": path} for name, path in clusters.items()]
+        with open('/tmp/cluster-data.json', 'w') as f:
+            json.dump(cluster_data, f, indent=2)
+        sys.exit(0)
+    
+    elif mr_status == 'failed':
+        logger.error("Skipping monitoring - MR creation failed")
+        monitoring_result['final_status'] = 'failed'
+        monitoring_result['message'] = 'MR creation failed'
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
         with open('/tmp/monitoring-result.json', 'w') as f:
             json.dump(monitoring_result, f, indent=2)
         with open('/tmp/cluster-data.json', 'w') as f:
             json.dump([], f, indent=2)
-        if mr_status == 'skipped':
-            sys.exit(0)
-        else:
-            sys.exit(1)
+        sys.exit(1)
 
     # Get GitLab credentials
     gitlab_token = os.getenv('MANIFEST_GITLAB_TOKEN')
@@ -142,7 +152,7 @@ def main():
                 if state in ['merged', 'closed']:
                     logger.info(f"Completed: {state}")
 
-                    monitoring_result['final_status'] = "success"
+                    monitoring_result['final_status'] = 'success'
                     monitoring_result['message'] = f"MR is {state}"
                     monitoring_result['mr_state'] = state
                     monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
@@ -188,8 +198,8 @@ def main():
 
     else :
         logger.warning(f"Timeout after {max_checks} minutes")
-        monitoring_result['final_status'] = 'timeout'
-        monitoring_result['message'] = 'Timeout reached'
+        monitoring_result['final_status'] = 'failed'
+        monitoring_result['message'] = f'MR is not merged or closed after {max_checks} minutes'
         monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
 
     # Save final result
@@ -203,9 +213,8 @@ def main():
 
     logger.info(f"Finished with status: {monitoring_result['final_status']}")
 
-    if monitoring_result['final_status'] != 'success':
+    if monitoring_result['final_status'] == 'failed':
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
-

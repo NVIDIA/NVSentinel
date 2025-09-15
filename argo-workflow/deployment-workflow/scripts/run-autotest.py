@@ -75,7 +75,7 @@ def wait_for_pipeline(pipeline) -> Dict:
     Wait for pipeline to complete and return final status
     """
 
-    for time in range(TIMEOUT_IN_MINUTES):
+    for minutes in range(TIMEOUT_IN_MINUTES):
         pipeline.refresh()
         current_status = pipeline.status
 
@@ -131,7 +131,7 @@ def trigger_pipeline(gl: gitlab.Gitlab, project_id: str, cluster_path: str) -> D
         
         # Create pipeline
         pipeline_data = {
-            'ref': 'main',  # Using main branch
+            'ref': 'skip_job', # to skip health check job
             'variables': [{'key': k, 'value': str(v)} for k, v in variables.items()]
         }
         

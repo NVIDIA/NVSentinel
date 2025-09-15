@@ -21,7 +21,7 @@ spec:
   imagePullSecrets:
   - name: nvidia-ngcuser-pull-secret
   templates:
-   # Mark version as complete (runs after ALL MR pods complete)
+   # Mark version as complete
   - name: complete-version
     inputs:
       parameters:

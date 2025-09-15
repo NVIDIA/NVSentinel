@@ -126,7 +126,8 @@ class TestMonitorMR:
         with pytest.raises(SystemExit):
             mod.main()
         res = json.loads(Path("/tmp/monitoring-result.json").read_text())
-        assert res["final_status"] == "timeout"
+        assert res["final_status"] == "failed"
+        assert res["message"] == "MR is not merged or closed after 2 minutes"
 
     # 3. MR not found
     def test_mr_not_found(self, monkeypatch):
@@ -177,4 +178,4 @@ class TestMonitorMR:
             mod.main()
         res = json.loads(Path("/tmp/monitoring-result.json").read_text())
         assert res["final_status"] == "failed"
-        assert res["message"] == "MR creation failed or no MR ID" 
+        assert res["message"] == "MR creation failed" 

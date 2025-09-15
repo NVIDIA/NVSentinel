@@ -30,13 +30,16 @@ logger = logging.getLogger('monitor-release-mr')
 def manage_tag(project, tag_name, ref):
     """Create or force-update a tag in the given project."""
     try:
-        # Delete if it already exists (GitLab returns 404 if not present)
-        project.tags.delete(tag_name)
-    except gitlab.exceptions.GitlabDeleteError:
-        pass
-    except gitlab.exceptions.GitlabGetError:
-        pass
-    project.tags.create({'tag_name': tag_name, 'ref': ref})
+        project.tags.create({'tag_name': tag_name, 'ref': ref})
+    except gitlab.exceptions.GitlabGetError as e:
+        logger.error(f"Error parsing MR data: {e}")
+        result = {
+            'final_status': 'failed',
+            'message': f'Error creating tag {tag_name} in {ref}',
+        }
+        with open('/tmp/monitoring-result.json', 'w') as f:
+            json.dump(result, f, indent=2)
+        sys.exit(1)
 
 def main():
     # Parse input parameters from environment
@@ -131,7 +134,7 @@ def main():
                 merge_status = getattr(mr_obj, 'merge_status', 'unknown')
                 logger.info(f"Status: {state} (merge_status: {merge_status})")
 
-                if state in ['merged', 'closed']:
+                if state =='merged':
                     logger.info(f"Completed: {state}")
                     monitoring_result['final_status'] = 'completed'
                     monitoring_result['message'] = f"MR is {state}"
@@ -141,13 +144,20 @@ def main():
                     manage_tag(project, version, ref=tag_ref)
                     logger.info(f"Tag {version} created from {tag_ref}")
                     break
+                elif state == 'closed':
+                    logger.info(f"Completed: {state}")
+                    monitoring_result['final_status'] = 'failed'
+                    monitoring_result['message'] = f"MR is {state}"
+                    monitoring_result['mr_state'] = state
+                    monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
+                    break
 
                 logger.info(f"Still {state}; waiting 60s …")
                 time.sleep(60)
             else:
                 logger.warning(f"Timeout after {max_checks} minutes")
-                monitoring_result['final_status'] = 'timeout'
-                monitoring_result['message'] = 'Timeout reached'
+                monitoring_result['final_status'] = 'failed'
+                monitoring_result['message'] = f'MR is not merged or closed after {max_checks} minutes'
                 monitoring_result['completed_at'] = datetime.now(timezone.utc).isoformat() + 'Z'
 
     except Exception as e:
@@ -159,6 +169,9 @@ def main():
         json.dump(monitoring_result, f, indent=2)
 
     logger.info(f"Finished with status: {monitoring_result['final_status']}")
+    
+    if monitoring_result['final_status'] == 'failed':
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

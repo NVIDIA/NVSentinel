@@ -82,8 +82,6 @@ spec:
                   value: ""
                 - name: commit-sha
                   value: ""
-                - name: triggered-by
-                  value: "gitlab-webhook"
                 - name: timestamp
                   value: ""
                 - name: user_id
@@ -103,13 +101,9 @@ spec:
           dest: spec.arguments.parameters.1.value
         - src:
             dependencyName: gitlab-tag-dep
-            dataTemplate: "gitlab-webhook"
+            dataTemplate: "{{ .Input.body.timestamp | default now }}"
           dest: spec.arguments.parameters.2.value
         - src:
             dependencyName: gitlab-tag-dep
-            dataTemplate: "{{ .Input.body.timestamp | default now }}"
-          dest: spec.arguments.parameters.3.value
-        - src:
-            dependencyName: gitlab-tag-dep
             dataKey: body.user_id
-          dest: spec.arguments.parameters.4.value
+          dest: spec.arguments.parameters.3.value

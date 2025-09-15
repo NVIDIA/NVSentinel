@@ -31,9 +31,16 @@ spec:
       - name: ace-mr-result
         valueFrom:
           path: /tmp/ace-mr-result
-      - name: manifest-template-mr-result
-        valueFrom:
-          path: /tmp/manifest-template-mr-result
+      # TODO: Uncomment this when repo changes are finished
+      # - name: manifest-template-mr-result
+      #   valueFrom:
+      #     path: /tmp/manifest-template-mr-result
+      # - name: nvcr-registry-mr-result
+      #   valueFrom:
+      #     path: /tmp/nvcr-registry-mr-result
+      # - name: bcp-registry-mr-result
+      #   valueFrom:
+      #     path: /tmp/bcp-registry-mr-result
     
     container:
       image: nvcr.io/nv-ngc-devops/python-gitlab:alpine
@@ -53,6 +60,16 @@ spec:
           secretKeyRef:
             name: gitlab-credentials
             key: ace-token
+      - name: NVCR_REGISTRY_GITLAB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: nvcr-registry-token
+      - name: BCP_REGISTRY_GITLAB_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: gitlab-credentials
+            key: bcp-registry-token
       - name: GITLAB_URL
         valueFrom:
           secretKeyRef:
@@ -62,6 +79,11 @@ spec:
         value: "{{inputs.parameters.version}}"
       - name: USER_ID
         value: "{{inputs.parameters.user_id}}"
+      - name: SBOM_RELEASE_BRANCH
+        valueFrom:
+          configMapKeyRef:
+            name: nvsentinel-cluster-patterns
+            key: sbomReleaseBranch
     volumes:
     - name: update-sbom-version-script-volume
       configMap:
