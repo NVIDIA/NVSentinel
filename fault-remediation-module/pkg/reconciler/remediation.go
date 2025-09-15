@@ -62,6 +62,7 @@ type TemplateData struct {
 	ApiGroup          string
 	TemplateMountPath string
 	TemplateFileName  string
+	HealthEventID     string
 	RecommendedAction platformconnector.RecommenedAction
 }
 
@@ -137,7 +138,10 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	return client, nil
 }
 
-func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+	healthEvent := healthEventDoc.HealthEventWithStatus.HealthEvent
+	healthEventID := healthEventDoc.ID.Hex()
+
 	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
 		log.Printf("DRY-RUN: Skipping custom resource creation for node %s", healthEvent.NodeName)
@@ -147,6 +151,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	log.Printf("Creating RebootNode CR for node: %s", healthEvent.NodeName)
 	c.templateData.NodeName = healthEvent.NodeName
 	c.templateData.RecommendedAction = healthEvent.RecommendedAction
+	c.templateData.HealthEventID = healthEventID
 
 	// Execute the template
 	var buf bytes.Buffer

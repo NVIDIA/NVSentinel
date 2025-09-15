@@ -20,7 +20,9 @@ import (
 	"text/template"
 
 	"github.com/stretchr/testify/assert"
+	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -286,7 +288,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 					metadata, found, err := unstructured.NestedMap(obj.Object, "metadata")
 					assert.NoError(t, err)
 					assert.True(t, found)
-					assert.Contains(t, metadata["generateName"], tt.nodeName)
+					assert.Contains(t, metadata["name"], tt.nodeName)
 					return obj, nil
 				},
 			}
@@ -296,7 +298,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			tmpl, err := tmpl.Parse(`apiVersion: {{.ApiGroup}}/{{.Version}}
 kind: RebootNode
 metadata:
-  generateName: maintenance-{{.NodeName}}-
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
 spec:
   nodeName: {{.NodeName}}`)
 			assert.NoError(t, err)
@@ -320,14 +322,19 @@ spec:
 				client.dryRunMode = []string{metav1.DryRunAll}
 			}
 
-			// Create a HealthEvent object
-			healthEvent := &platformconnector.HealthEvent{
-				NodeName:          tt.nodeName,
-				RecommendedAction: tt.recommendedAction,
+			// Create a HealthEventDoc object
+			healthEventDoc := &HealthEventDoc{
+				ID: primitive.NewObjectID(),
+				HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+					HealthEvent: &platformconnector.HealthEvent{
+						NodeName:          tt.nodeName,
+						RecommendedAction: tt.recommendedAction,
+					},
+				},
 			}
 
 			// Test CreateMaintenanceResource
-			result := client.CreateMaintenanceResource(context.Background(), healthEvent)
+			result := client.CreateMaintenanceResource(context.Background(), healthEventDoc)
 			assert.Equal(t, tt.shouldSucceed, result)
 			assert.Equal(t, tt.shouldCreate, createCalled, "Create function call expectation mismatch")
 		})

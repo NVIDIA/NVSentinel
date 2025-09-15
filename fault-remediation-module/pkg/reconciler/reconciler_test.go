@@ -24,18 +24,19 @@ import (
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // MockK8sClient is a mock implementation of K8sClient interface
 type MockK8sClient struct {
-	createMaintenanceResourceFn func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool
+	createMaintenanceResourceFn func(ctx context.Context, healthEventDoc *HealthEventDoc) bool
 	runLogCollectorJobFn        func(ctx context.Context, nodeName string) error
 }
 
-func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
-	return m.createMaintenanceResourceFn(ctx, healthEvent)
+func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+	return m.createMaintenanceResourceFn(ctx, healthEventDoc)
 }
 
 func (m *MockK8sClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
@@ -80,8 +81,8 @@ func TestNewReconciler(t *testing.T) {
 					Database: "test",
 				},
 				K8sClient: &MockK8sClient{
-					createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
-						assert.Equal(t, tt.nodeName, healthEvent.NodeName)
+					createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+						assert.Equal(t, tt.nodeName, healthEventDoc.HealthEvent.NodeName)
 						return tt.crCreationResult
 					},
 				},
@@ -120,9 +121,9 @@ func TestHandleEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
-					assert.Equal(t, tt.nodeName, healthEvent.NodeName)
-					assert.Equal(t, tt.recommendedAction, healthEvent.RecommendedAction)
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+					assert.Equal(t, tt.nodeName, healthEventDoc.HealthEvent.NodeName)
+					assert.Equal(t, tt.recommendedAction, healthEventDoc.HealthEvent.RecommendedAction)
 					return tt.shouldSucceed
 				},
 			}
@@ -132,12 +133,16 @@ func TestHandleEvent(t *testing.T) {
 			}
 
 			r := NewReconciler(cfg, false)
-			healthEvent := &platformconnector.HealthEvent{
-				NodeName:          tt.nodeName,
-				RecommendedAction: tt.recommendedAction,
+			healthEventDoc := &HealthEventDoc{
+				ID: primitive.NewObjectID(),
+				HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+					HealthEvent: &platformconnector.HealthEvent{
+						NodeName:          tt.nodeName,
+						RecommendedAction: tt.recommendedAction,
+					},
+				},
 			}
-			// handleEvent is now only called for supported actions
-			result := r.handleEvent(ctx, healthEvent)
+			result := r.Config.K8sClient.CreateMaintenanceResource(ctx, healthEventDoc)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
@@ -204,7 +209,7 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
 			return true
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -281,7 +286,7 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
 					return true
 				},
 				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -314,7 +319,7 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
 			return true
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -340,7 +345,7 @@ func TestLogCollectorDisabled(t *testing.T) {
 
 	logCollectorCalled := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
 			return true
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -408,7 +413,7 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 					updateDoc := update.(bson.M)
 
 					assert.Equal(t, tt.event["fullDocument"].(bson.M)["_id"], filterDoc["_id"])
-					assert.Equal(t, tt.nodeRemediated, updateDoc["$set"].(bson.M)["healtheventstatus.noderemediated"])
+					assert.Equal(t, tt.nodeRemediated, updateDoc["$set"].(bson.M)["healtheventstatus.faultremediated"])
 
 					if tt.mockError != nil {
 						return nil, tt.mockError

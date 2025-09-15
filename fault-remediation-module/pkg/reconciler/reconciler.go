@@ -25,6 +25,7 @@ import (
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/klog"
 )
@@ -46,6 +47,11 @@ type Reconciler struct {
 	Config              ReconcilerConfig
 	NodeEvictionContext sync.Map
 	DryRun              bool
+}
+
+type HealthEventDoc struct {
+	ID                                   primitive.ObjectID `bson:"_id"`
+	storeconnector.HealthEventWithStatus `bson:",inline"`
 }
 
 func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
@@ -103,7 +109,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	for event := range watcher.Events() {
 		klog.Info("Event received....")
 		totalEventsReceived.Inc()
-		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+		healthEventWithStatus := HealthEventDoc{}
 		if err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
 			&healthEventWithStatus,
@@ -126,7 +132,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		}
 
 		// Check if we should skip this event (NONE actions or unsupported actions)
-		if r.shouldSkipEvent(healthEventWithStatus) {
+		if r.shouldSkipEvent(healthEventWithStatus.HealthEventWithStatus) {
 			continue
 		}
 
@@ -134,7 +140,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 		for i := 1; i <= maxRetries; i++ {
 			klog.Infof("Attempt %d, handle event for node: %s", i, healthEventWithStatus.HealthEvent.NodeName)
-			if r.handleEvent(ctx, healthEventWithStatus.HealthEvent) {
+			if r.Config.K8sClient.CreateMaintenanceResource(ctx, &healthEventWithStatus) {
 				nodeRemediatedStatus = true
 				break
 			}
@@ -152,12 +158,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 	}
 }
 
-func (r *Reconciler) handleEvent(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool {
-	// This method is only called for supported actions (currently only NODE_REBOOT)
-	klog.Infof("Processing %s action for node %s", healthEvent.RecommendedAction.String(), healthEvent.NodeName)
-	return r.Config.K8sClient.CreateMaintenanceResource(ctx, healthEvent)
-}
-
 func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection MongoInterface, event bson.M, nodeRemediatedStatus bool) error {
 	var err error
 	document, ok := event["fullDocument"].(bson.M)
@@ -167,7 +167,7 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection 
 	filter := bson.M{"_id": document["_id"]}
 	update := bson.M{
 		"$set": bson.M{
-			"healtheventstatus.noderemediated": nodeRemediatedStatus,
+			"healtheventstatus.faultremediated": nodeRemediatedStatus,
 		},
 	}
 

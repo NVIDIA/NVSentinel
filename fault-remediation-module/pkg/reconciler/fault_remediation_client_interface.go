@@ -16,11 +16,9 @@ package reconciler
 
 import (
 	"context"
-
-	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 )
 
 type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEvent *platformconnector.HealthEvent) bool
+	CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) bool
 	RunLogCollectorJob(ctx context.Context, nodeName string) error
 }

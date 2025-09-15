@@ -15,6 +15,6 @@
 apiVersion: {{.ApiGroup}}/{{.Version}}
 kind: RebootNode
 metadata:
-  generateName: maintenance-{{.NodeName}}-
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
 spec:
   nodeName: {{.NodeName}}

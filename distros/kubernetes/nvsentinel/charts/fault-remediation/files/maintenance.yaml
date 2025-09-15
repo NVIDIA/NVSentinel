@@ -17,6 +17,6 @@ apiVersion: {{ .ApiGroup }}/{{ .Version }}
 # TODO: Add different maintenance actions based on RecommendedAction value
 kind: {{ if eq .RecommendedAction 2 }}RebootNode{{ else }}RebootNode{{ end }} 
 metadata:
-  generateName: maintenance-{{ .NodeName }}-
+  name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
 spec:
   nodeName: {{ .NodeName }}
