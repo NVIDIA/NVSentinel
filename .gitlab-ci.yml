@@ -132,7 +132,7 @@ include:
 
   # semantic-release (release)
   # https://gitlab-master.nvidia.com/dgxcloud/infra-automation/gitlab-components/semantic-release
-  - component: gitlab-master.nvidia.com/dgxcloud/infra-automation/gitlab-components/semantic-release/semantic-release@2.2.0
+  - component: gitlab-master.nvidia.com/dgxcloud/infra-automation/gitlab-components/semantic-release/semantic-release@2.3.0
     inputs:
       changelog: false
 
