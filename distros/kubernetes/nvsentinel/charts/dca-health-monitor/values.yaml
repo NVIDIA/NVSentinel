@@ -15,10 +15,10 @@
 updateStrategy: RollingUpdate
 
 image:
-  repository: nvcr.io/nv-ngc-devops/nvs_healthcheck-dev
+  repository: nvcr.io/nv-ngc-devops/nvsentinel-dca-health-monitor
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "main"
+  tag: "1.0.0"
 
 imagePullSecrets:
   - name: nvidia-ngcuser-pull-secret

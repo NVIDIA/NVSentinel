@@ -88,8 +88,9 @@ global:
   dcaHealthMonitor:
     enabled: false
     image:
-      repository: nvcr.io/nv-ngc-devops/nvsentinel-nvs_healthcheck-dev
+      repository: nvcr.io/nv-ngc-devops/nvsentinel-dca-health-monitor
       pullPolicy: IfNotPresent
+    tag: "1.0.0"
   
   cspHealthMonitor:
     enabled: false

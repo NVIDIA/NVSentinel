@@ -51,8 +51,8 @@ spec:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.global.dcaHealthMonitor.image.repository }}:{{ .Values.global.dcaHealthMonitor.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.dcaHealthMonitor.image.pullPolicy }}
           command:
             - "/opt/bin/nvsentinel/healthcheck_monitor"
           env:
@@ -75,10 +75,6 @@ spec:
               mountPath: /nvsentinel/sys
             - name: proc-vol
               mountPath: /nvsentinel/proc
-            # For nvme drives read
-            - name: dev
-              mountPath: /dev
-              readOnly: true
             # Configuration files
             - name: cluster-config-vol
               mountPath: /etc/healthcheck/default/clusters/conf_hc_DRACO_CLUSTER_GPU-H100.yml
@@ -106,13 +102,6 @@ spec:
           hostPath:
             path: /proc
             type: Directory
-        # For nvme drives read
-        - name: dev
-          hostPath:
-            path: /dev
-            type: Directory
-        # Configuration volumes
-
         # Cluster configuration
         - name: cluster-config-vol
           configMap:
