@@ -127,6 +127,7 @@ global:
 
   inclusterFileServer:
     enabled: false
+    metricsPort: 2112
   kata:
     enabled: false
     port:

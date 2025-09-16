@@ -23,11 +23,11 @@ spec:
     type: Recreate
   selector:
     matchLabels:
-      app: nvsentinel-file-server
+      app.kubernetes.io/instance: nvsentinel
   template:
     metadata:
       labels:
-        app: nvsentinel-file-server
+        app.kubernetes.io/instance: nvsentinel
     spec:
 {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -96,6 +96,44 @@ spec:
               mountPath: /var/run
             - name: nginx-tmp
               mountPath: /opt/bitnami/nginx/tmp
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+{{- if .Values.metrics.enabled }}
+        # HTTP metrics exporter (parses nginx logs for HTTP status codes and latency)
+        - name: nginx-log-exporter
+          image: "{{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}"
+          imagePullPolicy: {{ .Values.metrics.image.pullPolicy }}
+          args:
+            - -config-file=/etc/prometheus-nginxlog-exporter/config.yml
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.inclusterFileServer.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+            - name: nginx-conf
+              mountPath: /etc/prometheus-nginxlog-exporter/config.yml
+              subPath: log-exporter-config.yml
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+{{- end }}
       volumes:
         - name: artifacts
 {{- if .Values.persistence.enabled }}
@@ -112,6 +150,8 @@ spec:
         - name: nginx-run
           emptyDir: {}
         - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-logs
           emptyDir: {}
 ---
 {{- if .Values.persistence.enabled }}

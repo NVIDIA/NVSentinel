@@ -32,8 +32,6 @@ persistence:
   accessModes:
     - ReadWriteOnce
   size: 50Gi
-imagePullSecrets:
-  - name: nvidia-ngcuser-pull-secret
 
 resources: {}
 
@@ -52,9 +50,13 @@ nodeSelector: {}
 
 # Default tolerations cover common dedicated node taints seen across CSPs.
 # Safe on clusters without these taints (tolerations do nothing there).
-tolerations:
-  - key: "dedicated"
-    operator: "Exists"
+tolerations: []
 
-networkPolicy:
-  allowIngressFromIngressNginx: true
+
+# Metrics configuration
+metrics:
+  enabled: true
+  image:
+    repository: nvcr.io/nv-ngc-devops/prometheus-nginxlog-exporter
+    tag: "v1.10.0"
+    pullPolicy: IfNotPresent

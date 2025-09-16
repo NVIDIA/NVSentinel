@@ -17,12 +17,17 @@ kind: Service
 metadata:
   name: nvsentinel-file-server
   namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: nvsentinel
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app: nvsentinel-file-server
+    app.kubernetes.io/instance: nvsentinel
   ports:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}
+    - name: metrics
+      port: {{ .Values.global.inclusterFileServer.metricsPort }}
+      targetPort: {{ .Values.global.inclusterFileServer.metricsPort }}
 {{- end }}
