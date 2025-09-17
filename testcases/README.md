@@ -63,7 +63,11 @@ This directory contains test cases for validating NVSentinel functionality. The 
 
 ### Fault Remediation Tests
 - Fault remediation module tests
-    - Verifies creation maintainence CR upon injection of fatal XID error
+    - Verifies creation maintenance CR upon injection of fatal XID error
+
+### Log Collector Tests
+- Log collector module tests
+    - Verifies automated bug report collection upon injection of fatal GPU error
 
 ### Metrics tests
 
