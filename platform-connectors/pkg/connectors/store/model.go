@@ -27,6 +27,7 @@ const (
 	StatusInProgress Status = "InProgress"
 	StatusFailed     Status = "Failed"
 	StatusSucceeded  Status = "Succeeded"
+	AlreadyDrained   Status = "AlreadyDrained"
 )
 
 const (
@@ -41,9 +42,10 @@ type OperationStatus struct {
 }
 
 type HealthEventStatus struct {
-	NodeQuarantined        *Status         `bson:"nodequarantined"`
-	UserPodsEvictionStatus OperationStatus `bson:"userpodsevictionstatus"`
-	FaultRemediated        *bool           `bson:"faultremediated"`
+	NodeQuarantined          *Status         `bson:"nodequarantined"`
+	UserPodsEvictionStatus   OperationStatus `bson:"userpodsevictionstatus"`
+	FaultRemediated          *bool           `bson:"faultremediated"`
+	LastRemediationTimestamp *time.Time      `bson:"lastremediationtimestamp,omitempty"`
 }
 
 type HealthEventWithStatus struct {
