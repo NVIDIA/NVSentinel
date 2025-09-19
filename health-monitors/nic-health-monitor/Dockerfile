@@ -14,14 +14,12 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.9
-ARG IMG=nvcr.io/nvidian/distroless/go
+ARG TAG=v3.1.12
+ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
+FROM golang:1.23-bullseye AS builder
 
 ENV CGO_ENABLED=0
-ARG TARGETOS
-ARG TARGETARCH
 
 WORKDIR /go/src/nic-health-monitor
 
@@ -31,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nic-health-monitor cmd/nichealthmonitor.go
+RUN go build -o nic-health-monitor cmd/nichealthmonitor.go
 
 FROM $IMG:$TAG
 

@@ -15,11 +15,9 @@
 # syntax=docker/dockerfile:1.6
 
 ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
-FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
+FROM golang:1.23-bullseye AS builder
 
 ENV CGO_ENABLED=0
-ARG TARGETOS
-ARG TARGETARCH
 
 WORKDIR /go/src/nvswitch-health-monitor
 
@@ -29,14 +27,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 COPY . .
 
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
+RUN go build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
 
-# build the driver-watcher binary
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o driver-watcher ./cmd/driver-watcher
+RUN go build -o driver-watcher ./cmd/driver-watcher
 
-# build the clear_fatal_errors utility for testing
 RUN go build -o clear_fatal_errors clear-nvswitch-fatal-errors/clear_fatal_errors.go
-
 
 FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
@@ -49,10 +44,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=builder /go/src/nvswitch-health-monitor/nvswitch-health-monitor /app/nvswitch-health-monitor
 
-# copy the driver-watcher binary
 COPY --from=builder /go/src/nvswitch-health-monitor/driver-watcher /app/driver-watcher
-
-# binary is used for testing
 COPY --from=builder /go/src/nvswitch-health-monitor/clear_fatal_errors /usr/local/bin/clear_fatal_errors
 
 ENTRYPOINT ["/app/nvswitch-health-monitor"]

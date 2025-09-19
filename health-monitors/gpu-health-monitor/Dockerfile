@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ARG DCGM_VERSION="4.2.0-1-ubuntu22.04"
-FROM nvcr.io/nv-ngc-devops/python:3.10-bookworm1.0 AS build
+FROM python:3.10-bookworm AS build
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install poetry==1.8.2

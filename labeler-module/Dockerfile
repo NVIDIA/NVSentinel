@@ -14,42 +14,26 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.9
+ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
+FROM golang:1.23-bullseye AS builder
 
-ARG GITLAB_HOST
-ARG GITLAB_LOGIN
-
-RUN if [ -z "$GITLAB_HOST" ] || [ -z "$GITLAB_LOGIN" ]; then \
-        echo "Error: GITLAB_HOST and GITLAB_LOGIN must be provided as build arguments."; \
-        exit 1; \
-    fi
-
+# TODO: remove when pushing to GitHub
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
-
-ARG TARGETOS
-ARG TARGETARCH
 
 WORKDIR /go/src/labeler
 
 COPY go.mod go.sum ./
 
-# download dependencies with authentication
-RUN --mount=type=secret,id=gitlab_token \
-    --mount=type=cache,target=/go/pkg/mod \
-    GITLAB_TOKEN=$(cat /run/secrets/gitlab_token) && \
-    echo "machine ${GITLAB_HOST} login ${GITLAB_LOGIN} password ${GITLAB_TOKEN}" > ~/.netrc && \
-    chmod 600 ~/.netrc && \
-    go mod download && \
-    rm ~/.netrc
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download 
 
 COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o labeler cmd/main.go
+    go build -trimpath -o labeler cmd/main.go
 
 FROM ${IMG}:${TAG}
 

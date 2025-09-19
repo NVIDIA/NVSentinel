@@ -16,7 +16,6 @@ FROM golang:1.23-bullseye AS builder
 
 WORKDIR /go/src/syslog-health-monitor
 
-# Copy go.mod and go.sum first to leverage Docker cache
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
@@ -24,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 
 ENV CGO_ENABLED=1
-# Install systemd development headers and pkg-config
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
@@ -33,19 +32,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Build the Go application with static linking
 RUN CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor ./cmd/main.go
 
-# --- Final stage ---
 FROM debian:bullseye-slim
 
-# Install systemd-sysv to get journalctl
 RUN apt-get update && apt-get install -y \
     systemd-sysv \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary from the builder stage
 COPY --from=builder /go/src/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
 
 RUN echo "deb http://deb.debian.org/debian bookworm main" \

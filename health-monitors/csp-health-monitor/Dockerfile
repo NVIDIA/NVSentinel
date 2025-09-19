@@ -14,60 +14,33 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.9
+ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM nvcr.io/nv-ngc-devops/golang:1.23-1.0 AS builder
+FROM golang:1.23-bullseye AS builder
 
-# Set necessary environment variables for Go modules
+# TODO: remove when pushing to GitHub
 ENV GOPRIVATE=*.nvidia.com
-ENV CGO_ENABLED=0
-ARG TARGETOS
-ARG TARGETARCH
-
-# Arguments for GitLab authentication
-ARG GITLAB_HOST
-ARG GITLAB_LOGIN
-
-RUN if [ -z "$GITLAB_HOST" ] || [ -z "$GITLAB_LOGIN" ]; then \
-        echo "Error: GITLAB_HOST and GITLAB_LOGIN must be provided as build arguments."; \
-        exit 1; \
-    fi
 
 WORKDIR /go/src/csp-health-monitor
 
-# Copy go module files first for better layer caching
 COPY go.mod go.sum ./
 
-# Download dependencies
-# The .netrc needs to be created in the home directory of the user running the build (root in this stage)
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=secret,id=gitlab_token \
-    GITLAB_TOKEN=$(cat /run/secrets/gitlab_token) && \
-    echo "machine ${GITLAB_HOST} login ${GITLAB_LOGIN} password ${GITLAB_TOKEN}" > ~/.netrc && \
-    chmod 600 ~/.netrc && \
-    git config --global url."https://${GITLAB_LOGIN}:${GITLAB_TOKEN}@${GITLAB_HOST}/".insteadOf "https://${GITLAB_HOST}/" && \
-    go env -w GOPRIVATE=${GITLAB_HOST} && \
-    go mod download && \
-    rm ~/.netrc
+    go mod download 
 
-# Copy the rest of the source code
 COPY . .
 
-# Build the main monitor application binary
 RUN --mount=type=cache,target=/go/pkg/mod \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o csp-health-monitor ./cmd/csp-health-monitor/main.go
+    go build -trimpath -o csp-health-monitor ./cmd/csp-health-monitor/main.go
 
-# Build the quarantine trigger engine sidecar binary
 RUN --mount=type=cache,target=/go/pkg/mod \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o maintenance-notifier ./cmd/maintenance-notifier/main.go
+    go build -trimpath -o maintenance-notifier ./cmd/maintenance-notifier/main.go
 
-# --- Final Stage ---
 FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-# Copy binaries from builder stage
 COPY --from=builder /go/src/csp-health-monitor/csp-health-monitor ./
 COPY --from=builder /go/src/csp-health-monitor/maintenance-notifier ./
 
