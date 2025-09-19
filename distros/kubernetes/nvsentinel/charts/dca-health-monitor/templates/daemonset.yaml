@@ -55,6 +55,9 @@ spec:
           imagePullPolicy: {{ .Values.global.dcaHealthMonitor.image.pullPolicy }}
           command:
             - "/opt/bin/nvsentinel/healthcheck_monitor"
+          args:
+            - "--interval"
+            - "{{ .Values.global.dcaHealthMonitor.interval | default "1800" }}"
           env:
             - name: CLUSTER_NAME
               value: {{ .Values.clusterName }}

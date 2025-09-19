@@ -37,25 +37,15 @@ data:
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
 {{- else }}
-      - name: "SysLogsDriverVersionMismatch"
+      - name: SysLogsXidError
         matches:
-          - 'Failed to initialize NVML: Driver/library version mismatch'
+          - 'Xid .* waiting for RPC response from GPU'
         count: 0
-        ignoreCase: false # Assuming default if not specified, original snippet doesn't show for this
+        ignoreCase: true
         tags: []
         journalPath: "/nvsentinel/var/log/journal/"
         boot: false
-        recommended_action: REPORT_ISSUE
-
-      - name: "SysLogsBMCHealth"
-        matches:
-          - 'BMC returned incorrect response'
-        count: 4
-        ignoreCase: true
-        tags: [] # Assuming empty if not specified, original snippet doesn't show for this
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: REPORT_ISSUE
+        recommended_action: NODE_REBOOT
 
       - name: "SysLogsGPUMissing"
         matches:
@@ -67,70 +57,9 @@ data:
         boot: false
         recommended_action: NODE_REBOOT
 
-      - name: "SysLogsXidError"
-        matches:
-          - 'Xid .* waiting for RPC response from GPU'
-        count: 0
-        ignoreCase: true
-        tags: [] # Assuming empty if not specified
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: NODE_REBOOT
 
-      - name: "SysLogshcaFwError"
-        matches:
-          - 'Health issue observed, firmware internal error'
-        count: 0
-        ignoreCase: true
-        tags: [] # Assuming empty if not specified
-        journalPath: "/nvsentinel/var/log/journal/" # Original snippet does not specify path for this one. Defaulting to empty.
-        boot: false
-        recommended_action: REPORT_ISSUE
 
-      - name: "SysLogsIbFirmwareBug"
-        matches:
-          - 'Skipping wait for vf pages stage'
-        count: 0
-        ignoreCase: false
-        tags: [] # Assuming empty if not specified
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: REPORT_ISSUE
 
-      - name: "SysLogsMceErrors"
-        matches:
-          - 'Machine check events logged'
-        count: 20
-        ignoreCase: true
-        tags: [] # Assuming empty if not specified
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: REPORT_ISSUE
-
-      - name: "SysLogsNvidiaFabricmanager"
-        matches:
-          - "Failed to find GPU"
-          - " fatal"
-        count: 0
-        ignoreCase: false
-        tags:
-          - "-b"
-          - "-u nv-fabricmanager.service"
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: true
-        recommended_action: NODE_REBOOT
-
-      - name: "SysLogsNvidiaPersistenced"
-        matches:
-          - "failed to open"
-        count: 0
-        ignoreCase: true
-        tags:
-          - "-b"
-          - "-u nvidia-persistenced.service"
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: true
-        recommended_action: REPORT_ISSUE
 {{- end }}
 
   # XID error mappings (shared with GPU health monitor from main chart)

@@ -36,94 +36,106 @@ data:
           name: GPU-H100
 
     GPU-H100:
+      # This check is specific to GB200. but not clear on the rationale/remediation part of this check.
+      # Clarification is needed from DCA team for this check.
+      # sw_sys_logs_qspi_timeout:
+      #   path: /nvsentinel/var/log/journal
+      #   matches:
+      #       - "QSPI Transfer failed with timeout"
+      #   count: 0
+      #   boot: true
+      #   tags:
+      #       - "--priority=err"
+      #       - "--dmesg"
+      #   timeout: 120
+      #   _group:
+      #     - logs
 
-      hw_drv_gpu_ecc_error:
-        uncorrected_total: 1024000
-        corrected_total: 1024000
-        uncorrected_total_sram: 1024000
-        corrected_total_sram: 1024000
-        uncorrected_vol: 3
-        corrected_vol: 1024
-        timeout: 60
-        _group:
-          - epilog
-          - prolog
-          - gpu
-
-      hw_drv_gpu_ecc_remapped_rows:
-        correctable_threshold: 1024
-        banks_low: 3000
-        banks_none: 3000
-        banks_partial: 3000
-        timeout: 60
-        _group:
-          - epilog
-          - prolog
-          - gpu
-      
-      sw_drv_config_nvidia_smi:
-        timeout: 60
-        _group:
-            - prolog
-            - epilog
-            - gpu
-          
-      hw_drv_gpu_ecc_retired_pages:
-        timeout: 60
-        _group:
-          - epilog
-          - prolog
-          - gpu
-
-
-
-      hw_drv_gpu_topology:
-        timeout: 60
-        _group:
-          - epilog
-          - prolog
-          - gpu
-
-      sw_sys_config_nv_container_cli:
-        _group:
-          - software
-
-      sw_sys_logs_qspi_timeout:
-        path: /nvsentinel/var/log/journal
+      sw_sys_logs_nvidia_fabricmanager:
         matches:
-            - "QSPI Transfer failed with timeout"
+          - "Failed to find GPU"
+          - " fatal"
         count: 0
-        boot: true
-        tags:
-            - "--priority=err"
-            - "--dmesg"
-        timeout: 120
-        _group:
-            - logs
-
-      sw_sys_logs_lustre_error:
-        path: /nvsentinel/var/log/journal
-        matches:
-            - "LNetError: "
-            - "LustreError: "
-        count: 0
-        tags:
-            - "--priority=err"
         ignore_case: false
-        timeout: 60
-        _group:
-            - logs
-
-      sw_sys_logs_io_error:
-        path: /nvsentinel/var/log/journal
-        matches:
-            - "I/O error"
-        count: 1
-        boot: true
         tags:
-            - "--priority=err"
-            - "--identifier=kernel"
-            - "--identifier=systemd"
-        timeout: 60
+          - "--boot"
+          - "-u nv-fabricmanager.service"
+        path: "/nvsentinel/var/log/journal/"
+        timeout: 60  # it represents the timeout for the check in seconds
+        boot: true
         _group:
-            - logs
+          - logs
+
+      sw_sys_logs_nvidia_persistenced:
+        matches:
+          - "failed to open"
+        count: 0
+        ignore_case: true
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags:
+          - "--boot"
+          - "-u nvidia-persistenced.service"
+        path: "/nvsentinel/var/log/journal/"
+        boot: true
+        _group:
+          - logs
+
+      sw_sys_logs_driver_version_mismatch:
+        matches:
+          - 'Failed to initialize NVML: Driver/library version mismatch'
+        count: 0
+        ignore_case: false
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags: []
+        path: "/nvsentinel/var/log/journal/"
+        boot: false
+        _group:
+          - logs
+
+      sw_sys_logs_bmc_health:
+        matches:
+          - 'BMC returned incorrect response'
+        count: 4
+        ignore_case: true
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags: []
+        path: "/nvsentinel/var/log/journal/"
+        boot: false
+        _group:
+          - logs
+
+      sw_sys_logs_hca_fw_error:
+        matches:
+          - 'Health issue observed, firmware internal error'
+        count: 0
+        ignore_case: true
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags: []
+        path: "/nvsentinel/var/log/journal/"
+        boot: false
+        _group:
+          - logs
+
+      sw_sys_logs_ib_firmware_bug:
+        matches:
+          - 'Skipping wait for vf pages stage'
+        count: 0
+        ignore_case: false
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags: []
+        path: "/nvsentinel/var/log/journal/"
+        boot: false
+        _group:
+          - logs
+
+      sw_sys_logs_mce_errors:
+        matches:
+          - 'Machine check events logged'
+        count: 20
+        ignore_case: true
+        timeout: 60  # it represents the timeout for the check in seconds
+        tags: []
+        path: "/nvsentinel/var/log/journal/"
+        boot: false
+        _group:
+          - logs

@@ -91,7 +91,8 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-dca-health-monitor
       pullPolicy: IfNotPresent
     tag: "1.0.0"
-  
+    interval: 1800
+
   cspHealthMonitor:
     enabled: false
 
