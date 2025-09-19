@@ -1,0 +1,8 @@
+NVIDIA NVSentinel
+Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+
+This product includes software developed by NVIDIA Corporation (https://www.nvidia.com/).
+
+The Initial Developer of the distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb, is Broadcom, Inc. (https://www.broadcom.com/).
+Copyright 2024 Broadcom, Inc. All Rights Reserved.
+Source: https://github.com/bitnami/charts/commit/f001424f6aad534d5fe5a9ad09265b24b1fd6fe7

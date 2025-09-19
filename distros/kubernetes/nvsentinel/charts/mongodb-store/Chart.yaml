@@ -21,6 +21,5 @@ appVersion: "1.16.0"
 
 dependencies:
   - name: mongodb
-    version: 16.2.2
-    repository: https://helm.ngc.nvidia.com/nv-ngc-devops
+    version: "16.2.2"
     condition: global.installMongoDB
