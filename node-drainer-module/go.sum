@@ -127,8 +127,8 @@ github.com/yuin/goldmark v1.2.1/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9dec
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250901064035-448ac86146d3 h1:zHa2962na5zkXSTOsZSkm4QUMGy8zwdtWjtVwIpZvA0=
 gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250901064035-448ac86146d3/go.mod h1:r16Cra1AmHEhN8tUx2gbTnmQALbC9TJtOiJqH3WRaFk=
-gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d h1:0wU9WuSgj9tbIWi3S8nxArKPEa5hO+yQ8Y02U9qm6uw=
-gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d/go.mod h1:w66bp5cYWDRz/ZEOGCxgEc1Kpw5FdNCIJ7q4XpUCCCE=
+gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250916143828-4a89e12b30c0 h1:sYDGr+4S9JUHbcvMDA2awiRDzAINMiZsozIAgzu1wW4=
+gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250916143828-4a89e12b30c0/go.mod h1:w66bp5cYWDRz/ZEOGCxgEc1Kpw5FdNCIJ7q4XpUCCCE=
 go.mongodb.org/mongo-driver v1.17.4 h1:jUorfmVzljjr0FLzYQsGP8cgN/qzzxlY9Vh0C9KFXVw=
 go.mongodb.org/mongo-driver v1.17.4/go.mod h1:Hy04i7O2kC4RS06ZrhPRqj/u4DTYkFDAAccj+rVKqgQ=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=

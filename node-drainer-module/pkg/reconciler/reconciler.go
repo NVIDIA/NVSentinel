@@ -30,9 +30,9 @@ import (
 )
 
 const (
-	maxRetries        = 5
-	retryDelay        = 10 * time.Second
-	NodeDrainLabelKey = "nvsentinel.dgxc.nvidia.com/node-drain-status"
+	maxRetries                 = 5
+	retryDelay                 = 10 * time.Second
+	NodeDrainStatusLabelKey    = "nvsentinel.dgxc.nvidia.com/node-drain-status"
 )
 
 type NodeDrainLabelValue string
@@ -121,7 +121,7 @@ func (r *Reconciler) startEventProcessing(ctx context.Context, event bson.M, col
 		return
 	}
 
-	klog.Infof("Received event:\nHealth Event: %+v", healthEventWithStatus.HealthEvent)
+	klog.Infof("Received event: \n%+v", healthEventWithStatus.HealthEvent)
 	// set the user pod eviction status to in-progress
 	podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = storeconnector.StatusInProgress
@@ -184,6 +184,8 @@ func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection
 func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
 
 	namespaceMap := r.getMatchingNamespace(ctx)
+	deleteAfterTimeout := r.Config.TomlConfig.DeleteAfterTimeoutMinutes
+	getTimeoutNamespaces := r.getTimeoutNamespaces(ctx)
 
 	// If DrainOverrides.Force is true, override all namespaces to use immediate eviction
 	if healthEventWithStatus.HealthEvent.DrainOverrides != nil && healthEventWithStatus.HealthEvent.DrainOverrides.Force {
@@ -207,11 +209,30 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, true)
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
-		} else {
-			klog.Infof("Node drainer status label updated for node %s", nodeName)
 		}
 		// Node is quarantined - set metric to 1 to indicate draining started
 		nodeDrainStatus.WithLabelValues(nodeName).Set(1)
+	}
+
+	if len(getTimeoutNamespaces) > 0 && *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
+		ctxTimeout, cancelTimeout := context.WithCancel(ctx)
+		timeoutKey := fmt.Sprintf("%s-timeout", nodeName)
+		r.NodeEvictionContext.Store(timeoutKey, &EvictionContext{cancel: cancelTimeout})
+
+		wg.Add(1)
+		go func(ctx context.Context, cancelFn context.CancelFunc, timeoutKey string, nodeName string, namespaces []string) {
+			defer func() {
+				// ensure the derived context is cancelled to release resources
+				cancelFn()
+				// remove the key so that future healthy events don't try to cancel again
+				r.NodeEvictionContext.Delete(timeoutKey)
+				wg.Done()
+			}()
+
+			if err := r.Config.K8sClient.DeletePodsAfterTimeout(ctx, nodeName, namespaces, deleteAfterTimeout, healthEventWithStatus); err != nil {
+				klog.Errorf("Error in deleting pod if not finished: %+v", err)
+			}
+		}(ctxTimeout, cancelTimeout, timeoutKey, nodeName, getTimeoutNamespaces)
 	}
 
 	for ns, mode := range namespaceMap {
@@ -225,6 +246,11 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 					evictionContext := context.(*EvictionContext)
 					evictionContext.cancel()
 				}
+			}
+			if context, ok := r.NodeEvictionContext.Load(fmt.Sprintf("%s-timeout", nodeName)); ok {
+				klog.Infof("Cancelling the eviction of pods on node %s", nodeName)
+				evictionContext := context.(*EvictionContext)
+				evictionContext.cancel()
 			}
 		} else {
 			wg.Add(1)
@@ -281,8 +307,6 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
-		} else {
-			klog.Infof("Node drainer status label updated for node %s", nodeName)
 		}
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 		return mErr
@@ -295,8 +319,6 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
-		} else {
-			klog.Infof("Node drainer status label updated for node %s", nodeName)
 		}
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 	}
@@ -308,7 +330,13 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 	namespaceMap := make(map[string]config.EvictMode)
 	systemNamespaces := r.Config.TomlConfig.SystemNamespaces
 	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
+
+		if userNamespace.Mode == config.ModeDeleteAfterTimeout {
+			continue
+		}
+
 		matchedNamespaces, err := r.Config.K8sClient.GetNamespacesMatchingPattern(ctx, userNamespace.Name, systemNamespaces)
+
 		if err != nil {
 			klog.Errorf("Error while matching namespaces with pattern %s: %+v", userNamespace.Name, err)
 			continue
@@ -322,6 +350,24 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 		}
 	}
 	return namespaceMap
+}
+
+func (r *Reconciler) getTimeoutNamespaces(ctx context.Context) []string {
+	timeoutNamespaces := []string{}
+	systemNamespaces := r.Config.TomlConfig.SystemNamespaces
+
+	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
+
+		if userNamespace.Mode == config.ModeDeleteAfterTimeout {
+			matchedNamespaces, err := r.Config.K8sClient.GetNamespacesMatchingPattern(ctx, userNamespace.Name, systemNamespaces)
+			if err != nil {
+				klog.Errorf("Error while matching namespaces with pattern %s: %+v", userNamespace.Name, err)
+				continue
+			}
+			timeoutNamespaces = append(timeoutNamespaces, matchedNamespaces...)
+		}
+	}
+	return timeoutNamespaces
 }
 
 // getInProgressEvents to get the events for which draining was already started

@@ -34,6 +34,7 @@ type MockNodeDrainerClient struct {
 	evictAllPodsImmediatelyFn      func(ctx context.Context, namespace string, nodename string, timeout time.Duration) error
 	checkIfAllPodsAreEvictedFn     func(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool
 	updateNodeLabelFn              func(ctx context.Context, nodeName string, isDraining bool) error
+	deletePodsAfterTimeoutFn       func(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error
 }
 
 func (c *MockNodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
@@ -56,6 +57,10 @@ func (c *MockNodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName st
 	return c.updateNodeLabelFn(ctx, nodeName, isDraining)
 }
 
+func (c *MockNodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
+	return c.deletePodsAfterTimeoutFn(ctx, nodeName, namespaces, timeout, event)
+}
+
 func TestHandleEvent(t *testing.T) {
 	ctx := context.Background()
 	var err error
@@ -69,7 +74,12 @@ func TestHandleEvent(t *testing.T) {
 			{
 				Name: "*sentin*",
 				Mode: "AllowCompletion",
+			},
+			{
+				Name: "*sentin*",
+				Mode: "DeleteAfterTimeout",
 			}},
+		DeleteAfterTimeoutMinutes: 1,
 	}
 	count := 0
 	k8sClient := &MockNodeDrainerClient{
@@ -108,6 +118,12 @@ func TestHandleEvent(t *testing.T) {
 				assert.Equal(t, false, isDraining, "Expected isDraining to be false but found %s", isDraining)
 				return nil
 			}
+			return nil
+		},
+		deletePodsAfterTimeoutFn: func(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
+			assert.Equal(t, "node1", nodeName, "Expected node1 to be deleted but found %s", nodeName)
+			assert.Equal(t, []string{"nvsentinel"}, namespaces, "Expected nvsentinel namespace to be deleted but found %s", namespaces)
+			assert.Equal(t, 1, timeout, "Expected timeout to be 1 but found %s", timeout)
 			return nil
 		},
 	}

@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	platform_connectors "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -302,6 +304,72 @@ func TestCheckIfAllPodsAreEvictedInImmediateMode(t *testing.T) {
 
 	assertPodDeleted(ctx, t, "runai", "pod1")
 	assertPodDeleted(ctx, t, "runai", "pod2")
+}
+
+func TestDeletePodsAfterTimeout(t *testing.T) {
+	ctx := context.TODO()
+
+	// Subtest 1: drain timeout already elapsed -> force delete
+	t.Run("timeout elapsed - pods deleted", func(t *testing.T) {
+		createNode(ctx, "node1", map[string]string{
+			NodeDrainStatusLabelKey: string(InProgress),
+		})
+
+		// pod on node-timeout
+		createTestPod(ctx, "nvsentinel", "timeout-pod", "node1")
+
+		err := k8sClient.DeletePodsAfterTimeout(ctx, "node1", []string{"nvsentinel"}, 4, &storeconnector.HealthEventWithStatus{
+			CreatedAt:   time.Now().Add(-3 * time.Minute),
+			HealthEvent: &platform_connectors.HealthEvent{},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{},
+				FaultRemediated:        nil,
+			},
+		})
+		assert.NoError(t, err)
+		assertPodDeleted(ctx, t, "nvsentinel", "timeout-pod")
+	})
+
+	// Subtest 2: drain timeout not elapsed -> pods remain
+	t.Run("timeout not elapsed - pods remain", func(t *testing.T) {
+		nodeName := "node-no-timeout"
+		// create node with start time 30s ago
+		createNode(ctx, nodeName, map[string]string{
+			NodeDrainStatusLabelKey: string(InProgress),
+		})
+
+		createTestPod(ctx, "nvsentinel", "early-pod", nodeName)
+
+		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 2, &storeconnector.HealthEventWithStatus{
+			CreatedAt:   time.Now().Add(-1 * time.Minute),
+			HealthEvent: &platform_connectors.HealthEvent{},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{},
+				FaultRemediated:        nil,
+			},
+		}) // 2 minute timeout
+		assert.NoError(t, err)
+		assertPodNotDeleted(ctx, t, "nvsentinel", "early-pod")
+	})
+
+	// Subtest 3: node not draining (no label) -> function no-ops
+	t.Run("node not draining", func(t *testing.T) {
+		nodeName := "plain-node"
+		createNode(ctx, nodeName, map[string]string{})
+
+		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 1, &storeconnector.HealthEventWithStatus{
+			CreatedAt:   time.Now().Add(-3 * time.Minute),
+			HealthEvent: &platform_connectors.HealthEvent{},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{},
+				FaultRemediated:        nil,
+			},
+		})
+		assert.NoError(t, err)
+	})
 }
 
 func TestPodStuckInTerminatingState(t *testing.T) {
@@ -585,6 +653,25 @@ func markPodHealthy(ctx context.Context, namespace string, podNames []string) {
 		if err != nil {
 			log.Fatalf("failed to update pod status for %s/%s: %v", namespace, name, err)
 		}
+	}
+}
+
+func createNode(ctx context.Context, nodeName string, labels map[string]string) {
+	node := &v1.Node{
+		ObjectMeta: metaV1.ObjectMeta{
+			Name:   nodeName,
+			Labels: labels,
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{{
+				Type:   v1.NodeReady,
+				Status: v1.ConditionTrue,
+			}},
+		},
+	}
+	_, err := Client.CoreV1().Nodes().Create(ctx, node, metaV1.CreateOptions{})
+	if err != nil {
+		log.Fatalf("Failed to create node %s: %v", nodeName, err)
 	}
 }
 

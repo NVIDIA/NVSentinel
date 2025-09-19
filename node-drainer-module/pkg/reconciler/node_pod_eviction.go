@@ -23,6 +23,7 @@ import (
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
+	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -130,8 +131,6 @@ func (c *NodeDrainerClient) findRemainingPods(pods []v1.Pod, namespace string, n
 			klog.Infof("Ignoring pod %s in namespace %s on node %s", pod.Name, namespace, nodeName)
 			continue
 		}
-
-		klog.InfoS("Pod not evicted", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
 		filteredPods = append(filteredPods, pod)
 	}
 	return filteredPods
@@ -263,7 +262,7 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 		return true
 	}
 
-	klog.Infof("Following pods are not evictecd from node %s, waiting %v for them to finish: \n%+v", nodeName, timeout, remainingPods)
+	klog.Infof("Following pods are not evicted from node %s, waiting %v for them to finish: \n%+v", nodeName, timeout, remainingPods)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -469,15 +468,16 @@ func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace 
 				return fmt.Errorf("error in listing remaining pods in namespace %s on node %s", namespace, nodeName)
 			}
 
-			allCompleted := true
+			podNames := []string{}
 			for _, pod := range podsList {
-				allCompleted = false
-				klog.InfoS("Still waiting for this pod to finish", "node", nodeName, "name", pod.Name, "namespace", pod.Namespace)
+				podNames = append(podNames, pod.Name)
 			}
 
-			if allCompleted {
+			if len(podNames) == 0 {
 				return nil
 			}
+
+			klog.InfoS("Still waiting for these pods to finish", "node", nodeName, "name", podNames, "namespace", namespace)
 		}
 	}
 }
@@ -488,22 +488,95 @@ func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string
 		if err != nil {
 			return err
 		}
-		currentValue, exists := node.Labels[NodeDrainLabelKey]
+		currentValue, exists := node.Labels[NodeDrainStatusLabelKey]
 		if isDraining {
 			if exists && currentValue == string(InProgress) {
-				// Desired label already set – skip the update call.
+				klog.Infof("Node draining label is already set for node %s", nodeName)
 				return nil
 			}
-			node.Labels[NodeDrainLabelKey] = string(InProgress)
+			node.Labels[NodeDrainStatusLabelKey] = string(InProgress)
 		} else {
 			if !exists {
-				// Label already absent – skip the update call.
+				klog.Infof("Node draining label is already absent for node %s", nodeName)
 				return nil
 			}
-			delete(node.Labels, NodeDrainLabelKey)
+			delete(node.Labels, NodeDrainStatusLabelKey)
 		}
 
 		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-		return err
+
+		if err != nil {
+			return err
+		}
+
+		klog.Infof("Node draining label updated for node %s", nodeName)
+		return nil
 	})
+}
+
+func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
+	// ticker to periodically check if pods are still present on the node
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	drainTimeout, err := c.GetNodeDrainTimeout(ctx, nodeName, timeout, event)
+	if err != nil {
+		return fmt.Errorf("error getting node drain timeout: %w", err)
+	}
+
+	// timer that fires once the overall timeout has elapsed
+	timer := time.NewTimer(drainTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Context cancelled – nothing more to do
+			return nil
+
+		case <-ticker.C:
+			// Periodically check if all pods are already gone. If yes – we're done early.
+			podsRunning := []string{}
+			for _, ns := range namespaces {
+				pods, err := c.findAllPodsInNamespaceAndNode(ctx, ns, nodeName)
+				if err != nil {
+					return fmt.Errorf("error listing pods in namespace %s on node %s: %w", ns, nodeName, err)
+				}
+				if len(pods) > 0 {
+					for _, pod := range pods {
+						podsRunning = append(podsRunning, pod.Name)
+					}
+				}
+			}
+			if len(podsRunning) == 0 {
+				// Nothing left to delete – return early.
+				return nil
+			}
+			klog.Infof("Still waiting for these pods to finish: %v in namespace %v on node %s", podsRunning, namespaces, nodeName)
+
+		case <-timer.C:
+			// Timeout hit – force delete all remaining pods.
+			for _, ns := range namespaces {
+				pods, err := c.findAllPodsInNamespaceAndNode(ctx, ns, nodeName)
+				if err != nil {
+					return fmt.Errorf("error listing pods in namespace %s on node %s: %w", ns, nodeName, err)
+				}
+				if err := c.forceDeletePods(ctx, pods); err != nil {
+					return fmt.Errorf("error force deleting pods in namespace %s on node %s: %w", ns, nodeName, err)
+				}
+			}
+			return nil
+		}
+	}
+}
+
+// get the timeout for the node drain using health event creation time and configured deleteAfterTimeout
+func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName string, timeout int, event *storeconnector.HealthEventWithStatus) (time.Duration, error) {
+	elapsed := time.Since(event.CreatedAt)
+	drainTimeout := time.Duration(timeout) * time.Minute
+
+	klog.Infof("Node %s has been in draining state for %v and waiting timeout is %v", nodeName, elapsed, drainTimeout)
+
+	return drainTimeout - elapsed, nil
+
 }

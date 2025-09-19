@@ -25,8 +25,9 @@ import (
 type EvictMode string
 
 const (
-	ModeImmediateEvict  EvictMode = "Immediate"
-	ModeAllowCompletion EvictMode = "AllowCompletion"
+	ModeImmediateEvict     EvictMode = "Immediate"
+	ModeAllowCompletion    EvictMode = "AllowCompletion"
+	ModeDeleteAfterTimeout EvictMode = "DeleteAfterTimeout"
 )
 
 type Duration struct {
@@ -39,8 +40,9 @@ type UserNamespace struct {
 }
 
 type TomlConfig struct {
-	EvictionTimeoutInSeconds Duration `toml:"evictionTimeoutInSeconds"`
-	SystemNamespaces         string   `toml:"systemNamespaces"`
+	EvictionTimeoutInSeconds  Duration `toml:"evictionTimeoutInSeconds"`
+	SystemNamespaces          string   `toml:"systemNamespaces"`
+	DeleteAfterTimeoutMinutes int      `toml:"deleteAfterTimeoutMinutes"`
 	// NotReadyTimeoutMinutes is the time after which a pod in NotReady state is considered stuck
 	NotReadyTimeoutMinutes int             `toml:"notReadyTimeoutMinutes"`
 	UserNamespaces         []UserNamespace `toml:"userNamespaces"`
@@ -82,6 +84,14 @@ func LoadTomlConfigFromString(configString string) (*TomlConfig, error) {
 
 // validateAndSetDefaults validates the configuration and sets default values
 func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
+	if config.DeleteAfterTimeoutMinutes == 0 {
+		config.DeleteAfterTimeoutMinutes = 60 // Default: 60 minutes
+	}
+
+	if config.DeleteAfterTimeoutMinutes <= 0 {
+		return nil, fmt.Errorf("deleteAfterTimeout must be a positive integer")
+	}
+
 	if config.NotReadyTimeoutMinutes == 0 {
 		config.NotReadyTimeoutMinutes = 5 // Default: 5 minutes
 	}
