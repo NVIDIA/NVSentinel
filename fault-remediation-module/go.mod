@@ -1,8 +1,8 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module
 
-go 1.23.0
+go 1.23.2
 
-toolchain go1.23.3
+toolchain go1.23.4
 
 require (
 	github.com/prometheus/client_golang v1.20.2

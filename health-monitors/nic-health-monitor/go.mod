@@ -1,17 +1,16 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/nic-health-monitor
 
-go 1.23.0
+go 1.23.2
 
 toolchain go1.23.4
 
 require (
-	github.com/golang/protobuf v1.5.4
 	github.com/prometheus/client_golang v1.20.2
 	github.com/stretchr/testify v1.9.0
 	google.golang.org/grpc v1.64.0
 	google.golang.org/protobuf v1.35.1
 	gopkg.in/ini.v1 v1.67.0
-	k8s.io/apimachinery v0.32.1
+	k8s.io/apimachinery v0.32.2
 	k8s.io/klog v1.0.0
 )
 

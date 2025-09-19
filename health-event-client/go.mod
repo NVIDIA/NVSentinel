@@ -1,6 +1,8 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-event-client
 
-go 1.23.0
+go 1.23.2
+
+toolchain go1.23.4
 
 require (
 	github.com/go-playground/validator/v10 v10.27.0

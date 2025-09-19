@@ -1,6 +1,8 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module
 
-go 1.23.1
+go 1.23.2
+
+toolchain go1.23.4
 
 require (
 	github.com/BurntSushi/toml v1.4.0
@@ -10,9 +12,9 @@ require (
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250901064035-448ac86146d3
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250916143828-4a89e12b30c0
 	go.mongodb.org/mongo-driver v1.17.4
-	k8s.io/api v0.32.1
-	k8s.io/apimachinery v0.32.1
-	k8s.io/client-go v0.32.1
+	k8s.io/api v0.32.2
+	k8s.io/apimachinery v0.32.2
+	k8s.io/client-go v0.32.2
 	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.130.1
 	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738

@@ -1,6 +1,8 @@
 module gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk
 
-go 1.23.0
+go 1.23.2
+
+toolchain go1.23.4
 
 require (
 	github.com/stretchr/testify v1.10.0

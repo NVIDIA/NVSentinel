@@ -26,15 +26,17 @@ import (
 
 type RingBuffer struct {
 	ringBufferIdentifier string
-	healthMetricQueue    workqueue.RateLimitingInterface
+	healthMetricQueue    workqueue.TypedRateLimitingInterface[*platformconnector.HealthEvents]
 	ctx                  context.Context
 }
 
 func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
 	workqueue.SetProvider(prometheusMetricsProvider{})
-	queue := workqueue.NewNamedRateLimitingQueue(
-		workqueue.DefaultControllerRateLimiter(),
-		ringBufferName,
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[*platformconnector.HealthEvents](),
+		workqueue.TypedRateLimitingQueueConfig[*platformconnector.HealthEvents]{
+			Name: ringBufferName,
+		},
 	)
 
 	return &RingBuffer{
@@ -62,7 +64,7 @@ func (rb *RingBuffer) Dequeue() *platformconnector.HealthEvents {
 		return nil
 	}
 
-	return healthEvents.(*platformconnector.HealthEvents)
+	return healthEvents
 }
 
 func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *platformconnector.HealthEvents) {
