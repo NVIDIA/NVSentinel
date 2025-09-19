@@ -41,7 +41,7 @@ global:
 
 
   nicHealthMonitor:
-    enabled: true
+    enabled: false
     nicExclusionRegexesForInjectedContainer: "^eth0$" #This is the default nic already being monitored from the daemonset monitor
     nicExclusionRegexes: "^gketmp.*"
     monitorNetworkType: "all"

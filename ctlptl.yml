@@ -12,37 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-nameOverride: ""
-fullnameOverride: ""
+# ctlptl apply -f ctrlptl.yml
+#
+# https://github.com/tilt-dev/ctlptl?tab=readme-ov-file#how-do-i-install-it
 
-updateStrategy: RollingUpdate
-maxUnavailable: 25%
-
-podAnnotations: {}
-
-podSecurityContext: {}
-
-securityContext:
-  runAsUser: 0
-
-resources: 
-  limits:
-    cpu: 500m
-    memory: 512Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
-
-nodeSelector: 
-  nvidia.com/gpu.present: "true"
-
-tolerations: []
-
-affinity: {}
-
-metricsPort: 2112
-stateFilePath: "/var/run/statefile"
-
-systemNodeSelector: {}
-
-systemNodeTolerations: []
+apiVersion: ctlptl.dev/v1alpha1
+kind: Registry
+name: ctlptl-registry
+---
+apiVersion: ctlptl.dev/v1alpha1
+kind: Cluster
+product: kind
+registry: ctlptl-registry
+kindV1Alpha4Cluster:
+  nodes:
+    - role: control-plane
+    - role: control-plane
+    - role: control-plane
+    - role: worker
+    - role: worker
