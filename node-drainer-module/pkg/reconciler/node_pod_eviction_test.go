@@ -410,7 +410,7 @@ func TestPodStuckInTerminatingState(t *testing.T) {
 	select {
 	case <-done:
 		// success - returned without waiting forever
-	case <-time.After(12 * time.Second):
+	case <-time.After(2 * time.Minute):
 		t.Fatalf("MonitorPodCompletion did not return in expected time for terminating pod")
 	}
 }
@@ -452,7 +452,7 @@ func TestPodStuckInPendingState(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(12 * time.Second):
+	case <-time.After(2 * time.Minute):
 		t.Fatalf("MonitorPodCompletion did not return in expected time for pending pod")
 	}
 }
@@ -496,7 +496,7 @@ func TestPodStuckInCrashLoopBackOffState(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(12 * time.Second):
+	case <-time.After(2 * time.Minute):
 		t.Fatalf("MonitorPodCompletion did not return in expected time for CrashLoopBackOff pod")
 	}
 }
@@ -547,7 +547,7 @@ func TestPodStuckInNotReadyState(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(12 * time.Second):
+	case <-time.After(2 * time.Minute):
 		t.Fatalf("MonitorPodCompletion did not return in expected time for NotReady pod")
 	}
 }

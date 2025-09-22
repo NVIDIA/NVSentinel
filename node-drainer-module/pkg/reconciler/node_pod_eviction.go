@@ -58,6 +58,10 @@ func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes
 		}
 	}
 
+	// TODO remove this after KACE-1708 is implemtned
+	k8sConfig.QPS = 2
+	k8sConfig.Burst = 5
+
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
@@ -282,7 +286,7 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 				klog.Errorf("Failed to force delete pods on node %s: %+v\n", nodeName, err)
 				return false
 			}
-			return c.verifyPodsDeletion(ctx, namespaces, nodeName, 60*time.Second)
+			return c.verifyPodsDeletion(ctx, namespaces, nodeName, time.Minute)
 		} else {
 			klog.Infof("Evicted all pods in namespace %v from node %s", namespaces, nodeName)
 			return true
@@ -453,7 +457,7 @@ func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) 
 
 // monitor the pods to complete their execution in allow completion mode
 func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodeName string) error {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	for {
@@ -516,7 +520,7 @@ func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string
 
 func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
 	// ticker to periodically check if pods are still present on the node
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	drainTimeout, err := c.GetNodeDrainTimeout(ctx, nodeName, timeout, event)
