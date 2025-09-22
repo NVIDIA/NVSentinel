@@ -524,6 +524,7 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 	defer ticker.Stop()
 
 	drainTimeout, err := c.GetNodeDrainTimeout(ctx, nodeName, timeout, event)
+	deleteDateTimeUTC := time.Now().UTC().Add(drainTimeout).Format(time.RFC3339)
 	if err != nil {
 		return fmt.Errorf("error getting node drain timeout: %w", err)
 	}
@@ -556,6 +557,12 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 				// Nothing left to delete – return early.
 				return nil
 			}
+
+			err := c.updateNodeEvent(ctx, nodeName, podsRunning, namespaces, deleteDateTimeUTC)
+			if err != nil {
+				return fmt.Errorf("error updating node event: %w", err)
+			}
+
 			klog.Infof("Still waiting for these pods to finish: %v in namespace %v on node %s", podsRunning, namespaces, nodeName)
 
 		case <-timer.C:
@@ -583,4 +590,66 @@ func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName st
 
 	return drainTimeout - elapsed, nil
 
+}
+
+func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string, podsRunning []string, namespaces []string, deleteTimeUTC string) error {
+	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	eventsClient := c.clientset.CoreV1().Events(metav1.NamespaceDefault)
+
+	reason := "NodeDraining"
+	message := fmt.Sprintf("The node has run into a fatal event and needs to be drained. Please terminate pods %s in namespace %s or they will be force deleted on %s.",
+		podsRunning, namespaces, deleteTimeUTC)
+
+	// Try to find an existing Event for this node with the same reason so we can just bump the count
+	evtList, err := eventsClient.List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=%s,reason=%s", nodeName, "Node", reason),
+	})
+	if err != nil {
+		return err
+	}
+
+	now := metav1.NewTime(time.Now())
+	if len(evtList.Items) > 0 {
+		// Update the first matching event – this follows kube-api server aggregation rules
+		existing := evtList.Items[0]
+		existing.Count++
+		existing.LastTimestamp = now
+		existing.Message = message
+		_, err = eventsClient.Update(ctx, &existing, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("error in updating event occurrance count: %w", err)
+		}
+		return nil
+	}
+
+	// Otherwise create a new event
+	newEvent := &v1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: nodeName + "-",
+			Namespace:    metav1.NamespaceDefault,
+		},
+		InvolvedObject: v1.ObjectReference{
+			Kind:       "Node",
+			Name:       nodeName,
+			UID:        node.UID,
+			APIVersion: "v1",
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           v1.EventTypeNormal,
+		Source:         v1.EventSource{Component: "nvsentinel-node-drainer-module"},
+		FirstTimestamp: now,
+		LastTimestamp:  now,
+		Count:          1,
+	}
+
+	_, err = eventsClient.Create(ctx, newEvent, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("error in creating event: %w", err)
+	}
+	return nil
 }

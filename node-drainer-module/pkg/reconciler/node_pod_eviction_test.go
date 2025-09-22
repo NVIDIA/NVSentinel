@@ -319,7 +319,7 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 		createTestPod(ctx, "nvsentinel", "timeout-pod", "node1")
 
 		err := k8sClient.DeletePodsAfterTimeout(ctx, "node1", []string{"nvsentinel"}, 4, &storeconnector.HealthEventWithStatus{
-			CreatedAt:   time.Now().Add(-3 * time.Minute),
+			CreatedAt:   time.Now().Add(-230 * time.Second), // 3 minutes and 50 seconds
 			HealthEvent: &platform_connectors.HealthEvent{},
 			HealthEventStatus: storeconnector.HealthEventStatus{
 				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
@@ -334,15 +334,18 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 	// Subtest 2: drain timeout not elapsed -> pods remain
 	t.Run("timeout not elapsed - pods remain", func(t *testing.T) {
 		nodeName := "node-no-timeout"
+		podName := "early-pod"
 		// create node with start time 30s ago
 		createNode(ctx, nodeName, map[string]string{
 			NodeDrainStatusLabelKey: string(InProgress),
 		})
 
-		createTestPod(ctx, "nvsentinel", "early-pod", nodeName)
+		createTestPod(ctx, "nvsentinel", podName, nodeName)
+		timout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+		expectedMessage := fmt.Sprintf("The node has run into a fatal event and needs to be drained. Please terminate pods [%s] in namespace [%s] or they will be force deleted on %s.", podName, "nvsentinel", timout)
 
 		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 2, &storeconnector.HealthEventWithStatus{
-			CreatedAt:   time.Now().Add(-1 * time.Minute),
+			CreatedAt:   time.Now().Add(-60 * time.Second), // 1 minute
 			HealthEvent: &platform_connectors.HealthEvent{},
 			HealthEventStatus: storeconnector.HealthEventStatus{
 				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
@@ -351,7 +354,16 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 			},
 		}) // 2 minute timeout
 		assert.NoError(t, err)
-		assertPodNotDeleted(ctx, t, "nvsentinel", "early-pod")
+		assertPodNotDeleted(ctx, t, "nvsentinel", podName)
+		// Verify that an event has been recorded for this node indicating the drain is in progress
+		events, err := Client.CoreV1().Events(metaV1.NamespaceDefault).List(ctx, metaV1.ListOptions{
+			FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=%s", nodeName, "Node"),
+		})
+		assert.NoError(t, err)
+		assert.Greater(t, len(events.Items), 0, "expected at least one event for node %s", nodeName)
+
+		latestEvt := events.Items[0]
+		assert.Equal(t, latestEvt.Message, expectedMessage)
 	})
 
 	// Subtest 3: node not draining (no label) -> function no-ops
@@ -370,6 +382,46 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 		})
 		assert.NoError(t, err)
 	})
+}
+
+func TestUpdateNodeEventUpdatesExistingEvent(t *testing.T) {
+	ctx := context.TODO()
+	nodeName := "event-node"
+
+	createNode(ctx, nodeName, map[string]string{})
+
+	eventsClient := Client.CoreV1().Events(metaV1.NamespaceDefault)
+	initialEvent := &v1.Event{
+		ObjectMeta: metaV1.ObjectMeta{
+			GenerateName: nodeName + "-",
+			Namespace:    metaV1.NamespaceDefault,
+		},
+		InvolvedObject: v1.ObjectReference{
+			Kind:       "Node",
+			Name:       nodeName,
+			APIVersion: "v1",
+		},
+		Reason:         "NodeDraining",
+		Message:        "initial message",
+		Type:           v1.EventTypeNormal,
+		Source:         v1.EventSource{Component: "unit-test"},
+		FirstTimestamp: metaV1.NewTime(time.Now()),
+		LastTimestamp:  metaV1.NewTime(time.Now()),
+		Count:          1,
+	}
+	createdEvt, err := eventsClient.Create(ctx, initialEvent, metaV1.CreateOptions{})
+	assert.NoError(t, err)
+
+	// call updateNodeEvent which should find and update the existing event
+	deleteTimeUTC := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339)
+	_ = k8sClient.updateNodeEvent(ctx, nodeName, []string{"pod-A"}, []string{"nvsentinel"}, deleteTimeUTC)
+
+	// fetch event again using its name
+	updated, err := eventsClient.Get(ctx, createdEvt.Name, metaV1.GetOptions{})
+	assert.NoError(t, err)
+
+	assert.Greater(t, updated.Count, int32(1), "expected event count to be incremented")
+	assert.Contains(t, updated.Message, "pod-A", "expected updated message to mention running pod")
 }
 
 func TestPodStuckInTerminatingState(t *testing.T) {
