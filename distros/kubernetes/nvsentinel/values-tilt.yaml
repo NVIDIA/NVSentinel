@@ -123,13 +123,15 @@ nvswitch-health-monitor:
   systemNodeSelector:
     node-role.kubernetes.io/control-plane: ""
 
-  tolerations: []
+  tolerations:
+  - operator: Exists
 
   systemNodeTolerations:
   - operator: Exists
 
 syslog-health-monitor:
-  tolerations: []
+  tolerations:
+  - operator: Exists
 
 health-events-analyzer:
   nodeSelector:

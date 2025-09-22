@@ -17,6 +17,8 @@ load('ext://namespace', 'namespace_create', 'namespace_inject')
 
 update_settings(k8s_upsert_timeout_secs=600)
 
+num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '10'))
+
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
     'cert-manager',
@@ -44,12 +46,36 @@ helm_resource(
     ],
 )
 
+helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
+helm_resource(
+    'kwok',
+    chart='sigs-kwok/kwok',
+    namespace='kube-system',
+)
+helm_resource(
+    'kwok-stage-fast',
+    chart='sigs-kwok/stage-fast',
+    resource_deps=['kwok'],
+    pod_readiness='ignore'
+)
+
+namespace_create('gpu-operator')
 namespace_create('nvsentinel')
+
+kwok_node_template = str(read_file('./tilt/kwok-node-template.yaml'))
+for i in range(num_gpu_nodes):
+    node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
+    k8s_yaml(blob(node_yaml))
+
+k8s_yaml('./tilt/nvidia-driver-daemonset.yaml')
+k8s_yaml('./tilt/nvidia-dcgm-daemonset.yaml')
+k8s_yaml('./tilt/janitor.dgxc.nvidia.com_rebootnodes.yaml')
 
 include('./fault-quarantine-module/Tiltfile')
 include('./fault-remediation-module/Tiltfile')
 include('./node-drainer-module/Tiltfile')
 include('./platform-connectors/Tiltfile')
+include('./tilt/simple-health-client/Tiltfile')
 include('./health-monitors/gpu-health-monitor/Tiltfile')
 include('./health-monitors/nvswitch-health-monitor/Tiltfile')
 include('./health-monitors/syslog-health-monitor/Tiltfile')
@@ -80,4 +106,20 @@ k8s_resource(
     new_name='prometheus-resources',
     objects=['nvsentinel-pod-monitor:podmonitor'],
     resource_deps=['prometheus-operator'],
+)
+
+kwok_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
+k8s_resource(
+    new_name='kwok-fake-nodes',
+    objects=kwok_node_names,
+    resource_deps=['kwok'],
+)
+k8s_resource(
+    'kwok-stage-fast',
+    pod_readiness='ignore',
+    resource_deps=['kwok']
+)
+k8s_resource(
+    workload='nvsentinel-gpu-health-monitor-dcgm-3.x',
+    pod_readiness='ignore'
 )

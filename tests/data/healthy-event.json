@@ -1,0 +1,17 @@
+{
+    "version": 1,
+    "agent": "gpu-health-monitor",
+    "componentClass": "GPU",
+    "checkName": "GpuXidError",
+    "isFatal": false,
+    "isHealthy": true,
+    "message": "No health failures",
+    "recommendedAction": 0,
+    "entitiesImpacted": [
+        {
+            "entityType": "gpu",
+            "entityValue": "0"
+        }
+    ],
+    "nodeName": "NODE_NAME"
+}

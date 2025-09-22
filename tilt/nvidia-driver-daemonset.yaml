@@ -1,0 +1,45 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-driver-daemonset
+  namespace: gpu-operator
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-driver-daemonset
+  template:
+    metadata:
+      labels:
+        app: nvidia-driver-daemonset
+    spec:
+      containers:
+      - image: nvcr.io/nvidia/driver:570.158.01-ubuntu22.04
+        name: nvidia-driver-ctr
+      - image: nvcr.io/nvidia/driver:570.158.01-ubuntu22.04
+        name: nvidia-peermem-ctr
+      - image: nvcr.io/nvidia/cloud-native/gdrdrv:v2.5-ubuntu22.04
+        name: nvidia-gdrcopy-ctr
+      initContainers:
+      - image: nvcr.io/nvidia/cloud-native/k8s-driver-manager:v0.8.0
+        name: k8s-driver-manager
+      nodeSelector:
+        nvidia.com/gpu.deploy.driver: "true"
+      tolerations:
+      - key: dedicated
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
