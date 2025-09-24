@@ -41,7 +41,9 @@ serviceAccount:
 
 nodeSelector: {}
 
-tolerations: []
+tolerations:
+  # Allow running on nodes with any taints for log collection
+  - operator: "Exists"
 
 metricsPort: 2112
 

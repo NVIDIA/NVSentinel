@@ -26,6 +26,7 @@ import (
 
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/discovery"
@@ -257,13 +258,40 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 				return
 			}
 
-			// Check completion status
-			if job.Status.Succeeded > 0 {
-				log.Printf("Log collector job %s succeeded", created.Name)
-				done <- nil // Success - no error
-			} else if job.Status.Failed > 0 {
+			// If job is complete (regardless of pod exit codes), count as success
+			// Only count as failure if Kubernetes reports the job itself failed
+			// Convert JobConditions to Conditions for meta helper
+			conditions := make([]metav1.Condition, len(job.Status.Conditions))
+			for i, jc := range job.Status.Conditions {
+				conditions[i] = metav1.Condition{
+					Type:   string(jc.Type),
+					Status: metav1.ConditionStatus(jc.Status),
+					Reason: jc.Reason,
+				}
+			}
+
+			if completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete)); completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
+				log.Printf("Log collector job %s completed successfully", created.Name)
+				// Use job's actual duration instead of custom tracking
+				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+				logCollectorJobs.WithLabelValues(nodeName, "success").Inc()
+				logCollectorJobDuration.WithLabelValues(nodeName, "success").Observe(duration)
+				done <- nil
+				return
+			}
+			if failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed)); failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
 				log.Printf("Log collector job %s failed", created.Name)
+				// Use job's actual duration for failed jobs too
+				var duration float64
+				if job.Status.CompletionTime != nil {
+					duration = job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+				} else {
+					duration = time.Since(job.Status.StartTime.Time).Seconds()
+				}
+				logCollectorJobs.WithLabelValues(nodeName, "failure").Inc()
+				logCollectorJobDuration.WithLabelValues(nodeName, "failure").Observe(duration)
 				done <- fmt.Errorf("log collector job %s failed", created.Name)
+				return
 			}
 		},
 	})

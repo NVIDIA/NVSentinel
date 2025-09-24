@@ -47,4 +47,21 @@ var (
 		},
 		[]string{"action", "node_name"},
 	)
+
+	// log collection job metrics
+	logCollectorJobs = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_remediation_log_collector_jobs_total",
+			Help: "Total number of log collector jobs.",
+		},
+		[]string{"node_name", "status"},
+	)
+	logCollectorJobDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "fault_remediation_log_collector_job_duration_seconds",
+			Help:    "Duration of log collector jobs in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"node_name", "status"},
+	)
 )
