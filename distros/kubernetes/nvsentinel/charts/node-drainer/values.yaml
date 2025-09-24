@@ -50,7 +50,7 @@ configPath: "/etc/config/config.toml"
 
 config: |
   evictionTimeoutInSeconds = "60"
-  systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage|runai|dgxc-admission-controller|dgxc-system|osmo|default|dgxc-logging|network-operator|skyhook)$"
+  systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage|runai|dgxc-admission-controller|dgxc-system|osmo|default|dgxc-logging|network-operator|skyhook|dgxc-alloy)$"
   deleteAfterTimeoutMinutes = 60 # Time (in minutes)after which pods in DeleteAfterTimeout mode will start deleting the pod 
 
   # Time after which a pod in NotReady state is considered stuck (in minutes)

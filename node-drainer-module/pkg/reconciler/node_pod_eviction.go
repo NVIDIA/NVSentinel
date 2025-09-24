@@ -572,6 +572,8 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 				if err != nil {
 					return fmt.Errorf("error listing pods in namespace %s on node %s: %w", ns, nodeName, err)
 				}
+
+				nodeDrainTimeoutReached.WithLabelValues(nodeName, ns).Inc()
 				if err := c.forceDeletePods(ctx, pods); err != nil {
 					return fmt.Errorf("error force deleting pods in namespace %s on node %s: %w", ns, nodeName, err)
 				}

@@ -30,9 +30,9 @@ import (
 )
 
 const (
-	maxRetries                 = 5
-	retryDelay                 = 10 * time.Second
-	NodeDrainStatusLabelKey    = "nvsentinel.dgxc.nvidia.com/node-drain-status"
+	maxRetries              = 5
+	retryDelay              = 10 * time.Second
+	NodeDrainStatusLabelKey = "nvsentinel.dgxc.nvidia.com/node-drain-status"
 )
 
 type NodeDrainLabelValue string
@@ -226,11 +226,14 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 				cancelFn()
 				// remove the key so that future healthy events don't try to cancel again
 				r.NodeEvictionContext.Delete(timeoutKey)
+				nodeDrainTimeout.WithLabelValues(nodeName).Set(0)
 				wg.Done()
 			}()
 
+			nodeDrainTimeout.WithLabelValues(nodeName).Set(1)
 			if err := r.Config.K8sClient.DeletePodsAfterTimeout(ctx, nodeName, namespaces, deleteAfterTimeout, healthEventWithStatus); err != nil {
 				klog.Errorf("Error in deleting pod if not finished: %+v", err)
+				nodeDrainError.WithLabelValues(nodeName, "delete_pods_after_timeout_error").Inc()
 			}
 		}(ctxTimeout, cancelTimeout, timeoutKey, nodeName, getTimeoutNamespaces)
 	}

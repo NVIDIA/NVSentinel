@@ -78,6 +78,22 @@ var (
 		[]string{"error_type", "node"},
 	)
 
+	nodeDrainTimeout = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "node_drainer_waiting_for_timeout",
+			Help: "Total number of node drainer operations in deleteAfterTimeout mode.",
+		},
+		[]string{"node"},
+	)
+
+	nodeDrainTimeoutReached = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "node_drainer_force_delete_pods_after_timeout",
+			Help: "Total number of node drainer operations in deleteAfterTimeout mode that reached the timeout and force deleted the pods.",
+		},
+		[]string{"node", "namespace"},
+	)
+
 	// performance metrics
 	eventHandlingDuration = promauto.NewHistogram(
 		prometheus.HistogramOpts{
