@@ -19,7 +19,7 @@ RUN apt-get update && \
     pip install --break-system-packages poetry==1.8.2 && \
     curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
     helm plugin install https://github.com/chartmuseum/helm-push && \
-    wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz && tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+    wget https://go.dev/dl/go1.23.4.linux-amd64.tar.gz && tar -C /usr/local -xzf go1.23.4.linux-amd64.tar.gz
 
 ENV PATH="${PATH}:/usr/local/go/bin:/root/go/bin"
 
