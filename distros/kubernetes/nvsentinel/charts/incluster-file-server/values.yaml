@@ -53,6 +53,11 @@ nodeSelector: {}
 tolerations: []
 
 
+# Log cleanup - delete files older than X days
+logCleanup:
+  enabled: true
+  retentionDays: 7  # Must be >= 1 day (validated to prevent data loss)
+
 # Metrics configuration
 metrics:
   enabled: true

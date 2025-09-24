@@ -134,6 +134,32 @@ spec:
               cpu: 50m
               memory: 64Mi
 {{- end }}
+{{- if .Values.logCleanup.enabled }}
+{{- if lt (.Values.logCleanup.retentionDays | int) 1 }}
+{{- fail "logCleanup.retentionDays must be at least 1 day to prevent accidental data loss" }}
+{{- end }}
+        - name: log-cleanup
+          image: "{{ .Values.initImage.repository }}:{{ .Values.initImage.tag }}"
+          imagePullPolicy: {{ .Values.initImage.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args: 
+            - |
+              set -xeuo pipefail
+              while true; do
+                find /usr/share/nginx/html -type f -mtime +{{ .Values.logCleanup.retentionDays }} -delete
+                sleep 86400
+              done
+          volumeMounts:
+            - name: artifacts
+              mountPath: /usr/share/nginx/html
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+{{- end }}
       volumes:
         - name: artifacts
 {{- if .Values.persistence.enabled }}
