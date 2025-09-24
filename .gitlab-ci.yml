@@ -437,7 +437,6 @@ csp-health-monitor-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - cd health-monitors/csp-health-monitor
     - go vet ./...
@@ -474,7 +473,6 @@ csp-health-monitor-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:csp-health-monitor,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} \
         . 
@@ -517,7 +515,6 @@ health-event-client-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-event-client,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-event-client:${SAFE_REF_NAME} \
         .
@@ -569,7 +566,6 @@ health-event-analyzer-lint-test:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
     - cd health-events-analyzer
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     # TODO: Update module to comply with root .golangci.yml configuration
@@ -606,7 +602,6 @@ health-event-analyzer-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-events-analyzer,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME} \
         .
@@ -618,7 +613,6 @@ fault-quarantine-module-lint-test:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
     - cd fault-quarantine-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     # TODO: Update module to comply with root .golangci.yml configuration
@@ -655,7 +649,6 @@ fault-quarantine-module-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-quarantine-module,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} \
         .
@@ -667,7 +660,6 @@ labeler-module-lint-test:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
     - cd labeler-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     # TODO: Update module to comply with root .golangci.yml configuration
@@ -704,7 +696,6 @@ labeler-module-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:labeler-module,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME} \
         .
@@ -716,7 +707,6 @@ node-drainer-module-lint-test:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
     - cd node-drainer-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     # TODO: Update module to comply with root .golangci.yml configuration
@@ -756,7 +746,6 @@ node-drainer-module-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:node-drainer-module,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME} \
         .
@@ -768,7 +757,6 @@ fault-remediation-module-lint-test:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
     - cd fault-remediation-module
-    - echo "machine $GIT_PRIVATE_DOMAIN login gitlab-ci-token password $CI_JOB_TOKEN" > ~/.netrc
     - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
     - go vet ./...
     # TODO: Update module to comply with root .golangci.yml configuration
@@ -807,7 +795,6 @@ fault-remediation-module-container-publish:
         --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-remediation-module,mode=max \
         --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
         --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --secret id=gitlab_token,env=CI_JOB_TOKEN \
         --push \
         -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME} \
         .
