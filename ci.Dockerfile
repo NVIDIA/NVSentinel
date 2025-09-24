@@ -39,6 +39,10 @@ RUN apt-get update && apt-get install -y wget && \
     apt-get update && apt-get install -y datacenter-gpu-manager=1:3.3.5 && \
     apt-get clean
 
+RUN curl -sSL "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" | \
+    tar -xJ --wildcards -C /usr/local/bin/ --strip-components=1 "*/shellcheck" && \
+    chmod +x /usr/local/bin/shellcheck
+
 RUN go install github.com/google/addlicense@latest
 
 ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
