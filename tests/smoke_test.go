@@ -16,6 +16,7 @@ package tests
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,7 +32,6 @@ type testContextKey int
 const (
 	keyNodeName testContextKey = iota
 	keyNamespace
-	keyPodName
 )
 
 func TestFatalHealthEvent(t *testing.T) {
@@ -39,22 +39,26 @@ func TestFatalHealthEvent(t *testing.T) {
 		WithLabel("suite", "smoke")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		nodeName := "kwok-node-0"
 		workloadNamespace := "workloads"
-		podName := "test-gpu-pod"
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
+		nodes, err := helpers.GetAllNodesNames(ctx, client)
+		assert.NoError(t, err, "failed to get cluster nodes")
+		assert.True(t, len(nodes) > 0, "no nodes found in cluster")
+
+		nodeName := nodes[rand.Intn(len(nodes))]
+		t.Logf("Selected node: %s", nodeName)
+
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")
 
-		err = helpers.CreateGPUPod(ctx, client, workloadNamespace, podName, nodeName)
-		assert.NoError(t, err, "failed to create GPU pod")
+		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
+		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
 		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
-		ctx = context.WithValue(ctx, keyPodName, podName)
 
 		return ctx
 	})
@@ -62,7 +66,7 @@ func TestFatalHealthEvent(t *testing.T) {
 	feature.Assess("Can send fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err := helpers.SendHealthEvent(nodeName, "data/fatal-health-event.json")
+		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event.json")
 		assert.NoError(t, err, "failed to send health event")
 
 		return ctx
@@ -75,8 +79,10 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to create kubernetes client")
 
 		t.Logf("Waiting for node %s to be cordoned", nodeName)
-		node, err := helpers.WaitForNodeCordonState(ctx, t, client, nodeName, true)
-		assert.NoError(t, err, "failed to check wait for node to be cordoned")
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, true)
+
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		assert.NoError(t, err, "failed to get node after cordoning")
 
 		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/cordon-by"])
 		assert.Equal(t, "GPU-fatal-error-ruleset", node.Labels["k8saas.nvidia.com/cordon-reason"])
@@ -101,20 +107,13 @@ func TestFatalHealthEvent(t *testing.T) {
 	feature.Assess("Drain label is set and pods are not evicted, delete the pod to move the process forward", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 		namespaceName := ctx.Value(keyNamespace).(string)
-		podName := ctx.Value(keyPodName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		_, err = helpers.WaitForNodeLabel(ctx, t, client, nodeName, "nvsentinel.dgxc.nvidia.com/node-drain-status", "IN_PROGRESS")
-		assert.NoError(t, err, "failed to wait for node drain status label")
+		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, "nvsentinel.dgxc.nvidia.com/node-drain-status", "IN_PROGRESS")
 
-		isRunning, err := helpers.IsPodRunning(ctx, client, namespaceName, podName)
-		assert.NoError(t, err, "failed to check pod status")
-		assert.True(t, isRunning, "expected GPU pod to still be running (not evicted)")
-
-		err = helpers.DeletePod(ctx, client, namespaceName, podName)
-		assert.NoError(t, err, "failed to delete GPU pod")
+		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
 
 		return ctx
 	})
@@ -125,8 +124,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		rebootNode, err := helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
-		assert.NoError(t, err, "failed to wait for RebootNode CR")
+		rebootNode := helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
 
 		err = helpers.DeleteRebootNodeCR(ctx, client, rebootNode)
 		assert.NoError(t, err, "failed to delete RebootNode CR")
@@ -137,7 +135,7 @@ func TestFatalHealthEvent(t *testing.T) {
 	feature.Assess("Can send healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err := helpers.SendHealthEvent(nodeName, "data/healthy-event.json")
+		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/healthy-event.json")
 		assert.NoError(t, err, "failed to send health event")
 
 		return ctx
@@ -150,8 +148,10 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to create kubernetes client")
 
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
-		node, err := helpers.WaitForNodeCordonState(ctx, t, client, nodeName, false)
-		assert.NoError(t, err, "failed to check wait for node to be uncordoned")
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
+
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		assert.NoError(t, err, "failed to get node after uncordoning")
 
 		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/uncordon-by"])
 
@@ -177,7 +177,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to create kubernetes client")
 
 		namespaceName := ctx.Value(keyNamespace).(string)
-		err = helpers.DeleteNamespace(ctx, client, namespaceName)
+		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
 		return ctx

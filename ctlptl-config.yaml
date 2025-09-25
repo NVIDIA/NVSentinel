@@ -22,3 +22,10 @@ kind: Cluster
 product: kind
 name: kind-nvsentinel
 registry: ctlptl-registry
+kindV1Alpha4Cluster:
+  nodes:
+    - role: control-plane
+    - role: control-plane
+    - role: control-plane
+    - role: worker
+    - role: worker

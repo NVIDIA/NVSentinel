@@ -17,7 +17,7 @@ load('ext://namespace', 'namespace_create', 'namespace_inject')
 
 update_settings(k8s_upsert_timeout_secs=600)
 
-num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '10'))
+num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
@@ -37,7 +37,7 @@ helm_resource(
     namespace='monitoring',
     flags=[
         '--create-namespace',
-        '--set=prometheus.enabled=false',
+        '--set=prometheus.enabled=true',
         '--set=alertmanager.enabled=false',
         '--set=grafana.enabled=false',
         '--set=kubeStateMetrics.enabled=false',
@@ -51,6 +51,9 @@ helm_resource(
     'kwok',
     chart='sigs-kwok/kwok',
     namespace='kube-system',
+    flags=[
+        '--set=hostNetwork=true'
+    ]
 )
 helm_resource(
     'kwok-stage-fast',
@@ -107,12 +110,19 @@ k8s_resource(
     objects=['nvsentinel-pod-monitor:podmonitor'],
     resource_deps=['prometheus-operator'],
 )
+k8s_resource(
+    'prometheus-operator',
+    port_forwards='9090:9090',
+)
 
 kwok_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
 k8s_resource(
     new_name='kwok-fake-nodes',
     objects=kwok_node_names,
-    resource_deps=['kwok'],
+    resource_deps=['kwok', 'nvsentinel-platform-connector', 'nvsentinel-fault-quarantine', 'nvsentinel-fault-remediation', 
+        'nvsentinel-gpu-health-monitor-node-labeler', 'nvsentinel-node-drainer', 'nvsentinel-nvswitch-health-monitor-driver-watcher', 
+        'nvsentinel-mongodb', 'simple-health-client'
+    ], 
 )
 k8s_resource(
     'kwok-stage-fast',
