@@ -1,12 +1,5 @@
-all: binary
-
-binary:
-	go build -o platform-connectors  main.go
-
-.PHONY: build
-build:
-	@echo "Building platform-connectors..."
-	go build ./...
+# NVSentinel Log Collector Makefile
+# Container-only module build targets
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -16,6 +9,20 @@ SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
 SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
 BUILDX_BUILDER ?= nvsentinel-builder
 PLATFORMS ?= linux/arm64,linux/amd64
+
+# Default target
+.PHONY: all
+all: lint
+
+# Lint and test this module (matches parent Makefile expectations)
+.PHONY: lint-test
+lint-test: lint
+
+# Lint shell scripts
+.PHONY: lint
+lint:
+	@echo "Linting log collector shell scripts..."
+	shellcheck entrypoint.sh
 
 # Setup buildx builder (matching GitLab CI setup)
 .PHONY: setup-buildx
@@ -30,26 +37,26 @@ setup-buildx:
 # Docker build target (for local development)
 .PHONY: docker-build
 docker-build: setup-buildx
-	@echo "Building Docker image for platform-connectors (local development)..."
+	@echo "Building Docker image for log-collector (local development)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:platform-connectors \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:platform-connectors,mode=max \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-platform-connectors:$(SAFE_REF_NAME) \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector,mode=max \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
 docker-publish: setup-buildx
-	@echo "Building and publishing Docker image for platform-connectors (production)..."
+	@echo "Building and publishing Docker image for log-collector (production)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:platform-connectors \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:platform-connectors,mode=max \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector,mode=max \
 		--push \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-platform-connectors:$(SAFE_REF_NAME) \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
 # Legacy targets for backwards compatibility
@@ -61,10 +68,16 @@ image: docker-build
 publish: docker-publish
 	@echo "Legacy 'publish' target - use 'docker-publish' for CI/production"
 
+# Clean target
+.PHONY: clean
+clean:
+	@echo "Cleaning log-collector..."
+	@echo "No build artifacts to clean for shell-based module"
+
 # Help target
 .PHONY: help
 help:
-	@echo "Platform Connectors Makefile - Matching .gitlab-ci.yml exactly"
+	@echo "NVSentinel Log Collector Makefile - Matching .gitlab-ci.yml exactly"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
@@ -73,9 +86,10 @@ help:
 	@echo "  PLATFORMS=$(PLATFORMS)"
 	@echo ""
 	@echo "Main targets:"
-	@echo "  all        - Build binary (default)"
-	@echo "  binary     - Build the main binary"
-	@echo "  build      - Build the module"
+	@echo "  all               - Run lint (default)"
+	@echo "  lint-test         - Run shell script linting (matches CI)"
+	@echo "  lint              - Run shellcheck locally"
+	@echo "  lint-ci           - Run shellcheck using exact CI Docker environment"
 	@echo ""
 	@echo "Docker targets:"
 	@echo "  docker-build    - Build Docker image (local development)"
@@ -85,11 +99,12 @@ help:
 	@echo "  publish         - Legacy target (calls docker-publish)"
 	@echo ""
 	@echo "Utility targets:"
+	@echo "  clean      - Clean build artifacts (no-op for shell module)"
 	@echo "  help       - Show this help message"
 	@echo ""
 	@echo "Notes:"
+	@echo "  - This is a container-only module using shell scripts"
 	@echo "  - Multi-platform builds: $(PLATFORMS)"
 	@echo "  - Images tagged with dynamic ref name: $(SAFE_REF_NAME)"
 	@echo "  - Build cache is used for faster builds"
 	@echo "  - Matches .gitlab-ci.yml configuration exactly"
-

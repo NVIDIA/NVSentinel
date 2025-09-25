@@ -1,11 +1,20 @@
-# NVSwitch Health Monitor Makefile
-# Individual module build and test targets
+# Fault Quarantine Module Makefile
+# Individual module build and test targets (requires private repo access)
 
 # Go binary and tools
 GO := go
 GOLANGCI_LINT := golangci-lint
 GOTESTSUM := gotestsum
 GOCOVER_COBERTURA := gocover-cobertura
+
+# Docker configuration matching GitLab CI
+NVCR_CONTAINER_REPO ?= nvcr.io
+NGC_ORG ?= nv-ngc-devops
+CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
+SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
+SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
+BUILDX_BUILDER ?= nvsentinel-builder
+PLATFORMS ?= linux/arm64,linux/amd64
 
 # Default target
 .PHONY: all
@@ -14,10 +23,11 @@ all: lint-test
 # Lint and test this module (matches parent Makefile expectations)
 .PHONY: lint-test
 lint-test:
-	@echo "Linting and testing nvswitch-health-monitor..."
+	@echo "Linting and testing fault-quarantine-module (with private repos)..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
-	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic && \
+	$(GOLANGCI_LINT) run --no-config --disable errcheck,gosimple && \
+	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 
@@ -25,17 +35,20 @@ lint-test:
 .PHONY: vet
 vet:
 	@echo "Running go vet..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./...
 
 .PHONY: lint
 lint:
 	@echo "Running golangci-lint..."
-	$(GOLANGCI_LINT) run --no-config
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GOLANGCI_LINT) run --no-config --disable errcheck,gosimple
 
 .PHONY: test
 test:
 	@echo "Running tests..."
-	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic
 
 .PHONY: coverage
 coverage: test
@@ -46,22 +59,15 @@ coverage: test
 # Build targets
 .PHONY: build
 build:
-	@echo "Building nvswitch-health-monitor..."
+	@echo "Building fault-quarantine-module..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) build ./...
 
 .PHONY: binary
 binary:
-	@echo "Building nvswitch-health-monitor binary..."
-	$(GO) build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
-
-# Docker configuration matching GitLab CI
-NVCR_CONTAINER_REPO ?= nvcr.io
-NGC_ORG ?= nv-ngc-devops
-CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
-SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
-SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
-BUILDX_BUILDER ?= nvsentinel-builder
-PLATFORMS ?= linux/arm64,linux/amd64
+	@echo "Building fault-quarantine-module binary..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GO) build -o fault-quarantine-module .
 
 # Setup buildx builder (matching GitLab CI setup)
 .PHONY: setup-buildx
@@ -76,26 +82,30 @@ setup-buildx:
 # Docker build target (for local development)
 .PHONY: docker-build
 docker-build: setup-buildx
-	@echo "Building Docker image for nvswitch-health-monitor (local development)..."
+	@echo "Building Docker image for fault-quarantine-module (local development)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module,mode=max \
+		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+		--build-arg GITLAB_LOGIN=gitlab-ci-token \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-fault-quarantine-module:$(SAFE_REF_NAME) \
 		.
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
 docker-publish: setup-buildx
-	@echo "Building and publishing Docker image for nvswitch-health-monitor (production)..."
+	@echo "Building and publishing Docker image for fault-quarantine-module (production)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module,mode=max \
+		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		--push \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-fault-quarantine-module:$(SAFE_REF_NAME) \
 		.
 
 # Legacy targets for backwards compatibility
@@ -110,14 +120,14 @@ publish: docker-publish
 # Clean target
 .PHONY: clean
 clean:
-	@echo "Cleaning nvswitch-health-monitor..."
+	@echo "Cleaning fault-quarantine-module..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml nvswitch-health-monitor
+	rm -f coverage.txt coverage.xml report.xml fault-quarantine-module
 
 # Help target
 .PHONY: help
 help:
-	@echo "NVSwitch Health Monitor Makefile - Matching .gitlab-ci.yml exactly"
+	@echo "Fault Quarantine Module Makefile - Matching .gitlab-ci.yml exactly"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
@@ -149,7 +159,9 @@ help:
 	@echo "  help       - Show this help message"
 	@echo ""
 	@echo "Notes:"
+	@echo "  - GOPRIVATE is automatically set for gitlab-master.nvidia.com/dgxcloud/mk8s/*"
 	@echo "  - Multi-platform builds: $(PLATFORMS)"
 	@echo "  - Images tagged with dynamic ref name: $(SAFE_REF_NAME)"
 	@echo "  - Build cache is used for faster builds"
+	@echo "  - Special lint configuration: --disable errcheck,gosimple"
 	@echo "  - Matches .gitlab-ci.yml configuration exactly"

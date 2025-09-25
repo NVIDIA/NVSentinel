@@ -1,5 +1,5 @@
-# NVSwitch Health Monitor Makefile
-# Individual module build and test targets
+# CSP Health Monitor Makefile
+# Individual module build and test targets (requires private repo access)
 
 # Go binary and tools
 GO := go
@@ -14,10 +14,11 @@ all: lint-test
 # Lint and test this module (matches parent Makefile expectations)
 .PHONY: lint-test
 lint-test:
-	@echo "Linting and testing nvswitch-health-monitor..."
+	@echo "Linting and testing csp-health-monitor (with private repos)..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
-	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic && \
+	$(GOLANGCI_LINT) run --config ../../.golangci.yml && \
+	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 
@@ -25,17 +26,20 @@ lint-test:
 .PHONY: vet
 vet:
 	@echo "Running go vet..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./...
 
 .PHONY: lint
 lint:
 	@echo "Running golangci-lint..."
-	$(GOLANGCI_LINT) run --no-config
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GOLANGCI_LINT) run --config ../../.golangci.yml
 
 .PHONY: test
 test:
 	@echo "Running tests..."
-	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic
 
 .PHONY: coverage
 coverage: test
@@ -46,13 +50,15 @@ coverage: test
 # Build targets
 .PHONY: build
 build:
-	@echo "Building nvswitch-health-monitor..."
+	@echo "Building csp-health-monitor..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) build ./...
 
 .PHONY: binary
 binary:
-	@echo "Building nvswitch-health-monitor binary..."
-	$(GO) build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
+	@echo "Building csp-health-monitor binary..."
+	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
+	$(GO) build -o csp-health-monitor cmd/main.go
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -73,51 +79,58 @@ setup-buildx:
 		 docker buildx use $(BUILDX_BUILDER) && \
 		 docker buildx inspect --bootstrap)
 
-# Docker build target (for local development)
+# Docker targets with clear separation of local vs CI builds (private repo module)
+
+# Local development build
 .PHONY: docker-build
 docker-build: setup-buildx
-	@echo "Building Docker image for nvswitch-health-monitor (local development)..."
+	@echo "Building Docker image for csp-health-monitor (local development)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:csp-health-monitor \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:csp-health-monitor,mode=max \
+		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+		--build-arg GITLAB_LOGIN=gitlab-ci-token \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-csp-health-monitor:$(SAFE_REF_NAME) \
 		.
 
-# Docker publish target (matching GitLab CI exactly)
+# CI/Production build (--push directly to registry, matches GitLab CI exactly)
 .PHONY: docker-publish
 docker-publish: setup-buildx
-	@echo "Building and publishing Docker image for nvswitch-health-monitor (production)..."
+	@echo "Building and publishing Docker image for csp-health-monitor (CI/production)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:csp-health-monitor \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:csp-health-monitor,mode=max \
+		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
+		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		--push \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-csp-health-monitor:$(SAFE_REF_NAME) \
 		.
 
 # Legacy targets for backwards compatibility
 .PHONY: image
 image: docker-build
-	@echo "Legacy 'image' target - use 'docker-build' for local development or 'docker-publish' for CI/production"
+	@echo "Built csp-health-monitor image locally (legacy target)"
 
 .PHONY: publish
-publish: docker-publish
-	@echo "Legacy 'publish' target - use 'docker-publish' for CI/production"
+publish: docker-build
+	@echo "Publishing csp-health-monitor image to registry (legacy target)..."
+	docker push $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-csp-health-monitor:$(SAFE_REF_NAME)
 
 # Clean target
 .PHONY: clean
 clean:
-	@echo "Cleaning nvswitch-health-monitor..."
+	@echo "Cleaning csp-health-monitor..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml nvswitch-health-monitor
+	rm -f coverage.txt coverage.xml report.xml csp-health-monitor
 
 # Help target
 .PHONY: help
 help:
-	@echo "NVSwitch Health Monitor Makefile - Matching .gitlab-ci.yml exactly"
+	@echo "CSP Health Monitor Makefile - Matching .gitlab-ci.yml exactly"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
@@ -137,18 +150,17 @@ help:
 	@echo "  build      - Build the module"
 	@echo "  binary     - Build the main binary"
 	@echo ""
-	@echo "Docker targets:"
-	@echo "  docker-build    - Build Docker image (local development)"
-	@echo "  docker-publish  - Build and publish Docker image (CI/production with --push)"
-	@echo "  setup-buildx    - Setup Docker buildx builder"
-	@echo "  image           - Legacy target (calls docker-build)"
-	@echo "  publish         - Legacy target (calls docker-publish)"
+	@echo "Docker targets (matching GitLab CI exactly):"
+	@echo "  image      - Build Docker image"
+	@echo "  publish    - Publish image to registry"
+	@echo "  setup-buildx - Setup Docker buildx builder"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  clean      - Clean build artifacts and reports"
 	@echo "  help       - Show this help message"
 	@echo ""
 	@echo "Notes:"
+	@echo "  - GOPRIVATE is automatically set for gitlab-master.nvidia.com/dgxcloud/mk8s/*"
 	@echo "  - Multi-platform builds: $(PLATFORMS)"
 	@echo "  - Images tagged with dynamic ref name: $(SAFE_REF_NAME)"
 	@echo "  - Build cache is used for faster builds"

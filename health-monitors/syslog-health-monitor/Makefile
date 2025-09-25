@@ -1,4 +1,4 @@
-# NVSwitch Health Monitor Makefile
+# Syslog Health Monitor Makefile
 # Individual module build and test targets
 
 # Go binary and tools
@@ -14,7 +14,7 @@ all: lint-test
 # Lint and test this module (matches parent Makefile expectations)
 .PHONY: lint-test
 lint-test:
-	@echo "Linting and testing nvswitch-health-monitor..."
+	@echo "Linting and testing syslog-health-monitor..."
 	$(GO) vet ./... && \
 	$(GOLANGCI_LINT) run --no-config && \
 	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic && \
@@ -46,13 +46,13 @@ coverage: test
 # Build targets
 .PHONY: build
 build:
-	@echo "Building nvswitch-health-monitor..."
+	@echo "Building syslog-health-monitor..."
 	$(GO) build ./...
 
 .PHONY: binary
 binary:
-	@echo "Building nvswitch-health-monitor binary..."
-	$(GO) build -o nvswitch-health-monitor cmd/nvswitch_health_monitor.go
+	@echo "Building syslog-health-monitor binary..."
+	$(GO) build -o syslog-health-monitor cmd/syslog-health-monitor/main.go
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -76,26 +76,26 @@ setup-buildx:
 # Docker build target (for local development)
 .PHONY: docker-build
 docker-build: setup-buildx
-	@echo "Building Docker image for nvswitch-health-monitor (local development)..."
+	@echo "Building Docker image for syslog-health-monitor (local development)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor,mode=max \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-syslog-health-monitor:$(SAFE_REF_NAME) \
 		.
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
 docker-publish: setup-buildx
-	@echo "Building and publishing Docker image for nvswitch-health-monitor (production)..."
+	@echo "Building and publishing Docker image for syslog-health-monitor (production)..."
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor \
-		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
+		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor \
+		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor,mode=max \
 		--push \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-nvswitch-health-monitor:$(SAFE_REF_NAME) \
+		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-syslog-health-monitor:$(SAFE_REF_NAME) \
 		.
 
 # Legacy targets for backwards compatibility
@@ -110,14 +110,14 @@ publish: docker-publish
 # Clean target
 .PHONY: clean
 clean:
-	@echo "Cleaning nvswitch-health-monitor..."
+	@echo "Cleaning syslog-health-monitor..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml nvswitch-health-monitor
+	rm -f coverage.txt coverage.xml report.xml syslog-health-monitor
 
 # Help target
 .PHONY: help
 help:
-	@echo "NVSwitch Health Monitor Makefile - Matching .gitlab-ci.yml exactly"
+	@echo "Syslog Health Monitor Makefile - Matching .gitlab-ci.yml exactly"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"

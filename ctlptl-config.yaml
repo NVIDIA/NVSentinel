@@ -12,22 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ctlptl apply -f ctrlptl.yml
-#
-# https://github.com/tilt-dev/ctlptl?tab=readme-ov-file#how-do-i-install-it
-
 apiVersion: ctlptl.dev/v1alpha1
 kind: Registry
 name: ctlptl-registry
+port: 5001
 ---
 apiVersion: ctlptl.dev/v1alpha1
 kind: Cluster
 product: kind
+name: kind-nvsentinel
 registry: ctlptl-registry
-kindV1Alpha4Cluster:
-  nodes:
-    - role: control-plane
-    - role: control-plane
-    - role: control-plane
-    - role: worker
-    - role: worker

@@ -42,7 +42,7 @@ variables:
   # This instructs Docker not to start over TLS.
   DOCKER_TLS_CERTDIR: ""
 
-image: $CI_REGISTRY_IMAGE/ci:29082025
+image: $CI_REGISTRY_IMAGE/ci:23092025
 
 
 default:
@@ -179,6 +179,8 @@ workflow:
       - job_execution_timeout
       - script_failure
   before_script:
+    - apk update && apk upgrade
+    - apk add --no-cache bash git make
     - docker info
     - docker login nvcr.io -u ${NGC_USER_NAME} -p ${NGC_PASSWORD}
     - docker context create ${BUILDX_BUILDER}-context || true
@@ -222,22 +224,12 @@ mrcop:
 protos-lint:
   stage: lint-test
   script:
-    - protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
-    - protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
-    - protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
-    - protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
-    - python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
-    - python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
-    - sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py # Due to this issue https://github.com/protocolbuffers/protobuf/issues/1491, this needs to be done else it will throw error during execution
-    - sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py # Due to this issue https://github.com/protocolbuffers/protobuf/issues/1491, this needs to be done else it will throw error during execution
-    - git status --porcelain --untracked-files=no
-    - git --no-pager diff
-    - '[ -z "$(git status --porcelain --untracked-files=no)" ]'
+    - make protos-lint
 
 license-headers-lint:
   stage: lint-test
   script:
-    - addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml .
+    - make license-headers-lint
 
 # argo-workflow-test:
 #   stage: test
@@ -253,13 +245,7 @@ license-headers-lint:
 gpu-health-monitor-lint-test:
   stage: lint-test
   script:
-    - cd health-monitors/gpu-health-monitor
-    - poetry config virtualenvs.in-project true  # Create .venv in project
-    - poetry install
-    - poetry run black --check .
-    - poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml
-    - poetry run coverage xml || true
-    - poetry run coverage report || true
+    - make -C health-monitors/gpu-health-monitor lint-test
   artifacts:
     when: always
     reports:
@@ -277,19 +263,7 @@ gpu-health-monitor-container-publish-3:
     - prepare-vars
     - gpu-health-monitor-lint-test
   script:
-    - cd health-monitors/gpu-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-3 \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-3,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x \
-        --build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
-        --build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
-        -f Dockerfile \
-        .
+    - make -C health-monitors/gpu-health-monitor docker-publish-dcgm3
 
 gpu-health-monitor-container-publish-4:
   stage: publish
@@ -299,27 +273,12 @@ gpu-health-monitor-container-publish-4:
     - prepare-vars
     - gpu-health-monitor-lint-test
   script:
-    - cd health-monitors/gpu-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-4 \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:gpu-health-monitor-4,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x \
-        -f Dockerfile \
-        . 
+    - make -C health-monitors/gpu-health-monitor docker-publish-dcgm4 
 
 nic-health-monitor-lint-test:
   stage: lint-test
   script:
-    - cd health-monitors/nic-health-monitor
-    - go vet ./...
-    - golangci-lint run --config ../../.golangci.yml
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make -C health-monitors/nic-health-monitor lint-test
   artifacts:
     when: always
     reports:
@@ -340,27 +299,12 @@ nic-health-monitor-container-publish:
     - prepare-vars
     - nic-health-monitor-lint-test
   script:
-    - cd health-monitors/nic-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nic-health-monitor \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nic-health-monitor,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nic-health-monitor:${SAFE_REF_NAME} \
-        . 
+    - make -C health-monitors/nic-health-monitor docker-publish 
   
 syslog-health-monitor-lint-test:
   stage: lint-test
   script:
-    - cd health-monitors/syslog-health-monitor
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make -C health-monitors/syslog-health-monitor lint-test
   artifacts:
     when: always
     reports:
@@ -381,26 +325,12 @@ syslog-health-monitor-container-publish:
     - prepare-vars
     - syslog-health-monitor-lint-test
   script:
-    - cd health-monitors/syslog-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:syslog-health-monitor \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:syslog-health-monitor,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME} \
-        .
+    - make -C health-monitors/syslog-health-monitor docker-publish
     
 nvswitch-health-monitor-lint-test:
   stage: lint-test
   script:
-    - cd health-monitors/nvswitch-health-monitor
-    - go vet ./...
-    - golangci-lint run --no-config
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make -C health-monitors/nvswitch-health-monitor lint-test
   artifacts:
     when: always
     reports:
@@ -421,29 +351,14 @@ nvswitch-health-monitor-container-publish:
     - prepare-vars
     - nvswitch-health-monitor-lint-test
   script:
-    - cd health-monitors/nvswitch-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nvswitch-health-monitor \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:nvswitch-health-monitor,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-nvswitch-health-monitor:${SAFE_REF_NAME} \
-        . 
+    - make -C health-monitors/nvswitch-health-monitor docker-publish 
 
 csp-health-monitor-lint-test:
   stage: lint-test
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - cd health-monitors/csp-health-monitor
-    - go vet ./...
-    - golangci-lint run --config ../../.golangci.yml
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make -C health-monitors/csp-health-monitor lint-test
   artifacts:
     when: always
     reports:
@@ -464,28 +379,12 @@ csp-health-monitor-container-publish:
     - prepare-vars
     - csp-health-monitor-lint-test
   script:
-    - cd health-monitors/csp-health-monitor
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:csp-health-monitor \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:csp-health-monitor,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME} \
-        . 
+    - make -C health-monitors/csp-health-monitor docker-publish
 
 health-event-client-lint-test:
   stage: lint-test
   script:
-    - cd health-event-client
-    - go vet ./...
-    - golangci-lint run --config ../.golangci.yml
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-health-event-client
   artifacts:
     when: always
     reports:
@@ -506,28 +405,12 @@ health-event-client-container-publish:
     - prepare-vars
     - health-event-client-lint-test
   script:
-    - cd health-event-client
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-event-client \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-event-client,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-event-client:${SAFE_REF_NAME} \
-        .
+    - make -C health-event-client docker-publish
 
 platform-connectors-lint-test:
   stage: lint-test
   script:
-    - cd platform-connectors
-    - go vet ./...
-    - golangci-lint run --config ../.golangci.yml
-    - gotestsum --junitfile report.xml -- -race -short $(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-platform-connectors
   artifacts:
     when: always
     reports:
@@ -548,16 +431,7 @@ platform-connectors-container-publish:
     - prepare-vars
     - platform-connectors-lint-test
   script:
-    - cd platform-connectors
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:platform-connectors \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:platform-connectors,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME} \
-        . 
+    - make -C platform-connectors docker-publish 
 
 
 health-event-analyzer-lint-test:
@@ -565,14 +439,7 @@ health-event-analyzer-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - cd health-events-analyzer
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-health-events-analyzer
   artifacts:
     when: always
     reports:
@@ -593,18 +460,7 @@ health-event-analyzer-container-publish:
     - prepare-vars
     - health-event-analyzer-lint-test
   script:
-    - cd health-events-analyzer
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-events-analyzer \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:health-events-analyzer,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME} \
-        .
+    - make -C health-events-analyzer docker-publish
 
 
 fault-quarantine-module-lint-test:
@@ -612,14 +468,7 @@ fault-quarantine-module-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - cd fault-quarantine-module
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config --disable errcheck,gosimple
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-fault-quarantine-module
   artifacts:
     when: always
     reports:
@@ -640,18 +489,7 @@ fault-quarantine-module-container-publish:
     - prepare-vars
     - fault-quarantine-module-lint-test
   script:
-    - cd fault-quarantine-module
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-quarantine-module \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-quarantine-module,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME} \
-        .
+    - make -C fault-quarantine-module docker-publish
 
 
 labeler-module-lint-test:
@@ -659,14 +497,7 @@ labeler-module-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - cd labeler-module
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-labeler-module
   artifacts:
     when: always
     reports:
@@ -687,18 +518,7 @@ labeler-module-container-publish:
     - prepare-vars
     - labeler-module-lint-test
   script:
-    - cd labeler-module
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:labeler-module \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:labeler-module,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME} \
-        .
+    - make -C labeler-module docker-publish
 
 
 node-drainer-module-lint-test:
@@ -706,17 +526,7 @@ node-drainer-module-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - cd node-drainer-module
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config
-    - export PATH="$GOPATH/bin:$PATH"
-    - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-    - export KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.30.0)
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-node-drainer-module
   artifacts:
     when: always
     reports:
@@ -737,18 +547,7 @@ node-drainer-module-container-publish:
     - prepare-vars
     - node-drainer-module-lint-test
   script:
-    - cd node-drainer-module
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:node-drainer-module \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:node-drainer-module,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME} \
-        .
+    - make -C node-drainer-module docker-publish
 
     
 fault-remediation-module-lint-test:
@@ -756,16 +555,7 @@ fault-remediation-module-lint-test:
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
-    - cd fault-remediation-module
-    - export GOPRIVATE=$GIT_PRIVATE_DOMAIN/dgxcloud/mk8s/*
-    - go vet ./...
-    # TODO: Update module to comply with root .golangci.yml configuration
-    - golangci-lint run --no-config
-    - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-    - export KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.30.0)
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-fault-remediation-module
   artifacts:
     when: always
     reports:
@@ -786,28 +576,12 @@ fault-remediation-module-container-publish:
     - prepare-vars
     - fault-remediation-module-lint-test
   script:
-    - cd fault-remediation-module
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-remediation-module \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:fault-remediation-module,mode=max \
-        --build-arg GITLAB_HOST=gitlab-master.nvidia.com \
-        --build-arg GITLAB_LOGIN=gitlab-ci-token \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME} \
-        .
+    - make -C fault-remediation-module docker-publish
 
 store-client-sdk-lint-test:
   stage: lint-test
   script:
-    - cd store-client-sdk
-    - go vet ./...
-    - golangci-lint run --config ../.golangci.yml
-    - gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
-    - go tool cover -func coverage.txt 
-    - gocover-cobertura < coverage.txt > coverage.xml
+    - make lint-test-store-client-sdk
   artifacts:
     when: always
     reports:
@@ -823,8 +597,7 @@ store-client-sdk-lint-test:
 kubernetes-distro-lint:
   stage: lint-test
   script:
-    - cd distros/kubernetes
-    - helm lint nvsentinel/
+    - make kubernetes-distro-lint
 
 
 kubernetes-distro-helm-publish:
@@ -832,15 +605,7 @@ kubernetes-distro-helm-publish:
   rules:
     - if: $CI_COMMIT_TAG
   script:
-    - cd distros/kubernetes
-    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
-    - helm repo add --force-update mongodb ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
-    - cd nvsentinel/charts/mongodb-store && helm dependency update && cd ../../..
-    - cd nvsentinel && helm dependency update && cd ..
-    - helm package nvsentinel --version ${CI_COMMIT_TAG}
-    - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
-    - helm repo add --force-update ngc ${HELM_URL}/${NGC_ORG} --username=${NGC_USER_NAME} --password=${NGC_PASSWORD}
-    - helm cm-push -f nvsentinel-${CI_COMMIT_TAG}.tgz ngc
+    - make -C distros/kubernetes helm-publish
 
 log-collector-container-publish:
   stage: publish
@@ -850,20 +615,9 @@ log-collector-container-publish:
     - prepare-vars
     - log-collector-lint
   script:
-    - cd nvsentinel-log-collector
-    - |
-      docker buildx build \
-        --platform linux/arm64,linux/amd64 \
-        --network=host \
-        --cache-from=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:log-collector \
-        --cache-to=type=registry,ref=${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-buildcache:log-collector,mode=max \
-        --push \
-        -t ${NVCR_CONTAINER_REPO}/${NGC_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME} \
-        .
+    - make -C nvsentinel-log-collector docker-publish
 
 log-collector-lint:
   stage: lint-test
-  image: koalaman/shellcheck-alpine:stable
   script:
-    - cd nvsentinel-log-collector
-    - shellcheck entrypoint.sh 
+    - make log-collector-lint
