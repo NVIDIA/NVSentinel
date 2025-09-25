@@ -66,20 +66,24 @@ func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes
 	if err != nil {
 		return nil, fmt.Errorf("error creating clientset: %w", err)
 	}
+
 	client := &NodeDrainerClient{
 		clientset:              clientset,
 		eviction:               clientset.PolicyV1(),
 		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
 	}
+
 	if dryRun {
 		client.dryRunMode = []string{metav1.DryRunAll}
 	} else {
 		client.dryRunMode = []string{}
 	}
+
 	return client, nil
 }
 
-func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string) ([]v1.Pod, error) {
+func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context,
+	namespace string, nodeName string) ([]v1.Pod, error) {
 	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
 	})
@@ -93,6 +97,7 @@ func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context, n
 
 	// ignore daemonset pods and other pods that should be ignored
 	filteredPods := c.findRemainingPods(pods.Items, namespace, nodeName)
+
 	return filteredPods, nil
 }
 
@@ -107,8 +112,10 @@ func (c *NodeDrainerClient) isPodStuckInTerminating(pod *v1.Pod) bool {
 
 	// If current time is beyond the timeout threshold, pod is considered stuck
 	if time.Now().After(timeoutThreshold) {
-		klog.Infof("Pod %s in namespace %s is stuck in terminating state - deletion timestamp: %v, grace period: %ds, timeout threshold: %v",
-			pod.Name, pod.Namespace, pod.DeletionTimestamp, *pod.Spec.TerminationGracePeriodSeconds, timeoutThreshold)
+		klog.Infof("Pod %s in namespace %s is stuck in terminating state - deletion timestamp: %v:,"+
+			"grace period: %ds, timeout threshold: %v", pod.Name, pod.Namespace, pod.DeletionTimestamp,
+			*pod.Spec.TerminationGracePeriodSeconds, timeoutThreshold)
+
 		return true
 	}
 
@@ -117,6 +124,7 @@ func (c *NodeDrainerClient) isPodStuckInTerminating(pod *v1.Pod) bool {
 
 func (c *NodeDrainerClient) findRemainingPods(pods []v1.Pod, namespace string, nodeName string) []v1.Pod {
 	filteredPods := []v1.Pod{}
+
 	for _, pod := range pods {
 		// Skip DaemonSet pods
 		if c.isDaemonSetPod(&pod, namespace, nodeName) {
@@ -135,8 +143,10 @@ func (c *NodeDrainerClient) findRemainingPods(pods []v1.Pod, namespace string, n
 			klog.Infof("Ignoring pod %s in namespace %s on node %s", pod.Name, namespace, nodeName)
 			continue
 		}
+
 		filteredPods = append(filteredPods, pod)
 	}
+
 	return filteredPods
 }
 
@@ -168,7 +178,8 @@ func (c *NodeDrainerClient) isPodNotReady(pod *v1.Pod) bool {
 }
 
 // gracefully evicts all pods in a namespace
-func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodeName string, timeout time.Duration) error {
+func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, namespace string,
+	nodeName string, timeout time.Duration) error {
 	pods, err := c.findAllPodsInNamespaceAndNode(ctx, namespace, nodeName)
 	if err != nil {
 		nodeDrainError.WithLabelValues("listing_pods_error", nodeName).Inc()
@@ -182,21 +193,27 @@ func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, nam
 	err = c.evictPodsInNamespaceAndNode(ctx, namespace, nodeName, timeout, pods)
 	if err != nil {
 		nodeDrainError.WithLabelValues("pods_eviction_error", nodeName).Inc()
+
 		return fmt.Errorf("error in evicting pods immediately in namespace %s: %w", namespace, err)
 	}
 
 	return nil
 }
 
-func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string, timeout time.Duration, pods []v1.Pod) error {
+func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string,
+	nodeName string, timeout time.Duration, pods []v1.Pod) error {
 	var wg sync.WaitGroup
+
 	var mErr *multierror.Error
+
 	errChan := make(chan error, len(pods))
 
 	for _, pod := range pods {
 		wg.Add(1)
-		go func(ctx context.Context, namespace, podName string, timeout time.Duration) {
+
+		f := func(ctx context.Context, namespace, podName string, timeout time.Duration) {
 			defer wg.Done()
+
 			err := c.sendEvictionRequestForPod(ctx, namespace, timeout, podName, nodeName)
 			if err != nil {
 				if errors.IsNotFound(err) {
@@ -208,7 +225,8 @@ func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, nam
 			} else {
 				klog.Infof("Pod %s evicted successfully from namespace %s on node %s\n", podName, namespace, nodeName)
 			}
-		}(ctx, namespace, pod.Name, timeout)
+		}
+		go f(ctx, namespace, pod.Name, timeout)
 	}
 
 	wg.Wait()
@@ -221,12 +239,15 @@ func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, nam
 	if mErr.ErrorOrNil() != nil {
 		return mErr
 	}
+
 	return nil
 }
 
 // evicts a pod
-func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, namespace string, timeout time.Duration, podName string, nodeName string) error {
+func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, namespace string,
+	timeout time.Duration, podName string, nodeName string) error {
 	var err error
+
 	eviction := &policyv1.Eviction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -240,6 +261,7 @@ func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, names
 
 	for i := 1; i <= maxRetries; i++ {
 		klog.Infof("Attempt %d, evicting pod %s in namespace %s...", i, podName, namespace)
+
 		err = c.eviction.Evictions(namespace).Evict(ctx, eviction)
 		if err == nil {
 			return nil
@@ -249,16 +271,20 @@ func (c *NodeDrainerClient) sendEvictionRequestForPod(ctx context.Context, names
 			klog.Errorf("PDB blocking eviction, retrying in %s... ", retryDelay)
 			nodeDrainError.WithLabelValues("PDB_blocking_eviction_error", nodeName).Inc()
 			time.Sleep(retryDelay)
+
 			continue
 		}
+
 		return fmt.Errorf("error in evicting the pod %s from namespace %s: %w", podName, namespace, err)
 	}
-	return fmt.Errorf("max attempt reached, eviction of pod %s from namespace %s couldn't complete: %w", podName, namespace, err)
+
+	return fmt.Errorf("max attempt reached, eviction of pod %s from namespace %s couldn't complete: %w",
+		podName, namespace, err)
 }
 
 // poll to check if all pods are successfully evicted from namespaces on a node
-func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
-
+func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
+	namespaces []string, nodeName string, timeout time.Duration) bool {
 	allEvicted, remainingPods := c.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName)
 
 	if allEvicted {
@@ -266,7 +292,8 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 		return true
 	}
 
-	klog.Infof("Following pods are not evicted from node %s, waiting %v for them to finish: \n%+v", nodeName, timeout, remainingPods)
+	klog.Infof("Following pods are not evicted from node %s"+
+		"waiting %v for them to finish: \n%+v", nodeName, timeout, remainingPods)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -276,7 +303,6 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 		klog.Infof("Context cancelled, stopping the monitoring")
 		return false
 	case <-timer.C:
-
 		allEvicted, remainingPods := c.checkIfPodsPresentInNamespaceAndNode(ctx, namespaces, nodeName)
 
 		if !allEvicted {
@@ -284,8 +310,10 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 			if err != nil {
 				nodeDrainError.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
 				klog.Errorf("Failed to force delete pods on node %s: %+v\n", nodeName, err)
+
 				return false
 			}
+
 			return c.verifyPodsDeletion(ctx, namespaces, nodeName, time.Minute)
 		} else {
 			klog.Infof("Evicted all pods in namespace %v from node %s", namespaces, nodeName)
@@ -295,8 +323,8 @@ func (c *NodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.
 }
 
 // check if pods are present in given namespace
-func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Context, namespaces []string, nodeName string) (bool, []v1.Pod) {
-
+func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Context,
+	namespaces []string, nodeName string) (bool, []v1.Pod) {
 	type result struct {
 		namespace string
 		pods      []v1.Pod
@@ -309,20 +337,27 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 		})
 		if err != nil {
 			nodeDrainError.WithLabelValues("listing_pods_error", nodeName).Inc()
-			resultChan <- result{namespace: namespace, pods: nil, err: fmt.Errorf("failed to list pods in namespace %s on node %s: %w", namespace, nodeName, err)}
+			resultChan <- result{namespace: namespace, pods: nil,
+				err: fmt.Errorf("failed to list pods in namespace %s on node %s: %w", namespace, nodeName, err)}
+
 			return
 		}
+
 		if len(pods.Items) > 0 {
 			remainingPods := c.findRemainingPods(pods.Items, namespace, nodeName)
 
 			resultChan <- result{namespace: namespace, pods: remainingPods, err: nil}
+
 			return
 		}
+
 		resultChan <- result{namespace: namespace, pods: nil, err: nil}
 	}
 
 	allEvicted := true
+
 	var remainingPods []v1.Pod
+
 	resultChan := make(chan result, len(namespaces))
 
 	for _, ns := range namespaces {
@@ -331,11 +366,15 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 
 	for i := 0; i < len(namespaces); i++ {
 		res := <-resultChan
+
 		if res.err != nil {
 			klog.Errorf("Failed to check namespace %s on node %s: %+v", res.namespace, nodeName, res.err)
+
 			allEvicted = false
+
 			continue
 		}
+
 		if len(res.pods) > 0 {
 			remainingPods = append(remainingPods, res.pods...)
 			allEvicted = false
@@ -343,6 +382,7 @@ func (c *NodeDrainerClient) checkIfPodsPresentInNamespaceAndNode(ctx context.Con
 	}
 
 	close(resultChan)
+
 	return allEvicted, remainingPods
 }
 
@@ -359,16 +399,20 @@ func (c *NodeDrainerClient) isDaemonSetPod(pod *v1.Pod, namespace string, nodeNa
 }
 
 // verify if all pods are deleted after force deletion
-func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
+func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces []string,
+	nodeName string, timeout time.Duration) bool {
 	startTime := time.Now()
 
 	for {
 		if ctx.Err() != nil {
 			return false
 		}
+
 		if time.Since(startTime) > timeout {
 			nodeDrainError.WithLabelValues("force_deletion_not_completed_error", nodeName).Inc()
-			klog.Errorf("Timeout exceeded while waiting for pods to be deleted in namespace %v on node %s", namespaces, nodeName)
+			klog.Errorf("Timeout exceeded while waiting for pods to be deleted in namespace %v on node %s",
+				namespaces, nodeName)
+
 			return false
 		}
 
@@ -378,14 +422,16 @@ func (c *NodeDrainerClient) verifyPodsDeletion(ctx context.Context, namespaces [
 			return true
 		}
 
-		klog.Infof("Following pods are not deleted from node %s, waiting for them to terminate: \n%+v", nodeName, remainingPods)
+		klog.Infof("Following pods are not deleted from node %s, waiting for them to terminate: \n%+v",
+			nodeName, remainingPods)
 
 		time.Sleep(retryDelay)
 	}
 }
 
 // get namespaces that matches the given pattern
-func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context,
+	includePattern string, excludePattern string) ([]string, error) {
 	namespaces, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w", err)
@@ -401,6 +447,7 @@ func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, in
 	}
 
 	var matchedNamespaces []string
+
 	for _, ns := range namespaces.Items {
 		// If excludeRegex is supplied and it matches, skip
 		if excludeRegex != nil && excludeRegex.MatchString(ns.Name) {
@@ -412,6 +459,7 @@ func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, in
 		if err != nil {
 			return nil, fmt.Errorf("error matching include pattern %s: %w", includePattern, err)
 		}
+
 		if !includeMatches {
 			continue
 		}
@@ -424,17 +472,21 @@ func (c *NodeDrainerClient) GetNamespacesMatchingPattern(ctx context.Context, in
 
 // force delete pods by removing their entries from etcd
 func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) error {
-
 	var wg sync.WaitGroup
+
 	var mu sync.Mutex
+
 	var errs *multierror.Error
 
 	// 0 grace period means force delete
 	gracePeriod := int64(0)
+
 	for _, pod := range pods {
 		wg.Add(1)
-		go func(p v1.Pod) {
+
+		f := func(p v1.Pod) {
 			defer wg.Done()
+
 			err := c.clientset.CoreV1().Pods(p.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &gracePeriod,
 				DryRun:             c.dryRunMode,
@@ -442,16 +494,19 @@ func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) 
 			if err != nil {
 				if !errors.IsNotFound(err) {
 					mu.Lock()
-					errs = multierror.Append(errs, fmt.Errorf("failed to force delete pod %s in namespace %s: %w", p.Name, p.Namespace, err))
+					errs = multierror.Append(errs, fmt.Errorf("failed to force delete pod %s in namespace %s: %w",
+						p.Name, p.Namespace, err))
 					mu.Unlock()
 				}
 			} else {
 				klog.Infof("Force deleted pod %s in namespace %s\n", p.Name, p.Namespace)
 			}
-		}(pod)
+		}
+		go f(pod)
 	}
 
 	wg.Wait()
+
 	return errs.ErrorOrNil()
 }
 
@@ -492,42 +547,48 @@ func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string
 		if err != nil {
 			return err
 		}
+
 		currentValue, exists := node.Labels[NodeDrainStatusLabelKey]
 		if isDraining {
 			if exists && currentValue == string(InProgress) {
 				klog.Infof("Node draining label is already set for node %s", nodeName)
 				return nil
 			}
+
 			node.Labels[NodeDrainStatusLabelKey] = string(InProgress)
 		} else {
 			if !exists {
 				klog.Infof("Node draining label is already absent for node %s", nodeName)
 				return nil
 			}
+
 			delete(node.Labels, NodeDrainStatusLabelKey)
 		}
 
 		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-
 		if err != nil {
 			return err
 		}
 
 		klog.Infof("Node draining label updated for node %s", nodeName)
+
 		return nil
 	})
 }
 
-func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
+//nolint:cyclop,gocognit //todo
+func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
+	namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
 	// ticker to periodically check if pods are still present on the node
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
 	drainTimeout, err := c.GetNodeDrainTimeout(ctx, nodeName, timeout, event)
-	deleteDateTimeUTC := time.Now().UTC().Add(drainTimeout).Format(time.RFC3339)
 	if err != nil {
 		return fmt.Errorf("error getting node drain timeout: %w", err)
 	}
+
+	deleteDateTimeUTC := time.Now().UTC().Add(drainTimeout).Format(time.RFC3339)
 
 	// timer that fires once the overall timeout has elapsed
 	timer := time.NewTimer(drainTimeout)
@@ -542,17 +603,20 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 		case <-ticker.C:
 			// Periodically check if all pods are already gone. If yes – we're done early.
 			podsRunning := []string{}
+
 			for _, ns := range namespaces {
 				pods, err := c.findAllPodsInNamespaceAndNode(ctx, ns, nodeName)
 				if err != nil {
 					return fmt.Errorf("error listing pods in namespace %s on node %s: %w", ns, nodeName, err)
 				}
+
 				if len(pods) > 0 {
 					for _, pod := range pods {
 						podsRunning = append(podsRunning, pod.Name)
 					}
 				}
 			}
+
 			if len(podsRunning) == 0 {
 				// Nothing left to delete – return early.
 				return nil
@@ -563,8 +627,8 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 				return fmt.Errorf("error updating node event: %w", err)
 			}
 
-			klog.Infof("Still waiting for these pods to finish: %v in namespace %v on node %s", podsRunning, namespaces, nodeName)
-
+			klog.Infof("Still waiting for these pods to finish: %v in namespace %v on node %s",
+				podsRunning, namespaces, nodeName)
 		case <-timer.C:
 			// Timeout hit – force delete all remaining pods.
 			for _, ns := range namespaces {
@@ -574,27 +638,30 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 				}
 
 				nodeDrainTimeoutReached.WithLabelValues(nodeName, ns).Inc()
+
 				if err := c.forceDeletePods(ctx, pods); err != nil {
 					return fmt.Errorf("error force deleting pods in namespace %s on node %s: %w", ns, nodeName, err)
 				}
 			}
+
 			return nil
 		}
 	}
 }
 
 // get the timeout for the node drain using health event creation time and configured deleteAfterTimeout
-func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName string, timeout int, event *storeconnector.HealthEventWithStatus) (time.Duration, error) {
+func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName string,
+	timeout int, event *storeconnector.HealthEventWithStatus) (time.Duration, error) {
 	elapsed := time.Since(event.CreatedAt)
 	drainTimeout := time.Duration(timeout) * time.Minute
 
 	klog.Infof("Node %s has been in draining state for %v and waiting timeout is %v", nodeName, elapsed, drainTimeout)
 
 	return drainTimeout - elapsed, nil
-
 }
 
-func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string, podsRunning []string, namespaces []string, deleteTimeUTC string) error {
+func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string,
+	podsRunning []string, namespaces []string, deleteTimeUTC string) error {
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -603,7 +670,8 @@ func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string
 	eventsClient := c.clientset.CoreV1().Events(metav1.NamespaceDefault)
 
 	reason := "NodeDraining"
-	message := fmt.Sprintf("The node has run into a fatal event and needs to be drained. Please terminate pods %s in namespace %s or they will be force deleted on %s.",
+	message := fmt.Sprintf("The node has run into a fatal event and needs to be drained. "+
+		"Please terminate pods %s in namespace %s or they will be force deleted on %s.",
 		podsRunning, namespaces, deleteTimeUTC)
 
 	// Try to find an existing Event for this node with the same reason so we can just bump the count
@@ -615,16 +683,19 @@ func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string
 	}
 
 	now := metav1.NewTime(time.Now())
+
 	if len(evtList.Items) > 0 {
 		// Update the first matching event – this follows kube-api server aggregation rules
 		existing := evtList.Items[0]
 		existing.Count++
 		existing.LastTimestamp = now
 		existing.Message = message
+
 		_, err = eventsClient.Update(ctx, &existing, metav1.UpdateOptions{})
 		if err != nil {
-			return fmt.Errorf("error in updating event occurrance count: %w", err)
+			return fmt.Errorf("error in updating event occurrence count: %w", err)
 		}
+
 		return nil
 	}
 
@@ -653,5 +724,6 @@ func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string
 	if err != nil {
 		return fmt.Errorf("error in creating event: %w", err)
 	}
+
 	return nil
 }

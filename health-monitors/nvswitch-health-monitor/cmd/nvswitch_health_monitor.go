@@ -127,7 +127,9 @@ func (cm *connectionManager) getConnection() (*grpc.ClientConn, error) {
 
 	// Create new connection with keepalive
 	klog.Info("Creating new gRPC connection")
+
 	var opts []grpc.DialOption
+
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
 		Time:                30 * time.Second, // Send pings every 30 seconds
@@ -141,6 +143,7 @@ func (cm *connectionManager) getConnection() (*grpc.ClientConn, error) {
 	}
 
 	cm.conn = conn
+
 	return conn, nil
 }
 
@@ -149,12 +152,14 @@ func (cm *connectionManager) getClient() (pb.PlatformConnectorClient, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return pb.NewPlatformConnectorClient(conn), nil
 }
 
 func (cm *connectionManager) close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+
 	if cm.conn != nil {
 		cm.conn.Close()
 	}
@@ -224,6 +229,7 @@ func buildHealthyEventEntitiesFromTopology(provider *lsnvlink.DynamicTopologyPro
 			if gpuID, err := strconv.Atoi(gpuIDStr); err == nil {
 				gpuSet[gpuID] = true
 			}
+
 			for _, link := range gpuTopo.Links {
 				nvlinkSet[link.RemoteLink] = true
 			}
@@ -284,15 +290,18 @@ func SxidEvent2HealthEvents(sxidEvent *sxid.SXIDErrorEvent, nodeName string,
 		if !provider.HasNVSwitch() {
 			// No NVSwitches present - don't generate any entities
 			klog.Infof("No NVSwitches present, skipping entity generation")
+
 			event.EntitiesImpacted = []*pb.Entity{}
 		} else {
 			// NVSwitches are present - use topology entities
 			klog.V(2).Infof("Using dynamic topology for healthy event entities")
+
 			event.EntitiesImpacted = buildHealthyEventEntitiesFromTopology(provider)
 		}
 	}
 
 	healthEvents.Events = append(healthEvents.Events, &event)
+
 	return &healthEvents
 }
 
@@ -322,6 +331,7 @@ func loadConfig(filePath string) (*NVSwitchMonitorConfig, error) {
 	config.PollingIntervalInMilliseconds = pollingIntervalValue
 
 	maxRetriesForHealthyEvent := defaultMaxRetriesForHealthyEvent
+
 	maxRetriesKey, err := section.GetKey("MaxRetriesForHealthyEvent")
 	if err == nil {
 		maxRetriesValue, parseErr := maxRetriesKey.Int()
@@ -337,6 +347,7 @@ func loadConfig(filePath string) (*NVSwitchMonitorConfig, error) {
 	}
 
 	retryDelaySecondsForHealthyEvent := defaultRetryDelaySecondsForHealthyEvent
+
 	retryDelayKey, err := section.GetKey("RetryDelaySecondsForHealthyEvent")
 	if err == nil {
 		retryDelayValue, parseErr := retryDelayKey.Int()
@@ -366,6 +377,7 @@ func main() {
 		"path to the nvswitch health monitor config file")
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	var sxidErrorMappingConfigFile = flag.String("sxid-error-mapping-config-file",
 		"/etc/nvswitchhealthmonitor/sxiderrorsmapping.csv",
 		"path to the sxid error mapping config file")
@@ -561,6 +573,7 @@ func createRecommendationActionMapping(configFile string) map[string]pb.Recommen
 			continue
 		}
 
+		//nolint:gosec // G115: integer overflow conversion uintptr -> int
 		recommendationActionMapping[key] = pb.RecommenedAction(valueInt)
 	}
 

@@ -41,22 +41,9 @@ const (
 )
 
 var (
-	dcgm4Regex *regexp.Regexp
-	dcgm3Regex *regexp.Regexp
+	dcgm4Regex = regexp.MustCompile(`.*/dcgm:4\..*`)
+	dcgm3Regex = regexp.MustCompile(`.*/dcgm:3\..*`)
 )
-
-func init() {
-	var err error
-	dcgm4Regex, err = regexp.Compile(`.*/dcgm:4\..*`)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to compile DCGM 4.x regex: %v", err))
-	}
-
-	dcgm3Regex, err = regexp.Compile(`.*/dcgm:3\..*`)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to compile DCGM 3.x regex: %v", err))
-	}
-}
 
 // Labeler manages node labeling based on pod information
 type Labeler struct {
@@ -69,7 +56,9 @@ type Labeler struct {
 }
 
 // NewLabeler creates a new Labeler instance
-func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration, dcgmApp, driverApp string) (*Labeler, error) {
+// nolint: cyclop // todo
+func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
+	dcgmApp, driverApp string) (*Labeler, error) {
 	labelSelector, err := labels.Parse(fmt.Sprintf("app in (%s,%s)", dcgmApp, driverApp))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse label selector: %w", err)
@@ -183,11 +172,13 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration, dcgm
 // Run starts the labeler and waits for cache sync
 func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
+
 	klog.Info("Starting Labeler")
 
 	go l.informer.Run(ctx.Done())
 
 	klog.Info("Waiting for Labeler cache to sync...")
+
 	if ok := cache.WaitForCacheSync(ctx.Done(), l.informerSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
@@ -247,6 +238,7 @@ func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
 }
 
 // handlePodEvent processes all pod events (add, update, delete) idempotently
+// nolint: cyclop // todo
 func (l *Labeler) handlePodEvent(obj any) error {
 	startTime := time.Now()
 	defer func() {
@@ -283,6 +275,7 @@ func (l *Labeler) handlePodEvent(obj any) error {
 
 		if node.Labels[DCGMVersionLabel] != expectedDCGMVersion {
 			needsUpdate = true
+
 			if expectedDCGMVersion == "" {
 				delete(node.Labels, DCGMVersionLabel)
 				klog.Infof("Removing DCGM version label from node %s", pod.Spec.NodeName)
@@ -294,6 +287,7 @@ func (l *Labeler) handlePodEvent(obj any) error {
 
 		if node.Labels[DriverInstalledLabel] != expectedDriverLabel {
 			needsUpdate = true
+
 			if expectedDriverLabel == "" {
 				delete(node.Labels, DriverInstalledLabel)
 				klog.Infof("Removing driver installed label from node %s", pod.Spec.NodeName)
@@ -309,13 +303,16 @@ func (l *Labeler) handlePodEvent(obj any) error {
 		}
 
 		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+
 		return err
 	})
-	metrics.NodeUpdateDuration.Observe(time.Since(updateStartTime).Seconds())
+
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", pod.Spec.NodeName, err)
 	}
+
+	metrics.NodeUpdateDuration.Observe(time.Since(updateStartTime).Seconds())
 
 	return nil
 }

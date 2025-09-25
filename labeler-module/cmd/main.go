@@ -57,6 +57,8 @@ func main() {
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		klog.Infof("Starting metrics server on port %s", *metricsPort)
+
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		if err := http.ListenAndServe(":"+*metricsPort, nil); err != nil {
 			klog.Errorf("Failed to start metrics server: %v", err)
 		}

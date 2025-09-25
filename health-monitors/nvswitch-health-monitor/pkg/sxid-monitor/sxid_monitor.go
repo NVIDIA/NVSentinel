@@ -76,6 +76,7 @@ func loadState(stateFilePath string) (nvSwitchMonitorState, error) {
 		if os.IsNotExist(err) {
 			return state, nil
 		}
+
 		return state, fmt.Errorf("failed to read state from file: %w", err)
 	}
 
@@ -131,6 +132,7 @@ func fetchCurrentBootID() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read boot_id: %w", err)
 	}
+
 	return strings.TrimSpace(string(data)), nil
 }
 
@@ -201,10 +203,13 @@ func (c *SxidEventMonitor) Run() error {
 
 	for {
 		start := time.Now()
+
 		readSize, err := readKernelLog(buffer, size)
 		if err != nil {
 			klog.Errorf("error while reading kernel log buffer: %v", err)
+
 			time.Sleep(pollingInterval)
+
 			continue
 		}
 
@@ -255,12 +260,14 @@ func (c *SxidEventMonitor) compareBootIDAndEmitHealthyEventIfChanged(state nvSwi
 // read the entire kernel log buffer non-destructively
 func readKernelLog(buffer []byte, size uintptr) (int, error) {
 	syslogReadCallsSucceeded.Inc()
+
 	readSize, _, errno := syscall.Syscall(syscall.SYS_SYSLOG,
 		SYSLOG_ACTION_READ_ALL, uintptr(unsafe.Pointer(&buffer[0])), size)
 	if errno != 0 {
 		syslogReadCallsFailed.Inc()
 		return 0, fmt.Errorf("failed to read kernel log buffer: %w", errno)
 	}
+
 	//nolint:gosec // G115: integer overflow conversion uintptr -> int
 	return int(readSize), nil
 }
@@ -270,6 +277,7 @@ func (c *SxidEventMonitor) processLog(log string) error {
 	if log == "" {
 		return nil
 	}
+
 	kernelLogsProcessed.Inc()
 
 	timestamp, err := extractTimestamp(log)
@@ -336,6 +344,7 @@ func extractTimestamp(log string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse timestamp: %w", err)
 	}
+
 	return timestamp, nil
 }
 
@@ -403,6 +412,7 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 
 	// Parse NVSwitch number
 	nvswitchStr := strings.TrimPrefix(strings.TrimSuffix(words[NvswitchX], ":"), "nvidia-nvswitch")
+
 	nvswitch, err := strconv.Atoi(nvswitchStr)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse nvidia-nvswitch number: %s", nvswitchStr)
@@ -413,6 +423,7 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 
 	// Parse error number
 	errorNumStr := strings.TrimSuffix(words[errorNumIdx], ",")
+
 	errorNum, err := strconv.Atoi(errorNumStr)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse error number: %s", errorNumStr)
@@ -420,6 +431,7 @@ func ParseSXIDError(str string) (*SXIDErrorEvent, error) {
 
 	// Parse Fatal/Non-fatal
 	var isFatal bool
+
 	switch {
 	case strings.HasPrefix(words[fatalIdx], "Fatal"):
 		isFatal = true

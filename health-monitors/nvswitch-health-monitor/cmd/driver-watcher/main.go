@@ -53,12 +53,16 @@ func main() {
 
 	// Handle shutdown signals
 	signalCh := make(chan os.Signal, 1)
+
 	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
+
+	start := func() {
 		<-signalCh
 		klog.Info("Received shutdown signal")
 		cancel()
-	}()
+	}
+
+	go start()
 
 	watcher.Run(ctx)
 }

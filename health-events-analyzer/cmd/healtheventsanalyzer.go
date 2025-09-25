@@ -18,7 +18,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,10 +36,12 @@ import (
 	"k8s.io/klog"
 )
 
+//nolint:cyclop // todo
 func main() {
 	ctx := context.Background()
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 
 	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
@@ -152,7 +153,7 @@ func main() {
 	// Parse the TOML content
 	tomlConfig, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
-		log.Fatalf("Failed to load config file: %v", err)
+		klog.Fatalf("Failed to load config file: %v", err)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{
@@ -165,7 +166,6 @@ func main() {
 
 	reconciler := reconciler.NewReconciler(reconcilerCfg)
 	reconciler.Start(ctx)
-
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

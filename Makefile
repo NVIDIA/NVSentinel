@@ -131,7 +131,7 @@ lint-test-health-events-analyzer:
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	cd health-events-analyzer && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -142,7 +142,7 @@ lint-test-fault-quarantine-module:
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	cd fault-quarantine-module && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config --disable errcheck,gosimple && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -153,7 +153,7 @@ lint-test-labeler-module:
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	cd labeler-module && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -167,7 +167,7 @@ lint-test-node-drainer-module:
 	export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) && \
 	cd node-drainer-module && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -181,7 +181,7 @@ lint-test-fault-remediation-module:
 	export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) && \
 	cd fault-remediation-module && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml

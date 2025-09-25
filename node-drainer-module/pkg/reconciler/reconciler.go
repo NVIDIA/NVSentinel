@@ -64,8 +64,8 @@ func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
-
-	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, r.Config.MongoConfig, r.Config.TokenConfig, r.Config.MongoPipeline)
+	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, r.Config.MongoConfig,
+		r.Config.TokenConfig, r.Config.MongoPipeline)
 	if err != nil {
 		klog.Fatalf("failed to create change stream watcher: %+v", err)
 	}
@@ -112,12 +112,14 @@ func (r *Reconciler) startEventProcessing(ctx context.Context, event bson.M, col
 	); err != nil {
 		totalEventProcessingError.WithLabelValues("unmarshal_doc_error").Inc()
 		klog.Errorf("Failed to unmarshal health event: \n%v; \nError:%+v", event, err)
+
 		return
 	}
 
 	currentStatus := healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status
 	if currentStatus == storeconnector.StatusSucceeded || currentStatus == storeconnector.StatusFailed {
-		klog.Infof("Skipping health event as its already in terminal state, \nHealth event: %+v", healthEventWithStatus.HealthEvent)
+		klog.Infof("Skipping health event as its already in terminal state"+
+			"\nHealth event: %+v", healthEventWithStatus.HealthEvent)
 		return
 	}
 
@@ -126,6 +128,7 @@ func (r *Reconciler) startEventProcessing(ctx context.Context, event bson.M, col
 	podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = storeconnector.StatusInProgress
 
+	//nolint:exhaustive // todo
 	switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
 	case storeconnector.Quarantined:
 		unhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
@@ -146,28 +149,35 @@ func (r *Reconciler) startEventProcessing(ctx context.Context, event bson.M, col
 	}(event)
 }
 
-func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection *mongo.Collection, healthEventWithStatus storeconnector.HealthEventWithStatus) {
+func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection *mongo.Collection,
+	healthEventWithStatus storeconnector.HealthEventWithStatus) {
 	startTime := time.Now()
+
 	var err error
 
 	podsEvictionStatus := &healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus
 
 	for i := 1; i <= maxRetries; i++ {
 		klog.Infof("Attempt %d, Processing health event: %+v", i, healthEventWithStatus)
+
 		err = r.handleEvent(ctx, healthEventWithStatus.HealthEvent.NodeName, &healthEventWithStatus)
 		if err == nil {
 			totalEventsSuccessfullyProcessed.Inc()
 
 			podsEvictionStatus.Status = storeconnector.StatusSucceeded
+
 			break
 		}
+
 		klog.Errorf("Error in processing the event:\n%+v, error is : \n%+v", healthEventWithStatus.HealthEvent, err)
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 		time.Sleep(retryDelay)
 	}
 
 	if err != nil {
-		klog.Errorf("Max attempt reached, error in handling health event: \n%+v:, \nerror: %+v", healthEventWithStatus.HealthEvent, err)
+		klog.Errorf("Max attempt reached, error in handling health event: "+
+			"%+v:, \nerror: %+v", healthEventWithStatus.HealthEvent, err)
+
 		podsEvictionStatus.Status = storeconnector.StatusFailed
 		podsEvictionStatus.Message = err.Error()
 	}
@@ -176,13 +186,15 @@ func (r *Reconciler) processEvents(ctx context.Context, event bson.M, collection
 		totalEventProcessingError.WithLabelValues("update_status_error").Inc()
 		klog.Errorf("Error in updating the user pods eviction status for node: %+v", err)
 	}
+
 	duration := time.Since(startTime).Seconds()
 
 	eventHandlingDuration.Observe(duration)
 }
 
-func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
-
+//nolint:cyclop,gocognit //todo
+func (r *Reconciler) handleEvent(ctx context.Context, nodeName string,
+	healthEventWithStatus *storeconnector.HealthEventWithStatus) error {
 	namespaceMap := r.getMatchingNamespace(ctx)
 	deleteAfterTimeout := r.Config.TomlConfig.DeleteAfterTimeoutMinutes
 	getTimeoutNamespaces := r.getTimeoutNamespaces(ctx)
@@ -190,15 +202,18 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 	// If DrainOverrides.Force is true, override all namespaces to use immediate eviction
 	if healthEventWithStatus.HealthEvent.DrainOverrides != nil && healthEventWithStatus.HealthEvent.DrainOverrides.Force {
 		klog.Infof("DrainOverrides.Force is true, forcing immediate eviction for all namespaces")
+
 		for ns := range namespaceMap {
 			namespaceMap[ns] = config.ModeImmediateEvict
 		}
 	}
 
 	var mu sync.Mutex
+
 	nsWithImmediateMode := []string{}
 
 	var wg sync.WaitGroup
+
 	errChan := make(chan error, len(r.Config.TomlConfig.UserNamespaces))
 
 	// Set metric based on node quarantine status
@@ -214,13 +229,16 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		nodeDrainStatus.WithLabelValues(nodeName).Set(1)
 	}
 
-	if len(getTimeoutNamespaces) > 0 && *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
+	if len(getTimeoutNamespaces) > 0 &&
+		*healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
 		ctxTimeout, cancelTimeout := context.WithCancel(ctx)
 		timeoutKey := fmt.Sprintf("%s-timeout", nodeName)
+
 		r.NodeEvictionContext.Store(timeoutKey, &EvictionContext{cancel: cancelTimeout})
 
 		wg.Add(1)
-		go func(ctx context.Context, cancelFn context.CancelFunc, timeoutKey string, nodeName string, namespaces []string) {
+
+		f := func(ctx context.Context, cancelFn context.CancelFunc, timeoutKey string, nodeName string, namespaces []string) {
 			defer func() {
 				// ensure the derived context is cancelled to release resources
 				cancelFn()
@@ -231,39 +249,50 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 			}()
 
 			nodeDrainTimeout.WithLabelValues(nodeName).Set(1)
-			if err := r.Config.K8sClient.DeletePodsAfterTimeout(ctx, nodeName, namespaces, deleteAfterTimeout, healthEventWithStatus); err != nil {
+
+			if err := r.Config.K8sClient.DeletePodsAfterTimeout(ctx, nodeName, namespaces,
+				deleteAfterTimeout, healthEventWithStatus); err != nil {
 				klog.Errorf("Error in deleting pod if not finished: %+v", err)
 				nodeDrainError.WithLabelValues(nodeName, "delete_pods_after_timeout_error").Inc()
 			}
-		}(ctxTimeout, cancelTimeout, timeoutKey, nodeName, getTimeoutNamespaces)
+		}
+		go f(ctxTimeout, cancelTimeout, timeoutKey, nodeName, getTimeoutNamespaces)
 	}
 
 	for ns, mode := range namespaceMap {
 		nsWithNode := fmt.Sprintf("%s-%s", nodeName, ns)
+		//nolint:nestif // TODO
 		if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
 			if _, ok := r.NodeEvictionContext.Load(nsWithNode); ok {
 				if mode == config.ModeAllowCompletion {
 					healthyEventWithContextCancellation.Inc()
 					klog.Infof("Cancelling the eviction of pods in namespace %s on node %s", ns, nodeName)
+
 					context, _ := r.NodeEvictionContext.Load(nsWithNode)
 					evictionContext := context.(*EvictionContext)
+
 					evictionContext.cancel()
 				}
 			}
+
 			if context, ok := r.NodeEvictionContext.Load(fmt.Sprintf("%s-timeout", nodeName)); ok {
 				klog.Infof("Cancelling the eviction of pods on node %s", nodeName)
+
 				evictionContext := context.(*EvictionContext)
+
 				evictionContext.cancel()
 			}
 		} else {
 			wg.Add(1)
-			go func(ctx context.Context, mode config.EvictMode, nodeName string, ns string, nsWithNode string) {
-				ctx1, cancel := context.WithCancel(ctx)
 
+			f := func(ctx context.Context, mode config.EvictMode, nodeName string, ns string, nsWithNode string) {
+				ctx1, cancel := context.WithCancel(ctx)
 				defer func() {
 					cancel()
 					wg.Done()
 				}()
+
+				//nolint:exhaustive // todo
 				switch mode {
 				case config.ModeImmediateEvict:
 					klog.Infof("Evicting pods from namespace %s in %s mode", ns, mode)
@@ -271,13 +300,15 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 					nsWithImmediateMode = append(nsWithImmediateMode, ns)
 					mu.Unlock()
 
-					if err := r.Config.K8sClient.EvictAllPodsInImmediateMode(ctx, ns, nodeName, r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration); err != nil {
+					if err := r.Config.K8sClient.EvictAllPodsInImmediateMode(ctx, ns, nodeName,
+						r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration); err != nil {
 						klog.Infof("error while evicting pods in namespace %s on node %s: %+v\n", ns, nodeName, err)
 						errChan <- err
 					}
 				case config.ModeAllowCompletion:
 					r.NodeEvictionContext.Store(nsWithNode, &EvictionContext{cancel: cancel})
 					klog.Infof("Monitoring pods for completion in namespace %s in %s mode", ns, mode)
+
 					if err := r.Config.K8sClient.MonitorPodCompletion(ctx1, ns, nodeName); err != nil {
 						klog.Infof("error while monitoring pods to complete in namespace %s on node %s: %+v\n", ns, nodeName, err)
 						errChan <- err
@@ -294,8 +325,8 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 					klog.Infof("Context cancelled for health event: %+v", healthEventWithStatus)
 				default:
 				}
-
-			}(ctx, mode, nodeName, ns, nsWithNode)
+			}
+			go f(ctx, mode, nodeName, ns, nsWithNode)
 		}
 	}
 
@@ -303,15 +334,19 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 	close(errChan)
 
 	var mErr *multierror.Error
+
 	if len(errChan) > 0 {
 		for err := range errChan {
 			mErr = multierror.Append(mErr, err)
 		}
+
 		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
 		}
+
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
+
 		return mErr
 	}
 
@@ -323,6 +358,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
 		}
+
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 	}
 
@@ -332,8 +368,8 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string, healthEve
 func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config.EvictMode {
 	namespaceMap := make(map[string]config.EvictMode)
 	systemNamespaces := r.Config.TomlConfig.SystemNamespaces
-	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
 
+	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
 		if userNamespace.Mode == config.ModeDeleteAfterTimeout {
 			continue
 		}
@@ -346,12 +382,13 @@ func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config
 		}
 
 		for _, ns := range matchedNamespaces {
-			//Add only if not present in the map
+			// Add only if not present in the map
 			if _, ok := namespaceMap[ns]; !ok {
 				namespaceMap[ns] = userNamespace.Mode
 			}
 		}
 	}
+
 	return namespaceMap
 }
 
@@ -360,16 +397,17 @@ func (r *Reconciler) getTimeoutNamespaces(ctx context.Context) []string {
 	systemNamespaces := r.Config.TomlConfig.SystemNamespaces
 
 	for _, userNamespace := range r.Config.TomlConfig.UserNamespaces {
-
 		if userNamespace.Mode == config.ModeDeleteAfterTimeout {
 			matchedNamespaces, err := r.Config.K8sClient.GetNamespacesMatchingPattern(ctx, userNamespace.Name, systemNamespaces)
 			if err != nil {
 				klog.Errorf("Error while matching namespaces with pattern %s: %+v", userNamespace.Name, err)
 				continue
 			}
+
 			timeoutNamespaces = append(timeoutNamespaces, matchedNamespaces...)
 		}
 	}
+
 	return timeoutNamespaces
 }
 
@@ -391,28 +429,36 @@ func (r *Reconciler) getInProgressEvents(ctx context.Context, collection *mongo.
 	}
 
 	klog.Infof("Found %d in-progress events to process", len(events))
+
 	return events, nil
 }
 
-func (r *Reconciler) verifyEvictionCompleted(ctx context.Context, healthEventWithStatus *storeconnector.HealthEventWithStatus, nodeName string, nsWithImmediateMode []string) error {
-
+func (r *Reconciler) verifyEvictionCompleted(ctx context.Context,
+	healthEventWithStatus *storeconnector.HealthEventWithStatus, nodeName string, nsWithImmediateMode []string) error {
 	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined && !r.DryRun {
 		klog.Infof("Verifying if all pods have been successfully evicted, if not, forcefully deleting them")
-		allEvicted := r.Config.K8sClient.CheckIfAllPodsAreEvictedInImmediateMode(ctx, nsWithImmediateMode, nodeName, r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration)
+
+		allEvicted := r.Config.K8sClient.CheckIfAllPodsAreEvictedInImmediateMode(ctx, nsWithImmediateMode, nodeName,
+			r.Config.TomlConfig.EvictionTimeoutInSeconds.Duration)
 		if !allEvicted {
 			return fmt.Errorf("error in evicting all pods in namespace %v on node %s", nsWithImmediateMode, nodeName)
 		}
+
 		nodeDrainSuccess.WithLabelValues(nodeName).Inc()
 	}
+
 	return nil
 }
 
-func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collection *mongo.Collection, event bson.M, userPodsEvictionStatus *storeconnector.OperationStatus) error {
+func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collection *mongo.Collection,
+	event bson.M, userPodsEvictionStatus *storeconnector.OperationStatus) error {
 	var err error
+
 	document, ok := event["fullDocument"].(bson.M)
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
 	}
+
 	filter := bson.M{"_id": document["_id"]}
 	update := bson.M{
 		"$set": bson.M{
@@ -422,10 +468,12 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collec
 
 	for i := 1; i <= maxRetries; i++ {
 		klog.Infof("Attempt %d, updating health event with ID %v", i, document["_id"])
+
 		_, err = collection.UpdateOne(ctx, filter, update)
 		if err == nil {
 			break
 		}
+
 		time.Sleep(retryDelay)
 	}
 
@@ -434,5 +482,6 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collec
 	}
 
 	klog.Infof("Health event status has been updated , health event: %+v, status: %+v", event, userPodsEvictionStatus)
+
 	return nil
 }

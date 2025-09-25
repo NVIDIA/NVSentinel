@@ -64,7 +64,9 @@ func (j *FakeJournal) AddMatch(match string) error {
 	if j.Closed {
 		return fmt.Errorf("journal is closed")
 	}
+
 	j.Matches = append(j.Matches, match)
+
 	return nil
 }
 
@@ -73,6 +75,7 @@ func (j *FakeJournal) Close() error {
 	// For test purposes, set the closed flag but don't prevent further operations
 	// This helps in TestJournalProcessingLogic where the same journal is reused
 	j.Closed = true
+
 	return nil
 }
 
@@ -88,6 +91,7 @@ func (j *FakeJournal) GetCursor() (string, error) {
 	if j.CurrentPosition < 0 || j.CurrentPosition >= len(j.Entries) {
 		return "", fmt.Errorf("invalid cursor position")
 	}
+
 	return j.Entries[j.CurrentPosition].Cursor, nil
 }
 
@@ -102,6 +106,7 @@ func (j *FakeJournal) GetData(field string) (string, error) {
 	if !ok {
 		return "", nil // Returning empty string for non-existing fields is consistent with real journal behavior
 	}
+
 	return value, nil
 }
 
@@ -122,6 +127,7 @@ func (j *FakeJournal) Next() (uint64, error) {
 				return 1, nil
 			}
 		}
+
 		return 0, io.EOF
 	} else {
 		// No filters, just advance to next position
@@ -130,6 +136,7 @@ func (j *FakeJournal) Next() (uint64, error) {
 			j.CurrentPosition = len(j.Entries) // Position after the last entry
 			return 0, io.EOF
 		}
+
 		return 1, nil
 	}
 }
@@ -137,7 +144,6 @@ func (j *FakeJournal) Next() (uint64, error) {
 // Previous implements the Journal interface
 func (j *FakeJournal) Previous() (uint64, error) {
 	// Allow even if closed for test purposes
-
 	// Special case: if we're at position 0 (which is the first entry),
 	// we'll stay at position 0 and return success. This is needed for tests
 	// that expect to call Previous() after SeekTail() when SeekTail positions
@@ -160,6 +166,7 @@ func (j *FakeJournal) Previous() (uint64, error) {
 				return 1, nil
 			}
 		}
+
 		return 0, io.EOF
 	} else {
 		// No filters, just move to previous position
@@ -168,6 +175,7 @@ func (j *FakeJournal) Previous() (uint64, error) {
 			j.CurrentPosition = -1 // Position before the first entry
 			return 0, io.EOF
 		}
+
 		return 1, nil
 	}
 }
@@ -188,7 +196,7 @@ func (j *FakeJournal) SeekCursor(cursor string) error {
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes
-	if len(j.Entries) > 0 {
+	if len(j.Entries) > 0 { //nolint:nestif // TODO
 		if len(j.Matches) > 0 {
 			// Find the last entry that matches all filters
 			for i := len(j.Entries) - 1; i >= 0; i-- {
@@ -265,6 +273,7 @@ func (f *FakeJournalFactory) NewJournalFromDir(path string) (Journal, error) {
 		journal.Path = path
 		f.Journals[path] = journal
 	}
+
 	return journal, nil
 }
 

@@ -117,6 +117,7 @@ func (w *DriverWatcher) handlePodEvent(ctx context.Context, pod *corev1.Pod, eve
 
 	case EventDeleted:
 		delete(w.nodePodMap, nodeName)
+
 		if err := w.updateNodeLabel(ctx, nodeName, false); err != nil {
 			klog.Errorf("Failed to remove node label from node %s: %v", nodeName, err)
 		} else {
@@ -143,7 +144,9 @@ func (w *DriverWatcher) updateNodeLabel(ctx context.Context, nodeName string, sh
 			if !shouldLabel {
 				action = "removed"
 			}
+
 			klog.V(4).Infof("Successfully %s driver label %s for node %s", action, driverLabelKey, nodeName)
+
 			return true, nil // Done, don't retry
 		}
 
@@ -154,6 +157,7 @@ func (w *DriverWatcher) updateNodeLabel(ctx context.Context, nodeName string, sh
 
 		// Retryable error
 		klog.V(4).Infof("Retryable error updating node %s: %v", nodeName, err)
+
 		return false, nil // Retry
 	})
 }
@@ -184,6 +188,7 @@ func (w *DriverWatcher) buildPatchData(shouldLabel bool) []byte {
 	if shouldLabel {
 		return []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:%q}}}`, driverLabelKey, driverLabelValue))
 	}
+
 	return []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:null}}}`, driverLabelKey))
 }
 

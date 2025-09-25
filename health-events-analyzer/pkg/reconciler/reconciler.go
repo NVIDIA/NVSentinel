@@ -60,7 +60,6 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
-
 	watcher, err := storewatcher.NewChangeStreamWatcher(
 		ctx,
 		r.config.MongoHealthEventCollectionConfig,
@@ -86,10 +85,10 @@ func (r *Reconciler) Start(ctx context.Context) {
 	klog.Info("Listening for events on the channel...")
 
 	for event := range watcher.Events() {
-
 		startTime := time.Now()
 
 		document := event["fullDocument"].(bson.M)
+
 		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
 		if err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
@@ -110,6 +109,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		totalEventsReceived.WithLabelValues(healthEventWithStatus.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
 
 		var err error
+
 		var publishedNewEvent bool
 
 		for i := 1; i <= maxRetries; i++ {
@@ -127,11 +127,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 				}
 
 				break
-
 			}
 
 			klog.Errorf("Error in handling the event with ID %s: %+v", document["_id"], err)
+
 			totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
+
 			time.Sleep(delay)
 		}
 
@@ -142,7 +143,6 @@ func (r *Reconciler) Start(ctx context.Context) {
 		duration := time.Since(startTime).Seconds()
 
 		eventHandlingDuration.Observe(duration)
-
 	}
 }
 
@@ -155,6 +155,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
 			if !ok {
 				klog.Warningf("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
+
 				actionVal = int32(platform_connectors.RecommenedAction_NONE)
 			}
 
@@ -162,10 +163,13 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 			if err != nil {
 				klog.Errorf("Error in publishing the new fatal event: %+v", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
+
 				return false, err
 			}
+
 			return true, nil
 		}
+
 		klog.V(2).Infof("Rule '%s' didn't meet criteria", rule.Name)
 	}
 
@@ -175,12 +179,14 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 }
 
 // matchesAnySequenceCriteria checks if the current event matches any sequence criteria in the rule
-func matchesAnySequenceCriteria(rule config.HealthEventsAnalyzerRule, healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+func matchesAnySequenceCriteria(rule config.HealthEventsAnalyzerRule,
+	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
 	for _, seq := range rule.Sequence {
 		if matchesSequenceCriteria(seq.Criteria, healthEventWithStatus.HealthEvent) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -197,10 +203,13 @@ func matchesSequenceCriteria(criteria map[string]interface{}, event *platform_co
 			return false
 		}
 	}
+
 	return true
 }
 
 // getValueFromPath extracts a value from the event using a dot-notation path
+//
+//nolint:cyclop, gocognit // todo
 func getValueFromPath(path string, event *platform_connectors.HealthEvent) interface{} {
 	parts := strings.Split(path, ".")
 
@@ -230,6 +239,7 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 		if idx, err := strconv.Atoi(parts[1]); err == nil && idx < len(event.ErrorCode) {
 			return event.ErrorCode[idx]
 		}
+
 		return nil
 	}
 
@@ -246,6 +256,7 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 				}
 			}
 		}
+
 		return nil
 	}
 
@@ -259,6 +270,7 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 
 	if strings.EqualFold(rootField, "generatedtimestamp") && len(parts) > 1 && event.GeneratedTimestamp != nil {
 		subField := strings.ToLower(parts[1])
+
 		timestampVal := reflect.ValueOf(event.GeneratedTimestamp).Elem()
 		for i := 0; i < timestampVal.NumField(); i++ {
 			field := timestampVal.Type().Field(i)
@@ -271,25 +283,32 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 	return nil
 }
 
-func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsAnalyzerRule, healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsAnalyzerRule,
+	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
 	klog.V(2).Infof("Evaluating rule '%s' for event: %+v", rule.Name, healthEventWithStatus)
+
 	timeWindow, err := time.ParseDuration(rule.TimeWindow)
 	if err != nil {
 		klog.Errorf("Failed to parse time window: %+v", err)
 		totalEventProcessingError.WithLabelValues("parse_time_window_error").Inc()
+
 		return false
 	}
 
 	// Create facets for each sequence
 	facets := bson.D{}
+
 	for i, seq := range rule.Sequence {
 		klog.V(2).Infof("Evaluating sequence: %+v", seq)
+
 		facetName := "sequence_" + strconv.Itoa(i)
 
 		matchCriteria, err := parseSequenceString(seq.Criteria, healthEventWithStatus.HealthEvent)
 		if err != nil {
 			klog.Errorf("Failed to parse sequence criteria: %v", err)
+
 			totalEventProcessingError.WithLabelValues("parse_criteria_error").Inc()
+
 			continue
 		}
 
@@ -329,10 +348,12 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	}
 
 	var result []bson.M
+
 	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipeline)
 	if err != nil {
 		klog.Errorf("Failed to execute aggregation pipeline: %+v", err)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
+
 		return false
 	}
 	defer cursor.Close(ctx)
@@ -340,6 +361,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	if err = cursor.All(ctx, &result); err != nil {
 		klog.Errorf("Failed to decode cursor: %+v", err)
 		totalEventProcessingError.WithLabelValues("decode_cursor_error").Inc()
+
 		return false
 	}
 
@@ -357,6 +379,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 // parseSequenceString converts a criteria string into a BSON document for MongoDB queries
 func parseSequenceString(criteria map[string]interface{}, event *platform_connectors.HealthEvent) (bson.D, error) {
 	doc := bson.D{}
+
 	for key, value := range criteria {
 		strValue, ok := value.(string)
 		if ok && len(strValue) > 5 && strValue[:5] == "this." {

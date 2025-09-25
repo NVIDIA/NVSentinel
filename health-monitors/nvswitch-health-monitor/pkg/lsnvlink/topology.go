@@ -74,6 +74,7 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 			klog.Fatalf("Failed to gather topology on initialization: %v", err)
 		}
 	})
+
 	return globalTopologyProvider
 }
 
@@ -81,6 +82,7 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 func (p *DynamicTopologyProvider) GatherTopology() error {
 	// Get NVLink topology to check if NVLinks/NVSwitches exist
 	cmd := exec.Command("nvidia-smi", "nvlink", "-R")
+
 	nvlinkOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		// Any error from nvidia-smi should be fatal (driver issues, permission problems, etc.)
@@ -89,13 +91,16 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 
 	// Check if output is empty or contains no NVLink information
 	outputStr := strings.TrimSpace(string(nvlinkOutput))
+
 	if len(outputStr) == 0 || !strings.Contains(outputStr, "Link") {
 		klog.Infof("No NVLink information found, no NVSwitches on this node")
+
 		p.topology = &NVLinkTopology{
 			HasNVSwitch:          false,
 			Topology:             make(map[string]GPUTopology),
 			NVSwitchPCIAddresses: []string{},
 		}
+
 		return nil
 	}
 
@@ -104,11 +109,13 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 
 	if len(nvswitchPCIAddrs) == 0 {
 		klog.Infof("No NVSwitch devices found in NVLink topology")
+
 		p.topology = &NVLinkTopology{
 			HasNVSwitch:          false,
 			Topology:             topology.Topology,
 			NVSwitchPCIAddresses: []string{},
 		}
+
 		return nil
 	}
 
@@ -147,6 +154,7 @@ func (p *DynamicTopologyProvider) logNVSwitchPCIAddresses() {
 	}
 
 	klog.Infof("NVSwitch PCI Addresses (%d total):", len(p.topology.NVSwitchPCIAddresses))
+
 	for _, pciAddr := range p.topology.NVSwitchPCIAddresses {
 		klog.Infof("  %s", pciAddr)
 	}
@@ -174,7 +182,9 @@ func (p *DynamicTopologyProvider) getSortedGPUIDs() []string {
 	for gpuID := range p.topology.Topology {
 		gpuIDs = append(gpuIDs, gpuID)
 	}
+
 	sort.Strings(gpuIDs)
+
 	return gpuIDs
 }
 
@@ -195,6 +205,7 @@ func (p *DynamicTopologyProvider) logSingleGPU(gpuID string) {
 	for linkID := range gpuTopo.Links {
 		linkIDs = append(linkIDs, linkID)
 	}
+
 	sort.Strings(linkIDs)
 
 	for _, linkID := range linkIDs {
@@ -211,10 +222,12 @@ func (p *DynamicTopologyProvider) parseNVLinkOutputWithPCIAddresses(output strin
 	}
 
 	lines := strings.Split(output, "\n")
-	var currentGPU string
-	var currentLinks map[string]TopologyLink
-	pciAddressSet := make(map[string]bool)
 
+	var currentGPU string
+
+	var currentLinks map[string]TopologyLink
+
+	pciAddressSet := make(map[string]bool)
 	gpuPattern := regexp.MustCompile(`^GPU (\d+):`)
 	linkPattern := regexp.MustCompile(`^Link (\d+):\s+Remote Device\s+([0-9a-fA-F:\.]+):\s+Link\s+(\d+)`)
 
@@ -230,6 +243,7 @@ func (p *DynamicTopologyProvider) parseNVLinkOutputWithPCIAddresses(output strin
 
 			currentGPU = matches[1]
 			currentLinks = make(map[string]TopologyLink)
+
 			continue
 		}
 

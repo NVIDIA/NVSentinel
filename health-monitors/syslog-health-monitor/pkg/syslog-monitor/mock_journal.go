@@ -52,7 +52,9 @@ func (j *MockJournal) AddMatch(match string) error {
 	if j.Closed {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	j.MatchFilters = append(j.MatchFilters, match)
+
 	return nil
 }
 
@@ -67,15 +69,19 @@ func (j *MockJournal) GetBootID() (string, error) {
 	if j.Closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailGetBootID {
 		return "", fmt.Errorf("forced GetBootID failure")
 	}
+
 	if j.TestBootID != "" {
 		return j.TestBootID, nil
 	}
+
 	if j.CurrentPosition >= 0 && j.CurrentPosition < len(j.Entries) {
 		return j.Entries[j.CurrentPosition].BootID, nil
 	}
+
 	return "mock-boot-id", nil
 }
 
@@ -84,15 +90,19 @@ func (j *MockJournal) GetCursor() (string, error) {
 	if j.Closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailGetCursor {
 		return "", fmt.Errorf("forced GetCursor failure")
 	}
+
 	if j.TestCursor != "" {
 		return j.TestCursor, nil
 	}
+
 	if j.CurrentPosition >= 0 && j.CurrentPosition < len(j.Entries) {
 		return j.Entries[j.CurrentPosition].Cursor, nil
 	}
+
 	return "mock-cursor", nil
 }
 
@@ -101,9 +111,11 @@ func (j *MockJournal) GetData(field string) (string, error) {
 	if j.Closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailGetData {
 		return "", fmt.Errorf("forced GetData failure")
 	}
+
 	if j.CurrentPosition < 0 || j.CurrentPosition >= len(j.Entries) {
 		return "", fmt.Errorf("invalid cursor position")
 	}
@@ -116,6 +128,7 @@ func (j *MockJournal) GetData(field string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("field not found: %s", field)
 	}
+
 	return value, nil
 }
 
@@ -124,13 +137,16 @@ func (j *MockJournal) Next() (uint64, error) {
 	if j.Closed {
 		return 0, errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailNextEntry {
 		return 0, fmt.Errorf("forced Next failure")
 	}
+
 	j.CurrentPosition++
 	if j.CurrentPosition >= len(j.Entries) {
 		return 0, io.EOF
 	}
+
 	return 1, nil
 }
 
@@ -139,11 +155,13 @@ func (j *MockJournal) Previous() (uint64, error) {
 	if j.Closed {
 		return 0, errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	j.CurrentPosition--
 	if j.CurrentPosition < 0 {
 		j.CurrentPosition = -1
 		return 0, io.EOF
 	}
+
 	return 1, nil
 }
 
@@ -152,15 +170,18 @@ func (j *MockJournal) SeekCursor(cursor string) error {
 	if j.Closed {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailSeekCursor {
 		return fmt.Errorf("forced SeekCursor failure")
 	}
+
 	for i, entry := range j.Entries {
 		if entry.Cursor == cursor {
 			j.CurrentPosition = i
 			return nil
 		}
 	}
+
 	return fmt.Errorf("cursor not found: %s", cursor)
 }
 
@@ -169,14 +190,17 @@ func (j *MockJournal) SeekTail() error {
 	if j.Closed {
 		return errors.New(JOURNAL_CLOSED_ERROR)
 	}
+
 	if j.FailSeekTail {
 		return fmt.Errorf("forced SeekTail failure")
 	}
+
 	if len(j.Entries) > 0 {
 		j.CurrentPosition = len(j.Entries) - 1
 	} else {
 		j.CurrentPosition = -1
 	}
+
 	return nil
 }
 
@@ -191,6 +215,7 @@ func (f *MockJournalFactory) NewJournal() (Journal, error) {
 	if f.DefaultJournal != nil {
 		return f.DefaultJournal, nil
 	}
+
 	return &MockJournal{
 		CurrentPosition: -1,
 		TestBootID:      "mock-boot-id",
@@ -203,6 +228,7 @@ func (f *MockJournalFactory) NewJournalFromDir(path string) (Journal, error) {
 	if !ok {
 		return nil, fmt.Errorf("no mock journal configured for path: %s", path)
 	}
+
 	return journal, nil
 }
 

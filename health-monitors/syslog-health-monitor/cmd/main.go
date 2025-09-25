@@ -84,9 +84,11 @@ func createTLSCredentials(endpoint string) (credentials.TransportCredentials, bo
 	}
 
 	klog.Infof("Created TLS credentials with custom CA")
+
 	return credentials.NewTLS(tlsConfig), true
 }
 
+//nolint:cyclop,gocognit // todo
 func main() {
 	// Initialize klog early to ensure logging works
 	klog.InitFlags(nil)
@@ -95,14 +97,22 @@ func main() {
 	// Early startup logging to help diagnose issues
 	klog.Infof("Starting syslog-health-monitor...")
 
-	configFile := flag.String("config-file", "/etc/config/config.yaml", "Path to the YAML configuration file for log checks.")
-	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock", "Path to the platform-connector UDS socket.")
-	platformConnectorEndpoint := flag.String("platform-connector-endpoint", "", "Platform connector endpoint (supports unix:// for socket or tcp:// for network). If specified, overrides platform-connector-socket.")
+	configFile := flag.String("config-file", "/etc/config/config.yaml",
+		"Path to the YAML configuration file for log checks.")
+	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
+		"Path to the platform-connector UDS socket.")
+	platformConnectorEndpoint := flag.String("platform-connector-endpoint", "",
+		"Platform connector endpoint (supports unix:// for socket or tcp:// for network). If specified, "+
+			"overrides platform-connector-socket.")
 	nodeNameEnv := flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
-	pollingIntervalFlag := flag.String("polling-interval", defaultPollingInterval, "Polling interval for health checks (e.g., 15m, 1h).") // Added polling interval flag
-	stateFileFlag := flag.String("state-file", defaultStateFilePath, "Path to state file for cursor persistence.")                        // Added state file flag
-	xidMappingFlag := flag.String("xid-mapping-file", defaultXidMappingPath, "Path to XID error mappings CSV file.")
-	actionMappingFlag := flag.String("action-mapping-file", defaultActionMappingPath, "Path to action mapping INI file.")
+	pollingIntervalFlag := flag.String("polling-interval", defaultPollingInterval,
+		"Polling interval for health checks (e.g., 15m, 1h).")
+	stateFileFlag := flag.String("state-file", defaultStateFilePath,
+		"Path to state file for cursor persistence.")
+	xidMappingFlag := flag.String("xid-mapping-file", defaultXidMappingPath,
+		"Path to XID error mappings CSV file.")
+	actionMappingFlag := flag.String("action-mapping-file", defaultActionMappingPath,
+		"Path to action mapping INI file.")
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 
 	flag.Parse()
@@ -113,6 +123,7 @@ func main() {
 	if nodeName == "" {
 		klog.Fatalf("NODE_NAME env not set and --node-name flag not provided, cannot run.")
 	}
+
 	klog.Infof("Using node name: %s", nodeName)
 
 	// Determine which endpoint to use - new endpoint flag takes precedence
@@ -130,10 +141,13 @@ func main() {
 
 	if useTLS {
 		klog.Infof("Configuring TLS credentials for platform connector connection")
+
 		endpoint = strings.TrimPrefix(endpoint, "tcp://")
+
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
 		klog.Infof("Using insecure credentials for platform connector connection")
+
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
@@ -141,7 +155,9 @@ func main() {
 
 	// Add retry logic for platform connector endpoint with detailed diagnostics
 	var conn *grpc.ClientConn
+
 	var err error
+
 	maxRetries := 10
 	isUnixSocket := strings.HasPrefix(endpoint, "unix://")
 
@@ -153,27 +169,30 @@ func main() {
 			socketPath := strings.TrimPrefix(endpoint, "unix://")
 			if _, statErr := os.Stat(socketPath); statErr != nil {
 				klog.Warningf("Attempt %d/%d: Platform connector socket file does not exist: %v", attempt, maxRetries, statErr)
+
 				if attempt < maxRetries {
 					time.Sleep(time.Duration(attempt) * time.Second)
 					continue
 				}
-				klog.Errorf("Platform connector socket file not found after %d attempts: %s", maxRetries, socketPath)
-				os.Exit(1)
+
+				klog.Fatalf("Platform connector socket file not found after %d attempts: %s", maxRetries, socketPath)
 			}
 		}
 
 		conn, err = grpc.NewClient(endpoint, opts...)
 		if err != nil {
 			klog.Warningf("Attempt %d/%d: Error creating gRPC client: %v", attempt, maxRetries, err)
+
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
-			klog.Errorf("Failed to create gRPC client after %d attempts: %v", maxRetries, err)
-			os.Exit(1)
+
+			klog.Fatalf("Failed to create gRPC client after %d attempts: %v", maxRetries, err)
 		}
 
 		klog.Infof("Successfully connected to platform connector on attempt %d", attempt)
+
 		break
 	}
 
@@ -189,6 +208,7 @@ func main() {
 
 	// Add retry logic for config file reading with detailed diagnostics
 	var yamlFile []byte
+
 	maxConfigRetries := 5
 	for attempt := 1; attempt <= maxConfigRetries; attempt++ {
 		klog.Infof("Attempt %d/%d: Reading config file: %s", attempt, maxConfigRetries, *configFile)
@@ -196,46 +216,50 @@ func main() {
 		// Check if config file exists
 		if _, statErr := os.Stat(*configFile); statErr != nil {
 			klog.Warningf("Attempt %d/%d: Config file does not exist: %v", attempt, maxConfigRetries, statErr)
+
 			if attempt < maxConfigRetries {
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
-			klog.Errorf("Config file not found after %d attempts: %s", maxConfigRetries, *configFile)
-			os.Exit(1)
+
+			klog.Fatalf("Config file not found after %d attempts: %s", maxConfigRetries, *configFile)
 		}
 
 		yamlFile, err = os.ReadFile(*configFile)
+
 		if err != nil {
 			klog.Warningf("Attempt %d/%d: Error reading config file: %v", attempt, maxConfigRetries, err)
+
 			if attempt < maxConfigRetries {
 				time.Sleep(time.Duration(attempt) * time.Second)
 				continue
 			}
-			klog.Errorf("Failed to read config file after %d attempts: %v", maxConfigRetries, err)
-			os.Exit(1)
+
+			klog.Fatalf("Failed to read config file after %d attempts: %v", maxConfigRetries, err)
 		}
 
 		klog.Infof("Successfully read config file on attempt %d", attempt)
+
 		break
 	}
 
 	var config ConfigFile
+
 	err = yaml.Unmarshal(yamlFile, &config)
 	if err != nil {
-		klog.Errorf("Error unmarshalling config file '%s': %v", *configFile, err)
-		os.Exit(1)
+		klog.Fatalf("Error unmarshalling config file '%s': %v", *configFile, err)
 	}
 
 	if len(config.Checks) == 0 {
-		klog.Errorln("Error: No checks defined in the config file.")
-		os.Exit(1)
+		klog.Fatalln("Error: No checks defined in the config file.")
 	}
 
 	klog.Infof("Creating syslog monitor with %d checks", len(config.Checks))
-	fdHealthMonitor, err := fd.NewSyslogMonitor(nodeName, config.Checks, client, defaultAgentName, defaultComponentClass, *pollingIntervalFlag, *stateFileFlag, *xidMappingFlag, *actionMappingFlag)
+
+	fdHealthMonitor, err := fd.NewSyslogMonitor(nodeName, config.Checks, client, defaultAgentName,
+		defaultComponentClass, *pollingIntervalFlag, *stateFileFlag, *xidMappingFlag, *actionMappingFlag)
 	if err != nil {
-		klog.Errorf("Error creating syslog health monitor: %v", err)
-		os.Exit(1)
+		klog.Fatalf("Error creating syslog health monitor: %v", err)
 	}
 
 	// Parse polling interval
@@ -243,10 +267,12 @@ func main() {
 	if err != nil {
 		klog.Fatalf("Error parsing polling interval '%s': %v", *pollingIntervalFlag, err)
 	}
+
 	klog.Infof("Polling every %v", pollingInterval)
 
 	// Start metrics server
 	klog.Infof("Starting metrics server on port %s", *metricsPort)
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
@@ -265,6 +291,7 @@ func main() {
 	// Polling loop
 	for range ticker.C {
 		klog.Info("Performing scheduled health check run...")
+
 		if err := fdHealthMonitor.Run(); err != nil {
 			klog.Errorf("Error running syslog health monitor: %v", err)
 		}

@@ -67,6 +67,7 @@ type TemplateData struct {
 	RecommendedAction platformconnector.RecommenedAction
 }
 
+// nolint: cyclop // todo
 func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -117,6 +118,7 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	}
 
 	tmpl := template.New("maintenance")
+
 	tmpl, err = tmpl.Parse(string(templateContent))
 	if err != nil {
 		return nil, fmt.Errorf("error parsing template: %w", err)
@@ -191,10 +193,12 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	}
 
 	log.Printf("Created Maintenance CR successfully for node %s", healthEvent.NodeName)
+
 	return true
 }
 
 // RunLogCollectorJob creates a log collector Job and waits for completion.
+// nolint: cyclop // todo
 func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
 	if len(c.dryRunMode) > 0 {
 		log.Printf("DRY-RUN: Skipping log collector job for node %s", nodeName)
@@ -270,7 +274,8 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 				}
 			}
 
-			if completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete)); completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
+			completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete))
+			if completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
 				log.Printf("Log collector job %s completed successfully", created.Name)
 				// Use job's actual duration instead of custom tracking
 				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
@@ -279,7 +284,9 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 				done <- nil
 				return
 			}
-			if failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed)); failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
+
+			failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed))
+			if failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
 				log.Printf("Log collector job %s failed", created.Name)
 				// Use job's actual duration for failed jobs too
 				var duration float64

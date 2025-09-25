@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog"
 )
 
+//nolint:cyclop //todo
 func main() {
 	ctx := context.Background()
 
@@ -52,6 +53,7 @@ func main() {
 	flag.Parse()
 
 	klog.Infof("Mongo client cert path taken is: %s", *mongoClientCertMountPath)
+
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		klog.Fatalf("MongoDB URI is not provided")
@@ -98,14 +100,16 @@ func main() {
 	}
 
 	klog.Infof("Starting a metrics port on : %s", *metricsPort)
-	go func() {
+
+	f := func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+*metricsPort, nil)
 		if err != nil {
 			klog.Fatalf("Failed to start metrics server: %v", err)
 		}
-	}()
+	}
+	go f()
 
 	mongoConfig := storewatcher.MongoDBConfig{
 		URI:        mongoURI,
@@ -133,8 +137,10 @@ func main() {
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "update"},
 				{Key: "$or", Value: bson.A{
-					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
-					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
+					bson.D{{Key: "updateDescription.updatedFields",
+						Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
+					bson.D{{Key: "updateDescription.updatedFields",
+						Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
 				}},
 			}},
 		},

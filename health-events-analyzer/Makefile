@@ -26,7 +26,7 @@ lint-test:
 	@echo "Linting and testing health-events-analyzer (with private repos)..."
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -42,7 +42,7 @@ vet:
 lint:
 	@echo "Running golangci-lint..."
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
-	$(GOLANGCI_LINT) run --no-config
+	$(GOLANGCI_LINT) run --config ../.golangci.yml
 
 .PHONY: test
 test:

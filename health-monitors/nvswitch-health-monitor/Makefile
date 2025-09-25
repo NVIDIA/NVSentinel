@@ -16,7 +16,7 @@ all: lint-test
 lint-test:
 	@echo "Linting and testing nvswitch-health-monitor..."
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v pkg/protos) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -30,7 +30,7 @@ vet:
 .PHONY: lint
 lint:
 	@echo "Running golangci-lint..."
-	$(GOLANGCI_LINT) run --no-config
+	$(GOLANGCI_LINT) run --config ../../.golangci.yml
 
 .PHONY: test
 test:

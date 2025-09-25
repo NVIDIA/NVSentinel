@@ -35,6 +35,7 @@ func (j *StubJournal) AddMatch(match string) error {
 	if j.closed {
 		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return nil
 }
 
@@ -49,6 +50,7 @@ func (j *StubJournal) GetBootID() (string, error) {
 	if j.closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return "stub-boot-id", nil
 }
 
@@ -57,6 +59,7 @@ func (j *StubJournal) GetCursor() (string, error) {
 	if j.closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return "stub-cursor", nil
 }
 
@@ -65,6 +68,7 @@ func (j *StubJournal) GetData(field string) (string, error) {
 	if j.closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return "", nil
 }
 
@@ -73,6 +77,7 @@ func (j *StubJournal) Next() (uint64, error) {
 	if j.closed {
 		return 0, errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return 0, io.EOF
 }
 
@@ -81,6 +86,7 @@ func (j *StubJournal) Previous() (uint64, error) {
 	if j.closed {
 		return 0, errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return 0, io.EOF
 }
 
@@ -89,6 +95,7 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 	if j.closed {
 		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return nil
 }
 
@@ -97,6 +104,7 @@ func (j *StubJournal) SeekTail() error {
 	if j.closed {
 		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
+
 	return nil
 }
 

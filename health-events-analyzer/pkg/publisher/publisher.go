@@ -68,11 +68,13 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		if isRetryableError(err) {
 			klog.Errorf("Retryable error occurred: %v", err)
 			FatalEventPublishingError.WithLabelValues("retryable_error").Inc()
+
 			return false, nil
 		}
 
 		klog.Errorf("Non-retryable error occurred: %v", err)
 		FatalEventPublishingError.WithLabelValues("non_retryable_error").Inc()
+
 		return false, err
 	})
 
@@ -80,16 +82,16 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		klog.Errorf("All retry attempts to send health event failed: %v", err)
 		return err
 	}
+
 	return nil
 }
 
 func NewPublisher(platformConnectorClient pb.PlatformConnectorClient) *PublisherConfig {
-
 	return &PublisherConfig{platformConnectorClient: platformConnectorClient}
 }
 
-func (p *PublisherConfig) Publish(ctx context.Context, event *pb.HealthEvent, recommendedAction pb.RecommenedAction) error {
-
+func (p *PublisherConfig) Publish(ctx context.Context, event *pb.HealthEvent,
+	recommendedAction pb.RecommenedAction) error {
 	// Create the health events request
 	event.IsFatal = true
 	event.RecommendedAction = recommendedAction

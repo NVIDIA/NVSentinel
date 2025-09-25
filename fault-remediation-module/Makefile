@@ -33,7 +33,7 @@ lint-test:
 	$(GO) install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
 	export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --no-config && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
 	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -49,7 +49,7 @@ vet:
 lint:
 	@echo "Running golangci-lint..."
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
-	$(GOLANGCI_LINT) run --no-config
+	$(GOLANGCI_LINT) run --config ../.golangci.yml
 
 .PHONY: test
 test:

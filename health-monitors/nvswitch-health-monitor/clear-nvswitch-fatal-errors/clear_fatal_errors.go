@@ -41,14 +41,17 @@ func parseList(list string) []string {
 	if list == "" {
 		return nil
 	}
+
 	parts := strings.Split(list, ",")
 	out := make([]string, 0, len(parts))
+
 	for _, p := range parts {
 		t := strings.TrimSpace(p)
 		if t != "" {
 			out = append(out, t)
 		}
 	}
+
 	return out
 }
 
@@ -64,12 +67,15 @@ func run() error {
 	for _, id := range parseList(*nvSwitchesFlag) {
 		entities = append(entities, &pb.Entity{EntityType: "NVSWITCH", EntityValue: id})
 	}
+
 	for _, id := range parseList(*nvLinksFlag) {
 		entities = append(entities, &pb.Entity{EntityType: "NVLINK", EntityValue: id})
 	}
+
 	for _, id := range parseList(*gpusFlag) {
 		entities = append(entities, &pb.Entity{EntityType: "GPU", EntityValue: id})
 	}
+
 	for _, id := range parseList(*pcisFlag) {
 		entities = append(entities, &pb.Entity{EntityType: "PCI", EntityValue: id})
 	}
@@ -114,6 +120,7 @@ func run() error {
 	}
 
 	log.Println("Healthy event sent successfully")
+
 	return nil
 }
 

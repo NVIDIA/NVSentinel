@@ -89,7 +89,8 @@ var (
 	nodeDrainTimeoutReached = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "node_drainer_force_delete_pods_after_timeout",
-			Help: "Total number of node drainer operations in deleteAfterTimeout mode that reached the timeout and force deleted the pods.",
+			Help: "Total number of node drainer operations in deleteAfterTimeout mode" +
+				"that reached the timeout and force deleted the pods.",
 		},
 		[]string{"node", "namespace"},
 	)

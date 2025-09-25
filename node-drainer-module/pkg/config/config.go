@@ -54,12 +54,16 @@ func (d *Duration) UnmarshalTOML(text interface{}) error {
 		if err != nil {
 			return fmt.Errorf("invalid duration format: %v", text)
 		}
+
 		if seconds <= 0 {
 			return fmt.Errorf("eviction timeout must be a positive integer")
 		}
+
 		d.Duration = time.Duration(seconds) * time.Second
+
 		return nil
 	}
+
 	return fmt.Errorf("invalid duration format: %v", text)
 }
 
@@ -99,5 +103,6 @@ func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
 	if config.NotReadyTimeoutMinutes <= 0 {
 		return nil, fmt.Errorf("notReadyTimeoutMinutes must be a positive integer")
 	}
+
 	return config, nil
 }

@@ -97,32 +97,34 @@ func getMongoDBConfig(mongoClientCertMountPath string) (*storewatcher.MongoDBCon
 	}
 
 	envVars := make(map[string]string)
+
 	for envVar, description := range requiredEnvVars {
 		value := os.Getenv(envVar)
 		if value == "" {
 			return nil, fmt.Errorf("%s is not provided", description)
 		}
+
 		envVars[envVar] = value
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return nil, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return nil, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		return nil, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
 	return &storewatcher.MongoDBConfig{
@@ -161,6 +163,7 @@ func getTokenConfig() (*storewatcher.TokenConfig, error) {
 
 func startMetricsServer(metricsPort string) {
 	klog.Infof("Starting a metrics port on : %s", metricsPort)
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
@@ -177,9 +180,10 @@ func getMongoPipeline() mongo.Pipeline {
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "update"},
 				{Key: "$and", Value: bson.A{
-					bson.D{{Key: "updateDescription.updatedFields", Value: bson.D{{Key: "healtheventstatus.userpodsevictionstatus", Value: bson.D{
-						{Key: "status", Value: "Succeeded"},
-					}}}}},
+					bson.D{{Key: "updateDescription.updatedFields",
+						Value: bson.D{{Key: "healtheventstatus.userpodsevictionstatus", Value: bson.D{
+							{Key: "status", Value: "Succeeded"},
+						}}}}},
 					bson.D{{Key: "fullDocument.healtheventstatus.nodequarantined", Value: store.Quarantined}},
 				}},
 			}},
@@ -228,6 +232,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("error while initializing kubernetes client: %v", err)
 	}
+
 	log.Println("Successfully initialized k8sclient")
 
 	// Initialize and start reconciler
@@ -253,6 +258,7 @@ func getEnvAsInt(name string, defaultValue int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("error converting %s to integer: %w", name, err)
 	}
+
 	if value <= 0 {
 		return 0, fmt.Errorf("value of %s must be a positive integer", name)
 	}

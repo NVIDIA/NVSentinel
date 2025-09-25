@@ -22,5 +22,6 @@ import (
 )
 
 type MongoInterface interface {
-	UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+	UpdateOne(ctx context.Context, filter interface{}, update interface{},
+		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
 }
