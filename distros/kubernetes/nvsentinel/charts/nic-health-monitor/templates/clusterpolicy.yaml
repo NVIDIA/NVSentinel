@@ -11,14 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 {{- if .Values.global.enableSidecarNICMonitoringForGKE }}
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: inject-nic-health-monitor-sidecar
-  namespace: {{ .Release.Namespace }}
-
 spec:
   background: false
   validationFailureAction: Audit
@@ -77,4 +74,3 @@ spec:
                   path: /var/run/nvsentinel
                   type: Directory
 {{ end }}
-{{- end }}

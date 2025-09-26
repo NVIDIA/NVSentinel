@@ -11,12 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "csp-health-monitor.fullname" . }}-config
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "csp-health-monitor.labels" . | nindent 4 }}
 data:
@@ -43,4 +41,3 @@ data:
     accountId = {{ .Values.configToml.aws.accountId | quote }}
     pollingIntervalSeconds = {{ .Values.configToml.aws.pollingIntervalSeconds }}
     region = {{ .Values.configToml.aws.region | quote }}
-{{ end }}

@@ -18,7 +18,6 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: {{ .Values.global.kata.tls.secretName | trimSuffix "-secret" }}
-  namespace: {{ .Release.Namespace }}
 spec:
   secretName: {{ .Values.global.kata.tls.secretName }}
   duration: 8760h   # 1 year
@@ -32,14 +31,11 @@ spec:
     name: mongo-ca-issuer
     kind: Issuer
 {{- end }}
-
-{{- if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: mongo-ca-issuer
-  namespace: {{ .Release.Namespace }}
 spec:
   ca:
     secretName: {{ .Values.global.kata.tls.caSecretName }}
@@ -48,7 +44,6 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: selfsigned-ca-issuer
-  namespace: {{ .Release.Namespace }}
 spec:
   selfSigned: {}
 ---
@@ -56,7 +51,6 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: {{ .Values.global.kata.tls.caSecretName | trimSuffix "-secret" }}
-  namespace: {{ .Release.Namespace }}
 spec:
   isCA: true
   commonName: {{ .Values.global.kata.tls.caSecretName | trimSuffix "-secret" }}
@@ -69,4 +63,3 @@ spec:
   issuerRef:
     name: selfsigned-ca-issuer
     kind: Issuer
-{{ end }}

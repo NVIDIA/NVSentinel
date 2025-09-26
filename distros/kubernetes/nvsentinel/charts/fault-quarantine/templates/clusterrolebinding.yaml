@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: {{ include "fault-quarantine-module.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fault-quarantine-module.labels" . | nindent 4 }}
-
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -28,4 +25,3 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "fault-quarantine-module.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
-{{ end }}

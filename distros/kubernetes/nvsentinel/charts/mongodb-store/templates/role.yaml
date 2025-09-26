@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: "{{ .Release.Namespace }}-mongodb-role"
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
-
 rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
@@ -27,4 +24,3 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "list", "get", "patch", "update"]
-{{ end }}

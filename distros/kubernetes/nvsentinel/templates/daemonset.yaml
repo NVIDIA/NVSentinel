@@ -18,10 +18,8 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "nvsentinel.fullname" . }}-platform-connector
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
-
 spec:
   updateStrategy:
     type: {{ .Values.platformConnector.updateStrategy }}
@@ -80,14 +78,6 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
-        {{- if eq .Values.global.clusterType "mgmt" }}
-            - name: KUBERNETES_CLUSTER_DOMAIN
-              value: "cluster.local"
-            - name: KUBERNETES_SERVICE_HOST
-              value: "apiserver-portal"
-            - name: KUBERNETES_SERVICE_PORT_HTTPS
-              value: "443"
-        {{- end }}
           envFrom:
             - configMapRef:
                 name: mongodb-config
@@ -108,6 +98,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-
-
 {{- end }}

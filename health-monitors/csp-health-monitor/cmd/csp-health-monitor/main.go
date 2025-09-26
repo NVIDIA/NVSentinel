@@ -109,11 +109,6 @@ func main() {
 
 	effectiveKubeconfigPath := *kubeconfig
 
-	if cfg.KubeconfigPath != "" {
-		klog.Infof("Overriding command-line kubeconfig with value from TOML config: %s", cfg.KubeconfigPath)
-		effectiveKubeconfigPath = cfg.KubeconfigPath
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

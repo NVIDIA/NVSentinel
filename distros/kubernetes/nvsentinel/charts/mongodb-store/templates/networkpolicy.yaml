@@ -16,7 +16,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: mongodb-networkpolicy
-  namespace: {{ .Release.Namespace }}
 spec:
   # Select the MongoDB pods in nvsentinel
   podSelector:

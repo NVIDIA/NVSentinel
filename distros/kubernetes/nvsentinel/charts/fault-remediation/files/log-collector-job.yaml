@@ -19,7 +19,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   generateName: {{ include "fault-remediation-module.fullname" . }}-log-collector-job-
-  namespace: {{ .Release.Namespace }}
 spec:
   ttlSecondsAfterFinished: 3600
   template:

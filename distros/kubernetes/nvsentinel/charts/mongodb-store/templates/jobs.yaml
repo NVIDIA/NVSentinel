@@ -11,19 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mongodb-job-sa
-  namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: mongodb-job-role
-  namespace: {{ .Release.Namespace }}
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -33,7 +29,6 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: mongodb-job-rolebinding
-  namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -47,7 +42,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: create-mongodb-database
-  namespace: {{ .Release.Namespace }}
   annotations:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
@@ -205,15 +199,12 @@ spec:
                 path: tls.key
               - key: ca.crt
                 path: ca.crt
-      {{- if not (eq $.Values.global.clusterType "mgmt") }}
       {{- with .Values.mongodb.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- end }}
       {{- with .Values.mongodb.jobTolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       restartPolicy: OnFailure
-{{ end }}

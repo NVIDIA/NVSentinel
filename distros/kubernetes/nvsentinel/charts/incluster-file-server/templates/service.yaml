@@ -11,12 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: v1
 kind: Service
 metadata:
   name: nvsentinel-file-server
-  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/instance: nvsentinel
 spec:
@@ -30,4 +28,3 @@ spec:
     - name: metrics
       port: {{ .Values.global.inclusterFileServer.metricsPort }}
       targetPort: {{ .Values.global.inclusterFileServer.metricsPort }}
-{{- end }}

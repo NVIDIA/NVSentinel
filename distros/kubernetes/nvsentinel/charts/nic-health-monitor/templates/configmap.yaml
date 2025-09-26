@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "nic-health-monitor.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nic-health-monitor.labels" . | nindent 4 }}
-
 data:
   config.ini: |
     NicExclusionRegex = {{ .Values.global.nicHealthMonitor.nicExclusionRegexes | default .Values.nicExclusionRegexes }}
@@ -27,4 +24,3 @@ data:
     MonitorNetworkType = {{ .Values.global.nicHealthMonitor.monitorNetworkType | default .Values.monitorNetworkType | default "all" }}
     SysClassNetPath = {{ .Values.sysClassNetPath | default "" }}
     SysClassInfinibandPath = {{ .Values.sysClassInfinibandPath | default "" }}
-{{ end }}

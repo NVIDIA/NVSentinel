@@ -29,7 +29,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	klog "k8s.io/klog/v2"
 
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -127,23 +126,15 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	return conn, pb.NewPlatformConnectorClient(conn)
 }
 
-func setupKubernetesClient(cfg *config.Config) kubernetes.Interface {
+func setupKubernetesClient() kubernetes.Interface {
 	var restCfg *rest.Config
 
 	var err error
 
-	if cfg != nil && cfg.KubeconfigPath != "" {
-		restCfg, err = clientcmd.BuildConfigFromFlags("", cfg.KubeconfigPath)
-		if err != nil {
-			klog.Errorf("Trigger Engine: failed to build kubeconfig from %s: %v", cfg.KubeconfigPath, err)
-			return nil
-		}
-	} else {
-		restCfg, err = rest.InClusterConfig()
-		if err != nil {
-			klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
-			return nil
-		}
+	restCfg, err = rest.InClusterConfig()
+	if err != nil {
+		klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
+		return nil
 	}
 
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
@@ -190,7 +181,7 @@ func main() {
 		}
 	}()
 
-	k8sClient := setupKubernetesClient(cfg)
+	k8sClient := setupKubernetesClient()
 
 	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 

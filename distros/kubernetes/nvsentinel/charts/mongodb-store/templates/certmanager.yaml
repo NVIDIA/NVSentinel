@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 # MongoDB Server Certificates
 {{- $replicaCount := int .Values.mongodb.replicaCount }}
 {{- range $i := until $replicaCount }}
@@ -31,9 +30,6 @@ spec:
     - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $i $.Release.Name $.Release.Namespace }}
     - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $.Release.Namespace }}
     - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $.Release.Namespace }}
-{{ if eq $.Values.global.clusterType "mgmt" }}
-    - {{ printf "%s-mongodb-%d.%s.psc.gcp.internal" $.Release.Namespace $i $.Release.Namespace }}
-{{ end }}
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
@@ -45,7 +41,6 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-app-client-cert
-  namespace: {{ .Release.Namespace }}
 spec:
   secretName: mongo-app-client-cert-secret
   duration: 8760h
@@ -71,7 +66,6 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-dgxcops-client-cert
-  namespace: {{ .Release.Namespace }}
 spec:
   secretName: mongo-dgxcops-client-cert-secret
   duration: 8760h
@@ -91,4 +85,3 @@ spec:
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
-{{ end }}

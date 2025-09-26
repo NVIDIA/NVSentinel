@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "tenant") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "gpu-health-monitor.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
-
 data:
   config.ini: |
     [logging]
@@ -60,9 +57,6 @@ data:
     DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL=NonFatal
     DCGM_HEALTH_WATCH_PCIE=Fatal
     DCGM_HEALTH_WATCH_PMU=Fatal
-    
-    
-    
 
   # The below tables should map to the xid error spreadsheet https://docs.google.com/spreadsheets/d/1t6PpsC5TXiNl4JMBuHlFIjmSbjLZ2ik0Sz3DLw8cLmE/edit?gid=121017179#gid=121017179
   # ordering of below columns => xiderrorno,xiderrorname,xiderrorrecommendedaction,FATAL/NONFATAL errors
@@ -70,5 +64,3 @@ data:
 
 
 {{ (.Files.Glob "dcgmerrorsmapping.csv").AsConfig | indent 2 }}
-
-{{ end }}

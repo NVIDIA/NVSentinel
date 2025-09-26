@@ -37,15 +37,13 @@ const (
 )
 
 type Config struct {
-	MaintenanceEventPollIntervalSeconds       int    `toml:"maintenanceEventPollIntervalSeconds"`
-	TriggerQuarantineWorkflowTimeLimitMinutes int    `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
-	PostMaintenanceHealthyDelayMinutes        int    `toml:"postMaintenanceHealthyDelayMinutes"`
-	NodeReadinessTimeoutMinutes               int    `toml:"nodeReadinessTimeoutMinutes"`
-	ClusterName                               string `toml:"clusterName"`
-	// Optional: Path to tenant kubeconfig (for MCP mode)
-	KubeconfigPath string    `toml:"kubeconfigPath,omitempty"`
-	GCP            GCPConfig `toml:"gcp"`
-	AWS            AWSConfig `toml:"aws"`
+	MaintenanceEventPollIntervalSeconds       int       `toml:"maintenanceEventPollIntervalSeconds"`
+	TriggerQuarantineWorkflowTimeLimitMinutes int       `toml:"triggerQuarantineWorkflowTimeLimitMinutes"`
+	PostMaintenanceHealthyDelayMinutes        int       `toml:"postMaintenanceHealthyDelayMinutes"`
+	NodeReadinessTimeoutMinutes               int       `toml:"nodeReadinessTimeoutMinutes"`
+	ClusterName                               string    `toml:"clusterName"`
+	GCP                                       GCPConfig `toml:"gcp"`
+	AWS                                       AWSConfig `toml:"aws"`
 }
 
 // GCPConfig holds GCP specific configuration.

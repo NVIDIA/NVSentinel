@@ -16,7 +16,6 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: {{ include "dca-health-monitor.fullname" . }}
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "dca-health-monitor.labels" . | nindent 4 }}
 spec:

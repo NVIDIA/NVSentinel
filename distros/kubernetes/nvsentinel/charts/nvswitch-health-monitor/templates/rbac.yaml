@@ -11,12 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "nvswitch-health-monitor.fullname" . }}-driver-watcher
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "nvswitch-health-monitor.labels" . | nindent 4 }}
 ---
@@ -59,4 +57,3 @@ roleRef:
   kind: ClusterRole
   name: {{ include "nvswitch-health-monitor.fullname" . }}-driver-watcher
   apiGroup: rbac.authorization.k8s.io
-{{ end }}

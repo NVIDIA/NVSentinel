@@ -124,8 +124,6 @@ global:
         tag: "2.5.2"
         pullPolicy: IfNotPresent
 
-  clusterType: standalone # standalone|mgmt|tenant
-
   inclusterFileServer:
     enabled: false
     metricsPort: 2112

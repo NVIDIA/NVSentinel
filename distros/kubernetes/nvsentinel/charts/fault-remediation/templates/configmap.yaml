@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{{ if or (eq .Values.global.clusterType "standalone") (eq .Values.global.clusterType "mgmt") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: fault-remediation-templates
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "fault-remediation-module.labels" . | nindent 4 }}
-
 data:
   {{ .Values.maintenanceResource.template.fileName }}: |
     {{- .Files.Get "files/maintenance.yaml" | nindent 4 }}
@@ -27,4 +24,3 @@ data:
   {{ .Values.logCollector.manifestFileName }}: |
     {{- tpl (.Files.Get "files/log-collector-job.yaml") . | nindent 4 }}
   {{ end }}
-{{ end }}
