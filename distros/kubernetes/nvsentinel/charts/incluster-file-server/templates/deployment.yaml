@@ -146,9 +146,13 @@ spec:
             - |
               set -xeuo pipefail
               while true; do
-                find /usr/share/nginx/html -type f -mtime +{{ .Values.logCleanup.retentionDays }} -delete
-                sleep 86400
+                find /usr/share/nginx/html -type f -mtime +${LOG_RETENTION_DAYS} -delete
+                sleep ${LOG_CLEANUP_SLEEP_INTERVAL}
               done
+          envFrom:
+            - configMapRef:
+                name: file-server-log-cleanup-config
+                optional: true
           volumeMounts:
             - name: artifacts
               mountPath: /usr/share/nginx/html
@@ -170,7 +174,7 @@ spec:
 {{- end }}
         - name: nginx-conf
           configMap:
-            name: {{ .Release.Name }}-file-server-nginx-conf
+            name: file-server-nginx-conf
         - name: nginx-cache
           emptyDir: {}
         - name: nginx-run

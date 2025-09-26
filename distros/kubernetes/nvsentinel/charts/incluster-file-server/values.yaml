@@ -57,6 +57,7 @@ tolerations: []
 logCleanup:
   enabled: true
   retentionDays: 7  # Must be >= 1 day (validated to prevent data loss)
+  sleepInterval: 86400  # Sleep interval in seconds between cleanup cycles (default: 24 hours)
 
 # Metrics configuration
 metrics:

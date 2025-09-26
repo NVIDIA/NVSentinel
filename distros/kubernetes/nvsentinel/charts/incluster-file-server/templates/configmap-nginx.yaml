@@ -15,7 +15,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-file-server-nginx-conf
+  name: file-server-nginx-conf
 data:
   default.conf: |
     log_format fileserver_format '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time';
@@ -90,5 +90,15 @@ data:
             labels:
               method: $method
               status: $status
+{{- end }}
+---
+{{- if .Values.logCleanup.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: file-server-log-cleanup-config
+data:
+  LOG_RETENTION_DAYS: "{{ .Values.logCleanup.retentionDays }}"
+  LOG_CLEANUP_SLEEP_INTERVAL: "{{ .Values.logCleanup.sleepInterval }}"
 {{- end }}
 {{- end }}
