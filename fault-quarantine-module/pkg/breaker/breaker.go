@@ -241,31 +241,3 @@ func (b *slidingWindowBreaker) CurrentState() State {
 
 	return b.state
 }
-
-// CurrentUtilization returns the current percentage of nodes cordoned in the sliding window.
-// It calculates the ratio of recent cordon events to total cluster nodes, providing
-// visibility into how close the system is to the trip threshold. Returns a value
-// between 0.0 and 1.0, where 0.5 means 50% of nodes have been cordoned recently.
-func (b *slidingWindowBreaker) CurrentUtilization(ctx context.Context) (float64, error) {
-	totalNodes, err := b.cfg.GetTotalNodes(ctx)
-	if err != nil {
-		klog.Errorf("Error getting total nodes: %v", err)
-		return 0, fmt.Errorf("error getting total nodes: %w", err)
-	}
-
-	if totalNodes == 0 {
-		klog.Errorf("Total nodes is 0")
-		return 0, fmt.Errorf("total nodes is 0")
-	}
-
-	now := time.Now()
-
-	b.mu.Lock()
-	b.slideWindow(now)
-	recent := b.sumBuckets()
-	b.mu.Unlock()
-
-	klog.Infof("CurrentUtilization: %f", float64(recent)/float64(totalNodes))
-
-	return float64(recent) / float64(totalNodes), nil
-}

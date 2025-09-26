@@ -23,7 +23,6 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -48,48 +47,6 @@ type NodeRuleEvaluator struct {
 	expression string
 	program    cel.Program
 	nodeLister corelisters.NodeLister
-}
-
-type MaxPercentageOfNodesToCordonRuleEvaluator struct {
-	expression   string
-	program      cel.Program
-	nodeInformer informer.NodeInfoProvider
-}
-
-// NewMaxPercentageOfNodesToCordonRuleEvaluator creates a new MaxPercentageOfNodesToCordonRuleEvaluator
-func NewMaxPercentageOfNodesToCordonRuleEvaluator(expression string,
-	nodeInformer informer.NodeInfoProvider) (*MaxPercentageOfNodesToCordonRuleEvaluator, error) {
-	klog.Infof("Creating MaxPercentageOfNodesToCordonRuleEvaluator with expression: %s", expression)
-
-	// Create a CEL environment with declarations for maxPercentageOfNodesToCordon
-	env, err := cel.NewEnv(
-		cel.Variable("maxPercentageOfNodesToCordon", cel.DoubleType),
-		ext.Strings(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-	}
-
-	ast, issues := env.Parse(expression)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to parse expression: %w", issues.Err())
-	}
-
-	checkedAst, issues := env.Check(ast)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to check expression: %w", issues.Err())
-	}
-
-	program, err := env.Program(checkedAst)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile expression: %w", err)
-	}
-
-	return &MaxPercentageOfNodesToCordonRuleEvaluator{
-		expression:   expression,
-		program:      program,
-		nodeInformer: nodeInformer,
-	}, nil
 }
 
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
@@ -188,63 +145,6 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 		program:    program,
 		nodeLister: nodeLister,
 	}, nil
-}
-
-// Evaluate checks if cordoning one more node would exceed the maximum percentage using informer data
-func (nc *MaxPercentageOfNodesToCordonRuleEvaluator) Evaluate(
-	event *platformconnectorprotos.HealthEvent,
-) (common.RuleEvaluationResult, error) {
-	// Get counts directly from the informer
-	totalNodes, cordonedNodesMap, err := nc.nodeInformer.GetGpuNodeCounts()
-	if err != nil {
-		// Handle cases where the informer might not be synced yet or other errors
-		return common.RuleEvaluationErroredOut, fmt.Errorf("failed to get GPU node counts from informer: %w", err)
-	}
-
-	cordonedNodes := len(cordonedNodesMap)
-
-	klog.V(3).Infof("Got counts from NodeInformer: Total=%d, Cordoned=%d", totalNodes, cordonedNodes)
-
-	if totalNodes == 0 {
-		// If the informer reports 0 GPU nodes, evaluation doesn't make sense.
-		klog.Warningf("MaxPercentageOfNodesToCordonRuleEvaluator: No GPU nodes reported by informer.")
-		// Depending on desired behavior, could be Failed or ErroredOut.
-		// Let's treat it as Failed for now, as the condition technically can't be met.
-		return common.RuleEvaluationFailed, fmt.Errorf("no GPU nodes found in the cluster (reported by informer)")
-	}
-	// If node is already cordoned, don't add +1 to the calculation
-	potentialPercentage := 0.0
-	if v, exists := cordonedNodesMap[event.NodeName]; exists && v {
-		potentialPercentage = ((float64(cordonedNodes) * 100.0) / float64(totalNodes))
-	} else {
-		potentialPercentage = ((float64(cordonedNodes+1) * 100.0) / float64(totalNodes))
-	}
-
-	// Evaluate the expression with the calculated percentage
-	out, _, err := nc.program.Eval(map[string]interface{}{
-		"maxPercentageOfNodesToCordon": potentialPercentage,
-	})
-	if err != nil {
-		return common.RuleEvaluationErroredOut, fmt.Errorf("failed to evaluate expression: %w", err)
-	}
-
-	result, ok := out.Value().(bool)
-	if !ok {
-		return common.RuleEvaluationErroredOut, fmt.Errorf("expression did not return a boolean: %v", out)
-	}
-
-	klog.V(3).Infof(
-		"result: %v for rule %s (TotalNodes: %d, CordonedNodes: %d, PotentialPercentage: %f)",
-		result, nc.expression, totalNodes, cordonedNodes, potentialPercentage)
-
-	if result {
-		// The expression evaluated to true, meaning cordoning another node is allowed (e.g., potentialPercentage <= max)
-		return common.RuleEvaluationSuccess, nil
-	}
-
-	// The expression evaluated to false, meaning cordoning another node would violate the rule
-	// We return RetryAgainInFuture because the number of nodes might change, allowing cordon later.
-	return common.RuleEvaluationRetryAgainInFuture, nil
 }
 
 // Evaluate the CEL expression against node metadata (labels and annotations)

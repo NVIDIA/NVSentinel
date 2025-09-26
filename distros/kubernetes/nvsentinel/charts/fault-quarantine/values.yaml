@@ -66,10 +66,6 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
-
-    [[rule-sets.match.all]]
-      kind = "MaxPercentageOfNodesToCordon"
-      expression = "maxPercentageOfNodesToCordon <= 100.0"
   
     [rule-sets.cordon]
       shouldCordon = true
@@ -88,10 +84,6 @@ config: |
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
 
-    [[rule-sets.match.all]]
-      kind = "MaxPercentageOfNodesToCordon"
-      expression = "maxPercentageOfNodesToCordon <= 100.0"
-
     [rule-sets.cordon]
       shouldCordon = true
 
@@ -108,10 +100,6 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
-      
-    [[rule-sets.match.all]]
-      kind = "MaxPercentageOfNodesToCordon"
-      expression = "maxPercentageOfNodesToCordon <= 100.0"
 
     [rule-sets.cordon]
       shouldCordon = true
@@ -129,10 +117,6 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
-      
-    [[rule-sets.match.all]]
-      kind = "MaxPercentageOfNodesToCordon"
-      expression = "maxPercentageOfNodesToCordon <= 100.0"
 
     [rule-sets.cordon]
       shouldCordon = true
@@ -150,10 +134,6 @@ config: |
       expression = '''
           !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
       '''
-
-    [[rule-sets.match.all]]
-      kind = "MaxPercentageOfNodesToCordon"
-      expression = "maxPercentageOfNodesToCordon <= 100.0"
 
     [rule-sets.cordon]
       shouldCordon = true

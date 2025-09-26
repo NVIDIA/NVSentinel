@@ -84,12 +84,6 @@ func createEvaluators(rules []config.Rule, client kubernetes.Interface,
 				eval, err = NewNodeRuleEvaluator(rule.Expression, nodeInformer.Lister())
 			}
 
-		case "MaxPercentageOfNodesToCordon":
-			if nodeInformer == nil {
-				err = fmt.Errorf("NodeInformer must be provided for MaxPercentageOfNodesToCordon rule kind")
-			} else {
-				eval, err = NewMaxPercentageOfNodesToCordonRuleEvaluator(rule.Expression, nodeInformer)
-			}
 		default:
 			err = fmt.Errorf("unknown evaluator kind: %s", rule.Kind)
 		}
