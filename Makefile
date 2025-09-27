@@ -395,6 +395,18 @@ dev-env:
 dev-env-clean:
 	$(MAKE) -C dev env-down
 
+# Tilt end-to-end test target for CI
+.PHONY: e2e-test
+e2e-test-ci:
+	$(MAKE) -C dev tilt-ci
+	$(MAKE) -C tests test-ci
+
+# Tilt end-to-end test target
+.PHONY: e2e-test
+e2e-test:
+	$(MAKE) -C dev tilt-up
+	$(MAKE) -C tests test
+
 # Kubernetes Helm targets (delegate to distros/kubernetes/Makefile)
 .PHONY: kubernetes-distro-helm-publish
 kubernetes-distro-helm-publish:
@@ -475,6 +487,10 @@ help:
 	@echo "  build-main-modules     - Build non-health-monitor Go modules"
 	@echo "  build-<module-name>    - Build specific module"
 	@echo ""
+	@echo "Test targets (delegated to sub-Makefiles):"
+	@echo "  e2e-test-ci        - Run end-to-end test suite in CI mode"
+	@echo "  e2e-test           - Run end-to-end test suite"
+	@echo ""
 	@echo "Clean targets (delegated to sub-Makefiles):"
 	@echo "  clean-all              - Clean all modules"
 	@echo "  clean-health-monitors  - Clean all health monitors"
@@ -489,12 +505,14 @@ help:
 	@echo "  distros/kubernetes/Makefile - Kubernetes/Helm specific targets"
 	@echo "  docker/Makefile           - Docker build specific targets"
 	@echo "  dev/Makefile              - Development environment targets"
+	@echo "  tests/Makefile            - End-to-end and integration test targets"
 	@echo ""
 	@echo "Individual module targets:"
 	@echo "  For health monitors: make -C health-monitors <target>"
 	@echo "  For docker builds: make -C docker <target>"
 	@echo "  For development: make -C dev <target>"
 	@echo "  For kubernetes: make -C distros/kubernetes <target>"
+	@echo "  For tests: make -C tests <target>"
 	@echo ""
 	@echo "Notes:"
 	@echo "  - Each sub-Makefile has its own help target: make -C <dir> help"

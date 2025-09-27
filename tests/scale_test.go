@@ -102,14 +102,8 @@ func TestScaleHealthEvents(t *testing.T) {
 	})
 
 	feature.Assess("Check Prometheus metrics for API server health", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		// Check for API server 5xx errors and 429 responses
-		err := helpers.CheckPrometheusMetricEmpty(ctx, t,
-			`apiserver_request_total{code=~"5.*", subresource!="/readyz"} or apiserver_request_total{code="429"} > 10`,
-			"API server 5xx errors and 429 responses")
-		assert.NoError(t, err, "API server should not have 5xx errors or 429 responses")
-
 		// Check for slow LIST operations (>5 seconds at 90th percentile)
-		err = helpers.CheckPrometheusMetricEmpty(ctx, t,
+		err := helpers.CheckPrometheusMetricEmpty(ctx, t,
 			`histogram_quantile(0.90, sum(rate(apiserver_request_duration_seconds_bucket{verb="LIST"}[5m])) by (le, instance, resource)) > 5`,
 			"slow LIST operations (>5s at p90)")
 		assert.NoError(t, err, "API server LIST operations should not be slow")

@@ -136,6 +136,12 @@ include:
     inputs:
       changelog: false
 
+  - component: $CI_SERVER_FQDN/dgxcloud/platform/tools/tilt-extensions/tilt@v1.18.0
+    inputs:
+      stage: e2e
+      use_ko: ""
+      use_helm: "true"
+
 stages:
   - .pre
   - check
@@ -143,6 +149,7 @@ stages:
   - generate
   - publish
   - deploy
+  - e2e
   - release
   - security
   
@@ -188,6 +195,9 @@ workflow:
     - docker buildx use ${BUILDX_BUILDER}
     - docker buildx inspect --bootstrap
 
+default:
+  before_script:
+    - echo "hack needed for tilt"
 
 prepare-vars:
   stage: .pre  # or stage: init
@@ -621,3 +631,22 @@ log-collector-lint:
   stage: lint-test
   script:
     - make log-collector-lint
+
+tilt:
+  needs:
+    - prepare-vars
+  variables:
+    CTLPTL_YAML: ctlptl-config.yaml
+  script:
+    # the following is a WAR to workaround the missing dependencies in the tilt shared
+    # gitlab component. We're going to be moving to github anyway, so opting to stick
+    # with a hack for now.
+    - | 
+      apt-get update
+      apt-get install -y build-essential
+      ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
+      curl -sL https://go.dev/dl/go1.24.0.linux-${ARCH}.tar.gz | tar -C /usr/local -xzf -
+      export PATH=$PATH:/usr/local/go/bin
+    - make e2e-test-ci
+  tags:
+    - dind
