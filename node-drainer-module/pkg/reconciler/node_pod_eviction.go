@@ -42,6 +42,7 @@ type NodeDrainerClient struct {
 	eviction               policyv1client.PolicyV1Interface
 	dryRunMode             []string
 	notReadyTimeoutMinutes *int
+	pollInterval           time.Duration
 }
 
 func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes *int) (*NodeDrainerClient, error) {
@@ -71,6 +72,7 @@ func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes
 		clientset:              clientset,
 		eviction:               clientset.PolicyV1(),
 		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
+		pollInterval:           time.Minute,
 	}
 
 	if dryRun {
@@ -512,7 +514,7 @@ func (c *NodeDrainerClient) forceDeletePods(ctx context.Context, pods []v1.Pod) 
 
 // monitor the pods to complete their execution in allow completion mode
 func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace string, nodeName string) error {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -534,6 +536,14 @@ func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace 
 
 			if len(podNames) == 0 {
 				return nil
+			}
+
+			message := fmt.Sprintf("Waiting for following pods to finish: %s in namespace: %s", podNames, namespace)
+			reason := "AwaitingPodCompletion"
+
+			err = c.updateNodeEvent(ctx, nodeName, reason, message)
+			if err != nil {
+				return fmt.Errorf("error updating node event: %w", err)
 			}
 
 			klog.InfoS("Still waiting for these pods to finish", "node", nodeName, "name", podNames, "namespace", namespace)
@@ -580,7 +590,7 @@ func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string
 func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
 	// ticker to periodically check if pods are still present on the node
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 
 	drainTimeout, err := c.GetNodeDrainTimeout(ctx, nodeName, timeout, event)
@@ -622,7 +632,14 @@ func (c *NodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName
 				return nil
 			}
 
-			err := c.updateNodeEvent(ctx, nodeName, podsRunning, namespaces, deleteDateTimeUTC)
+			message := fmt.Sprintf(
+				"Waiting for following pods to finish: %s in namespace: %s or they will be force deleted on: %s",
+				podsRunning, namespaces, deleteDateTimeUTC,
+			)
+
+			reason := "WaitingBeforeForceDelete"
+
+			err := c.updateNodeEvent(ctx, nodeName, reason, message)
 			if err != nil {
 				return fmt.Errorf("error updating node event: %w", err)
 			}
@@ -660,19 +677,13 @@ func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName st
 	return drainTimeout - elapsed, nil
 }
 
-func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string,
-	podsRunning []string, namespaces []string, deleteTimeUTC string) error {
+func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string, reason string, message string) error {
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 
 	eventsClient := c.clientset.CoreV1().Events(metav1.NamespaceDefault)
-
-	reason := "NodeDraining"
-	message := fmt.Sprintf("The node has run into a fatal event and needs to be drained. "+
-		"Please terminate pods %s in namespace %s or they will be force deleted on %s.",
-		podsRunning, namespaces, deleteTimeUTC)
 
 	// Try to find an existing Event for this node with the same reason so we can just bump the count
 	evtList, err := eventsClient.List(ctx, metav1.ListOptions{
@@ -684,19 +695,20 @@ func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string
 
 	now := metav1.NewTime(time.Now())
 
-	if len(evtList.Items) > 0 {
-		// Update the first matching event – this follows kube-api server aggregation rules
-		existing := evtList.Items[0]
-		existing.Count++
-		existing.LastTimestamp = now
-		existing.Message = message
+	// Check if any event matches the reason and message
+	for _, existingEvent := range evtList.Items {
+		if existingEvent.Message == message {
+			// Matching event found, update it
+			existingEvent.Count++
+			existingEvent.LastTimestamp = now
+			_, err = eventsClient.Update(ctx, &existingEvent, metav1.UpdateOptions{})
 
-		_, err = eventsClient.Update(ctx, &existing, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("error in updating event occurrence count: %w", err)
+			if err != nil {
+				return fmt.Errorf("error in updating event occurrence count: %w", err)
+			}
+
+			return nil
 		}
-
-		return nil
 	}
 
 	// Otherwise create a new event
@@ -713,7 +725,7 @@ func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string
 		},
 		Reason:         reason,
 		Message:        message,
-		Type:           v1.EventTypeNormal,
+		Type:           "NodeDraining",
 		Source:         v1.EventSource{Component: "nvsentinel-node-drainer-module"},
 		FirstTimestamp: now,
 		LastTimestamp:  now,

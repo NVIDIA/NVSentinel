@@ -92,6 +92,7 @@ func TestMain(m *testing.M) {
 	}
 	// Reduce the NotReady timeout so tests complete quickly (1 minute)
 	k8sClient.notReadyTimeoutMinutes = ptr.To(1)
+	k8sClient.pollInterval = 10 * time.Second
 
 	namespaces := []string{"runai", "nvsentinel", "runai-prod", "runai-dev", "testing-ns"}
 
@@ -103,6 +104,9 @@ func TestMain(m *testing.M) {
 			log.Fatalf("Failed to create namespace %s: %v", ns, err)
 		}
 	}
+
+	createNode(ctx, "node1", map[string]string{})
+	createNode(ctx, "node2", map[string]string{})
 
 	createTestPod(ctx, "runai", "pod1", "node1")
 	createTestPod(ctx, "runai", "pod2", "node1")
@@ -260,6 +264,7 @@ func TestMonitorPodCompletion(t *testing.T) {
 	ctx := context.TODO()
 	var err error
 	namespace := "nvsentinel"
+	nodeName := "node1"
 	mockEvictionClient := k8sClient.eviction.(*MockEvictionClient)
 
 	mockEvictionClient.EvictedPods = sync.Map{}
@@ -269,7 +274,7 @@ func TestMonitorPodCompletion(t *testing.T) {
 		if err != nil {
 			t.Log("error in deleting the pod job-pod1")
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(12 * time.Second)
 		pod, err := Client.CoreV1().Pods(namespace).Get(ctx, "job-pod2", metaV1.GetOptions{})
 		if err != nil {
 			t.Logf("Failed to get pod: %v", err)
@@ -286,12 +291,22 @@ func TestMonitorPodCompletion(t *testing.T) {
 		}
 	}()
 
-	err = k8sClient.MonitorPodCompletion(ctx, namespace, "node1")
+	err = k8sClient.MonitorPodCompletion(ctx, namespace, nodeName)
 	if err != nil {
-		t.Fatalf("Error is not expected while eviction of pods in namespace %s in Allow completion mode", namespace)
+		t.Fatalf("Error is not expected while eviction of pods in namespace %s in Allow completion mode. Error: %v", namespace, err)
 	}
 	// daemonset pods should not be terminated
 	assertPodNotDeleted(ctx, t, "nvsentinel", "daemonset1")
+
+	reason := "AwaitingPodCompletion"
+	events, err := Client.CoreV1().Events(metaV1.NamespaceDefault).List(ctx, metaV1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=%s,reason=%s", nodeName, "Node", reason),
+	})
+	assert.Greater(t, len(events.Items), 0, "expected at least one event for node %s", nodeName)
+
+	latestEvt := events.Items[0]
+	expectedMessage := fmt.Sprintf("Waiting for following pods to finish: [job-pod2] in namespace: %s", namespace)
+	assert.Equal(t, latestEvt.Message, expectedMessage, "expected updated message to mention running pod")
 }
 
 func TestCheckIfAllPodsAreEvictedInImmediateMode(t *testing.T) {
@@ -311,14 +326,17 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 
 	// Subtest 1: drain timeout already elapsed -> force delete
 	t.Run("timeout elapsed - pods deleted", func(t *testing.T) {
-		createNode(ctx, "node1", map[string]string{
+		nodeName := "node1"
+		node1, _ := Client.CoreV1().Nodes().Get(ctx, nodeName, metaV1.GetOptions{})
+		node1.Labels = map[string]string{
 			NodeDrainStatusLabelKey: string(InProgress),
-		})
+		}
+		Client.CoreV1().Nodes().Update(ctx, node1, metaV1.UpdateOptions{})
 
 		// pod on node-timeout
-		createTestPod(ctx, "nvsentinel", "timeout-pod", "node1")
+		createTestPod(ctx, "nvsentinel", "timeout-pod", nodeName)
 
-		err := k8sClient.DeletePodsAfterTimeout(ctx, "node1", []string{"nvsentinel"}, 4, &storeconnector.HealthEventWithStatus{
+		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 4, &storeconnector.HealthEventWithStatus{
 			CreatedAt:   time.Now().Add(-230 * time.Second), // 3 minutes and 50 seconds
 			HealthEvent: &platform_connectors.HealthEvent{},
 			HealthEventStatus: storeconnector.HealthEventStatus{
@@ -341,23 +359,24 @@ func TestDeletePodsAfterTimeout(t *testing.T) {
 		})
 
 		createTestPod(ctx, "nvsentinel", podName, nodeName)
-		timout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
-		expectedMessage := fmt.Sprintf("The node has run into a fatal event and needs to be drained. Please terminate pods [%s] in namespace [%s] or they will be force deleted on %s.", podName, "nvsentinel", timout)
+		timout := time.Now().UTC().Add(20 * time.Second).Format(time.RFC3339)
+		expectedMessage := fmt.Sprintf("Waiting for following pods to finish: [%s] in namespace: [%s] or they will be force deleted on: %s", podName, "nvsentinel", timout)
 
-		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 2, &storeconnector.HealthEventWithStatus{
-			CreatedAt:   time.Now().Add(-60 * time.Second), // 1 minute
+		err := k8sClient.DeletePodsAfterTimeout(ctx, nodeName, []string{"nvsentinel"}, 1, &storeconnector.HealthEventWithStatus{
+			CreatedAt:   time.Now().Add(-40 * time.Second), // 40 seconds
 			HealthEvent: &platform_connectors.HealthEvent{},
 			HealthEventStatus: storeconnector.HealthEventStatus{
 				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
 				UserPodsEvictionStatus: storeconnector.OperationStatus{},
 				FaultRemediated:        nil,
 			},
-		}) // 2 minute timeout
+		}) // 1 minute timeout
 		assert.NoError(t, err)
 		assertPodNotDeleted(ctx, t, "nvsentinel", podName)
+		reason := "WaitingBeforeForceDelete"
 		// Verify that an event has been recorded for this node indicating the drain is in progress
 		events, err := Client.CoreV1().Events(metaV1.NamespaceDefault).List(ctx, metaV1.ListOptions{
-			FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=%s", nodeName, "Node"),
+			FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=%s,reason=%s", nodeName, "Node", reason),
 		})
 		assert.NoError(t, err)
 		assert.Greater(t, len(events.Items), 0, "expected at least one event for node %s", nodeName)
@@ -391,6 +410,11 @@ func TestUpdateNodeEventUpdatesExistingEvent(t *testing.T) {
 	createNode(ctx, nodeName, map[string]string{})
 
 	eventsClient := Client.CoreV1().Events(metaV1.NamespaceDefault)
+	deleteTimeUTC := time.Now().UTC().Format(time.RFC3339)
+	message := fmt.Sprintf("Waiting for following pods to finish: %s in namespace: %s or they will be force deleted on: %s.", "[pod-A]", "[nvsentinel]", deleteTimeUTC)
+	reason := "WaitingBeforeForceDelete"
+	eventType := "NodeDraining"
+
 	initialEvent := &v1.Event{
 		ObjectMeta: metaV1.ObjectMeta{
 			GenerateName: nodeName + "-",
@@ -401,27 +425,26 @@ func TestUpdateNodeEventUpdatesExistingEvent(t *testing.T) {
 			Name:       nodeName,
 			APIVersion: "v1",
 		},
-		Reason:         "NodeDraining",
-		Message:        "initial message",
-		Type:           v1.EventTypeNormal,
+		Reason:         reason,
+		Message:        message,
+		Type:           eventType,
 		Source:         v1.EventSource{Component: "unit-test"},
 		FirstTimestamp: metaV1.NewTime(time.Now()),
 		LastTimestamp:  metaV1.NewTime(time.Now()),
 		Count:          1,
 	}
+
 	createdEvt, err := eventsClient.Create(ctx, initialEvent, metaV1.CreateOptions{})
+
 	assert.NoError(t, err)
 
-	// call updateNodeEvent which should find and update the existing event
-	deleteTimeUTC := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339)
-	_ = k8sClient.updateNodeEvent(ctx, nodeName, []string{"pod-A"}, []string{"nvsentinel"}, deleteTimeUTC)
+	_ = k8sClient.updateNodeEvent(ctx, nodeName, reason, message)
 
-	// fetch event again using its name
 	updated, err := eventsClient.Get(ctx, createdEvt.Name, metaV1.GetOptions{})
 	assert.NoError(t, err)
 
 	assert.Greater(t, updated.Count, int32(1), "expected event count to be incremented")
-	assert.Contains(t, updated.Message, "pod-A", "expected updated message to mention running pod")
+	assert.Equal(t, updated.Message, message, "expected updated message to mention running pod")
 }
 
 func TestPodStuckInTerminatingState(t *testing.T) {
