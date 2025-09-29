@@ -46,9 +46,17 @@ func main() {
 		}
 	}()
 
-	// Process health event
-	if err := manager.ProcessHealthEvent(config); err != nil {
-		log.Printf("Failed to process health event: %v", err)
-		return
+	if config.EventID != "" {
+		// Monitor specific event
+		if err := manager.MonitorEvent(config.EventID); err != nil {
+			log.Printf("Failed to monitor event: %v", err)
+			return
+		}
+	} else {
+		// Process health event
+		if err := manager.ProcessHealthEvent(config); err != nil {
+			log.Printf("Failed to process health event: %v", err)
+			return
+		}
 	}
 }

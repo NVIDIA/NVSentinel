@@ -20,28 +20,21 @@ import (
 	"flag"
 	"fmt"
 	"math"
-
-	validator "github.com/go-playground/validator/v10"
 )
-
-// Package-level validator instance for better performance
-var validate = validator.New()
 
 // Config holds all the configuration options
 type Config struct {
-	// Required fields
-	NodeName          string `json:"node_name" validate:"required"`
-	ErrorCode         string `json:"error_code" validate:"required"`
-	Reason            string `json:"reason" validate:"required"`
+	NodeName          string `json:"node_name"`
+	ErrorCode         string `json:"error_code"`
+	Reason            string `json:"reason"`
 	IsHealthy         bool   `json:"is_healthy"`
-	RecommendedAction int32  `json:"recommended_action" validate:"required"`
-	CreatorID         string `json:"creator_id" validate:"required"`
-
-	// Optional fields
-	Force          bool   `json:"force"`
-	SkipQuarantine bool   `json:"skip_quarantine"`
-	SkipDrain      bool   `json:"skip_drain"`
-	SocketPath     string `json:"socket_path"`
+	RecommendedAction int32  `json:"recommended_action"`
+	CreatorID         string `json:"creator_id"`
+	Force             bool   `json:"force"`
+	SkipQuarantine    bool   `json:"skip_quarantine"`
+	SkipDrain         bool   `json:"skip_drain"`
+	SocketPath        string `json:"socket_path"`
+	EventID           string `json:"event_id"`
 }
 
 // LoadConfig loads configuration from command line flags
@@ -64,11 +57,7 @@ func LoadConfig() (*Config, error) {
 		RecommendedAction: flags.recommendedAction,
 		CreatorID:         flags.creatorID,
 		SocketPath:        flags.socketPath,
-	}
-
-	// Validate configuration
-	if err := validateConfig(config); err != nil {
-		return nil, err
+		EventID:           flags.eventID,
 	}
 
 	return config, nil
@@ -86,6 +75,7 @@ type flagValues struct {
 	creatorID         string
 	socketPath        string
 	recommendedAction int32
+	eventID           string
 }
 
 // parseFlags defines and parses command line flags
@@ -101,6 +91,7 @@ func parseFlags() (*flagValues, error) {
 	creatorID := flag.String("creator-id", "default", "Creator ID (required)")
 	socketPath := flag.String("socket", "/var/run/nvsentinel/nvsentinel.sock", "Platform connector socket path")
 	recommendedActionFlag := flag.Int64("recommended-action", 1, "Recommended action (required)")
+	eventID := flag.String("event-id", "", "Optional eventID for monitoring specific events")
 
 	flag.Parse()
 
@@ -122,10 +113,6 @@ func parseFlags() (*flagValues, error) {
 		creatorID:         *creatorID,
 		socketPath:        *socketPath,
 		recommendedAction: int32(flagRecommendedAction),
+		eventID:           *eventID,
 	}, nil
-}
-
-// validateConfig validates the config struct using the validator library
-func validateConfig(config *Config) error {
-	return validate.Struct(config)
 }
