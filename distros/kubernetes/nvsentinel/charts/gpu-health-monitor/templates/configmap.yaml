@@ -37,9 +37,7 @@ data:
     EnabledEventProcessors = PlatformConnectorEventProcessor
     
     [xiderrorsconfig]
-    XidErrorsBatchProcessingEnabled = false
     XidErrorsSlidingWindowSize = 3
-    XidErrorsBatchProcessingInterval = 10
 
     {{ $actionMapping := .Files.Get "files/actionmapping.ini" }}
     {{- $actionMapping }}

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-import threading
 import click, configparser, signal, sys
 import logging as log
 from threading import Event
@@ -22,7 +21,6 @@ import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
 from .platform_connector.protos import platformconnector_pb2
-from gpu_health_monitor.nvml_parser.nvml_xid_parser import DummyNvmlXidParser
 
 
 def _init_event_processor(
@@ -33,9 +31,6 @@ def _init_event_processor(
     dcgm_errors_info_dict: dict[str, str],
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails],
     gpu_error_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
-    xid_errors_batch_processing_interval: int,
-    xid_errors_batch_processing_enabled: bool,
-    nvml_xid_parser,
     state_file_path: str,
     dcgm_health_conditions_categorization_mapping_config: dict[str, str],
 ):
@@ -49,9 +44,6 @@ def _init_event_processor(
                 xid_errors_info_dict=xid_errors_info_dict,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
-                xid_errors_batch_processing_interval=xid_errors_batch_processing_interval,
-                xid_errors_batch_processing_enabled=xid_errors_batch_processing_enabled,
-                nvml_xid_parser=nvml_xid_parser,
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
             )
@@ -82,6 +74,9 @@ def create_recommend_action_mapping_from_xid_error_to_platform_connector(data):
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
+@click.option(
+    "--dcgm-xid-monitoring-enabled", type=bool, help="Is XID monitoring Enabled", required=False, default=True
+)
 def cli(
     dcgm_addr,
     xid_error_mapping_config_file,
@@ -91,6 +86,7 @@ def cli(
     verbose,
     state_file,
     dcgm_k8s_service_enabled,
+    dcgm_xid_monitoring_enabled,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -108,9 +104,7 @@ def cli(
         log.fatal("Failed to fetch nodename from environment variable 'NODE_NAME'")
         sys.exit(1)
 
-    gpu_error_recommend_action_mapping_config = config["gpuerrorrecommendactiontoplatformconnectormapping"]
-    xid_errors_batch_processing_enabled = config.getboolean("xiderrorsconfig", "XidErrorsBatchProcessingEnabled")
-    xid_errors_batch_processing_interval = config.getint("xiderrorsconfig", "XidErrorsBatchProcessingInterval")
+    gpu_error_recommend_action_mapping_config = config["errorrecommendactiontoplatformconnectormapping"]
     xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
     dcgm_errors_info_dict: dict[str, str] = {}
     dcgm_health_conditions_categorization_mapping_config = config["DCGMHealthConditionsCategorizationMapping"]
@@ -147,7 +141,6 @@ def cli(
 
     prom_server, t = start_http_server(port)
     log.info("Initialization completed")
-    nvml_xid_parser = DummyNvmlXidParser()
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
     for event_processor in enabled_event_processor_names:
@@ -160,9 +153,6 @@ def cli(
                 dcgm_errors_info_dict,
                 xid_errors_info_dict,
                 gpu_error_recommend_action_mapping,
-                int(xid_errors_batch_processing_interval),
-                xid_errors_batch_processing_enabled,
-                nvml_xid_parser,
                 state_file_path,
                 dcgm_health_conditions_categorization_mapping_config,
             )
@@ -181,6 +171,7 @@ def cli(
         poll_interval_seconds=int(dcgm_config["PollIntervalSeconds"]),
         callbacks=enabled_event_processors,
         dcgm_k8s_service_enabled=dcgm_k8s_service_enabled,
+        dcgm_xid_monitoring_enabled=dcgm_xid_monitoring_enabled,
     )
     dcgm_watcher.start([], exit)
 

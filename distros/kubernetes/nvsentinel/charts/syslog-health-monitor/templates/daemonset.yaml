@@ -65,8 +65,8 @@ spec:
             # Regular mode: Use UDS socket for platform connector
             - "{{ .Values.global.socketPath | default "unix:///var/run/nvsentinel.sock" }}"
             {{- end }}
-            - "--xid-mapping-file"
-            - "/etc/syslog-monitor/xiderrorsmapping.csv"
+            - "--sxid-mapping-file"
+            - "/etc/syslog-monitor/sxiderrorsmapping.csv"
             - "--action-mapping-file"
             - "/etc/syslog-monitor/actionmapping.ini"
           resources:
@@ -139,7 +139,25 @@ spec:
             - name: sys-vol
               mountPath: /nvsentinel/sys
               readOnly: true
-          
+{{- if .Values.global.xidUsingSyslogMonitor }}
+        - name: xid-analyzer-sidecar
+          image: {{ .Values.global.syslogHealthMonitor.xidSideCar.image.repository }}:{{ .Values.global.syslogHealthMonitor.xidSideCar.image.tag }}
+          imagePullPolicy: {{ .Values.global.syslogHealthMonitor.xidSideCar.image.pullPolicy }}
+          ports:
+            - name: http-api
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          env:
+            - name: PORT
+              value: "8080"
+{{- end }}
       volumes:
         - name: config-volume
           configMap:
@@ -187,6 +205,9 @@ spec:
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
+      {{- if .Values.global.sxidUsingSyslogMonitor }}
+        nvsentinel.dgxc.nvidia.com/driver.installed: "true"
+      {{- end }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}

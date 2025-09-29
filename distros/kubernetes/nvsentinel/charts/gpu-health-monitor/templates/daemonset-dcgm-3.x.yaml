@@ -62,6 +62,10 @@ spec:
             - {{ .Values.stateFilePath }}
             - --dcgm-k8s-service-enabled
             - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
+{{ if .Values.global.xidUsingSyslogMonitor }}
+            - --dcgm-xid-monitoring-enabled
+            - "False"
+{{ end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-3.x"

@@ -22,7 +22,7 @@ image:
   tag: "0.1.0"
 
 updateStrategy: RollingUpdate
-maxUnavailable: 1
+maxUnavailable: 10
 
 podAnnotations: {}
 

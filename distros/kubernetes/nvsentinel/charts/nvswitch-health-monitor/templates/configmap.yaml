@@ -23,18 +23,9 @@ data:
     MaxRetriesForHealthyEvent = 20
     RetryDelaySecondsForHealthyEvent = 5
 
-    [sxiderrorrecommendactiontoplatformconnectormapping]
-    UNEXPECTED_ERR_REPORT_ISSUE = 5
-    RESET_FABRIC = 16
-    WORKFLOW_NVLINK_POTENTIALY_FATAL_ERR = 17
-    CHECK_FM_CONFIG = 18
-    CHECK_THERMALS = 19
-    RESET_GPU = 20
-    CHECK_LINK_MECHANICAL_CONNECTIONS = 21
-    INVESTIGATE_LINK_SI = 22
-    IGNORE = 0
-    RUN_FIELDDIAG = 6
+  # Action to platform connector code mapping (shared with different monitors)
+{{ (.Files.Glob "files/actionmapping.ini").AsConfig | indent 2 }}
 
   # The below tables should map to the xid error spreadsheet https://docs.google.com/spreadsheets/d/1t6PpsC5TXiNl4JMBuHlFIjmSbjLZ2ik0Sz3DLw8cLmE/edit?gid=121017179#gid=121017179
   # ordering of below columns => sxiderrorno,sxiderrorname,sxiderrorrecommendedaction,FATAL/NONFATAL errors
-{{ (.Files.Glob "sxiderrorsmapping.csv").AsConfig | indent 2 }}
+{{ (.Files.Glob "files/sxiderrorsmapping.csv").AsConfig | indent 2 }}

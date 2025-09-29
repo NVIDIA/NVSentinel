@@ -35,6 +35,7 @@ class DCGMWatcher:
         poll_interval_seconds: int,
         callbacks: list[types.CallbackInterface],
         dcgm_k8s_service_enabled: bool,
+        dcgm_xid_monitoring_enabled: bool,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -49,6 +50,7 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
+        self._dcgm_xid_monitoring_enabled = dcgm_xid_monitoring_enabled
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -295,7 +297,10 @@ class DCGMWatcher:
         gpu_ids = dcgm_group.GetGpuIds()
         gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
         log.info(f"dcgm gpu_id are {gpu_ids}")
-        dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
+        if self._dcgm_xid_monitoring_enabled:
+            dcgm_groups_with_xid_policy = self._register_xid_callbacks_on_all_gpus(dcgm_handle)
+        else:
+            dcgm_groups_with_xid_policy = []
 
         return dcgm_group, gpu_ids, gpu_serials, dcgm_groups_with_xid_policy
 
@@ -339,7 +344,7 @@ class DCGMWatcher:
                             self._initialize_dcgm_monitoring(dcgm_handle)
                         )
                         for callback in self._callbacks:
-                            if hasattr(callback, "clear_all_xid_errors"):
+                            if self._dcgm_xid_monitoring_enabled and hasattr(callback, "clear_all_xid_errors"):
                                 try:
                                     callback.clear_all_xid_errors(gpu_ids, gpu_serials)
                                 except Exception as e:

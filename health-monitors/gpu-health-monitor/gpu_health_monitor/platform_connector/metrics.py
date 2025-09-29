@@ -24,10 +24,6 @@ xid_events_publish_time_to_grpc_channel = Histogram(
     "Amount of time spent in publishing xid events on the grpc channel",
     labelnames=["operation_name"],
 )
-overall_reconcile_loop_time = Histogram(
-    "xid_errors_batch_processing_reconcile_time",
-    "Amount of time spent running a single reconcile loop for batch processing of xid errors",
-)
 health_events_insertion_to_uds_succeed = Counter(
     "health_events_insertion_to_uds_succeed", "Total number of successful insertion of health events to UDS"
 )

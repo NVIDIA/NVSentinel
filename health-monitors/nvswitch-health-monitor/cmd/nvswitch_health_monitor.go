@@ -565,7 +565,7 @@ func createRecommendationActionMapping(configFile string) map[string]pb.Recommen
 		klog.Fatalf("failed to load config file: %v", err)
 	}
 
-	section := cfg.Section("sxiderrorrecommendactiontoplatformconnectormapping")
+	section := cfg.Section("errorrecommendactiontoplatformconnectormapping")
 	for key, value := range section.KeysHash() {
 		valueInt, err := strconv.ParseInt(value, 10, 32)
 		if err != nil {

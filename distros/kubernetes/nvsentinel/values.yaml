@@ -107,6 +107,12 @@ global:
       repository: nvcr.io/nv-ngc-devops/nvsentinel-syslog-health-monitor
       pullPolicy: IfNotPresent
 
+    xidSideCar:
+      image:
+        repository: nvcr.io/nv-ngc-devops/nvidia-xid-analyzer-sidecar
+        pullPolicy: IfNotPresent
+        tag: "v1"
+
 
   imagePullSecrets:
     - name: nvidia-ngcuser-pull-secret
@@ -137,6 +143,9 @@ global:
       secretName: nvsentinel-pc-tls
       caSecretName: mongo-root-ca-secret
       mountPath: "/etc/nvsentinel/certs"
+
+  sxidUsingSyslogMonitor: false
+  xidUsingSyslogMonitor: false
 
 
 platformConnector:

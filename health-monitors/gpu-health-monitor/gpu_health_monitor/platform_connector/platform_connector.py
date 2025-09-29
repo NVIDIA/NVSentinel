@@ -20,7 +20,6 @@ from .protos import platformconnector_pb2, platformconnector_pb2_grpc
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics
-from gpu_health_monitor.nvml_parser.nvml_parser import NvmlXidParser
 from time import sleep
 import re
 
@@ -50,9 +49,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         xid_errors_info_dict: dict[str, XidErrorsMappingDetails],
         gpu_errors_recommend_action_mapping: dict[str, platformconnector_pb2.RecommenedAction],
         dcgm_errors_info_dict: dict[str, str],
-        xid_errors_batch_processing_interval: int,
-        xid_errors_batch_processing_enabled: bool,
-        nvml_xid_parser: NvmlXidParser,
         state_file_path: str,
         dcgm_health_conditions_categorization_mapping_config: dict[str, str],
     ) -> None:
@@ -65,11 +61,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.dcgm_errors_info_dict = dcgm_errors_info_dict
         self.xid_errors_info_dict = xid_errors_info_dict
         self.gpu_errors_recommend_action_mapping = gpu_errors_recommend_action_mapping
-        self.xid_errors_batch_processing_interval = xid_errors_batch_processing_interval
-        self.xid_errors_sliding_window_index = 0
-        self.nvml_xid_parser = nvml_xid_parser
-        self.xid_errors_batch_processing_enabled = xid_errors_batch_processing_enabled
-        self.nvml_xid_parser.register_xid_processing_done_callback(self.xid_error_batch_processing)
         self.state_file_path = state_file_path
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
@@ -339,10 +330,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         return platformconnector_pb2.RecommenedAction.REPORT_ISSUE
 
     def xid_event_occurred(self, gpu_id: str, error_num: int, serial: str):
-        # The below if flag xid_errors_batch_processing_enabled is disabled for now as the NVML XID parser library is
-        # not available yet. Once that is available, then this flag will be enabled.
-        if self.xid_errors_batch_processing_enabled:
-            self.nvml_xid_parser.process_xid_errors_on_gpu(error_num, gpu_id)
         with metrics.xid_events_publish_time_to_grpc_channel.labels("xid_events_publish_time_to_grpc_channel").time():
             timestamp = Timestamp()
             timestamp.GetCurrentTime()

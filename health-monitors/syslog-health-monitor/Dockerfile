@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
 FROM golang:1.23-bullseye AS builder
 
 WORKDIR /go/src/syslog-health-monitor
@@ -34,7 +35,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor ./cmd/main.go
 
-FROM debian:bullseye-slim
+FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
 RUN apt-get update && apt-get install -y \
     systemd-sysv \
@@ -43,11 +44,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /go/src/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
 
-RUN echo "deb http://deb.debian.org/debian bookworm main" \
-        > /etc/apt/sources.list.d/bookworm.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends -t bookworm \
-        libsystemd0 liblz4-1 libzstd1 && \
-    rm /etc/apt/sources.list.d/bookworm.list
+RUN apt-get update && \
+    apt-get install -y libsystemd0 liblz4-1 libzstd1
 
 ENTRYPOINT ["/app/syslog-health-monitor"] 

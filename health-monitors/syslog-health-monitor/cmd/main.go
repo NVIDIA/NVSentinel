@@ -25,7 +25,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	fd "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 	"google.golang.org/grpc"
@@ -36,16 +35,17 @@ import (
 
 const (
 	defaultAgentName         = "syslog-health-monitor"
-	defaultComponentClass    = "GPU"                                      // Or a more specific class if applicable
-	defaultPollingInterval   = "30m"                                      // Added default polling interval
-	defaultStateFilePath     = "/var/run/syslog_monitor/state.json"       // Added default state file path
-	defaultXidMappingPath    = "/etc/syslog-monitor/xiderrormappings.csv" // Default path for XID error mappings
-	defaultActionMappingPath = "/etc/syslog-monitor/actionmapping.ini"    // Default path for action mappings
+	defaultComponentClass    = "GPU"                                       // Or a more specific class if applicable
+	defaultPollingInterval   = "30m"                                       // Added default polling interval
+	defaultStateFilePath     = "/var/run/syslog_monitor/state.json"        // Added default state file path
+	defaultXidMappingPath    = "/etc/syslog-monitor/xiderrormappings.csv"  // Default path for XID error mappings
+	defaultSXidMappingPath   = "/etc/syslog-monitor/sxiderrormappings.csv" // Default path for SXID error mappings
+	defaultActionMappingPath = "/etc/syslog-monitor/actionmapping.ini"     // Default path for action mappings
 )
 
 // ConfigFile matches the top-level structure of the YAML config file
 type ConfigFile struct {
-	Checks []common.CheckDefinition `yaml:"checks"`
+	Checks []fd.CheckDefinition `yaml:"checks"`
 }
 
 // createTLSCredentials creates TLS credentials if appropriate, returns credentials and whether to use TLS
@@ -109,11 +109,12 @@ func main() {
 		"Polling interval for health checks (e.g., 15m, 1h).")
 	stateFileFlag := flag.String("state-file", defaultStateFilePath,
 		"Path to state file for cursor persistence.")
-	xidMappingFlag := flag.String("xid-mapping-file", defaultXidMappingPath,
-		"Path to XID error mappings CSV file.")
+	sxidMappingFlag := flag.String("sxid-mapping-file", defaultSXidMappingPath, "Path to SXID errors mapping CSV file.")
 	actionMappingFlag := flag.String("action-mapping-file", defaultActionMappingPath,
 		"Path to action mapping INI file.")
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
+	xidAnalyserEndpoint := flag.String("xid-analyser-endpoint", "http://localhost:8080",
+		"Endpoint to the XID analyser service.")
 
 	flag.Parse()
 
@@ -256,8 +257,14 @@ func main() {
 
 	klog.Infof("Creating syslog monitor with %d checks", len(config.Checks))
 
+	filePaths := fd.FilePaths{
+		StateFilePath:     *stateFileFlag,
+		SxidMappingPath:   *sxidMappingFlag,
+		ActionMappingPath: *actionMappingFlag,
+	}
+
 	fdHealthMonitor, err := fd.NewSyslogMonitor(nodeName, config.Checks, client, defaultAgentName,
-		defaultComponentClass, *pollingIntervalFlag, *stateFileFlag, *xidMappingFlag, *actionMappingFlag)
+		defaultComponentClass, *pollingIntervalFlag, filePaths, *xidAnalyserEndpoint)
 	if err != nil {
 		klog.Fatalf("Error creating syslog health monitor: %v", err)
 	}

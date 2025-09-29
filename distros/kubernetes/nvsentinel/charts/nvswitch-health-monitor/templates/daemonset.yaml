@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+{{ if not .Values.global.sxidUsingSyslogMonitor }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -92,3 +93,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

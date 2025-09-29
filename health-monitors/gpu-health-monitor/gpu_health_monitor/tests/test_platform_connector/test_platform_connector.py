@@ -24,7 +24,6 @@ from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
 from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, platformconnector_pb2_grpc
-from gpu_health_monitor.nvml_parser.nvml_xid_parser import DummyNvmlXidParser
 from google.protobuf.timestamp_pb2 import Timestamp
 
 socket_path = "/tmp/nvsentinel.sock"
@@ -72,6 +71,7 @@ class TestPlatformConnectors(unittest.TestCase):
             poll_interval_seconds=10,
             callbacks=[],
             dcgm_k8s_service_enabled=False,
+            dcgm_xid_monitoring_enabled=True,
         )
         gpu_serials = {
             0: "1650924060039",
@@ -152,8 +152,6 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
 
         xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
-        xid_errors_batch_processing_interval = 4
-        xid_errors_batch_processing_enabled = True
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
             node_name,
@@ -161,9 +159,6 @@ class TestPlatformConnectors(unittest.TestCase):
             xid_errors_info_dict,
             xid_error_recommend_action_mapping,
             dcgm_errors_info_dict,
-            xid_errors_batch_processing_interval,
-            xid_errors_batch_processing_enabled,
-            DummyNvmlXidParser(),
             "statefile",
             dcgm_health_conditions_categorization_mapping_config,
         )
@@ -298,7 +293,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 "DCGM_HEALTH_WATCH_NVLINK": "Fatal",
             }
 
-            nvml_xid_parser = DummyNvmlXidParser()
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=socket_path,
                 node_name=node_name,
@@ -306,9 +300,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 xid_errors_info_dict=xid_errors_info_dict,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
-                xid_errors_batch_processing_interval=10,
-                xid_errors_batch_processing_enabled=False,
-                nvml_xid_parser=nvml_xid_parser,
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
             )
@@ -354,7 +345,6 @@ class TestPlatformConnectors(unittest.TestCase):
             "DCGM_HEALTH_WATCH_PCIE": "Fatal",
         }
 
-        nvml_xid_parser = DummyNvmlXidParser()
         platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
             socket_path=socket_path,
             node_name=node_name,
@@ -362,9 +352,6 @@ class TestPlatformConnectors(unittest.TestCase):
             xid_errors_info_dict=xid_errors_info_dict,
             dcgm_errors_info_dict=dcgm_errors_info_dict,
             gpu_errors_recommend_action_mapping=gpu_error_recommend_action_mapping,
-            xid_errors_batch_processing_interval=10,
-            xid_errors_batch_processing_enabled=False,
-            nvml_xid_parser=nvml_xid_parser,
             state_file_path="statefile",
             dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
         )

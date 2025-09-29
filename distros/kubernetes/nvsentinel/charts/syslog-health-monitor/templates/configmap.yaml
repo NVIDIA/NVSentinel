@@ -24,40 +24,22 @@ data:
   # or scripts.
   log_check_definitions.yaml: |
     checks:
-{{- if .Values.global.kata.enabled }}
+{{- if or .Values.global.xidUsingSyslogMonitor .Values.global.kata.enabled }}
       - name: "SysLogsXIDError"
-        matches:
-          - 'NVRM: Xid'
-        count: 0
-        ignoreCase: true
+{{- if .Values.global.kata.enabled }}
         tags:
           - "-u containerd.service"
+{{- end }}
         journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-{{- else }}
-      - name: SysLogsXidError
-        matches:
-          - 'Xid .* waiting for RPC response from GPU'
-        count: 0
-        ignoreCase: true
-        tags: []
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: NODE_REBOOT
-
-      - name: "SysLogsGPUMissing"
-        matches:
-          - 'GPU has fallen off the bus'
-        count: 0
-        ignoreCase: true
-        tags: [] # Assuming empty if not specified
-        journalPath: "/nvsentinel/var/log/journal/"
-        boot: false
-        recommended_action: NODE_REBOOT
 {{- end }}
 
-  # XID error mappings (shared with GPU health monitor from main chart)
-{{ (.Files.Glob "files/xiderrorsmapping.csv").AsConfig | indent 2 }}
+{{- if .Values.global.sxidUsingSyslogMonitor }}
+      - name: "SysLogsSXIDError"
+        journalPath: "/nvsentinel/var/log/journal/"
+{{- end }}
 
-  # Action to platform connector code mapping (shared with GPU health monitor)
+  # Action to platform connector code mapping (shared with different monitors)
 {{ (.Files.Glob "files/actionmapping.ini").AsConfig | indent 2 }}
+
+  # SXID error mappings (shared with NVSwitch health monitor from main chart)
+{{ (.Files.Glob "files/sxiderrorsmapping.csv").AsConfig | indent 2 }}
