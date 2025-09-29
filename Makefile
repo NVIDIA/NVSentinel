@@ -6,6 +6,7 @@ GO := go
 GOLANGCI_LINT := golangci-lint
 GOTESTSUM := gotestsum
 GOCOVER_COBERTURA := gocover-cobertura
+ENVTEST := setup-envtest
 
 # Variables
 GOPATH ?= $(shell go env GOPATH)
@@ -154,7 +155,7 @@ lint-test-labeler-module:
 	cd labeler-module && \
 	$(GO) vet ./... && \
 	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
-	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use -p path)" $(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 

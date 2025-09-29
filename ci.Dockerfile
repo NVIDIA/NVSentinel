@@ -43,7 +43,8 @@ RUN curl -sSL "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/
     tar -xJ --wildcards -C /usr/local/bin/ --strip-components=1 "*/shellcheck" && \
     chmod +x /usr/local/bin/shellcheck
 
-RUN go install github.com/google/addlicense@latest
+RUN go install github.com/google/addlicense@latest && \
+    go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
 ENV PYTHONPATH=/usr/local/dcgm/bindings/python3 \
     PYTHONUNBUFFERED=1

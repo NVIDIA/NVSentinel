@@ -42,7 +42,7 @@ variables:
   # This instructs Docker not to start over TLS.
   DOCKER_TLS_CERTDIR: ""
 
-image: $CI_REGISTRY_IMAGE/ci:23092025
+image: $CI_REGISTRY_IMAGE/ci:29092025
 
 
 default:

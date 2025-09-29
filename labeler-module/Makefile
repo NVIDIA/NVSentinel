@@ -6,6 +6,7 @@ GO := go
 GOLANGCI_LINT := golangci-lint
 GOTESTSUM := gotestsum
 GOCOVER_COBERTURA := gocover-cobertura
+ENVTEST := setup-envtest
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -27,7 +28,7 @@ lint-test:
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
 	$(GO) vet ./... && \
 	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
-	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use -p path)" $(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 
@@ -48,7 +49,7 @@ lint:
 test:
 	@echo "Running tests..."
 	export GOPRIVATE=gitlab-master.nvidia.com/dgxcloud/mk8s/* && \
-	$(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use -p path)" $(GOTESTSUM) --junitfile report.xml -- -race $$(go list ./...) -coverprofile=coverage.txt -covermode atomic
 
 .PHONY: coverage
 coverage: test
