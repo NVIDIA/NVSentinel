@@ -13,8 +13,8 @@ lint-test:
 	poetry install && \
 	poetry run black --check . && \
 	poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml && \
-	poetry run coverage xml || true && \
-	poetry run coverage report || true
+	(poetry run coverage xml || true) && \
+	(poetry run coverage report || true)
 
 # Individual steps
 .PHONY: setup
