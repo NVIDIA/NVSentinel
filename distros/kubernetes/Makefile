@@ -14,7 +14,7 @@ helm-publish:
 	@if [ -z "$$CI_COMMIT_TAG" ]; then \
 		echo "Warning: CI_COMMIT_TAG not set, skipping publish"; \
 	else \
-		helm repo add --force-update ngc https://helm.ngc.nvidia.com/nv-ngc-devops && \
+		helm repo add --force-update ngc https://helm.ngc.nvidia.com/nv-ngc-devops --username=$$NGC_USER_NAME --password=$$NGC_PASSWORD && \
 		helm cm-push -f nvsentinel-$$CI_COMMIT_TAG.tgz ngc; \
 	fi
 
