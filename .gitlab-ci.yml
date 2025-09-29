@@ -203,6 +203,7 @@ prepare-vars:
   stage: .pre  # or stage: init
   script:
     - SAFE_REF_NAME=$(echo $CI_COMMIT_REF_NAME | sed 's/\//-/g')
+    - if [ -z "$CI_COMMIT_TAG" ]; then SAFE_REF_NAME="0.0.0-$SAFE_REF_NAME"; fi
     - echo "SAFE_REF_NAME=$SAFE_REF_NAME" >> variables.env
   artifacts:
     reports:
@@ -612,8 +613,6 @@ kubernetes-distro-lint:
 
 kubernetes-distro-helm-publish:
   stage: publish
-  rules:
-    - if: $CI_COMMIT_TAG
   script:
     - make -C distros/kubernetes helm-publish
 

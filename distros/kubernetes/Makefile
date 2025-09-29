@@ -11,12 +11,12 @@ lint:
 .PHONY: helm-publish
 helm-publish:
 	@echo "Publishing Kubernetes Helm chart..."
-	@if [ -z "$$CI_COMMIT_TAG" ]; then \
-		echo "Warning: CI_COMMIT_TAG not set, skipping publish"; \
+	@if [ -z "$$SAFE_REF_NAME" ]; then \
+		echo "Warning: SAFE_REF_NAME not set, skipping publish"; \
 	else \
 		helm repo add --force-update ngc https://helm.ngc.nvidia.com/nv-ngc-devops --username=$$NGC_USER_NAME --password=$$NGC_PASSWORD && \
-		helm package nvsentinel --version $$CI_COMMIT_TAG && \
-		helm cm-push -f nvsentinel-$$CI_COMMIT_TAG.tgz ngc; \
+		helm package nvsentinel --version $$SAFE_REF_NAME && \
+		helm cm-push -f nvsentinel-$$SAFE_REF_NAME.tgz ngc; \
 	fi
 
 # All Kubernetes/Helm operations
