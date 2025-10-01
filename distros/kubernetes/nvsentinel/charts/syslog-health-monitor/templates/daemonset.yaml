@@ -57,14 +57,6 @@ spec:
             - "/var/run/syslog_monitor/state.json"
             - "--metrics-port"
             - "{{ .Values.metricsPort }}"
-            - "--platform-connector-endpoint"
-            {{- if .Values.global.kata.enabled }}
-            # Kata mode: Use TCP connection to Kubernetes service
-            - "tcp://{{ .Release.Name }}-platform-connector.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.global.kata.port.servicePort }}"
-            {{- else }}
-            # Regular mode: Use UDS socket for platform connector
-            - "{{ .Values.global.socketPath | default "unix:///var/run/nvsentinel.sock" }}"
-            {{- end }}
             - "--sxid-mapping-file"
             - "/etc/syslog-monitor/sxiderrorsmapping.csv"
             - "--action-mapping-file"
@@ -123,10 +115,6 @@ spec:
             - name: host-machine-id
               mountPath: /etc/machine-id
               readOnly: true
-            - name: pc-root-ca
-              mountPath: /etc/nvsentinel/certs/ca.crt
-              readOnly: true
-              subPath: ca.crt
             {{- else }}
             # Regular mode: Mount var/log directly
             - name: var-log-vol
@@ -184,9 +172,6 @@ spec:
           hostPath:
             path: /etc/machine-id
             type: File
-        - name: pc-root-ca
-          secret:
-            secretName: {{ .Values.global.kata.tls.caSecretName }}
         {{- else }}
         # Regular mode: Direct var/log mount
         - name: var-log-vol
@@ -205,10 +190,10 @@ spec:
 
       {{- with .Values.nodeSelector }}
       nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.global.sxidUsingSyslogMonitor }}
         nvsentinel.dgxc.nvidia.com/driver.installed: "true"
-      {{- end }}
-        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:

@@ -14,8 +14,6 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"net/http"
 	"os"
@@ -28,7 +26,6 @@ import (
 	pb "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	fd "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
 )
@@ -38,7 +35,6 @@ const (
 	defaultComponentClass    = "GPU"                                       // Or a more specific class if applicable
 	defaultPollingInterval   = "30m"                                       // Added default polling interval
 	defaultStateFilePath     = "/var/run/syslog_monitor/state.json"        // Added default state file path
-	defaultXidMappingPath    = "/etc/syslog-monitor/xiderrormappings.csv"  // Default path for XID error mappings
 	defaultSXidMappingPath   = "/etc/syslog-monitor/sxiderrormappings.csv" // Default path for SXID error mappings
 	defaultActionMappingPath = "/etc/syslog-monitor/actionmapping.ini"     // Default path for action mappings
 )
@@ -46,46 +42,6 @@ const (
 // ConfigFile matches the top-level structure of the YAML config file
 type ConfigFile struct {
 	Checks []fd.CheckDefinition `yaml:"checks"`
-}
-
-// createTLSCredentials creates TLS credentials if appropriate, returns credentials and whether to use TLS
-func createTLSCredentials(endpoint string) (credentials.TransportCredentials, bool) {
-	// Use TLS for TCP endpoints (kata mode) when CA certificate is available
-	if strings.HasPrefix(endpoint, "unix://") {
-		// Unix socket - no TLS needed
-		return nil, false
-	}
-
-	// Check if TLS CA certificate exists (mounted in kata mode)
-	caCertPath := "/etc/nvsentinel/certs/ca.crt"
-	if _, err := os.Stat(caCertPath); err != nil {
-		klog.Warningf("TLS CA certificate not found at %s, falling back to insecure connection", caCertPath)
-		return nil, false
-	}
-
-	// Load CA certificate
-	caCert, err := os.ReadFile(caCertPath)
-	if err != nil {
-		klog.Errorf("Failed to read CA certificate from %s: %v, falling back to insecure connection", caCertPath, err)
-		return nil, false
-	}
-
-	// Create certificate pool and add our CA
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		klog.Errorf("Failed to parse CA certificate from %s, falling back to insecure connection", caCertPath)
-		return nil, false
-	}
-
-	// Create TLS credentials with custom CA
-	tlsConfig := &tls.Config{
-		RootCAs:    caCertPool,
-		MinVersion: tls.VersionTLS13,
-	}
-
-	klog.Infof("Created TLS credentials with custom CA")
-
-	return credentials.NewTLS(tlsConfig), true
 }
 
 //nolint:cyclop,gocognit // todo
@@ -101,9 +57,6 @@ func main() {
 		"Path to the YAML configuration file for log checks.")
 	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket.")
-	platformConnectorEndpoint := flag.String("platform-connector-endpoint", "",
-		"Platform connector endpoint (supports unix:// for socket or tcp:// for network). If specified, "+
-			"overrides platform-connector-socket.")
 	nodeNameEnv := flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
 	pollingIntervalFlag := flag.String("polling-interval", defaultPollingInterval,
 		"Polling interval for health checks (e.g., 15m, 1h).")
@@ -127,60 +80,39 @@ func main() {
 
 	klog.Infof("Using node name: %s", nodeName)
 
-	// Determine which endpoint to use - new endpoint flag takes precedence
-	var endpoint string
-	if *platformConnectorEndpoint != "" {
-		endpoint = *platformConnectorEndpoint
-	} else {
-		endpoint = *platformConnectorSocket
-	}
-
 	var opts []grpc.DialOption
+	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 
-	// Determine if TLS should be used based on endpoint and available certificates
-	creds, useTLS := createTLSCredentials(endpoint)
+	klog.Infof("Creating gRPC client to platform connector at: %s", *platformConnectorSocket)
 
-	if useTLS {
-		klog.Infof("Configuring TLS credentials for platform connector connection")
-
-		endpoint = strings.TrimPrefix(endpoint, "tcp://")
-
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		klog.Infof("Using insecure credentials for platform connector connection")
-
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	klog.Infof("Creating gRPC client to platform connector at: %s", endpoint)
-
-	// Add retry logic for platform connector endpoint with detailed diagnostics
+	// Add retry logic for platform connector socket with detailed diagnostics
 	var conn *grpc.ClientConn
 
 	var err error
 
 	maxRetries := 10
-	isUnixSocket := strings.HasPrefix(endpoint, "unix://")
-
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		klog.Infof("Attempt %d/%d: Checking platform connector availability at %s", attempt, maxRetries, endpoint)
+		klog.Infof("Attempt %d/%d: Checking platform connector socket availability at %s",
+			attempt, maxRetries, *platformConnectorSocket)
 
-		// For unix sockets, check if socket file exists before attempting connection
-		if isUnixSocket {
-			socketPath := strings.TrimPrefix(endpoint, "unix://")
-			if _, statErr := os.Stat(socketPath); statErr != nil {
-				klog.Warningf("Attempt %d/%d: Platform connector socket file does not exist: %v", attempt, maxRetries, statErr)
+		// Check if socket file exists before attempting connection
+		socketPath := strings.TrimPrefix(*platformConnectorSocket, "unix://")
+		if _, statErr := os.Stat(socketPath); statErr != nil {
+			klog.Warningf("Attempt %d/%d: Platform connector socket file does not exist: %v", attempt, maxRetries, statErr)
 
-				if attempt < maxRetries {
-					time.Sleep(time.Duration(attempt) * time.Second)
-					continue
-				}
-
-				klog.Fatalf("Platform connector socket file not found after %d attempts: %s", maxRetries, socketPath)
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				continue
 			}
+
+			klog.Errorf("Platform connector socket file not found after %d attempts: %s", maxRetries, socketPath)
+			klog.Flush()
+
+			//nolint:gocritic // Running klog.Flush() to ensure logs are flushed
+			os.Exit(1)
 		}
 
-		conn, err = grpc.NewClient(endpoint, opts...)
+		conn, err = grpc.NewClient(*platformConnectorSocket, opts...)
 		if err != nil {
 			klog.Warningf("Attempt %d/%d: Error creating gRPC client: %v", attempt, maxRetries, err)
 

@@ -22,6 +22,12 @@ rules:
   - ""
   resources:
   - nodes
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
   - nodes/status
   verbs:
   - get

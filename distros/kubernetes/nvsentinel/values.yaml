@@ -135,14 +135,6 @@ global:
     metricsPort: 2112
   kata:
     enabled: false
-    port:
-      servicePort: 9090
-      metricsPort: 2112
-
-    tls:
-      secretName: nvsentinel-pc-tls
-      caSecretName: mongo-root-ca-secret
-      mountPath: "/etc/nvsentinel/certs"
 
   sxidUsingSyslogMonitor: false
   xidUsingSyslogMonitor: false
@@ -182,11 +174,6 @@ platformConnector:
     enabled: true
     qps: 5.0
     burst: 10
-
-  kataModeDeployment:
-    nodeSelector: {}
-    nodeAffinity: {}
-    tolerations: {}
 
 
 nameOverride: ""

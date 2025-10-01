@@ -85,3 +85,35 @@ spec:
   issuerRef:
     name: mongo-ca-issuer
     kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mongo-ca-issuer
+spec:
+  ca:
+    secretName: mongo-root-ca-secret
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-ca-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-root-ca
+spec:
+  isCA: true
+  commonName: mongo-root-ca
+  secretName: mongo-root-ca-secret
+  duration: 87600h   # 10 years
+  renewBefore: 720h  # 30 days before expiration
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  issuerRef:
+    name: selfsigned-ca-issuer
+    kind: Issuer

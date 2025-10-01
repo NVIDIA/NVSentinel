@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if (ne .Values.global.kata.enabled true) }}
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -59,7 +58,6 @@ spec:
           - "--config=/etc/config/config.json"
           - "--metrics-port={{ .Values.platformConnector.metricsPort }}"
           - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
-          - "--transport=uds"
           - "--socket={{ .Values.socketPath }}"
           - "--nodehealtheventssocket={{ .Values.nodeHealthEventsSocketPath }}"
           resources:
@@ -98,4 +96,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- end }}
