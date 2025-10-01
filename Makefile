@@ -84,7 +84,7 @@ protos-lint:
 .PHONY: license-headers-lint
 license-headers-lint:
 	@echo "Checking license headers..."
-	addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml .
+	addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml -ignore nvsentinel-log-collector/pyproject.toml .
 
 # Lint and test non-health-monitor Go modules
 .PHONY: go-lint-test-all

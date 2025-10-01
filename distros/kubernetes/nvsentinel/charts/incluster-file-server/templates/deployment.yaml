@@ -97,7 +97,7 @@ spec:
             - name: nginx-logs
               mountPath: /var/log/nginx
 {{- if .Values.metrics.enabled }}
-        # HTTP metrics exporter (parses nginx logs for HTTP status codes and latency)
+        # HTTP metrics exporter
         - name: nginx-log-exporter
           image: "{{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}"
           imagePullPolicy: {{ .Values.metrics.image.pullPolicy }}
@@ -106,18 +106,6 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ .Values.global.inclusterFileServer.metricsPort }}
-          readinessProbe:
-            httpGet:
-              path: /metrics
-              port: metrics
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /metrics
-              port: metrics
-            initialDelaySeconds: 15
-            periodSeconds: 30
           volumeMounts:
             - name: nginx-logs
               mountPath: /var/log/nginx
@@ -137,30 +125,32 @@ spec:
 {{- fail "logCleanup.retentionDays must be at least 1 day to prevent accidental data loss" }}
 {{- end }}
         - name: log-cleanup
-          image: "{{ .Values.initImage.repository }}:{{ .Values.initImage.tag }}"
-          imagePullPolicy: {{ .Values.initImage.pullPolicy }}
-          command: ["/bin/sh", "-c"]
-          args: 
-            - |
-              set -xeuo pipefail
-              while true; do
-                find /usr/share/nginx/html -type f -mtime +${LOG_RETENTION_DAYS} -delete
-                sleep ${LOG_CLEANUP_SLEEP_INTERVAL}
-              done
-          envFrom:
-            - configMapRef:
-                name: file-server-log-cleanup-config
-                optional: true
+          image: {{ .Values.cleanupMetrics.image.repository }}:{{ .Values.cleanupMetrics.image.tag | default .Values.global.image.tag | default "latest" }}
+          imagePullPolicy: {{ .Values.cleanupMetrics.image.pullPolicy }}
+          ports:
+            - name: cleanup-metrics
+              containerPort: {{ .Values.global.inclusterFileServer.cleanupMetricsPort }}
+          env:
+            - name: CLEANUP_METRICS_PORT
+              value: "{{ .Values.global.inclusterFileServer.cleanupMetricsPort }}"
+            - name: LOG_RETENTION_DAYS
+              value: "{{ .Values.logCleanup.retentionDays }}"
+            - name: LOG_CLEANUP_SLEEP_INTERVAL
+              value: "{{ .Values.logCleanup.sleepInterval }}"
+            - name: TARGET_DIRECTORY
+              value: "/usr/share/nginx/html"
           volumeMounts:
             - name: artifacts
               mountPath: /usr/share/nginx/html
+            - name: nginx-logs
+              mountPath: /var/log/nginx
           resources:
             requests:
               cpu: 10m
-              memory: 16Mi
+              memory: 64Mi
             limits:
-              cpu: 50m
-              memory: 32Mi
+              cpu: 100m
+              memory: 128Mi
 {{- end }}
       volumes:
         - name: artifacts

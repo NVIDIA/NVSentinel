@@ -11,21 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
-metadata:
-  name: nvsentinel-pod-monitor
-spec:
-  selector:
-    matchExpressions:
-      - { key: "app.kubernetes.io/instance", operator: In, values: ["nvsentinel"] }
-  namespaceSelector:
-    matchNames:
-      - {{ .Release.Namespace }}
-  podMetricsEndpoints:
-    - port: metrics
-      path: /metrics
-      interval: 30s
-    - port: cleanup-metrics
-      path: /metrics
-      interval: 30s

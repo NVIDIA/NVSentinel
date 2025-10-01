@@ -624,12 +624,27 @@ log-collector-container-publish:
     - prepare-vars
     - log-collector-lint
   script:
-    - make -C nvsentinel-log-collector docker-publish
+    - make -C nvsentinel-log-collector docker-publish-log-collector
+
+file-server-cleanup-container-publish:
+  stage: publish
+  extends:
+    - .container-publish-base
+  needs:
+    - prepare-vars
+    - file-server-cleanup-lint
+  script:
+    - make -C nvsentinel-log-collector docker-publish-file-server-cleanup
 
 log-collector-lint:
   stage: lint-test
   script:
-    - make log-collector-lint
+    - make -C nvsentinel-log-collector lint-log-collector
+
+file-server-cleanup-lint:
+  stage: lint-test
+  script:
+    - make -C nvsentinel-log-collector lint-file-server-cleanup
 
 tilt:
   needs:

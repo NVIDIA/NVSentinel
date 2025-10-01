@@ -132,7 +132,8 @@ global:
 
   inclusterFileServer:
     enabled: false
-    metricsPort: 2112
+    metricsPort: 9001
+    cleanupMetricsPort: 9002
   kata:
     enabled: false
 

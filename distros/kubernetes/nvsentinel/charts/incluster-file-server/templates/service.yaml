@@ -28,3 +28,6 @@ spec:
     - name: metrics
       port: {{ .Values.global.inclusterFileServer.metricsPort }}
       targetPort: {{ .Values.global.inclusterFileServer.metricsPort }}
+    - name: cleanup-metrics
+      port: {{ .Values.global.inclusterFileServer.cleanupMetricsPort }}
+      targetPort: {{ .Values.global.inclusterFileServer.cleanupMetricsPort }}

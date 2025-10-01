@@ -116,7 +116,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(fileserver_http_response_count_total{cluster=~\"$cluster\", status=~\"2..\"}) by (cluster)",
+          "expr": "sum by (cluster) (fileserver_http_response_count_total{cluster=~\"$cluster\",status=~\"2..\"})",
           "legendFormat": "{{cluster}} - Successful",
           "range": true,
           "refId": "A"
@@ -207,7 +207,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(fileserver_http_response_count_total{cluster=~\"$cluster\", status=~\"4..|5..\"}) by (cluster)",
+          "expr": "sum by (cluster) (fileserver_http_response_count_total{cluster=~\"$cluster\",status=~\"[45]..\"})",
           "legendFormat": "{{cluster}} - Failed",
           "range": true,
           "refId": "A"
@@ -323,7 +323,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "avg by (cluster) (fileserver_http_response_time_seconds_hist_sum / fileserver_http_response_time_seconds_hist_count) * 1000",
+          "expr": "avg by (cluster) (fileserver_http_response_time_seconds_sum{cluster=~\"$cluster\"} / fileserver_http_response_time_seconds_count{cluster=~\"$cluster\"}) * 1000",
           "legendFormat": "{{cluster}} - Average Duration (ms)",
           "range": true,
           "refId": "A"
@@ -421,6 +421,311 @@
         }
       ],
       "title": "4. Request Rate (requests per second)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "grafanacloud-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0-17556714384",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(fileserver_log_rotation_successful_total{cluster=~\"$cluster\"}) by (cluster)",
+          "legendFormat": "{{cluster}} - Successful",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "5. Log Rotation - Successful Attempts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "grafanacloud-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0-17556714384",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(fileserver_log_rotation_failed_total{cluster=~\"$cluster\"}) by (cluster)",
+          "legendFormat": "{{cluster}} - Failed",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "6. Log Rotation - Failed Attempts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "grafanacloud-prom"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Free Space",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1073741824
+              },
+              {
+                "color": "green",
+                "value": 5368709120
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0-17556714384",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "fileserver_disk_space_free_bytes{cluster=~\"$cluster\"}",
+          "legendFormat": "{{cluster}} - Free Space",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "7. Disk Space Available",
       "type": "timeseries"
     }
   ],

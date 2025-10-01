@@ -29,7 +29,6 @@ data:
 
       client_max_body_size 0;
 
-      # Health endpoint for k8s probes (no auth)
       location = /healthz {
         access_log off;
         return 200;
@@ -42,7 +41,6 @@ data:
         autoindex_localtime on;
       }
 
-      # Upload endpoint for collectors (no auth; restrict via NetworkPolicy)
       location /upload/ {
         root /usr/share/nginx/html;
         client_max_body_size 0;
