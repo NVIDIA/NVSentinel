@@ -218,7 +218,7 @@ func TestNewK8sClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := NewK8sClient(tt.kubeconfig, tt.dryRun, TemplateData{
+			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, TemplateData{
 				Namespace:         "dgxc-janitor",
 				Version:           "v1alpha1",
 				ApiGroup:          "janitor.dgxc.nvidia.com",
@@ -228,9 +228,11 @@ func TestNewK8sClient(t *testing.T) {
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, client)
+				assert.Nil(t, clientSet)
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, client)
+				assert.NotNil(t, clientSet)
 				if tt.dryRun {
 					assert.Equal(t, []string{metav1.DryRunAll}, client.dryRunMode)
 				} else {

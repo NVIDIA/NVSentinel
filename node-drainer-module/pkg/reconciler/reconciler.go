@@ -23,6 +23,7 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -47,6 +48,7 @@ type ReconcilerConfig struct {
 	TokenConfig   storewatcher.TokenConfig
 	MongoPipeline mongo.Pipeline
 	K8sClient     NodeDrainerClientInterface
+	StateManager  statemanager.StateManager
 }
 
 type Reconciler struct {
@@ -198,7 +200,6 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string,
 	namespaceMap := r.getMatchingNamespace(ctx)
 	deleteAfterTimeout := r.Config.TomlConfig.DeleteAfterTimeoutMinutes
 	getTimeoutNamespaces := r.getTimeoutNamespaces(ctx)
-
 	// If DrainOverrides.Force is true, override all namespaces to use immediate eviction
 	if healthEventWithStatus.HealthEvent.DrainOverrides != nil && healthEventWithStatus.HealthEvent.DrainOverrides.Force {
 		klog.Infof("DrainOverrides.Force is true, forcing immediate eviction for all namespaces")
@@ -221,9 +222,10 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string,
 		// Node is healthy/unquarantined - set metric to 0
 		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
 	} else {
-		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, true)
+		_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainingLabelValue, false)
 		if err != nil {
 			klog.Errorf("Error updating node label: %+v", err)
+			totalEventProcessingError.WithLabelValues("label_update_error").Inc()
 		}
 		// Node is quarantined - set metric to 1 to indicate draining started
 		nodeDrainStatus.WithLabelValues(nodeName).Set(1)
@@ -333,36 +335,38 @@ func (r *Reconciler) handleEvent(ctx context.Context, nodeName string,
 	wg.Wait()
 	close(errChan)
 
-	var mErr *multierror.Error
-
+	var drainError error
+	// errChan is only written to when draining is occurring for Quarantined HealthEvents
 	if len(errChan) > 0 {
+		var mErr *multierror.Error
 		for err := range errChan {
 			mErr = multierror.Append(mErr, err)
 		}
 
-		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
-		if err != nil {
-			klog.Errorf("Error updating node label: %+v", err)
-		}
-
-		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
-
-		return mErr
+		drainError = mErr
+	} else {
+		// verifyEvictionCompleted ensures that eviction verification only occurs on Quarantined HealthEvents
+		drainError = r.verifyEvictionCompleted(ctx, healthEventWithStatus, nodeName, nsWithImmediateMode)
 	}
 
-	err := r.verifyEvictionCompleted(ctx, healthEventWithStatus, nodeName, nsWithImmediateMode)
+	// We will update the state label from draining to drain-succeeded or drain-failed on Quarantined HealthEvents
+	if *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
+		drainLabelValue := statemanager.DrainSucceededLabelValue
 
-	// Set metric to 0 only after successful completion of draining
-	if err == nil && *healthEventWithStatus.HealthEventStatus.NodeQuarantined == storeconnector.Quarantined {
-		err := r.Config.K8sClient.UpdateNodeLabel(ctx, nodeName, false)
-		if err != nil {
-			klog.Errorf("Error updating node label: %+v", err)
+		if drainError != nil {
+			nodeDrainStatus.WithLabelValues(nodeName).Set(0)
+
+			drainLabelValue = statemanager.DrainFailedLabelValue
 		}
 
-		nodeDrainStatus.WithLabelValues(nodeName).Set(0)
+		_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, drainLabelValue, false)
+		if err != nil {
+			klog.Errorf("Error updating node label: %+v", err)
+			totalEventProcessingError.WithLabelValues("label_update_error").Inc()
+		}
 	}
-
-	return err
+	// drainError can only be non-nil on Quarantined HealthEvents
+	return drainError
 }
 
 func (r *Reconciler) getMatchingNamespace(ctx context.Context) map[string]config.EvictMode {

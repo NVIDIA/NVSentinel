@@ -9,6 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/common v0.62.0
 	github.com/stretchr/testify v1.10.0
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.0
 	k8s.io/api v0.34.0
 	k8s.io/apimachinery v0.34.0
@@ -71,3 +72,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager => ../statemanager

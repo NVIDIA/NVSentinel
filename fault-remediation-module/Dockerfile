@@ -23,14 +23,17 @@ FROM golang:1.23-bullseye AS builder
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
 
-WORKDIR /go/src/fault-remediation
+WORKDIR /go/src
 
-COPY go.mod go.sum ./
+COPY fault-remediation-module ./fault-remediation-module
+COPY platform-connectors ./platform-connectors
+COPY statemanager ./statemanager
+COPY store-client-sdk/ ./store-client-sdk/
+
+WORKDIR /go/src/fault-remediation-module
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download 
-
-COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o faultremediation cmd/fault-remediation/main.go
@@ -39,6 +42,6 @@ FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-COPY --from=builder /go/src/fault-remediation/faultremediation .
+COPY --from=builder /go/src/fault-remediation-module/faultremediation .
 
 ENTRYPOINT ["/app/faultremediation"]

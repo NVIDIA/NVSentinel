@@ -44,7 +44,6 @@ rules:
   - nodes
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - ""

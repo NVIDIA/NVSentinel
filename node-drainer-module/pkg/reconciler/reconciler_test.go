@@ -25,6 +25,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platform_connectors "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"k8s.io/utils/ptr"
 )
 
@@ -51,10 +52,6 @@ func (c *MockNodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context,
 
 func (c *MockNodeDrainerClient) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context, namespaces []string, nodeName string, timeout time.Duration) bool {
 	return c.checkIfAllPodsAreEvictedFn(ctx, namespaces, nodeName, timeout)
-}
-
-func (c *MockNodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string, isDraining bool) error {
-	return c.updateNodeLabelFn(ctx, nodeName, isDraining)
 }
 
 func (c *MockNodeDrainerClient) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
@@ -106,20 +103,6 @@ func TestHandleEvent(t *testing.T) {
 		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
 			return true
 		},
-		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
-			count++
-			switch count {
-			case 1:
-				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
-				return nil
-			case 2:
-				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-				assert.Equal(t, false, isDraining, "Expected isDraining to be false but found %s", isDraining)
-				return nil
-			}
-			return nil
-		},
 		deletePodsAfterTimeoutFn: func(ctx context.Context, nodeName string, namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error {
 			assert.Equal(t, "node1", nodeName, "Expected node1 to be deleted but found %s", nodeName)
 			assert.Equal(t, []string{"nvsentinel"}, namespaces, "Expected nvsentinel namespace to be deleted but found %s", namespaces)
@@ -127,10 +110,28 @@ func TestHandleEvent(t *testing.T) {
 			return nil
 		},
 	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, statemanager.DrainingLabelValue, newStateLabelValue)
+				return true, nil
+			case 2:
+				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
+				assert.Equal(t, statemanager.DrainSucceededLabelValue, newStateLabelValue)
+				return true, nil
+			}
+			return true, nil
+		},
+	}
 
 	cfg := ReconcilerConfig{
-		TomlConfig: config,
-		K8sClient:  k8sClient,
+		TomlConfig:   config,
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
 	}
 
 	healthEvent := &storeconnector.HealthEventWithStatus{
@@ -192,25 +193,29 @@ func TestHandleEventWithError(t *testing.T) {
 			t.Errorf("Didn't expect this function to be called in error state")
 			return false
 		},
-		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
 			count++
 			switch count {
 			case 1:
-				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
-				return nil
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.DrainingLabelValue, newStateLabelValue)
+				return true, nil
 			case 2:
-				assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-				assert.Equal(t, false, isDraining, "Expected Failed label value but found %s", isDraining)
-				return nil
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.DrainFailedLabelValue, newStateLabelValue)
+				return true, nil
 			}
-			return nil
+			return true, nil
 		},
 	}
 
 	cfg := ReconcilerConfig{
-		TomlConfig: config,
-		K8sClient:  k8sClient,
+		TomlConfig:   config,
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
 	}
 
 	healthEvent := &storeconnector.HealthEventWithStatus{
@@ -245,26 +250,90 @@ func TestHandleEventWithError(t *testing.T) {
 		t.Errorf("Didn't expect this function to be called in error state")
 		return false
 	}
-	k8sClient.updateNodeLabelFn = func(ctx context.Context, nodeName string, isDraining bool) error {
-		count++
-		switch count {
-		case 1:
-			assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-			assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
-			return nil
-		case 2:
-			assert.Equal(t, "node1", nodeName, "Expected node1 to be updated but found %s", nodeName)
-			assert.Equal(t, false, isDraining, "Expected Failed label value but found %s", isDraining)
-			return nil
-		}
-		return nil
-	}
-
+	// We can rely on the same StateManager previously defined
 	err = r.handleEvent(ctx, "node1", healthEvent)
 
 	if err == nil {
 		t.Errorf("Expected an error for eviction of pods in Allow completion mode but got nil")
 	}
+}
+
+func TestHandleEventWithVerifyEvictionError(t *testing.T) {
+	ctx := context.Background()
+	var err error
+
+	config := config.TomlConfig{
+		EvictionTimeoutInSeconds: config.Duration{Duration: 40},
+		UserNamespaces: []config.UserNamespace{{
+			Name: "*ai",
+			Mode: "Immediate",
+		},
+			{
+				Name: "*sentin*",
+				Mode: "AllowCompletion",
+			}},
+	}
+	count := 0
+	// eviction of pods in immediate mode with error
+	k8sClient := &MockNodeDrainerClient{
+		getNamespacesMatchingPatternFn: func(ctx context.Context, includePattern string, excludePattern string) ([]string, error) {
+			switch includePattern {
+			case "*ai":
+				return []string{"runai"}, nil
+			case "*sentin*":
+				return []string{"nvsentinel"}, nil
+			default:
+				return []string{}, fmt.Errorf("Unexpected %s pattern passed", includePattern)
+			}
+		},
+		monitorPodCompletionFn: func(ctx context.Context, namespace, nodename string) error {
+			assert.Equal(t, "nvsentinel", namespace, "Expected nvsentinel namespace pods to be passed in Allow completion mode eviction but found %s", namespace)
+			assert.Equal(t, "node1", nodename, "Expected node1 to be evicted but found %s", nodename)
+			return nil
+		},
+		evictAllPodsImmediatelyFn: func(ctx context.Context, namespace, nodename string, timeout time.Duration) error {
+			assert.Equal(t, "runai", namespace, "Expected runai namespace pods to be passed in immediate mode eviction but found %s", namespace)
+			assert.Equal(t, "node1", nodename, "Expected node1 to be evicted but found %s", nodename)
+			return nil
+		},
+		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
+			return false
+		},
+	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.DrainingLabelValue, newStateLabelValue)
+				return true, nil
+			case 2:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.DrainFailedLabelValue, newStateLabelValue)
+				return true, nil
+			}
+			return true, nil
+		},
+	}
+	cfg := ReconcilerConfig{
+		TomlConfig:   config,
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
+	}
+	healthEvent := &storeconnector.HealthEventWithStatus{
+		CreatedAt:   time.Now(),
+		HealthEvent: &platform_connectors.HealthEvent{},
+		HealthEventStatus: storeconnector.HealthEventStatus{
+			NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+			UserPodsEvictionStatus: storeconnector.OperationStatus{},
+			FaultRemediated:        nil,
+		},
+	}
+	r := NewReconciler(cfg, false)
+	err = r.handleEvent(ctx, "node1", healthEvent)
+	assert.Error(t, err)
 }
 
 func TestHandleEventWithHealthyEvent(t *testing.T) {
@@ -305,15 +374,19 @@ func TestHandleEventWithHealthyEvent(t *testing.T) {
 			t.Errorf("Check for eviction of pod should not be done for healthy event")
 			return false
 		},
-		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
-			t.Errorf("UpdateNodeLabel should not be called for healthy event")
-			return nil
+	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			t.Errorf("UpdateNVSentinelStateNodeLabel should not be called for healthy event")
+			return true, nil
 		},
 	}
 
 	cfg := ReconcilerConfig{
-		TomlConfig: config,
-		K8sClient:  k8sClient,
+		TomlConfig:   config,
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
 	}
 
 	healthEvent := &storeconnector.HealthEventWithStatus{
@@ -375,25 +448,29 @@ func TestHandleEventWithInvalidMode(t *testing.T) {
 		checkIfAllPodsAreEvictedFn: func(ctx context.Context, nsWithImmediateMode []string, nodeName string, timeout time.Duration) bool {
 			return true
 		},
-		updateNodeLabelFn: func(ctx context.Context, nodeName string, isDraining bool) error {
+	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
 			count++
 			switch count {
 			case 1:
-				assert.Equal(t, "node-for-invalid-mode", nodeName, "Expected node-for-invalid-mode to be updated but found %s", nodeName)
-				assert.Equal(t, true, isDraining, "Expected isDraining to be true but found %s", isDraining)
-				return nil
+				assert.Equal(t, "node-for-invalid-mode", nodeName)
+				assert.Equal(t, statemanager.DrainingLabelValue, newStateLabelValue)
+				return true, nil
 			case 2:
-				assert.Equal(t, "node-for-invalid-mode", nodeName, "Expected node-for-invalid-mode to be updated but found %s", nodeName)
-				assert.Equal(t, false, isDraining, "Expected isDraining to be false but found %s", isDraining)
-				return nil
+				assert.Equal(t, "node-for-invalid-mode", nodeName)
+				assert.Equal(t, statemanager.DrainSucceededLabelValue, newStateLabelValue)
+				return true, nil
 			}
-			return nil
+			return true, nil
 		},
 	}
 
 	cfg := ReconcilerConfig{
-		TomlConfig: tomlCfg,
-		K8sClient:  k8sClient,
+		TomlConfig:   tomlCfg,
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
 	}
 
 	healthEvent := &storeconnector.HealthEventWithStatus{

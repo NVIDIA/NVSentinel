@@ -23,11 +23,13 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
@@ -101,6 +103,73 @@ func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name st
 	return nil
 }
 
+/*
+This function ensures that the given node follows the given label values in order for the dgxc.nvidia.com/nvsentinel-state
+node label. We leverage this helper function to ensure that a node progresses through the following NVSentinel states:
+
+- dgxc.nvidia.com/nvsentinel-state: quarantined
+- dgxc.nvidia.com/nvsentinel-state: draining
+- dgxc.nvidia.com/nvsentinel-state: drain-succeeded
+- dgxc.nvidia.com/nvsentinel-state: remediating
+- dgxc.nvidia.com/nvsentinel-state: remediation-succeeded
+- label removed
+
+TODO: this test currently tolerates starting the watch when the node has a label value that does not start with our
+intended sequence rather than starting without the label value. This is required because there's a race condition
+between the end of the TestScaleHealthEvents where a node may have the remediation-succeeded when the test completes.
+This workaround can be removed after KACE-1703 is completed.
+*/
+func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
+	labelValueSequence []string, success chan bool) error {
+	currentLabelIndex := 0
+	prevLabelValue := ""
+	// Lock to prevent concurrent access to currentLabelIndex/prevLabelValue/foundInvalidSequence.
+	// Note that sends to the success channel will be blocked on the test runner reading the result of this label sequence
+	// in TestFatalHealthEventEndToEnd. The UpdateFunc thread which has acquired the lock will be waiting for the main
+	// thead to read from the success channel. This is the desired behavior because we only want to have 1 UpdateFunc
+	// thread write true/false.
+	var lock sync.Mutex
+	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
+		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
+		WithUpdateFunc(func(updated interface{}) {
+			lock.Lock()
+			defer lock.Unlock()
+			node := updated.(*v1.Node)
+			actualValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+			if exists && currentLabelIndex < len(labelValueSequence) {
+				t.Logf("Received node update for %s, value for %s=%s\n", nodeName,
+					statemanager.NVSentinelStateLabelKey, actualValue)
+				if currentLabelIndex < len(labelValueSequence) && actualValue == labelValueSequence[currentLabelIndex] {
+					prevLabelValue = labelValueSequence[currentLabelIndex]
+					currentLabelIndex++
+				} else if actualValue != labelValueSequence[currentLabelIndex] &&
+					prevLabelValue != actualValue && currentLabelIndex != 0 {
+					sendNodeLabelResult(ctx, success, false)
+				}
+			} else {
+				t.Logf("Received node update for %s, value for %s doesn't exist", nodeName,
+					statemanager.NVSentinelStateLabelKey)
+				if currentLabelIndex == len(labelValueSequence) {
+					sendNodeLabelResult(ctx, success, true)
+				} else if currentLabelIndex != 0 {
+					sendNodeLabelResult(ctx, success, false)
+				}
+			}
+			// Do nothing if the label exists and the actualValue equals the previous label value, if the first label
+			// observed doesn't match yet, or if we already found all the expected labels and we're waiting for the
+			// label to be removed. Additionally, do nothing if the label doesn't exist and we still haven't seen the
+			// label added.
+		}).Start(ctx)
+}
+
+func sendNodeLabelResult(ctx context.Context, success chan bool, result bool) {
+	select {
+	case success <- result:
+	case <-ctx.Done():
+		return
+	}
+}
+
 // WaitForNodesWithLabel waits for nodes with names specified in `nodeNames` to have a label with key `labelKey` set to `expectedValue`.
 func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, labelKey, expectedValue string) {
 	require.Eventually(t, func() bool {
@@ -122,6 +191,26 @@ func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, n
 		t.Logf("Nodes with label %s=%s: %d/%d", labelKey, expectedValue, actualCount, targetCount)
 		return actualCount == targetCount
 	}, WaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
+}
+
+func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string, expectedEvent v1.Event) {
+	require.Eventually(t, func() bool {
+		fieldSelector := resources.WithFieldSelector(fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName))
+		var eventsForNode v1.EventList
+		err := c.Resources().List(ctx, &eventsForNode, fieldSelector)
+		if err != nil {
+			t.Logf("Got an error listing events for node %s: %s", nodeName, err)
+			return false
+		}
+		for _, event := range eventsForNode.Items {
+			if event.Type == expectedEvent.Type && event.Reason == expectedEvent.Reason {
+				t.Logf("Matching event for node %s: %v", nodeName, event)
+				return true
+			}
+		}
+		t.Logf("Did not find any events for node %s matching event %v", nodeName, expectedEvent)
+		return false
+	}, WaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
 }
 
 // GetNodeByName retrieves a Kubernetes node by its `nodeName` and returns the node object.
@@ -152,24 +241,30 @@ func DeletePod(ctx context.Context, c klient.Client, namespace, podName string) 
 	return nil
 }
 
+func listAllRebootNodes(ctx context.Context, c klient.Client) (*unstructured.UnstructuredList, error) {
+	rebootNodeList := &unstructured.UnstructuredList{}
+	rebootNodeList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "RebootNodeList",
+	})
+	err := c.Resources().List(ctx, rebootNodeList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list rebootnodes: %v", err)
+	}
+	return rebootNodeList, nil
+}
+
 // WaitForRebootNodeCR waits for a RebootNode custom resource to be created for the node with the specified `nodeName` and returns the CR object.
 func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
 
 	require.Eventually(t, func() bool {
-		rebootNodeList := &unstructured.UnstructuredList{}
-		rebootNodeList.SetGroupVersionKind(schema.GroupVersionKind{
-			Group:   "janitor.dgxc.nvidia.com",
-			Version: "v1alpha1",
-			Kind:    "RebootNodeList",
-		})
-
-		err := c.Resources().List(ctx, rebootNodeList)
+		rebootNodeList, err := listAllRebootNodes(ctx, c)
 		if err != nil {
 			t.Logf("failed to list rebootnodes: %v", err)
 			return false
 		}
-
 		for _, item := range rebootNodeList.Items {
 			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
 			if err != nil {
@@ -188,6 +283,21 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 	}, WaitTimeout, WaitInterval, "RebootNode CR should exist for node %s", nodeName)
 
 	return resultCR
+}
+
+// DeleteAllRebootNodesCRs deletes all RebootNode custom resources in the cluster
+func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) error {
+	rebootNodeList, err := listAllRebootNodes(ctx, c)
+	if err != nil {
+		return fmt.Errorf("failed to list rebootnodes: %v", err)
+	}
+	for _, item := range rebootNodeList.Items {
+		err = DeleteRebootNodeCR(ctx, c, &item)
+		if err != nil {
+			return fmt.Errorf("failed to delete reboot node: %v", err)
+		}
+	}
+	return nil
 }
 
 // DeleteRebootNodeCR deletes the specified RebootNode custom resource `rebootNode`.
@@ -272,7 +382,7 @@ func WaitForNodesCordonedAndDrained(ctx context.Context, t *testing.T, c klient.
 			if node.Spec.Unschedulable {
 				cordonedCount++
 
-				if drainStatus, exists := node.Labels["nvsentinel.dgxc.nvidia.com/node-drain-status"]; exists && drainStatus == "IN_PROGRESS" {
+				if drainStatus, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists && drainStatus == string(statemanager.DrainingLabelValue) {
 					drainedCount++
 				}
 			}

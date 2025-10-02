@@ -23,15 +23,17 @@ FROM golang:1.23-bullseye AS builder
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
 
+WORKDIR /go/src
 
-WORKDIR /go/src/fault-quarantine
+COPY fault-quarantine-module ./fault-quarantine-module
+COPY platform-connectors ./platform-connectors
+COPY statemanager ./statemanager
+COPY store-client-sdk/ ./store-client-sdk/
 
-COPY go.mod go.sum ./
+WORKDIR /go/src/fault-quarantine-module
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
-
-COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o faultquarantine cmd/faultquarantine.go
@@ -40,6 +42,6 @@ FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-COPY --from=builder /go/src/fault-quarantine/faultquarantine .
+COPY --from=builder /go/src/fault-quarantine-module/faultquarantine .
 
 ENTRYPOINT ["/app/faultquarantine"]

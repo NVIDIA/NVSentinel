@@ -32,7 +32,6 @@ import (
 	policyv1client "k8s.io/client-go/kubernetes/typed/policy/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 )
@@ -45,17 +44,18 @@ type NodeDrainerClient struct {
 	pollInterval           time.Duration
 }
 
-func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes *int) (*NodeDrainerClient, error) {
+func NewNodeDrainerClient(kubeconfig string, dryRun bool,
+	notReadyTimeoutMinutes *int) (*NodeDrainerClient, kubernetes.Interface, error) {
 	k8sConfig, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
-			return nil, fmt.Errorf("kubeconfig is not set")
+			return nil, nil, fmt.Errorf("kubeconfig is not set")
 		}
 
 		// build config from kubeconfig file
 		k8sConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
+			return nil, nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
 		}
 	}
 
@@ -65,7 +65,7 @@ func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes
 
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
-		return nil, fmt.Errorf("error creating clientset: %w", err)
+		return nil, nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
 	client := &NodeDrainerClient{
@@ -81,7 +81,7 @@ func NewNodeDrainerClient(kubeconfig string, dryRun bool, notReadyTimeoutMinutes
 		client.dryRunMode = []string{}
 	}
 
-	return client, nil
+	return client, clientset, nil
 }
 
 func (c *NodeDrainerClient) findAllPodsInNamespaceAndNode(ctx context.Context,
@@ -202,8 +202,8 @@ func (c *NodeDrainerClient) EvictAllPodsInImmediateMode(ctx context.Context, nam
 	return nil
 }
 
-func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string,
-	nodeName string, timeout time.Duration, pods []v1.Pod) error {
+func (c *NodeDrainerClient) evictPodsInNamespaceAndNode(ctx context.Context, namespace string, nodeName string,
+	timeout time.Duration, pods []v1.Pod) error {
 	var wg sync.WaitGroup
 
 	var mErr *multierror.Error
@@ -549,41 +549,6 @@ func (c *NodeDrainerClient) MonitorPodCompletion(ctx context.Context, namespace 
 			klog.InfoS("Still waiting for these pods to finish", "node", nodeName, "name", podNames, "namespace", namespace)
 		}
 	}
-}
-
-func (c *NodeDrainerClient) UpdateNodeLabel(ctx context.Context, nodeName string, isDraining bool) error {
-	return retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
-		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-
-		currentValue, exists := node.Labels[NodeDrainStatusLabelKey]
-		if isDraining {
-			if exists && currentValue == string(InProgress) {
-				klog.Infof("Node draining label is already set for node %s", nodeName)
-				return nil
-			}
-
-			node.Labels[NodeDrainStatusLabelKey] = string(InProgress)
-		} else {
-			if !exists {
-				klog.Infof("Node draining label is already absent for node %s", nodeName)
-				return nil
-			}
-
-			delete(node.Labels, NodeDrainStatusLabelKey)
-		}
-
-		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-		if err != nil {
-			return err
-		}
-
-		klog.Infof("Node draining label updated for node %s", nodeName)
-
-		return nil
-	})
 }
 
 //nolint:cyclop,gocognit //todo

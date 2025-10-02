@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -60,6 +61,25 @@ func TestFatalHealthEvent(t *testing.T) {
 		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 
+		return ctx
+	})
+
+	nodeLabelSequenceObserved := make(chan bool)
+	feature.Assess("Can start node label watcher", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+		t.Logf("Starting label sequence watcher for node %s", nodeName)
+		desiredNVSentinelStateNodeLabels := []string{
+			string(statemanager.QuarantinedLabelValue),
+			string(statemanager.DrainingLabelValue),
+			string(statemanager.DrainSucceededLabelValue),
+			string(statemanager.RemediatingLabelValue),
+			string(statemanager.RemediationSucceededLabelValue),
+		}
+		err = helpers.StartNodeLabelWatcher(ctx, t, client, nodeName, desiredNVSentinelStateNodeLabels, nodeLabelSequenceObserved)
+		assert.NoError(t, err, "failed to start node label watcher")
 		return ctx
 	})
 
@@ -111,7 +131,13 @@ func TestFatalHealthEvent(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, "nvsentinel.dgxc.nvidia.com/node-drain-status", "IN_PROGRESS")
+		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.DrainingLabelValue))
+
+		expectedDrainingNodeEvent := v1.Event{
+			Type:   "NodeDraining",
+			Reason: "AwaitingPodCompletion",
+		}
+		helpers.WaitForNodeEvent(ctx, t, client, nodeName, expectedDrainingNodeEvent)
 
 		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
 
@@ -169,6 +195,16 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.Equal(t, "GpuXidErrorIsHealthy", nodeCondition.Reason)
 		assert.Equal(t, "No Health Failures", nodeCondition.Message)
 
+		return ctx
+	})
+
+	feature.Assess("Observed NVSentinel expected state label changes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		select {
+		case success := <-nodeLabelSequenceObserved:
+			assert.True(t, success)
+		default:
+			assert.Fail(t, "did not observe expected label changes for nvsentinel-state")
+		}
 		return ctx
 	})
 

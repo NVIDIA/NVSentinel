@@ -139,6 +139,9 @@ func TestScaleHealthEvents(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
+		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		assert.NoError(t, err, "failed to delete RebootNode CRs")
+
 		return ctx
 	})
 

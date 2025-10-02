@@ -23,6 +23,7 @@ import (
 
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -40,6 +41,7 @@ type ReconcilerConfig struct {
 	TokenConfig        storewatcher.TokenConfig
 	MongoPipeline      mongo.Pipeline
 	K8sClient          FaultRemediationClientInterface
+	StateManager       statemanager.StateManager
 	EnableLogCollector bool
 }
 
@@ -47,6 +49,8 @@ type Reconciler struct {
 	Config              ReconcilerConfig
 	NodeEvictionContext sync.Map
 	DryRun              bool
+	MaxRetries          int
+	RetryDelay          time.Duration
 }
 
 type HealthEventDoc struct {
@@ -55,7 +59,13 @@ type HealthEventDoc struct {
 }
 
 func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
-	return &Reconciler{Config: cfg, NodeEvictionContext: sync.Map{}, DryRun: dryRunEnabled}
+	return &Reconciler{
+		Config:              cfg,
+		NodeEvictionContext: sync.Map{},
+		DryRun:              dryRunEnabled,
+		MaxRetries:          maxRetries,
+		RetryDelay:          retryDelay,
+	}
 }
 
 func (r *Reconciler) shouldSkipEvent(healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
@@ -142,33 +152,58 @@ func (r *Reconciler) Start(ctx context.Context) {
 			}
 		}
 
-		// Check if we should skip this event (NONE actions or unsupported actions)
-		if r.shouldSkipEvent(healthEventWithStatus.HealthEventWithStatus) {
-			continue
+		eventSkipped, nodeRemediatedStatus := r.executeRemediation(ctx, healthEventWithStatus)
+		if !eventSkipped {
+			if err := r.updateNodeRemediatedStatus(ctx, collection, event, nodeRemediatedStatus); err != nil {
+				totalEventProcessingError.WithLabelValues("update_status_error", healthEventWithStatus.HealthEvent.NodeName).Inc()
+				log.Printf("\nError updating remediation status for node: %+v\n", err)
+			} else {
+				totalEventsSuccessfullyProcessed.Inc()
+			}
 		}
+	}
+}
 
-		nodeRemediatedStatus := false
+func (r *Reconciler) executeRemediation(ctx context.Context, healthEventWithStatus HealthEventDoc) (bool, bool) {
+	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, healthEventWithStatus.HealthEvent.NodeName,
+		statemanager.RemediatingLabelValue, false)
+	if err != nil {
+		klog.Errorf("Error updating node label: %+v", err)
+		totalEventProcessingError.WithLabelValues("label_update_error", healthEventWithStatus.HealthEvent.NodeName).Inc()
+	}
 
-		for i := 1; i <= maxRetries; i++ {
+	shouldSkipEvent := r.shouldSkipEvent(healthEventWithStatus.HealthEventWithStatus)
+
+	nodeRemediatedStatus := false
+
+	remediationLabelValue := statemanager.RemediationFailedLabelValue
+
+	if !shouldSkipEvent {
+		for i := 1; i <= r.MaxRetries; i++ {
 			klog.Infof("Attempt %d, handle event for node: %s", i, healthEventWithStatus.HealthEvent.NodeName)
 
 			if r.Config.K8sClient.CreateMaintenanceResource(ctx, &healthEventWithStatus) {
 				nodeRemediatedStatus = true
+				remediationLabelValue = statemanager.RemediationSucceededLabelValue
+
 				break
 			}
 
-			if i < maxRetries {
-				time.Sleep(retryDelay)
+			if i < r.MaxRetries {
+				time.Sleep(r.RetryDelay)
 			}
 		}
-
-		if err := r.updateNodeRemediatedStatus(ctx, collection, event, nodeRemediatedStatus); err != nil {
-			totalEventProcessingError.WithLabelValues("update_status_error", healthEventWithStatus.HealthEvent.NodeName).Inc()
-			log.Printf("\nError updating remediation status for node: %+v\n", err)
-		} else {
-			totalEventsSuccessfullyProcessed.Inc()
-		}
 	}
+	// If shouldSkipEvent is true or if the nodeRemediatedStatus is false, we will update the state to remediation-failed,
+	// else we will update the state to remediation-succeeded.
+	_, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx, healthEventWithStatus.HealthEvent.NodeName,
+		remediationLabelValue, false)
+	if err != nil {
+		klog.Errorf("Error updating node label: %+v", err)
+		totalEventProcessingError.WithLabelValues("label_update_error", healthEventWithStatus.HealthEvent.NodeName).Inc()
+	}
+
+	return shouldSkipEvent, nodeRemediatedStatus
 }
 
 func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection MongoInterface,
@@ -187,7 +222,7 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection 
 		},
 	}
 
-	for i := 1; i <= maxRetries; i++ {
+	for i := 1; i <= r.MaxRetries; i++ {
 		klog.Infof("Attempt %d, updating health event with ID %v", i, document["_id"])
 
 		_, err = collection.UpdateOne(ctx, filter, update)
@@ -195,7 +230,7 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection 
 			break
 		}
 
-		time.Sleep(retryDelay)
+		time.Sleep(r.RetryDelay)
 	}
 
 	if err != nil {

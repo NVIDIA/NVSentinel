@@ -23,16 +23,19 @@ FROM golang:1.23-bullseye AS builder
 ENV GOPRIVATE=*.nvidia.com
 ENV CGO_ENABLED=0
 
-WORKDIR /go/src/node-drainer-module
+WORKDIR /go/src
 
-COPY go.mod go.sum ./
+COPY node-drainer-module ./node-drainer-module
+COPY platform-connectors ./platform-connectors
+COPY statemanager ./statemanager
+COPY store-client-sdk/ ./store-client-sdk/
+
+WORKDIR /go/src/node-drainer-module
 
 # download dependencies with authentication
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-COPY . .
-    
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o nodedrainer cmd/nodedrainer.go
 

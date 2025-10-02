@@ -83,7 +83,7 @@ setup-buildx:
 .PHONY: docker-build
 docker-build: setup-buildx
 	@echo "Building Docker image for fault-quarantine-module (local development)..."
-	docker buildx build \
+	cd .. && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module \
@@ -91,13 +91,14 @@ docker-build: setup-buildx
 		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
 		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-fault-quarantine-module:$(SAFE_REF_NAME) \
+		-f fault-quarantine-module/Dockerfile \
 		.
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
 docker-publish: setup-buildx
 	@echo "Building and publishing Docker image for fault-quarantine-module (production)..."
-	docker buildx build \
+	cd .. && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:fault-quarantine-module \
@@ -106,6 +107,7 @@ docker-publish: setup-buildx
 		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-fault-quarantine-module:$(SAFE_REF_NAME) \
+		-f fault-quarantine-module/Dockerfile \
 		.
 
 # Legacy targets for backwards compatibility

@@ -18,15 +18,18 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"k8s.io/utils/ptr"
 )
 
 // MockK8sClient is a mock implementation of K8sClient interface
@@ -50,6 +53,13 @@ type MockCollection struct {
 
 func (m *MockCollection) UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
 	return m.updateOneFn(ctx, filter, update, opts...)
+}
+
+func newTestReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
+	r := NewReconciler(cfg, dryRunEnabled)
+	r.RetryDelay = 1 * time.Microsecond
+	r.MaxRetries = 2
+	return r
 }
 
 func TestNewReconciler(t *testing.T) {
@@ -88,7 +98,7 @@ func TestNewReconciler(t *testing.T) {
 				},
 			}
 
-			r := NewReconciler(cfg, tt.dryRun)
+			r := newTestReconciler(cfg, tt.dryRun)
 			assert.NotNil(t, r)
 			assert.Equal(t, tt.dryRun, r.DryRun)
 		})
@@ -132,7 +142,7 @@ func TestHandleEvent(t *testing.T) {
 				K8sClient: k8sClient,
 			}
 
-			r := NewReconciler(cfg, false)
+			r := newTestReconciler(cfg, false)
 			healthEventDoc := &HealthEventDoc{
 				ID: primitive.NewObjectID(),
 				HealthEventWithStatus: storeconnector.HealthEventWithStatus{
@@ -148,8 +158,193 @@ func TestHandleEvent(t *testing.T) {
 	}
 }
 
+func TestExecuteRemediationWithSkippedEvent(t *testing.T) {
+	ctx := context.Background()
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+			t.Errorf("CreateMaintenanceResource should not be called on a skipped event")
+			return false
+		},
+	}
+	count := 0
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediatingLabelValue, newStateLabelValue)
+				return true, nil
+			case 2:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediationFailedLabelValue, newStateLabelValue)
+				return true, nil
+			}
+			return true, nil
+		},
+	}
+	cfg := ReconcilerConfig{
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
+	}
+	healthEvent := HealthEventDoc{
+		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+			CreatedAt: time.Now(),
+			HealthEvent: &platformconnector.HealthEvent{
+				NodeName:          "node1",
+				RecommendedAction: platformconnector.RecommenedAction_UNKNOWN,
+			},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+				FaultRemediated:        nil,
+			},
+		},
+	}
+	r := newTestReconciler(cfg, false)
+	eventSkipped, nodeRemediatedStatus := r.executeRemediation(ctx, healthEvent)
+	assert.True(t, eventSkipped)
+	assert.False(t, nodeRemediatedStatus)
+}
+
+func TestExecuteRemediationWithSuccess(t *testing.T) {
+	ctx := context.Background()
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+			return true
+		},
+	}
+	count := 0
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediatingLabelValue, newStateLabelValue)
+				return true, nil
+			case 2:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediationSucceededLabelValue, newStateLabelValue)
+				return true, nil
+			}
+			return true, nil
+		},
+	}
+	cfg := ReconcilerConfig{
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
+	}
+	healthEvent := HealthEventDoc{
+		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+			CreatedAt: time.Now(),
+			HealthEvent: &platformconnector.HealthEvent{
+				NodeName:          "node1",
+				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+				FaultRemediated:        nil,
+			},
+		},
+	}
+	r := newTestReconciler(cfg, false)
+	eventSkipped, nodeRemediatedStatus := r.executeRemediation(ctx, healthEvent)
+	assert.False(t, eventSkipped)
+	assert.True(t, nodeRemediatedStatus)
+}
+
+func TestExecuteRemediationWithFailure(t *testing.T) {
+	ctx := context.Background()
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+			return false
+		},
+	}
+	count := 0
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			count++
+			switch count {
+			case 1:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediatingLabelValue, newStateLabelValue)
+				return true, nil
+			case 2:
+				assert.Equal(t, "node1", nodeName)
+				assert.Equal(t, statemanager.RemediationFailedLabelValue, newStateLabelValue)
+				return true, nil
+			}
+			return true, nil
+		},
+	}
+	cfg := ReconcilerConfig{
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
+	}
+	healthEvent := HealthEventDoc{
+		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+			CreatedAt: time.Now(),
+			HealthEvent: &platformconnector.HealthEvent{
+				NodeName:          "node1",
+				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+				FaultRemediated:        nil,
+			},
+		},
+	}
+	r := newTestReconciler(cfg, false)
+	eventSkipped, nodeRemediatedStatus := r.executeRemediation(ctx, healthEvent)
+	assert.False(t, eventSkipped)
+	assert.False(t, nodeRemediatedStatus)
+}
+
+func TestExecuteRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
+	ctx := context.Background()
+	k8sClient := &MockK8sClient{
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+			return true
+		},
+	}
+	stateManager := &statemanager.MockStateManager{
+		UpdateNVSentinelStateNodeLabelFn: func(ctx context.Context, nodeName string,
+			newStateLabelValue statemanager.NVSentinelStateLabelValue, removeStateLabel bool) (bool, error) {
+			return true, fmt.Errorf("got an error calling UpdateNVSentinelStateNodeLabel")
+		},
+	}
+	cfg := ReconcilerConfig{
+		K8sClient:    k8sClient,
+		StateManager: stateManager,
+	}
+	healthEvent := HealthEventDoc{
+		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+			CreatedAt: time.Now(),
+			HealthEvent: &platformconnector.HealthEvent{
+				NodeName:          "node1",
+				RecommendedAction: platformconnector.RecommenedAction_NODE_REBOOT,
+			},
+			HealthEventStatus: storeconnector.HealthEventStatus{
+				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
+				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+				FaultRemediated:        nil,
+			},
+		},
+	}
+	r := newTestReconciler(cfg, false)
+	eventSkipped, nodeRemediatedStatus := r.executeRemediation(ctx, healthEvent)
+	assert.False(t, eventSkipped)
+	assert.True(t, nodeRemediatedStatus)
+}
+
 func TestShouldSkipEvent(t *testing.T) {
-	r := NewReconciler(ReconcilerConfig{}, false)
+	r := newTestReconciler(ReconcilerConfig{}, false)
 
 	tests := []struct {
 		name              string
@@ -223,7 +418,7 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 		K8sClient:          k8sClient,
 		EnableLogCollector: true,
 	}
-	r := NewReconciler(cfg, false)
+	r := newTestReconciler(cfg, false)
 
 	he := &platformconnector.HealthEvent{NodeName: "test-node-none", RecommendedAction: platformconnector.RecommenedAction_NONE}
 	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
@@ -302,7 +497,7 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 				K8sClient:          k8sClient,
 				EnableLogCollector: true,
 			}
-			r := NewReconciler(cfg, false)
+			r := newTestReconciler(cfg, false)
 
 			result := r.Config.K8sClient.RunLogCollectorJob(ctx, tt.nodeName)
 			if tt.expectedResult {
@@ -333,7 +528,7 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 		K8sClient:          k8sClient,
 		EnableLogCollector: true,
 	}
-	r := NewReconciler(cfg, true) // Enable dry run
+	r := newTestReconciler(cfg, true) // Enable dry run
 
 	result := r.Config.K8sClient.RunLogCollectorJob(ctx, "test-node-dry-run")
 	assert.NoError(t, result, "Dry run should return no error")
@@ -358,7 +553,7 @@ func TestLogCollectorDisabled(t *testing.T) {
 		K8sClient:          k8sClient,
 		EnableLogCollector: false, // Disabled
 	}
-	r := NewReconciler(cfg, false)
+	r := newTestReconciler(cfg, false)
 
 	he := &platformconnector.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: platformconnector.RecommenedAction_NONE}
 	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
@@ -422,7 +617,7 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 				},
 			}
 
-			r := NewReconciler(ReconcilerConfig{}, false)
+			r := newTestReconciler(ReconcilerConfig{}, false)
 			err := r.updateNodeRemediatedStatus(ctx, mockColl, tt.event, tt.nodeRemediated)
 
 			if tt.expectError {

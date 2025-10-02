@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/reconciler"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -222,7 +223,7 @@ func main() {
 	pipeline := getMongoPipeline()
 
 	// Initialize k8s client
-	k8sClient, err := reconciler.NewK8sClient(cfg.kubeconfigPath, cfg.dryRun, reconciler.TemplateData{
+	k8sClient, clientSet, err := reconciler.NewK8sClient(cfg.kubeconfigPath, cfg.dryRun, reconciler.TemplateData{
 		Namespace:         envCfg.namespace,
 		Version:           envCfg.version,
 		ApiGroup:          envCfg.apiGroup,
@@ -241,6 +242,7 @@ func main() {
 		TokenConfig:        *tokenConfig,
 		MongoPipeline:      pipeline,
 		K8sClient:          k8sClient,
+		StateManager:       statemanager.NewStateManager(clientSet),
 		EnableLogCollector: envCfg.enableLogCollector,
 	}
 

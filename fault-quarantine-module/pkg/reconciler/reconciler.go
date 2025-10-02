@@ -32,6 +32,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -673,6 +674,7 @@ func (r *Reconciler) handleEvent(
 		labelsMap.LoadOrStore(cordonedByLabelKey, common.ServiceName)
 
 		labelsMap.Store(cordonedTimestampLabelKey, time.Now().UTC().Format("2006-01-02T15-04-05Z"))
+		labelsMap.Store(string(statemanager.NVSentinelStateLabelKey), string(statemanager.QuarantinedLabelValue))
 	}
 
 	isNodeQuarantined := (len(taintsToBeApplied) > 0 || isCordoned.Load())
@@ -821,7 +823,7 @@ func (r *Reconciler) handleQuarantinedNode(
 				taintsToBeRemoved,
 				isUnCordon,
 				annotationsToBeRemoved,
-				[]string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey}, labelsMap,
+				[]string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey, statemanager.NVSentinelStateLabelKey}, labelsMap,
 			); err != nil {
 				klog.Errorf("error while updating node for event: %+v: %+v", event, err)
 				processingErrors.WithLabelValues("untaint_and_uncordon_error").Inc()

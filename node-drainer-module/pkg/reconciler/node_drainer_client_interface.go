@@ -27,7 +27,6 @@ type NodeDrainerClientInterface interface {
 	EvictAllPodsInImmediateMode(ctx context.Context, namespace string, nodename string, timout time.Duration) error
 	CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 		namespaces []string, nodeName string, timeout time.Duration) bool
-	UpdateNodeLabel(ctx context.Context, nodeName string, isDraining bool) error
 	DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		namespaces []string, timeout int, event *storeconnector.HealthEventWithStatus) error
 }

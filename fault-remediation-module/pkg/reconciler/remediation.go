@@ -68,35 +68,36 @@ type TemplateData struct {
 }
 
 // nolint: cyclop // todo
-func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient, error) {
+func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient,
+	kubernetes.Interface, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		if kubeconfig == "" {
-			return nil, fmt.Errorf("kubeconfig is not set")
+			return nil, nil, fmt.Errorf("kubeconfig is not set")
 		}
 
 		// build config from kubeconfig file
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
+			return nil, nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
 		}
 	}
 
 	clientset, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("error creating clientset: %w", err)
+		return nil, nil, fmt.Errorf("error creating clientset: %w", err)
 	}
 
 	// Create typed Kubernetes client for Jobs
 	kubeClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("error creating kubernetes client: %w", err)
+		return nil, nil, fmt.Errorf("error creating kubernetes client: %w", err)
 	}
 
 	// Create discovery client for RESTMapper
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("error creating discovery client: %w", err)
+		return nil, nil, fmt.Errorf("error creating discovery client: %w", err)
 	}
 
 	// Create RESTMapper for GVK to GVR conversion
@@ -108,20 +109,20 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 
 	// Check if the template file exists
 	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+		return nil, nil, fmt.Errorf("template file does not exist: %s", templatePath)
 	}
 
 	// Read and parse the template
 	templateContent, err := os.ReadFile(templatePath)
 	if err != nil {
-		return nil, fmt.Errorf("error reading template file: %w", err)
+		return nil, nil, fmt.Errorf("error reading template file: %w", err)
 	}
 
 	tmpl := template.New("maintenance")
 
 	tmpl, err = tmpl.Parse(string(templateContent))
 	if err != nil {
-		return nil, fmt.Errorf("error parsing template: %w", err)
+		return nil, nil, fmt.Errorf("error parsing template: %w", err)
 	}
 
 	client := &FaultRemediationClient{
@@ -138,7 +139,7 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 		client.dryRunMode = []string{}
 	}
 
-	return client, nil
+	return client, kubeClient, nil
 }
 
 func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) bool {

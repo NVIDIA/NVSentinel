@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnectorprotos "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -186,7 +188,7 @@ func TestHandleEvent(t *testing.T) {
 				if _, ok := annotations[common.QuarantineHealthEventAnnotationKey]; !ok {
 					t.Errorf("Expected quarantineHealthEvent annotation to be set")
 				}
-				if len(labelsMap) != 3 {
+				if len(labelsMap) != 4 {
 					t.Errorf("Expected cordon labels to be applied on node %s", nodeName)
 				}
 				return nil
@@ -626,6 +628,7 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 	ctx := context.Background()
 
 	taintAndCordonCalled := false
+	var addedLabels map[string]string
 	k8sMock := &mockK8sClient{
 		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
 			// No quarantine annotations exist
@@ -633,6 +636,7 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 		},
 		taintAndCordonNodeFn: func(ctx context.Context, nodeName string, taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error {
 			taintAndCordonCalled = true
+			addedLabels = labelMap
 			return nil
 		},
 	}
@@ -685,6 +689,20 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 
 	if !taintAndCordonCalled {
 		t.Error("Expected TaintAndCordonNode to be called for unhealthy event")
+	}
+	normalizedTime := time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	expectedLabels := map[string]string{
+		cordonedByLabelKey:                   common.ServiceName,
+		cordonedReasonLabelKey:               "test-eval",
+		cordonedTimestampLabelKey:            normalizedTime,
+		statemanager.NVSentinelStateLabelKey: string(statemanager.QuarantinedLabelValue),
+	}
+	if _, ok := addedLabels[cordonedTimestampLabelKey]; !ok {
+		t.Errorf("Missing expected label %s", cordonedTimestampLabelKey)
+	}
+	addedLabels[cordonedTimestampLabelKey] = normalizedTime
+	if !reflect.DeepEqual(addedLabels, expectedLabels) {
+		t.Errorf("Unexpected set of labels added in TaintAndCordonNodeAndSetAnnotations: %v compared to %v", addedLabels, expectedLabels)
 	}
 }
 
@@ -1030,7 +1048,7 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 	}
 
 	unquarantineCalled := false
-
+	var removedLabels []string
 	k8sMock := &mockK8sClient{
 		getNodeAnnotationsFn: func(ctx context.Context, nodeName string) (map[string]string, error) {
 			return annotationMap, nil
@@ -1040,6 +1058,7 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 			if !isUncordon {
 				t.Errorf("Expected isUncordon to be true when un-quarantining the node")
 			}
+			removedLabels = labelsToRemove
 			return nil
 		},
 		// No new tainting expected in this path
@@ -1083,6 +1102,15 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 		t.Errorf("Expected UnTaintAndUnCordonNodeAndRemoveAnnotations to be invoked for healthy event")
 	}
 
+	expectedRemovedLabels := []string{
+		cordonedByLabelKey,
+		cordonedReasonLabelKey,
+		cordonedTimestampLabelKey,
+		statemanager.NVSentinelStateLabelKey,
+	}
+	if !reflect.DeepEqual(removedLabels, expectedRemovedLabels) {
+		t.Errorf("Unexpected set of labels removed from UnTaintAndUnCordonNodeAndRemoveAnnotations: %v", removedLabels)
+	}
 	// The cache must reflect that the node is no longer quarantined
 	quarantinedNodes := r.nodeInfo.GetQuarantinedNodesCopy()
 	if quarantinedNodes["node1"] {

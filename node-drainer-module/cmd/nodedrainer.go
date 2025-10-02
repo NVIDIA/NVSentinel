@@ -27,6 +27,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/node-drainer-module/pkg/reconciler"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -156,7 +157,7 @@ func main() {
 	}
 
 	// Initialize the k8s client with pod timeout configuration
-	k8sClient, err := reconciler.NewNodeDrainerClient(*kubeconfigPath, *dryRun, &tomlCfg.NotReadyTimeoutMinutes)
+	k8sClient, clientSet, err := reconciler.NewNodeDrainerClient(*kubeconfigPath, *dryRun, &tomlCfg.NotReadyTimeoutMinutes)
 	if err != nil {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}
@@ -169,6 +170,7 @@ func main() {
 		TokenConfig:   tokenConfig,
 		MongoPipeline: pipeline,
 		K8sClient:     k8sClient,
+		StateManager:  statemanager.NewStateManager(clientSet),
 	}
 
 	reconciler := reconciler.NewReconciler(reconcilerCfg, *dryRun)
