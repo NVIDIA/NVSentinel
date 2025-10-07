@@ -113,7 +113,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         health_events = []
         check_name = "GpuDcgmConnectivityFailure"
 
-        key = self._build_cache_key(check_name, self._component_class, "")
+        key = self._build_cache_key(check_name, "DCGM", "ALL")
         if key not in self.entity_cache or not self.entity_cache[key].isHealthy:
             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
             log.info(f"Updated cache for key {key} with connectivity failure")
@@ -440,10 +440,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             log.error("DCGM connectivity failure detected, sending GpuDcgmConnectivityFailure health event")
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
-
+            message = "Failed to connect to DCGM for health check"
             health_events = []
             check_name = "GpuDcgmConnectivityFailure"
-            key = self._build_cache_key(check_name, self._component_class, "")
+            key = self._build_cache_key(check_name, "DCGM", "ALL")
             if key not in self.entity_cache or self.entity_cache[key].isHealthy:
                 self.entity_cache[key] = CachedEntityState(isFatal=True, isHealthy=False)
                 log.info(f"Updated cache for key {key} with connectivity failure")
@@ -458,7 +458,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     isHealthy=False,
                     errorCode=["DCGM_CONNECTIVITY_ERROR"],
                     entitiesImpacted=[],
-                    message="Failed to connect to DCGM for health check",
+                    message=message,
                     recommendedAction=platformconnector_pb2.REPORT_ISSUE,
                     nodeName=self._node_name,
                     metadata={"SerialNumber": ""},

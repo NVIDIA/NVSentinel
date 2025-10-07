@@ -176,14 +176,36 @@ class DCGMWatcher:
             log.debug(f"initial health status is {health_details}")
 
             health_status = self._get_health_status_dict()
+            # Temporary dict to accumulate multiple failures per GPU
+            gpu_failures_accumulator = {}
+
             for i in range(health_details.incidentCount):
                 incident = health_details.incidents[i]
-                health_status[self._health_watches[incident.system]].status = types.HealthStatus(int(incident.health))
+                watch_name = self._health_watches[incident.system]
+                health_status[watch_name].status = types.HealthStatus(int(incident.health))
                 gpu_id = incident.entityInfo.entityId
-                health_status[self._health_watches[incident.system]].entity_failures[gpu_id] = types.ErrorDetails(
-                    message=incident.error.msg, code=self._error_codes[incident.error.code]
+                error_code = self._error_codes[incident.error.code]
+                error_msg = incident.error.msg
+
+                log.debug(f"incident.error.code is {incident.error.code} and error msg is {error_msg}")
+
+                # Create a key for accumulating failures per GPU per watch
+                accumulator_key = (watch_name, gpu_id)
+
+                if accumulator_key not in gpu_failures_accumulator:
+                    gpu_failures_accumulator[accumulator_key] = {"code": error_code, "messages": []}
+
+                # Accumulate all error messages for this GPU and watch type
+                gpu_failures_accumulator[accumulator_key]["messages"].append(error_msg)
+
+            # Now consolidate accumulated failures into health_status
+            for (watch_name, gpu_id), failure_data in gpu_failures_accumulator.items():
+                # Combine all messages with semicolon separator
+                combined_message = "; ".join(failure_data["messages"])
+                health_status[watch_name].entity_failures[gpu_id] = types.ErrorDetails(
+                    message=combined_message, code=failure_data["code"]
                 )
-                log.debug(f"incident.error.code is {incident.error.code} and error msg is {incident.error.msg}")
+
             log.debug(f"filled in health details is {health_status}")
             return health_status, True
         except dcgm_structs.DCGMError_Timeout as e:

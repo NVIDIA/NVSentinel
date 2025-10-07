@@ -428,3 +428,40 @@ func (c *FaultQuarantineClient) GetNodesWithAnnotation(ctx context.Context, anno
 
 	return nodesWithAnnotation, nil
 }
+
+// UpdateNodeAnnotations updates only the specified annotations on a node without affecting other properties
+func (c *FaultQuarantineClient) UpdateNodeAnnotations(
+	ctx context.Context,
+	nodename string,
+	annotations map[string]string,
+) error {
+	return retry.OnError(customBackoff, errors.IsConflict, func() error {
+		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		// Update annotations
+		if node.Annotations == nil {
+			node.Annotations = make(map[string]string)
+		}
+
+		for key, value := range annotations {
+			node.Annotations[key] = value
+		}
+
+		updateOptions := metav1.UpdateOptions{}
+		if c.dryRunMode {
+			updateOptions.DryRun = []string{metav1.DryRunAll}
+		}
+
+		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, updateOptions)
+		if err != nil {
+			return err
+		}
+
+		klog.Infof("Successfully updated annotations for node %s", nodename)
+
+		return nil
+	})
+}

@@ -28,6 +28,7 @@ import (
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/common"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/config"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/evaluator"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/informer"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	storeconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/connectors/store"
@@ -686,9 +687,19 @@ func (r *Reconciler) handleEvent(
 			!event.HealthEvent.QuarantineOverrides.Force) {
 			r.cb.AddCordonEvent(event.HealthEvent.NodeName)
 		}
-		eventJsonStr, err := json.Marshal(event.HealthEvent)
+
+		// Create health events structure for the new quarantine with sanitized health event
+		healthEvents := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+		updated := healthEvents.AddOrUpdateEvent(event.HealthEvent)
+
+		if !updated {
+			klog.Infof("Health event %+v already exists for node %s, skipping quarantine", event.HealthEvent, event.HealthEvent.NodeName)
+			return nil, common.RuleEvaluationNotApplicable
+		}
+
+		eventJsonStr, err := json.Marshal(healthEvents)
 		if err != nil {
-			klog.Errorf("error while marshalling event %+v: %+v", event.HealthEvent, err)
+			klog.Fatalf("error while marshalling health events: %+v", err)
 		} else {
 			annotationsMap[common.QuarantineHealthEventAnnotationKey] = string(eventJsonStr)
 		}
@@ -753,107 +764,271 @@ func (r *Reconciler) handleEvent(
 	return &status, common.RuleEvaluationNotApplicable
 }
 
-// nolint: cyclop //fix this as part of NGCC-21793
 func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
 	event *platformconnectorprotos.HealthEvent,
 ) bool {
-	// Get quarantine annotations from cache or API fallback
+	// Get and validate health events quarantine annotations
+	healthEventsAnnotationMap, annotations, err := r.getAndValidateHealthEventsQuarantineAnnotations(ctx, event)
+	if err != nil {
+		processingErrors.WithLabelValues("get_node_annotations_error").Inc()
+		// Error cases return true to keep node quarantined, or false if no annotation exists
+		return err.Error() != "no quarantine annotation"
+	}
+
+	// Check if any entities from this event are already tracked
+	_, hasExistingCheck := healthEventsAnnotationMap.GetEvent(event)
+
+	if !event.IsHealthy {
+		// Handle unhealthy event - add new entity failures
+		added := healthEventsAnnotationMap.AddOrUpdateEvent(event)
+
+		if added {
+			klog.Infof("Added entity failures for check %s on node %s (total tracked entities: %d)",
+				event.CheckName, event.NodeName, healthEventsAnnotationMap.Count())
+
+			// Update the annotation with the new entity failures
+			if err := r.updateHealthEventsQuarantineAnnotation(ctx, event.NodeName, healthEventsAnnotationMap); err != nil {
+				klog.Errorf("Failed to update health events annotation: %v", err)
+				return true
+			}
+		} else {
+			klog.V(2).Infof("All entities already tracked for check %s on node %s",
+				event.CheckName, event.NodeName)
+		}
+
+		// Node remains quarantined
+		return true
+	}
+
+	// Handle healthy event
+	if !hasExistingCheck {
+		klog.V(2).Infof("Received healthy event for untracked check %s on node %s (other checks may still be failing)",
+			event.CheckName, event.NodeName)
+		return true
+	}
+
+	// Remove the specific entities that have recovered
+	// With entity-level tracking, each entity is handled independently
+	removedCount := healthEventsAnnotationMap.RemoveEvent(event)
+
+	if removedCount > 0 {
+		klog.Infof("Removed %d recovered entities for check %s on node %s (remaining entities: %d)",
+			removedCount, event.CheckName, event.NodeName, healthEventsAnnotationMap.Count())
+	} else {
+		klog.V(2).Infof("No matching entities to remove for check %s on node %s",
+			event.CheckName, event.NodeName)
+	}
+
+	// Check if all checks have recovered
+	if healthEventsAnnotationMap.IsEmpty() {
+		// All checks recovered - uncordon the node
+		klog.Infof("All health checks recovered for node %s, proceeding with uncordon",
+			event.NodeName)
+		return r.performUncordon(ctx, event, annotations)
+	}
+
+	// Update the annotation with the modified health events structure
+	if err := r.updateHealthEventsQuarantineAnnotation(ctx, event.NodeName, healthEventsAnnotationMap); err != nil {
+		klog.Errorf("Failed to update health events annotation after recovery: %v", err)
+		return true
+	}
+
+	// Node remains quarantined as there are still failing checks
+	klog.Infof("Node %s remains quarantined with %d failing checks: %v",
+		event.NodeName, healthEventsAnnotationMap.Count(), healthEventsAnnotationMap.GetAllCheckNames())
+
+	return true
+}
+
+func (r *Reconciler) getAndValidateHealthEventsQuarantineAnnotations(
+	ctx context.Context,
+	event *platformconnectorprotos.HealthEvent,
+) (*healthEventsAnnotation.HealthEventsAnnotationMap, map[string]string, error) {
 	annotations, err := r.getNodeQuarantineAnnotations(ctx, event.NodeName)
 	if err != nil {
 		klog.Errorf("error while getting node annotations for event: %+v: %+v", event, err)
 		processingErrors.WithLabelValues("get_node_annotations_error").Inc()
 
+		return nil, nil, fmt.Errorf("failed to get annotations")
+	}
+
+	quarantineAnnotationStr, exists := annotations[common.QuarantineHealthEventAnnotationKey]
+	if !exists || quarantineAnnotationStr == "" {
+		klog.Infof("No quarantine annotation found for node %s", event.NodeName)
+		return nil, nil, fmt.Errorf("no quarantine annotation")
+	}
+
+	// Try to unmarshal as HealthEventsAnnotationMap first
+	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
+
+	err = json.Unmarshal([]byte(quarantineAnnotationStr), &healthEventsMap)
+	if err != nil {
+		// Fallback: try to unmarshal as single HealthEvent for backward compatibility
+		var singleHealthEvent platformconnectorprotos.HealthEvent
+
+		if err2 := json.Unmarshal([]byte(quarantineAnnotationStr), &singleHealthEvent); err2 == nil {
+			// Convert single event to health events structure
+			klog.Infof("Converting single health event to health events structure for node %s", event.NodeName)
+
+			healthEventsMap = *healthEventsAnnotation.NewHealthEventsAnnotationMap()
+			healthEventsMap.AddOrUpdateEvent(&singleHealthEvent)
+
+			// Update the annotation to new format for consistency
+			if err := r.updateHealthEventsQuarantineAnnotation(ctx, event.NodeName, &healthEventsMap); err != nil {
+				klog.Warningf("Failed to update annotation to new format: %v", err)
+			}
+		} else {
+			klog.Errorf("error unmarshalling annotation for node %s: %+v", event.NodeName, err)
+			return nil, nil, fmt.Errorf("failed to unmarshal annotation")
+		}
+	}
+
+	return &healthEventsMap, annotations, nil
+}
+
+func (r *Reconciler) updateHealthEventsQuarantineAnnotation(
+	ctx context.Context,
+	nodeName string,
+	healthEvents *healthEventsAnnotation.HealthEventsAnnotationMap,
+) error {
+	annotationBytes, err := json.Marshal(healthEvents)
+	if err != nil {
+		klog.Errorf("error marshalling health events annotation: %+v", err)
+		return fmt.Errorf("failed to marshal health events: %w", err)
+	}
+
+	annotationsToUpdate := map[string]string{
+		common.QuarantineHealthEventAnnotationKey: string(annotationBytes),
+	}
+
+	if err := r.config.K8sClient.UpdateNodeAnnotations(ctx, nodeName, annotationsToUpdate); err != nil {
+		klog.Errorf("error updating node annotations for multi-event: %+v", err)
+		return err
+	}
+
+	klog.Infof("Updated health events quarantine annotation for node %s - %d checks tracked",
+		nodeName, healthEvents.Count())
+
+	// Update cache
+	r.updateCacheWithQuarantineAnnotations(nodeName, annotationsToUpdate)
+
+	return nil
+}
+
+func (r *Reconciler) performUncordon(
+	ctx context.Context,
+	event *platformconnectorprotos.HealthEvent,
+	annotations map[string]string,
+) bool {
+	klog.Infof("All entities recovered for check %s on node %s - proceeding with uncordon",
+		event.CheckName, event.NodeName)
+
+	// Prepare uncordon parameters
+	taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, err := r.prepareUncordonParams(
+		event, annotations)
+	if err != nil {
+		klog.Errorf("error preparing uncordon params for event: %+v: %+v", event, err)
 		return true
 	}
 
-	labelsMap := map[string]string{}
-	quarantineAnnotationEvent, exists := annotations[common.QuarantineHealthEventAnnotationKey]
-
-	if !exists || quarantineAnnotationEvent == "" {
-		klog.Infof("No quarantine annotation found for node %s", event.NodeName)
+	// Nothing to uncordon
+	if len(taintsToBeRemoved) == 0 && !isUnCordon {
 		return false
 	}
 
-	//nolint //ignore complexity of nested block //fix this as part of NGCC-21793
-	if compareHealthEventWithAnnotationEventToCheckUnQuarantine(event, quarantineAnnotationEvent) {
-		// Check if we need to remove taints and remove them
-		quarantineAnnotationEventTaintsAppliedStr, taintsExists :=
-			annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+	// Add the main quarantine annotation to removal list
+	annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAnnotationKey)
 
-		// Check if we need to uncordon
-		quarantineAnnotationEventIsCordonStr, cordonExists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
-
-		var taintsToBeRemoved []config.Taint
-
-		annotationsToBeRemoved := []string{}
-
-		isUnCordon := false
-
-		if taintsExists && quarantineAnnotationEventTaintsAppliedStr != "" {
-			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
-
-			err = json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &taintsToBeRemoved)
-			if err != nil {
-				klog.Errorf("error while unmarshalling taints annotation %+v for event: %+v: %+v",
-					quarantineAnnotationEventTaintsAppliedStr, event, err)
-
-				// Node remains quarantined due to unmarshalling error
-				return true
-			}
-		}
-
-		if cordonExists && quarantineAnnotationEventIsCordonStr == common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
-			isUnCordon = true
-			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventIsCordonedAnnotationKey)
-			labelsMap[uncordonedByLabelKey] = common.ServiceName
-			labelsMap[uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
-		}
-
-		if len(taintsToBeRemoved) > 0 || isUnCordon {
-			annotationsToBeRemoved = append(annotationsToBeRemoved, common.QuarantineHealthEventAnnotationKey)
-
-			if !r.config.CircuitBreakerEnabled {
-				klog.Infof("Circuit breaker is disabled, proceeding with unquarantine action for node %s", event.NodeName)
-			}
-
-			if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
-				ctx,
-				event.NodeName,
-				taintsToBeRemoved,
-				isUnCordon,
-				annotationsToBeRemoved,
-				[]string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey, statemanager.NVSentinelStateLabelKey}, labelsMap,
-			); err != nil {
-				klog.Errorf("error while updating node for event: %+v: %+v", event, err)
-				processingErrors.WithLabelValues("untaint_and_uncordon_error").Inc()
-
-				return true
-			}
-
-			totalNodesUnquarantined.WithLabelValues(event.NodeName).Inc()
-			currentQuarantinedNodes.WithLabelValues(event.NodeName).Dec()
-			klog.Infof("Decremented currentQuarantinedNodes metric for unquarantined node: %s", event.NodeName)
-
-			// Update cache by removing the annotations that were just removed from the node
-			// This ensures subsequent events in the same batch see the updated annotations
-			r.updateCacheWithUnquarantineAnnotations(event.NodeName, annotationsToBeRemoved)
-
-			// Update the quarantinedNodesMap to reflect the node is no longer quarantined
-			r.nodeInfo.MarkNodeQuarantineStatusCache(event.NodeName, false, false)
-			for _, taint := range taintsToBeRemoved {
-				taintsRemoved.WithLabelValues(taint.Key, taint.Effect).Inc()
-			}
-
-			if isUnCordon {
-				cordonsRemoved.Inc()
-			}
-		}
-		return false
+	if !r.config.CircuitBreakerEnabled {
+		klog.Infof("Circuit breaker is disabled, proceeding with unquarantine action for node %s", event.NodeName)
 	}
 
-	// If quarantineAnnotationEvent is present but doesn't match the criteria to unquarantine
-	return true
+	if err := r.config.K8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
+		ctx,
+		event.NodeName,
+		taintsToBeRemoved,
+		isUnCordon,
+		annotationsToBeRemoved,
+		[]string{cordonedByLabelKey, cordonedReasonLabelKey, cordonedTimestampLabelKey, statemanager.NVSentinelStateLabelKey},
+		labelsMap,
+	); err != nil {
+		klog.Errorf("error while updating node for event: %+v: %+v", event, err)
+		processingErrors.WithLabelValues("untaint_and_uncordon_error").Inc()
+
+		return true
+	}
+
+	r.updateUncordonMetricsAndCache(event.NodeName, taintsToBeRemoved, isUnCordon, annotationsToBeRemoved)
+
+	return false
+}
+
+// prepareUncordonParams prepares parameters for uncordoning a node
+func (r *Reconciler) prepareUncordonParams(
+	event *platformconnectorprotos.HealthEvent,
+	annotations map[string]string,
+) ([]config.Taint, []string, bool, map[string]string, error) {
+	var (
+		annotationsToBeRemoved = []string{}
+		taintsToBeRemoved      []config.Taint
+		isUnCordon             = false
+		labelsMap              = map[string]string{}
+	)
+
+	// Check taints
+	quarantineAnnotationEventTaintsAppliedStr, taintsExists :=
+		annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+	if taintsExists && quarantineAnnotationEventTaintsAppliedStr != "" {
+		annotationsToBeRemoved = append(annotationsToBeRemoved,
+			common.QuarantineHealthEventAppliedTaintsAnnotationKey)
+
+		err := json.Unmarshal([]byte(quarantineAnnotationEventTaintsAppliedStr), &taintsToBeRemoved)
+		if err != nil {
+			klog.Errorf("error while unmarshalling taints annotation %+v for event: %+v: %+v",
+				quarantineAnnotationEventTaintsAppliedStr, event, err)
+			return nil, nil, false, nil, err
+		}
+	}
+
+	// Check cordon status
+	quarantineAnnotationEventIsCordonStr, cordonExists :=
+		annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+	if cordonExists && quarantineAnnotationEventIsCordonStr == common.QuarantineHealthEventIsCordonedAnnotationValueTrue {
+		isUnCordon = true
+
+		annotationsToBeRemoved = append(annotationsToBeRemoved,
+			common.QuarantineHealthEventIsCordonedAnnotationKey)
+		labelsMap[uncordonedByLabelKey] = common.ServiceName
+		labelsMap[uncordonedTimestampLabelKey] = time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	}
+
+	return taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, nil
+}
+
+// updateUncordonMetricsAndCache updates metrics and cache after uncordoning
+func (r *Reconciler) updateUncordonMetricsAndCache(
+	nodeName string,
+	taintsToBeRemoved []config.Taint,
+	isUnCordon bool,
+	annotationsToBeRemoved []string,
+) {
+	totalNodesUnquarantined.WithLabelValues(nodeName).Inc()
+	currentQuarantinedNodes.WithLabelValues(nodeName).Dec()
+	klog.Infof("Decremented currentQuarantinedNodes metric for unquarantined node: %s", nodeName)
+
+	// Update cache
+	r.updateCacheWithUnquarantineAnnotations(nodeName, annotationsToBeRemoved)
+	r.nodeInfo.MarkNodeQuarantineStatusCache(nodeName, false, false)
+
+	// Update taint metrics
+	for _, taint := range taintsToBeRemoved {
+		taintsRemoved.WithLabelValues(taint.Key, taint.Effect).Inc()
+	}
+
+	if isUnCordon {
+		cordonsRemoved.Inc()
+	}
 }
 
 func (r *Reconciler) updateNodeQuarantineStatus(
@@ -886,64 +1061,6 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 	klog.Infof("Document with _id: %v has been updated with status %s", document["_id"], *nodeQuarantinedStatus)
 
 	return nil
-}
-
-func compareHealthEventWithAnnotationEventToCheckUnQuarantine(
-	event *platformconnectorprotos.HealthEvent,
-	annotationEventStr string,
-) bool {
-	var annotationEvent platformconnectorprotos.HealthEvent
-
-	err := json.Unmarshal([]byte(annotationEventStr), &annotationEvent)
-	if err != nil {
-		klog.Errorf("error while unmarshalling annotation event string %s: %+v", annotationEventStr, err)
-		return false
-	}
-
-	if event.Agent != annotationEvent.Agent ||
-		event.CheckName != annotationEvent.CheckName ||
-		event.ComponentClass != annotationEvent.ComponentClass ||
-		event.NodeName != annotationEvent.NodeName ||
-		!areAnnotationEntitiesSubsetOfEventEntities(event.EntitiesImpacted, annotationEvent.EntitiesImpacted) ||
-		event.Version != annotationEvent.Version {
-		return false
-	}
-
-	return event.IsHealthy
-}
-
-// checks if all Entity objects in annotation event are present in passed event regardless of order
-func areAnnotationEntitiesSubsetOfEventEntities(
-	eventEntities,
-	annotationEventEntities []*platformconnectorprotos.Entity,
-) bool {
-	if len(eventEntities) == 0 {
-		return true
-	}
-
-	type key struct {
-		EntityType  string
-		EntityValue string
-	}
-
-	counts := make(map[key]int)
-
-	for _, entity := range eventEntities {
-		k := key{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
-		counts[k]++
-	}
-
-	for _, entity := range annotationEventEntities {
-		k := key{EntityType: entity.EntityType, EntityValue: entity.EntityValue}
-
-		if counts[k] == 0 {
-			return false
-		}
-
-		counts[k]--
-	}
-
-	return true
 }
 
 func formatCordonOrUncordonReasonValue(input string, length int) string {

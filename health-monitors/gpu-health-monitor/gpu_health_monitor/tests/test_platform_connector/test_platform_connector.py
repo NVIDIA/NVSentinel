@@ -202,7 +202,11 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
-        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
+        dcgm_health_event_key = platform_connector_test._build_cache_key(
+            check_name,
+            "GPU",
+            "0",
+        )
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
@@ -222,19 +226,18 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
-        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
-        before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
-        health_events = healthEventProcessor.health_events
-        assert len(platform_connector_test.entity_cache) == cache_length
-        assert (
-            platform_connector_test.entity_cache[dcgm_health_event_key].isFatal != before_insertion_cache_value.isFatal
+
+        # Verify healthy event was added to cache with correct message format
+        dcgm_health_event_key = platform_connector_test._build_cache_key(
+            check_name,
+            "GPU",
+            "0",
         )
-        assert (
-            platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy
-            != before_insertion_cache_value.isHealthy
-        )
+        assert dcgm_health_event_key in platform_connector_test.entity_cache
+        assert platform_connector_test.entity_cache[dcgm_health_event_key].isFatal == False
+        assert platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy == True
 
         platform_connector_test.xid_event_occurred("0", 64, gpu_serials[0])
         health_events = healthEventProcessor.health_events
@@ -264,6 +267,259 @@ class TestPlatformConnectors(unittest.TestCase):
         assert health_event.errorCode == []
         assert health_event.entitiesImpacted == [platformconnector_pb2.Entity(entityType="GPU", entityValue="0")]
         assert health_event.recommendedAction == platformconnector_pb2.RecommenedAction.NONE
+        server.stop(0)
+
+    def test_health_event_multiple_failures_same_gpu(self):
+        """Test that multiple NvLink failures for the same GPU are properly published to gRPC."""
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_xid_monitoring_enabled=True,
+        )
+
+        gpu_serials = {
+            0: "1650924060039",
+            1: "1650924060040",
+            2: "1650924060041",
+            3: "1650924060042",
+            4: "1650924060043",
+            5: "1650924060044",
+            6: "1650924060045",
+            7: "1650924060046",
+        }
+
+        exit = Event()
+        xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
+        dcgm_errors_info_dict = {}
+        dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "RESET_GPU"
+
+        dcgm_health_conditions_categorization_mapping_config = {}
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+
+        xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            exit,
+            xid_errors_info_dict,
+            xid_error_recommend_action_mapping,
+            dcgm_errors_info_dict,
+            "statefile",
+            dcgm_health_conditions_categorization_mapping_config,
+        )
+
+        # Simulate multiple NvLink failures for GPU 0 (4 links down: 8, 9, 14, 15)
+        # This mimics the aggregated message from dcgm.py after the fix
+        dcgm_health_events = watcher._get_health_status_dict()
+        aggregated_message = (
+            "GPU 0's NvLink link 8 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 9 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 14 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 15 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics."
+        )
+
+        dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message=aggregated_message,
+                )
+            },
+        )
+
+        gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+
+        health_events = healthEventProcessor.health_events
+
+        # Find the NvLink failure event for GPU 0
+        nvlink_failure_event = None
+        for event in health_events:
+            if (
+                event.checkName == "GpuNvlinkWatch"
+                and not event.isHealthy
+                and event.entitiesImpacted[0].entityValue == "0"
+            ):
+                nvlink_failure_event = event
+                break
+
+        # Verify the event was published
+        assert nvlink_failure_event is not None, "NvLink failure event for GPU 0 not found"
+        assert nvlink_failure_event.errorCode[0] == "DCGM_FR_NVLINK_DOWN"
+        assert nvlink_failure_event.isFatal == True
+        assert nvlink_failure_event.isHealthy == False
+        assert nvlink_failure_event.entitiesImpacted[0].entityValue == "0"
+        assert nvlink_failure_event.recommendedAction == platformconnector_pb2.RecommenedAction.COMPONENT_RESET
+        assert nvlink_failure_event.metadata["SerialNumber"] == "1650924060039"
+
+        # Verify all 4 NvLink failures are in the message
+        assert "link 8" in nvlink_failure_event.message, "Link 8 failure missing from message"
+        assert "link 9" in nvlink_failure_event.message, "Link 9 failure missing from message"
+        assert "link 14" in nvlink_failure_event.message, "Link 14 failure missing from message"
+        assert "link 15" in nvlink_failure_event.message, "Link 15 failure missing from message"
+
+        # Verify messages are properly separated
+        assert nvlink_failure_event.message.count(";") == 3, "Expected 3 semicolons separating 4 messages"
+
+        # Verify the complete aggregated message is preserved
+        assert nvlink_failure_event.message == aggregated_message
+
+        server.stop(0)
+
+    def test_health_event_multiple_gpus_multiple_failures_each(self):
+        """Test that multiple NvLink failures across multiple GPUs are properly published to gRPC."""
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_xid_monitoring_enabled=True,
+        )
+
+        gpu_serials = {
+            0: "1650924060039",
+            1: "1650924060040",
+            2: "1650924060041",
+            3: "1650924060042",
+            4: "1650924060043",
+            5: "1650924060044",
+            6: "1650924060045",
+            7: "1650924060046",
+        }
+
+        exit = Event()
+        xid_errors_info_dict: dict[str, platform_connector.XidErrorsMappingDetails] = {}
+        dcgm_errors_info_dict = {}
+        dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "RESET_GPU"
+
+        dcgm_health_conditions_categorization_mapping_config = {}
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+
+        xid_error_recommend_action_mapping = create_recommend_action_mapping_from_xid_error_to_platform_connector()
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            exit,
+            xid_errors_info_dict,
+            xid_error_recommend_action_mapping,
+            dcgm_errors_info_dict,
+            "statefile",
+            dcgm_health_conditions_categorization_mapping_config,
+        )
+
+        # Simulate multiple NvLink failures for GPU 0 and GPU 1
+        dcgm_health_events = watcher._get_health_status_dict()
+
+        gpu0_message = (
+            "GPU 0's NvLink link 8 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 9 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 14 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 15 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics."
+        )
+
+        gpu1_message = (
+            "GPU 1's NvLink link 8 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 1's NvLink link 9 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 1's NvLink link 12 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 1's NvLink link 13 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics."
+        )
+
+        dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message=gpu0_message,
+                ),
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message=gpu1_message,
+                ),
+            },
+        )
+
+        gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+
+        health_events = healthEventProcessor.health_events
+
+        # Find NvLink failure events for both GPUs
+        gpu0_event = None
+        gpu1_event = None
+        for event in health_events:
+            if event.checkName == "GpuNvlinkWatch" and not event.isHealthy:
+                if event.entitiesImpacted[0].entityValue == "0":
+                    gpu0_event = event
+                elif event.entitiesImpacted[0].entityValue == "1":
+                    gpu1_event = event
+
+        # Verify GPU 0 event
+        assert gpu0_event is not None, "NvLink failure event for GPU 0 not found"
+        assert gpu0_event.errorCode[0] == "DCGM_FR_NVLINK_DOWN"
+        assert gpu0_event.isFatal == True
+        assert gpu0_event.isHealthy == False
+        assert gpu0_event.metadata["SerialNumber"] == "1650924060039"
+
+        # Verify all 4 NvLink failures for GPU 0
+        assert "link 8" in gpu0_event.message
+        assert "link 9" in gpu0_event.message
+        assert "link 14" in gpu0_event.message
+        assert "link 15" in gpu0_event.message
+        assert gpu0_event.message.count(";") == 3
+        assert gpu0_event.message == gpu0_message
+
+        # Verify GPU 1 event
+        assert gpu1_event is not None, "NvLink failure event for GPU 1 not found"
+        assert gpu1_event.errorCode[0] == "DCGM_FR_NVLINK_DOWN"
+        assert gpu1_event.isFatal == True
+        assert gpu1_event.isHealthy == False
+        assert gpu1_event.metadata["SerialNumber"] == "1650924060040"
+
+        # Verify all 4 NvLink failures for GPU 1
+        assert "link 8" in gpu1_event.message
+        assert "link 9" in gpu1_event.message
+        assert "link 12" in gpu1_event.message
+        assert "link 13" in gpu1_event.message
+        assert gpu1_event.message.count(";") == 3
+        assert gpu1_event.message == gpu1_message
+
         server.stop(0)
 
     def test_dcgm_connectivity_failed(self):

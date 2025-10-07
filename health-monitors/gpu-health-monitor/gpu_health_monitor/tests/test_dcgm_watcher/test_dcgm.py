@@ -229,6 +229,126 @@ class TestDCGMHealthChecks:
         assert response == expected_response
         assert connectivity_success == True
 
+    def _get_nvlink_incident(self, group_id, entity_id, link_id):
+        """Helper to create NvLink down incident for testing."""
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_NVLINK
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = f"GPU {entity_id}'s NvLink link {link_id} is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics."
+        incident.error.code = dcgm_errors.DCGM_FR_NVLINK_DOWN
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = group_id
+        incident.entityInfo.entityId = entity_id
+        return incident
+
+    def test_perform_health_check_multiple_failures_same_gpu(self):
+        """Test that multiple failures for the same GPU are aggregated into a single error message."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_xid_monitoring_enabled=True,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        mock_response.incidentCount = 4
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+
+        # Simulate 4 NvLink failures for GPU 0 (links 8, 9, 14, 15)
+        mock_response.incidents[0] = self._get_nvlink_incident(0, 0, 8)
+        mock_response.incidents[1] = self._get_nvlink_incident(0, 0, 9)
+        mock_response.incidents[2] = self._get_nvlink_incident(0, 0, 14)
+        mock_response.incidents[3] = self._get_nvlink_incident(0, 0, 15)
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+        expected_response = watcher._get_health_status_dict()
+
+        # Expected: All 4 NvLink failures should be aggregated into a single message
+        expected_message = (
+            "GPU 0's NvLink link 8 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 9 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 14 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics.; "
+            "GPU 0's NvLink link 15 is currently down Check DCGM and system logs for errors. Reset GPU. Restart DCGM. Rerun diagnostics."
+        )
+
+        expected_response["DCGM_HEALTH_WATCH_NVLINK"] = dcgm.types.HealthDetails(
+            status=dcgm.types.HealthStatus.FAIL,
+            entity_failures={
+                0: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message=expected_message,
+                )
+            },
+        )
+
+        assert response == expected_response
+        assert connectivity_success == True
+
+        # Verify that all 4 failures are captured in the message
+        assert "link 8" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        assert "link 9" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        assert "link 14" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        assert "link 15" in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+
+        # Verify messages are separated by semicolons
+        assert response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message.count(";") == 3
+
+    def test_perform_health_check_multiple_gpus_multiple_failures_each(self):
+        """Test that multiple failures across multiple GPUs are properly handled."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+            dcgm_xid_monitoring_enabled=True,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        mock_response.incidentCount = 8
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+
+        # Simulate 4 NvLink failures for GPU 0 and 4 for GPU 1
+        mock_response.incidents[0] = self._get_nvlink_incident(0, 0, 8)
+        mock_response.incidents[1] = self._get_nvlink_incident(0, 0, 9)
+        mock_response.incidents[2] = self._get_nvlink_incident(0, 0, 14)
+        mock_response.incidents[3] = self._get_nvlink_incident(0, 0, 15)
+        mock_response.incidents[4] = self._get_nvlink_incident(0, 1, 8)
+        mock_response.incidents[5] = self._get_nvlink_incident(0, 1, 9)
+        mock_response.incidents[6] = self._get_nvlink_incident(0, 1, 12)
+        mock_response.incidents[7] = self._get_nvlink_incident(0, 1, 13)
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        # Verify both GPUs have entries
+        assert 0 in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+        assert 1 in response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures
+
+        # Verify GPU 0 has all 4 link failures
+        gpu0_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[0].message
+        assert "link 8" in gpu0_message
+        assert "link 9" in gpu0_message
+        assert "link 14" in gpu0_message
+        assert "link 15" in gpu0_message
+        assert gpu0_message.count(";") == 3
+
+        # Verify GPU 1 has all 4 link failures
+        gpu1_message = response["DCGM_HEALTH_WATCH_NVLINK"].entity_failures[1].message
+        assert "link 8" in gpu1_message
+        assert "link 9" in gpu1_message
+        assert "link 12" in gpu1_message
+        assert "link 13" in gpu1_message
+        assert gpu1_message.count(";") == 3
+
+        assert connectivity_success == True
+
     @patch("pydcgm.DcgmGroup.__new__")
     def test_register_xid_callback_on_all_gpus(self, mock_dcgm_group):
         watcher = dcgm.DCGMWatcher(
