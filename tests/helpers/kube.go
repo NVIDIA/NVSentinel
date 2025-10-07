@@ -127,12 +127,32 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 	labelValueSequence []string, success chan bool) error {
 	currentLabelIndex := 0
 	prevLabelValue := ""
+
+	// Check the node's current label value before starting the watch to handle fast transitions
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err == nil {
+		if currentValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
+			// Find where this value is in the expected sequence
+			for i, expected := range labelValueSequence {
+				if currentValue == expected {
+					t.Logf("[LabelWatcher] Node %s already has label=%s (index %d), adjusting start position",
+						nodeName, currentValue, i)
+					currentLabelIndex = i + 1  // Start watching for the NEXT label
+					prevLabelValue = currentValue
+					break
+				}
+			}
+		}
+	}
+
 	// Lock to prevent concurrent access to currentLabelIndex/prevLabelValue/foundInvalidSequence.
 	// Note that sends to the success channel will be blocked on the test runner reading the result of this label sequence
 	// in TestFatalHealthEventEndToEnd. The UpdateFunc thread which has acquired the lock will be waiting for the main
 	// thead to read from the success channel. This is the desired behavior because we only want to have 1 UpdateFunc
 	// thread write true/false.
 	var lock sync.Mutex
+	t.Logf("[LabelWatcher] Starting watcher for node %s, expecting sequence: %v (starting at index %d)",
+		nodeName, labelValueSequence, currentLabelIndex)
 	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
 		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
 		WithUpdateFunc(func(updated interface{}) {
@@ -141,22 +161,57 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 			node := updated.(*v1.Node)
 			actualValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
 			if exists && currentLabelIndex < len(labelValueSequence) {
-				t.Logf("Received node update for %s, value for %s=%s\n", nodeName,
-					statemanager.NVSentinelStateLabelKey, actualValue)
+				expectedValue := labelValueSequence[currentLabelIndex]
+				t.Logf("[LabelWatcher] Node %s update: %s=%s (progress: %d/%d, expected: %s, prev: %s)",
+					nodeName, statemanager.NVSentinelStateLabelKey, actualValue,
+					currentLabelIndex, len(labelValueSequence), expectedValue, prevLabelValue)
 				if currentLabelIndex < len(labelValueSequence) && actualValue == labelValueSequence[currentLabelIndex] {
+					t.Logf("[LabelWatcher] ✓ MATCHED expected label [%d]: %s", currentLabelIndex, actualValue)
 					prevLabelValue = labelValueSequence[currentLabelIndex]
 					currentLabelIndex++
-				} else if actualValue != labelValueSequence[currentLabelIndex] &&
-					prevLabelValue != actualValue && currentLabelIndex != 0 {
-					sendNodeLabelResult(ctx, success, false)
+					if currentLabelIndex == len(labelValueSequence) {
+						t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(labelValueSequence))
+					}
+				} else if actualValue != labelValueSequence[currentLabelIndex] && prevLabelValue != actualValue {
+					// If this is the first label we're seeing (currentLabelIndex == 0) and it doesn't match,
+					// we missed early labels due to race condition. Check if this label appears later in sequence.
+					if currentLabelIndex == 0 {
+						foundLaterInSequence := false
+						for i := 1; i < len(labelValueSequence); i++ {
+							if actualValue == labelValueSequence[i] {
+								foundLaterInSequence = true
+								t.Logf("[LabelWatcher] ✗ MISSED early labels: First label received is '%s' (expected index %d), but expected to start with '%s' (index 0)",
+									actualValue, i, labelValueSequence[0])
+								break
+							}
+						}
+						if !foundLaterInSequence {
+							t.Logf("[LabelWatcher] ✗ UNEXPECTED first label: got '%s', not in expected sequence at all", actualValue)
+						}
+						t.Logf("[LabelWatcher] Sending FAILURE to channel (missed early labels)")
+						sendNodeLabelResult(ctx, success, false)
+					} else {
+						// Not the first label, unexpected transition
+						t.Logf("[LabelWatcher] ✗ UNEXPECTED label transition: got '%s', expected '%s' (prev: '%s')",
+							actualValue, labelValueSequence[currentLabelIndex], prevLabelValue)
+						t.Logf("[LabelWatcher] Sending FAILURE to channel")
+						sendNodeLabelResult(ctx, success, false)
+					}
+				} else if actualValue == prevLabelValue {
+					t.Logf("[LabelWatcher] Ignoring duplicate update for label: %s", actualValue)
 				}
 			} else {
-				t.Logf("Received node update for %s, value for %s doesn't exist", nodeName,
-					statemanager.NVSentinelStateLabelKey)
+				t.Logf("[LabelWatcher] Node %s update: %s label doesn't exist (progress: %d/%d)",
+					nodeName, statemanager.NVSentinelStateLabelKey, currentLabelIndex, len(labelValueSequence))
 				if currentLabelIndex == len(labelValueSequence) {
+					t.Logf("[LabelWatcher] ✓ All labels observed and now removed. Sending SUCCESS to channel")
 					sendNodeLabelResult(ctx, success, true)
 				} else if currentLabelIndex != 0 {
+					t.Logf("[LabelWatcher] ✗ Label removed prematurely (only saw %d/%d labels). Sending FAILURE to channel",
+						currentLabelIndex, len(labelValueSequence))
 					sendNodeLabelResult(ctx, success, false)
+				} else {
+					t.Logf("[LabelWatcher] Waiting for first label to appear...")
 				}
 			}
 			// Do nothing if the label exists and the actualValue equals the previous label value, if the first label
