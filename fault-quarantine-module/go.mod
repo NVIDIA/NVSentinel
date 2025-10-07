@@ -9,8 +9,8 @@ require (
 	github.com/google/cel-go v0.20.1
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/prometheus/client_golang v1.20.2
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250901064035-448ac86146d3
-	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager v0.0.0-20250901050746-391b5ab7018d
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250922095649-50aef3f27c10
+	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager v0.0.0-20251002153030-9e1e7404df8a
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
 	go.mongodb.org/mongo-driver v1.17.4
 	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc

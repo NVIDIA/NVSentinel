@@ -336,8 +336,11 @@ spec:
 			}
 
 			// Test CreateMaintenanceResource
-			result := client.CreateMaintenanceResource(context.Background(), healthEventDoc)
+			result, crName := client.CreateMaintenanceResource(context.Background(), healthEventDoc)
 			assert.Equal(t, tt.shouldSucceed, result)
+			if tt.shouldSucceed && !tt.dryRun {
+				assert.NotEmpty(t, crName, "CR name should be returned on success")
+			}
 			assert.Equal(t, tt.shouldCreate, createCalled, "Create function call expectation mismatch")
 		})
 	}

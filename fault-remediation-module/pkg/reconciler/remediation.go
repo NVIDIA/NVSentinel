@@ -24,8 +24,11 @@ import (
 	"text/template"
 	"time"
 
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/common"
+	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/crstatus"
 	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
 	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,12 +50,14 @@ const (
 )
 
 type FaultRemediationClient struct {
-	clientset    dynamic.Interface
-	kubeClient   kubernetes.Interface
-	restMapper   *restmapper.DeferredDiscoveryRESTMapper
-	dryRunMode   []string
-	template     *template.Template
-	templateData TemplateData
+	clientset            dynamic.Interface
+	kubeClient           kubernetes.Interface
+	restMapper           *restmapper.DeferredDiscoveryRESTMapper
+	dryRunMode           []string
+	template             *template.Template
+	templateData         TemplateData
+	annotationManager    NodeAnnotationManagerInterface
+	statusCheckerFactory *crstatus.CRStatusCheckerFactory
 }
 
 // TemplateData holds the data to be inserted into the template
@@ -139,17 +144,42 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 		client.dryRunMode = []string{}
 	}
 
+	// Initialize annotation manager
+	client.annotationManager = NewNodeAnnotationManager(kubeClient)
+
+	// Initialize status checker factory
+	client.statusCheckerFactory = crstatus.NewCRStatusCheckerFactory(
+		clientset, mapper, dryRun)
+
 	return client, kubeClient, nil
 }
 
-func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) bool {
+// GetAnnotationManager returns the annotation manager for the client
+func (c *FaultRemediationClient) GetAnnotationManager() NodeAnnotationManagerInterface {
+	return c.annotationManager
+}
+
+// GetStatusCheckerForAction returns the appropriate status checker for the given action
+func (c *FaultRemediationClient) GetStatusCheckerForAction(
+	action platformconnector.RecommenedAction,
+) (crstatus.CRStatusChecker, error) {
+	return c.statusCheckerFactory.GetStatusChecker(action)
+}
+
+func (c *FaultRemediationClient) CreateMaintenanceResource(
+	ctx context.Context,
+	healthEventDoc *HealthEventDoc,
+) (bool, string) {
 	healthEvent := healthEventDoc.HealthEventWithStatus.HealthEvent
 	healthEventID := healthEventDoc.ID.Hex()
+
+	// Generate CR name
+	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)
 
 	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
 		log.Printf("DRY-RUN: Skipping custom resource creation for node %s", healthEvent.NodeName)
-		return true
+		return true, crName
 	}
 
 	log.Printf("Creating RebootNode CR for node: %s", healthEvent.NodeName)
@@ -161,7 +191,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	var buf bytes.Buffer
 	if err := c.template.Execute(&buf, c.templateData); err != nil {
 		log.Fatalf("Failed to execute template: %v", err)
-		return false
+		return false, ""
 	}
 
 	log.Printf("Generated YAML: %s", buf.String())
@@ -170,7 +200,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	var obj map[string]any
 	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
 		log.Fatalf("Failed to unmarshal YAML: %v", err)
-		return false
+		return false, ""
 	}
 
 	maintenance := &unstructured.Unstructured{Object: obj}
@@ -182,20 +212,61 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		log.Fatalf("Failed to get REST mapping for %s: %v", gvk, err)
-		return false
+		return false, ""
 	}
 
 	// Create the maintenance resource at cluster level
-	_, err = c.clientset.Resource(mapping.Resource).
+	createdCR, err := c.clientset.Resource(mapping.Resource).
 		Create(ctx, maintenance, metav1.CreateOptions{})
 	if err != nil {
-		log.Fatalf("Failed to create Maintenance CR: %v", err)
-		return false
+		return c.handleCreateCRError(ctx, err, crName, healthEvent)
 	}
 
-	log.Printf("Created Maintenance CR successfully for node %s", healthEvent.NodeName)
+	// Get the actual name of the created CR
+	actualCRName := createdCR.GetName()
+	log.Printf("Created Maintenance CR %s successfully for node %s", actualCRName, healthEvent.NodeName)
 
-	return true
+	// Update node annotation with CR reference
+	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
+	if group != "" && c.annotationManager != nil {
+		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
+			group, actualCRName); err != nil {
+			// Continue even if annotation update fails
+			log.Printf("Warning: Failed to update node annotation for %s: %v", healthEvent.NodeName, err)
+		}
+	}
+
+	return true, actualCRName
+}
+
+// handleCreateCRError handles errors from CR creation
+func (c *FaultRemediationClient) handleCreateCRError(
+	ctx context.Context,
+	err error,
+	crName string,
+	healthEvent *platformconnector.HealthEvent,
+) (bool, string) {
+	// Check if the CR already exists
+	if apierrors.IsAlreadyExists(err) {
+		log.Printf("Maintenance CR %s already exists for node %s, treating as success",
+			crName, healthEvent.NodeName)
+
+		// Update node annotation with CR reference
+		group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
+		if group != "" && c.annotationManager != nil {
+			if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
+				group, crName); err != nil {
+				log.Printf("Warning: Failed to update node annotation for %s: %v", healthEvent.NodeName, err)
+			}
+		}
+
+		return true, crName
+	}
+
+	// For other errors, log and return failure (not fatal - allow retry)
+	log.Printf("Failed to create Maintenance CR: %v", err)
+
+	return false, ""
 }
 
 // RunLogCollectorJob creates a log collector Job and waits for completion.

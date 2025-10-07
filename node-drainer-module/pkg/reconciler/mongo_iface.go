@@ -17,13 +17,15 @@ package reconciler
 import (
 	"context"
 
-	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/crstatus"
-	platformconnector "gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors/pkg/protos"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string)
-	RunLogCollectorJob(ctx context.Context, nodeName string) error
-	GetAnnotationManager() NodeAnnotationManagerInterface
-	GetStatusCheckerForAction(action platformconnector.RecommenedAction) (crstatus.CRStatusChecker, error)
+// MongoCollectionAPI defines only the MongoDB methods used by the reconciler.
+// This keeps mocks minimal and focused for tests.
+type MongoCollectionAPI interface {
+	UpdateOne(ctx context.Context, filter interface{}, update interface{},
+		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult
+	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
 }

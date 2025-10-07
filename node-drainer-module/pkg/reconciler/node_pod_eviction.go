@@ -642,6 +642,11 @@ func (c *NodeDrainerClient) GetNodeDrainTimeout(ctx context.Context, nodeName st
 	return drainTimeout - elapsed, nil
 }
 
+// GetKubernetesClient returns the underlying Kubernetes clientset
+func (c *NodeDrainerClient) GetKubernetesClient() (kubernetes.Interface, error) {
+	return c.clientset, nil
+}
+
 func (c *NodeDrainerClient) updateNodeEvent(ctx context.Context, nodeName string, reason string, message string) error {
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {

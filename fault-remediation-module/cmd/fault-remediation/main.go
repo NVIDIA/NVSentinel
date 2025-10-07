@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/fault-remediation-module/pkg/reconciler"
@@ -45,6 +46,8 @@ type config struct {
 	kubeconfigPath           string
 	dryRun                   bool
 	enableLogCollector       bool
+	updateMaxRetries         int
+	updateRetryDelaySeconds  int
 }
 
 func parseFlags() *config {
@@ -55,6 +58,10 @@ func parseFlags() *config {
 		"path where the mongodb client cert is mounted")
 	flag.StringVar(&cfg.kubeconfigPath, "kubeconfig-path", "", "path to kubeconfig file")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "flag to run node drainer module in dry-run mode")
+	flag.IntVar(&cfg.updateMaxRetries, "update-max-retries", 5,
+		"maximum attempts to update remediation status per event")
+	flag.IntVar(&cfg.updateRetryDelaySeconds, "update-retry-delay-seconds", 10,
+		"delay in seconds between remediation status update retries")
 	flag.Parse()
 
 	return cfg
@@ -178,14 +185,23 @@ func startMetricsServer(metricsPort string) {
 func getMongoPipeline() mongo.Pipeline {
 	return mongo.Pipeline{
 		bson.D{
-			{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: "update"},
-				{Key: "$and", Value: bson.A{
-					bson.D{{Key: "updateDescription.updatedFields",
-						Value: bson.D{{Key: "healtheventstatus.userpodsevictionstatus", Value: bson.D{
-							{Key: "status", Value: "Succeeded"},
-						}}}}},
-					bson.D{{Key: "fullDocument.healtheventstatus.nodequarantined", Value: store.Quarantined}},
+			bson.E{Key: "$match", Value: bson.D{
+				bson.E{Key: "operationType", Value: "update"},
+				bson.E{Key: "$or", Value: bson.A{
+					// Watch for quarantine events (for remediation)
+					bson.D{
+						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: bson.D{
+							bson.E{Key: "$in", Value: bson.A{store.StatusSucceeded, store.AlreadyDrained}},
+						}},
+						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: bson.D{
+							bson.E{Key: "$in", Value: bson.A{store.Quarantined, store.AlreadyQuarantined}},
+						}},
+					},
+					// Watch for unquarantine events (for annotation cleanup)
+					bson.D{
+						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: store.UnQuarantined},
+						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: store.StatusSucceeded},
+					},
 				}},
 			}},
 		},
@@ -241,9 +257,11 @@ func main() {
 		MongoConfig:        *mongoConfig,
 		TokenConfig:        *tokenConfig,
 		MongoPipeline:      pipeline,
-		K8sClient:          k8sClient,
+		RemediationClient:  k8sClient,
 		StateManager:       statemanager.NewStateManager(clientSet),
 		EnableLogCollector: envCfg.enableLogCollector,
+		UpdateMaxRetries:   cfg.updateMaxRetries,
+		UpdateRetryDelay:   time.Duration(cfg.updateRetryDelaySeconds) * time.Second,
 	}
 
 	reconciler := reconciler.NewReconciler(reconcilerCfg, cfg.dryRun)

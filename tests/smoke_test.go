@@ -16,7 +16,6 @@ package tests
 
 import (
 	"context"
-	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,8 +48,35 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.NoError(t, err, "failed to get cluster nodes")
 		assert.True(t, len(nodes) > 0, "no nodes found in cluster")
 
-		nodeName := nodes[rand.Intn(len(nodes))]
-		t.Logf("Selected node: %s", nodeName)
+		// Select from nodes that scale test never touched (starting from 50% onwards)
+		// Scale test uses first 45% of nodes, so selecting from 50%+ ensures no MongoDB collision
+		startIdx := int(float64(len(nodes)) * 0.50)
+		if startIdx >= len(nodes) {
+			startIdx = len(nodes) - 1
+		}
+		unusedNodes := nodes[startIdx:]
+
+		// Find an uncordoned node from the unused subset to ensure clean state
+		var nodeName string
+		for _, name := range unusedNodes {
+			node, err := helpers.GetNodeByName(ctx, client, name)
+			if err != nil {
+				t.Logf("failed to get node %s: %v", name, err)
+				continue
+			}
+			if !node.Spec.Unschedulable {
+				nodeName = name
+				break
+			}
+		}
+
+		// If no uncordoned node found in unused subset, just use the first unused node
+		if nodeName == "" {
+			nodeName = unusedNodes[0]
+			t.Logf("No uncordoned node in unused subset, using first unused node: %s", nodeName)
+		} else {
+			t.Logf("Selected uncordoned node: %s (from unused nodes starting at index %d)", nodeName, startIdx)
+		}
 
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")

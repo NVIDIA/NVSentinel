@@ -134,14 +134,16 @@ func main() {
 	}
 
 	pipeline := mongo.Pipeline{
-		{
-			{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: "update"},
-				{Key: "$or", Value: bson.A{
-					bson.D{{Key: "updateDescription.updatedFields",
-						Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
-					bson.D{{Key: "updateDescription.updatedFields",
-						Value: bson.D{{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
+		bson.D{
+			bson.E{Key: "$match", Value: bson.D{
+				bson.E{Key: "operationType", Value: "update"},
+				bson.E{Key: "$or", Value: bson.A{
+					bson.D{bson.E{Key: "updateDescription.updatedFields",
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
+					bson.D{bson.E{Key: "updateDescription.updatedFields",
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.AlreadyQuarantined}}}},
+					bson.D{bson.E{Key: "updateDescription.updatedFields",
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
 				}},
 			}},
 		},
@@ -162,6 +164,12 @@ func main() {
 		klog.Fatalf("error while initializing kubernetes client: %v", err)
 	}
 
+	// Get the Kubernetes clientset for cache initialization
+	kubeClient, err := k8sClient.GetKubernetesClient()
+	if err != nil {
+		klog.Fatalf("error while getting kubernetes client: %v", err)
+	}
+
 	klog.Info("Successfully initialized k8sclient")
 
 	reconcilerCfg := reconciler.ReconcilerConfig{
@@ -173,7 +181,7 @@ func main() {
 		StateManager:  statemanager.NewStateManager(clientSet),
 	}
 
-	reconciler := reconciler.NewReconciler(reconcilerCfg, *dryRun)
+	reconciler := reconciler.NewReconciler(reconcilerCfg, *dryRun, kubeClient)
 	reconciler.Start(ctx)
 }
 

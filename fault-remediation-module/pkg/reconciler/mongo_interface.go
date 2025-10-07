@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -24,4 +25,13 @@ import (
 type MongoInterface interface {
 	UpdateOne(ctx context.Context, filter interface{}, update interface{},
 		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
+	CountDocuments(ctx context.Context, filter interface{}, opts ...*options.CountOptions) (int64, error)
+}
+
+type WatcherInterface interface {
+	Events() <-chan bson.M
+	Start(ctx context.Context)
+	Close(ctx context.Context) error
+	MarkProcessed(ctx context.Context) error
 }

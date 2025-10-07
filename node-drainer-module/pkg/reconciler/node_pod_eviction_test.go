@@ -92,7 +92,8 @@ func TestMain(m *testing.M) {
 	}
 	// Reduce the NotReady timeout so tests complete quickly (1 minute)
 	k8sClient.notReadyTimeoutMinutes = ptr.To(1)
-	k8sClient.pollInterval = 10 * time.Second
+
+	k8sClient.pollInterval = 2 * time.Second
 
 	namespaces := []string{"runai", "nvsentinel", "runai-prod", "runai-dev", "testing-ns"}
 
@@ -246,7 +247,7 @@ func TestMonitorPodCompletionWithContextCancelled(t *testing.T) {
 	mockEvictionClient.EvictedPods = sync.Map{}
 
 	go func() {
-		time.Sleep(15 * time.Second)
+		time.Sleep(5 * time.Second)
 		cancel()
 	}()
 
@@ -274,7 +275,8 @@ func TestMonitorPodCompletion(t *testing.T) {
 		if err != nil {
 			t.Log("error in deleting the pod job-pod1")
 		}
-		time.Sleep(12 * time.Second)
+		// Sleep for 3 seconds to ensure the update happens after first poll (at 0s) but before second poll (at 2s interval)
+		time.Sleep(3 * time.Second)
 		pod, err := Client.CoreV1().Pods(namespace).Get(ctx, "job-pod2", metaV1.GetOptions{})
 		if err != nil {
 			t.Logf("Failed to get pod: %v", err)

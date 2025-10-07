@@ -66,6 +66,7 @@ func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client,
 }
 
 // CreateNamespace creates a new Kubernetes namespace with the specified `name`.
+// If the namespace already exists, it returns nil (idempotent operation).
 func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -75,6 +76,9 @@ func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 
 	err := c.Resources().Create(ctx, namespace)
 	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to create namespace %s: %w", name, err)
 	}
 
@@ -382,8 +386,13 @@ func WaitForNodesCordonedAndDrained(ctx context.Context, t *testing.T, c klient.
 			if node.Spec.Unschedulable {
 				cordonedCount++
 
-				if drainStatus, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists && drainStatus == string(statemanager.DrainingLabelValue) {
-					drainedCount++
+				if drainStatus, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
+					// Accept nodes in draining state or already drain-succeeded state
+					// (nodes that were already drained won't transition through draining again)
+					if drainStatus == string(statemanager.DrainingLabelValue) ||
+						drainStatus == string(statemanager.DrainSucceededLabelValue) {
+						drainedCount++
+					}
 				}
 			}
 		}

@@ -27,6 +27,13 @@ var (
 			Help: "Total number of events received from the watcher.",
 		},
 	)
+	// events replayed at startup
+	totalEventsReplayed = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "node_drainer_events_replayed_total",
+			Help: "Total number of in-progress events replayed at startup.",
+		},
+	)
 	totalEventsSuccessfullyProcessed = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "node_drainer_events_successfully_processed_total",
