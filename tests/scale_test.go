@@ -16,6 +16,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"testing"
 
@@ -34,6 +35,9 @@ const (
 	keyHealthCheckNodes
 )
 
+// 45% of nodes will be tested
+const nodeSubsetPercentage = 45
+
 func TestScaleHealthEvents(t *testing.T) {
 	feature := features.New("TestScaleHealthEvents").
 		WithLabel("suite", "scale")
@@ -51,8 +55,8 @@ func TestScaleHealthEvents(t *testing.T) {
 		assert.NoError(t, err, "failed to get cluster nodes")
 		t.Logf("Found %d nodes in cluster", len(nodes))
 
-		healthCheckNodes := selectNodeSubset(nodes, 0.45)
-		t.Logf("Selected %d nodes (48%%) for health check operations", len(healthCheckNodes))
+		healthCheckNodes := selectNodeSubset(nodes, float64(nodeSubsetPercentage)/100)
+		t.Logf("Selected %d nodes (%d%%) for health check operations", len(healthCheckNodes), nodeSubsetPercentage)
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 		ctx = context.WithValue(ctx, keyNodes, nodes)
@@ -81,7 +85,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Send unhealthy events to 48% of nodes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess(fmt.Sprintf("Send unhealthy events to %d%% of nodes", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/fatal-health-event.json")
@@ -90,7 +94,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Validate 48% of nodes are cordoned and have drain label", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess(fmt.Sprintf("Validate %d%% of nodes are cordoned and have drain label", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		client, err := c.NewClient()
@@ -111,7 +115,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Send healthy events to 48% of nodes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess(fmt.Sprintf("Send healthy events to %d%% of nodes", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/healthy-event.json")
