@@ -1363,7 +1363,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		taintsToRemove,
 		false, // Node is already uncordoned manually, so we don't need to uncordon again
 		annotationsToRemove,
-		nil, // No labels to remove
+		[]string{statemanager.NVSentinelStateLabelKey},
 		nil, // No labels to add
 	); err != nil {
 		klog.Errorf("Failed to clean up annotations for manually uncordoned node %s: %v", nodeName, err)

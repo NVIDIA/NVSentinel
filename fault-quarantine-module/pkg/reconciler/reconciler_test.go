@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2144,9 +2145,9 @@ func TestHandleManualUncordon(t *testing.T) {
 			removedAnnotationKeys = annotationKeys
 			removedTaints = taints
 
-			// No labels should be added or removed in manual uncordon
-			if len(labelsToRemove) > 0 {
-				t.Errorf("Should not remove any labels, got %v", labelsToRemove)
+			expectedLabelsToRemove := []string{statemanager.NVSentinelStateLabelKey}
+			if !slices.Equal(expectedLabelsToRemove, labelsToRemove) {
+				t.Errorf("Should remove labels %v, got %v", expectedLabelsToRemove, labelsToRemove)
 			}
 			if len(labelMap) > 0 {
 				t.Errorf("Should not add any labels, got %v", labelMap)
@@ -2237,7 +2238,8 @@ func TestManualUncordonEndToEnd(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-node-1",
 			Labels: map[string]string{
-				informer.GpuNodeLabel: "true",
+				informer.GpuNodeLabel:                "true",
+				statemanager.NVSentinelStateLabelKey: string(statemanager.RemediationFailedLabelValue),
 			},
 			Annotations: map[string]string{
 				common.QuarantineHealthEventAnnotationKey:              `{"nodeName":"test-node-1","agent":"test","checkName":"test","isHealthy":false}`,
@@ -2318,6 +2320,8 @@ func TestManualUncordonEndToEnd(t *testing.T) {
 				}
 			}
 			node.Spec.Taints = newTaints
+
+			delete(node.Labels, statemanager.NVSentinelStateLabelKey)
 
 			_, err = fakeClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 			return err
@@ -2436,6 +2440,14 @@ func TestManualUncordonEndToEnd(t *testing.T) {
 		t.Error("QuarantineHealthEventIsCordoned annotation should be removed")
 	}
 
+	// Check dgxc.nvidia.com/nvsentinel-state label was removed but expected labels are persisted
+	if _, exists := updatedNode.Labels[statemanager.NVSentinelStateLabelKey]; exists {
+		t.Errorf("%s label should be removed", statemanager.NVSentinelStateLabelKey)
+	}
+	if _, exists := updatedNode.Labels[informer.GpuNodeLabel]; !exists {
+		t.Errorf("%s label should be persisted", informer.GpuNodeLabel)
+	}
+
 	// Check manual uncordon annotation was added
 	if val := updatedNode.Annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; val != common.QuarantinedNodeUncordonedManuallyAnnotationValue {
 		t.Errorf("Expected manual uncordon annotation to be 'True', got %s", val)
@@ -2536,11 +2548,11 @@ func TestNodeRequarantineAfterManualUncordon(t *testing.T) {
 		if err := mockK8sClient.UnTaintAndUnCordonNodeAndRemoveAnnotations(
 			ctx,
 			"test-node",
-			nil,   // No taints to remove
-			false, // Not uncordoning
+			nil,                                                             // No taints to remove
+			false,                                                           // Not uncordoning
 			[]string{common.QuarantinedNodeUncordonedManuallyAnnotationKey}, // Remove manual uncordon annotation
-			nil, // No labels to remove
-			nil, // No labels to add
+			nil,                                                             // No labels to remove
+			nil,                                                             // No labels to add
 		); err == nil {
 			// Update cache to remove the manual uncordon annotation
 			r.updateCacheWithUnquarantineAnnotations("test-node",
