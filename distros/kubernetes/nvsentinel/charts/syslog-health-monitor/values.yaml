@@ -71,7 +71,7 @@ metricsPort: 2112
 #   invertMatches: ""
 
 # Add new pollingInterval configuration
-pollingInterval: "30m" # Default polling interval, e.g., "5m", "1h", "30s"
+pollingInterval: "15s" # Default polling interval, e.g., "5m", "1h", "30s"
 
 # Add new stateFile configuration for cursor persistence
 stateFile: "/var/run/syslog_health_monitor/state.json" # Path to persistent state file
