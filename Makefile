@@ -63,10 +63,27 @@ health-monitors-lint-test-all:
 	@echo "Running lint and tests for all health monitors..."
 	$(MAKE) -C health-monitors lint-test-all
 
-# Generate and check protobuf files
+# Generate protobuf files
+.PHONY: protos-generate
+protos-generate:
+	@echo "Generating protobuf files..."
+	protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
+	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
+	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
+	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
+	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py
+	git status --porcelain --untracked-files=no
+	git --no-pager diff
+	@echo "Checking if protobuf files are up to date..."
+	test -z "$$(git status --porcelain --untracked-files=no)"
+
+# Check protobuf files
 .PHONY: protos-lint
-protos-lint:
-	@echo "Generating and checking protobuf files..."
+protos-lint: protos-generate
+	@echo "Checking protobuf files..."
 	protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
