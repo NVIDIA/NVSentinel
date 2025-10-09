@@ -605,6 +605,22 @@ store-client-sdk-lint-test:
       - store-client-sdk/code-quality-report.json
   coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
 
+statemanager-lint-test:
+  stage: lint-test
+  script:
+    - make lint-test-statemanager
+  artifacts:
+    when: always
+    reports:
+      codequality: statemanager/code-quality-report.json
+      coverage_report:
+        coverage_format: cobertura
+        path: statemanager/coverage.xml
+      junit: statemanager/report.xml
+    paths:
+      - statemanager/code-quality-report.json
+  coverage: '/total:\s*\(statements\)\s*\d+.\d+%/'
+
 kubernetes-distro-lint:
   stage: lint-test
   script:

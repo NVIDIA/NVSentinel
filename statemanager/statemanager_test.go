@@ -164,3 +164,102 @@ func TestUpdateNVSentinelStateNodeLabelWithLabelAlreadyRemoved(t *testing.T) {
 	assert.False(t, nodeModified)
 	assert.NoError(t, err)
 }
+
+// Test that label removal from any state doesn't trigger validation errors.
+// This is important for canceled drains: quarantined -> draining -> label removed (healthy event).
+func TestLabelRemovalFromAnyStateDoesNotTriggerValidation(t *testing.T) {
+	states := []NVSentinelStateLabelValue{
+		QuarantinedLabelValue,
+		DrainingLabelValue,
+		DrainSucceededLabelValue,
+		DrainFailedLabelValue,
+		RemediatingLabelValue,
+		RemediationSucceededLabelValue,
+		RemediationFailedLabelValue,
+	}
+
+	for _, state := range states {
+		t.Run(string(state), func(t *testing.T) {
+			ctx, manager, err := newTestStateManager(testNodeName, map[string]string{
+				NVSentinelStateLabelKey: string(state),
+			})
+			assert.NoError(t, err)
+
+			// Remove label from this state - should not trigger validation error
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabel(ctx, testNodeName, "", true)
+			assert.True(t, nodeModified)
+			assert.NoError(t, err, "Removing label from %s state should not trigger validation error", state)
+
+			// Verify label was actually removed
+			node, getErr := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			assert.NoError(t, getErr)
+			_, exists := node.Labels[NVSentinelStateLabelKey]
+			assert.False(t, exists, "Label should be removed from node in %s state", state)
+		})
+	}
+}
+
+// Test state progression - expected transitions succeed without error,
+// unexpected transitions return error but still update the label
+func TestStateTransitionValidProgression(t *testing.T) {
+	tests := []struct {
+		name         string
+		initialState string
+		targetState  NVSentinelStateLabelValue
+		labelExists  bool
+		expectError  bool // Whether this transition should return an error
+	}{
+		// Expected progressions (normal flow, no error)
+		{"NoState to Quarantined", "", QuarantinedLabelValue, false, false},
+		{"Quarantined to Draining", string(QuarantinedLabelValue), DrainingLabelValue, true, false},
+		{"Draining to DrainSucceeded", string(DrainingLabelValue), DrainSucceededLabelValue, true, false},
+		{"Draining to DrainFailed", string(DrainingLabelValue), DrainFailedLabelValue, true, false},
+		{"DrainSucceeded to Remediating", string(DrainSucceededLabelValue), RemediatingLabelValue, true, false},
+		{"Remediating to RemediationSucceeded", string(RemediatingLabelValue), RemediationSucceededLabelValue, true, false},
+		{"Remediating to RemediationFailed", string(RemediatingLabelValue), RemediationFailedLabelValue, true, false},
+
+		// Unexpected progressions (return error but label is still updated)
+		// This allows callers to emit error metrics while labels reflect reality
+		{"NoState to Draining", "", DrainingLabelValue, false, true},
+		{"NoState to Remediating", "", RemediatingLabelValue, false, true},
+		{"Quarantined to DrainSucceeded", string(QuarantinedLabelValue), DrainSucceededLabelValue, true, true},
+		{"Quarantined to Remediating", string(QuarantinedLabelValue), RemediatingLabelValue, true, true},
+		{"Draining to Remediating", string(DrainingLabelValue), RemediatingLabelValue, true, true},
+		// DrainFailed is a terminal state - fault-remediation-module only consumes drain-succeeded
+		{"DrainFailed to Remediating", string(DrainFailedLabelValue), RemediatingLabelValue, true, true},
+		{"DrainSucceeded to DrainFailed", string(DrainSucceededLabelValue), DrainFailedLabelValue, true, true},
+		{"RemediationSucceeded to Draining", string(RemediationSucceededLabelValue), DrainingLabelValue, true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := make(map[string]string)
+			if tt.labelExists {
+				labels[NVSentinelStateLabelKey] = tt.initialState
+			}
+			ctx, manager, err := newTestStateManager(testNodeName, labels)
+			assert.NoError(t, err)
+
+			nodeModified, err := manager.UpdateNVSentinelStateNodeLabel(ctx, testNodeName, tt.targetState, false)
+
+			// Check if error matches expectation
+			if tt.expectError {
+				assert.Error(t, err, "Expected error for unexpected transition from %s to %s", tt.initialState, tt.targetState)
+				assert.Contains(t, err.Error(), "unexpected state transition",
+					"Error should indicate unexpected transition")
+			} else {
+				assert.NoError(t, err, "Expected no error for valid transition from %s to %s", tt.initialState, tt.targetState)
+			}
+
+			// Even with error, node should be modified and label should be set
+			assert.True(t, nodeModified, "Node should be modified even for unexpected transitions (from %s to %s)",
+				tt.initialState, tt.targetState)
+
+			// Verify the label was actually set regardless of validation error
+			node, getErr := manager.clientSet.CoreV1().Nodes().Get(ctx, testNodeName, metav1.GetOptions{})
+			assert.NoError(t, getErr)
+			assert.Equal(t, string(tt.targetState), node.Labels[NVSentinelStateLabelKey],
+				"Label should be set to target state even for unexpected transitions")
+		})
+	}
+}
