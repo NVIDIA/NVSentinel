@@ -65,37 +65,44 @@ health-monitors-lint-test-all:
 
 # Generate protobuf files
 .PHONY: protos-generate
-protos-generate:
+protos-generate: protos-clean
 	@echo "Generating protobuf files..."
+	@echo "=== Tool Versions ==="
+	@echo "Go: $$(go version)"
+	@echo "protoc: $$(protoc --version)"
+	@echo "protoc-gen-go: $$(protoc-gen-go --version)"
+	@echo "protoc-gen-go-grpc: $$(protoc-gen-go-grpc --version)"
+	@echo "========================"
 	protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=health-monitors/syslog-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/syslog-health-monitor/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=health-events-analyzer/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-events-analyzer/pkg/protos/ protobufs/platformconnector.proto
+	protoc -I protobufs/ --go_out=tilt/simple-health-client/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=tilt/simple-health-client/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
 	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
 	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
 	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
 	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py
-	git status --porcelain --untracked-files=no
-	git --no-pager diff
-	@echo "Checking if protobuf files are up to date..."
-	test -z "$$(git status --porcelain --untracked-files=no)"
 
 # Check protobuf files
 .PHONY: protos-lint
 protos-lint: protos-generate
 	@echo "Checking protobuf files..."
-	protoc -I protobufs/ --go_out=platform-connectors/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/protos/ protobufs/platformconnector.proto
-	protoc -I protobufs/ --go_out=health-monitors/nic-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nic-health-monitor/pkg/protos/ protobufs/platformconnector.proto
-	protoc -I protobufs/ --go_out=health-monitors/nvswitch-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/nvswitch-health-monitor/pkg/protos/ protobufs/platformconnector.proto
-	protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
-	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
-	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
-	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
-	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py
 	git status --porcelain --untracked-files=no
 	git --no-pager diff
 	@echo "Checking if protobuf files are up to date..."
 	test -z "$$(git status --porcelain --untracked-files=no)"
+
+# Clean generated protobuf files
+.PHONY: protos-clean
+protos-clean:
+	@echo "Cleaning generated protobuf files..."
+	@echo "Removing Go protobuf files (.pb.go)..."
+	find . -name "*.pb.go" -type f -delete
+	@echo "Removing Python protobuf files (*_pb2.py, *_pb2_grpc.py, *_pb2.pyi)..."
+	find . \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete
+	@echo "All generated protobuf files have been removed."
 
 # Check license headers
 .PHONY: license-headers-lint
@@ -450,7 +457,9 @@ help:
 	@echo "Main targets:"
 	@echo "  all                    - Run lint-test-all (default)"
 	@echo "  lint-test-all          - Lint and test all modules"
+	@echo "  protos-generate        - Generate protobuf files from .proto sources"
 	@echo "  protos-lint            - Generate and check protobuf files"
+	@echo "  protos-clean           - Remove all generated protobuf files"
 	@echo "  license-headers-lint   - Check license headers"
 	@echo "  log-collector-lint     - Lint shell scripts"
 	@echo ""
