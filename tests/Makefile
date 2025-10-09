@@ -20,8 +20,6 @@ test-ci:
 # Run end-to-end tests
 .PHONY: test
 test:
-	@echo "Applying known workaround for circuit breaker in kwok"
-	kubectl delete po -l app.kubernetes.io/name=fault-quarantine -n nvsentinel || echo "No fault-quarantine pods found to delete"
 	$(GO) test -count 1 -v ./...
 
 # Help target

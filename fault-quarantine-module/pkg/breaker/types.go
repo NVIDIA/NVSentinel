@@ -59,6 +59,18 @@ type Config struct {
 	// This allows the threshold to adapt to cluster scaling events.
 	GetTotalNodes func(ctx context.Context) (int, error)
 
+	// MaxRetries is the maximum number of retry attempts when GetTotalNodes returns 0
+	// Default: 10 retries (allows ~30 seconds for cache sync with exponential backoff)
+	MaxRetries int
+
+	// InitialRetryDelay is the base delay for the first retry attempt
+	// Default: 100ms, exponentially increases with each retry
+	InitialRetryDelay time.Duration
+
+	// MaxRetryDelay caps the maximum delay between retry attempts
+	// Default: 5 seconds (prevents excessive delays)
+	MaxRetryDelay time.Duration
+
 	// EnsureConfigMap creates/initializes the ConfigMap for state persistence
 	EnsureConfigMap func(ctx context.Context, initial State) error
 	// ReadStateFn reads the persisted breaker state from ConfigMap

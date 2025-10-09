@@ -33,6 +33,28 @@ var (
 			Help: "Utilization of the fault quarantine breaker.",
 		},
 	)
+	faultQuarantineGetTotalNodesDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_get_total_nodes_duration_seconds",
+			Help:    "Duration of getTotalNodesWithRetry calls in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"result"},
+	)
+	faultQuarantineGetTotalNodesErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_get_total_nodes_errors_total",
+			Help: "Total number of errors from getTotalNodesWithRetry.",
+		},
+		[]string{"error_type"},
+	)
+	faultQuarantineGetTotalNodesRetryAttempts = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_get_total_nodes_retry_attempts",
+			Help:    "Number of retry attempts needed for getTotalNodesWithRetry.",
+			Buckets: []float64{0, 1, 2, 3, 5, 10},
+		},
+	)
 )
 
 func SetFaultQuarantineBreakerUtilization(utilization float64) {
