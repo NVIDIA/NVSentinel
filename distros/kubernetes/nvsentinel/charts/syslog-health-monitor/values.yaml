@@ -75,3 +75,13 @@ pollingInterval: "15s" # Default polling interval, e.g., "5m", "1h", "30s"
 
 # Add new stateFile configuration for cursor persistence
 stateFile: "/var/run/syslog_health_monitor/state.json" # Path to persistent state file
+
+driverWatcher:
+  logLevel: 2
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
