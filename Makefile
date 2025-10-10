@@ -12,6 +12,12 @@ ENVTEST := setup-envtest
 GOPATH ?= $(shell go env GOPATH)
 GO_CACHE_DIR ?= $(shell go env GOCACHE)
 
+# Tool versions
+GOLANGCI_LINT_VERSION := v1.64.8
+GOTESTSUM_VERSION := latest
+GOCOVER_COBERTURA_VERSION := latest
+GO_VERSION := 1.24.8
+
 # Go modules with specific patterns from CI
 GO_MODULES := \
 	health-monitors/nic-health-monitor \
@@ -54,9 +60,142 @@ KUBEBUILDER_MODULES := \
 .PHONY: all
 all: lint-test-all
 
+# Install lint tools
+.PHONY: install-lint-tools
+install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura
+	@echo "All lint tools installed successfully"
+	@echo ""
+	@echo "=== Installed Tool Versions and Locations ==="
+	@echo "Go: $$(go version)"
+	@echo "    Location: $$(which go)"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint: $$(golangci-lint version 2>/dev/null | head -1)"; \
+		echo "    Location: $$(which golangci-lint)"; \
+	else \
+		echo "golangci-lint: not found"; \
+	fi
+	@if command -v gotestsum >/dev/null 2>&1; then \
+		echo "gotestsum: $$(gotestsum --version 2>/dev/null || echo 'version command not available')"; \
+		echo "    Location: $$(which gotestsum)"; \
+	else \
+		echo "gotestsum: not found"; \
+	fi
+	@if command -v gocover-cobertura >/dev/null 2>&1; then \
+		echo "gocover-cobertura: installed (no version command available)"; \
+		echo "    Location: $$(which gocover-cobertura)"; \
+	else \
+		echo "gocover-cobertura: not found"; \
+	fi
+	@echo "=============================================="
+
+# Install golangci-lint
+.PHONY: install-golangci-lint
+install-golangci-lint:
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		current_version=$$(golangci-lint version 2>/dev/null | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown"); \
+		if [ "$$current_version" = "$(GOLANGCI_LINT_VERSION)" ]; then \
+			echo "golangci-lint $(GOLANGCI_LINT_VERSION) is already installed at $$(which golangci-lint)"; \
+		else \
+			existing_path=$$(which golangci-lint); \
+			install_dir=$$(dirname "$$existing_path"); \
+			echo "Current version: $$current_version at $$existing_path, installing $(GOLANGCI_LINT_VERSION) to $$install_dir..."; \
+			curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$$install_dir" $(GOLANGCI_LINT_VERSION); \
+		fi; \
+	else \
+		echo "golangci-lint not found, installing $(GOLANGCI_LINT_VERSION) to $(GOPATH)/bin..."; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin $(GOLANGCI_LINT_VERSION); \
+	fi
+	@echo "golangci-lint installation complete"
+
+# Install gotestsum
+.PHONY: install-gotestsum
+install-gotestsum:
+	@echo "Installing gotestsum..."
+	@if ! command -v gotestsum >/dev/null 2>&1; then \
+		echo "gotestsum not found, installing..."; \
+		$(GO) install gotest.tools/gotestsum@$(GOTESTSUM_VERSION); \
+	else \
+		echo "gotestsum is already installed"; \
+	fi
+
+# Install gocover-cobertura
+.PHONY: install-gocover-cobertura
+install-gocover-cobertura:
+	@echo "Installing gocover-cobertura..."
+	@if ! command -v gocover-cobertura >/dev/null 2>&1; then \
+		echo "gocover-cobertura not found, installing..."; \
+		$(GO) install github.com/boumenot/gocover-cobertura@$(GOCOVER_COBERTURA_VERSION); \
+	else \
+		echo "gocover-cobertura is already installed"; \
+	fi
+
+# Install Go $(GO_VERSION) for CI environments (Linux and macOS, amd64 and arm64)
+.PHONY: install-go-ci
+install-go-ci:
+	@echo "Installing Go $(GO_VERSION) for CI..."
+	@# Detect platform and architecture
+	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	case "$$ARCH" in \
+		x86_64) ARCH=amd64 ;; \
+		aarch64|arm64) ARCH=arm64 ;; \
+		*) echo "Unsupported architecture: $$ARCH" && exit 1 ;; \
+	esac; \
+	echo "Detected platform: $$OS-$$ARCH"; \
+	\
+	if command -v go >/dev/null 2>&1; then \
+		current_version=$$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/go//'); \
+		if [ "$$current_version" = "$(GO_VERSION)" ]; then \
+			echo "Go $(GO_VERSION) is already installed"; \
+			echo "Location: $$(which go)"; \
+			go version; \
+			exit 0; \
+		else \
+			echo "Current Go version: $$current_version, installing $(GO_VERSION)..."; \
+		fi; \
+	else \
+		echo "Go not found, installing $(GO_VERSION)..."; \
+	fi; \
+	\
+	GO_TARBALL="go$(GO_VERSION).$$OS-$$ARCH.tar.gz"; \
+	GO_URL="https://go.dev/dl/$$GO_TARBALL"; \
+	echo "Downloading $$GO_URL..."; \
+	\
+	if command -v wget >/dev/null 2>&1; then \
+		wget -q "$$GO_URL" || (echo "Failed to download Go tarball" && exit 1); \
+	elif command -v curl >/dev/null 2>&1; then \
+		curl -sSL "$$GO_URL" -o "$$GO_TARBALL" || (echo "Failed to download Go tarball" && exit 1); \
+	else \
+		echo "Neither wget nor curl found. Please install one of them." && exit 1; \
+	fi; \
+	\
+	echo "Extracting Go $(GO_VERSION)..."; \
+	if [ "$$OS" = "darwin" ]; then \
+		rm -rf /usr/local/go 2>/dev/null || true; \
+		tar -C /usr/local -xzf "$$GO_TARBALL"; \
+		echo "Go $(GO_VERSION) installed to /usr/local/go"; \
+		echo "Add /usr/local/go/bin to your PATH if not already present"; \
+	else \
+		rm -rf /usr/local/go 2>/dev/null || true; \
+		tar -C /usr/local -xzf "$$GO_TARBALL"; \
+		echo "Go $(GO_VERSION) installed to /usr/local/go"; \
+		echo "Add /usr/local/go/bin to your PATH if not already present"; \
+	fi; \
+	\
+	rm -f "$$GO_TARBALL"; \
+	echo "Installation complete"; \
+	\
+	if [ -x /usr/local/go/bin/go ]; then \
+		echo "Installed Go version: $$(/usr/local/go/bin/go version)"; \
+		echo "Location: /usr/local/go/bin/go"; \
+	else \
+		echo "Warning: Go binary not found at expected location /usr/local/go/bin/go"; \
+	fi
+
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint
+lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -110,6 +249,47 @@ protos-clean:
 license-headers-lint:
 	@echo "Checking license headers..."
 	addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml -ignore nvsentinel-log-collector/pyproject.toml .
+
+# Check go.mod files for proper replace directives
+.PHONY: gomod-lint
+gomod-lint:
+	@echo "Validating go.mod files for local module replace directives..."
+	./scripts/validate-gomod.sh
+
+# Sync dependencies across all go modules using Go workspace
+.PHONY: dependencies-sync
+dependencies-sync: dependencies-update go-mod-tidy-all
+	@echo "go.mod and go.sum updated and synced successfully across all go modules"
+
+# Update dependencies across all go modules using Go workspace
+.PHONY: dependencies-update
+dependencies-update:
+	@echo "Updating dependencies across all Go modules..."
+	rm go.work >/dev/null 2>&1 || true
+	find . -name "go.mod" | awk -F/go.mod '{print $$1}' | xargs go work init
+	go work sync
+	rm go.work go.work.sum >/dev/null 2>&1 || true
+	@echo "Dependencies updated successfully"
+
+# Sync dependencies and lint to ensure no files were modified
+.PHONY: dependencies-sync-lint
+dependencies-sync-lint: dependencies-sync
+	@echo "Checking if dependency sync modified any files..."
+	git status --porcelain --untracked-files=no
+	git --no-pager diff
+	@echo "Verifying that dependency sync didn't modify any files..."
+	test -z "$$(git status --porcelain --untracked-files=no)"
+
+# Run go mod tidy in all directories with go.mod files
+.PHONY: go-mod-tidy-all
+go-mod-tidy-all:
+	@echo "Running go mod tidy in all directories with go.mod files..."
+	@find . -name "go.mod" -type f | while read -r gomod_file; do \
+		dir=$$(dirname "$$gomod_file"); \
+		echo "Running go mod tidy in $$dir..."; \
+		(cd "$$dir" && go mod tidy) || exit 1; \
+	done
+	@echo "go mod tidy completed in all modules"
 
 # Lint and test non-health-monitor Go modules
 .PHONY: go-lint-test-all
@@ -303,7 +483,7 @@ clean-main-modules:
 	@echo "Cleaning non-health-monitor Go modules..."
 	@for module in $(shell echo "$(GO_MODULES)" | tr ' ' '\n' | grep -v health-monitors); do \
 		echo "Cleaning $$module..."; \
-		cd $$module && $(GO) clean ./... && cd ..; \
+		$(MAKE) -C $$module clean || exit 1; \
 	done
 
 # Docker targets (delegate to docker/Makefile) - matching GitLab CI exactly
@@ -463,10 +643,16 @@ help:
 	@echo "Main targets:"
 	@echo "  all                    - Run lint-test-all (default)"
 	@echo "  lint-test-all          - Lint and test all modules"
+	@echo "  install-lint-tools     - Install required lint tools (golangci-lint, gotestsum, etc.)"
+	@echo "  install-go-ci          - Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd64/arm64)"
 	@echo "  protos-generate        - Generate protobuf files from .proto sources"
 	@echo "  protos-lint            - Generate and check protobuf files"
 	@echo "  protos-clean           - Remove all generated protobuf files"
 	@echo "  license-headers-lint   - Check license headers"
+	@echo "  gomod-lint             - Validate go.mod files for local module replace directives"
+	@echo "  dependencies-sync      - Sync dependencies across all Go modules using workspace"
+	@echo "  dependencies-sync-lint - Sync dependencies and verify no files were modified"
+	@echo "  go-mod-tidy-all        - Run go mod tidy in all directories with go.mod files"
 	@echo "  log-collector-lint     - Lint shell scripts"
 	@echo ""
 	@echo "Module-specific targets (delegated to sub-Makefiles):"

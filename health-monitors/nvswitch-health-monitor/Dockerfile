@@ -15,7 +15,7 @@
 # syntax=docker/dockerfile:1.6
 
 ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 ENV CGO_ENABLED=0
 

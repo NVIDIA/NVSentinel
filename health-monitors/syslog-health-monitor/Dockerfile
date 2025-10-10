@@ -13,15 +13,21 @@
 # limitations under the License.
 
 ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
-WORKDIR /go/src/syslog-health-monitor
+WORKDIR /go/src/nvsentinel
 
-COPY go.mod go.sum ./
+# Copy the go.mod files for dependencies first
+COPY health-monitors/nvswitch-health-monitor/go.mod health-monitors/nvswitch-health-monitor/go.sum health-monitors/nvswitch-health-monitor/
+COPY health-monitors/syslog-health-monitor/go.mod health-monitors/syslog-health-monitor/go.sum health-monitors/syslog-health-monitor/
+
+# Download dependencies
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    cd health-monitors/syslog-health-monitor && go mod download
 
-COPY . .
+# Copy the source code
+COPY health-monitors/nvswitch-health-monitor/ health-monitors/nvswitch-health-monitor/
+COPY health-monitors/syslog-health-monitor/ health-monitors/syslog-health-monitor/
 
 ENV CGO_ENABLED=1
 
@@ -33,7 +39,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-RUN CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor ./cmd/main.go
+RUN cd health-monitors/syslog-health-monitor && \
+    CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor ./cmd/main.go
 
 FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
@@ -42,7 +49,7 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /go/src/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
+COPY --from=builder /go/src/nvsentinel/health-monitors/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
 
 RUN apt-get update && \
     apt-get install -y libsystemd0 liblz4-1 libzstd1

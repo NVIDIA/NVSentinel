@@ -134,7 +134,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning node-drainer-module..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml node-drainer-module
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json node-drainer-module
 
 # Help target
 .PHONY: help

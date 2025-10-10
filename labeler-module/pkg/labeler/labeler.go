@@ -151,7 +151,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 				}
 			},
 			DeleteFunc: func(obj any) {
-				if err := l.handlePodEvent(obj); err != nil {
+				if err := l.handlePodDeleteEvent(obj); err != nil {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
 					klog.Errorf("Failed to handle pod delete event: %v", err)
 				} else {
@@ -237,8 +237,153 @@ func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
 	return "", nil
 }
 
-// handlePodEvent processes all pod events (add, update, delete) idempotently
+// getDCGMVersionForNodeExcluding returns the expected DCGM version for a specific node,
+// excluding a specific pod from consideration (used for delete events)
+func (l *Labeler) getDCGMVersionForNodeExcluding(nodeName string, excludePod *v1.Pod) (string, error) {
+	objs, err := l.informer.GetIndexer().ByIndex(NodeDCGMIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get DCGM pods by node index for node %s: %w", nodeName, err)
+	}
+
+	for _, obj := range objs {
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			continue
+		}
+
+		// Skip the pod we're excluding (the one being deleted)
+		if pod.UID == excludePod.UID {
+			continue
+		}
+
+		for _, container := range pod.Spec.Containers {
+			if dcgm4Regex.MatchString(container.Image) {
+				return "4.x", nil
+			} else if dcgm3Regex.MatchString(container.Image) {
+				return "3.x", nil
+			}
+		}
+	}
+
+	return "", nil
+}
+
+// getDriverLabelForNodeExcluding returns the expected driver label value for a specific node,
+// excluding a specific pod from consideration (used for delete events)
+func (l *Labeler) getDriverLabelForNodeExcluding(nodeName string, excludePod *v1.Pod) (string, error) {
+	objs, err := l.informer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
+	}
+
+	for _, obj := range objs {
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			continue
+		}
+
+		// Skip the pod we're excluding (the one being deleted)
+		if pod.UID == excludePod.UID {
+			continue
+		}
+
+		if podutil.IsPodReady(pod) {
+			return "true", nil
+		}
+	}
+
+	return "", nil
+}
+
+// updateNodeLabels updates node labels based on expected DCGM and driver label values
 // nolint: cyclop // todo
+func (l *Labeler) updateNodeLabels(nodeName, expectedDCGMVersion, expectedDriverLabel string) error {
+	updateStartTime := time.Now()
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		}
+
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+
+		needsUpdate := false
+
+		if node.Labels[DCGMVersionLabel] != expectedDCGMVersion {
+			needsUpdate = true
+
+			if expectedDCGMVersion == "" {
+				delete(node.Labels, DCGMVersionLabel)
+				klog.Infof("Removing DCGM version label from node %s", nodeName)
+			} else {
+				node.Labels[DCGMVersionLabel] = expectedDCGMVersion
+				klog.Infof("Setting DCGM version label on node %s to %s", nodeName, expectedDCGMVersion)
+			}
+		}
+
+		if node.Labels[DriverInstalledLabel] != expectedDriverLabel {
+			needsUpdate = true
+
+			if expectedDriverLabel == "" {
+				delete(node.Labels, DriverInstalledLabel)
+				klog.Infof("Removing driver installed label from node %s", nodeName)
+			} else {
+				node.Labels[DriverInstalledLabel] = expectedDriverLabel
+				klog.Infof("Setting driver installed label on node %s to %s", nodeName, expectedDriverLabel)
+			}
+		}
+
+		if !needsUpdate {
+			klog.V(4).Infof("Node %s already has correct labels", nodeName)
+			return nil
+		}
+
+		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
+
+		return err
+	})
+
+	if err != nil {
+		metrics.NodeUpdateFailures.Inc()
+		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
+	}
+
+	metrics.NodeUpdateDuration.Observe(time.Since(updateStartTime).Seconds())
+
+	return nil
+}
+
+// handlePodDeleteEvent processes pod delete events by recalculating node labels
+// after excluding the deleted pod from consideration
+func (l *Labeler) handlePodDeleteEvent(obj any) error {
+	startTime := time.Now()
+	defer func() {
+		metrics.EventHandlingDuration.Observe(time.Since(startTime).Seconds())
+	}()
+
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		return fmt.Errorf("pod delete event: expected Pod object, got %T", obj)
+	}
+
+	// For delete events, we need to calculate what the labels should be
+	// after this pod is removed, so we exclude it from our calculations
+	expectedDCGMVersion, err := l.getDCGMVersionForNodeExcluding(pod.Spec.NodeName, pod)
+	if err != nil {
+		return fmt.Errorf("failed to get DCGM version for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
+	}
+
+	expectedDriverLabel, err := l.getDriverLabelForNodeExcluding(pod.Spec.NodeName, pod)
+	if err != nil {
+		return fmt.Errorf("failed to get driver label for node %s excluding deleted pod: %w", pod.Spec.NodeName, err)
+	}
+
+	return l.updateNodeLabels(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
+}
+
+// handlePodEvent processes all pod events (add, update) idempotently
 func (l *Labeler) handlePodEvent(obj any) error {
 	startTime := time.Now()
 	defer func() {
@@ -260,59 +405,5 @@ func (l *Labeler) handlePodEvent(obj any) error {
 		return fmt.Errorf("failed to get driver label for node %s: %w", pod.Spec.NodeName, err)
 	}
 
-	updateStartTime := time.Now()
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, pod.Spec.NodeName, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to get node %s: %w", pod.Spec.NodeName, err)
-		}
-
-		if node.Labels == nil {
-			node.Labels = make(map[string]string)
-		}
-
-		needsUpdate := false
-
-		if node.Labels[DCGMVersionLabel] != expectedDCGMVersion {
-			needsUpdate = true
-
-			if expectedDCGMVersion == "" {
-				delete(node.Labels, DCGMVersionLabel)
-				klog.Infof("Removing DCGM version label from node %s", pod.Spec.NodeName)
-			} else {
-				node.Labels[DCGMVersionLabel] = expectedDCGMVersion
-				klog.Infof("Setting DCGM version label on node %s to %s", pod.Spec.NodeName, expectedDCGMVersion)
-			}
-		}
-
-		if node.Labels[DriverInstalledLabel] != expectedDriverLabel {
-			needsUpdate = true
-
-			if expectedDriverLabel == "" {
-				delete(node.Labels, DriverInstalledLabel)
-				klog.Infof("Removing driver installed label from node %s", pod.Spec.NodeName)
-			} else {
-				node.Labels[DriverInstalledLabel] = expectedDriverLabel
-				klog.Infof("Setting driver installed label on node %s to %s", pod.Spec.NodeName, expectedDriverLabel)
-			}
-		}
-
-		if !needsUpdate {
-			klog.V(4).Infof("Node %s already has correct labels", pod.Spec.NodeName)
-			return nil
-		}
-
-		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
-
-		return err
-	})
-
-	if err != nil {
-		metrics.NodeUpdateFailures.Inc()
-		return fmt.Errorf("failed to reconcile node labeling for %s: %w", pod.Spec.NodeName, err)
-	}
-
-	metrics.NodeUpdateDuration.Observe(time.Since(updateStartTime).Seconds())
-
-	return nil
+	return l.updateNodeLabels(pod.Spec.NodeName, expectedDCGMVersion, expectedDriverLabel)
 }

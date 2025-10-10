@@ -91,7 +91,8 @@ docker-build: setup-buildx
 		--build-arg GITLAB_HOST=gitlab-master.nvidia.com \
 		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-health-events-analyzer:$(SAFE_REF_NAME) \
-		.
+		-f Dockerfile \
+		..
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
@@ -106,7 +107,8 @@ docker-publish: setup-buildx
 		--build-arg GITLAB_LOGIN=gitlab-ci-token \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-health-events-analyzer:$(SAFE_REF_NAME) \
-		.
+		-f Dockerfile \
+		..
 
 # Legacy targets for backwards compatibility
 .PHONY: image
@@ -122,7 +124,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning health-events-analyzer..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml health-events-analyzer
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json health-events-analyzer
 
 # Help target
 .PHONY: help

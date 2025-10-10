@@ -160,6 +160,11 @@ workflow:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # =================================================================================================
+.lint-base:
+  before_script:
+    - make install-go-ci
+    - make install-lint-tools
+
 .dind-service:
   image: docker:28.1.1
   services:
@@ -234,13 +239,24 @@ mrcop:
 
 protos-lint:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make protos-lint
 
 license-headers-lint:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make license-headers-lint
+
+gomod-lint:
+  stage: lint-test
+  extends:
+    - .lint-base
+  script:
+    - make gomod-lint
 
 # argo-workflow-test:
 #   stage: test
@@ -255,6 +271,8 @@ license-headers-lint:
 
 gpu-health-monitor-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C health-monitors/gpu-health-monitor lint-test
   artifacts:
@@ -288,6 +306,8 @@ gpu-health-monitor-container-publish-4:
 
 nic-health-monitor-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C health-monitors/nic-health-monitor lint-test
   artifacts:
@@ -314,6 +334,8 @@ nic-health-monitor-container-publish:
   
 syslog-health-monitor-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C health-monitors/syslog-health-monitor lint-test
   artifacts:
@@ -340,6 +362,8 @@ syslog-health-monitor-container-publish:
     
 nvswitch-health-monitor-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C health-monitors/nvswitch-health-monitor lint-test
   artifacts:
@@ -366,6 +390,8 @@ nvswitch-health-monitor-container-publish:
 
 csp-health-monitor-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -394,6 +420,8 @@ csp-health-monitor-container-publish:
 
 health-event-client-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make lint-test-health-event-client
   artifacts:
@@ -420,6 +448,8 @@ health-event-client-container-publish:
 
 platform-connectors-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make lint-test-platform-connectors
   artifacts:
@@ -447,6 +477,8 @@ platform-connectors-container-publish:
 
 health-event-analyzer-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -476,6 +508,8 @@ health-event-analyzer-container-publish:
 
 fault-quarantine-module-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -505,6 +539,8 @@ fault-quarantine-module-container-publish:
 
 labeler-module-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -534,6 +570,8 @@ labeler-module-container-publish:
 
 node-drainer-module-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -563,6 +601,8 @@ node-drainer-module-container-publish:
     
 fault-remediation-module-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   variables:
     GIT_PRIVATE_DOMAIN: gitlab-master.nvidia.com
   script:
@@ -591,6 +631,8 @@ fault-remediation-module-container-publish:
 
 store-client-sdk-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make lint-test-store-client-sdk
   artifacts:
@@ -607,6 +649,8 @@ store-client-sdk-lint-test:
 
 statemanager-lint-test:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make lint-test-statemanager
   artifacts:
@@ -623,6 +667,8 @@ statemanager-lint-test:
 
 kubernetes-distro-lint:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make kubernetes-distro-lint
 
@@ -654,11 +700,15 @@ file-server-cleanup-container-publish:
 
 log-collector-lint:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C nvsentinel-log-collector lint-log-collector
 
 file-server-cleanup-lint:
   stage: lint-test
+  extends:
+    - .lint-base
   script:
     - make -C nvsentinel-log-collector lint-file-server-cleanup
 

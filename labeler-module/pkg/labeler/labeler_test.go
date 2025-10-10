@@ -604,18 +604,32 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				no, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
 				require.NoError(t, err, "failed to fetch node")
 
+				// Debug output to help diagnose failures
+				t.Logf("Current node labels: %+v", no.Labels)
+				t.Logf("Expected DCGM label: '%s', Expected driver label: '%s'", tt.expectedDCGMLabel, tt.expectedDriverLabel)
+
 				if tt.expectedDCGMLabel != "" {
-					require.Equal(t, tt.expectedDCGMLabel, no.Labels[DCGMVersionLabel])
+					if actualLabel, exists := no.Labels[DCGMVersionLabel]; !exists || actualLabel != tt.expectedDCGMLabel {
+						t.Logf("DCGM label mismatch: expected='%s', actual='%s', exists=%v", tt.expectedDCGMLabel, actualLabel, exists)
+						return false
+					}
 				} else {
-					_, exists := no.Labels[DCGMVersionLabel]
-					require.False(t, exists, "DCGM version label should not exist")
+					if _, exists := no.Labels[DCGMVersionLabel]; exists {
+						t.Logf("DCGM label should not exist but found: %s", no.Labels[DCGMVersionLabel])
+						return false
+					}
 				}
 
 				if tt.expectedDriverLabel != "" {
-					require.Equal(t, tt.expectedDriverLabel, no.Labels[DriverInstalledLabel])
+					if actualLabel, exists := no.Labels[DriverInstalledLabel]; !exists || actualLabel != tt.expectedDriverLabel {
+						t.Logf("Driver label mismatch: expected='%s', actual='%s', exists=%v", tt.expectedDriverLabel, actualLabel, exists)
+						return false
+					}
 				} else {
-					_, exists := no.Labels[DriverInstalledLabel]
-					require.False(t, exists, "Driver installed label should not exist")
+					if _, exists := no.Labels[DriverInstalledLabel]; exists {
+						t.Logf("Driver label should not exist but found: %s", no.Labels[DriverInstalledLabel])
+						return false
+					}
 				}
 
 				return true

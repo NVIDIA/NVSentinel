@@ -17,19 +17,23 @@
 ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 ENV CGO_ENABLED=0
 ARG TARGETOS
 ARG TARGETARCH
 
+WORKDIR /go/src
+
+COPY platform-connectors/ ./platform-connectors/
+COPY health-event-client/go.mod health-event-client/go.sum ./health-event-client/
+
 WORKDIR /go/src/health-event-client
 
-COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-COPY . .
+COPY health-event-client/ .
 
 RUN go build -o health-event-client .
 

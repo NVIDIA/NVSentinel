@@ -134,7 +134,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning fault-remediation-module..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml fault-remediation-module
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json fault-remediation-module
 
 # Help target
 .PHONY: help

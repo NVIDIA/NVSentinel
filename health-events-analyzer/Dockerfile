@@ -17,19 +17,23 @@
 ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 # TODO: remove when pushing to GitHub
 ENV GOPRIVATE=*.nvidia.com
 
-WORKDIR /go/src/health-events-analyzer
+WORKDIR /go/src
 
-COPY go.mod go.sum ./
+COPY platform-connectors/ ./platform-connectors/
+COPY store-client-sdk/ ./store-client-sdk/
+COPY health-events-analyzer/go.mod health-events-analyzer/go.sum ./health-events-analyzer/
+
+WORKDIR /go/src/health-events-analyzer
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download 
 
-COPY . .
+COPY health-events-analyzer/ .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o healtheventsanalyzer cmd/healtheventsanalyzer.go

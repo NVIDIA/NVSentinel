@@ -124,7 +124,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning fault-quarantine-module..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml fault-quarantine-module
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json fault-quarantine-module
 
 # Help target
 .PHONY: help

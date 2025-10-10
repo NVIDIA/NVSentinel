@@ -17,7 +17,7 @@
 ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 ENV CGO_ENABLED=0
 

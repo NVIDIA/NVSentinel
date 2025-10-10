@@ -58,5 +58,5 @@ func (m *SxidEventMonitor) Run() error {
 
 // Close is a stub for non-Linux platforms
 func (m *SxidEventMonitor) Close() {
-    close(m.EventChan)
+	close(m.EventChan)
 }

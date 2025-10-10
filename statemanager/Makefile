@@ -54,7 +54,7 @@ build:
 clean:
 	@echo "Cleaning statemanager..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json
 
 # Help target
 .PHONY: help

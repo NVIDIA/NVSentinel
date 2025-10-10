@@ -61,6 +61,13 @@ image: docker-build
 publish: docker-publish
 	@echo "Legacy 'publish' target - use 'docker-publish' for CI/production"
 
+# Clean target
+.PHONY: clean
+clean:
+	@echo "Cleaning platform-connectors..."
+	go clean ./...
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json platform-connectors
+
 # Help target
 .PHONY: help
 help:
@@ -85,6 +92,7 @@ help:
 	@echo "  publish         - Legacy target (calls docker-publish)"
 	@echo ""
 	@echo "Utility targets:"
+	@echo "  clean      - Clean build artifacts and reports"
 	@echo "  help       - Show this help message"
 	@echo ""
 	@echo "Notes:"

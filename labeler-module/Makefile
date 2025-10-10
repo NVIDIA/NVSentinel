@@ -123,7 +123,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning labeler-module..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml labeler-module
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json labeler-module
 
 # Help target
 .PHONY: help

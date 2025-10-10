@@ -36,7 +36,7 @@ run:
   # Enables skipping of directories:
   # - vendor$, third_party$, testdata$, examples$, Godeps$, builtin$
   # Default: true
-  skip-dirs-use-default: true
+  # skip-dirs-use-default: true # deprecated, moved to issues.exclude-dirs-use-default
 
   # If set we pass it to "go list -mod={option}". From "go help modules":
   # If invoked with -mod=readonly, the go command is disallowed from the implicit
@@ -71,7 +71,12 @@ output:
   # Example: "checkstyle:report.xml,json:stdout,colored-line-number"
   #
   # Default: colored-line-number
-  format: "code-climate:code-quality-report.json,colored-line-number:stdout"
+  # format: "code-climate:code-quality-report.json,colored-line-number:stdout" # deprecated, moved to formats
+  formats:
+    - format: "code-climate"
+      path: "code-quality-report.json"
+    - format: "colored-line-number"
+      path: "stdout"
 
   # Print lines of code with issue.
   # Default: true
@@ -83,7 +88,7 @@ output:
 
   # Make issues output unique by line.
   # Default: true
-  uniq-by-line: false
+  # uniq-by-line: false # deprecated, moved to issues.uniq-by-line
 
   # Add a prefix to the output file references.
   # Default is no prefix.
@@ -91,6 +96,17 @@ output:
 
   # Sort results by: filepath, line and column.
   sort-results: true
+
+# Issues configuration
+issues:
+  # Enables skipping of directories:
+  # - vendor$, third_party$, testdata$, examples$, Godeps$, builtin$
+  # Default: true
+  exclude-dirs-use-default: true
+
+  # Make issues output unique by line.
+  # Default: true
+  uniq-by-line: false
 
 linters:
   enable:

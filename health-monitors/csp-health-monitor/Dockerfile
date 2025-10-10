@@ -17,31 +17,40 @@
 ARG TAG=v3.1.12
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM golang:1.23-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 # TODO: remove when pushing to GitHub
 ENV GOPRIVATE=*.nvidia.com
 
-WORKDIR /go/src/csp-health-monitor
+WORKDIR /go/src/nvsentinel
 
-COPY go.mod go.sum ./
+# Copy the go.mod files for dependencies first
+COPY platform-connectors/go.mod platform-connectors/go.sum platform-connectors/
+COPY store-client-sdk/go.mod store-client-sdk/go.sum store-client-sdk/
+COPY health-monitors/csp-health-monitor/go.mod health-monitors/csp-health-monitor/go.sum health-monitors/csp-health-monitor/
+
+# Download dependencies
+RUN --mount=type=cache,target=/go/pkg/mod \
+    cd health-monitors/csp-health-monitor && go mod download
+
+# Copy the source code
+COPY platform-connectors/ platform-connectors/
+COPY store-client-sdk/ store-client-sdk/
+COPY health-monitors/csp-health-monitor/ health-monitors/csp-health-monitor/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download 
-
-COPY . .
-
-RUN --mount=type=cache,target=/go/pkg/mod \
+    cd health-monitors/csp-health-monitor && \
     go build -trimpath -o csp-health-monitor ./cmd/csp-health-monitor/main.go
 
 RUN --mount=type=cache,target=/go/pkg/mod \
+    cd health-monitors/csp-health-monitor && \
     go build -trimpath -o maintenance-notifier ./cmd/maintenance-notifier/main.go
 
 FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-COPY --from=builder /go/src/csp-health-monitor/csp-health-monitor ./
-COPY --from=builder /go/src/csp-health-monitor/maintenance-notifier ./
+COPY --from=builder /go/src/nvsentinel/health-monitors/csp-health-monitor/csp-health-monitor ./
+COPY --from=builder /go/src/nvsentinel/health-monitors/csp-health-monitor/maintenance-notifier ./
 
 ENTRYPOINT ["/app/csp-health-monitor"]

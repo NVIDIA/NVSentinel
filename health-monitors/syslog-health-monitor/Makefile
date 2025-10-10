@@ -83,7 +83,8 @@ docker-build: setup-buildx
 		--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor \
 		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor,mode=max \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-syslog-health-monitor:$(SAFE_REF_NAME) \
-		.
+		-f Dockerfile \
+		../..
 
 # Docker publish target (matching GitLab CI exactly)
 .PHONY: docker-publish
@@ -96,7 +97,8 @@ docker-publish: setup-buildx
 		--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:syslog-health-monitor,mode=max \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-syslog-health-monitor:$(SAFE_REF_NAME) \
-		.
+		-f Dockerfile \
+		../..
 
 # Legacy targets for backwards compatibility
 .PHONY: image
@@ -112,7 +114,7 @@ publish: docker-publish
 clean:
 	@echo "Cleaning syslog-health-monitor..."
 	$(GO) clean ./...
-	rm -f coverage.txt coverage.xml report.xml syslog-health-monitor
+	rm -f coverage.txt coverage.xml report.xml code-quality-report.json syslog-health-monitor
 
 # Help target
 .PHONY: help
