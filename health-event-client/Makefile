@@ -1,12 +1,56 @@
-.PHONY: all binary image build-and-push clean test
+# Health Event Client Makefile
+# Individual module build and test targets
+
+# Go binary and tools
+GO := go
+GOLANGCI_LINT := golangci-lint
+GOTESTSUM := gotestsum
+GOCOVER_COBERTURA := gocover-cobertura
+
+.PHONY: all binary image build-and-push clean test lint-test vet lint coverage build
 
 all: binary
 
 binary:
-	go build -o health-event-client .
+	$(GO) build -o health-event-client .
 
+# Lint and test this module (matches parent Makefile expectations)
+.PHONY: lint-test
+lint-test:
+	@echo "Linting and testing health-event-client..."
+	$(GO) vet ./... && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number && \
+	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
+	$(GO) tool cover -func coverage.txt && \
+	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
+
+# Individual steps
+.PHONY: vet
+vet:
+	@echo "Running go vet..."
+	$(GO) vet ./...
+
+.PHONY: lint
+lint:
+	@echo "Running golangci-lint..."
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number
+
+.PHONY: test
 test:
-	go test ./... -v
+	@echo "Running tests..."
+	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./...) -coverprofile=coverage.txt -covermode atomic
+
+.PHONY: coverage
+coverage: test
+	@echo "Generating coverage reports..."
+	$(GO) tool cover -func coverage.txt
+	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
+
+# Build targets
+.PHONY: build
+build:
+	@echo "Building health-event-client..."
+	$(GO) build ./...
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -80,8 +124,15 @@ help:
 	@echo ""
 	@echo "Main targets:"
 	@echo "  all        - Build binary (default)"
+	@echo "  lint-test  - Run full lint and test suite (matches CI)"
 	@echo "  binary     - Build the main binary"
-	@echo "  test       - Run tests"
+	@echo "  build      - Build the module"
+	@echo ""
+	@echo "Individual targets:"
+	@echo "  vet        - Run go vet"
+	@echo "  lint       - Run golangci-lint"
+	@echo "  test       - Run tests with coverage"
+	@echo "  coverage   - Generate coverage reports"
 	@echo ""
 	@echo "Docker targets:"
 	@echo "  docker-build    - Build Docker image (local development)"
@@ -104,5 +155,9 @@ help:
 build-and-push:
 	./build.sh
 
+# Clean target
+.PHONY: clean
 clean:
+	@echo "Cleaning health-event-client..."
+	$(GO) clean ./...
 	rm -f coverage.txt coverage.xml report.xml code-quality-report.json health-event-client

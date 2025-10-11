@@ -317,7 +317,7 @@ lint-test-health-event-client:
 	@echo "Linting and testing health-event-client..."
 	cd health-event-client && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number && \
 	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./...) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
@@ -327,7 +327,7 @@ lint-test-platform-connectors:
 	@echo "Linting and testing platform-connectors..."
 	cd platform-connectors && \
 	$(GO) vet ./... && \
-	$(GOLANGCI_LINT) run --config ../.golangci.yml && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number && \
 	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml

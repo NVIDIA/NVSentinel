@@ -1,12 +1,53 @@
+# Platform Connectors Makefile
+# Individual module build and test targets
+
+# Go binary and tools
+GO := go
+GOLANGCI_LINT := golangci-lint
+GOTESTSUM := gotestsum
+GOCOVER_COBERTURA := gocover-cobertura
+
 all: binary
 
 binary:
-	go build -o platform-connectors  main.go
+	$(GO) build -o platform-connectors  main.go
+
+# Lint and test this module (matches parent Makefile expectations)
+.PHONY: lint-test
+lint-test:
+	@echo "Linting and testing platform-connectors..."
+	$(GO) vet ./... && \
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number && \
+	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic && \
+	$(GO) tool cover -func coverage.txt && \
+	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
+
+# Individual steps
+.PHONY: vet
+vet:
+	@echo "Running go vet..."
+	$(GO) vet ./...
+
+.PHONY: lint
+lint:
+	@echo "Running golangci-lint..."
+	$(GOLANGCI_LINT) run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number
+
+.PHONY: test
+test:
+	@echo "Running tests..."
+	$(GOTESTSUM) --junitfile report.xml -- -race -short $$(go list ./... | grep -v -e pkg/protos -e pkg/connectors/nodehealtheventsudsconnector/protos) -coverprofile=coverage.txt -covermode atomic
+
+.PHONY: coverage
+coverage: test
+	@echo "Generating coverage reports..."
+	$(GO) tool cover -func coverage.txt
+	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 
 .PHONY: build
 build:
 	@echo "Building platform-connectors..."
-	go build ./...
+	$(GO) build ./...
 
 # Docker configuration matching GitLab CI
 NVCR_CONTAINER_REPO ?= nvcr.io
@@ -65,13 +106,13 @@ publish: docker-publish
 .PHONY: clean
 clean:
 	@echo "Cleaning platform-connectors..."
-	go clean ./...
+	$(GO) clean ./...
 	rm -f coverage.txt coverage.xml report.xml code-quality-report.json platform-connectors
 
 # Help target
 .PHONY: help
 help:
-	@echo "Platform Connectors Makefile - Matching .gitlab-ci.yml exactly"
+	@echo "Platform Connectors Makefile - Individual module build and test targets"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
@@ -81,8 +122,15 @@ help:
 	@echo ""
 	@echo "Main targets:"
 	@echo "  all        - Build binary (default)"
+	@echo "  lint-test  - Run full lint and test suite (matches CI)"
 	@echo "  binary     - Build the main binary"
 	@echo "  build      - Build the module"
+	@echo ""
+	@echo "Individual targets:"
+	@echo "  vet        - Run go vet"
+	@echo "  lint       - Run golangci-lint"
+	@echo "  test       - Run tests with coverage"
+	@echo "  coverage   - Generate coverage reports"
 	@echo ""
 	@echo "Docker targets:"
 	@echo "  docker-build    - Build Docker image (local development)"
