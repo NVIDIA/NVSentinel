@@ -20,7 +20,7 @@ test-ci:
 # Run end-to-end tests
 .PHONY: test
 test:
-	$(GO) test -count 1 -v ./...
+	$(GO) test -timeout 20m -count 1 -v ./...
 
 # Help target
 .PHONY: help

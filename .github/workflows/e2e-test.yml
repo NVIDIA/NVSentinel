@@ -1,0 +1,212 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: E2E Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read       # Required for checking out code
+  actions: read        # Required for artifact operations
+
+env:
+  # E2E-specific tool versions (not duplicated elsewhere)
+  KIND_VERSION: '0.30.0'
+  CTLPTL_VERSION: '0.8.43'
+  TILT_VERSION: '0.35.2'
+
+jobs:
+  prepare-environment:
+    uses: ./.github/workflows/prepare-environment.yml
+
+  e2e-test:
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 90
+    needs: prepare-environment
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workaround for freeing up more disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          # Additional Docker cleanup as recommended by Kind
+          docker system prune -f
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prep system for multi-node Kind cluster
+        run: |
+          # System configuration for Kind multi-node setup
+          sudo systemctl stop apparmor || echo "unable to stop apparmor"
+          sudo systemctl disable apparmor || echo "unable to disable apparmor"
+          sudo modprobe br_netfilter || echo "unable to run modprobe"
+
+          # Network configuration
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+
+          # File system limits for Kind
+          sudo sysctl -w fs.inotify.max_user_watches=524288
+          sudo sysctl -w fs.inotify.max_user_instances=1024
+
+          # IPTables cleanup and configuration
+          sudo iptables -F && sudo iptables -X && sudo iptables -t nat -F && sudo iptables -t nat -X && sudo iptables -t mangle -F && sudo iptables -t mangle -X && sudo iptables -P INPUT ACCEPT && sudo iptables -P FORWARD ACCEPT -w 5 && sudo iptables -P OUTPUT ACCEPT -w 5
+          sudo systemctl restart docker
+
+      - name: Cache E2E testing tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ctlptl
+            /usr/local/bin/kind
+            /usr/local/bin/kubectl
+            /usr/local/bin/tilt
+          key: ${{ runner.os }}-e2e-tools-${{ env.KIND_VERSION }}-${{ env.CTLPTL_VERSION }}-${{ env.TILT_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-e2e-tools-
+
+      - name: Install E2E testing tools
+        run: |
+          # Install ctlptl (if not cached)
+          CTLPTL_VERSION="${{ env.CTLPTL_VERSION }}"
+          if command -v ctlptl &> /dev/null && ctlptl version | grep -q "v${CTLPTL_VERSION}"; then
+            echo "ctlptl v${CTLPTL_VERSION} already installed from cache"
+          else
+            echo "Installing ctlptl v${CTLPTL_VERSION}..."
+            curl -fsSL https://github.com/tilt-dev/ctlptl/releases/download/v${CTLPTL_VERSION}/ctlptl.${CTLPTL_VERSION}.linux.x86_64.tar.gz | sudo tar -xzv -C /usr/local/bin ctlptl
+          fi
+
+          # Install Kind (if not cached)
+          KIND_VERSION="${{ env.KIND_VERSION }}"
+          if command -v kind &> /dev/null && kind version | grep -q "${KIND_VERSION}"; then
+            echo "Kind v${KIND_VERSION} already installed from cache"
+          else
+            echo "Installing Kind v${KIND_VERSION}..."
+            curl -Lo ./kind https://kind.sigs.k8s.io/dl/v${KIND_VERSION}/kind-linux-amd64
+            chmod +x ./kind
+            sudo mv ./kind /usr/local/bin/kind
+          fi
+
+          # Install kubectl (if not cached)
+          if command -v kubectl &> /dev/null; then
+            echo "kubectl already installed from cache"
+          else
+            echo "Installing kubectl..."
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv ./kubectl /usr/local/bin/kubectl
+          fi
+
+          # Install Tilt (if not cached)
+          TILT_VERSION="${{ env.TILT_VERSION }}"
+          if command -v tilt &> /dev/null && tilt version | grep -q "${TILT_VERSION}"; then
+            echo "Tilt v${TILT_VERSION} already installed from cache"
+          else
+            echo "Installing Tilt v${TILT_VERSION}..."
+            TEMP_DIR=$(mktemp -d)
+            curl -fsSL https://github.com/tilt-dev/tilt/releases/download/v${TILT_VERSION}/tilt.${TILT_VERSION}.linux.x86_64.tar.gz | tar -xzv -C "$TEMP_DIR" tilt
+            sudo mv "$TEMP_DIR/tilt" /usr/local/bin/
+            rm -rf "$TEMP_DIR"
+          fi
+
+          # Verify installations
+          echo "Verifying tool installations:"
+          echo "ctlptl: $(ctlptl version)"
+          echo "Kind: $(kind version)"
+          echo "kubectl: $(kubectl version --client --short)"
+          echo "Tilt: $(tilt version)"
+          echo "Docker: $(docker version --format '{{.Client.Version}}')"
+
+      - name: Configure Helm repositories
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update
+
+      - name: Configure ctlptl registry authentication
+        run: |
+          chmod +x scripts/configure-ctlptl-registry.sh
+          ./scripts/configure-ctlptl-registry.sh
+
+      - name: Create cluster for E2E tests
+        env:
+          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
+          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+          CTLPTL_YAML: ctlptl-config.yaml
+        run: |
+          make cluster-create
+
+      - name: Run E2E tests
+        env:
+          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
+          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+          CTLPTL_YAML: ctlptl-config.yaml
+        run: |
+          make e2e-test-ci
+
+      - name: Upload test results
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: e2e-test
+          file-paths: |
+            tests/results/
+            tests/*.log
+          retention-days: 14
+
+      - name: Cleanup Docker resources
+        if: always()
+        run: |
+          # Remove all containers (running and stopped)
+          docker rm -f $(docker ps -a -q) || true
+          # Remove all images
+          docker rmi -f $(docker images -q -a) || true
+          # Remove all volumes
+          docker volume prune -f || true
+          # Remove all networks (except default ones)
+          docker network prune -f || true
+          # Clean up build cache
+          docker builder prune -f || true

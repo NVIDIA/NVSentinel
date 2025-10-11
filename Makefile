@@ -608,7 +608,7 @@ dev-env-clean:
 	$(MAKE) -C dev env-down
 
 # Tilt end-to-end test target for CI
-.PHONY: e2e-test
+.PHONY: e2e-test-ci
 e2e-test-ci:
 	$(MAKE) -C dev tilt-ci
 	$(MAKE) -C tests test-ci
