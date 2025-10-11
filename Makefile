@@ -222,8 +222,9 @@ protos-generate: protos-clean
 	protoc -I protobufs/ --go_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=platform-connectors/pkg/connectors/nodehealtheventsudsconnector/protos/ protobufs/nodehealtheventsudsconnector.proto
 	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
 	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos protobufs/platformconnector.proto
-	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
-	sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py
+	@SED_CMD=$$(command -v gsed 2>/dev/null || command -v sed); \
+	$$SED_CMD -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
+	$$SED_CMD -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/clear_xid_errors/protos/platformconnector_pb2_grpc.py
 
 # Check protobuf files
 .PHONY: protos-lint
