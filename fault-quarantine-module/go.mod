@@ -6,7 +6,7 @@ toolchain go1.24.8
 
 require (
 	github.com/BurntSushi/toml v1.5.0
-	github.com/google/cel-go v0.26.0
+	github.com/google/cel-go v0.26.1
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/prometheus/client_golang v1.23.2
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250922095649-50aef3f27c10
