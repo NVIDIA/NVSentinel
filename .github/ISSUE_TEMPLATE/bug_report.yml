@@ -1,0 +1,72 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I searched existing issues
+          required: true
+        - label: I can reproduce this issue
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: What happened and what did you expect?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Health Monitor
+        - Core Service
+        - Fault Management
+        - Deployment/Config
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Step one
+        2. Step two
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - NVSentinel version:
+        - Kubernetes version:
+        - Deployment method:
+      value: |
+        - NVSentinel version:
+        - Kubernetes version:
+        - Deployment method:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs/Output
+      description: Include relevant logs or error messages
+      placeholder: |
+        ```
+        # Logs here
+        ```

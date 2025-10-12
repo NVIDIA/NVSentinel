@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security Issue
+    url: https://github.com/NVIDIA/NVSentinel/security/advisories/new
+    about: Report a security vulnerability (private disclosure)
+  - name: 💬 Discussions
+    url: https://github.com/NVIDIA/NVSentinel/discussions
+    about: Ask questions, share ideas, and discuss with the community
+  - name: 📖 Documentation
+    url: https://github.com/NVIDIA/NVSentinel/blob/main/README.md
+    about: Read the documentation and guides
