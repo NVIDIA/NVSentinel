@@ -30,7 +30,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOTAL_MODULES=0
 MODULES_WITH_ISSUES=0
 TOTAL_ISSUES=0
-MODULES_NEED_TIDY=0
 TOTAL_TIDY_ISSUES=0
 
 # Function to print colored output
@@ -90,7 +89,7 @@ get_relative_path() {
     # Manual calculation as last resort
     # Simple case: to is a subdirectory of from
     if [[ "$abs_to" == "$abs_from"/* ]]; then
-        echo "${abs_to#$abs_from/}"
+        echo "${abs_to#"$abs_from"/}"
         return 0
     fi
 
@@ -112,14 +111,15 @@ get_relative_path() {
     if [[ "$abs_to" == "$common_part" ]]; then
         echo "${result%/}"
     else
-        echo "${result}${abs_to#$common_part/}"
+        echo "${result}${abs_to#"$common_part"/}"
     fi
 }
 
 # Function to check if go mod tidy is needed
 check_mod_tidy() {
     local gomod_file="$1"
-    local gomod_dir="$(dirname "$gomod_file")"
+    local gomod_dir
+    gomod_dir="$(dirname "$gomod_file")"
     local tidy_needed=0
 
     # Change to the directory containing go.mod
@@ -128,7 +128,7 @@ check_mod_tidy() {
     # Create temporary copies of go.mod and go.sum for comparison
     local temp_dir
     temp_dir=$(mktemp -d)
-    trap "rm -rf '$temp_dir'" EXIT
+    trap 'rm -rf "$temp_dir"' EXIT
 
     # Copy current files
     cp go.mod "$temp_dir/go.mod.orig" 2>/dev/null || true
@@ -172,11 +172,11 @@ check_mod_tidy() {
 # Function to validate a single go.mod file
 validate_gomod() {
     local gomod_file="$1"
-    local gomod_dir="$(dirname "$gomod_file")"
-    local module_name="$(basename "$gomod_dir")"
+    local gomod_dir
+    gomod_dir="$(dirname "$gomod_file")"
     local issues_found=0
 
-    print_info "Checking ${gomod_file#$REPO_ROOT/}..."
+    print_info "Checking ${gomod_file#"$REPO_ROOT"/}..."
 
     # Change to the directory containing go.mod
     if ! cd "$gomod_dir" 2>/dev/null; then
@@ -256,8 +256,8 @@ validate_gomod() {
                     fi
 
                     # Normalize paths for comparison (remove ./ prefix)
-                    current_replace=$(echo "$current_replace" | sed 's|^\./||')
-                    expected_relative_path=$(echo "$expected_relative_path" | sed 's|^\./||')
+                    current_replace=${current_replace#./}
+                    expected_relative_path=${expected_relative_path#./}
 
                     if [[ "$current_replace" == "$expected_relative_path" ]]; then
                         print_info "  ✓ $dep => $current_replace"
@@ -335,12 +335,9 @@ main() {
     print_info ""
 
     # Validate each go.mod file
-    local overall_status=0
     for gomod_file in "${gomod_files[@]}"; do
         TOTAL_MODULES=$((TOTAL_MODULES + 1))
-        if ! validate_gomod "$gomod_file"; then
-            overall_status=1
-        fi
+        validate_gomod "$gomod_file"
         print_info ""
     done
 

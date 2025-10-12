@@ -278,7 +278,7 @@ while IFS= read -r gomod; do
         if [ "$depth" -eq 0 ]; then
             rel_path="./"
         else
-            rel_path=$(printf '../%.0s' $(seq 1 $depth))
+            rel_path=$(printf '../%.0s' $(seq 1 "$depth"))
         fi
 
         # Add replace directives for all internal modules
@@ -291,21 +291,23 @@ while IFS= read -r gomod; do
             fi
 
             # Add replace directives
-            echo "" >> go.mod
-            echo "// Local replacements for internal modules" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/statemanager => ${rel_path}statemanager" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-monitors/csp-health-monitor => ${rel_path}health-monitors/csp-health-monitor" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-monitors/nvswitch-health-monitor => ${rel_path}health-monitors/nvswitch-health-monitor" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-monitors/nic-health-monitor => ${rel_path}health-monitors/nic-health-monitor" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-monitors/syslog-health-monitor => ${rel_path}health-monitors/syslog-health-monitor" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/platform-connectors => ${rel_path}platform-connectors" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/store-client-sdk => ${rel_path}store-client-sdk" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-event-client => ${rel_path}health-event-client" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/health-events-analyzer => ${rel_path}health-events-analyzer" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/fault-quarantine-module => ${rel_path}fault-quarantine-module" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/labeler-module => ${rel_path}labeler-module" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/node-drainer-module => ${rel_path}node-drainer-module" >> go.mod
-            echo "replace ${GITHUB_IMPORT}/fault-remediation-module => ${rel_path}fault-remediation-module" >> go.mod
+            {
+                echo ""
+                echo "// Local replacements for internal modules"
+                echo "replace ${GITHUB_IMPORT}/statemanager => ${rel_path}statemanager"
+                echo "replace ${GITHUB_IMPORT}/health-monitors/csp-health-monitor => ${rel_path}health-monitors/csp-health-monitor"
+                echo "replace ${GITHUB_IMPORT}/health-monitors/nvswitch-health-monitor => ${rel_path}health-monitors/nvswitch-health-monitor"
+                echo "replace ${GITHUB_IMPORT}/health-monitors/nic-health-monitor => ${rel_path}health-monitors/nic-health-monitor"
+                echo "replace ${GITHUB_IMPORT}/health-monitors/syslog-health-monitor => ${rel_path}health-monitors/syslog-health-monitor"
+                echo "replace ${GITHUB_IMPORT}/platform-connectors => ${rel_path}platform-connectors"
+                echo "replace ${GITHUB_IMPORT}/store-client-sdk => ${rel_path}store-client-sdk"
+                echo "replace ${GITHUB_IMPORT}/health-event-client => ${rel_path}health-event-client"
+                echo "replace ${GITHUB_IMPORT}/health-events-analyzer => ${rel_path}health-events-analyzer"
+                echo "replace ${GITHUB_IMPORT}/fault-quarantine-module => ${rel_path}fault-quarantine-module"
+                echo "replace ${GITHUB_IMPORT}/labeler-module => ${rel_path}labeler-module"
+                echo "replace ${GITHUB_IMPORT}/node-drainer-module => ${rel_path}node-drainer-module"
+                echo "replace ${GITHUB_IMPORT}/fault-remediation-module => ${rel_path}fault-remediation-module"
+            } >> go.mod
         })
         replace_count=$((replace_count + 1))
     fi

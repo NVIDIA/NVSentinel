@@ -258,6 +258,13 @@ gomod-lint:
   script:
     - make gomod-lint
 
+scripts-lint-test:
+  stage: lint-test
+  extends:
+    - .lint-base
+  script:
+    - make -C scripts lint-test
+
 # argo-workflow-test:
 #   stage: test
 #   script:
