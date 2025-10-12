@@ -12,7 +12,7 @@ require (
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/statemanager v0.0.0-00010101000000-000000000000
 	go.uber.org/zap v1.27.0
 	k8s.io/api v0.34.0
-	k8s.io/apimachinery v0.34.0
+	k8s.io/apimachinery v0.34.1
 	sigs.k8s.io/controller-runtime v0.22.1
 	sigs.k8s.io/e2e-framework v0.6.0
 )
