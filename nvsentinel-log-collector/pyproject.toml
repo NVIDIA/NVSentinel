@@ -7,7 +7,7 @@ authors = ["NVIDIA Corporation <nvsentinel@nvidia.com>"]
 [tool.poetry.dependencies]
 python = "^3.12"
 click = "^8.1.7"
-prometheus-client = "^0.20.0"
+prometheus-client = "^0.23.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
