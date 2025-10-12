@@ -14,7 +14,7 @@ require (
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
 	go.mongodb.org/mongo-driver v1.17.4
 	k8s.io/api v0.34.0
-	k8s.io/apimachinery v0.34.0
+	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.0
 	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.130.1
