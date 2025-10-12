@@ -48,7 +48,7 @@ jobs:
     outputs:
       versions: ${{ steps.build-list.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build image list
         id: build-list
@@ -104,7 +104,7 @@ jobs:
           - component: file-server-cleanup
             make_command: 'make -C nvsentinel-log-collector docker-publish-file-server-cleanup'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Publish container for ${{ matrix.component }}
         uses: ./.github/actions/publish-container

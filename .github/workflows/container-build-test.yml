@@ -98,7 +98,7 @@ jobs:
           - component: file-server-cleanup
             make_command: 'make -C nvsentinel-log-collector docker-build-file-server-cleanup'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check if component should be built
         id: should-build

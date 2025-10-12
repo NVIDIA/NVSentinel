@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 90
     needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Workaround for freeing up more disk space
         run: |

@@ -70,7 +70,7 @@ jobs:
             make_command: 'make kubernetes-distro-lint'
             step_name: 'Run lint'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup build environment
         uses: ./.github/actions/setup-build-env
@@ -104,7 +104,7 @@ jobs:
             python_required: 'true'
             replace_imports: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup build environment
         uses: ./.github/actions/setup-build-env
@@ -149,7 +149,7 @@ jobs:
           - node-drainer-module
           - fault-remediation-module
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup build environment
         uses: ./.github/actions/setup-build-env

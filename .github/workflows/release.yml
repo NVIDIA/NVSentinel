@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 30
     needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build image list
         env:
@@ -61,7 +61,7 @@ jobs:
       - prepare-environment
       - build-image-list
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install helm
         uses: azure/setup-helm@v4
@@ -89,7 +89,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download versions.txt
         uses: actions/download-artifact@v4

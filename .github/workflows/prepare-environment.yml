@@ -85,7 +85,7 @@ jobs:
       protoc_gen_go_grpc_version: ${{ env.PROTOC_GEN_GO_GRPC_VERSION }}
       shellcheck_version: ${{ env.SHELLCHECK_VERSION }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare variables
         id: prepare
         uses: ./.github/actions/prepare-vars
