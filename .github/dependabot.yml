@@ -1,0 +1,122 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Go modules (root level)
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Health Monitors
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/gpu-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/nic-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/nvswitch-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/csp-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/syslog-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Core Services
+  - package-ecosystem: "gomod"
+    directory: "/health-events-analyzer"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/platform-connectors"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/statemanager"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-event-client"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/store-client-sdk"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Fault Management
+  - package-ecosystem: "gomod"
+    directory: "/fault-quarantine-module"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/fault-remediation-module"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/labeler-module"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/node-drainer-module"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Python packages
+  - package-ecosystem: "pip"
+    directory: "/health-monitors/gpu-health-monitor"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "pip"
+    directory: "/nvsentinel-log-collector"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Docker
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels: ["dependencies"]

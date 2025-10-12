@@ -1,0 +1,48 @@
+name: Question
+description: Ask a question about usage, configuration, or troubleshooting
+title: "[Question]: "
+labels: ["question", "needs-triage"]
+
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I searched existing issues and docs
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Installation/Deployment
+        - Configuration
+        - Troubleshooting
+        - Performance/Monitoring
+        - Integration
+        - Best Practices
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant details about your setup
+      placeholder: |
+        - NVSentinel version:
+        - Kubernetes version:
+        - What you're trying to accomplish:
+    validations:
+      required: false
