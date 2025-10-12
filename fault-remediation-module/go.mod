@@ -8,9 +8,9 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.mongodb.org/mongo-driver v1.17.4
-	k8s.io/api v0.34.0
-	k8s.io/apimachinery v0.34.0
-	k8s.io/client-go v0.34.0
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
 	k8s.io/klog v1.0.0
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397
 	sigs.k8s.io/controller-runtime v0.22.1
