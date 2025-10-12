@@ -8,7 +8,7 @@ require (
 	gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/platform-connectors v0.0.0-20250919203102-dd6bf6e0d460
 	go.mongodb.org/mongo-driver v1.17.4
 	google.golang.org/grpc v1.75.0
-	google.golang.org/protobuf v1.36.8
+	google.golang.org/protobuf v1.36.10
 	k8s.io/apimachinery v0.34.0
 	k8s.io/client-go v0.34.0
 )
