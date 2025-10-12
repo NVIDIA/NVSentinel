@@ -39,4 +39,4 @@ runs:
         fi
         echo "safe_ref_name=$SAFE_REF_NAME" >> $GITHUB_OUTPUT
         echo "nvcr_container_repo=${{ env.CONTAINER_REGISTRY || 'ghcr.io' }}" >> $GITHUB_OUTPUT
-        echo "container_org=${{ env.CONTAINER_ORG || github.repository_owner }}" >> $GITHUB_OUTPUT
+        echo "container_org=$(echo '${{ env.CONTAINER_ORG || github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
