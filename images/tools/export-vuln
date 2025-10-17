@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+
+vuln_dir="${1:-reports/vuln}"
+output_file="vuln.csv"
+
+if [[ ! -d "$vuln_dir" ]]; then
+  echo "Error: Directory $vuln_dir does not exist." >&2
+  exit 1
+fi
+
+rm -f "$output_file"
+
+shopt -s nullglob
+for file in "$vuln_dir"/*.json; do
+  [[ -f "$file" ]] || continue
+  echo "Processing: $file"
+
+  # jq prints nothing if there are no vulns, avoids errors on missing arrays
+  jq -r '
+    . as $root
+    | ($root.Results // [])[]?
+    | . as $res
+    | ($res.Vulnerabilities // [])[]?
+    | [
+        ($root.ArtifactName // ""),
+        (.VulnerabilityID // ""),
+        (.PkgName // ""),
+        (.InstalledVersion // ""),
+        (.Severity // "")
+      ] | @csv
+  ' "$file" >> "$output_file" || {
+    echo "Warning: jq failed on $file (skipping)"; continue;
+  }
+done
+
+echo "Wrote: $output_file"

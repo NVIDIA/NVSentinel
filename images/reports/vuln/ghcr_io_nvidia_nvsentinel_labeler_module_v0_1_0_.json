@@ -1,0 +1,1698 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2025-10-17T15:05:40.194409-07:00",
+  "ArtifactName": "ghcr.io/nvidia/nvsentinel-labeler-module:v0.1.0",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "Size": 68068864,
+    "OS": {
+      "Family": "debian",
+      "Name": "12.12"
+    },
+    "ImageID": "sha256:1e6411503fbac572c400a104da29c2b70ac32c9445899e488aacab28ff66f4b0",
+    "DiffIDs": [
+      "sha256:bff7f7a9d44356d8784500366094c66399aa6a2edd990cc70e02e27c84402753",
+      "sha256:8fa10c0194df9b7c054c90dbe482585f768a54428fc90a5b78a0066a123b1bba",
+      "sha256:4840c7c54023c867f19564429c89ddae4e9589c83dce82492183a7e9f7dab1fa",
+      "sha256:4d049f83d9cf21d1f5cc0e11deaf36df02790d0e60c1a3829538fb4b61685368",
+      "sha256:af5aa97ebe6ce1604747ec1e21af7136ded391bcabe4acef882e718a87c86bcc",
+      "sha256:edd3d07ce063dedf7bddec21e81d3df4a6013893cd921fe31223cd8b467aa8dd",
+      "sha256:bbb6cacb8c82e4da4e8143e03351e939eab5e21ce0ef333c42e637af86c5217b",
+      "sha256:2a92d6ac9e4fcc274d5168b217ca4458a9fec6f094ead68d99c77073f08caac1",
+      "sha256:1a73b54f556b477f0a8b939d13c504a3b4f4db71f7a09c63afbc10acb3de5849",
+      "sha256:f4aee9e53c42a22ed82451218c3ea03d1eea8d6ca8fbe8eb4e950304ba8a8bb3",
+      "sha256:bfe9137a1b044e8097cdfcb6899137a8a984ed70931ed1e8ef0cf7e023a139fc",
+      "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e",
+      "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37",
+      "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe",
+      "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3",
+      "sha256:dcaf436cbca0316426a521f43127efbd41c44c8b1daa7afe71c6dfbea77d861d",
+      "sha256:cccaadcdb31d7309c8c245bb29b81e34dcb578daada1c3d341b24dd69d6f144a",
+      "sha256:6e3e6cdaf2681dda9330919df586fddd873bf34d34e18d745996f1bfea9d4242",
+      "sha256:a3728d8e311ebd2ad8a07e808126e34748daf7ea260fe8263d17e1e26926af1a",
+      "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+    ],
+    "RepoTags": [
+      "ghcr.io/nvidia/nvsentinel-labeler-module:v0.1.0"
+    ],
+    "RepoDigests": [
+      "ghcr.io/nvidia/nvsentinel-labeler-module@sha256:340cd6d328692427a6be104bfda7558821e4d6592e324932836cefe3e1d7631f"
+    ],
+    "ImageConfig": {
+      "architecture": "amd64",
+      "created": "2025-10-17T15:39:57.527791298Z",
+      "history": [
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created": "2025-10-17T15:38:08.691710688Z",
+          "created_by": "WORKDIR /app",
+          "comment": "buildkit.dockerfile.v0"
+        },
+        {
+          "created": "2025-10-17T15:39:57.527791298Z",
+          "created_by": "COPY /go/src/labeler/labeler . # buildkit",
+          "comment": "buildkit.dockerfile.v0"
+        },
+        {
+          "created": "2025-10-17T15:39:57.527791298Z",
+          "created_by": "ENTRYPOINT [\"/app/labeler\"]",
+          "comment": "buildkit.dockerfile.v0",
+          "empty_layer": true
+        }
+      ],
+      "os": "linux",
+      "rootfs": {
+        "type": "layers",
+        "diff_ids": [
+          "sha256:bff7f7a9d44356d8784500366094c66399aa6a2edd990cc70e02e27c84402753",
+          "sha256:8fa10c0194df9b7c054c90dbe482585f768a54428fc90a5b78a0066a123b1bba",
+          "sha256:4840c7c54023c867f19564429c89ddae4e9589c83dce82492183a7e9f7dab1fa",
+          "sha256:4d049f83d9cf21d1f5cc0e11deaf36df02790d0e60c1a3829538fb4b61685368",
+          "sha256:af5aa97ebe6ce1604747ec1e21af7136ded391bcabe4acef882e718a87c86bcc",
+          "sha256:edd3d07ce063dedf7bddec21e81d3df4a6013893cd921fe31223cd8b467aa8dd",
+          "sha256:bbb6cacb8c82e4da4e8143e03351e939eab5e21ce0ef333c42e637af86c5217b",
+          "sha256:2a92d6ac9e4fcc274d5168b217ca4458a9fec6f094ead68d99c77073f08caac1",
+          "sha256:1a73b54f556b477f0a8b939d13c504a3b4f4db71f7a09c63afbc10acb3de5849",
+          "sha256:f4aee9e53c42a22ed82451218c3ea03d1eea8d6ca8fbe8eb4e950304ba8a8bb3",
+          "sha256:bfe9137a1b044e8097cdfcb6899137a8a984ed70931ed1e8ef0cf7e023a139fc",
+          "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e",
+          "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37",
+          "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe",
+          "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3",
+          "sha256:dcaf436cbca0316426a521f43127efbd41c44c8b1daa7afe71c6dfbea77d861d",
+          "sha256:cccaadcdb31d7309c8c245bb29b81e34dcb578daada1c3d341b24dd69d6f144a",
+          "sha256:6e3e6cdaf2681dda9330919df586fddd873bf34d34e18d745996f1bfea9d4242",
+          "sha256:a3728d8e311ebd2ad8a07e808126e34748daf7ea260fe8263d17e1e26926af1a",
+          "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+        ]
+      },
+      "config": {
+        "Entrypoint": [
+          "/app/labeler"
+        ],
+        "Env": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+          "LD_LIBRARY_PATH=/lib/distroless/"
+        ],
+        "Labels": {
+          "org.opencontainers.image.created": "2025-09-08T22:48:42Z",
+          "org.opencontainers.image.documentation": "https://gitlab-master.nvidia.com/gfn/security/container-hardening/distroless-sample-projects",
+          "org.opencontainers.image.revision": "0de236e8c246a2f55221d70b371ca24837d3359a",
+          "org.opencontainers.image.source": "https://gitlab-master.nvidia.com/gfn/security/container-hardening/baseimages",
+          "org.opencontainers.image.title": "Golang Distroless Image",
+          "org.opencontainers.image.url": "https://gitlab-master.nvidia.com/gfn/security/container-hardening/distroless-sample-projects",
+          "org.opencontainers.image.version": "v3.1.12"
+        },
+        "User": "nvs",
+        "WorkingDir": "/app"
+      }
+    },
+    "Layers": [
+      {
+        "Size": 327680,
+        "Digest": "sha256:fd4aa3667332c2a4837e1b5f395b0555b3c4ec299e38166ae93ee84bad01befa",
+        "DiffID": "sha256:bff7f7a9d44356d8784500366094c66399aa6a2edd990cc70e02e27c84402753"
+      },
+      {
+        "Size": 40960,
+        "Digest": "sha256:bfb59b82a9b65e47d485e53b3e815bca3b3e21a095bd0cb88ced9ac0b48062bf",
+        "DiffID": "sha256:8fa10c0194df9b7c054c90dbe482585f768a54428fc90a5b78a0066a123b1bba"
+      },
+      {
+        "Size": 2406400,
+        "Digest": "sha256:017886f7e1764618ffad6fbd503c42a60076c63adc16355cac80f0f311cae4c9",
+        "DiffID": "sha256:4840c7c54023c867f19564429c89ddae4e9589c83dce82492183a7e9f7dab1fa"
+      },
+      {
+        "Size": 1536,
+        "Digest": "sha256:b6824ed73363f94b3b2b44084c51c31bc32af77a96861d49e16f91e3ab6bed71",
+        "DiffID": "sha256:4d049f83d9cf21d1f5cc0e11deaf36df02790d0e60c1a3829538fb4b61685368"
+      },
+      {
+        "Size": 2560,
+        "Digest": "sha256:7c12895b777bcaa8ccae0605b4de635b68fc32d60fa08f421dc3818bf55ee212",
+        "DiffID": "sha256:af5aa97ebe6ce1604747ec1e21af7136ded391bcabe4acef882e718a87c86bcc"
+      },
+      {
+        "Size": 2048,
+        "Digest": "sha256:aa796dec1a378b52ab2d74d160eb49180e43db68bff18fb75b1201f9fa3fd9bb",
+        "DiffID": "sha256:edd3d07ce063dedf7bddec21e81d3df4a6013893cd921fe31223cd8b467aa8dd"
+      },
+      {
+        "Size": 2560,
+        "Digest": "sha256:5664b15f108bf9436ce3312090a767300800edbbfd4511aa1a6d64357024d5dd",
+        "DiffID": "sha256:bbb6cacb8c82e4da4e8143e03351e939eab5e21ce0ef333c42e637af86c5217b"
+      },
+      {
+        "Size": 1536,
+        "Digest": "sha256:27be814a09ebd97fac6fb7b82d19f117185e90601009df3fbab6f442f85cd6b3",
+        "DiffID": "sha256:2a92d6ac9e4fcc274d5168b217ca4458a9fec6f094ead68d99c77073f08caac1"
+      },
+      {
+        "Size": 10240,
+        "Digest": "sha256:4aa0ea1413d37a58615488592a0b827ea4b2e48fa5a77cf707d0e35f025e613f",
+        "DiffID": "sha256:1a73b54f556b477f0a8b939d13c504a3b4f4db71f7a09c63afbc10acb3de5849"
+      },
+      {
+        "Size": 3072,
+        "Digest": "sha256:3f4e2c5863480125882d92060440a5250766bce764fee10acdbac18c872e4dc7",
+        "DiffID": "sha256:f4aee9e53c42a22ed82451218c3ea03d1eea8d6ca8fbe8eb4e950304ba8a8bb3"
+      },
+      {
+        "Size": 241664,
+        "Digest": "sha256:ddf74a63f7d8b7d157e5db1a45675a58e304b4c1d425b05c28c835b987623395",
+        "DiffID": "sha256:bfe9137a1b044e8097cdfcb6899137a8a984ed70931ed1e8ef0cf7e023a139fc"
+      },
+      {
+        "Size": 1546240,
+        "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+        "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+      },
+      {
+        "Size": 1218560,
+        "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+        "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+      },
+      {
+        "Size": 13066240,
+        "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+        "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+      },
+      {
+        "Size": 5918720,
+        "Digest": "sha256:c058825cfcd674180d54bec6822f5d549c038b3c66884c197a863341943c2e70",
+        "DiffID": "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3"
+      },
+      {
+        "Size": 2560,
+        "Digest": "sha256:88d59a2387a1a041db96185febb689ba8e2810b0f2acb1e0f1f690441257cb84",
+        "DiffID": "sha256:dcaf436cbca0316426a521f43127efbd41c44c8b1daa7afe71c6dfbea77d861d"
+      },
+      {
+        "Size": 2048,
+        "Digest": "sha256:00178db943e30e3c688e29745e5bccbae7143c30459912563e3528362b5aafbb",
+        "DiffID": "sha256:cccaadcdb31d7309c8c245bb29b81e34dcb578daada1c3d341b24dd69d6f144a"
+      },
+      {
+        "Size": 2560,
+        "Digest": "sha256:ea3773dba9215eb23212d3b3e22bc8e523eb58baf5b9378a0af6dbdbdb93ea86",
+        "DiffID": "sha256:6e3e6cdaf2681dda9330919df586fddd873bf34d34e18d745996f1bfea9d4242"
+      },
+      {
+        "Size": 1536,
+        "Digest": "sha256:bde1dbde18c88d66de515e9ede9dd57e80ab08a6c947c250a47b3131739a2be5",
+        "DiffID": "sha256:a3728d8e311ebd2ad8a07e808126e34748daf7ea260fe8263d17e1e26926af1a"
+      },
+      {
+        "Size": 43270144,
+        "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+        "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+      }
+    ]
+  },
+  "Results": [
+    {
+      "Target": "ghcr.io/nvidia/nvsentinel-labeler-module:v0.1.0 (debian 12.12)",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2010-4756",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2010-4756",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: glob implementation can cause excessive CPU and memory consumption due to crafted glob expressions",
+          "Description": "The glob implementation in the GNU C Library (aka glibc or libc6) allows remote authenticated users to cause a denial of service (CPU and memory consumption) via crafted glob expressions that do not match any pathnames, as demonstrated by glob expressions in STAT commands to an FTP daemon, a different vulnerability than CVE-2010-2632.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-399"
+          ],
+          "VendorSeverity": {
+            "debian": 1,
+            "nvd": 2,
+            "redhat": 1
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:S/C:N/I:N/A:P",
+              "V2Score": 4
+            },
+            "redhat": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:N/I:N/A:P",
+              "V2Score": 5
+            }
+          },
+          "References": [
+            "http://cxib.net/stuff/glob-0day.c",
+            "http://securityreason.com/achievement_securityalert/89",
+            "http://securityreason.com/exploitalert/9223",
+            "https://access.redhat.com/security/cve/CVE-2010-4756",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=681681",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=CVE-2010-4756",
+            "https://nvd.nist.gov/vuln/detail/CVE-2010-4756",
+            "https://www.cve.org/CVERecord?id=CVE-2010-4756"
+          ],
+          "PublishedDate": "2011-03-02T20:00:01.037Z",
+          "LastModifiedDate": "2025-04-11T00:51:21.963Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2018-20796",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2018-20796",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: uncontrolled recursion in function check_dst_limits_calc_pos_1 in posix/regexec.c",
+          "Description": "In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(\\227|)(\\\\1\\\\1|t1|\\\\\\2537)+' in grep.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-674"
+          ],
+          "VendorSeverity": {
+            "cbl-mariner": 3,
+            "debian": 1,
+            "nvd": 3,
+            "redhat": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:N/I:N/A:P",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V2Score": 5,
+              "V3Score": 7.5
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+              "V3Score": 5.3
+            }
+          },
+          "References": [
+            "http://www.securityfocus.com/bid/107160",
+            "https://access.redhat.com/security/cve/CVE-2018-20796",
+            "https://debbugs.gnu.org/cgi/bugreport.cgi?bug=34141",
+            "https://lists.gnu.org/archive/html/bug-gnulib/2019-01/msg00108.html",
+            "https://nvd.nist.gov/vuln/detail/CVE-2018-20796",
+            "https://security.netapp.com/advisory/ntap-20190315-0002/",
+            "https://support.f5.com/csp/article/K26346590?utm_source=f5support\u0026amp%3Butm_medium=RSS",
+            "https://www.cve.org/CVERecord?id=CVE-2018-20796"
+          ],
+          "PublishedDate": "2019-02-26T02:29:00.45Z",
+          "LastModifiedDate": "2024-11-21T04:02:11.827Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-1010022",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-1010022",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: stack guard protection bypass",
+          "Description": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass stack guard protection. The component is: nptl. The attack vector is: Exploit stack buffer overflow vulnerability and use this bypass vulnerability to bypass stack guard. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-119"
+          ],
+          "VendorSeverity": {
+            "debian": 1,
+            "nvd": 4
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:P/I:P/A:P",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+              "V2Score": 7.5,
+              "V3Score": 9.8
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2019-1010022",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-1010022",
+            "https://security-tracker.debian.org/tracker/CVE-2019-1010022",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=22850",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=22850#c3",
+            "https://ubuntu.com/security/CVE-2019-1010022",
+            "https://www.cve.org/CVERecord?id=CVE-2019-1010022"
+          ],
+          "PublishedDate": "2019-07-15T04:15:13.317Z",
+          "LastModifiedDate": "2024-11-21T04:17:55.5Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-1010023",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-1010023",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: running ldd on malicious ELF leads to code execution because of wrong size computation",
+          "Description": "GNU Libc current is affected by: Re-mapping current loaded library with malicious ELF file. The impact is: In worst case attacker may evaluate privileges. The component is: libld. The attack vector is: Attacker sends 2 ELF files to victim and asks to run ldd on it. ldd execute code. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.",
+          "Severity": "LOW",
+          "VendorSeverity": {
+            "debian": 1,
+            "nvd": 3,
+            "redhat": 1
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:M/Au:N/C:P/I:P/A:P",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+              "V2Score": 6.8,
+              "V3Score": 8.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+              "V3Score": 7.8
+            }
+          },
+          "References": [
+            "http://www.securityfocus.com/bid/109167",
+            "https://access.redhat.com/security/cve/CVE-2019-1010023",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-1010023",
+            "https://security-tracker.debian.org/tracker/CVE-2019-1010023",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=22851",
+            "https://support.f5.com/csp/article/K11932200?utm_source=f5support\u0026amp%3Butm_medium=RSS",
+            "https://ubuntu.com/security/CVE-2019-1010023",
+            "https://www.cve.org/CVERecord?id=CVE-2019-1010023"
+          ],
+          "PublishedDate": "2019-07-15T04:15:13.397Z",
+          "LastModifiedDate": "2024-11-21T04:17:55.643Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-1010024",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-1010024",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: ASLR bypass using cache of thread stack and heap",
+          "Description": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may bypass ASLR using cache of thread stack and heap. The component is: glibc. NOTE: Upstream comments indicate \"this is being treated as a non-security bug and no real threat.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-200"
+          ],
+          "VendorSeverity": {
+            "debian": 1,
+            "nvd": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:P/I:N/A:N",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+              "V2Score": 5,
+              "V3Score": 5.3
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+              "V3Score": 5.3
+            }
+          },
+          "References": [
+            "http://www.securityfocus.com/bid/109162",
+            "https://access.redhat.com/security/cve/CVE-2019-1010024",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-1010024",
+            "https://security-tracker.debian.org/tracker/CVE-2019-1010024",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=22852",
+            "https://support.f5.com/csp/article/K06046097",
+            "https://support.f5.com/csp/article/K06046097?utm_source=f5support\u0026amp%3Butm_medium=RSS",
+            "https://ubuntu.com/security/CVE-2019-1010024",
+            "https://www.cve.org/CVERecord?id=CVE-2019-1010024"
+          ],
+          "PublishedDate": "2019-07-15T04:15:13.473Z",
+          "LastModifiedDate": "2024-11-21T04:17:55.843Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-1010025",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-1010025",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: information disclosure of heap addresses of pthread_created thread",
+          "Description": "GNU Libc current is affected by: Mitigation bypass. The impact is: Attacker may guess the heap addresses of pthread_created thread. The component is: glibc. NOTE: the vendor's position is \"ASLR bypass itself is not a vulnerability.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-330"
+          ],
+          "VendorSeverity": {
+            "debian": 1,
+            "nvd": 2,
+            "redhat": 1
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:P/I:N/A:N",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+              "V2Score": 5,
+              "V3Score": 5.3
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:L/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+              "V3Score": 2.9
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2019-1010025",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-1010025",
+            "https://security-tracker.debian.org/tracker/CVE-2019-1010025",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=22853",
+            "https://support.f5.com/csp/article/K06046097",
+            "https://support.f5.com/csp/article/K06046097?utm_source=f5support\u0026amp%3Butm_medium=RSS",
+            "https://ubuntu.com/security/CVE-2019-1010025",
+            "https://www.cve.org/CVERecord?id=CVE-2019-1010025"
+          ],
+          "PublishedDate": "2019-07-15T04:15:13.537Z",
+          "LastModifiedDate": "2024-11-21T04:17:55.96Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2019-9192",
+          "PkgID": "libc6@2.36-9+deb12u13",
+          "PkgName": "libc6",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libc6@2.36-9%2Bdeb12u13?arch=amd64\u0026distro=debian-12.12",
+            "UID": "e9fbd2cfea1ed1be"
+          },
+          "InstalledVersion": "2.36-9+deb12u13",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:e7fa9df358f005850f690ad890b35d30e28b089082a944dc186f5ab3d7f04eb1",
+            "DiffID": "sha256:bd29502adf199ad9c03afba9bc79df572a26ec60a2a6ffdda4883a5b7a1632fe"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2019-9192",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "glibc: uncontrolled recursion in function check_dst_limits_calc_pos_1 in posix/regexec.c",
+          "Description": "In the GNU C Library (aka glibc or libc6) through 2.29, check_dst_limits_calc_pos_1 in posix/regexec.c has Uncontrolled Recursion, as demonstrated by '(|)(\\\\1\\\\1)*' in grep, a different issue than CVE-2018-20796. NOTE: the software maintainer disputes that this is a vulnerability because the behavior occurs only with a crafted pattern",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-674"
+          ],
+          "VendorSeverity": {
+            "cbl-mariner": 3,
+            "debian": 1,
+            "nvd": 3,
+            "redhat": 1
+          },
+          "CVSS": {
+            "nvd": {
+              "V2Vector": "AV:N/AC:L/Au:N/C:N/I:N/A:P",
+              "V3Vector": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V2Score": 5,
+              "V3Score": 7.5
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.0/AV:L/AC:L/PR:L/UI:R/S:U/C:N/I:N/A:L",
+              "V3Score": 2.8
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2019-9192",
+            "https://nvd.nist.gov/vuln/detail/CVE-2019-9192",
+            "https://sourceware.org/bugzilla/show_bug.cgi?id=24269",
+            "https://support.f5.com/csp/article/K26346590?utm_source=f5support\u0026amp%3Butm_medium=RSS",
+            "https://www.cve.org/CVERecord?id=CVE-2019-9192"
+          ],
+          "PublishedDate": "2019-02-26T18:29:00.34Z",
+          "LastModifiedDate": "2024-11-21T04:51:10.53Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-9230",
+          "VendorIDs": [
+            "DSA-6015-1"
+          ],
+          "PkgID": "libssl3@3.0.17-1~deb12u2",
+          "PkgName": "libssl3",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libssl3@3.0.17-1~deb12u2?arch=amd64\u0026distro=debian-12.12",
+            "UID": "7ca3c4fbfeb1d2c2"
+          },
+          "InstalledVersion": "3.0.17-1~deb12u2",
+          "FixedVersion": "3.0.17-1~deb12u3",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:c058825cfcd674180d54bec6822f5d549c038b3c66884c197a863341943c2e70",
+            "DiffID": "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-9230",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "openssl: Out-of-bounds read \u0026 write in RFC 3211 KEK Unwrap",
+          "Description": "Issue summary: An application trying to decrypt CMS messages encrypted using\npassword based encryption can trigger an out-of-bounds read and write.\n\nImpact summary: This out-of-bounds read may trigger a crash which leads to\nDenial of Service for an application. The out-of-bounds write can cause\na memory corruption which can have various consequences including\na Denial of Service or Execution of attacker-supplied code.\n\nAlthough the consequences of a successful exploit of this vulnerability\ncould be severe, the probability that the attacker would be able to\nperform it is low. Besides, password based (PWRI) encryption support in CMS\nmessages is very rarely used. For that reason the issue was assessed as\nModerate severity according to our Security Policy.\n\nThe FIPS modules in 3.5, 3.4, 3.3, 3.2, 3.1 and 3.0 are not affected by this\nissue, as the CMS implementation is outside the OpenSSL FIPS module\nboundary.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-125",
+            "CWE-787"
+          ],
+          "VendorSeverity": {
+            "amazon": 2,
+            "azure": 3,
+            "redhat": 2,
+            "ubuntu": 2
+          },
+          "CVSS": {
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L",
+              "V3Score": 5.6
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-9230",
+            "https://github.com/openssl/openssl/commit/5965ea5dd6960f36d8b7f74f8eac67a8eb8f2b45",
+            "https://github.com/openssl/openssl/commit/9e91358f365dee6c446dcdcdb01c04d2743fd280",
+            "https://github.com/openssl/openssl/commit/a79c4ce559c6a3a8fd4109e9f33c1185d5bf2def",
+            "https://github.com/openssl/openssl/commit/b5282d677551afda7d20e9c00e09561b547b2dfd",
+            "https://github.com/openssl/openssl/commit/bae259a211ada6315dc50900686daaaaaa55f482",
+            "https://github.openssl.org/openssl/extended-releases/commit/c2b96348bfa662f25f4fabf81958ae822063dae3",
+            "https://github.openssl.org/openssl/extended-releases/commit/dfbaf161d8dafc1132dd88cd48ad990ed9b4c8ba",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-9230",
+            "https://openssl-library.org/news/secadv/20250930.txt",
+            "https://ubuntu.com/security/notices/USN-7786-1",
+            "https://www.cve.org/CVERecord?id=CVE-2025-9230"
+          ],
+          "PublishedDate": "2025-09-30T14:15:41.05Z",
+          "LastModifiedDate": "2025-10-02T19:12:17.16Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-27587",
+          "PkgID": "libssl3@3.0.17-1~deb12u2",
+          "PkgName": "libssl3",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libssl3@3.0.17-1~deb12u2?arch=amd64\u0026distro=debian-12.12",
+            "UID": "7ca3c4fbfeb1d2c2"
+          },
+          "InstalledVersion": "3.0.17-1~deb12u2",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:c058825cfcd674180d54bec6822f5d549c038b3c66884c197a863341943c2e70",
+            "DiffID": "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3"
+          },
+          "SeveritySource": "debian",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-27587",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "OpenSSL 3.0.0 through 3.3.2 on the PowerPC architecture is vulnerable  ...",
+          "Description": "OpenSSL 3.0.0 through 3.3.2 on the PowerPC architecture is vulnerable to a Minerva attack, exploitable by measuring the time of signing of random messages using the EVP_DigestSign API, and then using the private key to extract the K value (nonce) from the signatures. Next, based on the bit size of the extracted nonce, one can compare the signing time of full-sized nonces to signatures that used smaller nonces, via statistical tests. There is a side-channel in the P-364 curve that allows private key extraction (also, there is a dependency between the bit size of K and the size of the side channel). NOTE: This CVE is disputed because the OpenSSL security policy explicitly notes that any side channels which require same physical system to be detected are outside of the threat model for the software. The timing signal is so small that it is infeasible to be detected without having the attacking process running on the same physical system.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-385"
+          ],
+          "VendorSeverity": {
+            "debian": 1,
+            "ubuntu": 1
+          },
+          "References": [
+            "https://github.com/openssl/openssl/issues/24253",
+            "https://minerva.crocs.fi.muni.cz",
+            "https://www.cve.org/CVERecord?id=CVE-2025-27587"
+          ],
+          "PublishedDate": "2025-06-16T22:15:44.093Z",
+          "LastModifiedDate": "2025-06-26T17:15:30.497Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-9232",
+          "VendorIDs": [
+            "DSA-6015-1"
+          ],
+          "PkgID": "libssl3@3.0.17-1~deb12u2",
+          "PkgName": "libssl3",
+          "PkgIdentifier": {
+            "PURL": "pkg:deb/debian/libssl3@3.0.17-1~deb12u2?arch=amd64\u0026distro=debian-12.12",
+            "UID": "7ca3c4fbfeb1d2c2"
+          },
+          "InstalledVersion": "3.0.17-1~deb12u2",
+          "FixedVersion": "3.0.17-1~deb12u3",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:c058825cfcd674180d54bec6822f5d549c038b3c66884c197a863341943c2e70",
+            "DiffID": "sha256:2e4983c761ce4933ecec23c31173fed551a237c8d0ba359b697de64bd953a7c3"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-9232",
+          "DataSource": {
+            "ID": "debian",
+            "Name": "Debian Security Tracker",
+            "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
+          },
+          "Title": "openssl: Out-of-bounds read in HTTP client no_proxy handling",
+          "Description": "Issue summary: An application using the OpenSSL HTTP client API functions may\ntrigger an out-of-bounds read if the 'no_proxy' environment variable is set and\nthe host portion of the authority component of the HTTP URL is an IPv6 address.\n\nImpact summary: An out-of-bounds read can trigger a crash which leads to\nDenial of Service for an application.\n\nThe OpenSSL HTTP client API functions can be used directly by applications\nbut they are also used by the OCSP client functions and CMP (Certificate\nManagement Protocol) client implementation in OpenSSL. However the URLs used\nby these implementations are unlikely to be controlled by an attacker.\n\nIn this vulnerable code the out of bounds read can only trigger a crash.\nFurthermore the vulnerability requires an attacker-controlled URL to be\npassed from an application to the OpenSSL function and the user has to have\na 'no_proxy' environment variable set. For the aforementioned reasons the\nissue was assessed as Low severity.\n\nThe vulnerable code was introduced in the following patch releases:\n3.0.16, 3.1.8, 3.2.4, 3.3.3, 3.4.0 and 3.5.0.\n\nThe FIPS modules in 3.5, 3.4, 3.3, 3.2, 3.1 and 3.0 are not affected by this\nissue, as the HTTP client implementation is outside the OpenSSL FIPS module\nboundary.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-125"
+          ],
+          "VendorSeverity": {
+            "redhat": 1,
+            "ubuntu": 1
+          },
+          "CVSS": {
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:N/I:N/A:L",
+              "V3Score": 3.1
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-9232",
+            "https://github.com/openssl/openssl/commit/2b4ec20e47959170422922eaff25346d362dcb35",
+            "https://github.com/openssl/openssl/commit/654dc11d23468a74fc8ea4672b702dd3feb7be4b",
+            "https://github.com/openssl/openssl/commit/7cf21a30513c9e43c4bc3836c237cf086e194af3",
+            "https://github.com/openssl/openssl/commit/89e790ac431125a4849992858490bed6b225eadf",
+            "https://github.com/openssl/openssl/commit/bbf38c034cdabd0a13330abcc4855c866f53d2e0",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-9232",
+            "https://openssl-library.org/news/secadv/20250930.txt",
+            "https://ubuntu.com/security/notices/USN-7786-1",
+            "https://www.cve.org/CVERecord?id=CVE-2025-9232"
+          ],
+          "PublishedDate": "2025-09-30T14:15:41.313Z",
+          "LastModifiedDate": "2025-10-02T19:12:17.16Z"
+        }
+      ]
+    },
+    {
+      "Target": "app/labeler",
+      "Class": "lang-pkgs",
+      "Type": "gobinary",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-9042",
+          "PkgID": "k8s.io/kubernetes@v1.32.0",
+          "PkgName": "k8s.io/kubernetes",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/k8s.io/kubernetes@v1.32.0",
+            "UID": "f7ecac3864ff4763"
+          },
+          "InstalledVersion": "v1.32.0",
+          "FixedVersion": "1.29.13, 1.30.9, 1.31.5, 1.32.1",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+            "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+          },
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-9042",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory Go",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"
+          },
+          "Title": "kubelet: Command Injection affecting Windows nodes via nodes/*/logs/query API",
+          "Description": "This CVE affects only Windows worker nodes. Your worker node is vulnerable to this issue if it is running one of the affected versions listed below.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-20"
+          ],
+          "VendorSeverity": {
+            "ghsa": 2,
+            "k8s": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 5.9
+            },
+            "k8s": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 5.9
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 5.9
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2025/01/16/1",
+            "https://access.redhat.com/security/cve/CVE-2024-9042",
+            "https://github.com/kubernetes/kubernetes",
+            "https://github.com/kubernetes/kubernetes/commit/45f4ccc2153bbb782253704cbe24c05e22b5d60c",
+            "https://github.com/kubernetes/kubernetes/commit/5fe148234f8ab1184f26069c4f7bef6c37efe347",
+            "https://github.com/kubernetes/kubernetes/commit/75c83a6871dc030675288c6d63c275a43c2f0d55",
+            "https://github.com/kubernetes/kubernetes/commit/fb0187c2bf7061258bb89891edb1237261eb7abc",
+            "https://github.com/kubernetes/kubernetes/issues/129654",
+            "https://groups.google.com/g/kubernetes-security-announce/c/9C3vn6aCSVg",
+            "https://nvd.nist.gov/vuln/detail/CVE-2024-9042",
+            "https://www.cve.org/CVERecord?id=CVE-2024-9042",
+            "https://www.cve.org/cverecord?id=CVE-2024-9042"
+          ],
+          "PublishedDate": "2025-03-13T17:15:34.277Z",
+          "LastModifiedDate": "2025-03-13T17:15:34.277Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-0426",
+          "PkgID": "k8s.io/kubernetes@v1.32.0",
+          "PkgName": "k8s.io/kubernetes",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/k8s.io/kubernetes@v1.32.0",
+            "UID": "f7ecac3864ff4763"
+          },
+          "InstalledVersion": "v1.32.0",
+          "FixedVersion": "1.32.2, 1.31.6, 1.30.10, 1.29.14",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+            "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+          },
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-0426",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory Go",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"
+          },
+          "Title": "k8s.io/kubernetes: kubelet: node denial of service via kubelet checkpoint API",
+          "Description": "A security issue was discovered in Kubernetes where a large number of container checkpoint requests made to the unauthenticated kubelet read-only HTTP endpoint may cause a Node Denial of Service by filling the Node's disk.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-400"
+          ],
+          "VendorSeverity": {
+            "azure": 2,
+            "ghsa": 2,
+            "k8s": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 6.2
+            },
+            "k8s": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 6.2
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+              "V3Score": 6.2
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2025/02/13/1",
+            "https://access.redhat.com/security/cve/CVE-2025-0426",
+            "https://github.com/kubernetes/kubernetes",
+            "https://github.com/kubernetes/kubernetes/issues/130016",
+            "https://groups.google.com/g/kubernetes-security-announce/c/KiODfu8i6w8",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-0426",
+            "https://www.cve.org/CVERecord?id=CVE-2025-0426",
+            "https://www.cve.org/cverecord?id=CVE-2025-0426"
+          ],
+          "PublishedDate": "2025-02-13T16:16:48.417Z",
+          "LastModifiedDate": "2025-02-13T17:17:19.863Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-1767",
+          "PkgID": "k8s.io/kubernetes@v1.32.0",
+          "PkgName": "k8s.io/kubernetes",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/k8s.io/kubernetes@v1.32.0",
+            "UID": "f7ecac3864ff4763"
+          },
+          "InstalledVersion": "v1.32.0",
+          "Status": "affected",
+          "Layer": {
+            "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+            "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+          },
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-1767",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory Go",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"
+          },
+          "Title": "kubelet: GitRepo Volume Inadvertent Local Repository Access",
+          "Description": "This CVE only affects Kubernetes clusters that utilize the in-tree gitRepo volume to clone git repositories from other pods within the same node. Since the in-tree gitRepo volume feature has been deprecated and will not receive security updates upstream, any cluster still using this feature remains vulnerable.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-20"
+          ],
+          "VendorSeverity": {
+            "ghsa": 2,
+            "k8s": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 6.5
+            },
+            "k8s": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 6.5
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 6.5
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2025/03/13/9",
+            "https://access.redhat.com/security/cve/CVE-2025-1767",
+            "https://github.com/kubernetes/kubernetes",
+            "https://github.com/kubernetes/kubernetes/issues/130786",
+            "https://github.com/kubernetes/kubernetes/pull/130786",
+            "https://groups.google.com/g/kubernetes-security-announce/c/19irihsKg7s",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-1767",
+            "https://www.cve.org/CVERecord?id=CVE-2025-1767",
+            "https://www.cve.org/cverecord?id=CVE-2025-1767"
+          ],
+          "PublishedDate": "2025-03-13T17:15:36.437Z",
+          "LastModifiedDate": "2025-03-13T21:15:43.127Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-5187",
+          "PkgID": "k8s.io/kubernetes@v1.32.0",
+          "PkgName": "k8s.io/kubernetes",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/k8s.io/kubernetes@v1.32.0",
+            "UID": "f7ecac3864ff4763"
+          },
+          "InstalledVersion": "v1.32.0",
+          "FixedVersion": "1.31.12, 1.32.8, 1.33.4",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+            "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+          },
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-5187",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory Go",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"
+          },
+          "Title": "kubernetes: kube-apiserver: Nodes can delete themselves by adding an OwnerReference",
+          "Description": "A vulnerability exists in the NodeRestriction admission controller in Kubernetes clusters where node users can delete their corresponding node object by patching themselves with an OwnerReference to a cluster-scoped resource. If the OwnerReference resource does not exist or is subsequently deleted, the given node object will be deleted via garbage collection.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-863"
+          ],
+          "VendorSeverity": {
+            "ghsa": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:L",
+              "V3Score": 6.7
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:L",
+              "V3Score": 6.7
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-5187",
+            "https://github.com/kubernetes/kubernetes",
+            "https://github.com/kubernetes/kubernetes/commit/a2d98cac56a0c5cb2d8abc4d087fc00846b3bc0f",
+            "https://github.com/kubernetes/kubernetes/issues/133471",
+            "https://groups.google.com/g/kubernetes-security-announce/c/znSNY7XCztE",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-5187",
+            "https://www.cve.org/CVERecord?id=CVE-2025-5187"
+          ],
+          "PublishedDate": "2025-08-27T17:15:48.27Z",
+          "LastModifiedDate": "2025-08-29T16:24:09.86Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-4563",
+          "PkgID": "k8s.io/kubernetes@v1.32.0",
+          "PkgName": "k8s.io/kubernetes",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/k8s.io/kubernetes@v1.32.0",
+            "UID": "f7ecac3864ff4763"
+          },
+          "InstalledVersion": "v1.32.0",
+          "FixedVersion": "1.32.6, 1.33.2",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:6d32ea77e51f98be345952e63ba4263e76191724032ff2b6645ddf5ee6d7b078",
+            "DiffID": "sha256:b1988980cb5a6d022c04a6da965d65fdadf9d081def78500de7877307721f360"
+          },
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-4563",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory Go",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"
+          },
+          "Title": "kube-apiserver: NodeRestriction Admission Controller Dynamic Resource Allocation Bypass",
+          "Description": "A vulnerability exists in the NodeRestriction admission controller where nodes can bypass dynamic resource allocation authorization checks. When the DynamicResourceAllocation feature gate is enabled, the controller properly validates resource claim statuses during pod status updates but fails to perform equivalent validation during pod creation. This allows a compromised node to create mirror pods that access unauthorized dynamic resources, potentially leading to privilege escalation.",
+          "Severity": "LOW",
+          "CweIDs": [
+            "CWE-20"
+          ],
+          "VendorSeverity": {
+            "azure": 1,
+            "ghsa": 1,
+            "redhat": 1
+          },
+          "CVSS": {
+            "ghsa": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:L",
+              "V3Score": 2.7
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:L",
+              "V3Score": 2.7
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-4563",
+            "https://github.com/kubernetes/kubernetes",
+            "https://github.com/kubernetes/kubernetes/issues/132151",
+            "https://github.com/kubernetes/kubernetes/pull/131844",
+            "https://github.com/kubernetes/kubernetes/pull/131875",
+            "https://github.com/kubernetes/kubernetes/pull/131876",
+            "https://groups.google.com/g/kubernetes-security-announce/c/Zv84LMRuvMQ",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-4563",
+            "https://pkg.go.dev/vuln/GO-2025-3774",
+            "https://www.cve.org/CVERecord?id=CVE-2025-4563"
+          ],
+          "PublishedDate": "2025-06-23T16:15:27.35Z",
+          "LastModifiedDate": "2025-06-23T20:16:21.633Z"
+        }
+      ]
+    },
+    {
+      "Target": "usr/bin/shelless_ulimit_amd64",
+      "Class": "lang-pkgs",
+      "Type": "gobinary",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-47907",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "e2a7f686909efa75"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.12, 1.24.6",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+            "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-47907",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "database/sql: Postgres Scan Race Condition",
+          "Description": "Cancelling a query (e.g. by cancelling the context passed to one of the query methods) during a call to the Scan method of the returned Rows can result in unexpected results if other queries are being made in parallel. This can result in a race condition that may overwrite the expected results with those of another query, causing the call to Scan to return either unexpected results from the other query or an error.",
+          "Severity": "HIGH",
+          "VendorSeverity": {
+            "amazon": 3,
+            "azure": 3,
+            "bitnami": 3,
+            "cbl-mariner": 3,
+            "redhat": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:L",
+              "V3Score": 7
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:L",
+              "V3Score": 7
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-47907",
+            "https://go.dev/cl/693735",
+            "https://go.dev/issue/74831",
+            "https://groups.google.com/g/golang-announce/c/x5MKroML2yM",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-47907",
+            "https://pkg.go.dev/vuln/GO-2025-3849",
+            "https://www.cve.org/CVERecord?id=CVE-2025-47907"
+          ],
+          "PublishedDate": "2025-08-07T16:15:30.357Z",
+          "LastModifiedDate": "2025-08-07T21:26:37.453Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-0913",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "e2a7f686909efa75"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.10, 1.24.4",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+            "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-0913",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "Inconsistent handling of O_CREATE|O_EXCL on Unix and Windows in os in syscall",
+          "Description": "os.OpenFile(path, os.O_CREATE|O_EXCL) behaved differently on Unix and Windows systems when the target path was a dangling symlink. On Unix systems, OpenFile with O_CREATE and O_EXCL flags never follows symlinks. On Windows, when the target path was a symlink to a nonexistent location, OpenFile would create a file in that location. OpenFile now always returns an error when the O_CREATE and O_EXCL flags are both set and the target path is a symlink.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-59"
+          ],
+          "VendorSeverity": {
+            "bitnami": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+              "V3Score": 5.5
+            }
+          },
+          "References": [
+            "https://go.dev/cl/672396",
+            "https://go.dev/issue/73702",
+            "https://groups.google.com/g/golang-announce/c/ufZ8WpEsA3A",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-0913",
+            "https://pkg.go.dev/vuln/GO-2025-3750"
+          ],
+          "PublishedDate": "2025-06-11T18:15:24.627Z",
+          "LastModifiedDate": "2025-08-08T14:53:03.55Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-22871",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "e2a7f686909efa75"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.8, 1.24.2",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+            "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-22871",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "net/http: Request smuggling due to acceptance of invalid chunked data in net/http",
+          "Description": "The net/http package improperly accepts a bare LF as a line terminator in chunked data chunk-size lines. This can permit request smuggling if a net/http server is used in conjunction with a server that incorrectly accepts a bare LF as part of a chunk-ext.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "alma": 2,
+            "amazon": 3,
+            "bitnami": 4,
+            "cbl-mariner": 3,
+            "oracle-oval": 2,
+            "redhat": 2,
+            "rocky": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 9.1
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:N",
+              "V3Score": 5.4
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2025/04/04/4",
+            "https://access.redhat.com/errata/RHSA-2025:9635",
+            "https://access.redhat.com/security/cve/CVE-2025-22871",
+            "https://bugzilla.redhat.com/2358493",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=2358493",
+            "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-22871",
+            "https://errata.almalinux.org/9/ALSA-2025-9635.html",
+            "https://errata.rockylinux.org/RLSA-2025:9845",
+            "https://go.dev/cl/652998",
+            "https://go.dev/issue/71988",
+            "https://groups.google.com/g/golang-announce/c/Y2uBTVKjBQk",
+            "https://linux.oracle.com/cve/CVE-2025-22871.html",
+            "https://linux.oracle.com/errata/ELSA-2025-9845.html",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-22871",
+            "https://pkg.go.dev/vuln/GO-2025-3563",
+            "https://www.cve.org/CVERecord?id=CVE-2025-22871"
+          ],
+          "PublishedDate": "2025-04-08T20:15:20.183Z",
+          "LastModifiedDate": "2025-04-18T15:15:57.923Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-4673",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "e2a7f686909efa75"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.10, 1.24.4",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+            "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-4673",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "net/http: Sensitive headers not cleared on cross-origin redirect in net/http",
+          "Description": "Proxy-Authorization and Proxy-Authenticate headers persisted on cross-origin redirects potentially leaking sensitive information.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "alma": 2,
+            "amazon": 2,
+            "azure": 2,
+            "bitnami": 2,
+            "cbl-mariner": 2,
+            "oracle-oval": 2,
+            "redhat": 2,
+            "rocky": 2,
+            "ubuntu": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N",
+              "V3Score": 6.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N",
+              "V3Score": 6.8
+            }
+          },
+          "References": [
+            "https://access.redhat.com/errata/RHSA-2025:15887",
+            "https://access.redhat.com/security/cve/CVE-2025-4673",
+            "https://bugzilla.redhat.com/2373305",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=2373305",
+            "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-4673",
+            "https://errata.almalinux.org/9/ALSA-2025-15887.html",
+            "https://errata.rockylinux.org/RLSA-2025:16432",
+            "https://go.dev/cl/679257",
+            "https://go.dev/issue/73816",
+            "https://groups.google.com/g/golang-announce/c/ufZ8WpEsA3A",
+            "https://linux.oracle.com/cve/CVE-2025-4673.html",
+            "https://linux.oracle.com/errata/ELSA-2025-10677.html",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-4673",
+            "https://pkg.go.dev/vuln/GO-2025-3751",
+            "https://ubuntu.com/security/notices/USN-7574-1",
+            "https://www.cve.org/CVERecord?id=CVE-2025-4673"
+          ],
+          "PublishedDate": "2025-06-11T17:15:42.993Z",
+          "LastModifiedDate": "2025-06-12T16:06:20.18Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-47906",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "e2a7f686909efa75"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.12, 1.24.6",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:83290d6ac26afdbff4a847d3c0ca7531eb212253ada0a456ced1fa0a9b89ef78",
+            "DiffID": "sha256:6843de4e1b4811c9ba56bfb58611d3d281cd27db6f50221ec813b205856ce19e"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-47906",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "os/exec: Unexpected paths returned from LookPath in os/exec",
+          "Description": "If the PATH environment variable contains paths which are executables (rather than just directories), passing certain strings to LookPath (\"\", \".\", and \"..\"), can result in the binaries listed in the PATH being unexpectedly returned.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "amazon": 3,
+            "bitnami": 2,
+            "cbl-mariner": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:L",
+              "V3Score": 6.5
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:L",
+              "V3Score": 6.5
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-47906",
+            "https://go.dev/cl/691775",
+            "https://go.dev/issue/74466",
+            "https://groups.google.com/g/golang-announce/c/x5MKroML2yM",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-47906",
+            "https://pkg.go.dev/vuln/GO-2025-3956",
+            "https://www.cve.org/CVERecord?id=CVE-2025-47906"
+          ],
+          "PublishedDate": "2025-09-18T19:15:37.66Z",
+          "LastModifiedDate": "2025-09-19T16:00:27.847Z"
+        }
+      ]
+    },
+    {
+      "Target": "usr/bin/sleep_amd64",
+      "Class": "lang-pkgs",
+      "Type": "gobinary",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-47907",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "fb517e8794e1b692"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.12, 1.24.6",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+            "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-47907",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "database/sql: Postgres Scan Race Condition",
+          "Description": "Cancelling a query (e.g. by cancelling the context passed to one of the query methods) during a call to the Scan method of the returned Rows can result in unexpected results if other queries are being made in parallel. This can result in a race condition that may overwrite the expected results with those of another query, causing the call to Scan to return either unexpected results from the other query or an error.",
+          "Severity": "HIGH",
+          "VendorSeverity": {
+            "amazon": 3,
+            "azure": 3,
+            "bitnami": 3,
+            "cbl-mariner": 3,
+            "redhat": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:L",
+              "V3Score": 7
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:L/A:L",
+              "V3Score": 7
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-47907",
+            "https://go.dev/cl/693735",
+            "https://go.dev/issue/74831",
+            "https://groups.google.com/g/golang-announce/c/x5MKroML2yM",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-47907",
+            "https://pkg.go.dev/vuln/GO-2025-3849",
+            "https://www.cve.org/CVERecord?id=CVE-2025-47907"
+          ],
+          "PublishedDate": "2025-08-07T16:15:30.357Z",
+          "LastModifiedDate": "2025-08-07T21:26:37.453Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-0913",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "fb517e8794e1b692"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.10, 1.24.4",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+            "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-0913",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "Inconsistent handling of O_CREATE|O_EXCL on Unix and Windows in os in syscall",
+          "Description": "os.OpenFile(path, os.O_CREATE|O_EXCL) behaved differently on Unix and Windows systems when the target path was a dangling symlink. On Unix systems, OpenFile with O_CREATE and O_EXCL flags never follows symlinks. On Windows, when the target path was a symlink to a nonexistent location, OpenFile would create a file in that location. OpenFile now always returns an error when the O_CREATE and O_EXCL flags are both set and the target path is a symlink.",
+          "Severity": "MEDIUM",
+          "CweIDs": [
+            "CWE-59"
+          ],
+          "VendorSeverity": {
+            "bitnami": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N",
+              "V3Score": 5.5
+            }
+          },
+          "References": [
+            "https://go.dev/cl/672396",
+            "https://go.dev/issue/73702",
+            "https://groups.google.com/g/golang-announce/c/ufZ8WpEsA3A",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-0913",
+            "https://pkg.go.dev/vuln/GO-2025-3750"
+          ],
+          "PublishedDate": "2025-06-11T18:15:24.627Z",
+          "LastModifiedDate": "2025-08-08T14:53:03.55Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-22871",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "fb517e8794e1b692"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.8, 1.24.2",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+            "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-22871",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "net/http: Request smuggling due to acceptance of invalid chunked data in net/http",
+          "Description": "The net/http package improperly accepts a bare LF as a line terminator in chunked data chunk-size lines. This can permit request smuggling if a net/http server is used in conjunction with a server that incorrectly accepts a bare LF as part of a chunk-ext.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "alma": 2,
+            "amazon": 3,
+            "bitnami": 4,
+            "cbl-mariner": 3,
+            "oracle-oval": 2,
+            "redhat": 2,
+            "rocky": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+              "V3Score": 9.1
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:N",
+              "V3Score": 5.4
+            }
+          },
+          "References": [
+            "http://www.openwall.com/lists/oss-security/2025/04/04/4",
+            "https://access.redhat.com/errata/RHSA-2025:9635",
+            "https://access.redhat.com/security/cve/CVE-2025-22871",
+            "https://bugzilla.redhat.com/2358493",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=2358493",
+            "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-22871",
+            "https://errata.almalinux.org/9/ALSA-2025-9635.html",
+            "https://errata.rockylinux.org/RLSA-2025:9845",
+            "https://go.dev/cl/652998",
+            "https://go.dev/issue/71988",
+            "https://groups.google.com/g/golang-announce/c/Y2uBTVKjBQk",
+            "https://linux.oracle.com/cve/CVE-2025-22871.html",
+            "https://linux.oracle.com/errata/ELSA-2025-9845.html",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-22871",
+            "https://pkg.go.dev/vuln/GO-2025-3563",
+            "https://www.cve.org/CVERecord?id=CVE-2025-22871"
+          ],
+          "PublishedDate": "2025-04-08T20:15:20.183Z",
+          "LastModifiedDate": "2025-04-18T15:15:57.923Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-4673",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "fb517e8794e1b692"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.10, 1.24.4",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+            "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-4673",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "net/http: Sensitive headers not cleared on cross-origin redirect in net/http",
+          "Description": "Proxy-Authorization and Proxy-Authenticate headers persisted on cross-origin redirects potentially leaking sensitive information.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "alma": 2,
+            "amazon": 2,
+            "azure": 2,
+            "bitnami": 2,
+            "cbl-mariner": 2,
+            "oracle-oval": 2,
+            "redhat": 2,
+            "rocky": 2,
+            "ubuntu": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N",
+              "V3Score": 6.8
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:N/A:N",
+              "V3Score": 6.8
+            }
+          },
+          "References": [
+            "https://access.redhat.com/errata/RHSA-2025:15887",
+            "https://access.redhat.com/security/cve/CVE-2025-4673",
+            "https://bugzilla.redhat.com/2373305",
+            "https://bugzilla.redhat.com/show_bug.cgi?id=2373305",
+            "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2025-4673",
+            "https://errata.almalinux.org/9/ALSA-2025-15887.html",
+            "https://errata.rockylinux.org/RLSA-2025:16432",
+            "https://go.dev/cl/679257",
+            "https://go.dev/issue/73816",
+            "https://groups.google.com/g/golang-announce/c/ufZ8WpEsA3A",
+            "https://linux.oracle.com/cve/CVE-2025-4673.html",
+            "https://linux.oracle.com/errata/ELSA-2025-10677.html",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-4673",
+            "https://pkg.go.dev/vuln/GO-2025-3751",
+            "https://ubuntu.com/security/notices/USN-7574-1",
+            "https://www.cve.org/CVERecord?id=CVE-2025-4673"
+          ],
+          "PublishedDate": "2025-06-11T17:15:42.993Z",
+          "LastModifiedDate": "2025-06-12T16:06:20.18Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-47906",
+          "PkgID": "stdlib@v1.23.6",
+          "PkgName": "stdlib",
+          "PkgIdentifier": {
+            "PURL": "pkg:golang/stdlib@v1.23.6",
+            "UID": "fb517e8794e1b692"
+          },
+          "InstalledVersion": "v1.23.6",
+          "FixedVersion": "1.23.12, 1.24.6",
+          "Status": "fixed",
+          "Layer": {
+            "Digest": "sha256:b509542d1efc57e1e202b9ed7f4fb9a80828f4d5805591f82e545636f567166a",
+            "DiffID": "sha256:0ca58e6ee710518a7cffafbc900b0748b63c327878c26b793d47ff6e11440d37"
+          },
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2025-47906",
+          "DataSource": {
+            "ID": "govulndb",
+            "Name": "The Go Vulnerability Database",
+            "URL": "https://pkg.go.dev/vuln/"
+          },
+          "Title": "os/exec: Unexpected paths returned from LookPath in os/exec",
+          "Description": "If the PATH environment variable contains paths which are executables (rather than just directories), passing certain strings to LookPath (\"\", \".\", and \"..\"), can result in the binaries listed in the PATH being unexpectedly returned.",
+          "Severity": "MEDIUM",
+          "VendorSeverity": {
+            "amazon": 3,
+            "bitnami": 2,
+            "cbl-mariner": 2,
+            "redhat": 2
+          },
+          "CVSS": {
+            "bitnami": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:L",
+              "V3Score": 6.5
+            },
+            "redhat": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:L",
+              "V3Score": 6.5
+            }
+          },
+          "References": [
+            "https://access.redhat.com/security/cve/CVE-2025-47906",
+            "https://go.dev/cl/691775",
+            "https://go.dev/issue/74466",
+            "https://groups.google.com/g/golang-announce/c/x5MKroML2yM",
+            "https://nvd.nist.gov/vuln/detail/CVE-2025-47906",
+            "https://pkg.go.dev/vuln/GO-2025-3956",
+            "https://www.cve.org/CVERecord?id=CVE-2025-47906"
+          ],
+          "PublishedDate": "2025-09-18T19:15:37.66Z",
+          "LastModifiedDate": "2025-09-19T16:00:27.847Z"
+        }
+      ]
+    }
+  ]
+}

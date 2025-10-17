@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -eo pipefail
+
+image_file="${1:-"images.txt"}"
+report_dir="${2:-"reports"}"
+vuln_dir="${report_dir}/vuln"
+sbom_dir="${report_dir}/sbom"
+
+# Validate input file exists
+if [[ ! -f "$image_file" ]]; then
+    echo "Image file '$image_file' does not exist."
+    exit 1
+fi
+
+# Create report directory if it doesn't exist
+rm -rf $report_dir
+mkdir -p $vuln_dir
+mkdir -p $sbom_dir
+
+while IFS= read -r img; do
+    echo "image: $img"
+
+    # Parse image name for output file naming
+    name=$(echo "$img" | tr -c '[:alnum:]' '_')
+    
+    # Generate the vulnerability report for the builder image
+    trivy image -q \
+        --format json \
+        --output "${vuln_dir}/${name}.json" \
+        --scanners vuln \
+        $img
+
+    # Generate the SBOM for the builder image
+    syft scan $img -q -s all-layers \
+        -o "cyclonedx-json=${sbom_dir}/${name}.json"
+done < "$image_file"

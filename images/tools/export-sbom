@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sbom_dir="${1:-reports/sbom}"
+output_file="sbom.csv"
+
+if [[ ! -d "$sbom_dir" ]]; then
+  echo "Error: Directory $sbom_dir does not exist." >&2
+  exit 1
+fi
+
+: > "$output_file"   # truncate/create
+
+emit() {
+  local f="$1"
+  jq -r '
+    (.metadata.component // {}) as $subject
+    | (.components // [])[]
+    | [
+        (
+          ($subject.name // "")
+          +
+          (if ($subject.version // "") != "" then "@" + $subject.version else "" end)
+        ),
+        ((.name // "") + " - " + (.version // "file")),
+        (.type // "")
+      ]
+      | @csv
+  ' "$f" >> "$output_file"
+}
+
+shopt -s nullglob
+found=0
+for f in "$sbom_dir"/*.json; do
+  found=1
+  echo "Processing: $f"
+  if ! emit "$f"; then
+    echo "WARN: jq failed on $f (skipping)" >&2
+  fi
+done
+if [[ $found -eq 0 ]]; then
+  echo "WARN: no *.json files in $sbom_dir" >&2
+fi
+
+echo "Wrote: $output_file"
