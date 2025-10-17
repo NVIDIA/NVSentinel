@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-click = "^8.1.7"
+click = "^8.3.0"
 grpcio = "^1.74.0"
 protobuf = "^6.31.1"
 prometheus-client = "^0.20.0"
