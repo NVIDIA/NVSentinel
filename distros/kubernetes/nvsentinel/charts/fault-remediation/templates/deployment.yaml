@@ -1,0 +1,113 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fault-remediation-module.fullname" . }}
+  labels:
+    {{- include "fault-remediation-module.labels" . | nindent 4}}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "fault-remediation-module.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with (.Values.global.podAnnotations | default .Values.podAnnotations) }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "fault-remediation-module.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
+      containers:
+        - name: fault-remediation
+          env:
+          - name: MAINTENANCE_NAMESPACE
+            value: {{ .Values.maintenanceResource.namespace }}
+          - name: MAINTENANCE_VERSION
+            value: {{ .Values.maintenanceResource.version }}
+          - name: MAINTENANCE_API_GROUP
+            value: {{ .Values.maintenanceResource.apiGroup }}
+
+          image: "{{ .Values.global.faultRemediationModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.faultRemediationModule.image.pullPolicy | default "IfNotPresent" }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          args:
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          - "--dry-run={{ .Values.global.dryRun }}"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          volumeMounts:
+          - name: mongo-app-client-cert
+            mountPath: {{ .Values.clientCertMountPath }}
+            readOnly: true
+          - name: templates
+            mountPath: {{ .Values.maintenanceResource.template.mountPath }}
+          env:
+          - name: MAINTENANCE_NAMESPACE
+            value: {{ .Values.maintenanceResource.namespace }}
+          - name: MAINTENANCE_VERSION
+            value: {{ .Values.maintenanceResource.version }}
+          - name: MAINTENANCE_API_GROUP
+            value: {{ .Values.maintenanceResource.apiGroup }}
+          - name: TEMPLATE_MOUNT_PATH
+            value: {{ .Values.maintenanceResource.template.mountPath }}
+          - name: TEMPLATE_FILE_NAME
+            value: {{ .Values.maintenanceResource.template.fileName }}
+          - name: ENABLE_LOG_COLLECTOR
+            value: "{{ .Values.logCollector.enabled }}"
+          - name: LOG_COLLECTOR_MANIFEST_PATH
+            value: {{ .Values.maintenanceResource.template.mountPath }}/{{ .Values.logCollector.manifestFileName }}
+          - name: ENABLE_GCP_SOS_COLLECTION
+            value: "{{ .Values.logCollector.enableGcpSosCollection }}"
+          envFrom:
+            - configMapRef:
+                name: mongodb-config
+                optional: true
+      volumes:
+      - name: mongo-app-client-cert
+        secret:
+          secretName: mongo-app-client-cert-secret
+          optional: true
+      - name: templates
+        configMap:
+          name: fault-remediation-templates
+          items:
+            - key: {{ .Values.maintenanceResource.template.fileName }}
+              path: {{ .Values.maintenanceResource.template.fileName }}
+            {{- if .Values.logCollector.enabled }}
+            - key: {{ .Values.logCollector.manifestFileName }}
+              path: {{ .Values.logCollector.manifestFileName }}
+            {{- end }}
+      restartPolicy: Always
+      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

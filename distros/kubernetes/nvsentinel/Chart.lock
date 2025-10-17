@@ -1,0 +1,33 @@
+dependencies:
+- name: gpu-health-monitor
+  repository: ""
+  version: 0.1.0
+- name: mongodb-store
+  repository: ""
+  version: 0.1.0
+- name: fault-quarantine
+  repository: ""
+  version: 0.1.0
+- name: node-drainer
+  repository: ""
+  version: 0.1.0
+- name: fault-remediation
+  repository: ""
+  version: 0.1.0
+- name: health-events-analyzer
+  repository: ""
+  version: 0.1.0
+- name: csp-health-monitor
+  repository: ""
+  version: 0.1.0
+- name: syslog-health-monitor
+  repository: ""
+  version: 0.1.0
+- name: incluster-file-server
+  repository: ""
+  version: 0.1.0
+- name: labeler
+  repository: ""
+  version: 0.1.0
+digest: sha256:c10f6e7fdb0b99a47f38e210c25e610da182c94fe32d89753a34352d12c0bb22
+generated: "2025-10-15T10:37:19.739789+05:30"

@@ -1,0 +1,41 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+FROM public.ecr.aws/docker/library/python:3.12-alpine AS build
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install poetry==1.8.2
+
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
+WORKDIR /app
+
+COPY . .
+RUN --mount=type=cache,target=/tmp/poetry_cache \
+    poetry build --format wheel 
+RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
+
+FROM public.ecr.aws/docker/library/python:3.12-alpine AS runtime
+
+ENV PYTHONUNBUFFERED=1
+
+COPY --from=build /app/dist/*.whl ./
+COPY --from=build /app/constraints.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ./file_server_cleanup*.whl --constraint constraints.txt
+
+CMD ["file_server_cleanup"]

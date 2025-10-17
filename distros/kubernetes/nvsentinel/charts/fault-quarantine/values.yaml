@@ -1,0 +1,97 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+podSecurityContext: {}
+
+resources: 
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Log level for the fault quarantine module (klog verbosity)
+logLevel: 1
+
+clientCertMountPath: "/etc/ssl/mongo-client"
+
+circuitBreaker:
+  enabled: true
+  percentage: 50
+  duration: 5m
+
+config: |
+  label-prefix = "k8saas.nvidia.com/"
+  
+  [[rule-sets]]
+    version = "1"
+    name = "GPU fatal error ruleset"              
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent"                 
+      expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
+    [rule-sets.cordon]
+      shouldCordon = true
+
+  [[rule-sets]]
+    version = "1"
+    name = "CSP health monitor fatal error ruleset"    
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent" 
+      expression = "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
+    [rule-sets.cordon]
+      shouldCordon = true
+
+  [[rule-sets]]
+    version = "1"
+    name = "Syslog fatal error ruleset"
+
+    [[rule-sets.match.all]]
+      kind = "HealthEvent"
+      expression = "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+
+    [[rule-sets.match.all]]
+      kind = "Node"
+      expression = '''
+          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      '''
+
+    [rule-sets.cordon]
+      shouldCordon = true

@@ -1,0 +1,83 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+podSecurityContext: {}
+
+resources:
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+
+# Configuration for the Quarantine Trigger Engine sidecar
+quarantineTriggerEngine:
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+  # Klog verbosity for the sidecar, defaults to main container's logLevel if not set
+  logLevel: 1
+  # Port for sidecar's Prometheus metrics endpoint
+  metricsPort: 2113
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Klog verbosity level for the main CSP health monitor container (e.g., 1=Info, 2=Debug, etc.)
+logLevel: 1
+
+# Mount path for MongoDB client certificates within the containers
+clientCertMountPath: "/etc/ssl/mongo-client"
+
+# Path to the UDS socket created by the Platform Connector DaemonSet
+udsPath: "/run/nvsentinel/nvsentinel.sock"
+
+# cspName specifies the active cloud service provider. Can be "gcp" or "aws".
+cspName: ""
+
+# config.toml content will be generated from the fields below using the configmap template.
+# Both main container and sidecar will mount and use this.
+configToml:
+  # Global settings
+  maintenanceEventPollIntervalSeconds: 60 # Used by Quarantine Trigger Engine sidecar
+  triggerQuarantineWorkflowTimeLimitMinutes: 30 # Used by Quarantine Trigger Engine sidecar
+  postMaintenanceHealthyDelayMinutes: 15 # Used by Quarantine Trigger Engine sidecar
+  nodeReadinessTimeoutMinutes: 60 # Used to monitor node readiness after maintenance
+  clusterName: "" # Used by main monitor and potentially sidecar if needed
+  kubeconfigPath: ""  # Optional, only set if running out-of-cluster against a tenant. Set to non-empty string to enable.
+
+  gcp:
+    targetProjectId: "" # Used by main monitor
+    apiPollingIntervalSeconds: 60 # Used by main monitor (GCP poller)
+    gcpServiceAccountName: "" # GCP service account name for workload identity
+    logFilter: "" # example: 'logName="projects/{PROJECT_ID}/logs/csp-health-monitor-test-log" AND operation.producer="compute.instances.upcomingMaintenance"'
+
+  aws:
+    accountId: "" # Used by main monitor
+    # How often to poll the AWS Health API for events in seconds
+    pollingIntervalSeconds: 60 # Used by main monitor (AWS poller)
+    # AWS region of the tenant cluster.
+    region: "" # Used by main monitor

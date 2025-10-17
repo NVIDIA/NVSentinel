@@ -1,0 +1,52 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+data:
+  config.ini: |
+    [logging]
+    LogFormat = %%(asctime)s,%%(msecs)03d %%(levelname)-8s [%%(filename)s:%%(lineno)d] %%(message)s
+    DateTimeFormat = %%Y-%%m-%%d:%%H:%%M:%%S
+
+    [dcgm]
+    PollIntervalSeconds = 15
+
+    [eventprocessors.kubernetes]
+    ConflictRetryCount = 10
+
+    [eventprocessors.platformconnector]
+    SocketPath = /var/run/nvsentinel.sock
+
+    [cli]
+    EnabledEventProcessors = PlatformConnectorEventProcessor
+
+    [DCGMHealthConditionsCategorizationMapping]
+    DCGM_HEALTH_WATCH_THERMAL=NonFatal
+    DCGM_HEALTH_WATCH_POWER=NonFatal
+    DCGM_HEALTH_WATCH_NVLINK=Fatal
+    DCGM_HEALTH_WATCH_SM=Fatal
+    DCGM_HEALTH_WATCH_MEM=Fatal
+    DCGM_HEALTH_WATCH_INFOROM=Fatal
+    DCGM_HEALTH_WATCH_MCU=Fatal
+    DCGM_HEALTH_WATCH_DRIVER=Fatal
+    DCGM_HEALTH_WATCH_NVSWITCH_FATAL=Fatal
+    DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL=NonFatal
+    DCGM_HEALTH_WATCH_PCIE=Fatal
+    DCGM_HEALTH_WATCH_PMU=Fatal
+
+{{ (.Files.Glob "files/dcgmerrorsmapping.csv").AsConfig | indent 2 }}

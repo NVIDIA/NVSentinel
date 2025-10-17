@@ -1,0 +1,64 @@
+
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+podSecurityContext: {}
+
+resources: 
+  limits:
+    cpu: "200m"
+    memory: "300Mi"
+  requests:
+    cpu: "200m"
+    memory: "300Mi"
+
+image:
+  repository: faultremediation
+  tag: "v1"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Special tolerations for fault remediation - allow running on nodes with any taints for log collection
+tolerations:
+  - operator: "Exists"
+
+clientCertMountPath: "/etc/ssl/mongo-client"
+
+maintenanceResource:
+  rebootResource:
+    name: rebootnodes
+  apiGroup: janitor.dgxc.nvidia.com
+  namespace: dgxc-janitor
+  version: v1alpha1
+  template:
+    mountPath: /etc/fault-remediation/templates
+    fileName: maintenance-template.yaml
+
+logCollector:
+  enabled: false
+  manifestFileName: log-collector-job.yaml
+  image:
+    repository: ghcr.io/nvidia/nvsentinel-log-collector
+    pullPolicy: IfNotPresent
+  uploadURL: "http://nvsentinel-file-server.nvsentinel.svc.cluster.local/upload"
+  gpuOperatorNamespaces: "gpu-operator"
+  enableGcpSosCollection: false

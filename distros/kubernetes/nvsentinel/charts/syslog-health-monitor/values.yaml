@@ -1,0 +1,77 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: syslog-health-monitor
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "0.1.0"
+
+updateStrategy: RollingUpdate
+maxUnavailable: 5%
+
+podSecurityContext: {}
+
+securityContext:
+  runAsUser: 0
+  capabilities:
+    add: ["SYSLOG", "SYS_ADMIN"]
+    
+resources: 
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Configuration for the syslog-health-monitor application.
+# The primary configuration is now done via the ConfigMap and the --config-file argument.
+# The Go application retains a fallback mode to use these individual flags if --config-file is not set.
+# config:
+#   # Comma-separated list of regex patterns to search for (required by app, but can be set in ConfigMap)
+#   matches: ""
+#   # Maximum allowed count of matches (required by app, but can be set in ConfigMap)
+#   count: 0 
+#   # Perform case-insensitive matching
+#   ignoreCase: false
+#   # Comma-separated list of tags for journalctl (e.g., --system, --user-unit my.service)
+#   tags: "--system"
+#   # Look back since last boot
+#   boot: false
+#   # Lookback duration (e.g., 2h, 10m, 30s). Overridden by --boot.
+#   lookback: "43200s"
+#   # Path to journal directory for journalctl --directory (optional)
+#   journalPath: ""
+#   # Comma-separated list of regex patterns to exclude from results (optional)
+#   invertMatches: ""
+
+# Add new pollingInterval configuration
+pollingInterval: "15s" # Default polling interval, e.g., "5m", "1h", "30s"
+
+# Add new stateFile configuration for cursor persistence
+stateFile: "/var/run/syslog_health_monitor/state.json" # Path to persistent state file
+
+driverWatcher:
+  logLevel: 2
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi

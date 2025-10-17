@@ -1,0 +1,119 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# MongoDB Server Certificates
+{{- $replicaCount := int .Values.mongodb.replicaCount }}
+{{- range $i := until $replicaCount }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-server-cert-{{ $i }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  secretName: mongo-server-cert-{{ $i }}
+  duration: 8760h   # 1 year
+  renewBefore: 360h # 15 days before expiration
+  commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
+  dnsNames:
+    - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $i $.Release.Namespace $.Release.Namespace }}
+    - {{ printf "%s-mongodb-%d.%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $i $.Release.Name $.Release.Namespace }}
+    - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Namespace $.Release.Namespace }}
+    - {{ printf "%s-mongodb-headless.%s.svc.cluster.local" $.Release.Name $.Release.Namespace }}
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+---
+{{- end }}
+
+# MongoDB Client Certificate
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-app-client-cert
+spec:
+  secretName: mongo-app-client-cert-secret
+  duration: 8760h
+  renewBefore: 360h
+  commonName: mongo-user-client
+  subject:
+    organizations:
+      - Nvidia
+    organizationalUnits:
+      - DGXC
+    localities:
+      - SantaClara
+    provinces:
+      - California
+    countries:
+      - US
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+---
+# MongoDB DGXCOPS Client Certificate
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-dgxcops-client-cert
+spec:
+  secretName: mongo-dgxcops-client-cert-secret
+  duration: 8760h
+  renewBefore: 360h
+  commonName: mongo-dgxcops-client
+  subject:
+    organizations:
+      - Nvidia
+    organizationalUnits:
+      - DGXC
+    localities:
+      - SantaClara
+    provinces:
+      - California
+    countries:
+      - US
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mongo-ca-issuer
+spec:
+  ca:
+    secretName: mongo-root-ca-secret
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: selfsigned-ca-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-root-ca
+spec:
+  isCA: true
+  commonName: mongo-root-ca
+  secretName: mongo-root-ca-secret
+  duration: 87600h   # 10 years
+  renewBefore: 720h  # 30 days before expiration
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  issuerRef:
+    name: selfsigned-ca-issuer
+    kind: Issuer

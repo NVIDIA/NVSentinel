@@ -1,0 +1,199 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+mongodb:
+  global:
+    imagePullSecrets:
+      - nvidia-ngcuser-pull-secret
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mongodb
+    tag: 8.0.3-debian-12-r0
+    pullPolicy: IfNotPresent
+  
+  commonAnnotations:
+    dgxc.nvidia.com/resource-category: management
+
+  architecture: replicaset
+  replicaCount: 3
+
+  readinessProbe:
+    timeoutSeconds: 10
+    initialDelaySeconds: 60
+
+  replicaSetName: rs0
+
+  resources:
+    requests:
+      cpu: 1
+      memory: 1.5Gi
+    limits:
+      cpu: 1.5
+      memory: 2Gi
+
+  serviceAccount: 
+    name: "mongodb-sa"
+
+  networkPolicy:
+    enabled: false
+
+  persistentVolumeClaimRetentionPolicy:
+    enabled: true
+    whenDeleted: Retain
+    whenScaled: Retain
+  
+  persistence:
+    resourcePolicy: "keep"
+  
+  automountServiceAccountToken: true
+  
+  pdb:
+    minAvailable: 2  # At least 2 replicas must be available (ensures quorum)
+
+  initContainers:
+    - name: create-mongodb-credentials
+      image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+      imagePullPolicy: "{{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}"
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          
+          # Check if MongoDB credentials secret exists
+          secret=$(kubectl get secret nvsentinel-mongodb -n {{ .Release.Namespace }} --ignore-not-found)
+          if [ -z "$secret" ]; then
+            echo "Secret nvsentinel-mongodb does not exist, creating it with random values..."
+            
+            # Generate random passwords (32 chars, alphanumeric)
+            ROOT_PASSWORD=$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | cut -c1-32)
+            REPLICA_SET_KEY=$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | cut -c1-32)
+            
+            # Create the secret with annotation in a single command
+            kubectl create secret generic nvsentinel-mongodb \
+              -n {{ .Release.Namespace }} \
+              --from-literal=mongodb-root-password="$ROOT_PASSWORD" \
+              --from-literal=mongodb-replica-set-key="$REPLICA_SET_KEY" \
+              --from-literal=mongodb-passwords="" \
+              --from-literal=mongodb-metrics-password="" \
+              --dry-run=client -o yaml | \
+              sed '/^metadata:/a\  annotations:\n    helm.sh/resource-policy: keep' | \
+              kubectl apply -f -
+            
+            echo "Secret nvsentinel-mongodb created with random credentials."
+            echo "NOTE: These credentials will be preserved for data retention."
+          else
+            echo "Secret nvsentinel-mongodb already exists, will reuse existing credentials..."
+            echo "This ensures data retention across reinstalls."
+          fi
+          
+          echo "MongoDB credentials initialization completed."
+          echo "=============================="
+    
+    - name: create-certmanager-resources
+      image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+      imagePullPolicy: "{{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}"
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          secret=$(kubectl get secret mongo-ca-secret -n {{ .Release.Namespace }} --ignore-not-found)
+          if [ -z "$secret" ]; then
+            echo "Secret mongo-ca-secret does not exist, creating it..."
+            SKIP_SECRET_CREATION=false
+          else
+            echo "Secret mongo-ca-secret already exists, skipping creation..."
+            SKIP_SECRET_CREATION=true
+          fi
+
+          if [ "$SKIP_SECRET_CREATION" = "false" ]; then
+            echo "Waiting for CA certificate to be ready..."
+            kubectl wait --for=condition=Ready certificate/mongo-root-ca -n {{ .Release.Namespace }} --timeout=300s
+
+            echo "Extracting CA certificate and key..."
+            kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} \
+              -o jsonpath="{.data.tls\.crt}" | base64 -d > /tmp/mongodb-ca-cert
+            kubectl get secret mongo-root-ca-secret -n {{ .Release.Namespace }} \
+              -o jsonpath="{.data.tls\.key}" | base64 -d > /tmp/mongodb-ca-key
+
+            echo "Creating mongo-ca-secret..."
+            kubectl create secret generic mongo-ca-secret -n {{ .Release.Namespace }} \
+              --from-file=mongodb-ca-cert=/tmp/mongodb-ca-cert \
+              --from-file=mongodb-ca-key=/tmp/mongodb-ca-key \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "Secret mongo-ca-secret created."
+          fi
+          
+          echo "Waiting for mongo client cert to be ready..."
+          kubectl wait --for=condition=Ready certificate/mongo-app-client-cert -n {{ .Release.Namespace }} --timeout=300s
+
+          echo "=============================="
+          echo "cert-manager resources creation completed."
+          echo "=============================="
+
+  auth:
+    enabled: true
+    rootUser: root
+    # The initContainer will create this secret if it doesn't exist with
+    # random credentials, or reuse it if it exists (for data retention)
+    existingSecret: "nvsentinel-mongodb"
+
+  tls:
+    enabled: true
+    mTLS:
+      enabled: true
+    mode: requireTLS
+    autoGenerated: false
+    existingSecret: "mongo-ca-secret"
+    replicaset:
+      existingSecrets:
+        - "mongo-server-cert-0"
+        - "mongo-server-cert-1"
+        - "mongo-server-cert-2"
+    
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/nginx
+      tag: 1.27.2-debian-12-r2
+      pullPolicy: IfNotPresent
+
+  replicaSetHostnames: true
+
+  extraFlags:
+    - "--setParameter"
+    - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
+
+  tolerations: []
+      
+  jobTolerations: []
+
+  arbiter:
+    enabled: false
+
+  metrics:
+    enabled: true
+    image:
+      registry: docker.io
+      repository: bitnamilegacy/mongodb-exporter
+      tag: 0.41.2-debian-12-r1
+      pullSecrets:
+      - nvidia-ngcuser-pull-secret
+    command:
+      - /bin/bash
+      - -ec
+    args:
+      - |
+        export HOSTNAME=$(hostname)
+        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.nvsentinel-mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"

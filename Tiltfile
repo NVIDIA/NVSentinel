@@ -1,0 +1,135 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load('ext://helm_resource', 'helm_resource', 'helm_repo')
+load('ext://namespace', 'namespace_create', 'namespace_inject')
+
+update_settings(k8s_upsert_timeout_secs=600)
+
+num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
+
+helm_repo('jetstack', 'https://charts.jetstack.io')
+helm_resource(
+    'cert-manager',
+    chart='jetstack/cert-manager',
+    namespace='cert-manager',
+    flags=[
+        '--create-namespace',
+        '--set=installCRDs=true',
+    ],
+)
+
+helm_repo('prometheus-community', 'https://prometheus-community.github.io/helm-charts')
+helm_resource(
+    'prometheus-operator',
+    chart='prometheus-community/kube-prometheus-stack',
+    namespace='monitoring',
+    flags=[
+        '--create-namespace',
+        '--set=prometheus.enabled=true',
+        '--set=alertmanager.enabled=false',
+        '--set=grafana.enabled=false',
+        '--set=kubeStateMetrics.enabled=false',
+        '--set=nodeExporter.enabled=false',
+        '--set=prometheusOperator.enabled=true',
+    ],
+)
+
+helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
+helm_resource(
+    'kwok',
+    chart='sigs-kwok/kwok',
+    namespace='kube-system',
+    flags=[
+        '--set=hostNetwork=true'
+    ]
+)
+helm_resource(
+    'kwok-stage-fast',
+    chart='sigs-kwok/stage-fast',
+    resource_deps=['kwok'],
+    pod_readiness='ignore'
+)
+
+namespace_create('gpu-operator')
+namespace_create('nvsentinel')
+
+kwok_node_template = str(read_file('./tilt/kwok-node-template.yaml'))
+for i in range(num_gpu_nodes):
+    node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
+    k8s_yaml(blob(node_yaml))
+
+k8s_yaml('./tilt/nvidia-driver-daemonset.yaml')
+k8s_yaml('./tilt/nvidia-dcgm-daemonset.yaml')
+k8s_yaml('./tilt/janitor.dgxc.nvidia.com_rebootnodes.yaml')
+
+include('./fault-quarantine-module/Tiltfile')
+include('./fault-remediation-module/Tiltfile')
+include('./node-drainer-module/Tiltfile')
+include('./platform-connectors/Tiltfile')
+include('./tilt/simple-health-client/Tiltfile')
+#include('./health-events-analyzer/Tiltfile') # This module was a proof-of-concept, never completed
+include('./health-monitors/gpu-health-monitor/Tiltfile')
+include('./health-monitors/syslog-health-monitor/Tiltfile')
+include('./labeler-module/Tiltfile')
+
+yaml = helm(
+    './distros/kubernetes/nvsentinel',
+    name='nvsentinel',
+    namespace='nvsentinel',
+    values=['./distros/kubernetes/nvsentinel/values.yaml', './distros/kubernetes/nvsentinel/values-tilt.yaml'],
+)
+k8s_yaml(yaml)
+
+k8s_resource(
+    new_name='cert-manager-resources',
+    objects=[
+        'mongo-root-ca:certificate',
+        'mongo-ca-issuer:issuer', 
+        'selfsigned-ca-issuer:issuer',
+        'mongo-server-cert-0:certificate',
+        'mongo-server-cert-1:certificate',
+        'mongo-server-cert-2:certificate',
+        'mongo-app-client-cert:certificate',
+        'mongo-dgxcops-client-cert:certificate'
+    ],
+    resource_deps=['cert-manager'],
+)
+k8s_resource(
+    new_name='prometheus-resources',
+    objects=['nvsentinel-pod-monitor:podmonitor'],
+    resource_deps=['prometheus-operator'],
+)
+k8s_resource(
+    'prometheus-operator',
+    port_forwards='9090:9090',
+)
+
+kwok_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
+k8s_resource(
+    new_name='kwok-fake-nodes',
+    objects=kwok_node_names,
+    resource_deps=['kwok', 'nvsentinel-platform-connector', 'nvsentinel-fault-quarantine', 'nvsentinel-fault-remediation', 
+        'nvsentinel-labeler', 'nvsentinel-node-drainer', 'nvsentinel-mongodb', 'simple-health-client'
+    ], 
+)
+k8s_resource(
+    'kwok-stage-fast',
+    pod_readiness='ignore',
+    resource_deps=['kwok']
+)
+k8s_resource(
+    workload='nvsentinel-gpu-health-monitor-dcgm-3.x',
+    pod_readiness='ignore'
+)

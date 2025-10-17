@@ -1,0 +1,102 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "incluster-file-server.fullname" . }}-nginx-conf
+  labels:
+    {{- include "incluster-file-server.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    log_format fileserver_format '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time';
+    
+    server {
+      listen 8080;
+      server_name _;
+      charset utf-8;
+
+      access_log /var/log/nginx/access.log fileserver_format;
+      error_log /dev/stderr info;
+
+      client_max_body_size 0;
+
+      location = /healthz {
+        access_log off;
+        return 200;
+      }
+
+      location / {
+        root /usr/share/nginx/html;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+      }
+
+      location /upload/ {
+        root /usr/share/nginx/html;
+        client_max_body_size 0;
+        create_full_put_path on;
+        dav_methods PUT DELETE MKCOL;
+        dav_access user:rw group:rw all:r;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+        disable_symlinks if_not_owner from=/usr/share/nginx/html;
+      }
+    }
+
+{{- if .Values.metrics.enabled }}
+  log-exporter-config.yml: |
+    listen:
+      port: {{ .Values.global.inclusterFileServer.metricsPort }}
+    namespaces:
+      - name: fileserver
+        format: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time'
+        source:
+          files:
+            - /var/log/nginx/access.log
+        labels:
+          app: "nvsentinel-file-server"
+        relabel_configs:
+          - target_label: method
+            from: request
+            split: 2
+          - target_label: status_code
+            from: status
+        metrics:
+          - name: http_response_count_total
+            help: "Total number of HTTP responses"
+            type: counter
+            labels:
+              method: $method
+              status: $status
+          - name: http_request_duration_seconds
+            help: "Request duration in seconds"
+            type: histogram
+            field: $request_time
+            buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+            labels:
+              method: $method
+              status: $status
+{{- end }}
+---
+{{- if .Values.logCleanup.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: file-server-log-cleanup-config
+data:
+  LOG_RETENTION_DAYS: "{{ .Values.logCleanup.retentionDays }}"
+  LOG_CLEANUP_SLEEP_INTERVAL: "{{ .Values.logCleanup.sleepInterval }}"
+{{- end }}

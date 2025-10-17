@@ -1,0 +1,127 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Health Monitors (only those with go.mod)
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/csp-health-monitor"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/syslog-health-monitor"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Core Services
+  - package-ecosystem: "gomod"
+    directory: "/health-events-analyzer"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/platform-connectors"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/statemanager"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/store-client-sdk"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Fault Management
+  - package-ecosystem: "gomod"
+    directory: "/fault-quarantine-module"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/fault-remediation-module"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/labeler-module"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "gomod"
+    directory: "/node-drainer-module"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Tests
+  - package-ecosystem: "gomod"
+    directory: "/tests"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Python packages
+  - package-ecosystem: "pip"
+    directory: "/health-monitors/gpu-health-monitor"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  - package-ecosystem: "pip"
+    directory: "/nvsentinel-log-collector"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
+  # Docker
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: "monthly"
+    labels: ["dependencies"]

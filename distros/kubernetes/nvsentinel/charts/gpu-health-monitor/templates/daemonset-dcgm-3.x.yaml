@@ -1,0 +1,130 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "gpu-health-monitor.fullname" . }}-dcgm-3.x
+  labels:
+    {{- include "gpu-health-monitor.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: {{ .Values.updateStrategy }}
+    {{- if eq .Values.updateStrategy "RollingUpdate"}}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.maxUnavailable }}
+    {{- end}}
+  selector:
+    matchLabels:
+      {{- include "gpu-health-monitor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with (.Values.global.podAnnotations | default .Values.podAnnotations) }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "gpu-health-monitor.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          command: ["gpu_health_monitor"]
+          args:
+            - --config-file
+            - "/etc/dcgmhealth/config.ini"
+            - --dcgm-error-mapping-config-file
+            - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
+            - --dcgm-addr
+            - {{ ternary  (printf "%s:%v" .Values.global.dcgm.service.endpoint .Values.global.dcgm.service.port) "localhost:5555" .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
+            - --port
+            - "{{ .Values.global.metricsPort }}"
+            - --verbose
+            - "False"
+            - --state-file
+            - {{ .Values.stateFilePath }}
+            - --dcgm-k8s-service-enabled
+            - {{ .Values.global.dcgm.dcgmK8sServiceEnabled | quote }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.global.gpuHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}-dcgm-3.x"
+          imagePullPolicy: {{ .Values.global.gpuHealthMonitor.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.global.metricsPort }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: {{ .Values.global.metricsPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            {{- if .Values.global.gpuHealthMonitorAdditionalVolumeMounts }}
+            {{ toYaml .Values.global.gpuHealthMonitorAdditionalVolumeMounts | nindent 12 }}
+            {{- end }}
+            - name: config-vol
+              mountPath: /etc/dcgmhealth
+            - name: var-run-vol
+              mountPath: /var/run/
+          env: 
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+      volumes:
+        - name: config-vol
+          configMap:
+            name: {{ include "gpu-health-monitor.fullname" . }}
+            defaultMode: 0777
+        - name: var-run-vol
+          hostPath:
+            path: /var/run/nvsentinel
+            type: Directory
+        {{- if .Values.global.gpuHealthMonitorAdditionalHostVolumes }}
+        {{ toYaml .Values.global.gpuHealthMonitorAdditionalHostVolumes | nindent 8 }}
+        {{- end }}
+      {{- if .Values.global.gpuHealthMonitor.useHostNetworking }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      nodeSelector:
+        nvsentinel.dgxc.nvidia.com/dcgm.version: "3.x"
+        {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

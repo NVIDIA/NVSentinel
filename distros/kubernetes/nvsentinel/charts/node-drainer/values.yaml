@@ -1,0 +1,54 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+podSecurityContext: {}
+
+resources:
+  limits:
+    cpu: "200m"
+    memory: "300Mi"
+  requests:
+    cpu: "200m"
+    memory: "300Mi"
+
+image:
+  repository: nodedrainer
+  tag: main
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+clientCertMountPath: "/etc/ssl/mongo-client"
+
+configPath: "/etc/config/config.toml"
+
+config: |
+  evictionTimeoutInSeconds = "60"
+  systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage|runai|dgxc-admission-controller|dgxc-system|osmo|default|dgxc-logging|network-operator|skyhook|dgxc-alloy)$"
+  deleteAfterTimeoutMinutes = 60 # Time (in minutes)after which pods in DeleteAfterTimeout mode will start deleting the pod 
+
+  # Time after which a pod in NotReady state is considered stuck (in minutes)
+  notReadyTimeoutMinutes = 5
+
+  # User namespace configuration with eviction modes
+  [[userNamespaces]]
+  name = "*"
+  mode = "AllowCompletion"

@@ -1,0 +1,95 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fault-quarantine-module.fullname" . }}
+  labels:
+    {{- include "fault-quarantine-module.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "fault-quarantine-module.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with (.Values.global.podAnnotations | default .Values.podAnnotations) }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "fault-quarantine-module.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
+      containers:
+        - name: fault-quarantine
+          image: "{{ .Values.global.faultQuarantineModule.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.global.faultQuarantineModule.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          args:
+          - "--metrics-port={{ .Values.global.metricsPort }}"
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          - "--dry-run={{ .Values.global.dryRun }}"
+          - "--circuit-breaker-percentage={{ .Values.circuitBreaker.percentage }}"
+          - "--circuit-breaker-duration={{ .Values.circuitBreaker.duration }}"
+          - "--circuit-breaker-enabled={{ .Values.circuitBreaker.enabled }}"
+          - "-v={{ .Values.logLevel }}"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          volumeMounts:
+          - name: config-volume
+            mountPath: /etc/config/config.toml
+            subPath: config.toml
+          - name: mongo-app-client-cert
+            mountPath: {{ .Values.clientCertMountPath }}
+            readOnly: true
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          envFrom:
+            - configMapRef:
+                name: mongodb-config
+                optional: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: fault-quarantine-config
+          items:
+          - key: config.toml
+            path: config.toml
+      - name: mongo-app-client-cert
+        secret:
+          secretName: mongo-app-client-cert-secret
+          optional: true
+      restartPolicy: Always
+      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

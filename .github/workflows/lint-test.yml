@@ -1,0 +1,176 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Lint and Test
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read       # Required for checking out code
+  actions: write       # Required for uploading test artifacts
+
+env:
+  # Go cache settings (specific to this workflow)
+  GOPATH: /home/runner/go
+  GOCACHE: /home/runner/.cache/go-build
+
+jobs:
+  prepare-environment:
+    uses: ./.github/workflows/prepare-environment.yml
+
+  simple-lint:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 30
+    needs: prepare-environment
+    strategy:
+      matrix:
+        include:
+          - component: protos
+            make_command: 'make protos-lint'
+            step_name: 'Run protos lint'
+          - component: license-headers
+            make_command: 'make license-headers-lint'
+            step_name: 'Run license headers check'
+          - component: gomod
+            make_command: 'make gomod-lint'
+            step_name: 'Run gomod lint'
+          - component: log-collector
+            make_command: 'make -C nvsentinel-log-collector lint-log-collector'
+            step_name: 'Run lint'
+            replace_imports: 'false'
+          - component: file-server-cleanup
+            make_command: 'make -C nvsentinel-log-collector lint-file-server-cleanup'
+            step_name: 'Run lint'
+            replace_imports: 'false'
+          - component: kubernetes-distro
+            make_command: 'make kubernetes-distro-lint'
+            step_name: 'Run lint'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          replace-imports: ${{ matrix.replace_imports || 'true' }}
+
+      - name: ${{ matrix.step_name }}
+        run: ${{ matrix.make_command }}
+
+  health-monitors-lint-test:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 30
+    needs: prepare-environment
+    strategy:
+      matrix:
+        include:
+          - component: syslog-health-monitor
+          - component: csp-health-monitor
+          - component: gpu-health-monitor
+            install_dcgm: 'true'
+            python_required: 'true'
+            replace_imports: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          install-dcgm: ${{ matrix.install_dcgm || 'false' }}
+          replace-imports: ${{ matrix.replace_imports || 'true' }}
+
+      - name: Run lint and test
+        run: make -C health-monitors/${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: ${{ matrix.component }}
+          file-paths: |
+            health-monitors/${{ matrix.component }}/coverage.xml
+            health-monitors/${{ matrix.component }}/report.xml
+
+
+  modules-lint-test:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 30
+    needs: prepare-environment
+    strategy:
+      matrix:
+        component:
+          - platform-connectors
+          - store-client-sdk
+          - statemanager
+          - health-events-analyzer
+          - fault-quarantine-module
+          - labeler-module
+          - node-drainer-module
+          - fault-remediation-module
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+
+      - name: Run lint and test
+        run: make -C ${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: ${{ matrix.component }}
+          file-paths: |
+            ${{ matrix.component }}/coverage.xml
+            ${{ matrix.component }}/report.xml
+
+
+
+

@@ -1,0 +1,76 @@
+##
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##
+
+# Source: manifests/log-collector-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: {{ include "fault-remediation-module.fullname" . }}-log-collector-job-
+  namespace: {{ .Release.Namespace }}
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: nvsentinel-log-collector
+    spec:
+      serviceAccountName: log-collector-job
+      imagePullSecrets:
+        - name: nvidia-ngcuser-pull-secret
+
+      restartPolicy: Never
+      # nodeName will be set programmatically by the controller before create
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: log-collector
+          image: {{ .Values.logCollector.image.repository }}:{{ .Values.global.image.tag | default "latest"  }}
+          imagePullPolicy: {{ .Values.logCollector.image.pullPolicy }}          
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: false
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: KEEP_ALIVE
+              value: "false"
+            - name: GPU_OPERATOR_NAMESPACES
+              value: {{ .Values.logCollector.gpuOperatorNamespaces | default "gpu-operator" | quote }}
+            - name: ENABLE_GPU_OPERATOR_MUST_GATHER
+              value: "false"
+            - name: COLLECTION_TIMEOUT_SECONDS
+              value: "900"
+            - name: UPLOAD_URL_BASE
+              value: {{ .Values.logCollector.uploadURL | quote }}
+            - name: ENABLE_GCP_SOS_COLLECTION
+              value: {{ .Values.logCollector.enableGcpSosCollection | quote }}
+          volumeMounts:
+            - name: artifacts
+              mountPath: /artifacts
+            - name: host-root
+              mountPath: /host
+              readOnly: true
+      volumes:
+        - name: artifacts
+          emptyDir: {}
+        - name: host-root
+          hostPath:
+            path: /

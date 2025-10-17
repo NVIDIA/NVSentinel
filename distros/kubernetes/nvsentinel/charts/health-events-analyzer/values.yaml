@@ -1,0 +1,65 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+securityContext:
+  runAsUser: 0
+
+podSecurityContext: {}
+
+resources: 
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+  requests:
+    cpu: "1"
+    memory: "1Gi"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+clientCertMountPath: "/etc/ssl/mongo-client"
+
+logLevel: 1
+
+config: |
+  [[rules]]
+  name = "Rule1"
+  description = "Detect occurrence of XID13 -> XID31 within 30 minutes"
+  time_window = "30m"
+  recommended_action = "COMPONENT_RESET"
+  
+  [[rules.sequence]]
+  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }
+  errorCount = 1
+  
+  [[rules.sequence]]
+  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "31", "healthevent.nodename" = "this.healthevent.nodename" }
+  errorCount = 1
+
+  [[rules]]
+  name = "Rule2"
+  description = "Detect occurrence of XID13 3 times within 30 minutes"
+  time_window = "30m"
+  recommended_action = "CONTACT_SUPPORT"
+
+  [[rules.sequence]]
+  criteria = { "healthevent.entitiesimpacted.0.entitytype" = "GPU", "healthevent.entitiesimpacted.0.entityvalue" = "this.healthevent.entitiesimpacted.0.entityvalue", "healthevent.errorcode.0" = "13", "healthevent.nodename" = "this.healthevent.nodename" }
+  errorCount = 3 

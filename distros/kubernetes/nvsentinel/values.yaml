@@ -1,0 +1,178 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+global:
+  image:
+    tag: "main"
+
+  metricsPort: 2112
+  
+  nodeSelector: {}
+  
+  tolerations: []
+  
+  affinity: {}
+  
+  podAnnotations: {}
+  
+  systemNodeSelector: {}
+  
+  systemNodeTolerations: []
+
+  dcgm:
+    dcgmK8sServiceEnabled: true
+    service:
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      port: 5555
+
+  dryRun: false
+
+  gpuHealthMonitor:
+    enabled: true
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-gpu-health-monitor
+      pullPolicy: IfNotPresent
+    
+    useHostNetworking: false
+    
+    busybox:
+      image:
+        repository: public.ecr.aws/docker/library/busybox
+        tag: "1.37.0"
+        pullPolicy: IfNotPresent
+
+  healthEventsAnalyzer:
+    enabled: false
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-health-events-analyzer
+      pullPolicy: IfNotPresent
+
+  faultQuarantineModule:
+    enabled: false
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-fault-quarantine-module
+      pullPolicy: IfNotPresent
+
+  nodeDrainerModule:
+    enabled: false
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-node-drainer-module
+      pullPolicy: IfNotPresent
+
+  faultRemediationModule:
+    enabled: false
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-fault-remediation-module
+      pullPolicy: IfNotPresent
+
+  cspHealthMonitor:
+    enabled: false
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-csp-health-monitor
+      pullPolicy: IfNotPresent
+
+  syslogHealthMonitor:
+    enabled: true
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-syslog-health-monitor
+      pullPolicy: IfNotPresent
+
+    xidSideCar:
+      enabled: false
+
+  labeler:
+    enabled: true
+
+    image:
+      repository: ghcr.io/nvidia/nvsentinel-labeler-module
+      pullPolicy: IfNotPresent
+
+  imagePullSecrets:
+    - name: nvidia-ngcuser-pull-secret
+
+  mongodbStore:
+    images:
+      kubectl:
+        repository: docker.io/bitnamilegacy/kubectl
+        tag: "1.30.6"
+        pullPolicy: IfNotPresent
+      mongosh:
+        repository: ghcr.io/rtsp/docker-mongosh
+        tag: "2.5.2"
+        pullPolicy: IfNotPresent
+
+  inclusterFileServer:
+    enabled: false
+    metricsPort: 9001
+    cleanupMetricsPort: 9002
+
+  kata:
+    enabled: false
+
+platformConnector:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel-platform-connectors
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  securityContext:
+    runAsUser: 0
+    capabilities:
+      drop:
+      - ALL
+
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+
+  podSecurityContext: {}
+
+  updateStrategy: RollingUpdate
+  maxUnavailable: 5%
+
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+socketPath: "/var/run/nvsentinel.sock"

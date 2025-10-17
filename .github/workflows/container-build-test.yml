@@ -1,0 +1,157 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Container Build Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      # Container-related files
+      - '**/Dockerfile*'
+      - '**/docker/**'
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '**/pyproject.toml'
+      - '**/poetry.lock'
+      - '**/*Makefile*'
+      - 'scripts/**'
+      # Workflow files
+      - '.github/workflows/container-build-test.yml'
+      - '.github/actions/build-container/**'
+      - '.github/actions/setup-build-env/**'
+      # Build scripts
+      - 'build_image_list.sh'
+  workflow_dispatch:
+    inputs:
+      components:
+        description: 'Comma-separated list of components to build (leave empty for all)'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read       # Required for checking out code
+  actions: read        # Required for cache operations
+  packages: write      # Required for GHCR build cache access
+
+jobs:
+  prepare-environment:
+    uses: ./.github/workflows/prepare-environment.yml
+
+  container-build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: prepare-environment
+    strategy:
+      fail-fast: false  # Continue testing other containers even if one fails
+      matrix:
+        include:
+          # Health Monitors
+          - component: gpu-health-monitor-dcgm3
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm3'
+          - component: gpu-health-monitor-dcgm4
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
+          - component: syslog-health-monitor
+            make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
+          - component: csp-health-monitor
+            make_command: 'make -C health-monitors/csp-health-monitor docker-build'
+          # Core Modules
+          - component: health-events-analyzer
+            make_command: 'make -C health-events-analyzer docker-build'
+          - component: fault-quarantine-module
+            make_command: 'make -C fault-quarantine-module docker-build'
+          - component: labeler-module
+            make_command: 'make -C labeler-module docker-build'
+          - component: node-drainer-module
+            make_command: 'make -C node-drainer-module docker-build'
+          - component: fault-remediation-module
+            make_command: 'make -C fault-remediation-module docker-build'
+          # Log Collection
+          - component: log-collector
+            make_command: 'make -C nvsentinel-log-collector docker-build-log-collector'
+          - component: file-server-cleanup
+            make_command: 'make -C nvsentinel-log-collector docker-build-file-server-cleanup'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if component should be built
+        id: should-build
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            components="${{ github.event.inputs.components }}"
+            if [[ -z "$components" ]]; then
+              echo "build=true" >> $GITHUB_OUTPUT
+            elif [[ "$components" == *"${{ matrix.component }}"* ]]; then
+              echo "build=true" >> $GITHUB_OUTPUT
+            else
+              echo "build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "build=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup build environment
+        if: steps.should-build.outputs.build == 'true'
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+
+      - name: Build container for ${{ matrix.component }}
+        if: steps.should-build.outputs.build == 'true'
+        run: echo "Building container for ${{ matrix.component }}..."
+
+      - name: Skip component
+        if: steps.should-build.outputs.build == 'false'
+        run: echo "Skipping ${{ matrix.component }} (not in selected components list)"
+
+      - name: Execute build
+        if: steps.should-build.outputs.build == 'true'
+        uses: ./.github/actions/build-container
+        with:
+          safe_ref_name: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          nvcr_container_repo: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
+          container_org: ${{ needs.prepare-environment.outputs.container_org }}
+          make_command: ${{ matrix.make_command }}
+
+  container-build-summary:
+    runs-on: ubuntu-latest
+    needs: container-build-test
+    if: always()
+    steps:
+      - name: Check build results
+        run: |
+          echo "Container build validation completed"
+          if [[ "${{ needs.container-build-test.result }}" == "failure" ]]; then
+            echo "❌ Some container builds failed"
+            exit 1
+          elif [[ "${{ needs.container-build-test.result }}" == "cancelled" ]]; then
+            echo "⚠️ Container builds were cancelled"
+            exit 1
+          else
+            echo "✅ All container builds passed"
+          fi

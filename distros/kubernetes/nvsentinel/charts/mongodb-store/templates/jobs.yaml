@@ -1,0 +1,210 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mongodb-job-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mongodb-job-role
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mongodb-job-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mongodb-job-role
+subjects:
+- kind: ServiceAccount
+  name: mongodb-job-sa
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mongodb-database
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      serviceAccountName: mongodb-job-sa
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: wait-for-mongodb-secret
+        image: "{{ .Values.global.mongodbStore.images.kubectl.repository }}:{{ .Values.global.mongodbStore.images.kubectl.tag }}"
+        imagePullPolicy: {{ .Values.global.mongodbStore.images.kubectl.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MongoDB secret to be available..."
+          while ! kubectl get secret nvsentinel-mongodb -n {{ .Release.Namespace }} >/dev/null 2>&1; do
+            echo "Secret nvsentinel-mongodb not found yet, waiting..."
+            sleep 5
+          done
+          echo "Secret nvsentinel-mongodb is available, proceeding..."
+      containers:
+      - name: mongo-client
+        image: "{{ .Values.global.mongodbStore.images.mongosh.repository }}:{{ .Values.global.mongodbStore.images.mongosh.tag }}"
+        imagePullPolicy: {{ .Values.global.mongodbStore.images.mongosh.pullPolicy }}
+        command:
+          - sh
+          - -c
+          - |
+            set -e
+
+            echo "=============================="
+            echo "Starting mongodb client job..."
+            echo "=============================="
+
+            echo "MONGODB_URI: $MONGODB_URI"
+            echo "MONGODB_APPLICATION_USER_DN: $MONGODB_APPLICATION_USER_DN"
+            echo "MONGODB_DATABASE_NAME: $MONGODB_DATABASE_NAME"
+            echo "MONGODB_COLLECTION_NAME: $MONGODB_COLLECTION_NAME"
+            echo "MONGODB_TOKEN_COLLECTION_NAME: $MONGODB_TOKEN_COLLECTION_NAME"
+
+            cat /certs/tls.crt /certs/tls.key > /tmp/tls.pem
+
+            echo "=============================="
+            echo "Connecting to mongodb and creating X.509 user..."
+            echo "=============================="
+
+            until mongosh "$MONGODB_URI" \
+              --authenticationMechanism SCRAM-SHA-256 \
+              --username root --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              --tls \
+              --tlsCAFile /certs/ca.crt \
+              --tlsCertificateKeyFile /tmp/tls.pem \
+                              --eval "
+                  db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
+                  
+                  // Create collections if they don't exist
+                  if (!db.getCollectionNames().includes('$MONGODB_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_COLLECTION_NAME');
+                  }
+                  
+                  if (!db.getCollectionNames().includes('$MONGODB_TOKEN_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_TOKEN_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_TOKEN_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_TOKEN_COLLECTION_NAME');
+                  }
+                  
+                  if (!db.getCollectionNames().includes('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME')) {
+                    db.createCollection('$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                    print('Created collection: $MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                  } else {
+                    print('Collection already exists: $MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME');
+                  }
+                  
+                  // Create indexes (MongoDB handles duplicates gracefully)
+                  db.$MONGODB_COLLECTION_NAME.createIndex(
+                    { 'createdAt': 1 },
+                    { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'actualEndTime': 1 },
+                    { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'scheduledStartTime': 1 },
+                  );
+                  db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                    { 'cspStatus': 1 },
+                  );
+                // Check if user exists before creating
+                var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
+                if (userExists) {
+                  print('User already exists, skipping creation.');
+                } else {
+                  print('Creating new user...');
+                  db.getSiblingDB('\$external').runCommand({
+                    createUser: '$MONGODB_APPLICATION_USER_DN',
+                    roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('User created successfully.');
+                }
+                // Check if dgxcops user exists before creating
+                var dgxcopsUserExists = db.getSiblingDB('\$external').getUser('$MONGODB_DGXCOPS_USER_DN');
+                if (dgxcopsUserExists) {
+                  print('Dgxcops user already exists, skipping creation.');
+                } else {
+                  print('Creating new dgxcops user...');
+                  db.getSiblingDB('\$external').runCommand({
+                    createUser: '$MONGODB_DGXCOPS_USER_DN',
+                    roles: [{ role: 'read', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('Dgxcops user created successfully.');
+                }"
+            do
+              echo "Waiting for mongodb to be ready...";
+              sleep 5;
+            done
+
+            echo "=============================="
+            echo "mongodb user creation completed."
+            echo "=============================="
+        env:
+          - name: MONGODB_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: nvsentinel-mongodb
+                key: mongodb-root-password
+          - name: MONGODB_APPLICATION_USER_DN
+            value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
+          - name: MONGODB_DGXCOPS_USER_DN
+            value: "CN=mongo-dgxcops-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
+        envFrom:
+          - configMapRef:
+              name: mongodb-config
+        volumeMounts:
+          - name: mongo-certificates
+            mountPath: /certs
+            readOnly: true
+      volumes:
+        - name: mongo-certificates
+          secret:
+            secretName: mongo-app-client-cert-secret
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+      {{- with .Values.mongodb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mongodb.jobTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      restartPolicy: OnFailure

@@ -1,0 +1,67 @@
+[tool.poetry]
+name = "gpu-health-monitor"
+version = "0.1.0"
+description = ""
+authors = ["Lalit Adithya V <ladithyav@nvidia.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+click = "^8.1.7"
+grpcio = "^1.74.0"
+protobuf = "^6.31.1"
+prometheus-client = "^0.20.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.4.2"
+coverage = "^7.5.4"
+pytest = "^8.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+gpu_health_monitor = "gpu_health_monitor.cli:cli"
+
+[tool.black]
+line-length = 120
+include = '\.pyi?$'
+exclude = '''
+
+(
+  /(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+  | gpu_health_monitor/platform_connector/protos
+
+)
+'''
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+omit = [
+    "tests/*",
+    "/usr/local/dcgm/*",
+    "gpu_health_monitor/platform_connector/protos/*"
+]

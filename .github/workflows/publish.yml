@@ -1,0 +1,141 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Publish Containers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (e.g., v1.2.3)'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read       # Required for checking out code
+  packages: write      # Required for publishing containers to ghcr.io
+  actions: read        # Required for artifact operations
+
+jobs:
+  prepare-environment:
+    uses: ./.github/workflows/prepare-environment.yml
+
+  build-image-list:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: prepare-environment
+    outputs:
+      versions: ${{ steps.build-list.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          replace-imports: 'true'
+          generate-protos: 'true'
+
+      - name: Build image list
+        id: build-list
+        env:
+          SAFE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
+          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
+          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+        run: |
+          chmod +x ./build_image_list.sh
+          ./build_image_list.sh
+          cat versions.txt
+
+      - name: Upload versions.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: versions
+          path: versions.txt
+          retention-days: 90
+
+  container-publish:
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 60
+    needs: prepare-environment
+    strategy:
+      matrix:
+        include:
+          - component: gpu-health-monitor-dcgm3
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm3'
+          - component: gpu-health-monitor-dcgm4
+            make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm4'
+          - component: syslog-health-monitor
+            make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
+          - component: csp-health-monitor
+            make_command: 'make -C health-monitors/csp-health-monitor docker-publish'
+          - component: platform-connectors
+            make_command: 'make -C platform-connectors docker-publish'
+          - component: health-events-analyzer
+            make_command: 'make -C health-events-analyzer docker-publish'
+          - component: fault-quarantine-module
+            make_command: 'make -C fault-quarantine-module docker-publish'
+          - component: labeler-module
+            make_command: 'make -C labeler-module docker-publish'
+          - component: node-drainer-module
+            make_command: 'make -C node-drainer-module docker-publish'
+          - component: fault-remediation-module
+            make_command: 'make -C fault-remediation-module docker-publish'
+          - component: log-collector
+            make_command: 'make -C nvsentinel-log-collector docker-publish-log-collector'
+          - component: file-server-cleanup
+            make_command: 'make -C nvsentinel-log-collector docker-publish-file-server-cleanup'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+          python-version: ${{ needs.prepare-environment.outputs.python_version }}
+          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
+          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
+          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
+          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
+          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          replace-imports: 'true'
+          generate-protos: 'true'
+
+      - name: Publish container for ${{ matrix.component }}
+        uses: ./.github/actions/publish-container
+        with:
+          safe_ref_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
+          nvcr_container_repo: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
+          container_org: ${{ needs.prepare-environment.outputs.container_org }}
+          make_command: ${{ matrix.make_command }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}

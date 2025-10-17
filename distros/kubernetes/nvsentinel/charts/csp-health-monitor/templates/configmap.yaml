@@ -1,0 +1,43 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "csp-health-monitor.fullname" . }}-config
+  labels:
+    {{- include "csp-health-monitor.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    # Global settings
+    maintenanceEventPollIntervalSeconds = {{ .Values.configToml.maintenanceEventPollIntervalSeconds }}
+    triggerQuarantineWorkflowTimeLimitMinutes = {{ .Values.configToml.triggerQuarantineWorkflowTimeLimitMinutes }}
+    postMaintenanceHealthyDelayMinutes = {{ .Values.configToml.postMaintenanceHealthyDelayMinutes }}
+    clusterName = {{ .Values.configToml.clusterName | quote }}
+    nodeReadinessTimeoutMinutes = {{ .Values.configToml.nodeReadinessTimeoutMinutes }}
+    {{- if .Values.configToml.kubeconfigPath }}
+    kubeconfigPath = {{ .Values.configToml.kubeconfigPath | quote }}
+    {{- end }}
+
+    [gcp]
+    enabled = {{ eq .Values.cspName "gcp" }}
+    targetProjectId = {{ .Values.configToml.gcp.targetProjectId | quote }}
+    apiPollingIntervalSeconds = {{ .Values.configToml.gcp.apiPollingIntervalSeconds }}
+    gcpServiceAccountName = {{ .Values.configToml.gcp.gcpServiceAccountName | quote }}
+    logFilter = {{ .Values.configToml.gcp.logFilter | quote }}
+
+    [aws]
+    enabled = {{ eq .Values.cspName "aws" }}
+    accountId = {{ .Values.configToml.aws.accountId | quote }}
+    pollingIntervalSeconds = {{ .Values.configToml.aws.pollingIntervalSeconds }}
+    region = {{ .Values.configToml.aws.region | quote }}

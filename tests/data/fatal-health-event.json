@@ -1,0 +1,20 @@
+{
+    "version": 1,
+    "agent": "gpu-health-monitor",
+    "componentClass": "GPU",
+    "checkName": "GpuXidError",
+    "isFatal": true,
+    "isHealthy": false,
+    "message": "XID error occured",
+    "recommendedAction": 15,
+    "errorCode": [
+        "79"
+    ],
+    "entitiesImpacted": [
+        {
+            "entityType": "gpu",
+            "entityValue": "0"
+        }
+    ],
+    "nodeName": "NODE_NAME"
+}
