@@ -32,10 +32,8 @@ builds:
 
   - id: syslog-health-monitor
     dir: health-monitors/syslog-health-monitor
+    env: [CGO_ENABLED=1]
     main: .
-    # Uncomment in CI
-    # MacOS (ISO C99 and later) do not support implicit function declarations
-    # env: [CGO_ENABLED=1]
 
   - id: labeler-module
     dir: labeler-module
