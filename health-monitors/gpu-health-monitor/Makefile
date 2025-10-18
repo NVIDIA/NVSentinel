@@ -66,8 +66,23 @@ all: lint-test
 # PYTHON-SPECIFIC OVERRIDES
 # =============================================================================
 
+# Generate protobuf files for GPU health monitor
+.PHONY: generate-protos
+generate-protos:
+	@echo "Generating protobuf files for $(MODULE_NAME)..."
+	@echo "Setting up poetry environment..."
+	$(TEST_SETUP_COMMANDS) \
+	echo "Checking if protoc is available..." && \
+	which protoc > /dev/null || (echo "ERROR: protoc not found. Please install Protocol Buffers compiler." && exit 1) && \
+	echo "Generating Python protobuf files..." && \
+	poetry run python -m grpc_tools.protoc -I../../protobufs/ --python_out=gpu_health_monitor/platform_connector/protos --pyi_out=gpu_health_monitor/platform_connector/protos --grpc_python_out=gpu_health_monitor/platform_connector/protos ../../protobufs/platformconnector.proto && \
+	echo "Fixing import statements in generated files..." && \
+	sed -i.bak 's/import platformconnector_pb2 as platformconnector__pb2/from . import platformconnector_pb2 as platformconnector__pb2/' gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py && \
+	rm -f gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py.bak && \
+	echo "Protobuf files generated successfully"
+
 # Override Go-based targets with Python equivalents
-lint-test:
+lint-test: generate-protos
 	@echo "Linting and testing $(MODULE_NAME) (Python module)..."
 	$(TEST_SETUP_COMMANDS) \
 	poetry run black --check . && \
@@ -82,7 +97,7 @@ lint:
 	@echo "Running Black formatter check on $(MODULE_NAME)..."
 	poetry run black --check .
 
-test:
+test: generate-protos
 	@echo "Running tests on $(MODULE_NAME)..."
 	$(TEST_SETUP_COMMANDS) \
 	poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml
@@ -106,6 +121,8 @@ clean:
 	rm -rf $(CLEAN_EXTRA_FILES)
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
+	@echo "Cleaning generated protobuf files..."
+	find gpu_health_monitor/platform_connector/protos \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete 2>/dev/null || true
 
 # =============================================================================
 # PYTHON-SPECIFIC DOCKER OVERRIDES
