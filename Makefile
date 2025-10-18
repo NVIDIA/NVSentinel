@@ -214,9 +214,11 @@ protos-generate: protos-clean
 	protoc -I protobufs/ --go_out=health-monitors/syslog-health-monitor/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-monitors/syslog-health-monitor/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=health-events-analyzer/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-events-analyzer/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=tilt/simple-health-client/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=tilt/simple-health-client/protos/ protobufs/platformconnector.proto
-	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
+	@echo "Generating Python protobuf files for GPU health monitor..."
+	cd health-monitors/gpu-health-monitor && poetry config virtualenvs.in-project true && poetry install && poetry run python -m grpc_tools.protoc -I../../protobufs/ --python_out=gpu_health_monitor/platform_connector/protos --pyi_out=gpu_health_monitor/platform_connector/protos --grpc_python_out=gpu_health_monitor/platform_connector/protos ../../protobufs/platformconnector.proto
 	@SED_CMD=$$(command -v gsed 2>/dev/null || command -v sed); \
-	$$SED_CMD -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
+	$$SED_CMD -i.bak 's/import platformconnector_pb2 as platformconnector__pb2/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py && \
+	rm -f health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py.bak
 
 # Check protobuf files
 .PHONY: protos-lint
