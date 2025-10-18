@@ -45,6 +45,12 @@ const (
 	defaultMetricsPortSidecar   = "2113"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 type appConfig struct {
 	configPath               string
 	udsPath                  string
@@ -74,7 +80,7 @@ func parseFlags() *appConfig {
 }
 
 func logStartupInfo(cfg *appConfig) {
-	klog.Infof("Starting Quarantine Trigger Engine Sidecar...")
+	klog.Infof("Starting Quarantine Trigger Engine Sidecar - version: %s, commit: %s, date: %s", version, commit, date)
 	klog.Infof("Using configuration file: %s", cfg.configPath)
 	klog.Infof("Platform Connector UDS Path: %s", cfg.udsPath)
 	klog.Infof("MongoDB Client Cert Mount Path: %s", cfg.mongoClientCertMountPath)

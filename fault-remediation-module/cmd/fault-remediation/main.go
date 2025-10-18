@@ -35,6 +35,12 @@ import (
 	"k8s.io/klog"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 type config struct {
 	namespace                string
 	version                  string
@@ -213,6 +219,8 @@ func main() {
 
 	// Parse flags and get configuration
 	cfg := parseFlags()
+
+	klog.Infof("Starting fault-remediation-module version: %s, commit: %s, date: %s", version, commit, date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()

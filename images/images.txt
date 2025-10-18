@@ -1,5 +1,0 @@
-ghcr.io/nvidia/nvsentinel-gpu-health-monitor:v0.1.0-dcgm-3.x
-ghcr.io/nvidia/nvsentinel-gpu-health-monitor:v0.1.0-dcgm-4.x
-ghcr.io/nvidia/nvsentinel-labeler-module:v0.1.0
-ghcr.io/nvidia/nvsentinel-platform-connectors:v0.1.0
-ghcr.io/nvidia/nvsentinel-syslog-health-monitor:v0.1.0

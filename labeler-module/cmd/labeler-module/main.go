@@ -30,6 +30,10 @@ import (
 )
 
 var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+
 	kubeconfig     = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort    = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	dcgmAppLabel   = flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
@@ -40,6 +44,8 @@ func main() {
 	klog.InitFlags(nil)
 	defer klog.Flush()
 	flag.Parse()
+
+	klog.Infof("Node Labeler Module - version: %s, commit: %s, date: %s", version, commit, date)
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {

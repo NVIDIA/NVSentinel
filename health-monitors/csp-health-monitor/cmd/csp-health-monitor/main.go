@@ -46,6 +46,12 @@ const (
 	eventChannelSize     = 100
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // startActiveMonitorAndLog starts the provided CSP monitor in a new goroutine
 // and logs its lifecycle and any runtime errors.
 func startActiveMonitorAndLog(
@@ -100,7 +106,7 @@ func main() {
 	flag.Parse()
 	defer klog.Flush()
 
-	klog.Infof("Starting CSP Health Monitor (Main Container)...")
+	klog.Infof("Starting CSP Health Monitor (Main Container) - Version: %s, Commit: %s, Date: %s", version, commit, date)
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {

@@ -1,0 +1,49 @@
+# .ko.yaml (repo root)
+defaultBaseImage: cgr.dev/chainguard/static:latest
+platforms: [linux/amd64, linux/arm64]
+
+ldflags:
+  - "-s -w"
+  - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+
+env: [CGO_ENABLED=0]
+
+builds:
+
+  - id: fault-quarantine-module
+    dir: fault-quarantine-module
+    main: cmd/fault-quarantine-module
+
+  - id: fault-remediation
+    dir: fault-remediation-module
+    main: cmd/fault-remediation
+
+  - id: health-events-analyzer
+    dir: health-events-analyzer
+    main: cmd/health-events-analyzer
+    
+  - id: csp-health-monitor
+    dir: health-monitors/csp-health-monitor
+    main: cmd/csp-health-monitor
+
+  - id: maintenance-notifier
+    dir: health-monitors/csp-health-monitor
+    main: cmd/maintenance-notifier
+
+  - id: syslog-health-monitor
+    dir: health-monitors/syslog-health-monitor
+    main: cmd/syslog-health-monitor
+    # env: [CGO_ENABLED=1] # Uncomment if CI
+
+  - id: labeler-module
+    dir: labeler-module
+    main: cmd/labeler-module
+
+  - id: node-drainer-module
+    dir: node-drainer-module
+    main: cmd/node-drainer-module
+
+labels:
+  org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+  org.opencontainers.image.licenses: "Apache-2.0"
+  org.opencontainers.image.title: "NVSentinel"
