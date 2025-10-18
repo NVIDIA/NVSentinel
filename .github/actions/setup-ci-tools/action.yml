@@ -179,6 +179,7 @@ runs:
         go install github.com/google/addlicense@latest
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
         go install golang.org/x/tools/cmd/goimports@latest
+        go install github.com/google/go-containerregistry/cmd/crane@latest
 
     - name: Set environment variables
       shell: bash

@@ -14,7 +14,7 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.12
+ARG TAG=v3.1.13
 ARG IMG=nvcr.io/nvidia/distroless/go
 
 FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder

@@ -33,9 +33,12 @@ runs:
       id: vars
       shell: bash
       run: |
-        SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-        if [[ ! "${{ github.ref }}" =~ ^refs/tags/.* ]]; then
-          SAFE_REF_NAME="0.0.0-$SAFE_REF_NAME"
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          SAFE_REF_NAME=$(git rev-parse --short HEAD)
+        elif [[ "${{ github.ref }}" =~ ^refs/tags/.* ]]; then
+          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+        else
+          SAFE_REF_NAME="0.0.0-$(echo "${{ github.ref_name }}" | sed 's/\//-/g')"
         fi
         echo "safe_ref_name=$SAFE_REF_NAME" >> $GITHUB_OUTPUT
         echo "nvcr_container_repo=${{ env.CONTAINER_REGISTRY || 'ghcr.io' }}" >> $GITHUB_OUTPUT

@@ -125,7 +125,7 @@ jobs:
 
             ## Container Images
 
-            See [versions.txt](versions.txt) for the full list of container images and versions.
+            See versions.txt for the full list of container images and versions.
 
             ## Helm Chart
 

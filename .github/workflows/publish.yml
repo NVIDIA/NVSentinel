@@ -18,6 +18,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -33,6 +35,9 @@ permissions:
   contents: read       # Required for checking out code
   packages: write      # Required for publishing containers to ghcr.io
   actions: read        # Required for artifact operations
+  security-events: write
+  id-token: write
+  attestations: write
 
 jobs:
   prepare-environment:
@@ -88,28 +93,42 @@ jobs:
         include:
           - component: gpu-health-monitor-dcgm3
             make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm3'
+            container_name: 'nvsentinel-gpu-health-monitor'
+            tag_suffix: '-dcgm-3.x'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm4'
+            container_name: 'nvsentinel-gpu-health-monitor'
+            tag_suffix: '-dcgm-4.x'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
+            container_name: 'nvsentinel-syslog-health-monitor'
           - component: csp-health-monitor
             make_command: 'make -C health-monitors/csp-health-monitor docker-publish'
+            container_name: 'nvsentinel-csp-health-monitor'
           - component: platform-connectors
             make_command: 'make -C platform-connectors docker-publish'
+            container_name: 'nvsentinel-platform-connectors'
           - component: health-events-analyzer
             make_command: 'make -C health-events-analyzer docker-publish'
+            container_name: 'nvsentinel-health-events-analyzer'
           - component: fault-quarantine-module
             make_command: 'make -C fault-quarantine-module docker-publish'
+            container_name: 'nvsentinel-fault-quarantine-module'
           - component: labeler-module
             make_command: 'make -C labeler-module docker-publish'
+            container_name: 'nvsentinel-labeler-module'
           - component: node-drainer-module
             make_command: 'make -C node-drainer-module docker-publish'
+            container_name: 'nvsentinel-node-drainer-module'
           - component: fault-remediation-module
             make_command: 'make -C fault-remediation-module docker-publish'
+            container_name: 'nvsentinel-fault-remediation-module'
           - component: log-collector
             make_command: 'make -C nvsentinel-log-collector docker-publish-log-collector'
+            container_name: 'nvsentinel-log-collector'
           - component: file-server-cleanup
             make_command: 'make -C nvsentinel-log-collector docker-publish-file-server-cleanup'
+            container_name: 'nvsentinel-file-server-cleanup'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -135,3 +154,5 @@ jobs:
           container_org: ${{ needs.prepare-environment.outputs.container_org }}
           make_command: ${{ matrix.make_command }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}
+          container_name: ${{ matrix.container_name }}
+          tag_suffix: ${{ matrix.tag_suffix }}

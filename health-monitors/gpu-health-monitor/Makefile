@@ -42,10 +42,17 @@ LINT_EXTRA_FLAGS :=
 include ../../common.mk
 
 # Cache configuration for specialized builds (respect DISABLE_REGISTRY_CACHE)
-CACHE_FROM_ARG_DCGM3 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3)
-CACHE_TO_ARG_DCGM3 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max)
-CACHE_FROM_ARG_DCGM4 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4)
-CACHE_TO_ARG_DCGM4 := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max)
+ifeq ($(DISABLE_REGISTRY_CACHE),true)
+CACHE_FROM_ARG_DCGM3 :=
+CACHE_TO_ARG_DCGM3 :=
+CACHE_FROM_ARG_DCGM4 :=
+CACHE_TO_ARG_DCGM4 :=
+else
+CACHE_FROM_ARG_DCGM3 := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3
+CACHE_TO_ARG_DCGM3 := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-3,mode=max
+CACHE_FROM_ARG_DCGM4 := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4
+CACHE_TO_ARG_DCGM4 := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)-4,mode=max
+endif
 
 # =============================================================================
 # DEFAULT TARGET
@@ -117,7 +124,7 @@ docker-build-dcgm3: setup-buildx
 		$(CACHE_FROM_ARG_DCGM3) \
 		$(CACHE_TO_ARG_DCGM3) \
 		$(DOCKER_EXTRA_ARGS) \
-		--load \
+		$(DOCKER_LOAD_ARG) \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-3.x \
 		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
 		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
@@ -133,7 +140,7 @@ docker-build-dcgm4: setup-buildx
 		$(CACHE_FROM_ARG_DCGM4) \
 		$(CACHE_TO_ARG_DCGM4) \
 		$(DOCKER_EXTRA_ARGS) \
-		--load \
+		$(DOCKER_LOAD_ARG) \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-4.x \
 		-f $(DOCKER_MODULE_PATH)/Dockerfile \
 		.

@@ -9,13 +9,21 @@ SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
 SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
 BUILDX_BUILDER ?= nvsentinel-builder
 PLATFORMS ?= linux/arm64,linux/amd64
+DOCKER_LOAD_ARG ?= --load
 
 # Cache configuration (can be disabled via environment variables)
 DISABLE_REGISTRY_CACHE ?= false
-CACHE_FROM_ARG_LOG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector)
-CACHE_TO_ARG_LOG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector,mode=max)
-CACHE_FROM_ARG_CLEANUP := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup)
-CACHE_TO_ARG_CLEANUP := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup,mode=max)
+ifeq ($(DISABLE_REGISTRY_CACHE),true)
+CACHE_FROM_ARG_LOG :=
+CACHE_TO_ARG_LOG :=
+CACHE_FROM_ARG_CLEANUP :=
+CACHE_TO_ARG_CLEANUP :=
+else
+CACHE_FROM_ARG_LOG := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector
+CACHE_TO_ARG_LOG := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector,mode=max
+CACHE_FROM_ARG_CLEANUP := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup
+CACHE_TO_ARG_CLEANUP := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup,mode=max
+endif
 
 # Default target
 .PHONY: all
@@ -90,6 +98,7 @@ docker-build-log-collector: setup-buildx
 		--network=host \
 		$(CACHE_FROM_ARG_LOG) \
 		$(CACHE_TO_ARG_LOG) \
+		$(DOCKER_LOAD_ARG) \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
@@ -103,6 +112,7 @@ docker-build-file-server-cleanup: setup-buildx
 		--network=host \
 		$(CACHE_FROM_ARG_CLEANUP) \
 		$(CACHE_TO_ARG_CLEANUP) \
+		$(DOCKER_LOAD_ARG) \
 		-f Dockerfile.cleanup \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.

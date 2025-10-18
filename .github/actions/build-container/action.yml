@@ -59,7 +59,6 @@ runs:
         SAFE_REF_NAME: ${{ inputs.safe_ref_name }}
         NVCR_CONTAINER_REPO: ${{ inputs.nvcr_container_repo }}
         NGC_ORG: ${{ inputs.container_org }}
-        PLATFORMS: 'linux/amd64'  # Only amd64 for faster PR validation
         DOCKER_BUILDKIT: 1
         BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max

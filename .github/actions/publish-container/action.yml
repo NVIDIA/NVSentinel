@@ -39,6 +39,12 @@ inputs:
   registry_password:
     description: 'Registry password'
     required: true
+  container_name: 
+    description: 'Container image being pushed'
+    required: true
+  tag_suffix:
+    description: 'Optional tag that has to be appended to the image tag'
+    default: ''
 
 runs:
   using: 'composite'
@@ -65,6 +71,7 @@ runs:
 
     - name: Build and publish container
       shell: bash
+      id: image
       env:
         SAFE_REF_NAME: ${{ inputs.safe_ref_name }}
         NVCR_CONTAINER_REPO: ${{ inputs.nvcr_container_repo }}
@@ -74,8 +81,21 @@ runs:
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max
       run: |
         ${{ inputs.make_command }}
+
+        DIGEST="$(crane digest ${{ inputs.nvcr_container_repo }}/${{ inputs.container_org }}/${{ inputs.container_name }}:${{ inputs.safe_ref_name }}${{ inputs.tag_suffix }})"
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+        echo "name=${{ inputs.nvcr_container_repo }}/${{ inputs.container_org }}/${{ inputs.container_name }}" >> "$GITHUB_OUTPUT"
+
         # Move cache to prevent it from growing indefinitely
         if [ -d "/tmp/.buildx-cache-new" ]; then
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
         fi
+    
+    - name: Attest
+      uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0
+      id: attest
+      with:
+        subject-name: ${{ steps.image.outputs.name }}
+        subject-digest: ${{ steps.image.outputs.digest }}
+        push-to-registry: true

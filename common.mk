@@ -29,13 +29,18 @@ SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
 BUILDX_BUILDER ?= nvsentinel-builder
 PLATFORMS ?= linux/arm64,linux/amd64
 
-# Cache configuration (can be disabled via environment variables)
-DISABLE_REGISTRY_CACHE ?= false
-CACHE_FROM_ARG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME))
-CACHE_TO_ARG := $(if $(filter true,$(DISABLE_REGISTRY_CACHE)),,--cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max)
-
 # Auto-detect current module name from directory
 MODULE_NAME := $(shell basename $(CURDIR))
+
+# Cache configuration (can be disabled via environment variables)
+DISABLE_REGISTRY_CACHE ?= false
+ifeq ($(DISABLE_REGISTRY_CACHE),true)
+CACHE_FROM_ARG :=
+CACHE_TO_ARG :=
+else
+CACHE_FROM_ARG := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)
+CACHE_TO_ARG := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max
+endif
 
 # Repository root path calculation (works from any subdirectory depth)
 REPO_ROOT := $(shell git rev-parse --show-toplevel)
@@ -64,6 +69,7 @@ BINARY_SOURCE ?= .
 
 # Docker configuration (can be overridden per module)
 DOCKER_EXTRA_ARGS ?=
+DOCKER_LOAD_ARG ?= --load
 HAS_DOCKER ?= 1
 
 # Module type configuration (Go=1, Python=0 - Python modules override targets)
@@ -182,7 +188,7 @@ docker-build: setup-buildx
 		$(CACHE_FROM_ARG) \
 		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
-		--load \
+		$(DOCKER_LOAD_ARG) \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \
 		-f $(DOCKER_MODULE_PATH)/Dockerfile \
 		.
@@ -191,10 +197,10 @@ docker-build: setup-buildx
 docker-build-local: setup-buildx
 	@echo "Building Docker image for $(MODULE_NAME) (local, no remote cache)..."
 	cd $(REPO_ROOT) && docker buildx build \
-		--platform linux/amd64 \
+		--platform $(PLATFORMS) \
 		--network=host \
 		$(DOCKER_EXTRA_ARGS) \
-		--load \
+		$(DOCKER_LOAD_ARG) \
 		-t $(MODULE_NAME):local \
 		-f $(DOCKER_MODULE_PATH)/Dockerfile \
 		.
