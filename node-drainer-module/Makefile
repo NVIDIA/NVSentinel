@@ -21,7 +21,7 @@
 
 # Node-drainer-module specific settings
 CLEAN_EXTRA_FILES := node-drainer-module
-BINARY_SOURCE := ./cmd/nodedrainer.go
+BINARY_SOURCE := ./main.go
 
 # Special kubebuilder setup for tests
 TEST_SETUP_COMMANDS := export PATH="$$GOPATH/bin:$$PATH" && \
@@ -88,5 +88,5 @@ help:
 	@echo "  image, publish  - Legacy targets"
 	@echo ""
 	@echo "Module-specific notes:"
-	@echo "  - Binary built from cmd/nodedrainer.go"
+	@echo "  - Binary built from main.go"
 	@echo "  - Uses standardized repo-root Docker build context"
