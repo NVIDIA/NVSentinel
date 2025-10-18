@@ -77,6 +77,15 @@ jobs:
           ./build_image_list.sh
           cat versions.txt
 
+      # Temp dual image build for ko logging investigation
+      - name: Build image using ko
+        id: build-ko
+        env:
+          KO_DOCKER_REPO: ghcr.io/${{ github.repository }}  # Includes both owner and repo name
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          GIT_COMMIT: ${{ github.sha }}
+        run: scripts/buildko
+
       - name: Upload versions.txt
         uses: actions/upload-artifact@v4
         with:

@@ -2,21 +2,23 @@
 
 set -euo pipefail
 
-export KO_DOCKER_REPO="us-docker.pkg.dev/proj-dgxc-demo/nvsentinel"
 export KO_LOG=info 
-export VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
-export GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
+export VERSION="${VERSION:-v0.1.0}"
+export GIT_COMMIT="${GIT_COMMIT:-dev}"
 export BUILD_DATE=$(date -u +%FT%TZ)
 
 # Ensure go.work file exists
-if [! -f go.work ]; then
+if [ ! -f go.work ]; then
   go work init
 fi
 
-ko build -B --sbom=cyclonedx --tags=v0.1.0,latest \
-  ./fault-quarantine-module/cmd/fault-quarantine-module \
-  ./fault-remediation-module/cmd/fault-remediation \
-  ./health-events-analyzer/cmd/health-events-analyzer \
+ko build -B --sbom=cyclonedx --tags=$VERSION --tags=latest \
+  ./fault-quarantine-module \
+  ./fault-remediation-module \
+  ./health-events-analyzer \
   ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
-  ./health-monitors/syslog-health-monitor/cmd/syslog-health-monitor
+  ./health-monitors/syslog-health-monitor \
+  ./labeler-module \
+  ./node-drainer-module \
+  ./platform-connectors 

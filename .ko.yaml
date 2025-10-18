@@ -12,15 +12,15 @@ builds:
 
   - id: fault-quarantine-module
     dir: fault-quarantine-module
-    main: cmd/fault-quarantine-module
+    main: .
 
   - id: fault-remediation
     dir: fault-remediation-module
-    main: cmd/fault-remediation
+    main: .
 
   - id: health-events-analyzer
     dir: health-events-analyzer
-    main: cmd/health-events-analyzer
+    main: .
     
   - id: csp-health-monitor
     dir: health-monitors/csp-health-monitor
@@ -32,16 +32,18 @@ builds:
 
   - id: syslog-health-monitor
     dir: health-monitors/syslog-health-monitor
-    main: cmd/syslog-health-monitor
-    # env: [CGO_ENABLED=1] # Uncomment if CI
+    main: .
+    # Uncomment in CI
+    # MacOS (ISO C99 and later) do not support implicit function declarations
+    # env: [CGO_ENABLED=1]
 
   - id: labeler-module
     dir: labeler-module
-    main: cmd/labeler-module
+    main: .
 
   - id: node-drainer-module
     dir: node-drainer-module
-    main: cmd/node-drainer-module
+    main: .
 
 labels:
   org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
