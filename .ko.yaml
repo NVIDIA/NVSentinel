@@ -45,7 +45,7 @@ builds:
     main: cmd/maintenance-notifier
 
   - id: syslog-health-monitor
-    baseImage: cgr.dev/chainguard/glibc-dynamic:latest
+    baseImage: nvcr.io/nvidia/cuda:12.1.1-base-ubuntu22.04
     dir: health-monitors/syslog-health-monitor
     env: [CGO_ENABLED=1]
     main: .
