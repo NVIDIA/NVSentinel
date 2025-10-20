@@ -21,7 +21,7 @@ if [ ! -f go.work ]; then
     ./platform-connectors 
 fi
 
-ko build -B --sbom=cyclonedx --tags="${VERSION}-slim" --tags=latest \
+ko build -B --sbom=cyclonedx --tags="${VERSION}-slim" \
   ./fault-quarantine-module \
   ./fault-remediation-module \
   ./health-events-analyzer \
