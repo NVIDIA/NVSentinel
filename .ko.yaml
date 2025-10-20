@@ -28,7 +28,7 @@ builds:
     dir: fault-quarantine-module
     main: .
 
-  - id: fault-remediation
+  - id: fault-remediation-module
     dir: fault-remediation-module
     main: .
 
@@ -43,12 +43,6 @@ builds:
   - id: maintenance-notifier
     dir: health-monitors/csp-health-monitor
     main: cmd/maintenance-notifier
-
-  - id: syslog-health-monitor
-    baseImage: nvcr.io/nvidia/cuda:12.1.1-base-ubuntu22.04
-    dir: health-monitors/syslog-health-monitor
-    env: [CGO_ENABLED=1]
-    main: .
 
   - id: labeler-module
     dir: labeler-module
