@@ -1,0 +1,24 @@
+#!/bin/bash
+
+set -euo pipefail
+
+export KO_LOG=info 
+export VERSION="${VERSION:-v0.1.0}"
+export GIT_COMMIT="${GIT_COMMIT:-dev}"
+export BUILD_DATE=$(date -u +%FT%TZ)
+
+# Ensure go.work file exists
+if [ ! -f go.work ]; then
+  go work init
+fi
+
+ko build -B --sbom=cyclonedx --tags="${VERSION}-slim" --tags=latest \
+  ./fault-quarantine-module \
+  ./fault-remediation-module \
+  ./health-events-analyzer \
+  ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
+  ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+  ./health-monitors/syslog-health-monitor \
+  ./labeler-module \
+  ./node-drainer-module \
+  ./platform-connectors 

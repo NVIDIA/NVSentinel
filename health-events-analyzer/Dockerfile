@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY health-events-analyzer/ .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go build -trimpath -o healtheventsanalyzer cmd/healtheventsanalyzer.go
+    go build -trimpath -o healtheventsanalyzer main.go
 
 FROM ${IMG}:${TAG}
 

@@ -32,7 +32,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY labeler-module/ .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go build -trimpath -o labeler cmd/main.go
+    go build -trimpath -o labeler main.go
 
 FROM ${IMG}:${TAG}
 

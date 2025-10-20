@@ -24,9 +24,17 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	klog.Infof("Node Drainer Module - version: %s, commit: %s, date: %s", version, commit, date)
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 

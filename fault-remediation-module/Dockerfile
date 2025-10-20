@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download 
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go build -trimpath -o faultremediation cmd/fault-remediation/main.go
+    go build -trimpath -o faultremediation main.go
 
 FROM ${IMG}:${TAG}
 

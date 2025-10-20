@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go build -trimpath -o nodedrainer cmd/nodedrainer.go
+    go build -trimpath -o nodedrainer main.go
 
 FROM ${IMG}:${TAG}
 
