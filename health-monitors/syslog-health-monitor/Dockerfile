@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cd health-monitors/syslog-health-monitor && \
-    CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor ./cmd/main.go
+    CGO_ENABLED=1 go build -tags "systemd" -ldflags="-s -w" -o syslog-health-monitor main.go
 
 FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
