@@ -264,19 +264,18 @@ jobs:
         run: |
           set -e  # Exit on error
 
-          # Current coverage is already uploaded in this workflow
-          echo "Downloading current coverage..."
-          if ! gh run download "${{ github.run_id }}" --name=consolidated-code-coverage --dir=/tmp/current-coverage; then
-            echo "❌ Failed to download current coverage artifacts"
+          # Use the locally consolidated coverage file (no download needed!)
+          echo "Using locally consolidated coverage..."
+          mkdir -p .github/outputs
+
+          if [[ ! -f consolidated-coverage/coverage.txt || ! -s consolidated-coverage/coverage.txt ]]; then
+            echo "❌ Consolidated coverage file not found or empty"
             exit 1
           fi
 
-          if [[ ! -f /tmp/current-coverage/coverage.txt ]]; then
-            echo "❌ Current coverage file not found"
-            exit 1
-          fi
-
-          mv /tmp/current-coverage/coverage.txt .github/outputs/new-coverage.txt
+          # Copy (don't move) so the artifact upload still has the original
+          cp consolidated-coverage/coverage.txt .github/outputs/new-coverage.txt
+          echo "✅ Current coverage prepared from local file"
 
           # Download baseline coverage from main (failure here is acceptable)
           echo "Downloading baseline coverage..."
