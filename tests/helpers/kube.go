@@ -1,4 +1,4 @@
-// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,12 +18,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v2"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -37,7 +41,7 @@ import (
 
 const (
 	WaitTimeout  = 10 * time.Minute
-	WaitInterval = 10 * time.Second
+	WaitInterval = 30 * time.Second
 )
 
 // WaitForNodesCordonState waits for nodes with names specified in `nodeNames` to be either cordoned or uncrodoned based on `shouldCordon`. If `shouldCordon` is
@@ -242,12 +246,8 @@ func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, n
 				continue
 			}
 
-			if actualValue, exists := node.Labels[labelKey]; exists {
-				if actualValue == expectedValue {
-					actualCount++
-				} else {
-					t.Logf("Node %s has label %s=%s but expected %s", nodeName, labelKey, actualValue, expectedValue)
-				}
+			if actualValue, exists := node.Labels[labelKey]; exists && actualValue == expectedValue {
+				actualCount++
 			}
 		}
 
@@ -609,4 +609,147 @@ func CreateRebootNodeCR(
 	}
 
 	return rebootNode, nil
+}
+
+func CreateConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath, name, namespace string) error {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	cm := &v1.ConfigMap{}
+	err = yaml.Unmarshal(content, cm)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal config map from file: %w", err)
+	}
+
+	if name != "" {
+		cm.Name = name
+	}
+
+	if namespace != "" {
+		cm.ObjectMeta.Namespace = namespace
+	}
+
+	// Clean up metadata fields that shouldn't be set during creation
+	cm.ObjectMeta.ResourceVersion = ""
+	cm.ObjectMeta.UID = ""
+	cm.ObjectMeta.Generation = 0
+	cm.ObjectMeta.CreationTimestamp = metav1.Time{}
+	cm.ObjectMeta.ManagedFields = nil
+
+	// Delete the configmap if it exists (for updates)
+	existingCM := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cm.ObjectMeta.Name,
+			Namespace: cm.ObjectMeta.Namespace,
+		},
+	}
+	_ = c.Resources().Delete(ctx, existingCM)
+
+	time.Sleep(100 * time.Millisecond)
+
+	maxRetries := 5
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+		}
+
+		err = c.Resources().Create(ctx, cm)
+		if err != nil {
+			if apierrors.IsAlreadyExists(err) && attempt < maxRetries-1 {
+				_ = c.Resources().Delete(ctx, existingCM)
+				time.Sleep(200 * time.Millisecond)
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("failed to create config map: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("failed to create config map after %d retries: %w", maxRetries, lastErr)
+}
+
+func GetPodMatchingRegex(ctx context.Context, c klient.Client, namespace, nameRegex string) (*v1.Pod, error) {
+	pattern, err := regexp.Compile(nameRegex)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex pattern %s: %w", nameRegex, err)
+	}
+
+	var podList v1.PodList
+	err = c.Resources(namespace).List(ctx, &podList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	for i := range podList.Items {
+		if pattern.MatchString(podList.Items[i].Name) {
+			return &podList.Items[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("no pods found matching name regex %s in namespace %s", nameRegex, namespace)
+}
+
+func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) (string, error) {
+	cm := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+	err := c.Resources().Get(ctx, name, namespace, cm)
+	if err != nil {
+		return "", fmt.Errorf("failed to get config map: %w", err)
+	}
+	filepath := fmt.Sprintf("/tmp/%s-%s.yaml", name, time.Now().Format("20060102150405"))
+	yamlData, err := yaml.Marshal(cm)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal config map to yaml: %w", err)
+	}
+	err = os.WriteFile(filepath, yamlData, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to write config map to file: %w", err)
+	}
+	return filepath, nil
+}
+
+func RestartDeployment(ctx context.Context, c klient.Client, name, namespace string) error {
+	maxRetries := 5
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+
+		deployment := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		}
+		err := c.Resources().Get(ctx, name, namespace, deployment)
+		if err != nil {
+			return fmt.Errorf("failed to get deployment: %w", err)
+		}
+
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = make(map[string]string)
+		}
+		deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+
+		err = c.Resources().Update(ctx, deployment)
+		if err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue
+			}
+			return fmt.Errorf("failed to restart deployment: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("failed to restart deployment after %d retries: %w", maxRetries, lastErr)
 }
