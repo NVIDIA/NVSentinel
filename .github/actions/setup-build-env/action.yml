@@ -37,6 +37,9 @@ inputs:
   protoc-gen-go-grpc-version:
     description: 'protoc-gen-go-grpc version to install'
     required: true
+  grpcio-tools-version:
+    description: 'grpcio-tools version to install'
+    required: true
   shellcheck-version:
     description: 'shellcheck version to install'
     required: true
@@ -58,5 +61,6 @@ runs:
         protobuf-version: ${{ inputs.protobuf-version }}
         protoc-gen-go-version: ${{ inputs.protoc-gen-go-version }}
         protoc-gen-go-grpc-version: ${{ inputs.protoc-gen-go-grpc-version }}
+        grpcio-tools-version: ${{ inputs.grpcio-tools-version }}
         shellcheck-version: ${{ inputs.shellcheck-version }}
         install-dcgm: ${{ inputs.install-dcgm }}

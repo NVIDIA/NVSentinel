@@ -81,6 +81,7 @@ jobs:
           protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
           protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
           protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
       - name: ${{ matrix.step_name }}
@@ -112,6 +113,7 @@ jobs:
           protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
           protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
           protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           install-dcgm: ${{ matrix.install_dcgm || 'false' }}
 
@@ -156,6 +158,7 @@ jobs:
           protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
           protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
           protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
+          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
       - name: Run lint and test

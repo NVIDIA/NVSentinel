@@ -48,6 +48,9 @@ on:
       protoc_gen_go_grpc_version:
         description: 'protoc-gen-go-grpc version'
         value: ${{ jobs.prepare-vars.outputs.protoc_gen_go_grpc_version }}
+      grpcio_tools_version:
+        description: 'grpcio-tools version'
+        value: ${{ jobs.prepare-vars.outputs.grpcio_tools_version }}
       shellcheck_version:
         description: 'shellcheck version'
         value: ${{ jobs.prepare-vars.outputs.shellcheck_version }}
@@ -65,6 +68,7 @@ env:
   PROTOBUF_VERSION: 'v27.1'
   PROTOC_GEN_GO_VERSION: 'v1.36.6'
   PROTOC_GEN_GO_GRPC_VERSION: 'v1.3.0'
+  GRPCIO_TOOLS_VERSION: '1.75.1'
   SHELLCHECK_VERSION: 'v0.11.0'
 
 jobs:
@@ -83,6 +87,7 @@ jobs:
       protobuf_version: ${{ env.PROTOBUF_VERSION }}
       protoc_gen_go_version: ${{ env.PROTOC_GEN_GO_VERSION }}
       protoc_gen_go_grpc_version: ${{ env.PROTOC_GEN_GO_GRPC_VERSION }}
+      grpcio_tools_version: ${{ env.GRPCIO_TOOLS_VERSION }}
       shellcheck_version: ${{ env.SHELLCHECK_VERSION }}
     steps:
       - uses: actions/checkout@v4

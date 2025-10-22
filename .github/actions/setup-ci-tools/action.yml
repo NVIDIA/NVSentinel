@@ -37,6 +37,9 @@ inputs:
   protoc-gen-go-grpc-version:
     description: 'protoc-gen-go-grpc version to install'
     required: true
+  grpcio-tools-version:
+    description: 'grpcio-tools version to install'
+    required: true
   shellcheck-version:
     description: 'shellcheck version to install'
     required: true
@@ -140,7 +143,7 @@ runs:
         fi
         go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ inputs.protoc-gen-go-version }}
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ inputs.protoc-gen-go-grpc-version }}
-        pip install grpcio==1.75.1 grpcio-tools==1.75.1
+        pip install grpcio==${{ inputs.grpcio-tools-version }} grpcio-tools==${{ inputs.grpcio-tools-version }}
 
     - name: Install DCGM (optional)
       if: inputs.install-dcgm == 'true'

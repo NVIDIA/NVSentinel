@@ -17,6 +17,7 @@ GOLANGCI_LINT_VERSION := v1.64.8
 GOTESTSUM_VERSION := latest
 GOCOVER_COBERTURA_VERSION := latest
 GO_VERSION := 1.24.8
+GRPCIO_TOOLS_VERSION := 1.75.1
 
 # Go modules with specific patterns from CI
 GO_MODULES := \
