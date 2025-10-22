@@ -233,15 +233,15 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context,
 	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
 	podsEvictionStatus.Status = storeconnector.StatusSucceeded
 
-	err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
-	if err != nil {
-		return err
-	}
-
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
 		klog.Errorf("Failed to update node label to drain-succeeded for %s: %v", nodeName, err)
 		metrics.TotalEventProcessingError.WithLabelValues("label_update_error").Inc()
+	}
+
+	err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
+	if err != nil {
+		return fmt.Errorf("failed to update user pod eviction status: %w", err)
 	}
 
 	metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(0)
