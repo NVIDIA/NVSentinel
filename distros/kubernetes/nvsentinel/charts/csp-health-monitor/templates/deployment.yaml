@@ -24,14 +24,14 @@ spec:
       {{- include "csp-health-monitor.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with (.Values.global.podAnnotations | default .Values.podAnnotations) }}
+      {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
         {{- include "csp-health-monitor.selectorLabels" . | nindent 8 }}
     spec:
-      {{- with .Values.global.imagePullSecrets }}
+      {{- with ((.Values.global).imagePullSecrets | default .Values.imagePullSecrets) }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -53,19 +53,19 @@ spec:
           type: DirectoryOrCreate
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.global.cspHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.global.cspHealthMonitor.image.pullPolicy }}
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           command: ["/app/csp-health-monitor"]
           args:
           - "--config=/etc/config/config.toml"
-          - "--metrics-port={{ .Values.global.metricsPort }}"
+          - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "-v={{ .Values.logLevel }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
             - name: metrics
-              containerPort: {{ .Values.global.metricsPort }}
+              containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
               protocol: TCP
           volumeMounts:
           - name: config-volume
@@ -79,8 +79,8 @@ spec:
                 optional: true
 
         - name: maintenance-notifier
-          image: "{{ .Values.global.cspHealthMonitor.image.repository }}:{{ .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.global.cspHealthMonitor.image.pullPolicy }}
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           securityContext:
             runAsUser: 0
           command: ["/app/maintenance-notifier"]
@@ -109,15 +109,15 @@ spec:
                 name: mongodb-config
                 optional: true
       restartPolicy: Always
-      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      {{- with (((.Values.global).affinity) | default .Values.affinity) }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      {{- with (((.Values.global).systemNodeTolerations) | default .Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

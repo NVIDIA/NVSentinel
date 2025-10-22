@@ -68,6 +68,9 @@ jobs:
           - component: kubernetes-distro
             make_command: 'make kubernetes-distro-lint'
             step_name: 'Run lint'
+          - component: helm-charts
+            make_command: 'make helm-lint'
+            step_name: 'Validate Helm charts'
     steps:
       - uses: actions/checkout@v4
 
@@ -86,6 +89,16 @@ jobs:
 
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
+
+      - name: Setup Helm
+        if: matrix.component == 'helm-charts'
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.14.4'
+
+      - name: Validate Helm Charts
+        if: matrix.component == 'helm-charts'
+        run: make helm-lint
 
   health-monitors-lint-test:
     runs-on: linux-amd64-cpu4

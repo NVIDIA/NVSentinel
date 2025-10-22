@@ -37,6 +37,16 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# Scheduling configuration
+nodeSelector: {}
+affinity: {}
+
+# Optional image pull secrets (fallback if global not available)
+imagePullSecrets: []
+
+# Optional pod annotations (fallback if global not available)
+podAnnotations: {}
+
 # Special tolerations for fault remediation - allow running on nodes with any taints for log collection
 tolerations:
   - operator: "Exists"

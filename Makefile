@@ -354,6 +354,35 @@ kubernetes-distro-lint:
 	@echo "Linting Kubernetes distribution..."
 	$(MAKE) -C distros/kubernetes lint
 
+# Helm chart validation
+.PHONY: helm-lint
+helm-lint:
+	@echo "🎯 Validating Helm charts..."
+	@# Ensure helm is available
+	@if ! command -v helm >/dev/null 2>&1; then \
+		echo "❌ Error: helm command not found. Please install Helm first."; \
+		exit 1; \
+	fi
+	@echo "Using Helm version: $$(helm version --short)"
+	@echo ""
+	@# Main nvsentinel chart
+	@echo "Validating main nvsentinel chart..."
+	helm lint distros/kubernetes/nvsentinel/
+	@echo ""
+	@# Individual component charts
+	@echo "Validating component charts..."
+	@for chart_dir in distros/kubernetes/nvsentinel/charts/*/; do \
+		if [[ -f "$$chart_dir/Chart.yaml" ]]; then \
+			chart_name=$$(basename "$$chart_dir"); \
+			echo "Validating chart: $$chart_name"; \
+			helm lint "$$chart_dir" -f distros/kubernetes/nvsentinel/values.yaml || exit 1; \
+			echo "Testing template rendering for: $$chart_name"; \
+			helm template "$$chart_name" "$$chart_dir" -f distros/kubernetes/nvsentinel/values.yaml >/dev/null || exit 1; \
+			echo ""; \
+		fi; \
+	done
+	@echo "✅ All Helm charts validated successfully"
+
 # Log collector lint (shell script)
 .PHONY: log-collector-lint
 log-collector-lint:

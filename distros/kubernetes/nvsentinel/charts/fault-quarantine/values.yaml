@@ -32,6 +32,17 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# Scheduling configuration
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+# Optional image pull secrets (fallback if global not available)
+imagePullSecrets: []
+
+# Optional pod annotations (fallback if global not available)
+podAnnotations: {}
+
 # Log level for the fault quarantine module (klog verbosity)
 logLevel: 1
 

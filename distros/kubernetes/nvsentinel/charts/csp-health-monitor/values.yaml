@@ -46,6 +46,17 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# Scheduling configuration
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+# Optional image pull secrets (fallback if global not available)
+imagePullSecrets: []
+
+# Optional pod annotations (fallback if global not available)
+podAnnotations: {}
+
 # Klog verbosity level for the main CSP health monitor container (e.g., 1=Info, 2=Debug, etc.)
 logLevel: 1
 

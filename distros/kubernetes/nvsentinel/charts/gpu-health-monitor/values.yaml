@@ -23,11 +23,23 @@ podSecurityContext: {}
 securityContext:
   runAsUser: 0
 
-resources: 
+resources:
   limits:
     cpu: 500m
     memory: 512Mi
   requests:
     cpu: 100m
     memory: 128Mi
+
+# Scheduling configuration
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
+# Optional image pull secrets (fallback if global not available)
+imagePullSecrets: []
+
+# Optional pod annotations (fallback if global not available)
+podAnnotations: {}
+
 stateFilePath: "/var/run/statefile"
