@@ -510,3 +510,5 @@ override.tf.json
 .terraformrc
 terraform.rc
 .DS_Store
+digests.txt
+images.json

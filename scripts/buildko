@@ -14,14 +14,13 @@ if [ ! -f go.work ]; then
     ./fault-quarantine-module \
     ./fault-remediation-module \
     ./health-events-analyzer \
-    ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
-    ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+    ./health-monitors/csp-health-monitor \
     ./labeler-module \
     ./node-drainer-module \
-    ./platform-connectors 
+    ./platform-connectors
 fi
 
-ko build -B --sbom=cyclonedx --tags="${VERSION}-slim" \
+ko build -B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}-slim" \
   ./fault-quarantine-module \
   ./fault-remediation-module \
   ./health-events-analyzer \
@@ -30,3 +29,20 @@ ko build -B --sbom=cyclonedx --tags="${VERSION}-slim" \
   ./labeler-module \
   ./node-drainer-module \
   ./platform-connectors 
+
+echo "built refs:"
+cat digests.txt
+
+# digests.txt has: ghcr.io/mchmarny/fault-quarantine-module:v0.1.0-slim@sha256:9168...
+# for attestation matrix we need subject-name WITHOUT tag, and the digest.
+jq -R -s '
+  split("\n")
+  | map(select(length>0))
+  | map({
+      name: (   split("@")[0] | sub(":[^@]+$"; "") ),
+      digest: ( split("@")[1] )
+    })
+' digests.txt | tee images.json
+
+# Export images.json content to GitHub Actions output
+echo "images=$(jq -c . images.json)" >> "$GITHUB_OUTPUT"

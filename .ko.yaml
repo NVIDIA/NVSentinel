@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# .ko.yaml (repo root)
+# .ko.yaml in the root of the repository
 defaultBaseImage: cgr.dev/chainguard/static:latest
 platforms: [linux/amd64, linux/arm64]
 
@@ -38,11 +38,11 @@ builds:
     
   - id: csp-health-monitor
     dir: health-monitors/csp-health-monitor
-    main: cmd/csp-health-monitor
+    main: ./cmd/csp-health-monitor
 
   - id: maintenance-notifier
     dir: health-monitors/csp-health-monitor
-    main: cmd/maintenance-notifier
+    main: ./cmd/maintenance-notifier
 
   - id: labeler-module
     dir: labeler-module
@@ -56,3 +56,7 @@ labels:
   org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
   org.opencontainers.image.licenses: "Apache-2.0"
   org.opencontainers.image.title: "NVSentinel"
+  org.opencontainers.image.description: "NVSentinel is an AI-powered monitoring and fault remediation solution for Kubernetes clusters."
+  org.opencontainers.image.version: "{{.Env.VERSION}}"
+  org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+  org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
