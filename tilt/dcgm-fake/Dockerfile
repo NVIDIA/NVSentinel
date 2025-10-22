@@ -12,24 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: nvidia-driver-daemonset
-  namespace: gpu-operator
-spec:
-  selector:
-    matchLabels:
-      app: nvidia-driver-daemonset
-  template:
-    metadata:
-      labels:
-        app: nvidia-driver-daemonset
-    spec:
-      containers:
-      - image: ubuntu:22.04
-        command: ["sleep", "infinity"]
-        name: nvidia-driver-ctr
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
+FROM nvcr.io/nvidia/cloud-native/dcgm:4.2.0-1-ubuntu22.04
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update || true && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    apt-get update && apt list -a datacenter-gpu-manager-4-dev && \
+    apt-get install -y --no-install-recommends \
+        datacenter-gpu-manager-4-dev=1:4.2.0 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY gpu-spec.yaml /gpu-spec.yaml
+
+ENV NVML_INJECTION_MODE=True
+ENV NVML_YAML_FILE=/gpu-spec.yaml

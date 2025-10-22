@@ -41,8 +41,8 @@ const (
 )
 
 var (
-	dcgm4Regex = regexp.MustCompile(`.*/dcgm:4\..*`)
-	dcgm3Regex = regexp.MustCompile(`.*/dcgm:3\..*`)
+	dcgm4Regex = regexp.MustCompile(`.*dcgm:4\..*`)
+	dcgm3Regex = regexp.MustCompile(`.*dcgm:3\..*`)
 )
 
 // Labeler manages node labeling based on pod information
