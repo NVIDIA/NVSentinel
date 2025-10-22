@@ -30,15 +30,31 @@ spec:
         app: nvidia-dcgm
     spec:
       containers:
-      - image: nvcr.io/nvidia/cloud-native/dcgm:4.3.1-1-ubuntu22.04
+      - image: ghcr.io/nvidia/nvsentinel-fake-dcgm:4.2.0
         name: nvidia-dcgm-ctr
-      initContainers:
-      - image: nvcr.io/nvidia/cloud-native/gpu-operator-validator:v25.3.2
-        name: toolkit-validation
-      nodeSelector:
-        nvidia.com/gpu.deploy.dcgm: "true"
       tolerations:
-      - key: dedicated
-        operator: Exists
       - key: nvidia.com/gpu
         operator: Exists
+---
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: "2025-07-18T18:39:40Z"
+  labels:
+    app: nvidia-dcgm
+  name: nvidia-dcgm
+  namespace: gpu-operator
+spec:
+  internalTrafficPolicy: Local
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: dcgm
+    port: 5555
+    protocol: TCP
+    targetPort: 5555
+  selector:
+    app: nvidia-dcgm
+  sessionAffinity: None
+  type: ClusterIP
