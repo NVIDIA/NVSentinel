@@ -1,0 +1,62 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Centralized Tool Versions
+# 
+# This file defines the canonical versions for all tools, languages, and dependencies
+# used across the NVSentinel project. All installation scripts, CI/CD workflows, and
+# Makefiles should reference this file as the single source of truth.
+#
+# Usage:
+#   - GitHub Actions: Read and parse this file in prepare-environment.yml
+#   - Makefiles: Source versions using yq or similar YAML parser
+#   - Documentation: Reference this file for version requirements
+#
+# When updating versions:
+#   1. Update the version here
+#   2. Test locally with: make install-lint-tools, make install-go-ci
+#   3. Verify CI/CD workflows still pass
+#   4. Update DEVELOPMENT.md if there are breaking changes
+
+# Language Versions
+languages:
+  go: '1.24'
+  python: '3.11'
+
+# Build & Package Management
+build_tools:
+  poetry: '1.8.2'
+
+# Go Development Tools
+go_tools:
+  golangci_lint: 'v1.64.8'
+  gotestsum: 'v1.13.0'
+  gocover_cobertura: 'v1.4.0'
+
+# Protocol Buffers / gRPC
+protobuf:
+  protobuf: 'v33.0'
+  protoc_gen_go: 'v1.36.10'
+  protoc_gen_go_grpc: 'v1.5.1'
+  grpcio_tools: '1.75.1'
+
+# Linting & Validation
+linting:
+  shellcheck: 'v0.11.0'
+  addlicense: 'latest'
+
+# Container Tools (for reference)
+container_tools:
+  docker_buildx: 'latest'
+  ko: 'latest'

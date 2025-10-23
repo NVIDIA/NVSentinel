@@ -19,74 +19,35 @@
 # MODULE-SPECIFIC CONFIGURATION
 # =============================================================================
 
+# Module type and capabilities
+IS_GO_MODULE := 1
+HAS_DOCKER := 1
+
 # Fault-quarantine-module specific settings
 CLEAN_EXTRA_FILES := fault-quarantine-module
-
-# Docker configuration
-HAS_DOCKER := 1
 DOCKER_EXTRA_ARGS :=
 
 # =============================================================================
-# INCLUDE COMMON DEFINITIONS
+# INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
-include ../common.mk
+include ../make/common.mk
+include ../make/go.mk
+include ../make/docker.mk
 
 # =============================================================================
-# LEGACY COMPATIBILITY
+# DEFAULT TARGET
 # =============================================================================
 
-# Legacy targets for backwards compatibility
-.PHONY: image publish
-image: docker-build
-	@echo "Legacy 'image' target - use 'docker-build' for local development"
-
-publish: docker-publish
-	@echo "Legacy 'publish' target - use 'docker-publish' for CI/production"
+.PHONY: all
+all: lint-test ## Run lint-test (default target)
 
 # =============================================================================
-# MODULE HELP
+# MODULE NOTES
 # =============================================================================
+# This module handles fault detection and quarantine operations.
+# - Uses standardized repo-root Docker build context
+# - Multi-platform builds: linux/arm64,linux/amd64
+# - Build cache enabled for faster builds
+# Run 'make help' to see available targets
 
-help:
-	@echo "Fault Quarantine Module Makefile - Using nvsentinel common.mk standards"
-	@echo ""
-	@echo "This module handles fault detection and quarantine operations."
-	@echo ""
-	@echo "Configuration (environment variables):"
-	@echo "  MODULE_NAME=$(MODULE_NAME)"
-	@echo "  REPO_ROOT=$(REPO_ROOT)"
-	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
-	@echo "  NGC_ORG=$(NGC_ORG)"
-	@echo "  SAFE_REF_NAME=$(SAFE_REF_NAME)"
-	@echo "  PLATFORMS=$(PLATFORMS)"
-	@echo "  HAS_DOCKER=$(HAS_DOCKER)"
-	@echo ""
-	@echo "Main targets:"
-	@echo "  all        - Run lint-test (standardized default)"
-	@echo "  lint-test  - Run full lint and test suite (matches CI)"
-	@echo ""
-	@echo "Individual targets:"
-	@echo "  vet        - Run go vet"
-	@echo "  lint       - Run golangci-lint"
-	@echo "  test       - Run tests with coverage"
-	@echo "  coverage   - Generate coverage reports"
-	@echo "  build      - Build the module"
-	@echo "  binary     - Build the main binary"
-	@echo ""
-	@echo "Docker targets:"
-	@echo "  docker-build    - Build Docker image (local development)"
-	@echo "  docker-publish  - Build and publish Docker image (CI/production)"
-	@echo "  setup-buildx    - Setup Docker buildx builder"
-	@echo "  image           - Legacy target (calls docker-build)"
-	@echo "  publish         - Legacy target (calls docker-publish)"
-	@echo ""
-	@echo "Utility targets:"
-	@echo "  clean      - Clean build artifacts and reports"
-	@echo "  help       - Show this help message"
-	@echo ""
-	@echo "Module-specific notes:"
-	@echo "  - Uses standardized repo-root Docker build context"
-	@echo "  - Multi-platform builds: $(PLATFORMS)"
-	@echo "  - Build cache enabled for faster builds"
-	@echo "  - Matches CI/CD pipeline configuration exactly"

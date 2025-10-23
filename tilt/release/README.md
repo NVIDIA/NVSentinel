@@ -87,4 +87,4 @@ tilt down -f tilt/release/Tiltfile.release
 
 ---
 
-For development builds from source, use the main `Tiltfile` instead.
+For development builds from source, use `tilt/Tiltfile` (or run `make tilt-up` from the root).

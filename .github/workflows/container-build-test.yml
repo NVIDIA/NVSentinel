@@ -34,8 +34,6 @@ on:
       - '.github/workflows/container-build-test.yml'
       - '.github/actions/build-container/**'
       - '.github/actions/setup-build-env/**'
-      # Build scripts
-      - 'build_image_list.sh'
   workflow_dispatch:
     inputs:
       components:

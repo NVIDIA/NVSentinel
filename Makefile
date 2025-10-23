@@ -12,12 +12,37 @@ ENVTEST := setup-envtest
 GOPATH ?= $(shell go env GOPATH)
 GO_CACHE_DIR ?= $(shell go env GOCACHE)
 
-# Tool versions
+# Load tool versions from .versions.yaml (single source of truth)
+# Requires yq to be installed: brew install yq (macOS) or see https://github.com/mikefarah/yq
+YQ := $(shell command -v yq 2> /dev/null)
+
+ifndef YQ
+$(warning yq not found - using default versions. Install yq for version management: brew install yq)
 GOLANGCI_LINT_VERSION := v1.64.8
 GOTESTSUM_VERSION := latest
 GOCOVER_COBERTURA_VERSION := latest
-GO_VERSION := 1.24.8
+GO_VERSION := 1.24
+PYTHON_VERSION := 3.11
+POETRY_VERSION := 1.8.2
+PROTOBUF_VERSION := v27.1
+PROTOC_GEN_GO_VERSION := v1.36.6
+PROTOC_GEN_GO_GRPC_VERSION := v1.3.0
 GRPCIO_TOOLS_VERSION := 1.75.1
+SHELLCHECK_VERSION := v0.11.0
+else
+# Load versions from .versions.yaml
+GOLANGCI_LINT_VERSION := $(shell $(YQ) '.go_tools.golangci_lint' .versions.yaml)
+GOTESTSUM_VERSION := $(shell $(YQ) '.go_tools.gotestsum' .versions.yaml)
+GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
+GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
+PYTHON_VERSION := $(shell $(YQ) '.languages.python' .versions.yaml)
+POETRY_VERSION := $(shell $(YQ) '.build_tools.poetry' .versions.yaml)
+PROTOBUF_VERSION := $(shell $(YQ) '.protobuf.protobuf' .versions.yaml)
+PROTOC_GEN_GO_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go' .versions.yaml)
+PROTOC_GEN_GO_GRPC_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go_grpc' .versions.yaml)
+GRPCIO_TOOLS_VERSION := $(shell $(YQ) '.protobuf.grpcio_tools' .versions.yaml)
+SHELLCHECK_VERSION := $(shell $(YQ) '.linting.shellcheck' .versions.yaml)
+endif
 
 # Go modules with specific patterns from CI
 GO_MODULES := \
@@ -56,11 +81,50 @@ KUBEBUILDER_MODULES := \
 
 # Default target
 .PHONY: all
-all: lint-test-all
+all: lint-test-all ## Run lint-test-all (default target)
+
+# Show loaded tool versions
+.PHONY: show-versions
+show-versions: ## Display all tool versions loaded from .versions.yaml
+	@echo "=== Tool Versions (from .versions.yaml) ==="
+	@echo "Languages:"
+	@echo "  Go:                     $(GO_VERSION)"
+	@echo "  Python:                 $(PYTHON_VERSION)"
+	@echo ""
+	@echo "Build Tools:"
+	@echo "  Poetry:                 $(POETRY_VERSION)"
+	@echo ""
+	@echo "Go Tools:"
+	@echo "  golangci-lint:          $(GOLANGCI_LINT_VERSION)"
+	@echo "  gotestsum:              $(GOTESTSUM_VERSION)"
+	@echo "  gocover-cobertura:      $(GOCOVER_COBERTURA_VERSION)"
+	@echo ""
+	@echo "Protocol Buffers:"
+	@echo "  protobuf:               $(PROTOBUF_VERSION)"
+	@echo "  protoc-gen-go:          $(PROTOC_GEN_GO_VERSION)"
+	@echo "  protoc-gen-go-grpc:     $(PROTOC_GEN_GO_GRPC_VERSION)"
+	@echo "  grpcio-tools:           $(GRPCIO_TOOLS_VERSION)"
+	@echo ""
+	@echo "Linting:"
+	@echo "  shellcheck:             $(SHELLCHECK_VERSION)"
+	@echo "==========================================="
+ifndef YQ
+	@echo ""
+	@echo "⚠️  WARNING: yq not found - using default versions"
+	@echo "   Install yq for automatic version loading:"
+	@echo "   macOS:  brew install yq"
+	@echo "   Linux:  See https://github.com/mikefarah/yq"
+endif
+
+# Setup development environment
+.PHONY: dev-env-setup
+dev-env-setup: ## Setup complete development environment (installs all required tools)
+	@echo "Setting up NVSentinel development environment..."
+	@bash scripts/setup-dev-env.sh
 
 # Install lint tools
 .PHONY: install-lint-tools
-install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura
+install-lint-tools: install-golangci-lint install-gotestsum install-gocover-cobertura ## Install all lint tools (golangci-lint, gotestsum, gocover-cobertura)
 	@echo "All lint tools installed successfully"
 	@echo ""
 	@echo "=== Installed Tool Versions and Locations ==="
@@ -130,7 +194,7 @@ install-gocover-cobertura:
 
 # Install Go $(GO_VERSION) for CI environments (Linux and macOS, amd64 and arm64)
 .PHONY: install-go-ci
-install-go-ci:
+install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd64/arm64)
 	@echo "Installing Go $(GO_VERSION) for CI..."
 	@# Detect platform and architecture
 	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
@@ -193,7 +257,7 @@ install-go-ci:
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint
+lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -203,7 +267,7 @@ health-monitors-lint-test-all:
 
 # Generate protobuf files
 .PHONY: protos-generate
-protos-generate: protos-clean
+protos-generate: protos-clean ## Generate protobuf files from .proto sources
 	@echo "Generating protobuf files..."
 	@echo "=== Tool Versions ==="
 	@echo "Go: $$(go version)"
@@ -216,12 +280,16 @@ protos-generate: protos-clean
 	protoc -I protobufs/ --go_out=health-events-analyzer/pkg/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=health-events-analyzer/pkg/protos/ protobufs/platformconnector.proto
 	protoc -I protobufs/ --go_out=tilt/simple-health-client/protos/ --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative --go-grpc_out=tilt/simple-health-client/protos/ protobufs/platformconnector.proto
 	python3 -m grpc_tools.protoc -Iprotobufs/ --python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --pyi_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos --grpc_python_out=health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos protobufs/platformconnector.proto
-	@SED_CMD=$$(command -v gsed 2>/dev/null || command -v sed); \
-	$$SED_CMD -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py
+	@# Fix Python import paths for relative imports
+	@if command -v gsed >/dev/null 2>&1; then \
+		gsed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
+	else \
+		sed -i '' 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
+	fi
 
 # Check protobuf files
 .PHONY: protos-lint
-protos-lint: protos-generate
+protos-lint: protos-generate ## Generate and check protobuf files are up to date
 	@echo "Checking protobuf files..."
 	git status --porcelain --untracked-files=no
 	git --no-pager diff
@@ -230,7 +298,7 @@ protos-lint: protos-generate
 
 # Clean generated protobuf files
 .PHONY: protos-clean
-protos-clean:
+protos-clean: ## Remove all generated protobuf files
 	@echo "Cleaning generated protobuf files..."
 	@echo "Removing Go protobuf files (.pb.go)..."
 	find . -name "*.pb.go" -type f -delete
@@ -240,19 +308,19 @@ protos-clean:
 
 # Check license headers
 .PHONY: license-headers-lint
-license-headers-lint:
+license-headers-lint: ## Check license headers in source files
 	@echo "Checking license headers..."
-	addlicense -f license-header.txt -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore **/.idea/** -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml -ignore nvsentinel-log-collector/pyproject.toml .
+	addlicense -f .github/headers/LICENSE -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore **/.idea/** -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml -ignore nvsentinel-log-collector/pyproject.toml .
 
 # Check go.mod files for proper replace directives
 .PHONY: gomod-lint
-gomod-lint:
+gomod-lint: ## Validate go.mod files for local module replace directives
 	@echo "Validating go.mod files for local module replace directives..."
 	./scripts/validate-gomod.sh
 
 # Sync dependencies across all go modules using Go workspace
 .PHONY: dependencies-sync
-dependencies-sync: dependencies-update go-mod-tidy-all
+dependencies-sync: dependencies-update go-mod-tidy-all ## Sync dependencies across all Go modules using workspace
 	@echo "go.mod and go.sum updated and synced successfully across all go modules"
 
 # Update dependencies across all go modules using Go workspace
@@ -267,7 +335,7 @@ dependencies-update:
 
 # Sync dependencies and lint to ensure no files were modified
 .PHONY: dependencies-sync-lint
-dependencies-sync-lint: dependencies-sync
+dependencies-sync-lint: dependencies-sync ## Sync dependencies and verify no files were modified
 	@echo "Checking if dependency sync modified any files..."
 	git status --porcelain --untracked-files=no
 	git --no-pager diff
@@ -276,7 +344,7 @@ dependencies-sync-lint: dependencies-sync
 
 # Run go mod tidy in all directories with go.mod files
 .PHONY: go-mod-tidy-all
-go-mod-tidy-all:
+go-mod-tidy-all: ## Run go mod tidy in all directories with go.mod files
 	@echo "Running go mod tidy in all directories with go.mod files..."
 	@find . -name "go.mod" -type f | while read -r gomod_file; do \
 		dir=$$(dirname "$$gomod_file"); \
@@ -385,13 +453,13 @@ helm-lint:
 
 # Log collector lint (shell script)
 .PHONY: log-collector-lint
-log-collector-lint:
+log-collector-lint: ## Lint shell scripts in log collector
 	@echo "Linting log collector shell scripts..."
 	$(MAKE) -C nvsentinel-log-collector lint
 
 # Build targets (delegate to sub-Makefiles for better organization)
 .PHONY: build-all
-build-all: build-health-monitors build-main-modules
+build-all: build-health-monitors build-main-modules ## Build all modules
 
 # Build health monitors (delegate to health-monitors/Makefile)
 .PHONY: build-health-monitors
@@ -433,7 +501,7 @@ build-gpu-health-monitor:
 
 # Clean targets (delegate to sub-Makefiles for better organization)
 .PHONY: clean-all
-clean-all: clean-health-monitors clean-main-modules
+clean-all: clean-health-monitors clean-main-modules ## Clean all modules
 
 # Clean health monitors (delegate to health-monitors/Makefile)
 .PHONY: clean-health-monitors
@@ -452,17 +520,17 @@ clean-main-modules:
 
 # Docker targets (delegate to docker/Makefile) - standardized build system
 .PHONY: docker-all
-docker-all:
+docker-all: ## Build all Docker images
 	@echo "Building all Docker images..."
 	$(MAKE) -C docker build-all
 
 .PHONY: docker-publish-all
-docker-publish-all:
+docker-publish-all: ## Build and publish all Docker images
 	@echo "Building and publishing all Docker images..."
 	$(MAKE) -C docker publish-all
 
 .PHONY: docker-setup-buildx
-docker-setup-buildx:
+docker-setup-buildx: ## Setup Docker buildx builder
 	$(MAKE) -C docker setup-buildx
 
 # GPU health monitor Docker targets (special cases with DCGM versions)
@@ -525,43 +593,118 @@ docker-health-monitors:
 docker-main-modules:
 	$(MAKE) -C docker build-main-modules
 
-# Development environment targets (delegate to dev/Makefile)
+# ============================================================================
+# Development Environment Targets
+# ============================================================================
+# Configuration variables
+CTLPTL_CONFIG_FILE ?= ctlptl-config.yaml
+CLUSTER_NAME ?= kind-nvsentinel
+REGISTRY_NAME ?= ctlptl-registry
+REGISTRY_PORT ?= 5001
+
+# Tilt development targets
 .PHONY: tilt-up
-tilt-up:
-	$(MAKE) -C dev tilt-up
+tilt-up: ## Start Tilt development environment
+	@echo "Starting Tilt development environment..."
+	@if ! command -v tilt >/dev/null 2>&1; then \
+		echo "Error: tilt is not installed. Please install from https://tilt.dev/"; \
+		exit 1; \
+	fi
+	tilt up -f tilt/Tiltfile
 
 .PHONY: tilt-down
-tilt-down:
-	$(MAKE) -C dev tilt-down
+tilt-down: ## Stop Tilt development environment
+	@echo "Stopping Tilt development environment..."
+	@if command -v tilt >/dev/null 2>&1; then \
+		tilt down -f tilt/Tiltfile; \
+	else \
+		echo "Warning: tilt is not installed"; \
+	fi
 
 .PHONY: tilt-ci
-tilt-ci:
-	$(MAKE) -C dev tilt-ci
+tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
+	@echo "Running Tilt in CI mode (no UI)..."
+	@if ! command -v tilt >/dev/null 2>&1; then \
+		echo "Error: tilt is not installed. Please install from https://tilt.dev/"; \
+		exit 1; \
+	fi
+	tilt ci -f tilt/Tiltfile
+	@echo "Waiting for all deployments to be ready..."
+	@kubectl get deployments --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
+		echo "Waiting for deployment $$name in namespace $$ns..."; \
+		kubectl rollout status deployment/$$name -n $$ns --timeout=300s || exit 1; \
+	done
+	@echo "Waiting for all daemonsets to be ready..."
+	@kubectl get daemonsets --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
+		echo "Waiting for daemonset $$name in namespace $$ns..."; \
+		kubectl rollout status daemonset/$$name -n $$ns --timeout=300s || exit 1; \
+	done
+	@echo "Waiting for all statefulsets to be ready..."
+	@kubectl get statefulsets --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
+		echo "Waiting for statefulset $$name in namespace $$ns..."; \
+		kubectl rollout status statefulset/$$name -n $$ns --timeout=300s || exit 1; \
+	done
+	@echo "All workloads are ready!"
 
+# ctlptl cluster configuration
 .PHONY: cluster-create
-cluster-create:
-	$(MAKE) -C dev cluster-create
+cluster-create: ## Create local ctlptl-managed Kind cluster with registry
+	@echo "Creating local development cluster with ctlptl..."
+	@if ! command -v ctlptl >/dev/null 2>&1; then \
+		echo "Error: ctlptl is not installed. Please install from https://github.com/tilt-dev/ctlptl"; \
+		echo "Installation options:"; \
+		echo "  - Homebrew: brew install tilt-dev/tap/ctlptl"; \
+		echo "  - Go: go install github.com/tilt-dev/ctlptl/cmd/ctlptl@latest"; \
+		exit 1; \
+	fi
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed. Please install Docker"; \
+		exit 1; \
+	fi
+	@if ! command -v kind >/dev/null 2>&1; then \
+		echo "Error: kind is not installed. Please install from https://kind.sigs.k8s.io/"; \
+		exit 1; \
+	fi
+	@echo "Creating cluster and registry with ctlptl..."
+	@if [ ! -f "$(CTLPTL_CONFIG_FILE)" ]; then \
+		echo "Error: ctlptl config file $(CTLPTL_CONFIG_FILE) not found"; \
+		exit 1; \
+	fi
+	ctlptl apply -f $(CTLPTL_CONFIG_FILE)
+	@echo "Waiting for all nodes to be ready..."
+	@kubectl wait --for=condition=ready nodes --all --timeout=300s
+	@echo "Cluster created successfully!"
+	@echo "Registry available at localhost:$(REGISTRY_PORT)"
 
 .PHONY: cluster-delete
-cluster-delete:
-	$(MAKE) -C dev cluster-delete
+cluster-delete: ## Delete local ctlptl-managed cluster and registry
+	@echo "Deleting local development cluster..."
+	@if [ ! -f "$(CTLPTL_CONFIG_FILE)" ]; then \
+		echo "Error: ctlptl config file $(CTLPTL_CONFIG_FILE) not found"; \
+		exit 1; \
+	fi
+	ctlptl delete -f $(CTLPTL_CONFIG_FILE) || echo "Resources from $(CTLPTL_CONFIG_FILE) not found"
 
 .PHONY: cluster-status
-cluster-status:
-	$(MAKE) -C dev cluster-status
+cluster-status: ## Show cluster and registry status
 
+# Combined development environment targets
 .PHONY: dev-env
-dev-env:
-	$(MAKE) -C dev env-up
+dev-env: cluster-create tilt-up ## Create cluster and start Tilt (full development setup)
 
 .PHONY: dev-env-clean
-dev-env-clean:
-	$(MAKE) -C dev env-down
+dev-env-clean: tilt-down cluster-delete ## Stop Tilt and delete cluster (full cleanup)
+
+# Quick development workflow targets
+.PHONY: dev-restart
+dev-restart: tilt-down tilt-up ## Restart Tilt without recreating cluster
+
+.PHONY: dev-reset
+dev-reset: dev-env-clean dev-env ## Full reset (tear down and recreate everything)
 
 # Tilt end-to-end test target for CI
 .PHONY: e2e-test-ci
-e2e-test-ci:
-	$(MAKE) -C dev tilt-ci
+e2e-test-ci: tilt-ci ## Run end-to-end test suite in CI mode
 	$(MAKE) -C tests test-ci
 
 # Tilt end-to-end test target
@@ -580,7 +723,7 @@ kubernetes-distro-helm-publish:
 
 # Utility targets
 .PHONY: list-modules
-list-modules:
+list-modules: ## List all modules (Go, Python, container-only)
 	@echo "Go modules:"
 	@for module in $(GO_MODULES); do echo "  $$module"; done
 	@echo "Python modules:"
@@ -589,102 +732,14 @@ list-modules:
 	@for module in $(CONTAINER_MODULES); do echo "  $$module"; done
 
 .PHONY: help
-help:
-	@echo "nvsentinel Main Makefile - coordinates between multiple specialized sub-Makefiles"
+help: ## Display available make targets
+	@echo "nvsentinel Main Makefile"
 	@echo ""
-	@echo "Main targets:"
-	@echo "  all                    - Run lint-test-all (default)"
-	@echo "  lint-test-all          - Lint and test all modules"
-	@echo "  install-lint-tools     - Install required lint tools (golangci-lint, gotestsum, etc.)"
-	@echo "  install-go-ci          - Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd64/arm64)"
-	@echo "  protos-generate        - Generate protobuf files from .proto sources"
-	@echo "  protos-lint            - Generate and check protobuf files"
-	@echo "  protos-clean           - Remove all generated protobuf files"
-	@echo "  license-headers-lint   - Check license headers"
-	@echo "  gomod-lint             - Validate go.mod files for local module replace directives"
-	@echo "  dependencies-sync      - Sync dependencies across all Go modules using workspace"
-	@echo "  dependencies-sync-lint - Sync dependencies and verify no files were modified"
-	@echo "  go-mod-tidy-all        - Run go mod tidy in all directories with go.mod files"
-	@echo "  log-collector-lint     - Lint shell scripts"
+	@echo "Available targets:"
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort -u | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Module-specific targets (delegated to sub-Makefiles):"
-	@echo "  health-monitors-lint-test-all - Lint and test all health monitors"
-	@echo "  go-lint-test-all              - Lint and test non-health-monitor Go modules"
-	@echo "  python-lint-test-all          - Lint and test non-health-monitor Python modules"
-	@echo "  kubernetes-distro-lint        - Lint Kubernetes Helm charts"
+	@echo "Configuration variables:"
+	@echo "  GO_VERSION=$(GO_VERSION), GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION)"
+	@echo "  CTLPTL_CONFIG_FILE=$(CTLPTL_CONFIG_FILE), REGISTRY_PORT=$(REGISTRY_PORT)"
 	@echo ""
-	@echo "Development environment targets (delegated to dev/Makefile):"
-	@echo "  dev-env                - Create cluster and start Tilt (full setup)"
-	@echo "  dev-env-clean          - Stop Tilt and delete cluster (full cleanup)"
-	@echo "  tilt-up                - Start Tilt development environment"
-	@echo "  tilt-down              - Stop Tilt development environment"
-	@echo "  tilt-ci                - Run Tilt in CI mode (no UI)"
-	@echo "  cluster-create         - Create local ctlptl-managed Kind cluster with registry"
-	@echo "  cluster-delete         - Delete local ctlptl-managed cluster and registry"
-	@echo "  cluster-status         - Show cluster and registry status"
-	@echo ""
-	@echo "Docker targets (delegated to docker/Makefile) - standardized build system:"
-	@echo "  docker-all                      - Build all Docker images"
-	@echo "  docker-publish-all              - Build and publish all Docker images"
-	@echo "  docker-setup-buildx             - Setup Docker buildx builder"
-	@echo "  docker-health-monitors          - Build all health monitor images"
-	@echo "  docker-main-modules             - Build all main module images"
-	@echo ""
-	@echo "  Special GPU health monitor targets:"
-	@echo "  docker-gpu-health-monitor       - Build both DCGM 3.x and 4.x GPU monitor images"
-	@echo "  docker-gpu-health-monitor-dcgm3 - Build GPU monitor with DCGM 3.x"
-	@echo "  docker-gpu-health-monitor-dcgm4 - Build GPU monitor with DCGM 4.x"
-	@echo ""
-	@echo "  Individual module Docker targets:"
-	@echo "  docker-syslog-health-monitor    - Build syslog health monitor"
-	@echo "  docker-csp-health-monitor       - Build CSP health monitor"
-	@echo "  docker-platform-connectors     - Build platform connectors"
-	@echo "  docker-health-events-analyzer  - Build health events analyzer"
-	@echo "  docker-fault-quarantine-module - Build fault quarantine module"
-	@echo "  docker-labeler-module          - Build labeler module"
-	@echo "  docker-node-drainer-module     - Build node drainer module"
-	@echo "  docker-fault-remediation-module - Build fault remediation module"
-	@echo "  docker-log-collector           - Build log collector"
-	@echo ""
-	@echo "Helm/Kubernetes targets (delegated to distros/kubernetes/Makefile):"
-	@echo "  kubernetes-distro-helm-publish - Publish Helm chart (requires CI_COMMIT_TAG)"
-	@echo ""
-	@echo "Build targets (delegated to sub-Makefiles):"
-	@echo "  build-all              - Build all modules (health monitors + main modules)"
-	@echo "  build-health-monitors  - Build all health monitors"
-	@echo "  build-main-modules     - Build non-health-monitor Go modules"
-	@echo "  build-<module-name>    - Build specific module"
-	@echo ""
-	@echo "Test targets (delegated to sub-Makefiles):"
-	@echo "  e2e-test-ci        - Run end-to-end test suite in CI mode"
-	@echo "  e2e-test           - Run end-to-end test suite"
-	@echo ""
-	@echo "Clean targets (delegated to sub-Makefiles):"
-	@echo "  clean-all              - Clean all modules"
-	@echo "  clean-health-monitors  - Clean all health monitors"
-	@echo "  clean-main-modules     - Clean non-health-monitor Go modules"
-	@echo ""
-	@echo "Utility targets:"
-	@echo "  list-modules           - List all modules"
-	@echo "  help                   - Show this help message"
-	@echo ""
-	@echo "Sub-Makefile locations:"
-	@echo "  health-monitors/Makefile  - Health monitor specific targets"
-	@echo "  distros/kubernetes/Makefile - Kubernetes/Helm specific targets"
-	@echo "  docker/Makefile           - Docker build specific targets"
-	@echo "  dev/Makefile              - Development environment targets"
-	@echo "  tests/Makefile            - End-to-end and integration test targets"
-	@echo ""
-	@echo "Individual module targets:"
-	@echo "  For health monitors: make -C health-monitors <target>"
-	@echo "  For docker builds: make -C docker <target>"
-	@echo "  For development: make -C dev <target>"
-	@echo "  For kubernetes: make -C distros/kubernetes <target>"
-	@echo "  For tests: make -C tests <target>"
-	@echo ""
-	@echo "Notes:"
-	@echo "  - Each sub-Makefile has its own help target: make -C <dir> help"
-	@echo "  - Docker builds use multi-platform (linux/arm64,linux/amd64) and build cache"
-	@echo "  - Docker targets use standardized build system"
-	@echo "  - Development clusters use ctlptl for declarative management"
-	@echo "  - Environment variables: NVCR_CONTAINER_REPO, NGC_ORG, SAFE_REF_NAME, PLATFORMS"
+	@echo "Sub-Makefiles: health-monitors/, docker/, distros/kubernetes/, tests/"

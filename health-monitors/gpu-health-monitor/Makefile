@@ -19,27 +19,21 @@
 # MODULE-SPECIFIC CONFIGURATION
 # =============================================================================
 
+# Python module configuration
+IS_GO_MODULE := 0
+HAS_DOCKER := 1
+
 # GPU-health-monitor specific settings (Python module)
 CLEAN_EXTRA_FILES := gpu_health_monitor.egg-info
-
-# Docker configuration - this module has dual DCGM support
-HAS_DOCKER := 1
 DOCKER_EXTRA_ARGS :=
 
-# Python-specific test setup
-TEST_SETUP_COMMANDS := poetry config virtualenvs.in-project true && poetry install &&
-
-# Python module - disable Go targets from common.mk
-IS_GO_MODULE := 0
-
-# Override lint-test for Python module (instead of Go)
-LINT_EXTRA_FLAGS :=
-
 # =============================================================================
-# INCLUDE COMMON DEFINITIONS
+# INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
-include ../../common.mk
+include ../../make/common.mk
+include ../../make/python.mk
+include ../../make/docker.mk
 
 # Cache configuration for specialized builds (respect DISABLE_REGISTRY_CACHE)
 ifeq ($(DISABLE_REGISTRY_CACHE),true)
@@ -58,52 +52,15 @@ endif
 # DEFAULT TARGET
 # =============================================================================
 
-# Default target
-.PHONY: all clean help
+.PHONY: all
 all: lint-test
 
 # =============================================================================
 # PYTHON-SPECIFIC OVERRIDES
 # =============================================================================
 
-# Override Go-based targets with Python equivalents
-lint-test:
-	@echo "Linting and testing $(MODULE_NAME) (Python module)..."
-	$(TEST_SETUP_COMMANDS) \
-	poetry run black --check . && \
-	poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml && \
-	(poetry run coverage xml || true) && \
-	(poetry run coverage report || true)
-
-vet:
-	@echo "Python modules don't use 'go vet' - skipping"
-
-lint:
-	@echo "Running Black formatter check on $(MODULE_NAME)..."
-	poetry run black --check .
-
-test:
-	@echo "Running tests on $(MODULE_NAME)..."
-	$(TEST_SETUP_COMMANDS) \
-	poetry run coverage run --source=gpu_health_monitor -m pytest -vv --junitxml=report.xml
-
-coverage: test
-	@echo "Generating coverage reports for $(MODULE_NAME)..."
-	poetry run coverage report
-	poetry run coverage xml || true
-
-build:
-	@echo "Building $(MODULE_NAME) (Python module)..."
-	poetry build
-
-binary:
-	@echo "Python modules don't build binaries directly - use 'build' target"
-
-clean:
-	@echo "Cleaning $(MODULE_NAME)..."
-	rm -f report.xml coverage.xml .coverage
-	rm -rf .pytest_cache
-	rm -rf $(CLEAN_EXTRA_FILES)
+# Python lint-test and other targets are provided by make/python.mk
+# but we can override them here if needed
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 

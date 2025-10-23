@@ -17,24 +17,49 @@ Welcome to the NVSentinel development team! This guide will help you understand 
 
 ## 🚀 Getting Started
 
+### Quick Setup
+
+Clone the repository:
+
+```bash
+git clone https://github.com/nvidia/nvsentinel.git
+cd nvsentinel
+```
+
+### Tool Version Management
+
+NVSentinel uses a centralized version management file (`.versions.yaml`) to ensure consistency across:
+
+- Local development
+- CI/CD pipelines
+- Container builds
+- Documentation
+
+**View Current Versions:**
+
+```bash
+make show-versions
+```
+
 ### Prerequisites
 
-Before you start developing, ensure you have the following tools installed:
+Before you start developing you will need the following tools. 
 
 **Required Tools:**
-- [Go 1.24+](https://golang.org/dl/)
+- [Go](https://golang.org/dl/)
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
 - [Helm 3.0+](https://helm.sh/docs/intro/install/)
-- [Protocol Buffers Compiler (protoc) v27.1](https://grpc.io/docs/protoc-installation/)
+- [Protocol Buffers Compiler (protoc)](https://grpc.io/docs/protoc-installation/)
+- [yq](https://github.com/mikefarah/yq) - YAML processor for version management
 
 **Development Tools:**
-- [golangci-lint v1.64.8](https://golangci-lint.run/usage/install/) - Go linting
+- [golangci-lint](https://golangci-lint.run/usage/install/)
 - [gotestsum](https://github.com/gotestyourself/gotestsum) - Enhanced test runner
 - [gocover-cobertura](https://github.com/boumenot/gocover-cobertura) - Coverage reporting
 - [addlicense](https://github.com/google/addlicense) - License header management
-- [Poetry 1.8.2](https://python-poetry.org/) - Python dependency management (for GPU health monitor)
-- [shellcheck v0.11.0](https://github.com/koalaman/shellcheck) - Shell script linting
+- [Poetry](https://python-poetry.org/)
+- [shellcheck](https://github.com/koalaman/shellcheck)
 
 **Optional but Recommended:**
 - [Tilt](https://tilt.dev/) - Local Kubernetes development
@@ -42,110 +67,24 @@ Before you start developing, ensure you have the following tools installed:
 - [Kind](https://kind.sigs.k8s.io/) - Local Kubernetes clusters (managed via ctlptl)
 - [MongoDB Compass](https://www.mongodb.com/products/compass) - Database GUI
 
-### Linux x86_64 Prerequisites Installation
-
-For a fresh Linux x86_64 system, run the following commands to install all required dependencies:
+The quickest way to install and ensure correct versions of these tools is via our interactive setup:
 
 ```bash
-# Set environment variables
-export PATH=/usr/local/go/bin:$PATH
-export PYTHONPATH=/usr/local/dcgm/bindings/python3
-export PYTHONUNBUFFERED=1
-
-# Update system
-apt-get update
-apt -y autoremove
-
-# Install basic tools
-apt-get install -y python3 python3-pip curl git wget unzip
-
-# Install Poetry (version matching CI)
-pip install --break-system-packages poetry==1.8.2
-
-# Install Helm
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-helm plugin install https://github.com/chartmuseum/helm-push || true
-
-# Install Protocol Buffers (version matching CI)
-wget -q https://github.com/protocolbuffers/protobuf/releases/download/v27.1/protoc-27.1-linux-x86_64.zip
-unzip -o protoc-27.1-linux-x86_64.zip -d protoc-27.1-linux-x86_64
-cp protoc-27.1-linux-x86_64/bin/protoc /usr/local/bin/
-mkdir -p /usr/local/bin/include/google
-cp -r protoc-27.1-linux-x86_64/include/google /usr/local/bin/include
-rm -rf protoc*
-
-# Install Python gRPC tools
-python3 -m pip install --break-system-packages grpcio grpcio-tools
-
-# Install NVIDIA DCGM
-wget -q https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb
-dpkg -i cuda-keyring_1.1-1_all.deb && rm cuda-keyring_1.1-1_all.deb
-apt-get install -y datacenter-gpu-manager=1:3.3.5
-
-# Install Go development tools (versions matching CI)
-go install github.com/google/addlicense@latest && mv $(go env GOPATH)/bin/addlicense /usr/local/bin/
-go install github.com/boumenot/gocover-cobertura@latest && mv $(go env GOPATH)/bin/gocover-cobertura /usr/local/bin/
-go install gotest.tools/gotestsum@latest && mv $(go env GOPATH)/bin/gotestsum /usr/local/bin/
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6 && mv $(go env GOPATH)/bin/protoc-gen-go /usr/local/bin/
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0 && mv $(go env GOPATH)/bin/protoc-gen-go-grpc /usr/local/bin/
-go install sigs.k8s.io/kind@v0.30.0 && mv $(go env GOPATH)/bin/kind /usr/local/bin/
-go install github.com/tilt-dev/ctlptl/cmd/ctlptl@latest && mv $(go env GOPATH)/bin/ctlptl /usr/local/bin/
-go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && mv $(go env GOPATH)/bin/setup-envtest /usr/local/bin/
-go install golang.org/x/tools/cmd/goimports@latest && mv $(go env GOPATH)/bin/goimports /usr/local/bin/
-
-# Install golangci-lint (version matching CI)
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin v1.64.8
-
-# Install kubectl
-curl -L "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/$(case $(uname -m) in aarch64) echo arm64;; x86_64) echo amd64;; *) echo $(uname -m);; esac)/kubectl" -o /usr/local/bin/kubectl
-chmod +x /usr/local/bin/kubectl
-
-# Install shellcheck (version matching CI)
-curl -sSL "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz" | tar -xJ --wildcards -C /usr/local/bin/ --strip-components=1 "*/shellcheck"
-chmod +x /usr/local/bin/shellcheck
-
-# Install Tilt
-curl -L https://github.com/tilt-dev/tilt/releases/download/v0.35.1/tilt.0.35.1.linux.x86_64.tar.gz | tar -xz -C /usr/local/bin
- tilt
-
-# Clean up
-apt-get clean
+make dev-env-setup
 ```
 
-### Quick Setup
+This setup process will:
 
-```bash
-# Clone the repository
-git clone https://github.com/nvidia/nvsentinel.git
-cd nvsentinel
-
-# Install development tools
-make help  # See all available commands
-
-# Run full test suite to verify setup
-make lint-test-all
-```
+- Detect your OS (Linux/macOS) and architecture (amd64/arm64)
+- Install yq for version management
+- Check and install required tools (Go, Docker, Python, Poetry)
+- Install development tools (Helm, kubectl, protoc, shellcheck, Tilt, Kind, ctlptl)
+- Install Go development tools (golangci-lint, gotestsum, etc.)
+- Install Python gRPC tools
 
 ### Build System Architecture
 
-The project uses a **unified build system** with shared patterns across all modules:
-
-```
-nvsentinel/
-├── Makefile                          # Main coordinator - delegates to sub-Makefiles
-├── common.mk                         # Shared build patterns for all Go modules
-├── health-monitors/Makefile          # Health monitor coordination
-│   ├── syslog-health-monitor/Makefile       # Go module (includes common.mk)
-│   ├── csp-health-monitor/Makefile          # Go module (includes common.mk)
-│   └── gpu-health-monitor/Makefile          # Python module (overrides common.mk)
-├── docker/Makefile                   # Docker build delegation to modules
-├── dev/Makefile                      # Development environment (Tilt, ctlptl)
-├── distros/kubernetes/Makefile       # Kubernetes/Helm operations
-├── scripts/Makefile                  # Shell script linting
-├── tests/Makefile                    # End-to-end testing
-├── nvsentinel-log-collector/Makefile # Container-only module (shell + Python)
-└── [go-module]/Makefile              # All Go modules: include ../common.mk
-```
+The project uses a **unified build system**:
 
 **Build System Features:**
 - **Unified Interface**: All modules support common targets (`all`, `lint-test`, `clean`, etc.)
@@ -204,33 +143,32 @@ sequenceDiagram
 
 ### 1. Local Development with Tilt
 
-Tilt provides the fastest development experience with hot reloading. The development environment targets are organized in `dev/Makefile`:
+Tilt provides the fastest development experience with hot reloading.
 
 ```bash
 # Quick start - create cluster and start Tilt in one command
-make dev-env                    # Delegates to: make -C dev env-up
+make dev-env                    # Creates cluster and starts Tilt
 
 # Manual step-by-step approach
-make cluster-create             # Delegates to: make -C dev cluster-create
-make tilt-up                    # Delegates to: make -C dev tilt-up
+make cluster-create             # Creates ctlptl-managed Kind cluster with registry
+make tilt-up                    # Starts Tilt with UI (runs: tilt up -f tilt/Tiltfile)
 
-# Direct dev/ Makefile usage
-make -C dev cluster-create      # Creates ctlptl-managed Kind cluster with registry
-make -C dev tilt-up            # Starts Tilt with UI
-make -C dev cluster-status     # Check cluster and registry status
+# Check status
+make cluster-status             # Check cluster and registry status
 
 # View Tilt UI
 # Navigate to http://localhost:10350
 
 # Stop everything when done
-make dev-env-clean             # Delegates to: make -C dev env-down
+make dev-env-clean             # Stops Tilt and deletes cluster
 
 # Or stop individually
-make tilt-down                 # Delegates to: make -C dev tilt-down
-make cluster-delete            # Delegates to: make -C dev cluster-delete
+make tilt-down                 # Stops Tilt (runs: tilt down -f tilt/Tiltfile)
+make cluster-delete            # Deletes the cluster
 ```
 
 **ctlptl Cluster Features:**
+
 - Declarative cluster configuration with YAML
 - Multi-node Kind cluster (3 control-plane, 2 worker nodes)
 - Cluster name: `kind-nvsentinel` (required `kind-` prefix)
@@ -742,7 +680,7 @@ All source files must include the Apache 2.0 license header:
 
 ```bash
 # Add license headers to new files
-addlicense -f license-header.txt .
+addlicense -f .github/headers/LICENSE .
 
 # Check license headers
 make license-headers-lint

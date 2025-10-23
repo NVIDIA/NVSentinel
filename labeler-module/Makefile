@@ -1,74 +1,36 @@
-# Labeler Module Makefile
-# Individual module build and test targets
+# labeler-module Makefile
 
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # =============================================================================
 # MODULE-SPECIFIC CONFIGURATION
 # =============================================================================
 
-# Labeler-module specific settings
-CLEAN_EXTRA_FILES := labeler-module
-
-# Special kubebuilder setup for tests
-TEST_SETUP_COMMANDS := export PATH="$$GOPATH/bin:$$PATH" && \
-                      go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
-                      export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) &&
-
-# Docker configuration
+IS_GO_MODULE := 1
 HAS_DOCKER := 1
-DOCKER_EXTRA_ARGS :=
 
 # =============================================================================
-# INCLUDE COMMON DEFINITIONS
+# INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
-include ../common.mk
+include ../make/common.mk
+include ../make/go.mk
+include ../make/docker.mk
 
 # =============================================================================
-# LEGACY COMPATIBILITY
+# DEFAULT TARGET
 # =============================================================================
 
-.PHONY: image publish
-image: docker-build
-publish: docker-publish
+.PHONY: all
+all: lint-test
 
 # =============================================================================
 # MODULE HELP
 # =============================================================================
 
+.PHONY: help
 help:
-	@echo "Labeler Module Makefile - Using nvsentinel common.mk standards"
+	@echo "labeler-module Makefile - Using nvsentinel make/*.mk standards"
 	@echo ""
-	@echo "This module handles node labeling and label management operations."
-	@echo ""
-	@echo "Configuration (environment variables):"
-	@echo "  MODULE_NAME=$(MODULE_NAME)"
-	@echo "  REPO_ROOT=$(REPO_ROOT)"
-	@echo "  GOPATH=$(GOPATH)"
-	@echo ""
-	@echo "Main targets:"
-	@echo "  all        - Run lint-test (standardized default)"
-	@echo "  lint-test  - Run full lint and test suite"
-	@echo ""
-	@echo "Individual targets:"
-	@echo "  vet, lint, test, coverage, build, binary"
-	@echo ""
-	@echo "Docker targets:"
-	@echo "  docker-build, docker-publish, image, publish"
-	@echo ""
-	@echo "Module-specific notes:"
-	@echo "  - Requires kubebuilder setup-envtest for testing"
-	@echo "  - Uses standardized repo-root Docker build context"
+	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
+	@echo "Docker targets: docker, docker-build, docker-publish"

@@ -60,17 +60,6 @@ env:
   CONTAINER_REGISTRY: ghcr.io
   CONTAINER_ORG: ${{ github.repository_owner }}
 
-  # Centralized tool versions - single source of truth
-  GO_VERSION: '1.24'
-  PYTHON_VERSION: '3.11'
-  POETRY_VERSION: '1.8.2'
-  GOLANGCI_LINT_VERSION: 'v1.64.8'
-  PROTOBUF_VERSION: 'v27.1'
-  PROTOC_GEN_GO_VERSION: 'v1.36.6'
-  PROTOC_GEN_GO_GRPC_VERSION: 'v1.3.0'
-  GRPCIO_TOOLS_VERSION: '1.75.1'
-  SHELLCHECK_VERSION: 'v0.11.0'
-
 jobs:
   prepare-vars:
     runs-on: ubuntu-latest
@@ -79,18 +68,40 @@ jobs:
       safe_ref_name: ${{ steps.prepare.outputs.safe_ref_name }}
       nvcr_container_repo: ${{ steps.prepare.outputs.nvcr_container_repo }}
       container_org: ${{ steps.prepare.outputs.container_org }}
-      # Tool version outputs
-      go_version: ${{ env.GO_VERSION }}
-      python_version: ${{ env.PYTHON_VERSION }}
-      poetry_version: ${{ env.POETRY_VERSION }}
-      golangci_lint_version: ${{ env.GOLANGCI_LINT_VERSION }}
-      protobuf_version: ${{ env.PROTOBUF_VERSION }}
-      protoc_gen_go_version: ${{ env.PROTOC_GEN_GO_VERSION }}
-      protoc_gen_go_grpc_version: ${{ env.PROTOC_GEN_GO_GRPC_VERSION }}
-      grpcio_tools_version: ${{ env.GRPCIO_TOOLS_VERSION }}
-      shellcheck_version: ${{ env.SHELLCHECK_VERSION }}
+      # Tool version outputs (loaded from .versions.yaml)
+      go_version: ${{ steps.load-versions.outputs.go_version }}
+      python_version: ${{ steps.load-versions.outputs.python_version }}
+      poetry_version: ${{ steps.load-versions.outputs.poetry_version }}
+      golangci_lint_version: ${{ steps.load-versions.outputs.golangci_lint_version }}
+      protobuf_version: ${{ steps.load-versions.outputs.protobuf_version }}
+      protoc_gen_go_version: ${{ steps.load-versions.outputs.protoc_gen_go_version }}
+      protoc_gen_go_grpc_version: ${{ steps.load-versions.outputs.protoc_gen_go_grpc_version }}
+      grpcio_tools_version: ${{ steps.load-versions.outputs.grpcio_tools_version }}
+      shellcheck_version: ${{ steps.load-versions.outputs.shellcheck_version }}
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Load tool versions from .versions.yaml
+        id: load-versions
+        run: |
+          # Install yq for YAML parsing
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+          # Load versions from .versions.yaml
+          echo "go_version=$(yq '.languages.go' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "python_version=$(yq '.languages.python' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "poetry_version=$(yq '.build_tools.poetry' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "golangci_lint_version=$(yq '.go_tools.golangci_lint' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "protobuf_version=$(yq '.protobuf.protobuf' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "protoc_gen_go_version=$(yq '.protobuf.protoc_gen_go' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "protoc_gen_go_grpc_version=$(yq '.protobuf.protoc_gen_go_grpc' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "grpcio_tools_version=$(yq '.protobuf.grpcio_tools' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "shellcheck_version=$(yq '.linting.shellcheck' .versions.yaml)" >> $GITHUB_OUTPUT
+          
+          echo "Loaded versions from .versions.yaml:"
+          cat $GITHUB_OUTPUT
+      
       - name: Prepare variables
         id: prepare
         uses: ./.github/actions/prepare-vars

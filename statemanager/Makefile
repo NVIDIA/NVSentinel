@@ -20,38 +20,29 @@
 # =============================================================================
 
 # State-manager specific settings (library module - no Docker or binary)
+IS_GO_MODULE := 1
 HAS_DOCKER := 0
 
 # =============================================================================
-# INCLUDE COMMON DEFINITIONS
+# INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
-include ../common.mk
+include ../make/common.mk
+include ../make/go.mk
 
 # =============================================================================
-# MODULE HELP
+# DEFAULT TARGET
 # =============================================================================
 
-help:
-	@echo "State Manager Makefile - Using nvsentinel common.mk standards"
-	@echo ""
-	@echo "This is a library module providing Kubernetes state management utilities."
-	@echo ""
-	@echo "Configuration (environment variables):"
-	@echo "  MODULE_NAME=$(MODULE_NAME)"
-	@echo "  REPO_ROOT=$(REPO_ROOT)"
-	@echo "  HAS_DOCKER=0 (library module - no Docker builds)"
-	@echo ""
-	@echo "Main targets:"
-	@echo "  all        - Run lint-test (standardized default)"
-	@echo "  lint-test  - Run full lint and test suite"
-	@echo ""
-	@echo "Individual targets:"
-	@echo "  vet, lint, test, coverage, build"
-	@echo ""
-	@echo "Note: Docker targets are disabled for this library module"
-	@echo ""
-	@echo "Module-specific notes:"
-	@echo "  - Library module providing Kubernetes client abstractions"
-	@echo "  - No binary output or Docker builds"
-	@echo "  - Used by other nvsentinel modules for state management"
+.PHONY: all
+all: lint-test ## Run lint-test (default target)
+
+# =============================================================================
+# MODULE NOTES
+# =============================================================================
+# This is a library module providing Kubernetes state management utilities.
+# - Library module providing Kubernetes client abstractions
+# - No binary output or Docker builds
+# - Used by other nvsentinel modules for state management
+# Run 'make help' to see available targets
+
