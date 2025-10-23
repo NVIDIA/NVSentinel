@@ -85,7 +85,7 @@ docker-build-dcgm3: setup-buildx
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-3.x \
 		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
 		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
-		-f $(DOCKER_MODULE_PATH)/Dockerfile \
+		-f $(MODULE_PATH)/Dockerfile \
 		.
 
 docker-build-dcgm4: setup-buildx
@@ -99,7 +99,7 @@ docker-build-dcgm4: setup-buildx
 		$(DOCKER_EXTRA_ARGS) \
 		$(DOCKER_LOAD_ARG) \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-4.x \
-		-f $(DOCKER_MODULE_PATH)/Dockerfile \
+		-f $(MODULE_PATH)/Dockerfile \
 		.
 
 docker-publish: setup-buildx docker-publish-dcgm3 docker-publish-dcgm4
@@ -118,7 +118,7 @@ docker-publish-dcgm3: setup-buildx
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-3.x \
 		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
 		--build-arg PYTHONPATH=/usr/local/dcgm/bindings/python3 \
-		-f $(DOCKER_MODULE_PATH)/Dockerfile \
+		-f $(MODULE_PATH)/Dockerfile \
 		.
 
 docker-publish-dcgm4: setup-buildx
@@ -132,7 +132,7 @@ docker-publish-dcgm4: setup-buildx
 		$(DOCKER_EXTRA_ARGS) \
 		--push \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME)-dcgm-4.x \
-		-f $(DOCKER_MODULE_PATH)/Dockerfile \
+		-f $(MODULE_PATH)/Dockerfile \
 		.
 
 # =============================================================================

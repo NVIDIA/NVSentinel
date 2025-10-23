@@ -1,6 +1,12 @@
 # NVSentinel Log Collector Makefile
 # Container-only module build targets
 
+# Repository root path calculation (works from any subdirectory depth)
+REPO_ROOT := $(shell git rev-parse --show-toplevel)
+
+# Auto-detect current module path relative to repo root
+MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
+
 # Docker configuration
 NVCR_CONTAINER_REPO ?= nvcr.io
 NGC_ORG ?= nv-ngc-devops
@@ -93,12 +99,13 @@ docker-build: setup-buildx docker-build-log-collector docker-build-file-server-c
 docker-build-log-collector: setup-buildx
 	@echo "Building Docker image for log-collector (local development)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	docker buildx build \
+	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		$(CACHE_FROM_ARG_LOG) \
 		$(CACHE_TO_ARG_LOG) \
 		$(DOCKER_LOAD_ARG) \
+		-f $(MODULE_PATH)/Dockerfile \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
@@ -107,13 +114,13 @@ docker-build-log-collector: setup-buildx
 docker-build-file-server-cleanup: setup-buildx
 	@echo "Building Docker image for file-server-cleanup (local development)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	docker buildx build \
+	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		$(CACHE_FROM_ARG_CLEANUP) \
 		$(CACHE_TO_ARG_CLEANUP) \
 		$(DOCKER_LOAD_ARG) \
-		-f Dockerfile.cleanup \
+		-f $(MODULE_PATH)/Dockerfile.cleanup \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
@@ -126,12 +133,13 @@ docker-publish: setup-buildx docker-publish-log-collector docker-publish-file-se
 docker-publish-log-collector: setup-buildx
 	@echo "Building and publishing Docker image for log-collector (production)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	docker buildx build \
+	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		$(CACHE_FROM_ARG_LOG) \
 		$(CACHE_TO_ARG_LOG) \
 		--push \
+		-f $(MODULE_PATH)/Dockerfile \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
@@ -140,13 +148,13 @@ docker-publish-log-collector: setup-buildx
 docker-publish-file-server-cleanup: setup-buildx
 	@echo "Building and publishing Docker image for file-server-cleanup (production)..."
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
-	docker buildx build \
+	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
 		$(CACHE_FROM_ARG_CLEANUP) \
 		$(CACHE_TO_ARG_CLEANUP) \
 		--push \
-		-f Dockerfile.cleanup \
+		-f $(MODULE_PATH)/Dockerfile.cleanup \
 		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
