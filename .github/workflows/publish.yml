@@ -193,9 +193,7 @@ jobs:
           protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
-      - name: Install Ko
-        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d  # v0.9
-
+      # ko is already installed in the setup-ci-tools action
       - name: Authenticate to GHCR
         shell: bash
         run: echo ${{ secrets.GITHUB_TOKEN }} | ko login ghcr.io -u ${{ github.actor }} --password-stdin
