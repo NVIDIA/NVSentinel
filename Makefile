@@ -283,6 +283,8 @@ protos-generate: protos-clean ## Generate protobuf files from .proto sources
 	@# Fix Python import paths for relative imports
 	@if command -v gsed >/dev/null 2>&1; then \
 		gsed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
+	elif sed --version 2>&1 | grep -q GNU; then \
+		sed -i 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
 	else \
 		sed -i '' 's/^import platformconnector_pb2 as platformconnector__pb2$$/from . import platformconnector_pb2 as platformconnector__pb2/' health-monitors/gpu-health-monitor/gpu_health_monitor/platform_connector/protos/platformconnector_pb2_grpc.py; \
 	fi
