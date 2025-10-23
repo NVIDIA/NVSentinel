@@ -203,6 +203,7 @@ runs:
         echo "Poetry: $(poetry --version)"
         echo "Helm: $(helm version --short)"
         echo "Go: $(go version)"
+        echo "ko: $(ko version)"
         echo "golangci-lint: $(golangci-lint --version)"
         echo "gotestsum: $(gotestsum --version)"
         echo "protoc: $(protoc --version)"
