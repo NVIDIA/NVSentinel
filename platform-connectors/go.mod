@@ -6,6 +6,7 @@ toolchain go1.24.8
 
 require (
 	github.com/golang/protobuf v1.5.4
+	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.mongodb.org/mongo-driver v1.17.4
@@ -113,3 +114,5 @@ replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+
+replace github.com/nvidia/nvsentinel/logger-sdk => ../logger-sdk

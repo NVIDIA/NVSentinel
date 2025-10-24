@@ -22,11 +22,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/nvidia/nvsentinel/labeler-module/pkg/labeler"
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -44,34 +44,8 @@ var (
 	driverAppLabel = flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 )
 
-// initLogger initializes the structured logger with the appropriate log level.
-func initLogger() {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-
-	var level slog.Level
-
-	// Set log level based on LOG_LEVEL environment variable or default to Info level
-	switch logLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "labeler-module", "version", version)
-
-	slog.SetDefault(logger)
-}
-
 func main() {
-	initLogger()
+	logger.SetDefault("labeler-module", version)
 	slog.Info("Starting labeler-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

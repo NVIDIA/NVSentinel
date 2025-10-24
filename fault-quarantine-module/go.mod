@@ -8,6 +8,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/google/cel-go v0.26.0
 	github.com/hashicorp/go-multierror v1.1.1
+	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/platform-connectors v0.0.0-20250922095649-50aef3f27c10
 	github.com/nvidia/nvsentinel/statemanager v0.0.0-20251002153030-9e1e7404df8a
 	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
@@ -116,3 +117,5 @@ replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+
+replace github.com/nvidia/nvsentinel/logger-sdk => ../logger-sdk

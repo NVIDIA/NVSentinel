@@ -22,12 +22,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -54,30 +54,6 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
-
-func initLogger() {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-
-	var level slog.Level
-
-	switch logLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "maintenance-notifier", "version", version)
-
-	slog.SetDefault(logger)
-}
 
 type appConfig struct {
 	configPath               string
@@ -183,7 +159,7 @@ func setupKubernetesClient() kubernetes.Interface {
 }
 
 func main() {
-	initLogger()
+	logger.SetDefault("maintenance-notifier", version)
 	slog.Info("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

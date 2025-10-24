@@ -22,9 +22,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -52,32 +52,8 @@ var (
 	date    = "unknown"
 )
 
-func initLogger() {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-
-	var level slog.Level
-
-	switch logLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "platform-connectors", "version", version)
-
-	slog.SetDefault(logger)
-}
-
 func main() {
-	initLogger()
+	logger.SetDefault("platform-connectors", version)
 	slog.Info("Starting platform-connectors", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

@@ -23,10 +23,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/reconciler"
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
@@ -55,30 +55,6 @@ type config struct {
 	enableLogCollector       bool
 	updateMaxRetries         int
 	updateRetryDelaySeconds  int
-}
-
-// initLogger initializes the structured logger with the appropriate log level.
-func initLogger() {
-	var level slog.Level
-
-	// Set log level based on LOG_LEVEL environment variable or default to Info level
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "fault-remediation-module", "version", version)
-
-	slog.SetDefault(logger)
 }
 
 // parseFlags parses command-line flags and returns a config struct.
@@ -307,7 +283,7 @@ func run() error {
 }
 
 func main() {
-	initLogger()
+	logger.SetDefault("fault-remediation-module", version)
 	slog.Info("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

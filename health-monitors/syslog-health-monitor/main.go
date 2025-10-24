@@ -22,6 +22,7 @@ import (
 
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
@@ -45,28 +46,6 @@ var (
 	date    = "unknown"
 )
 
-func initLogger() {
-	var level slog.Level
-
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "syslog-health-monitor", "version", version)
-
-	slog.SetDefault(logger)
-}
-
 // ConfigFile matches the top-level structure of the YAML config file
 type ConfigFile struct {
 	Checks []fd.CheckDefinition `yaml:"checks"`
@@ -89,8 +68,7 @@ func main() {
 
 	flag.Parse()
 
-	initLogger()
-
+	logger.SetDefault("syslog-health-monitor", version)
 	slog.Info("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
 
 	slog.Info("Parsed command line flags successfully")

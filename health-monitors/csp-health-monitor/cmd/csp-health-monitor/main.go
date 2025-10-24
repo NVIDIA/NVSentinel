@@ -22,13 +22,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -55,31 +55,6 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
-
-// initLogger initializes the structured logger with the appropriate log level.
-func initLogger() {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-
-	var level slog.Level
-
-	switch logLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "csp-health-monitor", "version", version)
-
-	slog.SetDefault(logger)
-}
 
 // startActiveMonitorAndLog starts the provided CSP monitor in a new goroutine
 // and logs its lifecycle and any runtime errors.
@@ -118,7 +93,7 @@ func startActiveMonitorAndLog(
 }
 
 func main() {
-	initLogger()
+	logger.SetDefault("csp-health-monitor", version)
 	slog.Info("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

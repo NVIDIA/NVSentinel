@@ -22,13 +22,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"log/slog"
 
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -45,36 +45,8 @@ var (
 	date    = "unknown"
 )
 
-// getLogLevel returns the slog.Level based on the LOG_LEVEL environment variable.
-func getLogLevel() slog.Level {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-
-	switch logLevel {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
-
-// initLogger initializes the structured logger with the appropriate log level.
-func initLogger() {
-	level := getLogLevel()
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "health-events-analyzer", "version", version)
-
-	slog.SetDefault(logger)
-}
-
 func main() {
-	initLogger()
+	logger.SetDefault("health-events-analyzer", version)
 	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

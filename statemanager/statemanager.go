@@ -145,11 +145,12 @@ import (
 	"context"
 	"fmt"
 
+	"log/slog"
+
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
-	"log/slog"
 )
 
 const (
@@ -244,11 +245,11 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 			return nil
 		}
 
-		slog.Info("Setting %s label to %s for node %s", NVSentinelStateLabelKey, newStateLabelValue, nodeName)
+		slog.Info("Labeling node", "node", nodeName, "from", currentValue, "to", newStateLabelValue)
 
 		if exists && currentValue == string(newStateLabelValue) {
-			slog.Info("Label %s with value %s is already set for node %s", NVSentinelStateLabelKey,
-				newStateLabelValue, nodeName)
+			slog.Info("No update needed for node", "node", nodeName, "label", NVSentinelStateLabelKey,
+				"value", newStateLabelValue)
 
 			return nil
 		}

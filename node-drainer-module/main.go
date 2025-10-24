@@ -20,11 +20,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
 )
 
@@ -35,33 +35,8 @@ var (
 	date    = "unknown"
 )
 
-func getLogLevel() slog.Level {
-	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-	switch logLevel {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
-
-func initLogger() {
-	level := getLogLevel()
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     level,
-		AddSource: true,
-	})).With("module", "node-drainer-module", "version", version)
-
-	slog.SetDefault(logger)
-}
-
 func main() {
-	initLogger()
+	logger.SetDefault("node-drainer-module", version)
 	slog.Info("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

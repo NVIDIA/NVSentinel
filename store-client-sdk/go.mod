@@ -51,3 +51,5 @@ replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+
+replace github.com/nvidia/nvsentinel/logger-sdk => ../logger-sdk
