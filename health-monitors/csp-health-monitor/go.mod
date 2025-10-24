@@ -46,9 +46,9 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
 	github.com/aws/aws-sdk-go-v2/service/health v1.30.2
-	github.com/nvidia/nvsentinel/data-models v0.0.0-00010101000000-000000000000
-	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
-	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
+	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/logger-sdk v0.0.0
+	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.mongodb.org/mongo-driver v1.17.4

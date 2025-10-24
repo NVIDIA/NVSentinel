@@ -7,8 +7,8 @@ toolchain go1.24.8
 require (
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/hashicorp/go-retryablehttp v0.7.8
-	github.com/nvidia/nvsentinel/data-models v0.0.0-00010101000000-000000000000
-	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
+	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/logger-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	github.com/thedatashed/xlsxreader v1.2.8
