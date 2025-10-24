@@ -303,6 +303,7 @@ func main() {
 	if err := run(); err != nil {
 		klog.ErrorS(err, "Fatal error")
 		klog.Flush()
+		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
 		os.Exit(1)
 	}
 }
