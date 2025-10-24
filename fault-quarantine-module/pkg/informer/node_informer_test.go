@@ -514,10 +514,8 @@ func TestNodeInformer_OnNodeAnnotationsChangedCallback(t *testing.T) {
 		defer mu.Unlock()
 		// Make a copy of annotations to avoid race conditions
 		annotationsCopy := make(map[string]string)
-		if annotations != nil {
-			for k, v := range annotations {
-				annotationsCopy[k] = v
-			}
+		for k, v := range annotations {
+			annotationsCopy[k] = v
 		}
 		callbackCalls = append(callbackCalls, struct {
 			nodeName    string
@@ -641,7 +639,7 @@ func TestNodeInformer_OnNodeAnnotationsChangedCallback(t *testing.T) {
 		if call.nodeName != "gpu-node-1" {
 			t.Errorf("Expected node name gpu-node-1, got %s", call.nodeName)
 		}
-		if call.annotations != nil && len(call.annotations) > 0 {
+		if len(call.annotations) > 0 {
 			t.Errorf("Expected nil or empty annotations for deleted node, got %v", call.annotations)
 		}
 	}
@@ -795,10 +793,8 @@ func TestNodeInformer_AnnotationCallbackRaceCondition(t *testing.T) {
 
 		// Deep copy annotations to avoid race conditions
 		annotationsCopy := make(map[string]string)
-		if annotations != nil {
-			for k, v := range annotations {
-				annotationsCopy[k] = v
-			}
+		for k, v := range annotations {
+			annotationsCopy[k] = v
 		}
 
 		callbackInvocations[nodeName] = append(callbackInvocations[nodeName], annotationsCopy)
@@ -869,7 +865,7 @@ func TestNodeInformer_AnnotationCallbackRaceCondition(t *testing.T) {
 
 		// Verify last invocation is for deletion (nil or empty map)
 		lastInvocation := invocations[len(invocations)-1]
-		if lastInvocation != nil && len(lastInvocation) > 0 {
+		if len(lastInvocation) > 0 {
 			t.Errorf("Node %s: expected last callback to be for deletion (empty annotations), got %v",
 				nodeName, lastInvocation)
 		}

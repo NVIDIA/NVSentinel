@@ -28,9 +28,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/mongo"
-	"log/slog"
 )
 
 const (
@@ -67,16 +68,16 @@ func (r *Reconciler) Start(ctx context.Context) {
 		r.config.MongoPipeline,
 	)
 	if err != nil {
-		slog.Error("failed to create change stream watcher: %+v", err)
+		slog.Error("Failed to create change stream watcher", "error", err)
 	}
 	defer watcher.Close(ctx)
 
 	r.config.CollectionClient, err = storewatcher.GetCollectionClient(ctx, r.config.MongoHealthEventCollectionConfig)
 	if err != nil {
 		slog.Error(
-			"error initializing healthEventCollection client with config %+v for mongodb: %+v",
-			r.config.MongoHealthEventCollectionConfig,
-			err,
+			"Error initializing healthEventCollection client",
+			"config", r.config.MongoHealthEventCollectionConfig,
+			"error", err,
 		)
 	}
 
@@ -94,17 +95,17 @@ func (r *Reconciler) Start(ctx context.Context) {
 			event,
 			&healthEventWithStatus,
 		); err != nil {
-			slog.Error("Failed to unmarshal event: %+v", err)
+			slog.Error("Failed to unmarshal event", "error", err)
 			totalEventProcessingError.WithLabelValues("unamrshal_doc_error").Inc()
 
 			if err := watcher.MarkProcessed(ctx); err != nil {
-				slog.Error("Error updating resume token: %+v", err)
+				slog.Error("Error updating resume token", "error", err)
 			}
 
 			continue
 		}
 
-		slog.Debug("Received event: %+v", healthEventWithStatus)
+		slog.Debug("Received event", "event", healthEventWithStatus)
 
 		totalEventsReceived.WithLabelValues(healthEventWithStatus.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
 
@@ -113,7 +114,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		var publishedNewEvent bool
 
 		for i := 1; i <= maxRetries; i++ {
-			slog.Debug("Attempt %d, handling event with ID %s", i, document["_id"])
+			slog.Debug("Handling event", "attempt", i, "eventID", document["_id"])
 
 			publishedNewEvent, err = r.handleEvent(ctx, &healthEventWithStatus)
 			if err == nil {
@@ -129,7 +130,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 				break
 			}
 
-			slog.Error("Error in handling the event with ID %s: %+v", document["_id"], err)
+			slog.Error("Error in handling the event", "eventID", document["_id"], "error", err)
 
 			totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 
@@ -137,7 +138,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		}
 
 		if err != nil {
-			slog.Error("Max attempt reached, error in handling the event with ID %s: %+v", document["_id"], err)
+			slog.Error("Max attempt reached, error in handling the event", "eventID", document["_id"], "error", err)
 		}
 
 		duration := time.Since(startTime).Seconds()
@@ -150,7 +151,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		// Check if current event matches any sequence criteria in the rule
 		if matchesAnySequenceCriteria(rule, *event) && r.evaluateRule(ctx, rule, *event) {
-			slog.Info("Rule '%s' matched for event: %+v", rule.Name, event)
+			slog.Info("Rule matched for event", "rule", rule.Name, "event", event)
 
 			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
 			if !ok {
@@ -161,7 +162,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 
 			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommenedAction(actionVal))
 			if err != nil {
-				slog.Error("Error in publishing the new fatal event: %+v", err)
+				slog.Error("Error in publishing the new fatal event", "error", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
 
 				return false, err
@@ -170,10 +171,10 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 			return true, nil
 		}
 
-		slog.Debug("Rule '%s' didn't meet criteria", rule.Name)
+		slog.Debug("Rule didn't meet criteria", "rule", rule.Name)
 	}
 
-	slog.Info("No rule matched for event: %+v", event)
+	slog.Info("No rule matched for event", "event", event)
 
 	return false, nil
 }
@@ -285,11 +286,11 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 
 func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
-	slog.Debug("Evaluating rule '%s' for event: %+v", rule.Name, healthEventWithStatus)
+	slog.Debug("Evaluating rule for event", "rule", rule.Name, "event", healthEventWithStatus)
 
 	timeWindow, err := time.ParseDuration(rule.TimeWindow)
 	if err != nil {
-		slog.Error("Failed to parse time window: %+v", err)
+		slog.Error("Failed to parse time window", "error", err)
 		totalEventProcessingError.WithLabelValues("parse_time_window_error").Inc()
 
 		return false
@@ -299,13 +300,13 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	facets := bson.D{}
 
 	for i, seq := range rule.Sequence {
-		slog.Debug("Evaluating sequence: %+v", seq)
+		slog.Debug("Evaluating sequence", "sequence", seq)
 
 		facetName := "sequence_" + strconv.Itoa(i)
 
 		matchCriteria, err := parseSequenceString(seq.Criteria, healthEventWithStatus.HealthEvent)
 		if err != nil {
-			slog.Error("Failed to parse sequence criteria: %v", err)
+			slog.Error("Failed to parse sequence criteria", "error", err)
 
 			totalEventProcessingError.WithLabelValues("parse_criteria_error").Inc()
 
@@ -351,7 +352,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 
 	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipeline)
 	if err != nil {
-		slog.Error("Failed to execute aggregation pipeline: %+v", err)
+		slog.Error("Failed to execute aggregation pipeline", "error", err)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
 
 		return false
@@ -359,7 +360,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	defer cursor.Close(ctx)
 
 	if err = cursor.All(ctx, &result); err != nil {
-		slog.Error("Failed to decode cursor: %+v", err)
+		slog.Error("Failed to decode cursor", "error", err)
 		totalEventProcessingError.WithLabelValues("decode_cursor_error").Inc()
 
 		return false
@@ -368,7 +369,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	if len(result) > 0 {
 		// Check if all criteria are met
 		if matched, ok := result[0]["ruleMatched"].(bool); ok && matched {
-			slog.Debug("All sequence conditions met for rule: %s", rule.Name)
+			slog.Debug("All sequence conditions met for rule", "rule", rule.Name)
 			return true
 		}
 	}
