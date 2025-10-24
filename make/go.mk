@@ -17,7 +17,7 @@ lint-test: ## Lint and test Go module (vet + golangci-lint + gotestsum)
 	$(TEST_SETUP_COMMANDS) \
 	$(GO) vet ./... && \
 	$(GOLANGCI_LINT) run --config $(GOLANGCI_CONFIG_PATH) $(LINT_EXTRA_FLAGS) && \
-	$(GOTESTSUM) --junitfile report.xml -- -race $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=./... && \
+	$(GOTESTSUM) --junitfile report.xml -- -race $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/... && \
 	$(GO) tool cover -func coverage.txt && \
 	$(GOCOVER_COBERTURA) < coverage.txt > coverage.xml
 
@@ -40,7 +40,7 @@ lint: ## Run golangci-lint
 test: ## Run tests with coverage
 	@echo "Running tests on $(MODULE_NAME)..."
 	$(TEST_SETUP_COMMANDS) \
-	$(GOTESTSUM) --junitfile report.xml -- -race $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=./...
+	$(GOTESTSUM) --junitfile report.xml -- -race $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/...
 
 .PHONY: coverage
 coverage: test ## Generate coverage reports
