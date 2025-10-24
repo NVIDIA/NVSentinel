@@ -277,6 +277,7 @@ jobs:
           output_dir: .github/outputs
 
       - name: Generate Coverage Report with Fixed PR Number
+        if: steps.changed-files.outputs.any_changed == 'true'
         run: |
           set -e  # Exit on error
 
