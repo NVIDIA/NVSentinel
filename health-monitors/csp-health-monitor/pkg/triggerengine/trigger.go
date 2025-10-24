@@ -97,7 +97,7 @@ func (e *Engine) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			metrics.TriggerPollCycles.Inc() // Increment poll cycle counter
-			slog.Info("Quarantine Trigger Engine polling datastore")
+			slog.Debug("Quarantine Trigger Engine polling datastore")
 
 			startCycle := time.Now()
 

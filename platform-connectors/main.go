@@ -101,13 +101,18 @@ func initializeK8sConnector(
 	return k8sRingBuffer, nil
 }
 
-func initializeMongoDBConnector(ctx context.Context, mongoClientCertMountPath string) {
+func initializeMongoDBConnector(ctx context.Context, mongoClientCertMountPath string) error {
 	ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
-	storeConnector := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, mongoClientCertMountPath)
+	storeConnector, err := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, mongoClientCertMountPath)
+	if err != nil {
+		return fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+	}
 
 	go storeConnector.FetchAndProcessHealthMetric(ctx)
+
+	return nil
 }
 
 func startGRPCServer(socket string) (net.Listener, error) {
@@ -141,7 +146,7 @@ func startMetricsServer(metricsPort string) {
 		http.Handle("/metrics", promhttp.Handler())
 		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
+			_, _ = w.Write([]byte("ok"))
 		})
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+metricsPort, nil)
@@ -188,7 +193,9 @@ func run() error {
 	}
 
 	if config["enableMongoDBStorePlatformConnector"] == True {
-		initializeMongoDBConnector(ctx, *mongoClientCertMountPath)
+		if err := initializeMongoDBConnector(ctx, *mongoClientCertMountPath); err != nil {
+			return fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+		}
 	}
 
 	lis, err := startGRPCServer(*socket)

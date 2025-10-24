@@ -60,30 +60,30 @@ func new(
 
 //nolint:cyclop
 func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	clientCertMountPath string) *MongoDbStoreConnector {
+	clientCertMountPath string) (*MongoDbStoreConnector, error) {
 	mongoDbURI := os.Getenv("MONGODB_URI")
 	if mongoDbURI == "" {
-		slog.Error("MongoDB URI is not provided")
+		return nil, fmt.Errorf("MONGODB_URI is not set")
 	}
 
 	mongoDbName := os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDbName == "" {
-		slog.Error("MongoDB database name is not provided")
+		return nil, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
 	}
 
 	mongoDbCollection := os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoDbCollection == "" {
-		slog.Error("MongoDB collection name is not provided")
+		return nil, fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
 	}
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		slog.Error("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", "error", err)
+		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		slog.Error("invalid CA_CERT_READ_INTERVAL_SECONDS", "error", err)
+		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
 	clientCertPath := clientCertMountPath + "/tls.crt"
@@ -98,18 +98,18 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 	// load CA certificate
 	caCert, err := pollTillCACertIsMountedSuccessfully(mongoCACertPath, totalCertTimeout, intervalCert)
 	if err != nil {
-		slog.Error("Failed to read CA certificate", "error", err)
+		return nil, fmt.Errorf("failed to load CA certificate: %w", err)
 	}
 
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
-		slog.Error("Failed to append CA certificate to pool")
+		return nil, fmt.Errorf("failed to append CA certificate to pool")
 	}
 
 	// Load client certificate and key
 	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
 	if err != nil {
-		slog.Error("Failed to load client certificate and key", "error", err)
+		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
 	tlsConfig := &tls.Config{
@@ -128,17 +128,17 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
-		slog.Error("Error connecting to mongoDB", "error", err.Error())
+		return nil, fmt.Errorf("failed to connect to mongodb: %w", err)
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		slog.Error("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS", "error", err)
+		return nil, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		slog.Error("invalid MONGODB_PING_INTERVAL_SECONDS", "error", err)
+		return nil, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
 	totalTimeout := time.Duration(totalTimeoutSeconds) * time.Second
@@ -146,13 +146,13 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
-		slog.Error("Failed to fetch nodename")
+		return nil, fmt.Errorf("NODE_NAME is not set")
 	}
 
 	// Confirm connectivity to the target database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoDbName, mongoDbCollection, totalTimeout, interval)
 	if err != nil {
-		slog.Error("error connecting to database", "error", err)
+		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
 	// For strong consistency, we need the majority of replicas to ack reads and writes
@@ -164,7 +164,7 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	slog.Info("Successfully initialized mongodb store connector")
 
-	return new(client, ringbuffer, nodeName, collection)
+	return new(client, ringbuffer, nodeName, collection), nil
 }
 
 func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context) {
