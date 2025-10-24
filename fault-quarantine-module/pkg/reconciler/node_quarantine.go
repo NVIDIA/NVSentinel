@@ -110,7 +110,7 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 			"namespace", namespace,
 			"error", err)
 
-		return err
+		return fmt.Errorf("failed to get circuit breaker config map %s/%s: %w", namespace, name, err)
 	}
 
 	cm := &corev1.ConfigMap{
@@ -124,9 +124,11 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 			"name", name,
 			"namespace", namespace,
 			"error", err)
+
+		return fmt.Errorf("failed to create circuit breaker config map %s/%s: %w", namespace, name, err)
 	}
 
-	return err
+	return nil
 }
 
 func (c *FaultQuarantineClient) GetTotalGpuNodes(ctx context.Context) (int, error) {
@@ -163,7 +165,7 @@ func (c *FaultQuarantineClient) ReadCircuitBreakerState(ctx context.Context, nam
 
 	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get circuit breaker config map %s/%s: %w", namespace, name, err)
 	}
 
 	if cm.Data == nil {
@@ -184,7 +186,7 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, na
 				"namespace", namespace,
 				"error", err)
 
-			return err
+			return fmt.Errorf("failed to get circuit breaker config map %s/%s: %w", namespace, name, err)
 		}
 
 		if cm.Data == nil {
@@ -199,9 +201,11 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, na
 				"name", name,
 				"namespace", namespace,
 				"error", err)
+
+			return fmt.Errorf("failed to update circuit breaker config map %s/%s: %w", namespace, name, err)
 		}
 
-		return err
+		return nil
 	})
 }
 
@@ -475,7 +479,7 @@ func (c *FaultQuarantineClient) UpdateNodeAnnotations(
 	return retry.OnError(customBackoff, errors.IsConflict, func() error {
 		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get node %s: %w", nodename, err)
 		}
 
 		// Update annotations
@@ -494,7 +498,7 @@ func (c *FaultQuarantineClient) UpdateNodeAnnotations(
 
 		_, err = c.clientset.CoreV1().Nodes().Update(ctx, node, updateOptions)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to update node %s annotations: %w", nodename, err)
 		}
 
 		slog.Info("Successfully updated annotations for node", "node", nodename)

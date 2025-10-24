@@ -88,7 +88,7 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint)
 			if err != nil {
 				slog.Error("Error initializing XID handler", "error", err.Error())
-				return nil, err
+				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
 			}
 
 			sm.checkToHandlerMap[check.Name] = xidHandler
@@ -98,7 +98,7 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 				nodeName, defaultAgentName, defaultComponentClass, check.Name)
 			if err != nil {
 				slog.Error("Error initializing SXID handler", "error", err.Error())
-				return nil, err
+				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
 			}
 
 			sm.checkToHandlerMap[check.Name] = sxidHandler
@@ -143,7 +143,7 @@ func (sm *SyslogMonitor) Run() error {
 func saveState(stateFilePath string, state syslogMonitorState) error {
 	data, err := json.Marshal(state)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal syslog monitor state: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(stateFilePath), 0755); err != nil {
@@ -302,7 +302,7 @@ func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
 
 	journal, err := sm.openJournal(check)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open journal for check %s: %w", check.Name, err)
 	}
 
 	defer func() {
@@ -312,12 +312,12 @@ func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
 	}()
 
 	if err := sm.configureTagFilters(journal, check); err != nil {
-		return err
+		return fmt.Errorf("failed to configure tag filters for check %s: %w", check.Name, err)
 	}
 
 	err = sm.processJournalEntries(journal, check)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to process journal entries for check %s: %w", check.Name, err)
 	}
 
 	// Save state after successfully processing journal entries
@@ -355,7 +355,7 @@ func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
 		// Only validate path on filesystem for real journal factories
 		if sm.journalFactory.RequiresFileSystemCheck() {
 			if err := sm.validateJournalPath(check); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("journal path validation failed for check %s: %w", check.Name, err)
 			}
 		}
 
@@ -624,8 +624,9 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		if message == "" {
 			// Successfully read an empty message. This entry is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check '%s': Empty message at cursor %s. "+
-				"Stored cursor for next run. Advancing.", check.Name, currentEntryCursor)
+			slog.Info("Check", "name", check.Name,
+				"message", message,
+				"cursor", currentEntryCursor)
 		} else {
 			err = sm.handleSingleLine(check, message)
 			if err != nil {
@@ -633,14 +634,14 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 			}
 			// This entry (matched or not) is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check '%s': Processed entry at cursor %s. Stored cursor for next run. Advancing.",
-				check.Name, currentEntryCursor)
+			slog.Info("Check", "name", check.Name,
+				"message", message,
+				"cursor", currentEntryCursor)
 		}
 
 		advancedNext, advErr := journal.Next()
 		if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
-			slog.Info("Check '%s': Reached end of journal after processing entry with cursor %s. Next run will"+
-				"start after this cursor.", check.Name, currentEntryCursor)
+			slog.Info("Check", "name", check.Name, "cursor", currentEntryCursor)
 			// sm.checkLastCursors[checkName] is already set to currentEntryCursor.
 			break
 		}
@@ -683,7 +684,7 @@ func (sm *SyslogMonitor) getJournalMessage(journal Journal, checkName string) (s
 
 		// If it's not a retryable error, return immediately
 		if !isRetryableJournalError(err) {
-			return "", err
+			return "", fmt.Errorf("non-retryable error reading journal message for check %s: %w", checkName, err)
 		}
 
 		// Log retry attempt
@@ -799,7 +800,7 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 
 		slog.Error("Non-retryable error sending health event", "error", err)
 
-		return false, err
+		return false, fmt.Errorf("non-retryable error sending health event: %w", err)
 	})
 
 	if err != nil {
@@ -835,7 +836,6 @@ func (sm *SyslogMonitor) handleSingleLine(check CheckDefinition, lineToEvaluate 
 	if handler, ok := sm.checkToHandlerMap[check.Name]; ok {
 		healthEvents, err := handler.ProcessLine(lineToEvaluate)
 		if err != nil {
-			slog.Error("error processing line %s: %s", lineToEvaluate, err.Error())
 			return fmt.Errorf("error processing line %s: %w", lineToEvaluate, err)
 		}
 

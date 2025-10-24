@@ -40,7 +40,7 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 	sxidErrorEvent, err := sxidHandler.extractInfoFromNVSwitchErrorMsg(message)
 	if err != nil {
 		slog.Error("error parsing line %s: %v", message, err)
-		return nil, err
+		return nil, fmt.Errorf("failed to extract info from NVSwitch error message: %w", err)
 	}
 
 	if sxidErrorEvent == nil {

@@ -73,7 +73,11 @@ func (m *NodeAnnotationManager) patchNodeWithRetry(ctx context.Context, nodeName
 			slog.Warn("Retryable error patching node %s annotation: %v. Retrying...", nodeName, err)
 		}
 
-		return err
+		if err != nil {
+			return fmt.Errorf("failed to patch node %s: %w", nodeName, err)
+		}
+
+		return nil
 	})
 }
 
@@ -111,7 +115,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 				slog.Warn("Retryable error getting node %s: %v. Retrying...", nodeName, err)
 			}
 
-			return err
+			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
 		}
 
 		node = n

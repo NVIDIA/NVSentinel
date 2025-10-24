@@ -341,7 +341,11 @@ func (l *Labeler) updateNodeLabels(nodeName, expectedDCGMVersion, expectedDriver
 
 		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
 
-		return err
+		if err != nil {
+			return fmt.Errorf("failed to update node %s: %w", nodeName, err)
+		}
+
+		return nil
 	})
 
 	if err != nil {

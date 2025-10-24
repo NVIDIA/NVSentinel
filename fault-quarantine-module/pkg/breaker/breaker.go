@@ -234,7 +234,7 @@ func (b *slidingWindowBreaker) ForceState(ctx context.Context, s State) error {
 
 	if err := b.cfg.WriteStateFn(ctx, s); err != nil {
 		slog.Error("Error writing circuit breaker state", "error", err)
-		return err
+		return fmt.Errorf("failed to write circuit breaker state %s: %w", s, err)
 	}
 
 	slog.Info("ForceState changed", "state", s)
@@ -300,7 +300,7 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 				result = resultError
 				errorType = "context_cancelled"
 
-				return 0, err
+				return 0, fmt.Errorf("context cancelled during GetTotalNodes retry: %w", err)
 			}
 		}
 	}

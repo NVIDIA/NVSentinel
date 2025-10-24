@@ -16,6 +16,7 @@ package publisher
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"log/slog"
@@ -76,12 +77,12 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 		slog.Error("Non-retryable error occurred", "error", err)
 		FatalEventPublishingError.WithLabelValues("non_retryable_error").Inc()
 
-		return false, err
+		return false, fmt.Errorf("non-retryable error publishing health event: %w", err)
 	})
 
 	if err != nil {
 		slog.Error("All retry attempts to send health event failed", "error", err)
-		return err
+		return fmt.Errorf("failed to publish health event after retries: %w", err)
 	}
 
 	return nil

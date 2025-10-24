@@ -126,19 +126,19 @@ func (n *GCPNormalizer) Normalize(
 
 	nodeName, clusterName, err := extractNodeAndCluster(additionalInfo)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to extract node and cluster from additional info: %w", err)
 	}
 
 	event, err := buildBaseEvent(entry, nodeName, clusterName)
 	if err != nil {
 		slog.Debug("GCP Normalizer: skipping entry due to validation", "error", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to build base event: %w", err)
 	}
 
 	auditLog, err := decodeAuditPayload(entry)
 	if err != nil {
 		slog.Error("Unexpected payload type for GCP maintenance log entry", "error", err, "insertID", entry.InsertID)
-		return nil, err
+		return nil, fmt.Errorf("failed to decode audit payload: %w", err)
 	}
 
 	methodName,

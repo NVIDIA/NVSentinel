@@ -219,7 +219,7 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 	err := retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
 		node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
 		}
 
 		currentValue, exists := node.Labels[NVSentinelStateLabelKey]
@@ -235,7 +235,7 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 
 			_, err = manager.clientSet.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to update node %s to remove label: %w", nodeName, err)
 			}
 
 			nodeModified = true
@@ -268,7 +268,7 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 		// Update the node (this happens regardless of validation result)
 		_, err = manager.clientSet.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to update node %s with new label: %w", nodeName, err)
 		}
 
 		nodeModified = true

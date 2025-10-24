@@ -14,7 +14,11 @@
 
 package reconciler
 
-import "github.com/BurntSushi/toml"
+import (
+	"fmt"
+
+	"github.com/BurntSushi/toml"
+)
 
 type SequenceStep struct {
 	Criteria   map[string]interface{} `toml:"criteria"`
@@ -36,7 +40,7 @@ type TomlConfig struct {
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
 	if _, err := toml.DecodeFile(path, &config); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
 	return &config, nil

@@ -118,9 +118,9 @@ func NewReconciler(ctx context.Context, cfg ReconcilerConfig, workSignal chan st
 				if err != nil {
 					slog.Error("Error reading circuit breaker state from config map",
 						"name", cfg.CircuitBreaker.Name, "namespace", cfg.CircuitBreaker.Namespace, "error", err)
-					return breaker.State(""), err
+					return breaker.State(""), fmt.Errorf("failed to read circuit breaker state: %w", err)
 				}
-				return breaker.State(val), err
+				return breaker.State(val), nil
 			},
 			WriteStateFn: func(c context.Context, s breaker.State) error {
 				return cfg.K8sClient.WriteCircuitBreakerState(c, cfg.CircuitBreaker.Name, cfg.CircuitBreaker.Namespace, string(s))
@@ -920,7 +920,7 @@ func (r *Reconciler) updateHealthEventsQuarantineAnnotation(
 
 	if err := r.config.K8sClient.UpdateNodeAnnotations(ctx, nodeName, annotationsToUpdate); err != nil {
 		slog.Error("Error updating node annotations for multi-event", "error", err)
-		return err
+		return fmt.Errorf("failed to update node annotations for multi-event on %s: %w", nodeName, err)
 	}
 
 	slog.Info("Updated health events quarantine annotation for node %s - %d checks tracked",
@@ -1003,7 +1003,7 @@ func (r *Reconciler) prepareUncordonParams(
 		if err != nil {
 			slog.Error("Error unmarshalling taints annotation",
 				"annotation", quarantineAnnotationEventTaintsAppliedStr, "event", event, "error", err)
-			return nil, nil, false, nil, err
+			return nil, nil, false, nil, fmt.Errorf("failed to unmarshal taints annotation: %w", err)
 		}
 	}
 
@@ -1123,7 +1123,7 @@ func (r *Reconciler) fetchAndCacheQuarantineAnnotations(ctx context.Context,
 	nodeName string) (map[string]string, error) {
 	allAnnotations, err := r.config.K8sClient.GetNodeAnnotations(ctx, nodeName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get node annotations for %s: %w", nodeName, err)
 	}
 
 	// Extract and store only quarantine annotations in cache
@@ -1339,7 +1339,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
 	if err != nil {
 		slog.Error("Failed to get annotations for manually uncordoned node %s: %v", nodeName, err)
-		return err
+		return fmt.Errorf("failed to get annotations for manually uncordoned node %s: %w", nodeName, err)
 	}
 
 	// Check which FQ annotations exist and need to be removed
@@ -1385,7 +1385,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		slog.Error("Failed to clean up annotations for manually uncordoned node %s: %v", nodeName, err)
 		processingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()
 
-		return err
+		return fmt.Errorf("failed to clean up annotations for manually uncordoned node %s: %w", nodeName, err)
 	}
 
 	// Add the new annotation
@@ -1398,7 +1398,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		nil, // No labels to add
 	); err != nil {
 		slog.Error("Failed to add manual uncordon annotation to node %s: %v", nodeName, err)
-		return err
+		return fmt.Errorf("failed to add manual uncordon annotation to node %s: %w", nodeName, err)
 	}
 
 	currentQuarantinedNodes.WithLabelValues(nodeName).Dec()

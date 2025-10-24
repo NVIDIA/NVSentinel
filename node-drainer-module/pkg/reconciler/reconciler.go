@@ -182,7 +182,7 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
 
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
 		nodeName, action.Namespaces, timeoutMinutes, &healthEvent); err != nil {
-		return err
+		return fmt.Errorf("failed timeout eviction for node %s: %w", nodeName, err)
 	}
 
 	return fmt.Errorf("timeout eviction initiated, requeuing for status verification")

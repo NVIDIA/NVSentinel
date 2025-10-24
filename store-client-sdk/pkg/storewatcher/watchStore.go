@@ -168,7 +168,7 @@ func NewChangeStreamWatcher(
 	// Open the change stream with appropriate read preference based on resume token presence
 	cs, err := openChangeStream(ctx, client, mongoConfig, pipeline, opts, hasResumeToken)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open change stream: %w", err)
 	}
 
 	watcher := &ChangeStreamWatcher{
@@ -391,7 +391,11 @@ func (w *ChangeStreamWatcher) Close(ctx context.Context) error {
 		slog.Info("ChangeStreamWatcher event channel closed", "client", w.clientName)
 	})
 
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to close change stream for client %s: %w", w.clientName, err)
+	}
+
+	return nil
 }
 
 func confirmConnectivityWithDBAndCollection(ctx context.Context, client *mongo.Client, mongoDbName string,

@@ -22,10 +22,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/thedatashed/xlsxreader"
-
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
+
+	"github.com/thedatashed/xlsxreader"
 )
 
 // NVIDIA XID Error Catalog - Embedded Excel File
@@ -105,7 +105,7 @@ func LoadErrorResolutionMap() (map[int]types.ErrorResolution, error) {
 
 	errorResolutionMap, err = processXidsSheet(xl, targetSheet, errorResolutionMap)
 	if err != nil {
-		return errorResolutionMap, err
+		return errorResolutionMap, fmt.Errorf("failed to process Xids sheet: %w", err)
 	}
 
 	return errorResolutionMap, nil

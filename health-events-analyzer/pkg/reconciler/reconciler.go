@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -151,7 +152,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		// Check if current event matches any sequence criteria in the rule
 		if matchesAnySequenceCriteria(rule, *event) && r.evaluateRule(ctx, rule, *event) {
-			slog.Info("Rule matched for event", "rule", rule.Name, "event", event)
+			slog.Debug("Rule matched for event", "rule", rule.Name, "event", event)
 
 			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
 			if !ok {
@@ -165,7 +166,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 				slog.Error("Error in publishing the new fatal event", "error", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
 
-				return false, err
+				return false, fmt.Errorf("failed to publish fatal event: %w", err)
 			}
 
 			return true, nil

@@ -16,9 +16,8 @@ package event
 
 import (
 	"fmt"
-	"time"
-
 	"log/slog"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/health/types"
@@ -85,7 +84,7 @@ func (n *AWSNormalizer) Normalize(
 ) (*model.MaintenanceEvent, error) {
 	event, meta, err := validateAWSNormalizerInput(rawEvent, additionalInfo...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("AWS normalizer input validation failed: %w", err)
 	}
 
 	slog.Debug("Normalizing AWS event",

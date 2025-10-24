@@ -77,7 +77,7 @@ func (d *Duration) UnmarshalTOML(text any) error {
 func LoadTomlConfig(path string) (*TomlConfig, error) {
 	var config TomlConfig
 	if _, err := toml.DecodeFile(path, &config); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode TOML config from %s: %w", path, err)
 	}
 
 	return validateAndSetDefaults(&config)

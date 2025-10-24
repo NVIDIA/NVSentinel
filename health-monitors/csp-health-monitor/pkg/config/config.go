@@ -82,12 +82,12 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	// Validate general configuration (loglevel, clusterName, intervals)
 	if err := validateGeneralConfig(&cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("general config validation failed: %w", err)
 	}
 
 	// Validate CSP-specific configuration (polling intervals, single CSP)
 	if err := validateCSPConfig(&cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("CSP config validation failed: %w", err)
 	}
 
 	return &cfg, nil
