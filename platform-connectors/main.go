@@ -53,8 +53,11 @@ var (
 )
 
 func initLogger() {
-	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+
+	var level slog.Level
+
+	switch logLevel {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn", "warning":
@@ -85,8 +88,11 @@ func main() {
 
 func run() error {
 	socket := flag.String("socket", "", "unix socket path")
+
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
+
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
 	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
@@ -101,6 +107,7 @@ func run() error {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
+
 	defer cancel() // Ensure cancel is called on all exit paths
 
 	data, err := os.ReadFile(*configFilePath)
@@ -152,7 +159,7 @@ func run() error {
 
 	err = os.Remove(*socket)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove existing socket with error %s", err)
+		return fmt.Errorf("failed to remove existing socket: %w", err)
 	}
 
 	lis, err := net.Listen("unix", *socket)

@@ -17,12 +17,13 @@ package server
 import (
 	"context"
 
+	"log/slog"
+
 	"github.com/golang/protobuf/ptypes/empty"
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"log/slog"
 )
 
 /*
@@ -47,7 +48,7 @@ type PlatformConnectorServer struct {
 }
 
 func (p *PlatformConnectorServer) HealthEventOccuredV1(ctx context.Context, he *pb.HealthEvents) (*empty.Empty, error) {
-	slog.Info("Health events %+v received", he)
+	slog.Info("Health events received", "events", he)
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 

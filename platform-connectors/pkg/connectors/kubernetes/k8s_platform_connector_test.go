@@ -24,8 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"log/slog"
+
+	"github.com/stretchr/testify/require"
 
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -234,7 +235,7 @@ func TestK8sNodeConditions(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create  node with err %s", err)
+		slog.Error("Failed to create node", "error", err)
 		os.Exit(1)
 	}
 	for testCase, healthEvent := range healthEventsList {
@@ -332,7 +333,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create  node with err %s", err)
+		slog.Error("Failed to create node", "error", err)
 		os.Exit(1)
 	}
 

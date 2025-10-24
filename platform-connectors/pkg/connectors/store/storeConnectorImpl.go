@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"time"
 
+	"log/slog"
+
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"go.mongodb.org/mongo-driver/bson"
@@ -31,7 +33,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"log/slog"
 )
 
 type MongoDbStoreConnector struct {
@@ -77,12 +78,12 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		slog.Error("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		slog.Error("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", "error", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		slog.Error("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		slog.Error("invalid CA_CERT_READ_INTERVAL_SECONDS", "error", err)
 	}
 
 	clientCertPath := clientCertMountPath + "/tls.crt"
@@ -97,7 +98,7 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 	// load CA certificate
 	caCert, err := pollTillCACertIsMountedSuccessfully(mongoCACertPath, totalCertTimeout, intervalCert)
 	if err != nil {
-		slog.Error("Failed to read CA certificate: %v", err)
+		slog.Error("Failed to read CA certificate", "error", err)
 	}
 
 	caCertPool := x509.NewCertPool()
@@ -108,7 +109,7 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 	// Load client certificate and key
 	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
 	if err != nil {
-		slog.Error("Failed to load client certificate and key: %v", err)
+		slog.Error("Failed to load client certificate and key", "error", err)
 	}
 
 	tlsConfig := &tls.Config{
@@ -127,17 +128,17 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
-		slog.Error("Error connecting to mongoDB: %s", err.Error())
+		slog.Error("Error connecting to mongoDB", "error", err.Error())
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		slog.Error("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		slog.Error("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS", "error", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		slog.Error("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		slog.Error("invalid MONGODB_PING_INTERVAL_SECONDS", "error", err)
 	}
 
 	totalTimeout := time.Duration(totalTimeoutSeconds) * time.Second
@@ -151,7 +152,7 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 	// Confirm connectivity to the target database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoDbName, mongoDbCollection, totalTimeout, interval)
 	if err != nil {
-		slog.Error("error connecting to database: %v", err)
+		slog.Error("error connecting to database", "error", err)
 	}
 
 	// For strong consistency, we need the majority of replicas to ack reads and writes
@@ -161,7 +162,7 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 	collection := client.Database(mongoDbName).Collection(mongoDbCollection, collOpts)
 
-	slog.Info("Successfully initialized mongodb store connector.")
+	slog.Info("Successfully initialized mongodb store connector")
 
 	return new(client, ringbuffer, nodeName, collection)
 }
@@ -171,14 +172,14 @@ func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context)
 	defer func() {
 		err := r.client.Disconnect(ctx)
 		if err != nil {
-			slog.Error("failed to close mongodb connection with error: %+v ", err)
+			slog.Error("failed to close mongodb connection", "error", err)
 		}
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context canceled. Exiting health metric processing loop.")
+			slog.Info("Context canceled, exiting health metric processing loop")
 			return
 		default:
 			healthEvents := r.ringBuffer.Dequeue()
@@ -188,7 +189,7 @@ func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context)
 
 			err := r.insertHealthEvents(ctx, healthEvents)
 			if err != nil {
-				slog.Error("Error inserting health events: %v", err)
+				slog.Error("Error inserting health events", "error", err)
 				r.ringBuffer.HealthMetricEleProcessingFailed(healthEvents)
 			} else {
 				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
@@ -241,7 +242,7 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 
 	var err error
 
-	slog.Info("Trying to read CA cert from %s.", certPath)
+	slog.Info("Trying to read CA cert", "path", certPath)
 
 	for {
 		if time.Now().After(timeout) {
@@ -252,10 +253,10 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 		// load CA certificate
 		caCert, err = os.ReadFile(certPath)
 		if err == nil {
-			slog.Info("Successfully read CA cert.")
+			slog.Info("Successfully read CA cert")
 			return caCert, nil
 		} else {
-			slog.Info("Failed to read CA certificate with error: %v, retrying...", err)
+			slog.Info("Failed to read CA certificate, retrying", "error", err)
 		}
 
 		time.Sleep(pingInterval)
@@ -269,7 +270,7 @@ func confirmConnectivityWithDBAndCollection(ctx context.Context, client *mongo.C
 
 	var err error
 
-	slog.Info("Trying to ping database %s to confirm connectivity.", mongoDbName)
+	slog.Info("Trying to ping database to confirm connectivity", "database", mongoDbName)
 
 	for {
 		if time.Now().After(timeout) {
@@ -280,7 +281,7 @@ func confirmConnectivityWithDBAndCollection(ctx context.Context, client *mongo.C
 
 		err = client.Database(mongoDbName).RunCommand(ctx, bson.D{{Key: "ping", Value: 1}}).Decode(&result)
 		if err == nil {
-			slog.Info("Successfully pinged database %s to confirm connectivity.", mongoDbName)
+			slog.Info("Successfully pinged database to confirm connectivity", "database", mongoDbName)
 			break
 		}
 
