@@ -18,8 +18,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/BurntSushi/toml"
 	"log/slog"
+
+	"github.com/BurntSushi/toml"
 )
 
 const (
@@ -95,37 +96,33 @@ func LoadConfig(filePath string) (*Config, error) {
 // applyDefaults assigns default values to zero-value fields.
 func applyDefaults(cfg *Config) {
 	if cfg.MaintenanceEventPollIntervalSeconds == 0 {
-		slog.Info(
-			"Configuration: 'maintenanceEventPollIntervalSeconds' not set, defaulting to %d",
-			DefaultMaintenanceEventPollIntervalSeconds,
-		)
+		slog.Info("Configuration not set, applying default",
+			"setting", "maintenanceEventPollIntervalSeconds",
+			"default", DefaultMaintenanceEventPollIntervalSeconds)
 
 		cfg.MaintenanceEventPollIntervalSeconds = DefaultMaintenanceEventPollIntervalSeconds
 	}
 
 	if cfg.TriggerQuarantineWorkflowTimeLimitMinutes == 0 {
-		slog.Info(
-			"Configuration: 'triggerQuarantineWorkflowTimeLimitMinutes' not set, defaulting to %d",
-			DefaultTriggerQuarantineWorkflowTimeLimitMinutes,
-		)
+		slog.Info("Configuration not set, applying default",
+			"setting", "triggerQuarantineWorkflowTimeLimitMinutes",
+			"default", DefaultTriggerQuarantineWorkflowTimeLimitMinutes)
 
 		cfg.TriggerQuarantineWorkflowTimeLimitMinutes = DefaultTriggerQuarantineWorkflowTimeLimitMinutes
 	}
 
 	if cfg.PostMaintenanceHealthyDelayMinutes == 0 {
-		slog.Info(
-			"Configuration: 'postMaintenanceHealthyDelayMinutes' not set or is 0, defaulting to %d",
-			DefaultPostMaintenanceHealthyDelayMinutes,
-		)
+		slog.Info("Configuration not set, applying default",
+			"setting", "postMaintenanceHealthyDelayMinutes",
+			"default", DefaultPostMaintenanceHealthyDelayMinutes)
 
 		cfg.PostMaintenanceHealthyDelayMinutes = DefaultPostMaintenanceHealthyDelayMinutes
 	}
 
 	if cfg.NodeReadinessTimeoutMinutes == 0 {
-		slog.Info(
-			"Configuration: 'nodeReadinessTimeoutMinutes' not set or is 0, defaulting to %d",
-			DefaultNodeReadinessTimeoutMinutes,
-		)
+		slog.Info("Configuration not set, applying default",
+			"setting", "nodeReadinessTimeoutMinutes",
+			"default", DefaultNodeReadinessTimeoutMinutes)
 
 		cfg.NodeReadinessTimeoutMinutes = DefaultNodeReadinessTimeoutMinutes
 	}
