@@ -69,9 +69,4 @@ docker-publish: setup-buildx ## Build and publish Docker image to registry
 		-f $(MODULE_PATH)/Dockerfile \
 		.
 
-.PHONY: help
-help: ## Display available make targets
-	@echo "Available Docker targets for $(MODULE_NAME):"
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort -u | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-25s\033[0m %s\n", $$1, $$2}'
-
 endif

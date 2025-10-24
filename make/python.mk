@@ -64,9 +64,4 @@ clean: ## Clean build artifacts and test outputs
 	rm -f coverage.txt coverage.xml report.xml code-quality-report.json $(CLEAN_EXTRA_FILES)
 	rm -rf dist/ build/ *.egg-info
 
-.PHONY: help
-help: ## Display available make targets
-	@echo "Available targets for $(MODULE_NAME) (Python):"
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort -u | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
-
 endif
