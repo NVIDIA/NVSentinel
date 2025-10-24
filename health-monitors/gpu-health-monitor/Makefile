@@ -70,14 +70,28 @@ ifneq ($(UNAME_S),Linux)
 	@echo "⚠️  Skipping GPU health monitor tests on $(UNAME_S)"
 	@echo "⚠️  To run full test suite, use a Linux system with NVIDIA GPUs"
 	@mkdir -p $(CURDIR)
-	@touch report.xml coverage.txt coverage.xml
+	@touch report.xml
+	@echo '<?xml version="1.0" encoding="UTF-8"?><coverage version="0.0" timestamp="0"><packages/></coverage>' > coverage.xml
+	@echo '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" tests="0" skipped="0" failures="0" errors="0" time="0" /></testsuites>' > report.xml
 else
 	@echo "Running tests on $(MODULE_NAME)..."
 	$(PYTHON_TEST_SETUP) \
 	poetry run coverage run --source=$(MODULE_NAME) -m pytest -vv --junitxml=report.xml
 endif
 
-# Override lint-test to use the modified test target
+# Override coverage target to skip on non-Linux systems
+.PHONY: coverage
+coverage: test ## Generate coverage reports (skips on non-Linux)
+ifneq ($(UNAME_S),Linux)
+	@echo "⚠️  Skipping coverage report generation on $(UNAME_S)"
+	@echo "✓ Empty coverage files created for CI compatibility"
+else
+	@echo "Generating coverage reports for $(MODULE_NAME)..."
+	poetry run coverage report
+	poetry run coverage xml || true
+endif
+
+# Override lint-test to use the modified test and coverage targets
 .PHONY: lint-test
 lint-test: setup lint test coverage ## Run linting and tests (full pipeline)
 ifneq ($(UNAME_S),Linux)
