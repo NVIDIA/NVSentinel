@@ -78,6 +78,10 @@ func run() error {
 
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
+		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
 		slog.Info("Starting metrics server on port", "port", *metricsPort)
 
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts

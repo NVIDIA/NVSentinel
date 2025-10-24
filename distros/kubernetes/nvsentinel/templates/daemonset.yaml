@@ -52,17 +52,17 @@ spec:
               containerPort: {{ .Values.global.metricsPort }}
           livenessProbe:
             httpGet:
-              path: /metrics
-              port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 3
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /metrics
-              port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 10
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
