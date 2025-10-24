@@ -15,13 +15,13 @@
 package evaluator
 
 import (
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 )
 
 // Interfaces and base structs
 type RuleSetEvaluatorIface interface {
-	Evaluate(healthEvent *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error)
+	Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error)
 	GetName() string
 	GetVersion() string
 	GetPriority() int

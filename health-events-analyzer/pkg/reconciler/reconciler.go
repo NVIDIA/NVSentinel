@@ -22,10 +22,10 @@ import (
 	"strings"
 	"time"
 
+	platform_connectors "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platform_connectors "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 

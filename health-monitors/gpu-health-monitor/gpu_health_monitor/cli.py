@@ -20,7 +20,7 @@ from prometheus_client import start_http_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
-from .platform_connector.protos import platformconnector_pb2
+from gpu_health_monitor.protos import health_event_pb2
 
 
 def _init_event_processor(

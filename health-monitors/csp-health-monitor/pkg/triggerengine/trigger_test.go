@@ -34,7 +34,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // MockDatastore is a mock implementation of the datastore.Store interface

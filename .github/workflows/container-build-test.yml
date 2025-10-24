@@ -119,6 +119,7 @@ jobs:
           protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
           protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
+          black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
       - name: Build container for ${{ matrix.component }}

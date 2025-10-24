@@ -20,6 +20,7 @@ class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESTART_BM: _ClassVar[RecommenedAction]
     REPLACE_VM: _ClassVar[RecommenedAction]
     UNKNOWN: _ClassVar[RecommenedAction]
+
 NONE: RecommenedAction
 COMPONENT_RESET: RecommenedAction
 CONTACT_SUPPORT: RecommenedAction
@@ -34,7 +35,9 @@ class HealthEvents(_message.Message):
     EVENTS_FIELD_NUMBER: _ClassVar[int]
     version: int
     events: _containers.RepeatedCompositeFieldContainer[HealthEvent]
-    def __init__(self, version: _Optional[int] = ..., events: _Optional[_Iterable[_Union[HealthEvent, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, version: _Optional[int] = ..., events: _Optional[_Iterable[_Union[HealthEvent, _Mapping]]] = ...
+    ) -> None: ...
 
 class Entity(_message.Message):
     __slots__ = ("entityType", "entityValue")
@@ -45,7 +48,24 @@ class Entity(_message.Message):
     def __init__(self, entityType: _Optional[str] = ..., entityValue: _Optional[str] = ...) -> None: ...
 
 class HealthEvent(_message.Message):
-    __slots__ = ("version", "agent", "componentClass", "checkName", "isFatal", "isHealthy", "message", "recommendedAction", "errorCode", "entitiesImpacted", "metadata", "generatedTimestamp", "nodeName", "quarantineOverrides", "drainOverrides")
+    __slots__ = (
+        "version",
+        "agent",
+        "componentClass",
+        "checkName",
+        "isFatal",
+        "isHealthy",
+        "message",
+        "recommendedAction",
+        "errorCode",
+        "entitiesImpacted",
+        "metadata",
+        "generatedTimestamp",
+        "nodeName",
+        "quarantineOverrides",
+        "drainOverrides",
+    )
+
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -53,6 +73,7 @@ class HealthEvent(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+
     VERSION_FIELD_NUMBER: _ClassVar[int]
     AGENT_FIELD_NUMBER: _ClassVar[int]
     COMPONENTCLASS_FIELD_NUMBER: _ClassVar[int]
@@ -83,7 +104,24 @@ class HealthEvent(_message.Message):
     nodeName: str
     quarantineOverrides: BehaviourOverrides
     drainOverrides: BehaviourOverrides
-    def __init__(self, version: _Optional[int] = ..., agent: _Optional[str] = ..., componentClass: _Optional[str] = ..., checkName: _Optional[str] = ..., isFatal: bool = ..., isHealthy: bool = ..., message: _Optional[str] = ..., recommendedAction: _Optional[_Union[RecommenedAction, str]] = ..., errorCode: _Optional[_Iterable[str]] = ..., entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ..., generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., nodeName: _Optional[str] = ..., quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ..., drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self,
+        version: _Optional[int] = ...,
+        agent: _Optional[str] = ...,
+        componentClass: _Optional[str] = ...,
+        checkName: _Optional[str] = ...,
+        isFatal: bool = ...,
+        isHealthy: bool = ...,
+        message: _Optional[str] = ...,
+        recommendedAction: _Optional[_Union[RecommenedAction, str]] = ...,
+        errorCode: _Optional[_Iterable[str]] = ...,
+        entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ...,
+        metadata: _Optional[_Mapping[str, str]] = ...,
+        generatedTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...,
+        nodeName: _Optional[str] = ...,
+        quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
+        drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
+    ) -> None: ...
 
 class BehaviourOverrides(_message.Message):
     __slots__ = ("force", "skip")

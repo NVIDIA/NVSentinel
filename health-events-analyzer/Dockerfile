@@ -23,15 +23,21 @@ FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
 
 WORKDIR /go/src
 
-COPY platform-connectors/ ./platform-connectors/
-COPY store-client-sdk/ ./store-client-sdk/
+# Copy go.mod and go.sum files for all dependencies first
+COPY data-models/go.mod data-models/go.sum ./data-models/
+COPY platform-connectors/go.mod platform-connectors/go.sum ./platform-connectors/
+COPY store-client-sdk/go.mod store-client-sdk/go.sum ./store-client-sdk/
 COPY health-events-analyzer/go.mod health-events-analyzer/go.sum ./health-events-analyzer/
 
 WORKDIR /go/src/health-events-analyzer
 
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download 
+    go mod download
 
+# Copy the source code after go mod download
+COPY data-models/ ../data-models/
+COPY platform-connectors/ ../platform-connectors/
+COPY store-client-sdk/ ../store-client-sdk/
 COPY health-events-analyzer/ .
 
 RUN --mount=type=cache,target=/go/pkg/mod \

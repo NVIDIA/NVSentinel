@@ -16,7 +16,11 @@ import dataclasses
 import logging as log
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from threading import Event
-from .protos import platformconnector_pb2, platformconnector_pb2_grpc
+
+from gpu_health_monitor.protos import (
+    health_event_pb2 as platformconnector_pb2,
+    health_event_pb2_grpc as platformconnector_pb2_grpc,
+)
 from google.protobuf.timestamp_pb2 import Timestamp
 import grpc
 from . import metrics

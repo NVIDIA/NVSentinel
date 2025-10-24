@@ -17,8 +17,8 @@ package reconciler
 import (
 	"context"
 
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
-	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 )
 
 type FaultRemediationClientInterface interface {

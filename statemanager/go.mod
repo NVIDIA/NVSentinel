@@ -73,7 +73,7 @@ require (
 )
 
 // Local replacements for internal modules
-replace github.com/nvidia/nvsentinel/statemanager => ../statemanager
+replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
 replace github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor => ../health-monitors/csp-health-monitor
 

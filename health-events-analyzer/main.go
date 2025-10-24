@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-
 	"log/slog"
 
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"

@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
 	"log/slog"
 
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"

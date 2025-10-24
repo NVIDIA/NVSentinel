@@ -35,7 +35,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	"google.golang.org/grpc"

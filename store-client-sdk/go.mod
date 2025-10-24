@@ -30,6 +30,8 @@ require (
 )
 
 // Local replacements for internal modules
+replace github.com/nvidia/nvsentinel/data-models => ../data-models
+
 replace github.com/nvidia/nvsentinel/statemanager => ../statemanager
 
 replace github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor => ../health-monitors/csp-health-monitor
@@ -37,8 +39,6 @@ replace github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor => ../he
 replace github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor => ../health-monitors/syslog-health-monitor
 
 replace github.com/nvidia/nvsentinel/platform-connectors => ../platform-connectors
-
-replace github.com/nvidia/nvsentinel/store-client-sdk => ../store-client-sdk
 
 replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
 

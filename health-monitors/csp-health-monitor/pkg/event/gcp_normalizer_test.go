@@ -21,7 +21,7 @@ import (
 
 	"cloud.google.com/go/logging"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/genproto/googleapis/cloud/audit"
 	"google.golang.org/genproto/googleapis/rpc/status"

@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/breaker"
@@ -34,7 +33,6 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
@@ -775,7 +773,7 @@ func (r *Reconciler) handleEvent(
 
 func (r *Reconciler) handleQuarantinedNode(
 	ctx context.Context,
-	event *platformconnectorprotos.HealthEvent,
+	event *protos.HealthEvent,
 ) bool {
 	// Get and validate health events quarantine annotations
 	healthEventsAnnotationMap, annotations, err := r.getAndValidateHealthEventsQuarantineAnnotations(ctx, event)
@@ -859,7 +857,7 @@ func (r *Reconciler) handleQuarantinedNode(
 
 func (r *Reconciler) getAndValidateHealthEventsQuarantineAnnotations(
 	ctx context.Context,
-	event *platformconnectorprotos.HealthEvent,
+	event *protos.HealthEvent,
 ) (*healthEventsAnnotation.HealthEventsAnnotationMap, map[string]string, error) {
 	annotations, err := r.getNodeQuarantineAnnotations(ctx, event.NodeName)
 	if err != nil {
@@ -881,7 +879,7 @@ func (r *Reconciler) getAndValidateHealthEventsQuarantineAnnotations(
 	err = json.Unmarshal([]byte(quarantineAnnotationStr), &healthEventsMap)
 	if err != nil {
 		// Fallback: try to unmarshal as single HealthEvent for backward compatibility
-		var singleHealthEvent platformconnectorprotos.HealthEvent
+		var singleHealthEvent protos.HealthEvent
 
 		if err2 := json.Unmarshal([]byte(quarantineAnnotationStr), &singleHealthEvent); err2 == nil {
 			// Convert single event to health events structure
@@ -934,7 +932,7 @@ func (r *Reconciler) updateHealthEventsQuarantineAnnotation(
 
 func (r *Reconciler) performUncordon(
 	ctx context.Context,
-	event *platformconnectorprotos.HealthEvent,
+	event *protos.HealthEvent,
 	annotations map[string]string,
 ) bool {
 	slog.Info("All entities recovered for check %s on node %s - proceeding with uncordon",
@@ -982,7 +980,7 @@ func (r *Reconciler) performUncordon(
 
 // prepareUncordonParams prepares parameters for uncordoning a node
 func (r *Reconciler) prepareUncordonParams(
-	event *platformconnectorprotos.HealthEvent,
+	event *protos.HealthEvent,
 	annotations map[string]string,
 ) ([]config.Taint, []string, bool, map[string]string, error) {
 	var (

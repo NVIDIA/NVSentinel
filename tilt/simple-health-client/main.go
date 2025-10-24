@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	pb "simple-health-client/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func main() {

@@ -9,8 +9,10 @@ readme = "README.md"
 python = "^3.10"
 click = "^8.1.7"
 grpcio = "^1.74.0"
-protobuf = "^6.31.1"
 prometheus-client = "^0.20.0"
+grpcio-tools = "1.75.1"
+protobuf = ">=6.31.1,<7.0.0"
+googleapis-common-protos = ">=1.56.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"

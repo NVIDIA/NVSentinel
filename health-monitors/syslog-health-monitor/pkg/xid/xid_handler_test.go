@@ -18,7 +18,7 @@ import (
 	"errors"
 	"testing"
 
-	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

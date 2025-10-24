@@ -16,9 +16,9 @@ package evaluator
 
 import (
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 )
 
 type AllRuleSetEvaluator struct {
@@ -27,7 +27,7 @@ type AllRuleSetEvaluator struct {
 }
 
 func (allEval *AllRuleSetEvaluator) Evaluate(
-	healthEvent *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
+	healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	var errs *multierror.Error
 
 	for _, evaluator := range allEval.evaluators {

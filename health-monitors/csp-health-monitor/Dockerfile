@@ -24,6 +24,7 @@ FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
 WORKDIR /go/src/nvsentinel
 
 # Copy the go.mod files for dependencies first
+COPY data-models/go.mod data-models/go.sum data-models/
 COPY platform-connectors/go.mod platform-connectors/go.sum platform-connectors/
 COPY store-client-sdk/go.mod store-client-sdk/go.sum store-client-sdk/
 COPY health-monitors/csp-health-monitor/go.mod health-monitors/csp-health-monitor/go.sum health-monitors/csp-health-monitor/
@@ -33,6 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     cd health-monitors/csp-health-monitor && go mod download
 
 # Copy the source code
+COPY data-models/ data-models/
 COPY platform-connectors/ platform-connectors/
 COPY store-client-sdk/ store-client-sdk/
 COPY health-monitors/csp-health-monitor/ health-monitors/csp-health-monitor/

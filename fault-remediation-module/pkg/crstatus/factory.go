@@ -17,8 +17,8 @@ package crstatus
 import (
 	"fmt"
 
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
-	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 )

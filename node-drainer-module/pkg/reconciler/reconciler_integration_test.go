@@ -25,7 +25,7 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/reconciler"
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platform_connectors "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"github.com/stretchr/testify/assert"
@@ -621,13 +621,13 @@ type healthEventOptions struct {
 }
 
 func createHealthEvent(opts healthEventOptions) bson.M {
-	healthEvent := &platform_connectors.HealthEvent{
+	healthEvent := &protos.HealthEvent{
 		NodeName:  opts.nodeName,
 		CheckName: "test-check",
 	}
 
 	if opts.drainForce {
-		healthEvent.DrainOverrides = &platform_connectors.BehaviourOverrides{Force: true}
+		healthEvent.DrainOverrides = &protos.BehaviourOverrides{Force: true}
 	}
 
 	return bson.M{

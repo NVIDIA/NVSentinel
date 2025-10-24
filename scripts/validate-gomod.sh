@@ -186,7 +186,7 @@ validate_gomod() {
 
     # Get all required dependencies
     local required_deps
-    if ! required_deps=$(go list -m -f '{{.Path}}' all 2>/dev/null | grep "^gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/" || true); then
+    if ! required_deps=$(go list -m -f '{{.Path}}' all 2>/dev/null | grep "^github.com/nvidia/nvsentinel/" || true); then
         print_error "  ✗ Failed to list module dependencies"
         issues_found=$((issues_found + 1))
         TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
@@ -213,6 +213,25 @@ validate_gomod() {
         in_replace && /^[[:space:]]*[^[:space:]]/ { print $1 }
     ' || true)
 
+    # Check for circular self-references in replace directives
+    local current_module
+    if ! current_module=$(go list -m 2>/dev/null); then
+        print_error "  ✗ Failed to get current module name"
+        issues_found=$((issues_found + 1))
+        TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
+    else
+        # Check if current module replaces itself
+        if echo "$replace_directives" | grep -q "^$current_module$"; then
+            print_error "  ✗ Circular self-reference detected: $current_module replaces itself"
+            print_error "    Remove: replace $current_module => ..."
+            print_error "    Modules should not replace themselves"
+            issues_found=$((issues_found + 1))
+            TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
+        else
+            print_info "  ✓ No circular self-references found"
+        fi
+    fi
+
     # Check each required dependency
     while IFS= read -r dep; do
         [[ -z "$dep" ]] && continue
@@ -230,7 +249,7 @@ validate_gomod() {
         fi
 
         # Check if this dependency exists as a local module
-        local dep_path="${dep#gitlab-master.nvidia.com/dgxcloud/mk8s/k8s-addons/nvsentinel/}"
+        local dep_path="${dep#github.com/nvidia/nvsentinel/}"
         local local_dep_dir="$REPO_ROOT/$dep_path"
 
         if [[ -d "$local_dep_dir" && -f "$local_dep_dir/go.mod" ]]; then
@@ -286,6 +305,26 @@ validate_gomod() {
                 print_error "    Add: replace $dep => $expected_relative_path"
                 issues_found=$((issues_found + 1))
                 TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
+            fi
+        fi
+
+        # Check version for local dependencies - should be exactly v0.0.0
+        if [[ -d "$local_dep_dir" && -f "$local_dep_dir/go.mod" ]]; then
+            local current_version
+            current_version=$(go list -m -f '{{.Version}}' "$dep" 2>/dev/null || true)
+            if [[ -n "$current_version" ]]; then
+                if [[ "$current_version" == "v0.0.0" ]]; then
+                    print_info "  ✓ $dep version: $current_version"
+                else
+                    print_error "  ✗ $dep has incorrect version:"
+                    print_error "    Current: $current_version"
+                    print_error "    Expected: v0.0.0"
+                    print_error "    Local modules should use v0.0.0 (no timestamp)"
+                    issues_found=$((issues_found + 1))
+                    TOTAL_ISSUES=$((TOTAL_ISSUES + 1))
+                fi
+            else
+                print_warning "  ⚠ Cannot determine version for $dep"
             fi
         fi
     done <<< "$required_deps"
@@ -349,7 +388,9 @@ main() {
 
     if [[ $TOTAL_ISSUES -eq 0 && $TOTAL_TIDY_ISSUES -eq 0 ]]; then
         print_success "All go.mod files are valid!"
+        print_info "✓ No circular self-references found"
         print_info "✓ All local module dependencies have proper replace directives"
+        print_info "✓ All local module dependencies use v0.0.0 version"
         print_info "✓ All modules are properly tidied"
     else
         print_error "Validation failed!"
@@ -362,13 +403,19 @@ main() {
         fi
         print_info ""
         print_info "To fix these issues:"
+        local step=1
         if [[ $TOTAL_ISSUES -gt 0 ]]; then
-            print_info "1. Add the missing replace directives shown above to the respective go.mod files"
+            print_info "$step. Fix replace directives and version issues shown above in the respective go.mod files"
+            print_info "   - Remove any circular self-references (modules replacing themselves)"
+            print_info "   - Add missing replace directives as shown"
+            print_info "   - Update local module versions to v0.0.0 (remove timestamps)"
+            step=$((step + 1))
         fi
         if [[ $TOTAL_TIDY_ISSUES -gt 0 ]]; then
-            print_info "$(( TOTAL_ISSUES > 0 ? 2 : 1 )). Run 'go mod tidy' in each affected module directory"
+            print_info "$step. Run 'go mod tidy' in each affected module directory"
+            step=$((step + 1))
         fi
-        print_info "$(( (TOTAL_ISSUES > 0 ? 1 : 0) + (TOTAL_TIDY_ISSUES > 0 ? 1 : 0) + 1 )). Re-run this script to verify fixes"
+        print_info "$step. Re-run this script to verify fixes"
     fi
 
     exit $((TOTAL_ISSUES + TOTAL_TIDY_ISSUES > 0 ? 1 : 0))
@@ -389,11 +436,15 @@ OPTIONS:
 DESCRIPTION:
     This script scans all go.mod files in the repository and:
     1. Identifies dependencies on local nvsentinel modules
-    2. Verifies that replace directives exist for these dependencies
-    3. Checks that replace paths point to the correct local directories
-    4. Verifies that 'go mod tidy' has been run (go.mod/go.sum are clean)
-    5. Reports any missing or incorrect replace directives
-    6. Reports any modules that need 'go mod tidy' to be run
+    2. Checks for circular self-references (modules replacing themselves)
+    3. Verifies that replace directives exist for local dependencies
+    4. Checks that replace paths point to the correct local directories
+    5. Validates that local module dependencies use v0.0.0 version (no timestamps)
+    6. Verifies that 'go mod tidy' has been run (go.mod/go.sum are clean)
+    7. Reports any circular self-references
+    8. Reports any missing or incorrect replace directives
+    9. Reports any local modules with incorrect versions
+    10. Reports any modules that need 'go mod tidy' to be run
 
     The script will exit with code 0 if all validations pass, or code 1 if
     any issues are found.

@@ -40,6 +40,9 @@ inputs:
   grpcio-tools-version:
     description: 'grpcio-tools version to install'
     required: true
+  black-version:
+    description: 'black version to install'
+    required: true
   shellcheck-version:
     description: 'shellcheck version to install'
     required: true
@@ -143,7 +146,7 @@ runs:
         fi
         go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ inputs.protoc-gen-go-version }}
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ inputs.protoc-gen-go-grpc-version }}
-        pip install grpcio==${{ inputs.grpcio-tools-version }} grpcio-tools==${{ inputs.grpcio-tools-version }}
+        pip install grpcio==${{ inputs.grpcio-tools-version }} grpcio-tools==${{ inputs.grpcio-tools-version }} black==${{ inputs.black-version }}
 
     - name: Install DCGM (optional)
       if: inputs.install-dcgm == 'true'
@@ -210,4 +213,5 @@ runs:
         echo "shellcheck: $(shellcheck --version | head -n 2)"
         echo "addlicense: $(addlicense >/dev/null 2>&1 || echo 'installed')"
         echo "goimports: $(goimports --help >/dev/null 2>&1 || echo 'installed')"
+        echo "black: $(black --version || echo 'not installed')"
         echo "==================================="

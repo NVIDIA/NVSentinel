@@ -201,6 +201,7 @@ PROTOBUF_VERSION=$(yq '.protobuf.protobuf' .versions.yaml)
 PROTOC_GEN_GO_VERSION=$(yq '.protobuf.protoc_gen_go' .versions.yaml)
 PROTOC_GEN_GO_GRPC_VERSION=$(yq '.protobuf.protoc_gen_go_grpc' .versions.yaml)
 GRPCIO_TOOLS_VERSION=$(yq '.protobuf.grpcio_tools' .versions.yaml)
+BLACK_VERSION=$(yq '.linting.black' .versions.yaml)
 SHELLCHECK_VERSION=$(yq '.linting.shellcheck' .versions.yaml)
 
 echo ""
@@ -210,6 +211,7 @@ echo "  Python:          ${PYTHON_VERSION}"
 echo "  Poetry:          ${POETRY_VERSION}"
 echo "  golangci-lint:   ${GOLANGCI_LINT_VERSION}"
 echo "  protobuf:        ${PROTOBUF_VERSION}"
+echo "  black:           ${BLACK_VERSION}"
 echo "  shellcheck:      ${SHELLCHECK_VERSION}"
 echo ""
 
@@ -303,6 +305,30 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
                     python3 -m pip install --user poetry==${POETRY_VERSION}
             fi
             log_success "Poetry installed"
+        fi
+    fi
+
+    # Check/Install Black
+    if command_exists black; then
+        BLACK_INSTALLED=$(black --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
+        log_success "Black installed: ${BLACK_INSTALLED}"
+
+        if [[ "${BLACK_INSTALLED}" != "${BLACK_VERSION}"* ]]; then
+            log_warning "Black version mismatch (current: ${BLACK_INSTALLED}, target: ${BLACK_VERSION})"
+            log_info "Consider updating: pip install --upgrade black==${PBLACK_VERSION}"
+        fi
+    else
+        log_warning "Black not found"
+        log_info "Installing Black ${BLACK_VERSION}..."
+
+        if prompt_continue; then
+            if [[ "${OS}" == "darwin" ]]; then
+                pip3 install black==${BLACK_VERSION}
+            elif [[ "${OS}" == "linux" ]]; then
+                python3 -m pip install --break-system-packages black==${BLACK_VERSION} || \
+                    python3 -m pip install --user black==${BLACK_VERSION}
+            fi
+            log_success "Black installed"
         fi
     fi
     echo ""
