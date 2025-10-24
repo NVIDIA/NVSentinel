@@ -221,26 +221,7 @@ func getMongoPipeline() mongo.Pipeline {
 	}
 }
 
-func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
-
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "fault-remediation-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
+func run() error {
 	ctx := context.Background()
 
 	// Parse flags and get configuration
@@ -249,25 +230,19 @@ func main() {
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
 	if err != nil {
-		klog.ErrorS(err, "Failed to get required environment variables")
-		klog.Flush()
-		os.Exit(1)
+		return fmt.Errorf("failed to get required environment variables: %w", err)
 	}
 
 	// Get MongoDB configuration
 	mongoConfig, err := getMongoDBConfig(cfg.mongoClientCertMountPath)
 	if err != nil {
-		klog.ErrorS(err, "Failed to get MongoDB configuration")
-		klog.Flush()
-		os.Exit(1)
+		return fmt.Errorf("failed to get MongoDB configuration: %w", err)
 	}
 
 	// Get token configuration
 	tokenConfig, err := getTokenConfig()
 	if err != nil {
-		klog.ErrorS(err, "Failed to get token configuration")
-		klog.Flush()
-		os.Exit(1)
+		return fmt.Errorf("failed to get token configuration: %w", err)
 	}
 
 	// Get MongoDB pipeline
@@ -282,9 +257,7 @@ func main() {
 		TemplateFileName:  envCfg.templateFileName,
 	})
 	if err != nil {
-		klog.ErrorS(err, "Error while initializing kubernetes client")
-		klog.Flush()
-		os.Exit(1)
+		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
 	klog.Info("Successfully initialized k8sclient")
@@ -306,6 +279,33 @@ func main() {
 	startMetricsServer(cfg.metricsPort)
 
 	reconciler.Start(ctx)
+	return nil
+}
+
+func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "fault-remediation-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
+	if err := run(); err != nil {
+		klog.ErrorS(err, "Fatal error")
+		os.Exit(1)
+	}
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {
