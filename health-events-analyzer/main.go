@@ -60,19 +60,13 @@ func main() {
 
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "health-events-analyzer",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting health-events-analyzer...")
+	klog.Infof("Starting health-events-analyzer version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	mongoURI := os.Getenv("MONGODB_URI")

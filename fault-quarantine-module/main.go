@@ -72,19 +72,13 @@ func main() {
 
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "fault-quarantine-module",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting fault-quarantine-module...")
+	klog.Infof("Starting fault-quarantine-module version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	namespace := os.Getenv("POD_NAMESPACE")

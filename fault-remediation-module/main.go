@@ -224,19 +224,13 @@ func run() error {
 	// Parse flags and get configuration
 	cfg := parseFlags()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "fault-remediation-module",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting fault-remediation-module...")
+	klog.Infof("Starting fault-remediation-module version=%s, commit=%s, date=%s", version, commit, date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()

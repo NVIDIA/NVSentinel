@@ -20,7 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -110,19 +109,13 @@ func main() {
 
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "csp-health-monitor",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting csp-health-monitor...")
+	klog.Infof("Starting csp-health-monitor version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	cfg, err := config.LoadConfig(*configPath)

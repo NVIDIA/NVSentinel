@@ -18,7 +18,6 @@ import (
 	"context"
 	"flag"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -48,19 +47,13 @@ func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "labeler-module",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting labeler-module...")
+	klog.Infof("Starting labeler-module version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)

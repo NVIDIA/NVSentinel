@@ -70,19 +70,13 @@ func main() {
 
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "syslog-health-monitor",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting syslog-health-monitor...")
+	klog.Infof("Starting syslog-health-monitor version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	klog.Infof("Parsed command line flags successfully")

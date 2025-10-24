@@ -20,7 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -159,19 +158,13 @@ func main() {
 
 	appCfg := parseFlags()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "maintenance-notifier",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting maintenance-notifier...")
+	klog.Infof("Starting maintenance-notifier version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	logStartupInfo(appCfg)

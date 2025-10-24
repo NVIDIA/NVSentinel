@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"flag"
-	"os"
 	"os/signal"
 	"syscall"
 
@@ -54,19 +53,13 @@ func main() {
 
 	flag.Parse()
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
 		"version", version,
-		"commit", commit,
-		"date", date,
 		"module", "node-drainer-module",
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting node-drainer-module...")
+	klog.Infof("Starting node-drainer-module version=%s, commit=%s, date=%s", version, commit, date)
 	defer klog.Flush()
 
 	klog.Infof("Mongo client cert path: %s", *mongoClientCertMountPath)
