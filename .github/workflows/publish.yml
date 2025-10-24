@@ -204,7 +204,7 @@ jobs:
 
       - name: Build Using Ko
         id: ko-build
-        run: scripts/buildko
+        run: scripts/buildko.sh
 
   attest:
     needs: build-images
