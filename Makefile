@@ -336,8 +336,7 @@ license-headers-lint: ## Check license headers in source files
 		-ignore **/*.pyc \
 		-ignore **/*.yaml \
 		-ignore **/*lock.hcl \
-		-ignore **/*pb2_grpc.py \
-		-ignore **/*pb2.py \
+		-ignore **/*pb2* \
 		.
 
 # Check go.mod files for proper replace directives
