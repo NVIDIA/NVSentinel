@@ -29,18 +29,24 @@ PROTOC_GEN_GO_VERSION := v1.36.6
 PROTOC_GEN_GO_GRPC_VERSION := v1.3.0
 GRPCIO_TOOLS_VERSION := 1.75.1
 SHELLCHECK_VERSION := v0.11.0
+ADDLICENSE_VERSION := latest
+DOCKER_BUILDX_VERSION := latest
+KO_VERSION := v0.18.0
 else
 # Load versions from .versions.yaml
+ADDLICENSE_VERSION := $(shell $(YQ) '.linting.addlicense' .versions.yaml)
+DOCKER_BUILDX_VERSION := $(shell $(YQ) '.container_tools.docker_buildx' .versions.yaml)
+GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
+GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
 GOLANGCI_LINT_VERSION := $(shell $(YQ) '.go_tools.golangci_lint' .versions.yaml)
 GOTESTSUM_VERSION := $(shell $(YQ) '.go_tools.gotestsum' .versions.yaml)
-GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
-GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
-PYTHON_VERSION := $(shell $(YQ) '.languages.python' .versions.yaml)
+GRPCIO_TOOLS_VERSION := $(shell $(YQ) '.protobuf.grpcio_tools' .versions.yaml)
+KO_VERSION := $(shell $(YQ) '.container_tools.ko' .versions.yaml)
 POETRY_VERSION := $(shell $(YQ) '.build_tools.poetry' .versions.yaml)
 PROTOBUF_VERSION := $(shell $(YQ) '.protobuf.protobuf' .versions.yaml)
-PROTOC_GEN_GO_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go' .versions.yaml)
 PROTOC_GEN_GO_GRPC_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go_grpc' .versions.yaml)
-GRPCIO_TOOLS_VERSION := $(shell $(YQ) '.protobuf.grpcio_tools' .versions.yaml)
+PROTOC_GEN_GO_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go' .versions.yaml)
+PYTHON_VERSION := $(shell $(YQ) '.languages.python' .versions.yaml)
 SHELLCHECK_VERSION := $(shell $(YQ) '.linting.shellcheck' .versions.yaml)
 endif
 
@@ -107,6 +113,11 @@ show-versions: ## Display all tool versions loaded from .versions.yaml
 	@echo ""
 	@echo "Linting:"
 	@echo "  shellcheck:             $(SHELLCHECK_VERSION)"
+	@echo "  addlicense:             $(ADDLICENSE_VERSION)"
+	@echo ""
+	@echo "Container Tools:"
+	@echo "  docker-buildx:          $(DOCKER_BUILDX_VERSION)"
+	@echo "  ko:                     $(KO_VERSION)"
 	@echo "==========================================="
 ifndef YQ
 	@echo ""
