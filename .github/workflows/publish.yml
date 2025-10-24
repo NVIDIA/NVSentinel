@@ -67,10 +67,22 @@ jobs:
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build image list
         id: build-list
         env:
-          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -146,10 +158,22 @@ jobs:
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
 
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish container for ${{ matrix.component }}
         uses: ./.github/actions/publish-container
         env:
-          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         with:
           make_command: ${{ matrix.make_command }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}

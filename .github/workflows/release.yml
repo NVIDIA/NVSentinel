@@ -47,9 +47,21 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build image list
         env:
-          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -82,10 +94,22 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
 
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Package and publish Helm chart
         env:
-          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          CI_COMMIT_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+          CI_COMMIT_TAG: ${{ steps.ref-name.outputs.value }}
           HELM_REGISTRY_TYPE: oci
           HELM_OCI_REGISTRY: ghcr.io
           HELM_OCI_REPOSITORY: nvidia

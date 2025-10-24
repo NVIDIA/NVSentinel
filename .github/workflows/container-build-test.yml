@@ -129,11 +129,18 @@ jobs:
         if: steps.should-build.outputs.build == 'false'
         run: echo "Skipping ${{ matrix.component }} (not in selected components list)"
 
+      - name: Compute ref name with short SHA
+        if: steps.should-build.outputs.build == 'true'
+        id: ref-name
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
       - name: Execute build
         if: steps.should-build.outputs.build == 'true'
         uses: ./.github/actions/build-container
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
           # Disable registry cache for pull requests to avoid permission issues
           DISABLE_REGISTRY_CACHE: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/')) && 'true' || 'false' }}
           # Disable --load flag in CI builds (causes issues with multi-platform builds)

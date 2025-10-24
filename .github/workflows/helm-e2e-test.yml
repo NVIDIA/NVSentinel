@@ -132,9 +132,15 @@ jobs:
           helm version --short
           kwok --version
 
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
       - name: Build container images locally
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
           CONTAINER_REGISTRY: localhost
           CONTAINER_ORG: nvsentinel-e2e
           PLATFORMS: linux/amd64
@@ -183,7 +189,7 @@ jobs:
 
       - name: Load images into Kind cluster
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "localhost/nvsentinel-e2e/nvsentinel-.*:.*${SAFE_REF_NAME}")
@@ -225,7 +231,7 @@ jobs:
 
       - name: Patch values for E2E testing
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           
@@ -260,7 +266,7 @@ jobs:
 
       - name: Install NVSentinel via Helm
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           helm upgrade --install nvsentinel ./distros/kubernetes/nvsentinel \
@@ -274,7 +280,7 @@ jobs:
 
       - name: Validate deployment with retry
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           chmod +x scripts/validate-nvsentinel.sh
@@ -302,7 +308,7 @@ jobs:
       - name: Collect debug artifacts
         if: failure()
         env:
-          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           mkdir -p /tmp/debug-artifacts

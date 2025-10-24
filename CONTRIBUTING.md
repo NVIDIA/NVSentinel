@@ -3,13 +3,18 @@
 Thank you for your interest in contributing to NVSentinel! We welcome contributions from the community and appreciate your help in making this project better.
 
 ## Table of Contents
-- [Getting Started](#getting-started)
-- [How to Contribute](#how-to-contribute)
-- [Reporting Issues](#reporting-issues)
-- [Submitting Pull Requests](#submitting-pull-requests)
-- [Developer Certificate of Origin](#developer-certificate-of-origin)
-- [Community Guidelines](#community-guidelines)
-- [Development Setup](#development-setup)
+- [Contributing to NVSentinel](#contributing-to-nvsentinel)
+  - [Table of Contents](#table-of-contents)
+  - [Getting Started](#getting-started)
+  - [How to Contribute](#how-to-contribute)
+  - [Reporting Issues](#reporting-issues)
+  - [Submitting Pull Requests](#submitting-pull-requests)
+    - [Pull Request Guidelines](#pull-request-guidelines)
+  - [Community Guidelines](#community-guidelines)
+  - [Development Setup](#development-setup)
+    - [Prerequisites](#prerequisites)
+    - [Local Development](#local-development)
+  - [Developer Certificate of Origin](#developer-certificate-of-origin)
 
 ## Getting Started
 
@@ -83,9 +88,9 @@ When reporting issues, please:
    ```
 
 2. **Install dependencies:**
-   ```bash
-   go mod download
-   ```
+    ```bash
+    make dev-env-setup
+    ```
 
 3. **Run tests:**
    ```bash
