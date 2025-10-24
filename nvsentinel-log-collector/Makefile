@@ -9,7 +9,7 @@ MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
 
 # Docker configuration (set from environment in CI)
 CONTAINER_REGISTRY ?= ghcr.io
-CONTAINER_ORG ?= $(shell git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$$#\1#p' | tr '[:upper:]' '[:lower:]')
+CONTAINER_ORG ?= nvidia
 CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
 SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
 SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
