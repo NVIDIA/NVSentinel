@@ -238,7 +238,7 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 				if _, exists := existingTaints[key]; !exists {
 					slog.Info("Tainting node with taint config",
 						"node", nodename,
-						"taintConfig", fmt.Sprintf("%+v", taintConfig))
+						"taintConfig", taintConfig)
 
 					existingTaints[key] = v1.Taint{
 						Key:    taintConfig.Key,
@@ -284,8 +284,8 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 			}
 
 			slog.Info("Setting annotations on node",
-				"annotations", fmt.Sprintf("%+v", annotations),
-				"node", nodename)
+				"node", nodename,
+				"annotations", annotations)
 			// set annotations
 			for annotationKey, annotationValue := range annotations {
 				node.Annotations[annotationKey] = annotationValue
@@ -348,7 +348,7 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 				if !found {
 					slog.Info("Node already does not have the taint",
 						"node", nodename,
-						"taintConfig", fmt.Sprintf("%+v", taintConfig))
+						"taintConfig", taintConfig)
 				} else {
 					toRemove[taintConfig] = true
 				}
@@ -360,7 +360,7 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 			slog.Info("Untainting node with taint config",
 				"node", nodename,
-				"toRemove", fmt.Sprintf("%+v", toRemove))
+				"toRemove", toRemove)
 
 			newTaints := []v1.Taint{}
 

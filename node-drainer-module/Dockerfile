@@ -29,6 +29,7 @@ COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY platform-connectors/go.mod platform-connectors/go.sum ./platform-connectors/
 COPY statemanager/go.mod statemanager/go.sum ./statemanager/
 COPY store-client-sdk/go.mod store-client-sdk/go.sum ./store-client-sdk/
+COPY logger-sdk/go.mod logger-sdk/go.sum ./logger-sdk/
 COPY node-drainer-module/go.mod node-drainer-module/go.sum ./node-drainer-module/
 
 WORKDIR /go/src/node-drainer-module
@@ -43,6 +44,7 @@ COPY data-models/ ../data-models/
 COPY platform-connectors/ ../platform-connectors/
 COPY statemanager/ ../statemanager/
 COPY store-client-sdk/ ../store-client-sdk/
+COPY logger-sdk/ ../logger-sdk/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o nodedrainer main.go

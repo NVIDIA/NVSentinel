@@ -26,11 +26,13 @@ WORKDIR /go/src/platform-connectors
 
 COPY platform-connectors/go.mod platform-connectors/go.sum ./
 COPY data-models/go.mod data-models/go.sum ../data-models/
+COPY logger-sdk/go.mod logger-sdk/go.sum ../logger-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY platform-connectors/ .
 COPY data-models/ ../data-models/
+COPY logger-sdk/ ../logger-sdk/
 
 RUN go build -o platform-connectors main.go
 

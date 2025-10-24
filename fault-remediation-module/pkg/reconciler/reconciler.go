@@ -86,7 +86,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	collection, err := storewatcher.GetCollectionClient(ctx, r.Config.MongoConfig)
 	if err != nil {
 		slog.Error("error initializing collection client for mongodb",
-			"config", fmt.Sprintf("%+v", r.Config.MongoConfig),
+			"config", r.Config.MongoConfig,
 			"error", err)
 	}
 
@@ -94,7 +94,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	slog.Info("Listening for events on the channel...")
 
 	for event := range watcher.Events() {
-		slog.Info("Event received", "event", fmt.Sprintf("%+v", event))
+		slog.Info("Event received", "event", event)
 		r.processEvent(ctx, event, watcher, collection)
 	}
 }
