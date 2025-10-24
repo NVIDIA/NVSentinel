@@ -21,8 +21,9 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/hashicorp/go-retryablehttp"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 // SidecarParser implements Parser interface using external sidecar service

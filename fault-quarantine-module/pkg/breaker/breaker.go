@@ -23,10 +23,9 @@ package breaker
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
-
-	"log/slog"
 
 	"golang.org/x/exp/maps"
 )

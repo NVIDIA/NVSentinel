@@ -17,15 +17,15 @@ package evaluator
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
-	"log/slog"
+	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
+	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
-	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
 )

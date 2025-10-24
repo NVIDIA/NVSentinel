@@ -16,6 +16,7 @@ package lsnvlink
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -23,8 +24,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"log/slog"
 )
 
 // TopologyLink represents a single NVLink connection

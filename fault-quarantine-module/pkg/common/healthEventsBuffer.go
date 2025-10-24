@@ -17,10 +17,10 @@ package common
 import (
 	"context"
 	"fmt"
-
 	"log/slog"
 
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
+
 	"go.mongodb.org/mongo-driver/bson"
 )
 

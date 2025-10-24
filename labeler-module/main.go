@@ -27,6 +27,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/labeler-module/pkg/labeler"
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"

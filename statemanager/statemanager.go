@@ -144,7 +144,6 @@ package statemanager
 import (
 	"context"
 	"fmt"
-
 	"log/slog"
 
 	"k8s.io/apimachinery/pkg/api/errors"

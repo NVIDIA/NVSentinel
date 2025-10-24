@@ -16,9 +16,8 @@ package config
 
 import (
 	"fmt"
-	"os"
-
 	"log/slog"
+	"os"
 
 	"github.com/BurntSushi/toml"
 )

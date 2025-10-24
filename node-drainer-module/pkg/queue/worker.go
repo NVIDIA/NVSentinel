@@ -20,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
+
 	"go.mongodb.org/mongo-driver/bson"
 )
 

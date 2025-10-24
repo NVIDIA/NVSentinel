@@ -18,18 +18,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"syscall"
 	"testing"
 	"time"
 
-	"log/slog"
-
-	"github.com/stretchr/testify/require"
-
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
+
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -345,7 +344,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to process healthEvents with err %s", err)
 	}
-	events, err := clientSet.CoreV1().Events("").List(ctx, metav1.ListOptions{
+	events, _ := clientSet.CoreV1().Events("").List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("involvedObject.kind=Node,involvedObject.name=%s", fakeNode.Name),
 	})
 

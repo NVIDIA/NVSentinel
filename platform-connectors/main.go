@@ -18,6 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,18 +28,13 @@ import (
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	"k8s.io/apimachinery/pkg/util/json"
-
-	"log/slog"
-
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
-
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
-
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/util/json"
 )
 
 const (

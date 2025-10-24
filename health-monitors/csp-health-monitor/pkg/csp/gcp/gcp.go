@@ -31,7 +31,6 @@ import (
 	"cloud.google.com/go/logging/logadmin"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"

@@ -16,13 +16,13 @@ package informer
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
-	"log/slog"
-
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"

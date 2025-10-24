@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
@@ -28,8 +29,6 @@ import (
 	platform_connectors "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
-
-	"log/slog"
 
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/mongo"

@@ -17,11 +17,11 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
-	"log/slog"
-
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/util/wait"

@@ -16,10 +16,10 @@ package kubernetes
 
 import (
 	"context"
-
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
+
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )

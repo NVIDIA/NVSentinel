@@ -16,15 +16,14 @@ package event
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-
-	"log/slog"
+	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
 	"cloud.google.com/go/logging"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	auditpb "google.golang.org/genproto/googleapis/cloud/audit"
 	"google.golang.org/protobuf/types/known/structpb"
 )

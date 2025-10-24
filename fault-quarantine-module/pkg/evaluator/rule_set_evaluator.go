@@ -16,12 +16,12 @@ package evaluator
 
 import (
 	"fmt"
-
 	"log/slog"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
+
+	multierror "github.com/hashicorp/go-multierror"
 	"k8s.io/client-go/kubernetes"
 )
 

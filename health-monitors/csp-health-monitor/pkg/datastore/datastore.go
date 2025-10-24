@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,8 +26,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-
-	"log/slog"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"

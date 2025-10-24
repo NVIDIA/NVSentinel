@@ -17,12 +17,12 @@ package reconciler
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"log/slog"
+	"time"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
+
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"

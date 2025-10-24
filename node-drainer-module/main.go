@@ -18,11 +18,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"log/slog"
 
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"

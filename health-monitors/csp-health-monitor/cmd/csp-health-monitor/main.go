@@ -19,14 +19,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-
-	"log/slog"
 
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

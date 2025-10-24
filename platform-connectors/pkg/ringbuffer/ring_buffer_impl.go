@@ -17,10 +17,10 @@ package ringbuffer
 import (
 	"context"
 	"errors"
-
 	"log/slog"
 
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+
 	"k8s.io/client-go/util/workqueue"
 )
 

@@ -16,11 +16,11 @@ package nodeinfo
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
-	"log/slog"
-
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )

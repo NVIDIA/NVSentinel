@@ -15,18 +15,17 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"log/slog"
+	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
+	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
-	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"

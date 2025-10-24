@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,12 +25,11 @@ import (
 	"text/template"
 	"time"
 
-	"log/slog"
-
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
