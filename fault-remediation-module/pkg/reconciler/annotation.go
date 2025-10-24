@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
-	"log/slog"
 )
 
 const (
@@ -178,7 +178,10 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 		return fmt.Errorf("failed to update remediation state annotation for %s: %w", nodeName, err)
 	}
 
-	slog.Info("Updated remediation state annotation for node %s, group %s, CR %s", nodeName, group, crName)
+	slog.Info("Updated remediation state annotation for node",
+		"node", nodeName,
+		"group", group,
+		"crName", crName)
 
 	return nil
 }
@@ -193,7 +196,7 @@ func (m *NodeAnnotationManager) ClearRemediationState(ctx context.Context, nodeN
 		return fmt.Errorf("failed to clear remediation state annotation for node %s: %w", nodeName, err)
 	}
 
-	slog.Info("Cleared remediation state annotation for node %s", nodeName)
+	slog.Info("Cleared remediation state annotation for node", "node", nodeName)
 
 	return nil
 }

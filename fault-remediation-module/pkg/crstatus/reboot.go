@@ -17,6 +17,7 @@ package crstatus
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
-	"log/slog"
 )
 
 // RebootNodeCRStatusChecker implements CRStatusChecker for RebootNode CRs
@@ -48,7 +48,7 @@ func NewRebootNodeCRStatusChecker(dynamicClient dynamic.Interface,
 // GetCRStatus retrieves the status of a RebootNode CR
 func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName string) (CRStatus, error) {
 	if c.dryRun {
-		slog.Info("DRY-RUN: CR %s doesn't exist (dry-run mode)", crName)
+		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName)
 		return CRStatusNotFound, nil // In dry-run, CRs don't actually exist
 	}
 
@@ -62,7 +62,10 @@ func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName stri
 	// Get GVR from GVK
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		slog.Error("Failed to get REST mapping for %s: %v", gvk, err)
+		slog.Error("Failed to get REST mapping",
+			"gvk", gvk.String(),
+			"error", err)
+
 		return CRStatusNotFound, nil
 	}
 
@@ -70,7 +73,7 @@ func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName stri
 	resource, err := c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
 	if err != nil {
 		if meta.IsNoMatchError(err) {
-			slog.Info("CR %s not found", crName)
+			slog.Info("CR not found", "crName", crName)
 			return CRStatusNotFound, nil
 		}
 
@@ -93,7 +96,7 @@ func (c *RebootNodeCRStatusChecker) extractRebootNodeStatus(obj *unstructured.Un
 	}
 
 	if !found {
-		slog.Warn("No status field found in RebootNode CR %s", obj.GetName())
+		slog.Warn("No status field found in RebootNode CR", "crName", obj.GetName())
 		return CRStatusInProgress, nil // Assume in progress if no status
 	}
 
@@ -109,7 +112,7 @@ func (c *RebootNodeCRStatusChecker) extractRebootNodeStatus(obj *unstructured.Un
 	}
 
 	if !found {
-		slog.Warn("No conditions found in RebootNode CR %s status", obj.GetName())
+		slog.Warn("No conditions found in RebootNode CR status", "crName", obj.GetName())
 		return CRStatusInProgress, nil
 	}
 

@@ -59,7 +59,7 @@ type config struct {
 
 // initLogger initializes the structured logger with the appropriate log level.
 func initLogger() {
-	level := slog.LevelInfo
+	var level slog.Level
 
 	// Set log level based on LOG_LEVEL environment variable or default to Info level
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
