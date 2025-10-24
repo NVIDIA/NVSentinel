@@ -411,7 +411,8 @@ func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay,
 	actualNodes, err := b.cfg.GetTotalNodes(ctx)
 
 	if err != nil {
-		slog.Error("Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",
+		slog.Error(
+			"Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",
 			"maxRetries", maxRetries,
 			"error", err,
 			"initialDelay", initialDelay,
@@ -420,7 +421,8 @@ func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay,
 		return
 	}
 
-	slog.Error("Circuit breaker: All retry attempts exhausted; found total cluster nodes but 0 GPU nodes with required NVIDIA labels; pod will restart",
+	slog.Error(
+		"Circuit breaker: All retry attempts exhausted; found 0 GPU nodes with NVIDIA labels; pod will restart",
 		"maxRetries", maxRetries,
 		"totalClusterNodes", actualNodes,
 		"initialDelay", initialDelay,

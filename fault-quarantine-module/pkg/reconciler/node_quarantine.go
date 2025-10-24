@@ -100,6 +100,7 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 		slog.Info("Circuit breaker config map already exists",
 			"name", name,
 			"namespace", namespace)
+
 		return nil
 	}
 
@@ -108,6 +109,7 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 			"name", name,
 			"namespace", namespace,
 			"error", err)
+
 		return err
 	}
 
@@ -181,6 +183,7 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, na
 				"name", name,
 				"namespace", namespace,
 				"error", err)
+
 			return err
 		}
 
@@ -233,6 +236,7 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 					slog.Info("Tainting node with taint config",
 						"node", nodename,
 						"taintConfig", fmt.Sprintf("%+v", taintConfig))
+
 					existingTaints[key] = v1.Taint{
 						Key:    taintConfig.Key,
 						Value:  taintConfig.Value,

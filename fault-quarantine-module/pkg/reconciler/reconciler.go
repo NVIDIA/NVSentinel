@@ -794,7 +794,11 @@ func (r *Reconciler) handleQuarantinedNode(
 
 		if added {
 			slog.Info("Added entity failures for check on node",
-				"check", event.CheckName, "node", event.NodeName, "trackedEntities", healthEventsAnnotationMap.Count()) // Update the annotation with the new entity failures
+				"check", event.CheckName,
+				"node", event.NodeName,
+				"trackedEntities", healthEventsAnnotationMap.Count())
+
+			// Update the annotation with the new entity failures
 			if err := r.updateHealthEventsQuarantineAnnotation(ctx, event.NodeName, healthEventsAnnotationMap); err != nil {
 				slog.Error("Failed to update health events annotation", "error", err)
 				return true
@@ -821,7 +825,10 @@ func (r *Reconciler) handleQuarantinedNode(
 
 	if removedCount > 0 {
 		slog.Info("Removed recovered entities for check on node",
-			"removedCount", removedCount, "check", event.CheckName, "node", event.NodeName, "remainingEntities", healthEventsAnnotationMap.Count())
+			"removedCount", removedCount,
+			"check", event.CheckName,
+			"node", event.NodeName,
+			"remainingEntities", healthEventsAnnotationMap.Count())
 	} else {
 		slog.Debug("No matching entities to remove for check %s on node %s",
 			event.CheckName, event.NodeName)
@@ -843,7 +850,9 @@ func (r *Reconciler) handleQuarantinedNode(
 
 	// Node remains quarantined as there are still failing checks
 	slog.Info("Node remains quarantined with failing checks",
-		"node", event.NodeName, "failingChecksCount", healthEventsAnnotationMap.Count(), "checks", healthEventsAnnotationMap.GetAllCheckNames())
+		"node", event.NodeName,
+		"failingChecksCount", healthEventsAnnotationMap.Count(),
+		"checks", healthEventsAnnotationMap.GetAllCheckNames())
 
 	return true
 }

@@ -43,21 +43,25 @@ var (
 	date    = "unknown"
 )
 
+// getLogLevel returns the slog.Level based on the LOG_LEVEL environment variable.
+func getLogLevel() slog.Level {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+
+	switch logLevel {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 // initLogger initializes the structured logger with the appropriate log level.
 func initLogger() {
-	level := slog.LevelInfo
-
-	// Set log level based on LOG_LEVEL environment variable or default to Info level
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
+	level := getLogLevel()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     level,
@@ -67,7 +71,6 @@ func initLogger() {
 	slog.SetDefault(logger)
 }
 
-// nolint: cyclop //fix this as part of NGCC-21793
 func main() {
 	initLogger()
 	slog.Info("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
@@ -78,111 +81,168 @@ func main() {
 	}
 }
 
-func run() error {
-	// Create a context that gets cancelled on OS interrupt signals
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop() // Ensure the signal listener is cleaned up
+func parseFlags() (metricsPort, mongoClientCertMountPath, kubeconfigPath *string, dryRun, circuitBreakerEnabled *bool,
+	circuitBreakerPercentage *int, circuitBreakerDuration *time.Duration) {
+	metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+	mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
-	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
+	kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
-	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
-	var circuitBreakerPercentage = flag.Int("circuit-breaker-percentage",
+	circuitBreakerPercentage = flag.Int("circuit-breaker-percentage",
 		50, "percentage of nodes to cordon before tripping the circuit breaker")
 
-	var circuitBreakerDuration = flag.Duration("circuit-breaker-duration",
+	circuitBreakerDuration = flag.Duration("circuit-breaker-duration",
 		5*time.Minute, "duration of the circuit breaker window")
 
-	var circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
+	circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
 		"enable or disable fault quarantine circuit breaker")
 
 	flag.Parse()
 
-	namespace := os.Getenv("POD_NAMESPACE")
+	return
+}
+
+func loadEnvConfig() (namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection string,
+	err error) {
+	namespace = os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		return fmt.Errorf("POD_NAMESPACE is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("POD_NAMESPACE is not provided")
 	}
 
-	mongoURI := os.Getenv("MONGODB_URI")
+	mongoURI = os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		return fmt.Errorf("MONGODB_URI is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_URI is not provided")
 	}
 
-	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	mongoDatabase = os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDatabase == "" {
-		return fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
-	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
+	mongoCollection = os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoCollection == "" {
-		return fmt.Errorf("MONGODB_COLLECTION_NAME is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_COLLECTION_NAME is not provided")
 	}
 
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	tokenDatabase = os.Getenv("MONGODB_DATABASE_NAME")
 	if tokenDatabase == "" {
-		return fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
+	tokenCollection = os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
 	if tokenCollection == "" {
-		return fmt.Errorf("MongoDB token collection name is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MongoDB token collection name is not provided")
 	}
 
-	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
+	return namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection, nil
+}
+
+func loadMongoTimeouts() (totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds,
+	intervalCACertSeconds, unprocessedEventsMetricUpdateIntervalSeconds int, err error) {
+	totalTimeoutSeconds, err = getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		return fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
-	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
+	intervalSeconds, err = getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
-	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
+	totalCACertTimeoutSeconds, err = getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		return fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
-	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
+	intervalCACertSeconds, err = getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
-	unprocessedEventsMetricUpdateIntervalSeconds, err :=
+	unprocessedEventsMetricUpdateIntervalSeconds, err =
 		getEnvAsInt("UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS", 25)
 	if err != nil {
-		return fmt.Errorf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %w", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %w", err)
 	}
 
-	mongoConfig := storewatcher.MongoDBConfig{
+	return
+}
+
+func createMongoConfig(
+	mongoURI, mongoDatabase, mongoCollection, mongoClientCertMountPath string,
+	totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds, intervalCACertSeconds int,
+) storewatcher.MongoDBConfig {
+	return storewatcher.MongoDBConfig{
 		URI:        mongoURI,
 		Database:   mongoDatabase,
 		Collection: mongoCollection,
 		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(*mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
+			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
+			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
+			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
 		},
 		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
 		TotalPingIntervalSeconds:   intervalSeconds,
 		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
 		TotalCACertIntervalSeconds: intervalCACertSeconds,
 	}
+}
 
-	tokenConfig := storewatcher.TokenConfig{
+func createTokenConfig(tokenDatabase, tokenCollection string) storewatcher.TokenConfig {
+	return storewatcher.TokenConfig{
 		ClientName:      "fault-quarantine-module",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
 	}
+}
 
-	pipeline := mongo.Pipeline{
+func createPipeline() mongo.Pipeline {
+	return mongo.Pipeline{
 		{{Key: "$match", Value: bson.D{{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}}}}},
 	}
+}
+
+func startMetricsServer(metricsPort string) {
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+metricsPort, nil)
+		if err != nil {
+			slog.Error("Failed to start metrics server", "error", err)
+			os.Exit(1)
+		}
+	}()
+}
+
+func run() error {
+	// Create a context that gets cancelled on OS interrupt signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop() // Ensure the signal listener is cleaned up
+
+	metricsPort, mongoClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
+		circuitBreakerPercentage, circuitBreakerDuration := parseFlags()
+
+	namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection, err := loadEnvConfig()
+	if err != nil {
+		return err
+	}
+
+	totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds,
+		intervalCACertSeconds, unprocessedEventsMetricUpdateIntervalSeconds, err := loadMongoTimeouts()
+	if err != nil {
+		return err
+	}
+
+	mongoConfig := createMongoConfig(mongoURI, mongoDatabase, mongoCollection, *mongoClientCertMountPath,
+		totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds, intervalCACertSeconds)
+
+	tokenConfig := createTokenConfig(tokenDatabase, tokenCollection)
+
+	pipeline := createPipeline()
 
 	tomlCfg, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
@@ -223,27 +283,20 @@ func run() error {
 	workSignal := make(chan struct{}, 1) // Buffer size 1 is usually sufficient
 
 	// Pass the workSignal channel to the Reconciler
-	reconciler := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
+	rec := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 
 	criticalError := make(chan error)
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-			os.Exit(1)
-		}
-	}()
+	startMetricsServer(*metricsPort)
 
-	reconciler.Start(ctx)
+	rec.Start(ctx)
 
 	select {
 	case <-ctx.Done():
 	case err := <-criticalError:
 		slog.Error("Critical component failure", "error", err)
 		stop() // Cancel context to trigger shutdown
+
 		return fmt.Errorf("critical component failure: %w", err)
 	}
 
