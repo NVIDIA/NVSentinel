@@ -491,6 +491,7 @@ func (c *AWSClient) processAWSHealthEvent(
 		slog.Error("Error getting affected entities for event",
 			"eventArn", eventArn,
 			"error", err)
+
 		return
 	}
 
@@ -736,6 +737,7 @@ func (c *AWSClient) getClusterInstanceNodeMap(ctx context.Context) (map[string]s
 			slog.Info("Node has non-AWS providerID",
 				"node", node.Name,
 				"providerID", node.Spec.ProviderID)
+
 			continue
 		}
 

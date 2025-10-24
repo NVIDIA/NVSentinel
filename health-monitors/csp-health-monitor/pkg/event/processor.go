@@ -122,6 +122,7 @@ func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.Ma
 		slog.Warn("Error finding prior PENDING for event",
 			"eventID", event.EventID,
 			"error", err)
+
 		return
 	}
 

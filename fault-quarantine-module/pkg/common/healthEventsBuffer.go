@@ -18,9 +18,10 @@ import (
 	"context"
 	"fmt"
 
+	"log/slog"
+
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"go.mongodb.org/mongo-driver/bson"
-	"log/slog"
 )
 
 // healthEventInfo represents information about a health event
@@ -59,7 +60,7 @@ func (b *HealthEventBuffer) RemoveAt(index int) error {
 		return fmt.Errorf("index out of bounds: %d", index)
 	}
 
-	slog.Info("Removing event at index %d: %+v", index, b.events[index].HealthEventWithStatus)
+	slog.Info("Removing event at index", "index", index, "event", b.events[index].HealthEventWithStatus)
 
 	// Remove the element at index
 	b.events = append(b.events[:index], b.events[index+1:]...)

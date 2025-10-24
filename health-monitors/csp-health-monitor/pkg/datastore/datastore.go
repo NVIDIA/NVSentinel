@@ -86,6 +86,7 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 	if mongoCollection == "" {
 		slog.Warn("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME not set, using default",
 			"defaultCollection", DefaultMongoDBCollection)
+
 		mongoCollection = DefaultMongoDBCollection
 	}
 
@@ -400,6 +401,7 @@ func (s *MongoStore) GetLastProcessedEventTimestampByCSP(
 			slog.Debug("No previous event timestamp found in datastore",
 				"csp", cspNameForLog,
 				"cluster", clusterName)
+
 			return time.Time{}, false, nil
 		}
 

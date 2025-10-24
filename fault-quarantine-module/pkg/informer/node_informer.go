@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
 	v1 "k8s.io/api/core/v1"
@@ -28,7 +30,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"log/slog"
 )
 
 const (
@@ -112,7 +113,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	slog.Info("NodeInformer created, watching nodes with label %s=true", GpuNodeLabel)
+	slog.Info("NodeInformer created, watching nodes with label", "label", GpuNodeLabel, "value", "true")
 
 	return ni, nil
 }
@@ -136,7 +137,7 @@ func (ni *NodeInformer) Run(stopCh <-chan struct{}) error {
 	_, err := ni.recalculateCounts()
 	if err != nil {
 		// Log the error but allow the informer to continue running
-		slog.Error("Initial count calculation failed: %v", err)
+		slog.Error("Initial count calculation failed", "error", err)
 	}
 
 	return nil
@@ -212,7 +213,7 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 		return
 	}
 
-	slog.Debug("Node added: %s", node.Name)
+	slog.Debug("Node added", "node", node.Name)
 
 	ni.mutex.Lock()
 
@@ -256,16 +257,16 @@ func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node)
 		return false
 	}
 
-	slog.Info("Detected manual uncordon of FQ-quarantined node: %s", newNode.Name)
+	slog.Info("Detected manual uncordon of FQ-quarantined node", "node", newNode.Name)
 
 	// Call the manual uncordon handler if registered
 	if ni.onManualUncordon != nil {
 		if err := ni.onManualUncordon(newNode.Name); err != nil {
-			slog.Error("Failed to handle manual uncordon for node %s: %v", newNode.Name, err)
+			slog.Error("Failed to handle manual uncordon for node", "node", newNode.Name, "error", err)
 		}
 	} else {
-		slog.Warn("Manual uncordon callback not registered for node %s - manual uncordon will not be handled",
-			newNode.Name)
+		slog.Warn("Manual uncordon callback not registered for node - manual uncordon will not be handled",
+			"node", newNode.Name)
 	}
 
 	return true
@@ -296,12 +297,14 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 	if oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable ||
 		oldNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] !=
 			newNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] {
-		slog.Debug("Node updated: %s (Unschedulable: %t -> %t)", newNode.Name,
-			oldNode.Spec.Unschedulable, newNode.Spec.Unschedulable)
+		slog.Debug("Node updated",
+			"node", newNode.Name,
+			"oldUnschedulable", oldNode.Spec.Unschedulable,
+			"newUnschedulable", newNode.Spec.Unschedulable)
 		ni.updateNodeQuarantineStatus(newNode)
 		ni.signalWork()
 	} else {
-		slog.Debug("Node update ignored (no relevant change): %s", newNode.Name)
+		slog.Debug("Node update ignored (no relevant change)", "node", newNode.Name)
 	}
 
 	// Notify about quarantine annotation changes
@@ -371,7 +374,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		}
 	}
 
-	slog.Info("Node deleted: %s", node.Name)
+	slog.Info("Node deleted", "node", node.Name)
 
 	ni.mutex.Lock()
 
@@ -445,10 +448,9 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 	ni.mutex.Unlock()
 
 	if changed {
-		slog.Debug("Node counts updated: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d", total, unschedulable)
+		slog.Debug("Node counts updated", "totalGpuNodes", total, "unschedulableGpuNodes", unschedulable)
 	} else {
-		slog.Debug("Node counts recalculated, no change: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d",
-			total, unschedulable)
+		slog.Debug("Node counts recalculated, no change", "totalGpuNodes", total, "unschedulableGpuNodes", unschedulable)
 	}
 
 	return changed, nil

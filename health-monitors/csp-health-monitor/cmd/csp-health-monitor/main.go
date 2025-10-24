@@ -58,8 +58,11 @@ var (
 
 // initLogger initializes the structured logger with the appropriate log level.
 func initLogger() {
-	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+
+	var level slog.Level
+
+	switch logLevel {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn", "warning":
@@ -142,7 +145,7 @@ func run() error {
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration from %s: %v", *configPath, err)
+		return fmt.Errorf("failed to load configuration from %s: %w", *configPath, err)
 	}
 
 	effectiveKubeconfigPath := *kubeconfig
@@ -152,7 +155,7 @@ func run() error {
 
 	store, err := datastore.NewStore(ctx, mongoClientCertMountPath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize datastore: %v", err)
+		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}
 
 	slog.Info("Datastore initialized successfully.")

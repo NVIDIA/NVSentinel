@@ -20,13 +20,14 @@ import (
 	"reflect"
 	"strings"
 
+	"log/slog"
+
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
-	"log/slog"
 )
 
 const (
@@ -51,7 +52,7 @@ type NodeRuleEvaluator struct {
 
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
 func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, error) {
-	slog.Info("Creating HealthEventRuleEvaluator with expression: %s", expression)
+	slog.Info("Creating HealthEventRuleEvaluator", "expression", expression)
 
 	env, err := cel.NewEnv(
 		cel.Variable(eventObjKey, cel.AnyType),
@@ -112,7 +113,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 
 // NewNodeRuleEvaluator creates a new NodeRuleEvaluator
 func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
-	slog.Info("Creating NodeRuleEvaluator with expression: %s", expression)
+	slog.Info("Creating NodeRuleEvaluator", "expression", expression)
 
 	// Create a CEL environment with declarations for node.labels and node.annotations
 	env, err := cel.NewEnv(
@@ -149,7 +150,7 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 
 // Evaluate the CEL expression against node metadata (labels and annotations)
 func (nm *NodeRuleEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
-	slog.Info("Evaluating NodeRuleEvaluator for node %s", event.NodeName)
+	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
 
 	// Get node metadata
 	nodeInfo, err := nm.getNode(event.NodeName)

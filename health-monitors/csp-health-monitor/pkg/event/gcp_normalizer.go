@@ -254,6 +254,7 @@ func initializeEventFromLogEntry(entry *logging.Entry, nodeName string) *model.M
 		slog.Warn("LogEntry has no MonitoredResource block",
 			"logName", entry.LogName,
 			"insertID", entry.InsertID)
+
 		return event // Return partially filled event
 	}
 

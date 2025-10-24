@@ -56,8 +56,11 @@ var (
 )
 
 func initLogger() {
-	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+
+	var level slog.Level
+
+	switch logLevel {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn", "warning":
@@ -195,7 +198,7 @@ func run() error {
 
 	cfg, err := config.LoadConfig(appCfg.configPath)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration from %s: %v", appCfg.configPath, err)
+		return fmt.Errorf("failed to load configuration from %s: %w", appCfg.configPath, err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -205,14 +208,16 @@ func run() error {
 
 	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize datastore: %v", err)
+		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}
 
 	slog.Info("Datastore initialized successfully for sidecar.")
 
 	conn, platformConnectorClient := setupUDSConnection(appCfg.udsPath)
+
 	defer func() {
 		slog.Info("Closing UDS connection for sidecar.")
+
 		if errClose := conn.Close(); errClose != nil {
 			slog.Error("Error closing sidecar UDS connection", "error", errClose)
 		}

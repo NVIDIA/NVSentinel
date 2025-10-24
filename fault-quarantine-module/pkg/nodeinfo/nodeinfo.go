@@ -18,10 +18,11 @@ import (
 	"context"
 	"sync"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"log/slog"
 )
 
 type NodeInfo struct {
@@ -89,7 +90,7 @@ func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined 
 		delete(n.quarantinedNodesMap, nodeName)
 	}
 
-	slog.Debug("Quarantined nodes map: %+v, Total length: %d", n.quarantinedNodesMap, len(n.quarantinedNodesMap))
+	slog.Debug("Quarantined nodes map", "map", n.quarantinedNodesMap, "count", len(n.quarantinedNodesMap))
 
 	n.signalWork()
 }
