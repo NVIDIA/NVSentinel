@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -71,7 +72,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, r.Config.MongoConfig, r.Config.TokenConfig,
 		r.Config.MongoPipeline)
 	if err != nil {
-		log.Fatalf("failed to create change stream watcher: %+v", err)
+		slog.Error("Failed to create change stream watcher", "error", err)
+		os.Exit(1)
 	}
 
 	defer func() {

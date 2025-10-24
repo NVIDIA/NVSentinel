@@ -120,7 +120,7 @@ func NewNodeInformer(clientset kubernetes.Interface,
 
 // Run starts the informer and waits for cache sync.
 func (ni *NodeInformer) Run(stopCh <-chan struct{}) error {
-	slog.Info("Starting NodeInformer")
+	slog.Info("Starting NodeInformer", "label", GpuNodeLabel)
 
 	// Start the informer goroutine
 	go ni.informer.Run(stopCh)

@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"google.golang.org/grpc"
@@ -83,5 +85,8 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Health event sent"})
 	})
 
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		slog.Error("Failed to start HTTP server", "error", err)
+		os.Exit(1)
+	}
 }

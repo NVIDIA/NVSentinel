@@ -49,8 +49,7 @@ type Components struct {
 }
 
 func StartMetricsServer(port string) error {
-	slog.Info("Starting a metrics port on",
-		"port", port)
+	slog.Info("Starting a metrics port on", "port", port)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())

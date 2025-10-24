@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"text/template"
@@ -190,7 +191,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	// Execute the template
 	var buf bytes.Buffer
 	if err := c.template.Execute(&buf, c.templateData); err != nil {
-		log.Fatalf("Failed to execute template: %v", err)
+		slog.Error("Failed to execute maintenance template", "error", err)
 		return false, ""
 	}
 
@@ -199,7 +200,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	// Convert YAML to unstructured
 	var obj map[string]any
 	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
-		log.Fatalf("Failed to unmarshal YAML: %v", err)
+		slog.Error("Failed to unmarshal YAML", "error", err)
 		return false, ""
 	}
 
@@ -211,7 +212,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	// Convert GVK to GVR using RESTMapper
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		log.Fatalf("Failed to get REST mapping for %s: %v", gvk, err)
+		slog.Error("Failed to get REST mapping", "error", err, "gvk", gvk)
 		return false, ""
 	}
 

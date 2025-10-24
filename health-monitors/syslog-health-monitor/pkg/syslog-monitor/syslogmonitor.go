@@ -122,8 +122,6 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 func (sm *SyslogMonitor) Run() error {
 	var jointError error = nil
 
-	slog.Info("Starting syslog monitor run cycle.")
-
 	for _, check := range sm.checks {
 		err := sm.executeCheck(check)
 		if err != nil {

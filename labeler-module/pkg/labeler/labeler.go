@@ -174,8 +174,6 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
-	slog.Info("Starting Labeler")
-
 	go l.informer.Run(ctx.Done())
 
 	slog.Info("Waiting for Labeler cache to sync...")
