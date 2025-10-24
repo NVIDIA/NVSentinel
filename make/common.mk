@@ -23,7 +23,7 @@ MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
 
 # Docker registry and organization (set from environment in CI)
 CONTAINER_REGISTRY ?= ghcr.io
-CONTAINER_ORG ?= $(shell git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$$#\1#p' | tr '[:upper:]' '[:lower:]')
+CONTAINER_ORG      ?= nvidia
 
 # Git branch handling for image tags
 CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
