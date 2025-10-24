@@ -19,10 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
-	"log/slog"
 )
 
 // SidecarParser implements Parser interface using external sidecar service
@@ -47,7 +47,7 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		slog.Error("error marshalling xid message: %v", err.Error())
+		slog.Error("Error marshalling XID message", "error", err.Error())
 		metrics.XidProcessingErrors.WithLabelValues("json_marshal_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("error marshalling xid message: %w", err)
@@ -55,7 +55,7 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 
 	req, err := retryablehttp.NewRequest("POST", p.url, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		slog.Error("error creating request: %v", err.Error())
+		slog.Error("Error creating request", "error", err.Error())
 		metrics.XidProcessingErrors.WithLabelValues("request_creation_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("error creating request: %w", err)
@@ -65,7 +65,7 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		slog.Error("error sending request: %v", err.Error())
+		slog.Error("Error sending request", "error", err.Error())
 		metrics.XidProcessingErrors.WithLabelValues("request_sending_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("error sending request: %w", err)
@@ -73,7 +73,7 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("HTTP request failed with status code: %d", resp.StatusCode)
+		slog.Error("HTTP request failed", "statusCode", resp.StatusCode)
 		metrics.XidProcessingErrors.WithLabelValues("http_status_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("HTTP request failed with status code: %d", resp.StatusCode)
@@ -81,19 +81,19 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		slog.Error("error reading response body: %v", err.Error())
+		slog.Error("Error reading response body", "error", err.Error())
 		metrics.XidProcessingErrors.WithLabelValues("response_reading_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
 
-	slog.Debug("Response body: %s", string(bodyBytes))
+	slog.Debug("Response received", "body", string(bodyBytes))
 
 	var xidResp Response
 
 	err = json.Unmarshal(bodyBytes, &xidResp)
 	if err != nil {
-		slog.Error("error decoding xid response: %v", err.Error())
+		slog.Error("Error decoding XID response", "error", err.Error())
 		metrics.XidProcessingErrors.WithLabelValues("response_decoding_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("error decoding xid response: %w", err)

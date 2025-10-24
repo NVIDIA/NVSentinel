@@ -16,12 +16,12 @@ package xid
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"log/slog"
 
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
@@ -69,7 +69,7 @@ func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, err
 	}
 
 	if xidResp == nil || !xidResp.Success {
-		slog.Debug("No XID found in parsing: %s", message)
+		slog.Debug("No XID found in parsing", "message", message)
 		return nil, nil
 	}
 

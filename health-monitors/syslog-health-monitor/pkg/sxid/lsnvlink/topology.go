@@ -71,7 +71,7 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 			},
 		}
 		if err := globalTopologyProvider.GatherTopology(); err != nil {
-			slog.Error("Failed to gather topology on initialization: %v", err)
+			slog.Error("Failed to gather topology on initialization", "error", err)
 		}
 	})
 
@@ -126,8 +126,10 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 	p.topology = topology
 	p.buildReverseMaps()
 
-	slog.Info("Successfully gathered NVLink topology (has_nvswitch=%v, %d GPUs, %d NVSwitches)",
-		topology.HasNVSwitch, len(topology.Topology), len(topology.NVSwitchPCIAddresses))
+	slog.Info("Successfully gathered NVLink topology",
+		"hasNVSwitch", topology.HasNVSwitch,
+		"gpuCount", len(topology.Topology),
+		"nvSwitchCount", len(topology.NVSwitchPCIAddresses))
 
 	// Log the complete topology details
 	p.logFullTopology()
@@ -138,8 +140,8 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 // logFullTopology logs the complete topology details for debugging and monitoring
 func (p *DynamicTopologyProvider) logFullTopology() {
 	slog.Info("===== NVLink Topology Details =====")
-	slog.Info("Timestamp: %s", p.topology.Timestamp)
-	slog.Info("Has NVSwitch: %v", p.topology.HasNVSwitch)
+	slog.Info("Topology timestamp", "timestamp", p.topology.Timestamp)
+	slog.Info("Topology has NVSwitch", "hasNVSwitch", p.topology.HasNVSwitch)
 
 	p.logNVSwitchPCIAddresses()
 	p.logGPUTopology()
@@ -153,10 +155,10 @@ func (p *DynamicTopologyProvider) logNVSwitchPCIAddresses() {
 		return
 	}
 
-	slog.Info("NVSwitch PCI Addresses (%d total):", len(p.topology.NVSwitchPCIAddresses))
+	slog.Info("NVSwitch PCI addresses", "count", len(p.topology.NVSwitchPCIAddresses))
 
 	for _, pciAddr := range p.topology.NVSwitchPCIAddresses {
-		slog.Info("  %s", pciAddr)
+		slog.Info("NVSwitch PCI address", "address", pciAddr)
 	}
 }
 
@@ -167,7 +169,7 @@ func (p *DynamicTopologyProvider) logGPUTopology() {
 		return
 	}
 
-	slog.Info("GPU Topology (%d GPUs):", len(p.topology.Topology))
+	slog.Info("GPU topology", "gpuCount", len(p.topology.Topology))
 
 	// Sort GPU IDs for consistent output
 	gpuIDs := p.getSortedGPUIDs()
@@ -191,14 +193,14 @@ func (p *DynamicTopologyProvider) getSortedGPUIDs() []string {
 // logSingleGPU logs the topology for a single GPU
 func (p *DynamicTopologyProvider) logSingleGPU(gpuID string) {
 	gpuTopo := p.topology.Topology[gpuID]
-	slog.Info("  GPU %s:", gpuID)
+	slog.Info("GPU topology", "gpu", gpuID)
 
 	if len(gpuTopo.Links) == 0 {
-		slog.Info("    No NVLinks")
+		slog.Info("No NVLinks for GPU", "gpu", gpuID)
 		return
 	}
 
-	slog.Info("    Links (%d total):", len(gpuTopo.Links))
+	slog.Info("GPU links", "gpu", gpuID, "linkCount", len(gpuTopo.Links))
 
 	// Sort link IDs for consistent output
 	var linkIDs []string
@@ -210,8 +212,11 @@ func (p *DynamicTopologyProvider) logSingleGPU(gpuID string) {
 
 	for _, linkID := range linkIDs {
 		link := gpuTopo.Links[linkID]
-		slog.Info("      Link %s -> Remote PCI: %s, Remote Link: %d",
-			linkID, link.RemotePCI, link.RemoteLink)
+		slog.Info("GPU link",
+			"gpu", gpuID,
+			"link", linkID,
+			"remotePCI", link.RemotePCI,
+			"remoteLink", link.RemoteLink)
 	}
 }
 
@@ -295,7 +300,7 @@ func (p *DynamicTopologyProvider) buildReverseMaps() {
 	for gpuIDStr, gpuTopo := range p.topology.Topology {
 		gpuID, err := strconv.Atoi(gpuIDStr)
 		if err != nil {
-			slog.Warn("Invalid GPU ID in topology: %s", gpuIDStr)
+			slog.Warn("Invalid GPU ID in topology", "gpuID", gpuIDStr)
 			continue
 		}
 

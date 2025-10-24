@@ -16,11 +16,11 @@ package sxid
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"log/slog"
 
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	lsnvlink "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid/lsnvlink"
@@ -49,11 +49,10 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 
 	gpuID, err := sxidHandler.getGPUID(sxidErrorEvent.PCI, sxidErrorEvent.Link)
 	if err != nil {
-		slog.Error("error in finding GPU ID with PCI %s and NVLink %d: %s",
-			sxidErrorEvent.PCI,
-			sxidErrorEvent.Link,
-			err.Error(),
-		)
+		slog.Error("Error finding GPU ID",
+			"pci", sxidErrorEvent.PCI,
+			"link", sxidErrorEvent.Link,
+			"error", err.Error())
 
 		return nil, fmt.Errorf(
 			"error in finding GPU ID with PCI %s and NVLink %d: %w",

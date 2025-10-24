@@ -16,6 +16,7 @@ package parser
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
-	"log/slog"
 )
 
 var (
@@ -105,7 +105,7 @@ func (p *CSVParser) parseNVL5XID(message string) (*Response, error) {
 
 	for _, rule := range rules {
 		if p.matchesNVL5Rule(rule, intrInfo, errorStatusStr) {
-			slog.Debug("Found matching NVL5 rule for XID %d", xidCode)
+			slog.Debug("Found matching NVL5 rule", "xidCode", xidCode)
 
 			recommendedAction = common.MapActionStringToProto(rule.Resolution)
 			ruleMnemonic = rule.Mnemonic
@@ -151,9 +151,12 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 	var recommendedAction pb.RecommenedAction = pb.RecommenedAction_CONTACT_SUPPORT
 	if errRes, found := p.errorResolutionMap[xidCode]; found {
 		recommendedAction = errRes.RecommendedAction
-		slog.Info("Found action %s for XID code %d", recommendedAction.String(), xidCode)
+		slog.Info("Found action for XID code",
+			"xidCode", xidCode,
+			"action", recommendedAction.String())
 	} else {
-		slog.Info("No action found for XID code %d, defaulting to CONTACT_SUPPORT", xidCode)
+		slog.Info("No action found for XID code, defaulting to CONTACT_SUPPORT",
+			"xidCode", xidCode)
 	}
 
 	xidDetails := XIDDetails{

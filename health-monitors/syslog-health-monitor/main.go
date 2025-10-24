@@ -46,7 +46,8 @@ var (
 )
 
 func initLogger() {
-	level := slog.LevelInfo
+	var level slog.Level
+
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
 	case "debug":
 		level = slog.LevelDebug
@@ -73,7 +74,6 @@ type ConfigFile struct {
 
 //nolint:cyclop,gocognit // todo
 func main() {
-
 	configFile := flag.String("config-file", "/etc/config/config.yaml",
 		"Path to the YAML configuration file for log checks.")
 	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
