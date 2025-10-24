@@ -13,7 +13,6 @@ require (
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.10
 	k8s.io/apimachinery v0.34.1
-	k8s.io/klog v1.0.0
 )
 
 require (
@@ -52,7 +51,7 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251014184007-4626949a642f // indirect
 	k8s.io/client-go v0.34.1 // indirect
-	k8s.io/klog/v2 v2.130.1 // indirect
+	k8s.io/klog/v2 v2.130.1
 )
 
 // Local replacements for internal modules
