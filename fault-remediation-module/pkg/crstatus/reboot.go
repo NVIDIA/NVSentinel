@@ -77,7 +77,7 @@ func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName stri
 			return CRStatusNotFound, nil
 		}
 
-		slog.Error("Failed to get CR %s: %v", crName, err)
+		slog.Error("Failed to get CR", "crName", crName, "error", err)
 
 		return CRStatusNotFound, nil
 	}

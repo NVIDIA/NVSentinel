@@ -139,14 +139,12 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 
 // logFullTopology logs the complete topology details for debugging and monitoring
 func (p *DynamicTopologyProvider) logFullTopology() {
-	slog.Info("===== NVLink Topology Details =====")
-	slog.Info("Topology timestamp", "timestamp", p.topology.Timestamp)
-	slog.Info("Topology has NVSwitch", "hasNVSwitch", p.topology.HasNVSwitch)
+	slog.Info("Topology",
+		"timestamp", p.topology.Timestamp,
+		"hasNVSwitch", p.topology.HasNVSwitch)
 
 	p.logNVSwitchPCIAddresses()
 	p.logGPUTopology()
-
-	slog.Info("===================================")
 }
 
 // logNVSwitchPCIAddresses logs the NVSwitch PCI addresses if present
@@ -155,11 +153,10 @@ func (p *DynamicTopologyProvider) logNVSwitchPCIAddresses() {
 		return
 	}
 
-	slog.Info("NVSwitch PCI addresses", "count", len(p.topology.NVSwitchPCIAddresses))
-
-	for _, pciAddr := range p.topology.NVSwitchPCIAddresses {
-		slog.Info("NVSwitch PCI address", "address", pciAddr)
-	}
+	slog.Info("NVSwitch PCI addresses",
+		"count", len(p.topology.NVSwitchPCIAddresses),
+		"addresses", p.topology.NVSwitchPCIAddresses,
+	)
 }
 
 // logGPUTopology logs the GPU topology with NVLink connections

@@ -145,15 +145,13 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	}
 
 	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
-		slog.Info("Skipping health event as it's already in terminal state",
-			"event", fmt.Sprintf("%+v", healthEventWithStatus.HealthEvent))
+		slog.Info("Skipping health event as it's already in terminal state", slog.Any("event", healthEventWithStatus.HealthEvent))
 		return nil
 	}
 
-	slog.Info("Enqueuing event",
-		"event", fmt.Sprintf("%+v", healthEventWithStatus.HealthEvent))
-	slog.Info("Current UserPodsEvictionStatus",
-		"status", fmt.Sprintf("%+v", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus))
+	slog.Info("Enqueuing",
+		slog.Any("event", healthEventWithStatus.HealthEvent),
+		slog.Any("userPodEvictingStatus", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus))
 
 	// Extract fullDocument to access the actual document _id
 	document, ok := event["fullDocument"].(bson.M)

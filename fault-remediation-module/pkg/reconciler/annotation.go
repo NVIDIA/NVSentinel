@@ -133,7 +133,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 	var state RemediationStateAnnotation
 	if err := json.Unmarshal([]byte(annotationValue), &state); err != nil {
-		slog.Error("Failed to unmarshal annotation for node %s: %v", nodeName, err)
+		slog.Error("Failed to unmarshal annotation", "node", nodeName, "error", err)
 		// Return empty state if unmarshal fails
 		return &RemediationStateAnnotation{
 			EquivalenceGroups: make(map[string]EquivalenceGroupState),
@@ -151,7 +151,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 
 	if err != nil {
 		// Log but continue with empty state
-		slog.Warn("Failed to get current remediation state for node %s: %v", nodeName, err)
+		slog.Warn("Failed to get current remediation state", "node", nodeName, "error", err)
 
 		state = &RemediationStateAnnotation{
 			EquivalenceGroups: make(map[string]EquivalenceGroupState),
@@ -230,7 +230,7 @@ func (m *NodeAnnotationManager) RemoveGroupFromState(ctx context.Context, nodeNa
 		return fmt.Errorf("failed to remove group from node annotation for %s: %w", nodeName, err)
 	}
 
-	slog.Info("Removed group %s from remediation state for node %s", group, nodeName)
+	slog.Info("Removed group from remediation state for node", "node", nodeName, "group", group)
 
 	return nil
 }

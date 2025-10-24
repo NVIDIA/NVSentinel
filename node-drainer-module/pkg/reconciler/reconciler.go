@@ -17,9 +17,8 @@ package reconciler
 import (
 	"context"
 	"fmt"
-	"sync"
-
 	"log/slog"
+	"sync"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/evaluator"

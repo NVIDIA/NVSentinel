@@ -257,20 +257,9 @@ func run() error {
 	// Pass the workSignal channel to the Reconciler
 	rec := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 
-	criticalError := make(chan error)
-
 	startMetricsServer(*metricsPort)
 
 	rec.Start(ctx)
-
-	select {
-	case <-ctx.Done():
-	case err := <-criticalError:
-		slog.Error("Critical component failure", "error", err)
-		stop() // Cancel context to trigger shutdown
-
-		return fmt.Errorf("critical component failure: %w", err)
-	}
 
 	return nil
 }
