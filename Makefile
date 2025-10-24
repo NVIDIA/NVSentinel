@@ -323,7 +323,27 @@ protos-clean: ## Remove all generated protobuf files
 .PHONY: license-headers-lint
 license-headers-lint: ## Check license headers in source files
 	@echo "Checking license headers..."
-	addlicense -f .github/headers/LICENSE -check -ignore **/*lock.hcl -ignore **/*pb2.py -ignore **/*pb2_grpc.py -ignore **/*.csv -ignore **/.venv/** -ignore **/.idea/** -ignore **/*report.xml -ignore **/*coverage.xml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml -ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml -ignore health-monitors/gpu-health-monitor/pyproject.toml -ignore nvsentinel-log-collector/pyproject.toml .
+	addlicense -f .github/headers/LICENSE -check \
+		-ignore **/*lock.hcl \
+		-ignore **/*pb2.py \
+		-ignore **/*pb2_grpc.py \
+		-ignore **/*.csv \
+		-ignore '**/.venv/**' \
+		-ignore '.venv/**' \
+		-ignore '*/.venv/**' \
+		-ignore **/.idea/** \
+		-ignore '**/report.xml' \
+		-ignore '**/coverage.xml' \
+		-ignore '**/coverage.txt' \
+		-ignore **/*.pyc \
+		-ignore '**/__pycache__/**' \
+		-ignore '**/site-packages/**' \
+		-ignore 'scripts/buildko.sh' \
+		-ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/Chart.yaml \
+		-ignore distros/kubernetes/nvsentinel/charts/mongodb-store/charts/mongodb/charts/common/Chart.yaml \
+		-ignore health-monitors/gpu-health-monitor/pyproject.toml \
+		-ignore nvsentinel-log-collector/pyproject.toml \
+		.
 
 # Check go.mod files for proper replace directives
 .PHONY: gomod-lint
