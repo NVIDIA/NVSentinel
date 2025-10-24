@@ -65,30 +65,30 @@ helm_resource(
 namespace_create('gpu-operator')
 namespace_create('nvsentinel')
 
-kwok_node_template = str(read_file('./tilt/kwok-node-template.yaml'))
+kwok_node_template = str(read_file('./kwok-node-template.yaml'))
 for i in range(num_gpu_nodes):
     node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
     k8s_yaml(blob(node_yaml))
 
-k8s_yaml('./tilt/nvidia-driver-daemonset.yaml')
-k8s_yaml('./tilt/nvidia-dcgm-daemonset.yaml')
-k8s_yaml('./tilt/janitor.dgxc.nvidia.com_rebootnodes.yaml')
+k8s_yaml('./nvidia-driver-daemonset.yaml')
+k8s_yaml('./nvidia-dcgm-daemonset.yaml')
+k8s_yaml('./janitor.dgxc.nvidia.com_rebootnodes.yaml')
 
-include('./fault-quarantine-module/Tiltfile')
-include('./fault-remediation-module/Tiltfile')
-include('./node-drainer-module/Tiltfile')
-include('./platform-connectors/Tiltfile')
-include('./tilt/simple-health-client/Tiltfile')
-#include('./health-events-analyzer/Tiltfile') # This module was a proof-of-concept, never completed
-include('./health-monitors/gpu-health-monitor/Tiltfile')
-include('./health-monitors/syslog-health-monitor/Tiltfile')
-include('./labeler-module/Tiltfile')
+include('../fault-quarantine-module/Tiltfile')
+include('../fault-remediation-module/Tiltfile')
+include('../node-drainer-module/Tiltfile')
+include('../platform-connectors/Tiltfile')
+include('./simple-health-client/Tiltfile')
+#include('../health-events-analyzer/Tiltfile') # This module was a proof-of-concept, never completed
+include('../health-monitors/gpu-health-monitor/Tiltfile')
+include('../health-monitors/syslog-health-monitor/Tiltfile')
+include('../labeler-module/Tiltfile')
 
 yaml = helm(
-    './distros/kubernetes/nvsentinel',
+    '../distros/kubernetes/nvsentinel',
     name='nvsentinel',
     namespace='nvsentinel',
-    values=['./distros/kubernetes/nvsentinel/values.yaml', './distros/kubernetes/nvsentinel/values-tilt.yaml'],
+    values=['../distros/kubernetes/nvsentinel/values.yaml', '../distros/kubernetes/nvsentinel/values-tilt.yaml'],
 )
 k8s_yaml(yaml)
 
