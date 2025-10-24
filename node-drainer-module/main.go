@@ -59,7 +59,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting node-drainer-module version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	klog.Infof("Mongo client cert path: %s", *mongoClientCertMountPath)

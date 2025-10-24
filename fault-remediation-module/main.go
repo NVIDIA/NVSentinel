@@ -230,7 +230,7 @@ func run() error {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting fault-remediation-module version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()

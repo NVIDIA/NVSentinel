@@ -53,7 +53,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting labeler-module version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting labeler-module", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)

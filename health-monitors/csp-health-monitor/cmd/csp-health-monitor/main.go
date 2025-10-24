@@ -115,7 +115,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting csp-health-monitor version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	cfg, err := config.LoadConfig(*configPath)

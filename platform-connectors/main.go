@@ -71,7 +71,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting platform-connectors version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting platform-connectors", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	if *socket == "" {

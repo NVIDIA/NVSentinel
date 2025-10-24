@@ -76,7 +76,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting syslog-health-monitor version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	klog.Infof("Parsed command line flags successfully")

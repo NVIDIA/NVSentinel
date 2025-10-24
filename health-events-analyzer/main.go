@@ -66,7 +66,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting health-events-analyzer version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	mongoURI := os.Getenv("MONGODB_URI")

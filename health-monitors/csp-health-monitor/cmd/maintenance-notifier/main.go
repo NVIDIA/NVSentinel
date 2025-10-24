@@ -164,7 +164,7 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Infof("Starting maintenance-notifier version=%s, commit=%s, date=%s", version, commit, date)
+	klog.InfoS("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	logStartupInfo(appCfg)
