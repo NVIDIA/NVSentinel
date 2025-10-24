@@ -41,7 +41,7 @@ RUN useradd -u 10001 -m nvsentinel
 
 WORKDIR /opt/nvsentinel-log-collector
 
-COPY entrypoint.sh /opt/nvsentinel-log-collector/entrypoint.sh
+COPY nvsentinel-log-collector/entrypoint.sh /opt/nvsentinel-log-collector/entrypoint.sh
 RUN chmod +x /opt/nvsentinel-log-collector/entrypoint.sh
 
 ENV PATH="/opt/nvsentinel-log-collector:${PATH}"
