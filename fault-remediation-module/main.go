@@ -18,7 +18,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -98,8 +97,12 @@ func getRequiredEnvVars() (*config, error) {
 		cfg.enableLogCollector = true
 	}
 
-	log.Printf("namespace: %s, version: %s, apigroup: %s, templateMountPath: %s, templateFileName: %s",
-		cfg.namespace, cfg.version, cfg.apiGroup, cfg.templateMountPath, cfg.templateFileName)
+	klog.InfoS("Configuration loaded",
+		"namespace", cfg.namespace,
+		"version", cfg.version,
+		"apiGroup", cfg.apiGroup,
+		"templateMountPath", cfg.templateMountPath,
+		"templateFileName", cfg.templateFileName)
 
 	return cfg, nil
 }
@@ -185,7 +188,9 @@ func startMetricsServer(metricsPort string) {
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+metricsPort, nil)
 		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+			klog.ErrorS(err, "Failed to start metrics server")
+			klog.Flush()
+			os.Exit(1)
 		}
 	}()
 }
@@ -244,19 +249,25 @@ func main() {
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
 	if err != nil {
-		log.Fatalf("Failed to get required environment variables: %v", err)
+		klog.ErrorS(err, "Failed to get required environment variables")
+		klog.Flush()
+		os.Exit(1)
 	}
 
 	// Get MongoDB configuration
 	mongoConfig, err := getMongoDBConfig(cfg.mongoClientCertMountPath)
 	if err != nil {
-		log.Fatalf("Failed to get MongoDB configuration: %v", err)
+		klog.ErrorS(err, "Failed to get MongoDB configuration")
+		klog.Flush()
+		os.Exit(1)
 	}
 
 	// Get token configuration
 	tokenConfig, err := getTokenConfig()
 	if err != nil {
-		log.Fatalf("Failed to get token configuration: %v", err)
+		klog.ErrorS(err, "Failed to get token configuration")
+		klog.Flush()
+		os.Exit(1)
 	}
 
 	// Get MongoDB pipeline
@@ -271,10 +282,12 @@ func main() {
 		TemplateFileName:  envCfg.templateFileName,
 	})
 	if err != nil {
-		log.Fatalf("error while initializing kubernetes client: %v", err)
+		klog.ErrorS(err, "Error while initializing kubernetes client")
+		klog.Flush()
+		os.Exit(1)
 	}
 
-	log.Println("Successfully initialized k8sclient")
+	klog.Info("Successfully initialized k8sclient")
 
 	// Initialize and start reconciler
 	reconcilerCfg := reconciler.ReconcilerConfig{
