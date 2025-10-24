@@ -17,6 +17,7 @@ package initializer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -31,7 +32,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	"log/slog"
 )
 
 type InitializationParams struct {
@@ -49,7 +49,8 @@ type Components struct {
 }
 
 func StartMetricsServer(port string) error {
-	slog.Info("Starting a metrics port on : %s", port)
+	slog.Info("Starting a metrics port on",
+		"port", port)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -64,7 +65,7 @@ func StartMetricsServer(port string) error {
 	go func() {
 		err := server.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
-			slog.Error("Metrics server error: %v", err)
+			slog.Error("Metrics server error", "error", err)
 		}
 	}()
 

@@ -35,18 +35,22 @@ var (
 	date    = "unknown"
 )
 
-func initLogger() {
-	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+func getLogLevel() slog.Level {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+	switch logLevel {
 	case "debug":
-		level = slog.LevelDebug
+		return slog.LevelDebug
 	case "warn", "warning":
-		level = slog.LevelWarn
+		return slog.LevelWarn
 	case "error":
-		level = slog.LevelError
+		return slog.LevelError
 	default:
-		level = slog.LevelInfo
+		return slog.LevelInfo
 	}
+}
+
+func initLogger() {
+	level := getLogLevel()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     level,
@@ -70,13 +74,17 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
+	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
-	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
-	var tomlConfigPath = flag.String("config-path", "/etc/config/config.toml",
+
+	kubeconfigPath := flag.String("kubeconfig-path", "", "path to kubeconfig file")
+
+	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml",
 		"path where the node drainer config file is present")
-	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+
+	dryRun := flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
 	flag.Parse()
 
@@ -129,6 +137,7 @@ func run() error {
 	case err := <-criticalError:
 		slog.Error("Critical component failure", "error", err)
 		stop() // Cancel context to trigger shutdown
+
 		return fmt.Errorf("critical component failure: %w", err)
 	}
 

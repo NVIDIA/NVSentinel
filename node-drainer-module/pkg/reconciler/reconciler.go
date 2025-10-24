@@ -106,6 +106,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		slog.Info("Waiting for node",
 			"node", nodeName,
 			"delay", action.WaitDelay)
+
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
 
 	case evaluator.ActionEvictImmediate:
@@ -149,6 +150,7 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 			slog.Error("Failed to update MongoDB status for node",
 				"node", nodeName,
 				"error", err)
+
 			return fmt.Errorf("failed to update MongoDB status for node %s: %w", nodeName, err)
 		}
 

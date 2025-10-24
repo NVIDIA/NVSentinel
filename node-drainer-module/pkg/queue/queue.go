@@ -17,12 +17,12 @@ package queue
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"go.mongodb.org/mongo-driver/bson"
 	"k8s.io/client-go/util/workqueue"
-	"log/slog"
 )
 
 func NewEventQueueManager() EventQueueManager {

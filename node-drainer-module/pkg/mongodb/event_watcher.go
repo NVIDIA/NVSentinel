@@ -17,6 +17,7 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
@@ -24,7 +25,6 @@ import (
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"log/slog"
 )
 
 type EventWatcher struct {
@@ -56,7 +56,7 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 
 	// Cold start failure shouldn't prevent normal operation
 	if err := w.handleColdStart(ctx); err != nil {
-		slog.Error("Failed to handle cold start: %v", err)
+		slog.Error("Failed to handle cold start", "error", err)
 	}
 
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, w.mongoConfig, w.tokenConfig, w.mongoPipeline)
@@ -75,12 +75,12 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 			return nil
 		case event := <-watcher.Events():
 			if err := w.preprocessAndEnqueueEvent(ctx, event); err != nil {
-				slog.Error("Failed to preprocess and enqueue event: %v", err)
+				slog.Error("Failed to preprocess and enqueue event", "error", err)
 				continue
 			}
 
 			if err := watcher.MarkProcessed(ctx); err != nil {
-				slog.Error("Error updating resume token: %v", err)
+				slog.Error("Error updating resume token", "error", err)
 			}
 		}
 	}
@@ -99,7 +99,7 @@ func (w *EventWatcher) handleColdStart(ctx context.Context) error {
 		return fmt.Errorf("failed to get in-progress events: %w", err)
 	}
 
-	slog.Info("Found %d in-progress events to process", len(inProgressEvents))
+	slog.Info("Found in-progress events to process", "count", len(inProgressEvents))
 
 	for _, event := range inProgressEvents {
 		// Wrap the event in the same format as change stream events
@@ -108,7 +108,7 @@ func (w *EventWatcher) handleColdStart(ctx context.Context) error {
 		}
 
 		if err := w.preprocessAndEnqueueEvent(ctx, wrappedEvent); err != nil {
-			slog.Error("Failed to enqueue cold start event: %v", err)
+			slog.Error("Failed to enqueue cold start event", "error", err)
 		} else {
 			metrics.TotalEventsReplayed.Inc()
 		}
@@ -145,13 +145,15 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	}
 
 	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
-		slog.Info("Skipping health event as it's already in terminal state: %+v",
-			healthEventWithStatus.HealthEvent)
+		slog.Info("Skipping health event as it's already in terminal state",
+			"event", fmt.Sprintf("%+v", healthEventWithStatus.HealthEvent))
 		return nil
 	}
 
-	slog.Info("Enqueuing event: %+v", healthEventWithStatus.HealthEvent)
-	slog.Info("Current UserPodsEvictionStatus: %+v", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus)
+	slog.Info("Enqueuing event",
+		"event", fmt.Sprintf("%+v", healthEventWithStatus.HealthEvent))
+	slog.Info("Current UserPodsEvictionStatus",
+		"status", fmt.Sprintf("%+v", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus))
 
 	// Extract fullDocument to access the actual document _id
 	document, ok := event["fullDocument"].(bson.M)
@@ -175,7 +177,8 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	}
 
 	if result.ModifiedCount > 0 {
-		slog.Info("Set initial eviction status to InProgress for node %s", healthEventWithStatus.HealthEvent.NodeName)
+		slog.Info("Set initial eviction status to InProgress for node",
+			"node", healthEventWithStatus.HealthEvent.NodeName)
 	}
 
 	nodeName := healthEventWithStatus.HealthEvent.NodeName

@@ -17,10 +17,10 @@ package queue
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"go.mongodb.org/mongo-driver/bson"
-	"log/slog"
 )
 
 type EventProcessor interface {
@@ -50,8 +50,10 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 
 	err := m.processEvent(ctx, *nodeEvent.Event, nodeEvent.Collection, nodeEvent.NodeName)
 	if err != nil {
-		slog.Warn("Error processing event for node %s (attempt %d): %v (will retry)",
-			nodeEvent.NodeName, m.queue.NumRequeues(nodeEvent)+1, err)
+		slog.Warn("Error processing event for node (will retry)",
+			"node", nodeEvent.NodeName,
+			"attempt", m.queue.NumRequeues(nodeEvent)+1,
+			"error", err)
 		m.queue.AddRateLimited(nodeEvent)
 	} else {
 		m.queue.Forget(nodeEvent)
