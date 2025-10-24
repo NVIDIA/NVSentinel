@@ -134,13 +134,14 @@ jobs:
 
       - name: Build container images locally
         env:
-          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
-          NVCR_CONTAINER_REPO: localhost
-          NGC_ORG: nvsentinel-e2e
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
+          CONTAINER_REGISTRY: localhost
+          CONTAINER_ORG: nvsentinel-e2e
           PLATFORMS: linux/amd64
           DISABLE_REGISTRY_CACHE: true
         run: |
           make docker-all
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           docker images | grep "localhost/nvsentinel-e2e/nvsentinel-.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
 
       - name: Create Kind cluster
@@ -182,8 +183,9 @@ jobs:
 
       - name: Load images into Kind cluster
         env:
-          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
         run: |
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "localhost/nvsentinel-e2e/nvsentinel-.*:.*${SAFE_REF_NAME}")
           [ ${#images[@]} -eq 0 ] && { echo "No images found"; exit 1; }
 
@@ -223,8 +225,10 @@ jobs:
 
       - name: Patch values for E2E testing
         env:
-          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
         run: |
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
+          
           # Replace repository URLs in chart files
           sed -i 's|ghcr\.io/nvidia/nvsentinel-|localhost/nvsentinel-e2e/nvsentinel-|g' \
             distros/kubernetes/nvsentinel/charts/*/values.yaml \
@@ -255,20 +259,24 @@ jobs:
           EOF
 
       - name: Install NVSentinel via Helm
+        env:
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
         run: |
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           helm upgrade --install nvsentinel ./distros/kubernetes/nvsentinel \
             --create-namespace \
             --namespace ${{ env.NVSENTINEL_NAMESPACE }} \
             --values /tmp/values-patched.yaml \
-            --set global.image.tag="${{ needs.prepare-environment.outputs.safe_ref_name }}" \
+            --set global.image.tag="${SAFE_REF_NAME}" \
             --debug
 
           kubectl get pods -n ${{ env.NVSENTINEL_NAMESPACE }}
 
       - name: Validate deployment with retry
         env:
-          SAFE_REF_NAME: ${{ needs.prepare-environment.outputs.safe_ref_name }}
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
         run: |
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           chmod +x scripts/validate-nvsentinel.sh
           max_attempts=$((${{ env.VALIDATION_TIMEOUT_MINUTES }} * 60 / ${{ env.VALIDATION_INTERVAL_SECONDS }}))
 
@@ -293,13 +301,16 @@ jobs:
 
       - name: Collect debug artifacts
         if: failure()
+        env:
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
         run: |
+          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           mkdir -p /tmp/debug-artifacts
           kubectl get all --all-namespaces > /tmp/debug-artifacts/all-resources.yaml || true
           kubectl get events --all-namespaces --sort-by='.lastTimestamp' > /tmp/debug-artifacts/all-events.yaml || true
           kubectl get pods -n ${{ env.NVSENTINEL_NAMESPACE }} -o yaml > /tmp/debug-artifacts/nvsentinel-pods.yaml || true
           kubectl logs -n ${{ env.NVSENTINEL_NAMESPACE }} --all-containers=true --tail=500 > /tmp/debug-artifacts/nvsentinel-logs.txt || true
-          ./scripts/validate-nvsentinel.sh --version "${{ needs.prepare-environment.outputs.safe_ref_name }}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "localhost/nvsentinel-e2e/nvsentinel" --verbose > /tmp/debug-artifacts/validation-output.txt 2>&1 || true
+          ./scripts/validate-nvsentinel.sh --version "${SAFE_REF_NAME}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "localhost/nvsentinel-e2e/nvsentinel" --verbose > /tmp/debug-artifacts/validation-output.txt 2>&1 || true
           docker images > /tmp/debug-artifacts/docker-images.txt
           df -h > /tmp/debug-artifacts/disk-usage.txt
 

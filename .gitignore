@@ -98,13 +98,13 @@ nosetests.xml
 coverage.xml
 
 # Coverage data
-coverage.txt
 .coverage
 .coverage.*
-htmlcov/
-cover/
 *.cover
 *.py,cover
+cover/
+coverage.txt
+htmlcov/
 
 # Code quality reports
 code-quality-report.json

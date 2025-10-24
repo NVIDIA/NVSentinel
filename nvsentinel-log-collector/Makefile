@@ -7,9 +7,9 @@ REPO_ROOT := $(shell git rev-parse --show-toplevel)
 # Auto-detect current module path relative to repo root
 MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
 
-# Docker configuration
-NVCR_CONTAINER_REPO ?= nvcr.io
-NGC_ORG ?= nv-ngc-devops
+# Docker configuration (set from environment in CI)
+CONTAINER_REGISTRY ?= ghcr.io
+CONTAINER_ORG ?= $(shell git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$$#\1#p' | tr '[:upper:]' '[:lower:]')
 CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
 SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
 SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
@@ -25,10 +25,10 @@ CACHE_TO_ARG_LOG :=
 CACHE_FROM_ARG_CLEANUP :=
 CACHE_TO_ARG_CLEANUP :=
 else
-CACHE_FROM_ARG_LOG := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector
-CACHE_TO_ARG_LOG := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:log-collector,mode=max
-CACHE_FROM_ARG_CLEANUP := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup
-CACHE_TO_ARG_CLEANUP := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:file-server-cleanup,mode=max
+CACHE_FROM_ARG_LOG := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:log-collector
+CACHE_TO_ARG_LOG := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:log-collector,mode=max
+CACHE_FROM_ARG_CLEANUP := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:file-server-cleanup
+CACHE_TO_ARG_CLEANUP := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:file-server-cleanup,mode=max
 endif
 
 # Default target
@@ -106,7 +106,7 @@ docker-build-log-collector: setup-buildx
 		$(CACHE_TO_ARG_LOG) \
 		$(DOCKER_LOAD_ARG) \
 		-f $(MODULE_PATH)/Dockerfile \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
 # Build file-server-cleanup image (local development)
@@ -121,7 +121,7 @@ docker-build-file-server-cleanup: setup-buildx
 		$(CACHE_TO_ARG_CLEANUP) \
 		$(DOCKER_LOAD_ARG) \
 		-f $(MODULE_PATH)/Dockerfile.cleanup \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
 # Docker publish target
@@ -140,7 +140,7 @@ docker-publish-log-collector: setup-buildx
 		$(CACHE_TO_ARG_LOG) \
 		--push \
 		-f $(MODULE_PATH)/Dockerfile \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-log-collector:$(SAFE_REF_NAME) \
 		.
 
 # Build and publish file-server-cleanup image
@@ -155,7 +155,7 @@ docker-publish-file-server-cleanup: setup-buildx
 		$(CACHE_TO_ARG_CLEANUP) \
 		--push \
 		-f $(MODULE_PATH)/Dockerfile.cleanup \
-		-t $(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
 # Legacy targets for backwards compatibility
@@ -179,8 +179,8 @@ help:
 	@echo "NVSentinel Log Collector Makefile - Standardized build system"
 	@echo ""
 	@echo "Configuration (environment variables):"
-	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
-	@echo "  NGC_ORG=$(NGC_ORG)"
+	@echo "  CONTAINER_REGISTRY=$(CONTAINER_REGISTRY)"
+	@echo "  CONTAINER_ORG=$(CONTAINER_ORG)"
 	@echo "  SAFE_REF_NAME=$(SAFE_REF_NAME)"
 	@echo "  PLATFORMS=$(PLATFORMS)"
 	@echo ""

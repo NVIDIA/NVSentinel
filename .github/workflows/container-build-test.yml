@@ -133,14 +133,14 @@ jobs:
         if: steps.should-build.outputs.build == 'true'
         uses: ./.github/actions/build-container
         env:
+          CI_COMMIT_REF_NAME: ${{ github.ref_name }}
           # Disable registry cache for pull requests to avoid permission issues
           DISABLE_REGISTRY_CACHE: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/')) && 'true' || 'false' }}
           # Disable --load flag in CI builds (causes issues with multi-platform builds)
           DOCKER_LOAD_ARG: ''
         with:
-          safe_ref_name: ${{ needs.prepare-environment.outputs.safe_ref_name }}
-          nvcr_container_repo: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
-          container_org: ${{ needs.prepare-environment.outputs.container_org }}
+          container_registry: ghcr.io
+          container_org: ${{ github.repository_owner }}
           make_command: ${{ matrix.make_command }}
 
   container-build-summary:

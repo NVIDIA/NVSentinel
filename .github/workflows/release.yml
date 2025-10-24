@@ -49,9 +49,9 @@ jobs:
 
       - name: Build image list
         env:
-          SAFE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
-          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
-          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CONTAINER_REGISTRY: ghcr.io
+          CONTAINER_ORG: ${{ github.repository_owner }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -86,13 +86,13 @@ jobs:
 
       - name: Package and publish Helm chart
         env:
-          SAFE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
+          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           CI_COMMIT_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
-          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+          CONTAINER_REGISTRY: ghcr.io
+          CONTAINER_ORG: ${{ github.repository_owner }}
           HELM_REGISTRY_TYPE: oci
           HELM_OCI_REGISTRY: ghcr.io
-          HELM_OCI_REPOSITORY: ${{ needs.prepare-environment.outputs.container_org }}
+          HELM_OCI_REPOSITORY: ${{ github.repository_owner }}
         run: make -C distros/kubernetes helm-publish
 
   create-github-release:

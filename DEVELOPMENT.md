@@ -289,8 +289,8 @@ Set these for production-like builds:
 
 ```bash
 # Docker configuration (standardized across all modules)
-export NVCR_CONTAINER_REPO="nvcr.io"
-export NGC_ORG="nv-ngc-devops"
+export CONTAINER_REGISTRY="ghcr.io"
+export CONTAINER_ORG="your-github-username"  # Defaults to repository owner
 export CI_COMMIT_REF_NAME="feature-branch"  # Or your branch name
 
 # These are computed automatically by common.mk:
@@ -428,16 +428,19 @@ make -C health-monitors/syslog-health-monitor image
 
 **CI-like Build:**
 ```bash
+**CI-like Build:**
+```bash
 # Set up environment like GitHub Actions
-export NVCR_CONTAINER_REPO="nvcr.io"
-export NGC_ORG="nv-ngc-devops"
+export CONTAINER_REGISTRY="ghcr.io"
+export CONTAINER_ORG="your-github-username"
 export CI_COMMIT_REF_NAME="main"
 
 # Build all images with full CI features (standardized)
 make docker-all
 
 # Images will be tagged like:
-# ghcr.io/nvidia/nvsentinel-syslog-health-monitor:main
+# ghcr.io/your-github-username/nvsentinel-syslog-health-monitor:main
+```
 # ghcr.io/nvidia/nvsentinel-gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel-gpu-health-monitor:main-dcgm-4.x
 ```
@@ -1061,16 +1064,17 @@ make -C docker build-all                          # All modules
 make -C health-monitors/gpu-health-monitor docker-build-dcgm3  # Specific variant
 
 # Test the built images locally
-docker run ghcr.io/nvidia/nvsentinel-syslog-health-monitor:local
+# Test the built images locally
+docker run ghcr.io/your-github-username/nvsentinel-syslog-health-monitor:local
 ```
 
 **CI/Production Workflow:**
 ```bash
 # Environment setup (matches GitHub Actions)
-export NVCR_CONTAINER_REPO="nvcr.io"
-export NGC_ORG="nv-ngc-devops"
+export CONTAINER_REGISTRY="ghcr.io"
+export CONTAINER_ORG="your-github-username"
 export CI_COMMIT_REF_NAME="main"
-# Private repo modules authentication handled automatically
+# Authentication handled by docker login to ghcr.io
 
 # Build and push directly to registry (standardized patterns)
 make -C docker publish-syslog-health-monitor         # Individual module

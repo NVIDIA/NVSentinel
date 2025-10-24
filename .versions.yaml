@@ -32,7 +32,7 @@
 # Language Versions
 languages:
   go: '1.24'
-  python: '3.11'
+  python: '3.10'
 
 # Build & Package Management
 build_tools:
@@ -56,7 +56,7 @@ linting:
   shellcheck: 'v0.11.0'
   addlicense: 'latest'
 
-# Container Tools (for reference)
+# Container Tools
 container_tools:
   docker_buildx: 'latest'
-  ko: 'latest'
+  ko: 'v0.18.0'

@@ -16,14 +16,11 @@ name: 'Build Container'
 description: 'Build container for validation without publishing'
 
 inputs:
-  safe_ref_name:
-    description: 'Safe reference name for container tags'
-    required: true
-  nvcr_container_repo:
-    description: 'Container registry URL'
+  container_registry:
+    description: 'Container registry URL (always ghcr.io)'
     required: true
   container_org:
-    description: 'Container organization/namespace'
+    description: 'Container organization/namespace (repository owner)'
     required: true
   make_command:
     description: 'Make command to run for building (should use docker-build, not docker-publish)'
@@ -56,14 +53,16 @@ runs:
     - name: Build container (validation only)
       shell: bash
       env:
-        SAFE_REF_NAME: ${{ inputs.safe_ref_name }}
-        NVCR_CONTAINER_REPO: ${{ inputs.nvcr_container_repo }}
-        NGC_ORG: ${{ inputs.container_org }}
+        CONTAINER_REGISTRY: ${{ inputs.container_registry }}
+        CONTAINER_ORG: ${{ inputs.container_org }}
         DOCKER_BUILDKIT: 1
         BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max
       run: |
-        echo "Building container for validation..."
+        # Compute SAFE_REF_NAME from CI_COMMIT_REF_NAME or fallback to GITHUB_REF_NAME
+        SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME:-${GITHUB_REF_NAME}}" | sed 's/\//-/g')
+        export SAFE_REF_NAME
+        echo "Building container for validation with ref: ${SAFE_REF_NAME}..."
         ${{ inputs.make_command }}
 
         # Clean up built images to save space

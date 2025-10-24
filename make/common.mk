@@ -21,9 +21,9 @@ MODULE_PATH := $(subst $(REPO_ROOT)/,,$(CURDIR))
 # DOCKER CONFIGURATION
 # =============================================================================
 
-# Docker registry and organization
-NVCR_CONTAINER_REPO ?= nvcr.io
-NGC_ORG ?= nv-ngc-devops
+# Docker registry and organization (set from environment in CI)
+CONTAINER_REGISTRY ?= ghcr.io
+CONTAINER_ORG ?= $(shell git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$$#\1#p' | tr '[:upper:]' '[:lower:]')
 
 # Git branch handling for image tags
 CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
@@ -40,8 +40,8 @@ ifeq ($(DISABLE_REGISTRY_CACHE),true)
 CACHE_FROM_ARG :=
 CACHE_TO_ARG :=
 else
-CACHE_FROM_ARG := --cache-from=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME)
-CACHE_TO_ARG := --cache-to=type=registry,ref=$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max
+CACHE_FROM_ARG := --cache-from=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME)
+CACHE_TO_ARG := --cache-to=type=registry,ref=$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-buildcache:$(MODULE_NAME),mode=max
 endif
 
 # Docker build arguments

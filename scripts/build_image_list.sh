@@ -27,8 +27,8 @@ input_file="distros/kubernetes/nvsentinel/values.yaml"
 static_prefix=""
 
 # Set default values for container registry and organization
-CONTAINER_REPO=${CONTAINER_REPO:-ghcr.io}
-CONTAINER_ORG=${CONTAINER_ORG:-nvidia}
+CONTAINER_REGISTRY=${CONTAINER_REGISTRY:-ghcr.io}
+CONTAINER_ORG=${CONTAINER_ORG:-$(git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$#\1#p' | tr '[:upper:]' '[:lower:]')}
 # Use provided SAFE_REF_NAME or calculate from CI_COMMIT_REF_NAME or git branch
 if [[ -z "${SAFE_REF_NAME:-}" ]]; then
   CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}
@@ -43,18 +43,18 @@ out="versions.txt"
 # ------- 1) Build dynamic list -------
 # Define array of dynamic images with their respective tags (sorted!)
 declare -a dynamic_images=(
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-file-server-cleanup:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME}"
-  "${CONTAINER_REPO}/${CONTAINER_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-file-server-cleanup:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME}"
 )
 
 # Write dynamic images to output file

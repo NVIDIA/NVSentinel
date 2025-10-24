@@ -5,9 +5,9 @@
 # Export all environment variables to delegated make calls
 export
 
-# Docker configuration
-NVCR_CONTAINER_REPO ?= nvcr.io
-NGC_ORG ?= nv-ngc-devops
+# Docker configuration (set from environment in CI)
+CONTAINER_REGISTRY ?= ghcr.io
+CONTAINER_ORG ?= $(shell git config --get remote.origin.url | sed -n 's#.*/\([^/]*\)/[^/]*$$#\1#p' | tr '[:upper:]' '[:lower:]')
 CI_COMMIT_REF_NAME ?= $(shell git rev-parse --abbrev-ref HEAD)
 SAFE_REF_NAME ?= $(shell echo $(CI_COMMIT_REF_NAME) | sed 's/\//-/g')
 SAFE_REF_NAME := $(if $(SAFE_REF_NAME),$(SAFE_REF_NAME),local)
@@ -217,13 +217,13 @@ setup-buildx:
 .PHONY: clean
 clean:
 	@echo "Removing nvsentinel Docker images..."
-	@docker images --format "{{.Repository}}:{{.Tag}}" | grep "$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-" | xargs -r docker rmi || true
+	@docker images --format "{{.Repository}}:{{.Tag}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-" | xargs -r docker rmi || true
 
 # List built images
 .PHONY: list
 list:
 	@echo "nvsentinel Docker images:"
-	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep "$(NVCR_CONTAINER_REPO)/$(NGC_ORG)/nvsentinel-" || echo "No nvsentinel images found"
+	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-" || echo "No nvsentinel images found"
 
 # Help target
 .PHONY: help
@@ -235,8 +235,8 @@ help:
 	@echo "for its own Docker build configuration."
 	@echo ""
 	@echo "Configuration (environment variables):"
-	@echo "  NVCR_CONTAINER_REPO=$(NVCR_CONTAINER_REPO)"
-	@echo "  NGC_ORG=$(NGC_ORG)"
+	@echo "  CONTAINER_REGISTRY=$(CONTAINER_REGISTRY)"
+	@echo "  CONTAINER_ORG=$(CONTAINER_ORG)"
 	@echo "  SAFE_REF_NAME=$(SAFE_REF_NAME)"
 	@echo "  PLATFORMS=$(PLATFORMS)"
 	@echo ""

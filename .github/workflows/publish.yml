@@ -70,9 +70,9 @@ jobs:
       - name: Build image list
         id: build-list
         env:
-          SAFE_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
-          NVCR_CONTAINER_REPO: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
-          NGC_ORG: ${{ needs.prepare-environment.outputs.container_org }}
+          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CONTAINER_REGISTRY: ghcr.io
+          CONTAINER_ORG: ${{ github.repository_owner }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -150,10 +150,13 @@ jobs:
 
       - name: Publish container for ${{ matrix.component }}
         uses: ./.github/actions/publish-container
+        env:
+          CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+          CONTAINER_REGISTRY: ghcr.io
+          CONTAINER_ORG: ${{ github.repository_owner }}
         with:
-          safe_ref_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.prepare-environment.outputs.safe_ref_name }}
-          nvcr_container_repo: ${{ needs.prepare-environment.outputs.nvcr_container_repo }}
-          container_org: ${{ needs.prepare-environment.outputs.container_org }}
+          container_registry: ghcr.io
+          container_org: ${{ github.repository_owner }}
           make_command: ${{ matrix.make_command }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}
           container_name: ${{ matrix.container_name }}

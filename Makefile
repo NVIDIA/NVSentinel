@@ -689,6 +689,24 @@ cluster-delete: ## Delete local ctlptl-managed cluster and registry
 
 .PHONY: cluster-status
 cluster-status: ## Show cluster and registry status
+	@echo "=== Cluster Status ==="
+	@if command -v ctlptl >/dev/null 2>&1; then \
+		echo "ctlptl clusters:"; \
+		ctlptl get clusters 2>/dev/null || echo "No ctlptl clusters found"; \
+		echo ""; \
+	fi
+	@if command -v kubectl >/dev/null 2>&1 && kubectl cluster-info >/dev/null 2>&1; then \
+		echo "Current kubectl context: $$(kubectl config current-context)"; \
+		echo ""; \
+		echo "Cluster nodes:"; \
+		kubectl get nodes -o wide 2>/dev/null || echo "Unable to get nodes"; \
+		echo ""; \
+		echo "Registry status:"; \
+		docker ps --filter "name=$(REGISTRY_NAME)" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "Registry container not found"; \
+	else \
+		echo "No active cluster (kubectl not configured or cluster not accessible)"; \
+	fi
+	@echo "======================"
 
 # Combined development environment targets
 .PHONY: dev-env
