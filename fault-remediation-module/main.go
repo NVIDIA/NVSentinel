@@ -186,11 +186,8 @@ func startMetricsServer(metricsPort string) {
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+metricsPort, nil)
-		if err != nil {
-			klog.ErrorS(err, "Failed to start metrics server")
-			klog.Flush()
-			os.Exit(1)
+		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
+			klog.ErrorS(err, "Metrics server failed")
 		}
 	}()
 }
@@ -279,6 +276,7 @@ func run() error {
 	startMetricsServer(cfg.metricsPort)
 
 	reconciler.Start(ctx)
+
 	return nil
 }
 
