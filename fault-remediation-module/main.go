@@ -302,6 +302,7 @@ func main() {
 
 	if err := run(); err != nil {
 		klog.ErrorS(err, "Fatal error")
+		klog.Flush()
 		os.Exit(1)
 	}
 }
