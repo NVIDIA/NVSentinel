@@ -45,19 +45,25 @@ var (
 	date    = "unknown"
 )
 
+// getLogLevel returns the slog.Level based on the LOG_LEVEL environment variable.
+func getLogLevel() slog.Level {
+	logLevel := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+
+	switch logLevel {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 // initLogger initializes the structured logger with the appropriate log level.
 func initLogger() {
-	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn", "warning":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
+	level := getLogLevel()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     level,
@@ -67,7 +73,6 @@ func initLogger() {
 	slog.SetDefault(logger)
 }
 
-//nolint:cyclop // todo
 func main() {
 	initLogger()
 	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
@@ -78,83 +83,78 @@ func main() {
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
-
-	flag.Parse()
-
+func loadMongoConfig(mongoClientCertMountPath string) (storewatcher.MongoDBConfig, error) {
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		return fmt.Errorf("MONGODB_URI is not set")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_URI is not set")
 	}
 
 	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDatabase == "" {
-		return fmt.Errorf("MONGODB_DATABASE_NAME is not set")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
 	}
 
 	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoCollection == "" {
-		return fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
-	}
-
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if tokenDatabase == "" {
-		return fmt.Errorf("MONGODB_DATABASE_NAME is not set")
-	}
-
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
-	if tokenCollection == "" {
-		return fmt.Errorf("MONGODB_TOKEN_COLLECTION_NAME is not set")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		return fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		return fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		return fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
-	mongoConfig := storewatcher.MongoDBConfig{
+	return storewatcher.MongoDBConfig{
 		URI:        mongoURI,
 		Database:   mongoDatabase,
 		Collection: mongoCollection,
 		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(*mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
+			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
+			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
+			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
 		},
 		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
 		TotalPingIntervalSeconds:   intervalSeconds,
 		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
 		TotalCACertIntervalSeconds: intervalCACertSeconds,
+	}, nil
+}
+
+func loadTokenConfig() (storewatcher.TokenConfig, error) {
+	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	if tokenDatabase == "" {
+		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
 	}
 
-	tokenConfig := storewatcher.TokenConfig{
+	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
+	if tokenCollection == "" {
+		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_TOKEN_COLLECTION_NAME is not set")
+	}
+
+	return storewatcher.TokenConfig{
 		ClientName:      "health-events-analyzer",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
-	}
+	}, nil
+}
 
-	pipeline := mongo.Pipeline{
+func createPipeline() mongo.Pipeline {
+	return mongo.Pipeline{
 		bson.D{
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "insert"},
@@ -163,23 +163,67 @@ func run() error {
 			}},
 		},
 	}
+}
 
-	var opts []grpc.DialOption
-	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
-	conn, err := grpc.NewClient(*socket, opts...)
+	conn, err := grpc.NewClient(socket, opts...)
 	if err != nil {
-		return fmt.Errorf("failed to dial platform connector UDS %s: %v", *socket, err)
+		return nil, nil, fmt.Errorf("failed to dial platform connector UDS %s: %w", socket, err)
 	}
-	defer conn.Close()
 
 	platformConnectorClient := pb.NewPlatformConnectorClient(conn)
-	publisher := publisher.NewPublisher(platformConnectorClient)
+	pub := publisher.NewPublisher(platformConnectorClient)
+
+	return pub, conn, nil
+}
+
+func startMetricsServer(metricsPort string) {
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
+		err := http.ListenAndServe(":"+metricsPort, nil)
+		if err != nil {
+			slog.Error("Failed to start metrics server", "error", err)
+			os.Exit(1)
+		}
+	}()
+}
+
+func run() error {
+	ctx := context.Background()
+
+	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+
+	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+		"path where the mongodb client cert is mounted")
+
+	flag.Parse()
+
+	mongoConfig, err := loadMongoConfig(*mongoClientCertMountPath)
+	if err != nil {
+		return err
+	}
+
+	tokenConfig, err := loadTokenConfig()
+	if err != nil {
+		return err
+	}
+
+	pipeline := createPipeline()
+
+	pub, conn, err := connectToPlatform(*socket)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
 	// Parse the TOML content
 	tomlConfig, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
-		return fmt.Errorf("error loading TOML config: %v", err)
+		return fmt.Errorf("error loading TOML config: %w", err)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{
@@ -187,22 +231,14 @@ func run() error {
 		TokenConfig:                      tokenConfig,
 		MongoPipeline:                    pipeline,
 		HealthEventsAnalyzerRules:        tomlConfig,
-		Publisher:                        publisher,
+		Publisher:                        pub,
 	}
 
-	reconciler := reconciler.NewReconciler(reconcilerCfg)
+	rec := reconciler.NewReconciler(reconcilerCfg)
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-			os.Exit(1)
-		}
-	}()
+	startMetricsServer(*metricsPort)
 
-	reconciler.Start(ctx)
+	rec.Start(ctx)
 
 	return nil
 }
