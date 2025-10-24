@@ -71,8 +71,6 @@ jobs:
         id: build-list
         env:
           CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -152,11 +150,7 @@ jobs:
         uses: ./.github/actions/publish-container
         env:
           CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
         with:
-          container_registry: ghcr.io
-          container_org: ${{ github.repository_owner }}
           make_command: ${{ matrix.make_command }}
           registry_password: ${{ secrets.GITHUB_TOKEN }}
           container_name: ${{ matrix.container_name }}

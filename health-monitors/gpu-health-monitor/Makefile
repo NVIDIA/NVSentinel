@@ -23,6 +23,9 @@
 IS_GO_MODULE := 0
 HAS_DOCKER := 1
 
+# Python package name (with underscores, not hyphens)
+PYTHON_PACKAGE_NAME := gpu_health_monitor
+
 # GPU-health-monitor specific settings (Python module)
 CLEAN_EXTRA_FILES := gpu_health_monitor.egg-info
 DOCKER_EXTRA_ARGS :=
@@ -76,7 +79,7 @@ ifneq ($(UNAME_S),Linux)
 else
 	@echo "Running tests on $(MODULE_NAME)..."
 	$(PYTHON_TEST_SETUP) \
-	poetry run coverage run --source=$(MODULE_NAME) -m pytest -vv --junitxml=report.xml
+	poetry run coverage run --source=$(PYTHON_PACKAGE_NAME) -m pytest -vv --junitxml=report.xml
 endif
 
 # Override coverage target to skip on non-Linux systems

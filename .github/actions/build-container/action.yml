@@ -16,12 +16,6 @@ name: 'Build Container'
 description: 'Build container for validation without publishing'
 
 inputs:
-  container_registry:
-    description: 'Container registry URL (always ghcr.io)'
-    required: true
-  container_org:
-    description: 'Container organization/namespace (repository owner)'
-    required: true
   make_command:
     description: 'Make command to run for building (should use docker-build, not docker-publish)'
     required: true
@@ -53,8 +47,6 @@ runs:
     - name: Build container (validation only)
       shell: bash
       env:
-        CONTAINER_REGISTRY: ${{ inputs.container_registry }}
-        CONTAINER_ORG: ${{ inputs.container_org }}
         DOCKER_BUILDKIT: 1
         BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max

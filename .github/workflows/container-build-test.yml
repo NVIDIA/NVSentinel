@@ -139,8 +139,6 @@ jobs:
           # Disable --load flag in CI builds (causes issues with multi-platform builds)
           DOCKER_LOAD_ARG: ''
         with:
-          container_registry: ghcr.io
-          container_org: ${{ github.repository_owner }}
           make_command: ${{ matrix.make_command }}
 
   container-build-summary:

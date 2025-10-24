@@ -50,8 +50,6 @@ jobs:
       - name: Build image list
         env:
           CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
         run: |
           chmod +x ./scripts/build_image_list.sh
           ./scripts/build_image_list.sh
@@ -88,11 +86,9 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           CI_COMMIT_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
           HELM_REGISTRY_TYPE: oci
           HELM_OCI_REGISTRY: ghcr.io
-          HELM_OCI_REPOSITORY: ${{ github.repository_owner }}
+          HELM_OCI_REPOSITORY: nvidia
         run: make -C distros/kubernetes helm-publish
 
   create-github-release:
@@ -131,7 +127,7 @@ jobs:
 
             Install with:
             ```
-            helm install nvsentinel oci://ghcr.io/${{ github.repository_owner }}/nvsentinel --version ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+            helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
             ```
           files: |
             versions.txt

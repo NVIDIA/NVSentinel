@@ -16,19 +16,9 @@ name: 'Publish Container'
 description: 'Complete container publishing workflow with Docker setup, login, and build'
 
 inputs:
-  container_registry:
-    description: 'Container registry URL (always ghcr.io)'
-    required: true
-  container_org:
-    description: 'Container organization/namespace (repository owner)'
-    required: true
   make_command:
     description: 'Make command to run for building and publishing'
     required: true
-  registry_username:
-    description: 'Registry username (default: github.actor)'
-    required: false
-    default: ${{ github.actor }}
   registry_password:
     description: 'Registry password'
     required: true
@@ -58,16 +48,14 @@ runs:
     - name: Log in to Container Registry
       uses: docker/login-action@v3
       with:
-        registry: ${{ inputs.container_registry }}
-        username: ${{ inputs.registry_username }}
+        registry: ghcr.io
+        username: ${{ github.actor }}
         password: ${{ inputs.registry_password }}
 
     - name: Build and publish container
       shell: bash
       id: image
       env:
-        CONTAINER_REGISTRY: ${{ inputs.container_registry }}
-        CONTAINER_ORG: ${{ inputs.container_org }}
         DOCKER_BUILDKIT: 1
         BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max
@@ -76,9 +64,9 @@ runs:
 
         # Compute SAFE_REF_NAME the same way the Makefile does
         SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME:-${GITHUB_REF_NAME}}" | sed 's/\//-/g')
-        DIGEST="$(crane digest ${{ inputs.container_registry }}/${{ inputs.container_org }}/${{ inputs.container_name }}:${SAFE_REF_NAME}${{ inputs.tag_suffix }})"
+        DIGEST="$(crane digest ghcr.io/nvidia/${{ inputs.container_name }}:${SAFE_REF_NAME}${{ inputs.tag_suffix }})"
         echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-        echo "name=${{ inputs.container_registry }}/${{ inputs.container_org }}/${{ inputs.container_name }}" >> "$GITHUB_OUTPUT"
+        echo "name=ghcr.io/nvidia/${{ inputs.container_name }}" >> "$GITHUB_OUTPUT"
 
         # Move cache to prevent it from growing indefinitely
         if [ -d "/tmp/.buildx-cache-new" ]; then

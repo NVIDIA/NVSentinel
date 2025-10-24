@@ -206,8 +206,6 @@ jobs:
       - name: Create cluster for E2E tests
         env:
           CI_COMMIT_REF_NAME: ${{ github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
           CTLPTL_YAML: ctlptl-config.yaml
           # Make cluster names unique per architecture to avoid conflicts in parallel runs
           CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}"
@@ -223,8 +221,6 @@ jobs:
       - name: Run E2E tests
         env:
           CI_COMMIT_REF_NAME: ${{ github.ref_name }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository_owner }}
           CTLPTL_YAML: ctlptl-config.yaml
           # Use same cluster name suffix for consistency
           CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}"
