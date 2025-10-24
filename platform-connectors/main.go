@@ -179,6 +179,7 @@ func main() {
 		if k8sRingBuffer != nil {
 			k8sRingBuffer.ShutDownHealthMetricQueue()
 		}
+
 		lis.Close()
 		os.Remove(*socket)
 	}
