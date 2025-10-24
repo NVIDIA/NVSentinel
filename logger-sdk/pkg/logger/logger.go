@@ -43,7 +43,8 @@ func NewStructuredLogger(module, version, level string) *slog.Logger {
 	})).With("module", module, "version", version)
 }
 
-// SetDefaultStructuredLogger initializes the structured logger with the appropriate log level and sets it as the default logger.
+// SetDefaultStructuredLogger initializes the structured logger with the
+// appropriate log level and sets it as the default logger.
 // Defined module name and version are included in the logger's context.
 // Parameters:
 //   - module: The name of the module/application using the logger.
@@ -83,5 +84,6 @@ func ParseLogLevel(level string) slog.Level {
 	default:
 		lev = slog.LevelInfo
 	}
+
 	return lev
 }

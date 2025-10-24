@@ -61,7 +61,9 @@ GO_MODULES := \
 	node-drainer-module \
 	fault-remediation-module \
 	store-client-sdk \
-	statemanager
+	statemanager \
+	logger-sdk
+
 
 # Python modules
 PYTHON_MODULES := \
@@ -440,6 +442,11 @@ lint-test-store-client-sdk:
 lint-test-statemanager:
 	@echo "Linting and testing statemanager..."
 	$(MAKE) -C statemanager lint-test
+
+.PHONY: lint-test-logger-sdk
+lint-test-logger-sdk:
+	@echo "Linting and testing logger-sdk..."
+	$(MAKE) -C logger-sdk lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules
