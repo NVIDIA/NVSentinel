@@ -56,6 +56,17 @@ var (
 	date    = "unknown"
 )
 
+// main is the entry point for the CSP Health Monitor application.
+func main() {
+	logger.SetDefaultStructuredLogger("csp-health-monitor", version)
+	slog.Info("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("CSP Health Monitor exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
 // startActiveMonitorAndLog starts the provided CSP monitor in a new goroutine
 // and logs its lifecycle and any runtime errors.
 func startActiveMonitorAndLog(
@@ -90,16 +101,6 @@ func startActiveMonitorAndLog(
 			slog.Info("Monitor shut down cleanly", "name", activeMonitor.GetName())
 		}
 	}()
-}
-
-func main() {
-	logger.SetDefault("csp-health-monitor", version)
-	slog.Info("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
-
-	if err := run(); err != nil {
-		slog.Error("CSP Health Monitor exited with error", "error", err)
-		os.Exit(1)
-	}
 }
 
 func run() error {

@@ -45,7 +45,7 @@ var (
 )
 
 func main() {
-	logger.SetDefault("labeler-module", version)
+	logger.SetDefaultStructuredLogger("labeler-module", version)
 	slog.Info("Starting labeler-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

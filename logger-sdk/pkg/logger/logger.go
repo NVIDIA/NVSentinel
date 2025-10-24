@@ -25,7 +25,7 @@ const (
 	EnvVarLogLevel = "LOG_LEVEL"
 )
 
-// New creates a new structured logger with the specified log level
+// NewStructuredLogger creates a new structured logger with the specified log level
 // Defined module name and version are included in the logger's context.
 // Parameters:
 //   - module: The name of the module/application using the logger.
@@ -34,7 +34,7 @@ const (
 //
 // Returns:
 //   - *slog.Logger: A pointer to the configured slog.Logger instance.
-func New(module, version, level string) *slog.Logger {
+func NewStructuredLogger(module, version, level string) *slog.Logger {
 	lev := ParseLogLevel(level)
 
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -43,25 +43,25 @@ func New(module, version, level string) *slog.Logger {
 	})).With("module", module, "version", version)
 }
 
-// SetDefault initializes the structured logger with the appropriate log level and sets it as the default logger.
+// SetDefaultStructuredLogger initializes the structured logger with the appropriate log level and sets it as the default logger.
 // Defined module name and version are included in the logger's context.
 // Parameters:
 //   - module: The name of the module/application using the logger.
 //   - version: The version of the module/application (e.g., "v1.0.0").
 //
 // Derives log level from the LOG_LEVEL environment variable.
-func SetDefault(module, version string) {
-	SetDefaultWithLevel(module, version, os.Getenv(EnvVarLogLevel))
+func SetDefaultStructuredLogger(module, version string) {
+	SetDefaultStructuredLoggerWithLevel(module, version, os.Getenv(EnvVarLogLevel))
 }
 
-// SetDefaultWithLevel initializes the structured logger with the specified log level
+// SetDefaultStructuredLoggerWithLevel initializes the structured logger with the specified log level
 // Defined module name and version are included in the logger's context.
 // Parameters:
 //   - module: The name of the module/application using the logger.
 //   - version: The version of the module/application (e.g., "v1.0.0").
 //   - level: The log level as a string (e.g., "debug", "info", "warn", "error").
-func SetDefaultWithLevel(module, version, level string) {
-	slog.SetDefault(New(module, version, level))
+func SetDefaultStructuredLoggerWithLevel(module, version, level string) {
+	slog.SetDefault(NewStructuredLogger(module, version, level))
 }
 
 // ParseLogLevel converts a string representation of a log level into a slog.Level.

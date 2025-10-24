@@ -53,7 +53,7 @@ var (
 )
 
 func main() {
-	logger.SetDefault("platform-connectors", version)
+	logger.SetDefaultStructuredLogger("platform-connectors", version)
 	slog.Info("Starting platform-connectors", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

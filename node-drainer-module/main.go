@@ -36,7 +36,7 @@ var (
 )
 
 func main() {
-	logger.SetDefault("node-drainer-module", version)
+	logger.SetDefaultStructuredLogger("node-drainer-module", version)
 	slog.Info("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

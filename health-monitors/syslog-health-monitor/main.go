@@ -68,7 +68,7 @@ func main() {
 
 	flag.Parse()
 
-	logger.SetDefault("syslog-health-monitor", version)
+	logger.SetDefaultStructuredLogger("syslog-health-monitor", version)
 	slog.Info("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
 
 	slog.Info("Parsed command line flags successfully")

@@ -283,7 +283,7 @@ func run() error {
 }
 
 func main() {
-	logger.SetDefault("fault-remediation-module", version)
+	logger.SetDefaultStructuredLogger("fault-remediation-module", version)
 	slog.Info("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

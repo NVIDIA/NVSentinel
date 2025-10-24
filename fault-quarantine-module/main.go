@@ -44,7 +44,7 @@ var (
 )
 
 func main() {
-	logger.SetDefault("fault-quarantine-module", version)
+	logger.SetDefaultStructuredLogger("fault-quarantine-module", version)
 	slog.Info("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

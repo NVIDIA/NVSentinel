@@ -46,7 +46,7 @@ var (
 )
 
 func main() {
-	logger.SetDefault("health-events-analyzer", version)
+	logger.SetDefaultStructuredLogger("health-events-analyzer", version)
 	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {

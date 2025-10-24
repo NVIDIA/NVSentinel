@@ -27,7 +27,6 @@ import (
 
 	"log/slog"
 
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -38,6 +37,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
 	trigger "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/triggerengine"
+	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 )
 
@@ -78,6 +78,16 @@ func parseFlags() *appConfig {
 	flag.Parse()
 
 	return cfg
+}
+
+func main() {
+	logger.SetDefaultStructuredLogger("maintenance-notifier", version)
+	slog.Info("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
 }
 
 func logStartupInfo(cfg *appConfig) {
@@ -156,16 +166,6 @@ func setupKubernetesClient() kubernetes.Interface {
 	slog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
 
 	return k8sClient
-}
-
-func main() {
-	logger.SetDefault("maintenance-notifier", version)
-	slog.Info("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
-
-	if err := run(); err != nil {
-		slog.Error("Fatal error", "error", err)
-		os.Exit(1)
-	}
 }
 
 func run() error {
