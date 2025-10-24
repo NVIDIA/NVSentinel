@@ -24,15 +24,24 @@ ENV CGO_ENABLED=0
 
 WORKDIR /go/src
 
-COPY fault-quarantine-module ./fault-quarantine-module
-COPY platform-connectors ./platform-connectors
-COPY statemanager ./statemanager
-COPY store-client-sdk/ ./store-client-sdk/
+# Copy go.mod and go.sum files for all dependencies first
+COPY data-models/go.mod data-models/go.sum ./data-models/
+COPY platform-connectors/go.mod platform-connectors/go.sum ./platform-connectors/
+COPY statemanager/go.mod statemanager/go.sum ./statemanager/
+COPY store-client-sdk/go.mod store-client-sdk/go.sum ./store-client-sdk/
+COPY fault-quarantine-module/go.mod fault-quarantine-module/go.sum ./fault-quarantine-module/
 
 WORKDIR /go/src/fault-quarantine-module
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
+
+# Copy the source code after go mod download
+COPY fault-quarantine-module/ .
+COPY platform-connectors/ ../platform-connectors/
+COPY statemanager/ ../statemanager/
+COPY store-client-sdk/ ../store-client-sdk/
+COPY data-models/ ../data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o faultquarantine main.go

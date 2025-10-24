@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // EventKey represents the identifying fields of a HealthEvent for entity-level matching
@@ -39,20 +39,20 @@ type HealthEventKey struct {
 
 // HealthEventsAnnotationMap represents a collection of unique health events
 type HealthEventsAnnotationMap struct {
-	Events map[HealthEventKey]*platformconnectorprotos.HealthEvent
+	Events map[HealthEventKey]*protos.HealthEvent
 }
 
 // NewHealthEventsAnnotationMap creates a new HealthEventsAnnotationMap instance
 func NewHealthEventsAnnotationMap() *HealthEventsAnnotationMap {
 	return &HealthEventsAnnotationMap{
-		Events: make(map[HealthEventKey]*platformconnectorprotos.HealthEvent),
+		Events: make(map[HealthEventKey]*protos.HealthEvent),
 	}
 }
 
 // createEventKeyForEntity creates a comparable key for a specific entity in a HealthEvent
 func createEventKeyForEntity(
-	event *platformconnectorprotos.HealthEvent,
-	entity *platformconnectorprotos.Entity,
+	event *protos.HealthEvent,
+	entity *protos.Entity,
 ) HealthEventKey {
 	key := HealthEventKey{
 		Agent:          event.Agent,
@@ -72,7 +72,7 @@ func createEventKeyForEntity(
 }
 
 // createEventKeys creates keys for all entities in a HealthEvent
-func createEventKeys(event *platformconnectorprotos.HealthEvent) []HealthEventKey {
+func createEventKeys(event *protos.HealthEvent) []HealthEventKey {
 	if len(event.EntitiesImpacted) == 0 {
 		// If no entities, create a single key without entity info
 		return []HealthEventKey{createEventKeyForEntity(event, nil)}
@@ -89,7 +89,7 @@ func createEventKeys(event *platformconnectorprotos.HealthEvent) []HealthEventKe
 
 // AddOrUpdateEvent adds a health event for each impacted entity
 // Returns true if at least one entity was added/updated
-func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *platformconnectorprotos.HealthEvent) bool {
+func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *protos.HealthEvent) bool {
 	keys := createEventKeys(event)
 	added := false
 
@@ -108,8 +108,8 @@ func (he *HealthEventsAnnotationMap) AddOrUpdateEvent(event *platformconnectorpr
 // If the event has no entities (empty EntitiesImpacted), it performs check-level matching
 // to find any stored event with the same Agent/ComponentClass/CheckName/Version
 func (he *HealthEventsAnnotationMap) GetEvent(
-	event *platformconnectorprotos.HealthEvent,
-) (*platformconnectorprotos.HealthEvent, bool) {
+	event *protos.HealthEvent,
+) (*protos.HealthEvent, bool) {
 	keys := createEventKeys(event)
 
 	// Try entity-level matching first
@@ -131,8 +131,8 @@ func (he *HealthEventsAnnotationMap) GetEvent(
 // getEventByCheck finds any stored event matching the check (ignoring entities)
 // Used for check-level healthy events that clear all entities for a check
 func (he *HealthEventsAnnotationMap) getEventByCheck(
-	event *platformconnectorprotos.HealthEvent,
-) (*platformconnectorprotos.HealthEvent, bool) {
+	event *protos.HealthEvent,
+) (*protos.HealthEvent, bool) {
 	for key, storedEvent := range he.Events {
 		if key.Agent == event.Agent &&
 			key.ComponentClass == event.ComponentClass &&
@@ -147,7 +147,7 @@ func (he *HealthEventsAnnotationMap) getEventByCheck(
 }
 
 // HasMatchingEntities checks if the event has any entities that match stored events
-func (he *HealthEventsAnnotationMap) HasMatchingEntities(event *platformconnectorprotos.HealthEvent) bool {
+func (he *HealthEventsAnnotationMap) HasMatchingEntities(event *protos.HealthEvent) bool {
 	keys := createEventKeys(event)
 	for _, key := range keys {
 		if _, exists := he.Events[key]; exists {
@@ -172,7 +172,7 @@ func (he *HealthEventsAnnotationMap) Count() int {
 // This is used when a healthy event clears specific entity failures
 // If the event has no entities (empty EntitiesImpacted), it removes ALL entities for that check
 // This handles check-level healthy events that mean "all entities for this check are healthy"
-func (he *HealthEventsAnnotationMap) RemoveEvent(event *platformconnectorprotos.HealthEvent) int {
+func (he *HealthEventsAnnotationMap) RemoveEvent(event *protos.HealthEvent) int {
 	keys := createEventKeys(event)
 
 	// If no entities specified (check-level healthy event), remove all entities for this check
@@ -199,7 +199,7 @@ func (he *HealthEventsAnnotationMap) RemoveEvent(event *platformconnectorprotos.
 
 // removeAllEntitiesForCheck removes all entities for a specific check
 // Used when a healthy event has no entities, meaning "all entities for this check are healthy"
-func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(event *platformconnectorprotos.HealthEvent) int {
+func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(event *protos.HealthEvent) int {
 	removed := 0
 	keysToRemove := []HealthEventKey{}
 
@@ -224,7 +224,7 @@ func (he *HealthEventsAnnotationMap) removeAllEntitiesForCheck(event *platformco
 }
 
 // RemoveEntitiesForCheck removes specific entities for a check
-func (he *HealthEventsAnnotationMap) RemoveEntitiesForCheck(event *platformconnectorprotos.HealthEvent) {
+func (he *HealthEventsAnnotationMap) RemoveEntitiesForCheck(event *protos.HealthEvent) {
 	// Remove each entity specified in the event
 	keys := createEventKeys(event)
 	for _, key := range keys {
@@ -256,8 +256,8 @@ func (he *HealthEventsAnnotationMap) GetAllCheckNames() []string {
 func (he *HealthEventsAnnotationMap) MarshalJSON() ([]byte, error) {
 	// Use a map to deduplicate event pointers
 	// Multiple entities can reference the same event object, we only want unique events
-	seen := make(map[*platformconnectorprotos.HealthEvent]bool)
-	events := make([]*platformconnectorprotos.HealthEvent, 0, len(he.Events))
+	seen := make(map[*protos.HealthEvent]bool)
+	events := make([]*protos.HealthEvent, 0, len(he.Events))
 
 	for _, event := range he.Events {
 		if !seen[event] {
@@ -272,14 +272,14 @@ func (he *HealthEventsAnnotationMap) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON reconstructs the map from JSON data (slice of events)
 func (he *HealthEventsAnnotationMap) UnmarshalJSON(data []byte) error {
-	var events []*platformconnectorprotos.HealthEvent
+	var events []*protos.HealthEvent
 	if err := json.Unmarshal(data, &events); err != nil {
 		return fmt.Errorf("failed to unmarshal health events: %w", err)
 	}
 
 	// Initialize the map if needed
 	if he.Events == nil {
-		he.Events = make(map[HealthEventKey]*platformconnectorprotos.HealthEvent)
+		he.Events = make(map[HealthEventKey]*protos.HealthEvent)
 	}
 
 	// Clear existing events and add the unmarshaled ones

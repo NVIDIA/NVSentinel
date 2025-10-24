@@ -13,12 +13,12 @@
 // limitations under the License.
 
 syntax = "proto3";
-package platformconnector;
+package datamodels;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 
-option go_package = "github.com/nvidia/nvsentinel/platform-connectors";
+option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
 
 service PlatformConnector {
   rpc HealthEventOccuredV1(HealthEvents) returns (google.protobuf.Empty) {}

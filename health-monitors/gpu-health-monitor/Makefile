@@ -205,6 +205,44 @@ format:
 	@echo "Running Black formatter on $(MODULE_NAME)..."
 	poetry run black .
 
+format-protobuf-files:
+	@echo "Formatting local protobuf files for $(MODULE_NAME)..."
+	poetry run black gpu_health_monitor/protos/ || true
+
+protos-generate: protos-clean
+	@echo "Generating protobuf files for $(MODULE_NAME)..."
+	@echo "=== Tool Versions ==="
+	@echo "protoc: $$(protoc --version)"
+	@if command -v poetry >/dev/null 2>&1; then \
+		grpcio_tools_version=$$(poetry run python -c "import importlib.metadata; print('grpcio-tools', importlib.metadata.version('grpcio-tools'))" 2>/dev/null || echo "grpcio-tools: not installed"); \
+		echo "$$grpcio_tools_version"; \
+		black_version=$$(poetry run black --version 2>/dev/null | head -1 || echo "black: not installed"); \
+		echo "$$black_version"; \
+	else \
+		echo "grpcio-tools: Poetry not available"; \
+		echo "black: Poetry not available"; \
+	fi
+	@echo "========================"
+	# Generate Python protobuf files
+	@echo "Generating Python protobuf files for $(MODULE_NAME)..."
+	@mkdir -p gpu_health_monitor/protos
+	python3 -m grpc_tools.protoc -I ../../data-models/protobufs/ --python_out=gpu_health_monitor/protos --pyi_out=gpu_health_monitor/protos --grpc_python_out=gpu_health_monitor/protos ../../data-models/protobufs/health_event.proto
+	# Fix relative imports in generated gRPC files
+	@SED_CMD=$$(command -v gsed 2>/dev/null || command -v sed); \
+	$$SED_CMD -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py
+	@touch gpu_health_monitor/protos/__init__.py
+	# Format generated protobuf files with Black
+	@echo "Formatting generated protobuf files..."
+	poetry run black gpu_health_monitor/protos/ || true
+
+# Clean generated protobuf files
+.PHONY: protos-clean
+protos-clean:
+	@echo "Cleaning generated protobuf files in $(MODULE_NAME)..."
+	@echo "Removing Python protobuf files (*_pb2.py, *_pb2_grpc.py, *_pb2.pyi)..."
+	find gpu_health_monitor/protos/ \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete 2>/dev/null || true
+	rm -rf ./health-monitors/gpu-health-monitor/.venv || true
+
 # =============================================================================
 # LEGACY COMPATIBILITY
 # =============================================================================
@@ -257,6 +295,10 @@ help:
 	@echo "  test       - Run tests with coverage"
 	@echo "  coverage   - Generate coverage reports"
 	@echo "  build      - Build Python package"
+	@echo ""
+	@echo "Protobuf targets:"
+	@echo "  protos-generate       - Generate Python protobuf files from .proto sources"
+	@echo "  format-protobuf-files - Format generated protobuf files with Black"
 	@echo ""
 	@echo "Docker targets (dual DCGM support):"
 	@echo "  docker-build         - Build both DCGM 3.x and 4.x images locally"

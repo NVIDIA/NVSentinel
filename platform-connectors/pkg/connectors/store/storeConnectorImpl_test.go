@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"

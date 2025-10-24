@@ -25,6 +25,7 @@ import (
 	"text/template"
 	"time"
 
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"

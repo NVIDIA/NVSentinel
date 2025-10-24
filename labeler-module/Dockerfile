@@ -25,11 +25,13 @@ ENV CGO_ENABLED=0
 WORKDIR /go/src/labeler
 
 COPY labeler-module/go.mod labeler-module/go.sum ./
+COPY data-models/go.mod data-models/go.sum ./data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY labeler-module/ .
+COPY data-models/ ../data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o labeler main.go

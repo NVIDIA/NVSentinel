@@ -22,14 +22,20 @@ FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0
 
-WORKDIR /go/src/simple-health-client
+WORKDIR /go/src
 
-COPY tilt/simple-health-client/go.mod tilt/simple-health-client/go.sum ./
+# Copy go.mod and go.sum files for all dependencies first
+COPY data-models/go.mod data-models/go.sum ./data-models/
+COPY tilt/simple-health-client/go.mod tilt/simple-health-client/go.sum ./tilt/simple-health-client/
+
+WORKDIR /go/src/tilt/simple-health-client
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
+# Copy the source code after go mod download
 COPY tilt/simple-health-client/ .
+COPY data-models/ ../../data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
@@ -38,6 +44,6 @@ FROM ${IMG}:${TAG}
 
 WORKDIR /app
 
-COPY --from=builder /go/src/simple-health-client/simple-health-client .
+COPY --from=builder /go/src/tilt/simple-health-client/simple-health-client .
 
 ENTRYPOINT ["/app/simple-health-client"]

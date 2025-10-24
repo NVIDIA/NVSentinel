@@ -13,9 +13,7 @@
 # limitations under the License.
 
 from gpu_health_monitor.dcgm_watcher import dcgm
-from unittest.mock import MagicMock, patch
-from threading import Event, Thread
-from ctypes import *
+from threading import Event
 import grpc
 import time
 import unittest
@@ -23,7 +21,11 @@ from typing import Any
 from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
-from gpu_health_monitor.platform_connector.protos import platformconnector_pb2, platformconnector_pb2_grpc
+
+from gpu_health_monitor.protos import (
+    health_event_pb2 as platformconnector_pb2,
+    health_event_pb2_grpc as platformconnector_pb2_grpc,
+)
 from google.protobuf.timestamp_pb2 import Timestamp
 
 socket_path = "/tmp/nvsentinel.sock"
@@ -91,6 +93,8 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
@@ -222,6 +226,8 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
@@ -334,6 +340,8 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,

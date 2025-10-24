@@ -42,6 +42,9 @@ on:
       grpcio_tools_version:
         description: 'grpcio-tools version'
         value: ${{ jobs.load-versions.outputs.grpcio_tools_version }}
+      black_version:
+        description: 'black version'
+        value: ${{ jobs.load-versions.outputs.black_version }}
       shellcheck_version:
         description: 'shellcheck version'
         value: ${{ jobs.load-versions.outputs.shellcheck_version }}
@@ -59,10 +62,22 @@ jobs:
       protoc_gen_go_version: ${{ steps.load-versions.outputs.protoc_gen_go_version }}
       protoc_gen_go_grpc_version: ${{ steps.load-versions.outputs.protoc_gen_go_grpc_version }}
       grpcio_tools_version: ${{ steps.load-versions.outputs.grpcio_tools_version }}
+      black_version: ${{ steps.load-versions.outputs.black_version }}
       shellcheck_version: ${{ steps.load-versions.outputs.shellcheck_version }}
     steps:
       - uses: actions/checkout@v4
-      
+
+      - name: Prepare environment variables
+        id: prepare
+        run: |
+          # Set safe ref name for container tags
+          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          echo "safe_ref_name=${SAFE_REF_NAME}" >> $GITHUB_OUTPUT
+
+          # Set container repository paths
+          echo "nvcr_container_repo=nvcr.io/${{ env.CONTAINER_ORG }}/nvsentinel" >> $GITHUB_OUTPUT
+          echo "container_org=${{ env.CONTAINER_ORG }}" >> $GITHUB_OUTPUT
+
       - name: Load tool versions from .versions.yaml
         id: load-versions
         run: |
@@ -79,6 +94,7 @@ jobs:
           echo "protoc_gen_go_version=$(yq '.protobuf.protoc_gen_go' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "protoc_gen_go_grpc_version=$(yq '.protobuf.protoc_gen_go_grpc' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "grpcio_tools_version=$(yq '.protobuf.grpcio_tools' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "black_version=$(yq '.linting.black' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "shellcheck_version=$(yq '.linting.shellcheck' .versions.yaml)" >> $GITHUB_OUTPUT
           
           echo "Loaded versions from .versions.yaml:"

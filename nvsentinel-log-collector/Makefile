@@ -124,6 +124,33 @@ docker-build-file-server-cleanup: setup-buildx
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
+# Local-only Docker build (no remote cache, faster for local development)
+.PHONY: docker-build-local
+docker-build-local: setup-buildx docker-build-local-log-collector docker-build-local-file-server-cleanup
+
+# Build log-collector image (local only, no remote cache)
+.PHONY: docker-build-local-log-collector
+docker-build-local-log-collector: setup-buildx
+	@echo "Building Docker image for log-collector (local, no remote cache)..."
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--network=host \
+		$(DOCKER_LOAD_ARG) \
+		-t log-collector:local \
+		.
+
+# Build file-server-cleanup image (local only, no remote cache)
+.PHONY: docker-build-local-file-server-cleanup
+docker-build-local-file-server-cleanup: setup-buildx
+	@echo "Building Docker image for file-server-cleanup (local, no remote cache)..."
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--network=host \
+		$(DOCKER_LOAD_ARG) \
+		-f Dockerfile.cleanup \
+		-t file-server-cleanup:local \
+		.
+
 # Docker publish target
 .PHONY: docker-publish
 docker-publish: setup-buildx docker-publish-log-collector docker-publish-file-server-cleanup
@@ -197,6 +224,7 @@ help:
 	@echo ""
 	@echo "Docker targets:"
 	@echo "  docker-build                      - Build both images (local development)"
+	@echo "  docker-build-local                - Build both images (local only, no remote cache)"
 	@echo "  docker-build-log-collector        - Build log-collector image only (local)"
 	@echo "  docker-build-file-server-cleanup  - Build file-server-cleanup image only (local)"
 	@echo "  docker-publish                    - Build and publish both images (CI/production)"

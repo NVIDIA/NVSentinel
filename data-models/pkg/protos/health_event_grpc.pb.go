@@ -16,9 +16,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v6.33.0
-// source: platformconnector.proto
+// source: health_event.proto
 
-package platform_connectors
+package protos
 
 import (
 	context "context"
@@ -34,7 +34,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PlatformConnector_HealthEventOccuredV1_FullMethodName = "/platformconnector.PlatformConnector/HealthEventOccuredV1"
+	PlatformConnector_HealthEventOccuredV1_FullMethodName = "/datamodels.PlatformConnector/HealthEventOccuredV1"
 )
 
 // PlatformConnectorClient is the client API for PlatformConnector service.
@@ -123,7 +123,7 @@ func _PlatformConnector_HealthEventOccuredV1_Handler(srv interface{}, ctx contex
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var PlatformConnector_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "platformconnector.PlatformConnector",
+	ServiceName: "datamodels.PlatformConnector",
 	HandlerType: (*PlatformConnectorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -132,5 +132,5 @@ var PlatformConnector_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "platformconnector.proto",
+	Metadata: "health_event.proto",
 }

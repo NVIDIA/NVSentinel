@@ -68,12 +68,11 @@ require (
 	github.com/xdg-go/scram v1.1.2 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
+	golang.org/x/mod v0.29.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
 	golang.org/x/oauth2 v0.32.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
@@ -106,11 +105,11 @@ replace github.com/nvidia/nvsentinel/platform-connectors => ../platform-connecto
 
 replace github.com/nvidia/nvsentinel/store-client-sdk => ../store-client-sdk
 
+replace github.com/nvidia/nvsentinel/data-models => ../data-models
+
 replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
 
 replace github.com/nvidia/nvsentinel/health-events-analyzer => ../health-events-analyzer
-
-replace github.com/nvidia/nvsentinel/fault-quarantine-module => ../fault-quarantine-module
 
 replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 

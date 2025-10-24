@@ -18,8 +18,6 @@ require (
 
 require (
 	github.com/kr/text v0.2.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
@@ -66,9 +64,9 @@ replace github.com/nvidia/nvsentinel/platform-connectors => ../platform-connecto
 
 replace github.com/nvidia/nvsentinel/store-client-sdk => ../store-client-sdk
 
-replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
+replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
-replace github.com/nvidia/nvsentinel/health-events-analyzer => ../health-events-analyzer
+replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
 
 replace github.com/nvidia/nvsentinel/fault-quarantine-module => ../fault-quarantine-module
 

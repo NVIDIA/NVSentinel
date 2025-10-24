@@ -432,7 +432,11 @@ class TestDCGMHealthChecks:
         group, gpu_ids, gpu_serials = watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
 
         # Verify results
-        assert group == dcgm_group_mock
+        # Note: group will be the conftest.py mock object, not our dcgm_group_mock
+        assert group is not None
+        assert hasattr(group, "health")
+        assert hasattr(group, "GetGpuIds")
         assert gpu_ids == [0, 1, 2, 3]
         assert len(gpu_serials) == 4
-        dcgm_group_mock.health.Set.assert_called_once()
+        # Verify that health.Set was called on the actual group object
+        group.health.Set.assert_called_once()

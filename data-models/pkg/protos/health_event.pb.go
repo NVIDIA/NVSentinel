@@ -16,9 +16,9 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: platformconnector.proto
+// source: health_event.proto
 
-package platform_connectors
+package protos
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -82,11 +82,11 @@ func (x RecommenedAction) String() string {
 }
 
 func (RecommenedAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_platformconnector_proto_enumTypes[0].Descriptor()
+	return file_health_event_proto_enumTypes[0].Descriptor()
 }
 
 func (RecommenedAction) Type() protoreflect.EnumType {
-	return &file_platformconnector_proto_enumTypes[0]
+	return &file_health_event_proto_enumTypes[0]
 }
 
 func (x RecommenedAction) Number() protoreflect.EnumNumber {
@@ -95,7 +95,7 @@ func (x RecommenedAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RecommenedAction.Descriptor instead.
 func (RecommenedAction) EnumDescriptor() ([]byte, []int) {
-	return file_platformconnector_proto_rawDescGZIP(), []int{0}
+	return file_health_event_proto_rawDescGZIP(), []int{0}
 }
 
 type HealthEvents struct {
@@ -108,7 +108,7 @@ type HealthEvents struct {
 
 func (x *HealthEvents) Reset() {
 	*x = HealthEvents{}
-	mi := &file_platformconnector_proto_msgTypes[0]
+	mi := &file_health_event_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -120,7 +120,7 @@ func (x *HealthEvents) String() string {
 func (*HealthEvents) ProtoMessage() {}
 
 func (x *HealthEvents) ProtoReflect() protoreflect.Message {
-	mi := &file_platformconnector_proto_msgTypes[0]
+	mi := &file_health_event_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -133,7 +133,7 @@ func (x *HealthEvents) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEvents.ProtoReflect.Descriptor instead.
 func (*HealthEvents) Descriptor() ([]byte, []int) {
-	return file_platformconnector_proto_rawDescGZIP(), []int{0}
+	return file_health_event_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *HealthEvents) GetVersion() uint32 {
@@ -160,7 +160,7 @@ type Entity struct {
 
 func (x *Entity) Reset() {
 	*x = Entity{}
-	mi := &file_platformconnector_proto_msgTypes[1]
+	mi := &file_health_event_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -172,7 +172,7 @@ func (x *Entity) String() string {
 func (*Entity) ProtoMessage() {}
 
 func (x *Entity) ProtoReflect() protoreflect.Message {
-	mi := &file_platformconnector_proto_msgTypes[1]
+	mi := &file_health_event_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -185,7 +185,7 @@ func (x *Entity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Entity.ProtoReflect.Descriptor instead.
 func (*Entity) Descriptor() ([]byte, []int) {
-	return file_platformconnector_proto_rawDescGZIP(), []int{1}
+	return file_health_event_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Entity) GetEntityType() string {
@@ -211,7 +211,7 @@ type HealthEvent struct {
 	IsFatal             bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
 	IsHealthy           bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
 	Message             string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	RecommendedAction   RecommenedAction       `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=platformconnector.RecommenedAction" json:"recommendedAction,omitempty"`
+	RecommendedAction   RecommenedAction       `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommenedAction" json:"recommendedAction,omitempty"`
 	ErrorCode           []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
 	EntitiesImpacted    []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
 	Metadata            map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -225,7 +225,7 @@ type HealthEvent struct {
 
 func (x *HealthEvent) Reset() {
 	*x = HealthEvent{}
-	mi := &file_platformconnector_proto_msgTypes[2]
+	mi := &file_health_event_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -237,7 +237,7 @@ func (x *HealthEvent) String() string {
 func (*HealthEvent) ProtoMessage() {}
 
 func (x *HealthEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_platformconnector_proto_msgTypes[2]
+	mi := &file_health_event_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -250,7 +250,7 @@ func (x *HealthEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthEvent.ProtoReflect.Descriptor instead.
 func (*HealthEvent) Descriptor() ([]byte, []int) {
-	return file_platformconnector_proto_rawDescGZIP(), []int{2}
+	return file_health_event_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *HealthEvent) GetVersion() uint32 {
@@ -368,7 +368,7 @@ type BehaviourOverrides struct {
 
 func (x *BehaviourOverrides) Reset() {
 	*x = BehaviourOverrides{}
-	mi := &file_platformconnector_proto_msgTypes[3]
+	mi := &file_health_event_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -380,7 +380,7 @@ func (x *BehaviourOverrides) String() string {
 func (*BehaviourOverrides) ProtoMessage() {}
 
 func (x *BehaviourOverrides) ProtoReflect() protoreflect.Message {
-	mi := &file_platformconnector_proto_msgTypes[3]
+	mi := &file_health_event_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -393,7 +393,7 @@ func (x *BehaviourOverrides) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BehaviourOverrides.ProtoReflect.Descriptor instead.
 func (*BehaviourOverrides) Descriptor() ([]byte, []int) {
-	return file_platformconnector_proto_rawDescGZIP(), []int{3}
+	return file_health_event_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BehaviourOverrides) GetForce() bool {
@@ -410,19 +410,20 @@ func (x *BehaviourOverrides) GetSkip() bool {
 	return false
 }
 
-var File_platformconnector_proto protoreflect.FileDescriptor
+var File_health_event_proto protoreflect.FileDescriptor
 
-const file_platformconnector_proto_rawDesc = "" +
+const file_health_event_proto_rawDesc = "" +
 	"\n" +
-	"\x17platformconnector.proto\x12\x11platformconnector\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"`\n" +
+	"\x12health_event.proto\x12\n" +
+	"datamodels\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto\"Y\n" +
 	"\fHealthEvents\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\rR\aversion\x126\n" +
-	"\x06events\x18\x02 \x03(\v2\x1e.platformconnector.HealthEventR\x06events\"J\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12/\n" +
+	"\x06events\x18\x02 \x03(\v2\x17.datamodels.HealthEventR\x06events\"J\n" +
 	"\x06Entity\x12\x1e\n" +
 	"\n" +
 	"entityType\x18\x01 \x01(\tR\n" +
 	"entityType\x12 \n" +
-	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\xa4\x06\n" +
+	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\x81\x06\n" +
 	"\vHealthEvent\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12&\n" +
@@ -430,16 +431,16 @@ const file_platformconnector_proto_rawDesc = "" +
 	"\tcheckName\x18\x04 \x01(\tR\tcheckName\x12\x18\n" +
 	"\aisFatal\x18\x05 \x01(\bR\aisFatal\x12\x1c\n" +
 	"\tisHealthy\x18\x06 \x01(\bR\tisHealthy\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\x12Q\n" +
-	"\x11recommendedAction\x18\b \x01(\x0e2#.platformconnector.RecommenedActionR\x11recommendedAction\x12\x1c\n" +
-	"\terrorCode\x18\t \x03(\tR\terrorCode\x12E\n" +
+	"\amessage\x18\a \x01(\tR\amessage\x12J\n" +
+	"\x11recommendedAction\x18\b \x01(\x0e2\x1c.datamodels.RecommenedActionR\x11recommendedAction\x12\x1c\n" +
+	"\terrorCode\x18\t \x03(\tR\terrorCode\x12>\n" +
 	"\x10entitiesImpacted\x18\n" +
-	" \x03(\v2\x19.platformconnector.EntityR\x10entitiesImpacted\x12H\n" +
-	"\bmetadata\x18\v \x03(\v2,.platformconnector.HealthEvent.MetadataEntryR\bmetadata\x12J\n" +
+	" \x03(\v2\x12.datamodels.EntityR\x10entitiesImpacted\x12A\n" +
+	"\bmetadata\x18\v \x03(\v2%.datamodels.HealthEvent.MetadataEntryR\bmetadata\x12J\n" +
 	"\x12generatedTimestamp\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x12generatedTimestamp\x12\x1a\n" +
-	"\bnodeName\x18\r \x01(\tR\bnodeName\x12W\n" +
-	"\x13quarantineOverrides\x18\x0e \x01(\v2%.platformconnector.BehaviourOverridesR\x13quarantineOverrides\x12M\n" +
-	"\x0edrainOverrides\x18\x0f \x01(\v2%.platformconnector.BehaviourOverridesR\x0edrainOverrides\x1a;\n" +
+	"\bnodeName\x18\r \x01(\tR\bnodeName\x12P\n" +
+	"\x13quarantineOverrides\x18\x0e \x01(\v2\x1e.datamodels.BehaviourOverridesR\x13quarantineOverrides\x12F\n" +
+	"\x0edrainOverrides\x18\x0f \x01(\v2\x1e.datamodels.BehaviourOverridesR\x0edrainOverrides\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\">\n" +
@@ -456,44 +457,44 @@ const file_platformconnector_proto_rawDesc = "" +
 	"RESTART_BM\x10\x18\x12\x0e\n" +
 	"\n" +
 	"REPLACE_VM\x10\x19\x12\v\n" +
-	"\aUNKNOWN\x10c2f\n" +
-	"\x11PlatformConnector\x12Q\n" +
-	"\x14HealthEventOccuredV1\x12\x1f.platformconnector.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B2Z0github.com/nvidia/nvsentinel/platform-connectorsb\x06proto3"
+	"\aUNKNOWN\x10c2_\n" +
+	"\x11PlatformConnector\x12J\n" +
+	"\x14HealthEventOccuredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
 
 var (
-	file_platformconnector_proto_rawDescOnce sync.Once
-	file_platformconnector_proto_rawDescData []byte
+	file_health_event_proto_rawDescOnce sync.Once
+	file_health_event_proto_rawDescData []byte
 )
 
-func file_platformconnector_proto_rawDescGZIP() []byte {
-	file_platformconnector_proto_rawDescOnce.Do(func() {
-		file_platformconnector_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_platformconnector_proto_rawDesc), len(file_platformconnector_proto_rawDesc)))
+func file_health_event_proto_rawDescGZIP() []byte {
+	file_health_event_proto_rawDescOnce.Do(func() {
+		file_health_event_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_health_event_proto_rawDesc), len(file_health_event_proto_rawDesc)))
 	})
-	return file_platformconnector_proto_rawDescData
+	return file_health_event_proto_rawDescData
 }
 
-var file_platformconnector_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_platformconnector_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
-var file_platformconnector_proto_goTypes = []any{
-	(RecommenedAction)(0),         // 0: platformconnector.RecommenedAction
-	(*HealthEvents)(nil),          // 1: platformconnector.HealthEvents
-	(*Entity)(nil),                // 2: platformconnector.Entity
-	(*HealthEvent)(nil),           // 3: platformconnector.HealthEvent
-	(*BehaviourOverrides)(nil),    // 4: platformconnector.BehaviourOverrides
-	nil,                           // 5: platformconnector.HealthEvent.MetadataEntry
+var file_health_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_health_event_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_health_event_proto_goTypes = []any{
+	(RecommenedAction)(0),         // 0: datamodels.RecommenedAction
+	(*HealthEvents)(nil),          // 1: datamodels.HealthEvents
+	(*Entity)(nil),                // 2: datamodels.Entity
+	(*HealthEvent)(nil),           // 3: datamodels.HealthEvent
+	(*BehaviourOverrides)(nil),    // 4: datamodels.BehaviourOverrides
+	nil,                           // 5: datamodels.HealthEvent.MetadataEntry
 	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
 	(*emptypb.Empty)(nil),         // 7: google.protobuf.Empty
 }
-var file_platformconnector_proto_depIdxs = []int32{
-	3, // 0: platformconnector.HealthEvents.events:type_name -> platformconnector.HealthEvent
-	0, // 1: platformconnector.HealthEvent.recommendedAction:type_name -> platformconnector.RecommenedAction
-	2, // 2: platformconnector.HealthEvent.entitiesImpacted:type_name -> platformconnector.Entity
-	5, // 3: platformconnector.HealthEvent.metadata:type_name -> platformconnector.HealthEvent.MetadataEntry
-	6, // 4: platformconnector.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
-	4, // 5: platformconnector.HealthEvent.quarantineOverrides:type_name -> platformconnector.BehaviourOverrides
-	4, // 6: platformconnector.HealthEvent.drainOverrides:type_name -> platformconnector.BehaviourOverrides
-	1, // 7: platformconnector.PlatformConnector.HealthEventOccuredV1:input_type -> platformconnector.HealthEvents
-	7, // 8: platformconnector.PlatformConnector.HealthEventOccuredV1:output_type -> google.protobuf.Empty
+var file_health_event_proto_depIdxs = []int32{
+	3, // 0: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
+	0, // 1: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommenedAction
+	2, // 2: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
+	5, // 3: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
+	6, // 4: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
+	4, // 5: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
+	4, // 6: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
+	1, // 7: datamodels.PlatformConnector.HealthEventOccuredV1:input_type -> datamodels.HealthEvents
+	7, // 8: datamodels.PlatformConnector.HealthEventOccuredV1:output_type -> google.protobuf.Empty
 	8, // [8:9] is the sub-list for method output_type
 	7, // [7:8] is the sub-list for method input_type
 	7, // [7:7] is the sub-list for extension type_name
@@ -501,27 +502,27 @@ var file_platformconnector_proto_depIdxs = []int32{
 	0, // [0:7] is the sub-list for field type_name
 }
 
-func init() { file_platformconnector_proto_init() }
-func file_platformconnector_proto_init() {
-	if File_platformconnector_proto != nil {
+func init() { file_health_event_proto_init() }
+func file_health_event_proto_init() {
+	if File_health_event_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_platformconnector_proto_rawDesc), len(file_platformconnector_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_health_event_proto_rawDesc), len(file_health_event_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_platformconnector_proto_goTypes,
-		DependencyIndexes: file_platformconnector_proto_depIdxs,
-		EnumInfos:         file_platformconnector_proto_enumTypes,
-		MessageInfos:      file_platformconnector_proto_msgTypes,
+		GoTypes:           file_health_event_proto_goTypes,
+		DependencyIndexes: file_health_event_proto_depIdxs,
+		EnumInfos:         file_health_event_proto_enumTypes,
+		MessageInfos:      file_health_event_proto_msgTypes,
 	}.Build()
-	File_platformconnector_proto = out.File
-	file_platformconnector_proto_goTypes = nil
-	file_platformconnector_proto_depIdxs = nil
+	File_health_event_proto = out.File
+	file_health_event_proto_goTypes = nil
+	file_health_event_proto_depIdxs = nil
 }

@@ -19,7 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestActionMapping(t *testing.T) {

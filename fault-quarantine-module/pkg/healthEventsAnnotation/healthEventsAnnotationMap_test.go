@@ -18,20 +18,20 @@ import (
 	"encoding/json"
 	"testing"
 
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // TestHealthEventsAnnotationMap_AddOrUpdateEvent tests adding and updating events
 func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 	tests := []struct {
 		name          string
-		events        []*platformconnectorprotos.HealthEvent
+		events        []*protos.HealthEvent
 		expectedAdded []bool
 		expectedCount int
 	}{
 		{
 			name: "single entity event",
-			events: []*platformconnectorprotos.HealthEvent{
+			events: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
@@ -40,7 +40,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					IsFatal:        true,
 					IsHealthy:      false,
 					ErrorCode:      []string{"62"},
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 					},
 				},
@@ -50,7 +50,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 		},
 		{
 			name: "multiple entities in single event",
-			events: []*platformconnectorprotos.HealthEvent{
+			events: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
@@ -59,7 +59,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					IsFatal:        true,
 					IsHealthy:      false,
 					ErrorCode:      []string{"62"},
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 						{EntityType: "GPU", EntityValue: "2"},
 						{EntityType: "GPU", EntityValue: "3"},
@@ -71,7 +71,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 		},
 		{
 			name: "duplicate event should not be added",
-			events: []*platformconnectorprotos.HealthEvent{
+			events: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
@@ -80,7 +80,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					IsFatal:        true,
 					IsHealthy:      false,
 					ErrorCode:      []string{"62"},
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 					},
 				},
@@ -92,7 +92,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					IsFatal:        true,
 					IsHealthy:      false,
 					ErrorCode:      []string{"63"}, // Different error code, but same key
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"}, // Same entity
 					},
 				},
@@ -102,13 +102,13 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 		},
 		{
 			name: "different entities should be tracked separately",
-			events: []*platformconnectorprotos.HealthEvent{
+			events: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
 					CheckName:      "GpuXidError",
 					NodeName:       "node1",
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 					},
 				},
@@ -117,7 +117,7 @@ func TestHealthEventsAnnotationMap_AddOrUpdateEvent(t *testing.T) {
 					ComponentClass: "GPU",
 					CheckName:      "GpuXidError",
 					NodeName:       "node1",
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "2"},
 					},
 				},
@@ -150,7 +150,7 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 
 	// Add an event
-	originalEvent := &platformconnectorprotos.HealthEvent{
+	originalEvent := &protos.HealthEvent{
 		Agent:          "gpu-health-monitor",
 		ComponentClass: "GPU",
 		CheckName:      "GpuXidError",
@@ -158,7 +158,7 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 		IsFatal:        true,
 		IsHealthy:      false,
 		ErrorCode:      []string{"62"},
-		EntitiesImpacted: []*platformconnectorprotos.Entity{
+		EntitiesImpacted: []*protos.Entity{
 			{EntityType: "GPU", EntityValue: "1"},
 		},
 	}
@@ -166,18 +166,18 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		queryEvent  *platformconnectorprotos.HealthEvent
+		queryEvent  *protos.HealthEvent
 		shouldFind  bool
 		description string
 	}{
 		{
 			name: "exact match should be found",
-			queryEvent: &platformconnectorprotos.HealthEvent{
+			queryEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "1"},
 				},
 			},
@@ -186,13 +186,13 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 		},
 		{
 			name: "healthy event should match unhealthy",
-			queryEvent: &platformconnectorprotos.HealthEvent{
+			queryEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
 				IsHealthy:      true, // Different from stored event
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "1"},
 				},
 			},
@@ -201,12 +201,12 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 		},
 		{
 			name: "different entity should not match",
-			queryEvent: &platformconnectorprotos.HealthEvent{
+			queryEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "2"}, // Different entity
 				},
 			},
@@ -215,12 +215,12 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 		},
 		{
 			name: "different check name should not match",
-			queryEvent: &platformconnectorprotos.HealthEvent{
+			queryEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "NVLinkError", // Different check
 				NodeName:       "node1",
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "1"},
 				},
 			},
@@ -249,32 +249,32 @@ func TestHealthEventsAnnotationMap_GetEvent(t *testing.T) {
 func TestHealthEventsAnnotationMap_RemoveEvent(t *testing.T) {
 	tests := []struct {
 		name            string
-		initialEvents   []*platformconnectorprotos.HealthEvent
-		removeEvent     *platformconnectorprotos.HealthEvent
+		initialEvents   []*protos.HealthEvent
+		removeEvent     *protos.HealthEvent
 		expectedRemoved int
 		expectedCount   int
 	}{
 		{
 			name: "remove single entity",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
 					CheckName:      "GpuXidError",
 					NodeName:       "node1",
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 						{EntityType: "GPU", EntityValue: "2"},
 					},
 				},
 			},
-			removeEvent: &platformconnectorprotos.HealthEvent{
+			removeEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
 				IsHealthy:      true, // Healthy event
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "1"}, // Remove only GPU 1
 				},
 			},
@@ -283,26 +283,26 @@ func TestHealthEventsAnnotationMap_RemoveEvent(t *testing.T) {
 		},
 		{
 			name: "remove multiple entities",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
 					CheckName:      "GpuXidError",
 					NodeName:       "node1",
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 						{EntityType: "GPU", EntityValue: "2"},
 						{EntityType: "GPU", EntityValue: "3"},
 					},
 				},
 			},
-			removeEvent: &platformconnectorprotos.HealthEvent{
+			removeEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
 				IsHealthy:      true,
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "1"},
 					{EntityType: "GPU", EntityValue: "3"}, // Remove GPU 1 and 3
 				},
@@ -312,24 +312,24 @@ func TestHealthEventsAnnotationMap_RemoveEvent(t *testing.T) {
 		},
 		{
 			name: "remove non-existent entity",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
 					CheckName:      "GpuXidError",
 					NodeName:       "node1",
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "1"},
 					},
 				},
 			},
-			removeEvent: &platformconnectorprotos.HealthEvent{
+			removeEvent: &protos.HealthEvent{
 				Agent:          "gpu-health-monitor",
 				ComponentClass: "GPU",
 				CheckName:      "GpuXidError",
 				NodeName:       "node1",
 				IsHealthy:      true,
-				EntitiesImpacted: []*platformconnectorprotos.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "99"}, // Non-existent
 				},
 			},
@@ -365,13 +365,13 @@ func TestHealthEventsAnnotationMap_GetAllCheckNames(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 
 	// Add events with different check names
-	events := []*platformconnectorprotos.HealthEvent{
+	events := []*protos.HealthEvent{
 		{
 			Agent:          "gpu-health-monitor",
 			ComponentClass: "GPU",
 			CheckName:      "GpuXidError",
 			NodeName:       "node1",
-			EntitiesImpacted: []*platformconnectorprotos.Entity{
+			EntitiesImpacted: []*protos.Entity{
 				{EntityType: "GPU", EntityValue: "1"},
 				{EntityType: "GPU", EntityValue: "2"},
 			},
@@ -381,7 +381,7 @@ func TestHealthEventsAnnotationMap_GetAllCheckNames(t *testing.T) {
 			ComponentClass: "GPU",
 			CheckName:      "GpuNvLinkWatch",
 			NodeName:       "node1",
-			EntitiesImpacted: []*platformconnectorprotos.Entity{
+			EntitiesImpacted: []*protos.Entity{
 				{EntityType: "GPU", EntityValue: "1"},
 			},
 		},
@@ -390,7 +390,7 @@ func TestHealthEventsAnnotationMap_GetAllCheckNames(t *testing.T) {
 			ComponentClass: "GPU",
 			CheckName:      "GpuThermalWatch",
 			NodeName:       "node1",
-			EntitiesImpacted: []*platformconnectorprotos.Entity{
+			EntitiesImpacted: []*protos.Entity{
 				{EntityType: "GPU", EntityValue: "3"},
 			},
 		},
@@ -423,15 +423,15 @@ func TestHealthEventsAnnotationMap_GetAllCheckNames(t *testing.T) {
 func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 	tests := []struct {
 		name            string
-		initialEvents   []*platformconnectorprotos.HealthEvent
-		healthyEvent    *platformconnectorprotos.HealthEvent
+		initialEvents   []*protos.HealthEvent
+		healthyEvent    *protos.HealthEvent
 		shouldMatch     bool
 		expectedRemoved int
 		expectedCount   int
 	}{
 		{
 			name: "check-level healthy event should match and remove all entities for that check",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "syslog-health-monitor",
 					ComponentClass: "GPU",
@@ -441,13 +441,13 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 					IsFatal:        true,
 					IsHealthy:      false,
 					ErrorCode:      []string{"79"},
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "PCI", EntityValue: "0000:b4:00"},
 						{EntityType: "GPUID", EntityValue: "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc"},
 					},
 				},
 			},
-			healthyEvent: &platformconnectorprotos.HealthEvent{
+			healthyEvent: &protos.HealthEvent{
 				Agent:            "syslog-health-monitor",
 				ComponentClass:   "GPU",
 				CheckName:        "SysLogsXIDError",
@@ -455,7 +455,7 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 				Version:          1,
 				IsHealthy:        true,
 				Message:          "No Health Failures",
-				EntitiesImpacted: []*platformconnectorprotos.Entity{}, // Empty - means all entities healthy
+				EntitiesImpacted: []*protos.Entity{}, // Empty - means all entities healthy
 			},
 			shouldMatch:     true,
 			expectedRemoved: 2, // Should remove both PCI and GPUID entities
@@ -463,7 +463,7 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 		},
 		{
 			name: "check-level healthy event should only remove matching check",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "syslog-health-monitor",
 					ComponentClass: "GPU",
@@ -471,7 +471,7 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 					NodeName:       "node1",
 					Version:        1,
 					IsHealthy:      false,
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "PCI", EntityValue: "0000:b4:00"},
 					},
 				},
@@ -482,19 +482,19 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 					NodeName:       "node1",
 					Version:        1,
 					IsHealthy:      false,
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "PCI", EntityValue: "0000:b4:00"},
 					},
 				},
 			},
-			healthyEvent: &platformconnectorprotos.HealthEvent{
+			healthyEvent: &protos.HealthEvent{
 				Agent:            "syslog-health-monitor",
 				ComponentClass:   "GPU",
 				CheckName:        "SysLogsXIDError", // Only matches first check
 				NodeName:         "node1",
 				Version:          1,
 				IsHealthy:        true,
-				EntitiesImpacted: []*platformconnectorprotos.Entity{}, // Empty
+				EntitiesImpacted: []*protos.Entity{}, // Empty
 			},
 			shouldMatch:     true,
 			expectedRemoved: 1, // Only removes SysLogsXIDError
@@ -502,7 +502,7 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 		},
 		{
 			name: "check-level healthy event with no matching check should not remove anything",
-			initialEvents: []*platformconnectorprotos.HealthEvent{
+			initialEvents: []*protos.HealthEvent{
 				{
 					Agent:          "gpu-health-monitor",
 					ComponentClass: "GPU",
@@ -510,19 +510,19 @@ func TestHealthEventsAnnotationMap_CheckLevelHealthyEvent(t *testing.T) {
 					NodeName:       "node1",
 					Version:        1,
 					IsHealthy:      false,
-					EntitiesImpacted: []*platformconnectorprotos.Entity{
+					EntitiesImpacted: []*protos.Entity{
 						{EntityType: "GPU", EntityValue: "0"},
 					},
 				},
 			},
-			healthyEvent: &platformconnectorprotos.HealthEvent{
+			healthyEvent: &protos.HealthEvent{
 				Agent:            "syslog-health-monitor", // Same agent
 				ComponentClass:   "GPU",
 				CheckName:        "SysLogsSXIDError", // Different check name
 				NodeName:         "node1",
 				Version:          1,
 				IsHealthy:        true,
-				EntitiesImpacted: []*platformconnectorprotos.Entity{}, // Empty
+				EntitiesImpacted: []*protos.Entity{}, // Empty
 			},
 			shouldMatch:     false,
 			expectedRemoved: 0,
@@ -563,7 +563,7 @@ func TestHealthEventsAnnotationMap_JSONSerialization(t *testing.T) {
 	// Create original map with events
 	originalMap := NewHealthEventsAnnotationMap()
 
-	event1 := &platformconnectorprotos.HealthEvent{
+	event1 := &protos.HealthEvent{
 		Version:        1,
 		Agent:          "gpu-health-monitor",
 		ComponentClass: "GPU",
@@ -572,12 +572,12 @@ func TestHealthEventsAnnotationMap_JSONSerialization(t *testing.T) {
 		IsFatal:        true,
 		IsHealthy:      false,
 		Message:        "XID error occurred",
-		EntitiesImpacted: []*platformconnectorprotos.Entity{
+		EntitiesImpacted: []*protos.Entity{
 			{EntityType: "GPU", EntityValue: "1"},
 		},
 	}
 
-	event2 := &platformconnectorprotos.HealthEvent{
+	event2 := &protos.HealthEvent{
 		Version:        1,
 		Agent:          "gpu-health-monitor",
 		ComponentClass: "GPU",
@@ -586,7 +586,7 @@ func TestHealthEventsAnnotationMap_JSONSerialization(t *testing.T) {
 		IsFatal:        true,
 		IsHealthy:      false,
 		Message:        "NVLink 0 is down",
-		EntitiesImpacted: []*platformconnectorprotos.Entity{
+		EntitiesImpacted: []*protos.Entity{
 			{EntityType: "GPU", EntityValue: "1"},
 		},
 	}
@@ -630,14 +630,14 @@ func TestHealthEventsAnnotationMap_JSONSerialization(t *testing.T) {
 	}
 
 	// Test that entity-level keys are recreated correctly
-	healthyEvent := &platformconnectorprotos.HealthEvent{
+	healthyEvent := &protos.HealthEvent{
 		Version:        1,
 		Agent:          "gpu-health-monitor",
 		ComponentClass: "GPU",
 		CheckName:      "GpuXidError",
 		NodeName:       "node1",
 		IsHealthy:      true,
-		EntitiesImpacted: []*platformconnectorprotos.Entity{
+		EntitiesImpacted: []*protos.Entity{
 			{EntityType: "GPU", EntityValue: "1"},
 		},
 	}
@@ -653,7 +653,7 @@ func TestHealthEventsAnnotationMap_MarshalJSONDeduplication(t *testing.T) {
 	hem := NewHealthEventsAnnotationMap()
 
 	// Add an event with multiple entities (mimics syslog-health-monitor behavior)
-	event := &platformconnectorprotos.HealthEvent{
+	event := &protos.HealthEvent{
 		Version:        1,
 		Agent:          "syslog-health-monitor",
 		ComponentClass: "GPU",
@@ -663,7 +663,7 @@ func TestHealthEventsAnnotationMap_MarshalJSONDeduplication(t *testing.T) {
 		IsHealthy:      false,
 		Message:        "ROBUST_CHANNEL_GPU_HAS_FALLEN_OFF_THE_BUS",
 		ErrorCode:      []string{"79"},
-		EntitiesImpacted: []*platformconnectorprotos.Entity{
+		EntitiesImpacted: []*protos.Entity{
 			{EntityType: "PCI", EntityValue: "0000:b4:00"},
 			{EntityType: "GPUID", EntityValue: "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc"},
 		},
@@ -678,7 +678,7 @@ func TestHealthEventsAnnotationMap_MarshalJSONDeduplication(t *testing.T) {
 	}
 
 	// Unmarshal to check structure
-	var eventsArray []*platformconnectorprotos.HealthEvent
+	var eventsArray []*protos.HealthEvent
 	if err := json.Unmarshal(jsonData, &eventsArray); err != nil {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}

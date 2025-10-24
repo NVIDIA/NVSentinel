@@ -55,6 +55,7 @@ protobuf:
 linting:
   shellcheck: 'v0.11.0'
   addlicense: 'latest'
+  black: '25.9.0'
 
 # Container Tools
 container_tools:

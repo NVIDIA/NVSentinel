@@ -15,7 +15,7 @@
 package common
 
 import (
-	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // RemediationEquivalenceGroups defines groups of remediation actions that are considered
