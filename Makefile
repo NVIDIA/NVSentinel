@@ -327,16 +327,17 @@ license-headers-lint: ## Check license headers in source files
 		-ignore '.venv/**' \
 		-ignore '**/__pycache__/**' \
 		-ignore '**/.venv/**' \
-		-ignore '**/*.txt' \
-		-ignore '**/*.xml' \
 		-ignore '**/site-packages/**' \
 		-ignore '*/.venv/**' \
-		-ignore **/.idea/** \
-		-ignore **/*.csv \
-		-ignore **/*.pyc \
-		-ignore **/*.yaml \
-		-ignore **/*lock.hcl \
-		-ignore **/*pb2* \
+		-ignore '**/.idea/**' \
+		-ignore '**/*.csv' \
+		-ignore '**/*.pyc' \
+		-ignore '**/*.txt' \
+		-ignore '**/*.xml' \
+		-ignore '**/*.yaml' \
+		-ignore '**/*.toml' \
+		-ignore '**/*lock.hcl' \
+		-ignore '**/*pb2*' \
 		.
 
 # Check go.mod files for proper replace directives
