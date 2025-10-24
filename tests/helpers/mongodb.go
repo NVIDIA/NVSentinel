@@ -38,7 +38,11 @@ type HealthEventStatus struct {
 	NodeQuarantined          string                 `json:"nodequarantined"`
 	UserPodsEvictionStatus   UserPodsEvictionStatus `json:"userpodsevictionstatus"`
 	FaultRemediated          *bool                  `json:"faultremediated,omitempty"`
-	LastRemediationTimestamp string                 `json:"lastremediationtimestamp,omitempty"`
+	LastRemediationTimestamp *EJSONDate             `json:"lastremediationtimestamp,omitempty"`
+}
+
+type EJSONDate struct {
+	Date string `json:"$date"`
 }
 
 // UserPodsEvictionStatus represents eviction status
