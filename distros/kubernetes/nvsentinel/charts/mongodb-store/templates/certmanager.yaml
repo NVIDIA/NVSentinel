@@ -41,6 +41,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-app-client-cert
+  namespace: {{ $.Release.Namespace }}
 spec:
   secretName: mongo-app-client-cert-secret
   duration: 8760h
@@ -66,6 +67,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-dgxcops-client-cert
+  namespace: {{ $.Release.Namespace }}
 spec:
   secretName: mongo-dgxcops-client-cert-secret
   duration: 8760h
@@ -90,6 +92,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: mongo-ca-issuer
+  namespace: {{ $.Release.Namespace }}
 spec:
   ca:
     secretName: mongo-root-ca-secret
@@ -98,6 +101,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: selfsigned-ca-issuer
+  namespace: {{ $.Release.Namespace }}
 spec:
   selfSigned: {}
 ---
@@ -105,6 +109,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: mongo-root-ca
+  namespace: {{ $.Release.Namespace }}
 spec:
   isCA: true
   commonName: mongo-root-ca
