@@ -31,7 +31,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type MongoDbStoreConnector struct {

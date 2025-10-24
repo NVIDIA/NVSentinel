@@ -30,7 +30,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type ReconcilerConfig struct {

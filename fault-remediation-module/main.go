@@ -32,10 +32,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -215,12 +217,29 @@ func getMongoPipeline() mongo.Pipeline {
 }
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "fault-remediation-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
 	ctx := context.Background()
 
 	// Parse flags and get configuration
 	cfg := parseFlags()
-
-	klog.Infof("Starting fault-remediation-module version: %s, commit: %s, date: %s", version, commit, date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()

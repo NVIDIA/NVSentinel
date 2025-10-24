@@ -31,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
@@ -42,8 +43,34 @@ const (
 	True = "true"
 )
 
+var (
+	// These variables will be populated during the build process
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 //nolint:cyclop
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "platform-connectors",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 

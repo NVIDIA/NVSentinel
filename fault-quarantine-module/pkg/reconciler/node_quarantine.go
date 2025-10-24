@@ -30,7 +30,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // other modules may also update the node, so we need to make sure that we retry on conflict

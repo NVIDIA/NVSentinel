@@ -33,10 +33,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -44,9 +46,26 @@ var (
 
 //nolint:cyclop // todo
 func main() {
-	ctx := context.Background()
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
 
-	klog.Infof("Health Events Analyzer - version: %s, commit: %s, date: %s", version, commit, date)
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "health-events-analyzer",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
+	ctx := context.Background()
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
@@ -55,10 +74,6 @@ func main() {
 	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
-
-	defer klog.Flush()
 	flag.Parse()
 
 	mongoURI := os.Getenv("MONGODB_URI")

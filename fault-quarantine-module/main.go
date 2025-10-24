@@ -33,9 +33,11 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -43,7 +45,24 @@ var (
 
 // nolint: cyclop //fix this as part of NGCC-21793
 func main() {
-	klog.Infof("Fault Quarantine Module - version: %s, commit: %s, date: %s", version, commit, date)
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "fault-quarantine-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
 
 	// Create a context that gets cancelled on OS interrupt signals
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -67,10 +86,6 @@ func main() {
 	var circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
 		"enable or disable fault quarantine circuit breaker")
 
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
-
-	defer klog.Flush()
 	flag.Parse()
 
 	namespace := os.Getenv("POD_NAMESPACE")

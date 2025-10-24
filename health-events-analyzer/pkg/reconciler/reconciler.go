@@ -30,7 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (

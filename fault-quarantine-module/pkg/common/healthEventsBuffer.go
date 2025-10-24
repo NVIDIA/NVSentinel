@@ -20,7 +20,7 @@ import (
 
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"go.mongodb.org/mongo-driver/bson"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // healthEventInfo represents information about a health event

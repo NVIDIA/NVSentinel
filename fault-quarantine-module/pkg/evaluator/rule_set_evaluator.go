@@ -21,7 +21,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,

@@ -17,24 +17,44 @@ package main
 import (
 	"context"
 	"flag"
+	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 )
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "node-drainer-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-
-	klog.Infof("Node Drainer Module - version: %s, commit: %s, date: %s", version, commit, date)
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 

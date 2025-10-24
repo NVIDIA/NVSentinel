@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	klog "k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
@@ -47,6 +49,7 @@ const (
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -89,6 +92,25 @@ func startActiveMonitorAndLog(
 }
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+		textlogger.Verbosity(1),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "csp-health-monitor",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting...")
+	defer klog.Flush()
+
 	configPath := flag.String("config", defaultConfigPath, "Path to the TOML configuration file.")
 	metricsPort := flag.String("metrics-port", defaultMetricsPort, "Port to expose Prometheus metrics on.")
 	kubeconfig := flag.String(
@@ -101,12 +123,6 @@ func main() {
 		defaultMongoCertPath,
 		"Directory where MongoDB client tls.crt, tls.key, and ca.crt are mounted.",
 	)
-
-	klog.InitFlags(nil)
-	flag.Parse()
-	defer klog.Flush()
-
-	klog.Infof("Starting CSP Health Monitor (Main Container) - Version: %s, Commit: %s, Date: %s", version, commit, date)
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {

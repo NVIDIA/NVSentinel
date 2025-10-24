@@ -29,7 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type Reconciler struct {

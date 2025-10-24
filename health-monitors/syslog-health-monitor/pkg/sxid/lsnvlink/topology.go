@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // TopologyLink represents a single NVLink connection
