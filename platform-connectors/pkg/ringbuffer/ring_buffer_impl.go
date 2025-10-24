@@ -19,7 +19,7 @@ import (
 	"errors"
 	"log/slog"
 
-	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 	"k8s.io/client-go/util/workqueue"
 )

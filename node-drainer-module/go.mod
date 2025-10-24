@@ -7,6 +7,7 @@ toolchain go1.24.8
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/hashicorp/go-multierror v1.1.1
+	github.com/nvidia/nvsentinel/data-models v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/platform-connectors v0.0.0-20250922095649-50aef3f27c10
 	github.com/nvidia/nvsentinel/statemanager v0.0.0-20251002153030-9e1e7404df8a

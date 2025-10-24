@@ -32,7 +32,6 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
 	trigger "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/triggerengine"
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"

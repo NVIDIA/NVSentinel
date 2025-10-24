@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
@@ -624,7 +624,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		if message == "" {
 			// Successfully read an empty message. This entry is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check", "name", check.Name,
+			slog.Info("Check, read empty message", "name", check.Name,
 				"message", message,
 				"cursor", currentEntryCursor)
 		} else {
@@ -634,14 +634,14 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 			}
 			// This entry (matched or not) is considered processed.
 			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check", "name", check.Name,
+			slog.Info("Check, considered processed", "name", check.Name,
 				"message", message,
 				"cursor", currentEntryCursor)
 		}
 
 		advancedNext, advErr := journal.Next()
 		if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
-			slog.Info("Check", "name", check.Name, "cursor", currentEntryCursor)
+			slog.Info("Check, no more", "name", check.Name, "cursor", currentEntryCursor)
 			// sm.checkLastCursors[checkName] is already set to currentEntryCursor.
 			break
 		}

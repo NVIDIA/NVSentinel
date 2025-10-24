@@ -23,7 +23,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
-	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -150,7 +149,7 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 }
 
 // Evaluate the CEL expression against node metadata (labels and annotations)
-func (nm *NodeRuleEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
+func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
 
 	// Get node metadata

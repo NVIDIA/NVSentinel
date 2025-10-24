@@ -6,6 +6,7 @@ toolchain go1.24.8
 
 require (
 	github.com/golang/protobuf v1.5.4
+	github.com/nvidia/nvsentinel/data-models v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1

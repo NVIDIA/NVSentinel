@@ -64,6 +64,7 @@ require (
 )
 
 require (
+	github.com/nvidia/nvsentinel/data-models v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/logger-sdk v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/platform-connectors v0.0.0-20251002153030-9e1e7404df8a
 	github.com/nvidia/nvsentinel/statemanager v0.0.0-20251002153030-9e1e7404df8a

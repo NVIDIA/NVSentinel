@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
 
 	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"

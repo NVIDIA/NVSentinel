@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
 	"cloud.google.com/go/logging"
 	auditpb "google.golang.org/genproto/googleapis/cloud/audit"
