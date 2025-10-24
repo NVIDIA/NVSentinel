@@ -55,9 +55,18 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
+	socket := flag.String("socket", "", "unix socket path")
+	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
+
+	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
+	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+		"path where the mongodb client cert is mounted")
+
+	flag.Parse()
+
 	logConfig := textlogger.NewConfig(
 		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
 	)
 
 	logger := textlogger.NewLogger(logConfig).WithValues(
@@ -68,18 +77,8 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting...")
+	klog.Info("Starting platform-connectors...")
 	defer klog.Flush()
-
-	socket := flag.String("socket", "", "unix socket path")
-	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
-
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
-
-	flag.Parse()
 
 	if *socket == "" {
 		klog.Fatalf("socket is not present")
@@ -177,7 +176,9 @@ func main() {
 	close(stopCh)
 
 	if lis != nil {
-		k8sRingBuffer.ShutDownHealthMetricQueue()
+		if k8sRingBuffer != nil {
+			k8sRingBuffer.ShutDownHealthMetricQueue()
+		}
 		lis.Close()
 		os.Remove(*socket)
 	}

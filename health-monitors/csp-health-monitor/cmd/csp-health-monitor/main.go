@@ -95,22 +95,6 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "csp-health-monitor",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
 	configPath := flag.String("config", defaultConfigPath, "Path to the TOML configuration file.")
 	metricsPort := flag.String("metrics-port", defaultMetricsPort, "Port to expose Prometheus metrics on.")
 	kubeconfig := flag.String(
@@ -123,6 +107,23 @@ func main() {
 		defaultMongoCertPath,
 		"Directory where MongoDB client tls.crt, tls.key, and ca.crt are mounted.",
 	)
+
+	flag.Parse()
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "csp-health-monitor",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting csp-health-monitor...")
+	defer klog.Flush()
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {

@@ -46,10 +46,10 @@ var (
 func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
+	flag.Parse()
 
 	logConfig := textlogger.NewConfig(
 		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
 	)
 
 	logger := textlogger.NewLogger(logConfig).WithValues(
@@ -60,10 +60,8 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting...")
+	klog.Info("Starting labeler-module...")
 	defer klog.Flush()
-
-	flag.Parse()
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {

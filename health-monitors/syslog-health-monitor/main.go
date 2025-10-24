@@ -55,22 +55,6 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "syslog-health-monitor",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
 	configFile := flag.String("config-file", "/etc/config/config.yaml",
 		"Path to the YAML configuration file for log checks.")
 	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
@@ -85,6 +69,21 @@ func main() {
 		"Endpoint to the XID analyser service.")
 
 	flag.Parse()
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "syslog-health-monitor",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting syslog-health-monitor...")
+	defer klog.Flush()
 
 	klog.Infof("Parsed command line flags successfully")
 

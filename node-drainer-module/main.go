@@ -37,22 +37,6 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "node-drainer-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -69,6 +53,21 @@ func main() {
 	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
 	flag.Parse()
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "node-drainer-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting node-drainer-module...")
+	defer klog.Flush()
 
 	klog.Infof("Mongo client cert path: %s", *mongoClientCertMountPath)
 

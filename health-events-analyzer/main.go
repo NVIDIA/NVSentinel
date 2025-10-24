@@ -49,22 +49,6 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "health-events-analyzer",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
 	ctx := context.Background()
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
@@ -75,6 +59,21 @@ func main() {
 		"path where the mongodb client cert is mounted")
 
 	flag.Parse()
+
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "health-events-analyzer",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting health-events-analyzer...")
+	defer klog.Flush()
 
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {

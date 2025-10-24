@@ -157,9 +157,10 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
+	appCfg := parseFlags()
+
 	logConfig := textlogger.NewConfig(
 		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
 	)
 
 	logger := textlogger.NewLogger(logConfig).WithValues(
@@ -170,10 +171,9 @@ func main() {
 	)
 
 	klog.SetLogger(logger)
-	klog.Info("Starting...")
+	klog.Info("Starting maintenance-notifier...")
 	defer klog.Flush()
 
-	appCfg := parseFlags()
 	logStartupInfo(appCfg)
 
 	cfg, err := config.LoadConfig(appCfg.configPath)

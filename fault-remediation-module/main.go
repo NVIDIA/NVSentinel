@@ -224,6 +224,20 @@ func run() error {
 	// Parse flags and get configuration
 	cfg := parseFlags()
 
+	logConfig := textlogger.NewConfig(
+		textlogger.Output(os.Stdout),
+	)
+
+	logger := textlogger.NewLogger(logConfig).WithValues(
+		"version", version,
+		"commit", commit,
+		"date", date,
+		"module", "fault-remediation-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.Info("Starting fault-remediation-module...")
+
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
 	if err != nil {
@@ -284,28 +298,14 @@ func main() {
 	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
 
-	logConfig := textlogger.NewConfig(
-		textlogger.Output(os.Stdout),
-		textlogger.Verbosity(1),
-	)
-
-	logger := textlogger.NewLogger(logConfig).WithValues(
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"module", "fault-remediation-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.Info("Starting...")
-	defer klog.Flush()
-
 	if err := run(); err != nil {
 		klog.ErrorS(err, "Fatal error")
 		klog.Flush()
 		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
 		os.Exit(1)
 	}
+
+	klog.Flush()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {
