@@ -18,11 +18,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,8 +34,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -43,11 +43,42 @@ var (
 	date    = "unknown"
 )
 
+// initLogger initializes the structured logger with the appropriate log level.
+func initLogger() {
+	level := slog.LevelInfo
+
+	// Set log level based on LOG_LEVEL environment variable or default to Info level
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	})).With("module", "fault-quarantine-module", "version", version)
+
+	slog.SetDefault(logger)
+}
+
 // nolint: cyclop //fix this as part of NGCC-21793
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	initLogger()
+	slog.Info("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
 
+	if err := run(); err != nil {
+		slog.Error("Application encountered a fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	// Create a context that gets cancelled on OS interrupt signals
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop() // Ensure the signal listener is cleaned up
@@ -72,69 +103,60 @@ func main() {
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "fault-quarantine-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		klog.Fatalf("POD_NAMESPACE is not provided")
+		return fmt.Errorf("POD_NAMESPACE is not provided")
 	}
 
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		klog.Fatalf("MongoDB URI is not provided")
+		return fmt.Errorf("MONGODB_URI is not provided")
 	}
 
 	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDatabase == "" {
-		klog.Fatalf("MongoDB Database name is not provided")
+		return fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
 	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoCollection == "" {
-		klog.Fatalf("MongoDB collection name is not provided")
+		return fmt.Errorf("MONGODB_COLLECTION_NAME is not provided")
 	}
 
 	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
 	if tokenDatabase == "" {
-		klog.Fatalf("MongoDB token database name is not provided")
+		return fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
 	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
 	if tokenCollection == "" {
-		klog.Fatalf("MongoDB token collection name is not provided")
+		return fmt.Errorf("MongoDB token collection name is not provided")
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		return fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		return fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
 	unprocessedEventsMetricUpdateIntervalSeconds, err :=
 		getEnvAsInt("UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS", 25)
 	if err != nil {
-		klog.Fatalf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %v", err)
+		return fmt.Errorf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %w", err)
 	}
 
 	mongoConfig := storewatcher.MongoDBConfig{
@@ -164,20 +186,20 @@ func main() {
 
 	tomlCfg, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
-		klog.Fatalf("error while loading the toml config: %v", err)
+		return fmt.Errorf("error loading TOML config: %w", err)
 	}
 
 	if *dryRun {
-		klog.Info("Running in dry-run mode")
+		slog.Info("Running in dry-run mode")
 	}
 
 	// Initialize the k8s client
 	k8sClient, err := reconciler.NewFaultQuarantineClient(*kubeconfigPath, *dryRun)
 	if err != nil {
-		klog.Fatalf("error while initializing kubernetes client: %v", err)
+		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized k8sclient")
+	slog.Info("Successfully initialized k8sclient")
 
 	reconcilerCfg := reconciler.ReconcilerConfig{
 		TomlConfig:                       *tomlCfg,
@@ -203,16 +225,29 @@ func main() {
 	// Pass the workSignal channel to the Reconciler
 	reconciler := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 
+	criticalError := make(chan error)
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+*metricsPort, nil)
 		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+			slog.Error("Failed to start metrics server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	reconciler.Start(ctx)
+
+	select {
+	case <-ctx.Done():
+	case err := <-criticalError:
+		slog.Error("Critical component failure", "error", err)
+		stop() // Cancel context to trigger shutdown
+		return fmt.Errorf("critical component failure: %w", err)
+	}
+
+	return nil
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

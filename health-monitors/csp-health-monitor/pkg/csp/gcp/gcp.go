@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
@@ -35,7 +36,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -80,7 +80,7 @@ func getInitialPollStartTime(
 	nowUTC time.Time,
 ) time.Time {
 	if store == nil {
-		klog.Warningf("Datastore client is nil for GCP monitor. Starting poll from current time.")
+		slog.Warn("Datastore client is nil for GCP monitor. Starting poll from current time.")
 
 		return nowUTC
 	}
@@ -92,7 +92,7 @@ func getInitialPollStartTime(
 		"GCP",
 	)
 	if errDb != nil {
-		klog.Warningf(
+		slog.Warn(
 			"Failed to get last processed GCP log event timestamp for cluster %s from datastore: %v. "+
 				"Starting poll from current time.",
 			clusterName,
@@ -103,7 +103,7 @@ func getInitialPollStartTime(
 	}
 
 	if found && !lastProcessedEventTS.IsZero() {
-		klog.Infof(
+		slog.Info(
 			"Resuming poll: last processed GCP log event timestamp for cluster %s is %v. "+
 				"Next poll window will start after this.",
 			clusterName,
@@ -113,10 +113,9 @@ func getInitialPollStartTime(
 		return lastProcessedEventTS
 	}
 
-	klog.Infof(
-		"No previous GCP logs checkpoint found in datastore for cluster %s. "+
-			"Starting poll from current time.",
-		clusterName,
+	slog.Info(
+		"no previous GCP logs checkpoint found in datastore for cluster. Starting poll from current time.",
+		"name", clusterName,
 	)
 
 	return nowUTC
@@ -139,7 +138,7 @@ func NewClient(
 	store datastore.Store,
 ) (*Client, error) {
 	if !cfg.Enabled {
-		klog.InfoS("GCP Client: Monitoring is disabled in configuration. Client initialization aborted.")
+		slog.Info("GCP Client: Monitoring is disabled in configuration. Client initialization aborted.")
 		return nil, fmt.Errorf("GCP monitoring is disabled by configuration, client not created")
 	}
 
@@ -161,10 +160,10 @@ func NewClient(
 	var k8sConfig *rest.Config
 
 	if kubeconfigPath != "" {
-		klog.Infof("GCP Client: Using kubeconfig from path: %s", kubeconfigPath)
+		slog.Info("GCP Client", "kubeconfig path", kubeconfigPath)
 		k8sConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	} else {
-		klog.Info("GCP Client: KubeconfigPath not specified, attempting in-cluster config.")
+		slog.Info("GCP Client: KubeconfigPath not specified, attempting in-cluster config.")
 
 		k8sConfig, err = rest.InClusterConfig()
 	}
@@ -185,11 +184,12 @@ func NewClient(
 		return nil, fmt.Errorf("GCP client (enabled) failed to create K8s clientset: %w", err)
 	}
 
-	klog.Info("GCP Client: Kubernetes clientset initialized successfully.")
+	slog.Info("GCP Client: Kubernetes clientset initialized successfully.")
 
 	initialPollStartTime := getInitialPollStartTime(ctx, store, clusterName, time.Now().UTC())
-	klog.Infof(
-		"GCP poller initial 'lastSuccessfullyProcessedPollEndTime' set to: %s",
+	slog.Info(
+		"GCP poller initial 'lastSuccessfullyProcessedPollEndTime' set to",
+		"initial poll start time",
 		initialPollStartTime.Format(time.RFC3339Nano),
 	)
 
@@ -213,7 +213,7 @@ func (c *Client) mapGCPInstanceToNodeName(
 	eventMetadata map[string]string,
 ) (string, error) {
 	if gcpNumericInstanceID == "" || gcpNumericInstanceID == gcpInstanceIDUnknown {
-		klog.V(2).Info("GCP mapGCPInstanceToNodeName: cannot map empty or UNKNOWN gcpNumericInstanceID.")
+		slog.Debug("GCP mapGCPInstanceToNodeName: cannot map empty or UNKNOWN gcpNumericInstanceID.")
 		return "", nil
 	}
 
@@ -222,10 +222,9 @@ func (c *Client) mapGCPInstanceToNodeName(
 
 	if zoneProvided && zone != "" {
 		listOptions.LabelSelector = fmt.Sprintf("topology.kubernetes.io/zone=%s", zone)
-		klog.V(3).Infof("GCP mapGCPInstanceToNodeName: Applying label selector for zone: %s", listOptions.LabelSelector)
+		slog.Debug("Applying label selector for zone", "selector", listOptions.LabelSelector)
 	} else {
-		klog.V(2).Info("GCP mapGCPInstanceToNodeName: Zone not available in event metadata, " +
-			"listing all nodes for mapping. This might be slow.")
+		slog.Debug("Zone not available in event metadata, listing all nodes for mapping. This might be slow.")
 	}
 
 	nodes, listErr := c.k8sClientset.CoreV1().Nodes().List(ctx, listOptions)
@@ -237,33 +236,29 @@ func (c *Client) mapGCPInstanceToNodeName(
 		)
 	}
 
-	klog.V(3).Infof(
-		"GCP mapGCPInstanceToNodeName: Listed %d nodes (selector '%s'), searching for match for instance ID '%s'",
-		len(nodes.Items),
-		listOptions.LabelSelector,
-		gcpNumericInstanceID,
-	)
+	slog.Debug("Listed nodes for GCP mapping",
+		"nodesCount", len(nodes.Items),
+		"selector", listOptions.LabelSelector,
+		"instanceID", gcpNumericInstanceID)
 
 	for _, node := range nodes.Items {
 		if numericIDFromAnnotation, ok := node.Annotations[gcpInstanceIDAnnotation]; ok {
 			if numericIDFromAnnotation == gcpNumericInstanceID {
-				klog.V(1).Infof(
-					"GCP mapGCPInstanceToNodeName: Found K8s Node '%s' by matching annotation '%s' (value: '%s') "+
-						"with event resource ID '%s'",
-					node.Name, gcpInstanceIDAnnotation, numericIDFromAnnotation, gcpNumericInstanceID)
+				slog.Debug("Found K8s Node by matching annotation",
+					"nodeName", node.Name,
+					"annotation", gcpInstanceIDAnnotation,
+					"annotationValue", numericIDFromAnnotation,
+					"instanceID", gcpNumericInstanceID)
 
 				return node.Name, nil
 			}
 		}
 	}
 
-	klog.V(1).Infof(
-		"GCP mapGCPInstanceToNodeName: No Kubernetes node found matching GCP numeric instance ID '%s' "+
-			"(Zone: '%s') after checking %d listed nodes.",
-		gcpNumericInstanceID,
-		zone,
-		len(nodes.Items),
-	)
+	slog.Debug("No Kubernetes node found matching GCP numeric instance ID",
+		"instanceID", gcpNumericInstanceID,
+		"zone", zone,
+		"nodesChecked", len(nodes.Items))
 
 	return "", nil
 }
@@ -276,7 +271,7 @@ func (c *Client) GetName() model.CSP {
 // maintenance events to eventChan until the context is cancelled.
 func (c *Client) StartMonitoring(ctx context.Context, eventChan chan<- model.MaintenanceEvent) error {
 	// If NewClient succeeded, c.config.Enabled is true.
-	klog.InfoS("Starting GCP Cloud Logging API poller",
+	slog.Info("Starting GCP Cloud Logging API poller",
 		"project", c.config.TargetProjectID,
 		"intervalSeconds", c.config.APIPollingIntervalSeconds,
 		"effectiveInitialQueryStartTime", c.lastSuccessfullyProcessedPollEndTime.Format(time.RFC3339Nano),
@@ -287,10 +282,10 @@ func (c *Client) StartMonitoring(ctx context.Context, eventChan chan<- model.Mai
 	if ctx.Err() == nil {
 		c.pollLogs(ctx, eventChan)
 	} else {
-		klog.InfoS("GCP API monitoring not starting initial poll due to context cancellation.")
+		slog.Info("GCP API monitoring not starting initial poll due to context cancellation.")
 
 		if err := c.logadminClient.Close(); err != nil { // logadminClient guaranteed non-nil by NewClient
-			klog.ErrorS(err, "Error closing logadmin client during early context cancellation")
+			slog.Error("Error closing logadmin client during early context cancellation", "error", err)
 		}
 
 		return ctx.Err()
@@ -302,10 +297,10 @@ func (c *Client) StartMonitoring(ctx context.Context, eventChan chan<- model.Mai
 	for {
 		select {
 		case <-ctx.Done():
-			klog.InfoS("GCP API monitoring stopping due to context cancellation.")
+			slog.Info("GCP API monitoring stopping due to context cancellation.")
 
 			if err := c.logadminClient.Close(); err != nil {
-				klog.ErrorS(err, "Error closing logadmin client")
+				slog.Error("Error closing logadmin client", "error", err)
 			}
 
 			return ctx.Err()
@@ -322,7 +317,7 @@ func (c *Client) pollLogs(ctx context.Context, eventChan chan<- model.Maintenanc
 	queryWindowEndTime := time.Now().UTC()
 
 	if !queryWindowStartTime.Before(queryWindowEndTime) {
-		klog.V(1).Infof(
+		slog.Debug(
 			"GCP Query window start time (%s) is not before query window end time (%s). "+
 				"Adjusting end time for query validity.",
 			queryWindowStartTime.Format(time.RFC3339Nano),
@@ -334,7 +329,7 @@ func (c *Client) pollLogs(ctx context.Context, eventChan chan<- model.Maintenanc
 		}
 	}
 
-	klog.V(1).InfoS("Polling GCP Logging API...",
+	slog.Info("Polling GCP Logging API...",
 		"queryWindowStartExclusive", queryWindowStartTime.Format(time.RFC3339Nano),
 		"queryWindowEndInclusive", queryWindowEndTime.Format(time.RFC3339Nano))
 
@@ -344,7 +339,7 @@ func (c *Client) pollLogs(ctx context.Context, eventChan chan<- model.Maintenanc
 		queryWindowEndTime.Format(time.RFC3339Nano))
 	fullFilter := fmt.Sprintf("(%s) AND (%s)", c.config.LogFilter, timeFilter)
 
-	klog.V(2).InfoS("Executing GCP log query", "filter", fullFilter)
+	slog.Info("Executing GCP log query", "filter", fullFilter)
 
 	it := c.logadminClient.Entries(ctx, logadmin.Filter(fullFilter))
 
@@ -359,12 +354,9 @@ func (c *Client) pollLogs(ctx context.Context, eventChan chan<- model.Maintenanc
 	if pollFetchSuccessful {
 		c.lastSuccessfullyProcessedPollEndTime = queryWindowEndTime
 	} else {
-		klog.Warningf(
-			"GCP poll cycle encountered errors fetching or processing entries. Checkpoint "+
-				"NOT advanced. durationSec=%.2f lastSuccessfullyProcessedPollEndTimeNotUpdated=%s",
-			time.Since(apiPollStartTs).Seconds(),
-			c.lastSuccessfullyProcessedPollEndTime.Format(time.RFC3339Nano),
-		)
+		slog.Warn("GCP poll cycle encountered errors fetching or processing entries. Checkpoint NOT advanced",
+			"durationSec", time.Since(apiPollStartTs).Seconds(),
+			"lastSuccessfullyProcessedPollEndTime", c.lastSuccessfullyProcessedPollEndTime.Format(time.RFC3339Nano))
 	}
 }
 
@@ -381,38 +373,32 @@ func (c *Client) getNodeNameForGcpLogEntry(
 	var mappingErr error
 
 	if gcpNumericInstanceID == "" || gcpNumericInstanceID == gcpInstanceIDUnknown {
-		klog.V(2).Infof("GCP instance ID ('%s') is empty or UNKNOWN from log entry, skipping K8s node name mapping.",
-			gcpNumericInstanceID)
+		slog.Debug("GCP instance ID is empty or UNKNOWN, skipping K8s node name mapping",
+			"instanceID", gcpNumericInstanceID)
 	} else {
-		klog.V(3).Infof("Attempting K8s mapping for GCP Instance ID: %s, Zone: %s", gcpNumericInstanceID, gcpZone)
+		slog.Debug("Attempting K8s mapping for GCP Instance",
+			"instanceID", gcpNumericInstanceID,
+			"zone", gcpZone)
 
 		nodeName, mappingErr = c.mapGCPInstanceToNodeName(ctx, gcpNumericInstanceID, eventMetaForMapper)
 		//nolint:gocritic
 		if mappingErr != nil {
-			klog.Warningf(
-				"Error mapping GCP resource ID '%s' (Zone: '%s') to K8s node name: %v. "+
-					"Proceeding without node name.",
-				gcpNumericInstanceID,
-				gcpZone,
-				mappingErr,
-			)
+			slog.Warn("Error mapping GCP resource ID to K8s node name. Proceeding without node name",
+				"instanceID", gcpNumericInstanceID,
+				"zone", gcpZone,
+				"error", mappingErr)
 		} else if nodeName == "" {
-			klog.V(1).Infof(
-				"No K8s node found for GCP resource ID '%s' (Numeric ID, Zone: '%s'). "+
-					"Event will be processed without NodeName. Treating as an error.",
-				gcpNumericInstanceID,
-				gcpZone,
-			)
+			slog.Debug("No K8s node found for GCP resource ID. Event will be processed without NodeName",
+				"instanceID", gcpNumericInstanceID,
+				"zone", gcpZone)
 
 			mappingErr = fmt.Errorf("no K8s node found for GCP numeric instance ID '%s' (Zone: '%s')",
 				gcpNumericInstanceID, gcpZone)
 		} else {
-			klog.V(1).Infof(
-				"Mapped GCP resource ID '%s' (Numeric ID, Zone: '%s') to K8s Node: %s",
-				gcpNumericInstanceID,
-				gcpZone,
-				nodeName,
-			)
+			slog.Debug("Mapped GCP resource ID to K8s Node",
+				"instanceID", gcpNumericInstanceID,
+				"zone", gcpZone,
+				"nodeName", nodeName)
 		}
 	}
 
@@ -427,7 +413,7 @@ func (c *Client) processSingleGcpLogEntry(
 	eventChan chan<- model.MaintenanceEvent,
 ) {
 	metrics.CSPEventsReceived.WithLabelValues(string(model.CSPGCP)).Inc()
-	klog.V(2).InfoS(
+	slog.Info(
 		"Raw GCP Log Entry received",
 		"InsertID", entry.InsertID,
 		"LogName", entry.LogName,
@@ -456,14 +442,14 @@ func (c *Client) processSingleGcpLogEntry(
 	normalizedEvent, errNorm := c.normalizer.Normalize(entry, nodeName, c.clusterName)
 	if errNorm != nil {
 		metrics.MainNormalizationErrors.WithLabelValues(string(model.CSPGCP)).Inc()
-		klog.ErrorS(errNorm, "Error normalizing GCP log entry", "InsertID", entry.InsertID)
+		slog.Error("Error normalizing GCP log entry", "InsertID", entry.InsertID, "error", errNorm)
 
 		return // Skip this event
 	}
 
 	select {
 	case eventChan <- *normalizedEvent:
-		klog.V(2).InfoS(
+		slog.Info(
 			"Sent normalized GCP event to channel",
 			"eventID", normalizedEvent.EventID,
 			"nodeName", normalizedEvent.NodeName,
@@ -471,7 +457,7 @@ func (c *Client) processSingleGcpLogEntry(
 			"internalStatus", normalizedEvent.Status,
 		)
 	case <-ctx.Done():
-		klog.Info("Context cancelled while sending GCP event to channel. Entry processing stopped for this event.")
+		slog.Info("Context cancelled while sending GCP event to channel. Entry processing stopped for this event.")
 	}
 }
 
@@ -495,7 +481,7 @@ func (c *Client) processLogEntries(
 	for {
 		// Check for context cancellation at the start of each iteration
 		if err := ctx.Err(); err != nil {
-			klog.Infof("Context cancelled before processing next entry: %v", err)
+			slog.Info("Context cancelled before processing next entry", "error", err)
 
 			pollFetchSuccessful = false // Ensure this is false if loop is exited due to cancellation
 
@@ -509,9 +495,10 @@ func (c *Client) processLogEntries(
 		}
 
 		if err != nil {
-			klog.ErrorS(
-				err,
+			slog.Error(
 				"Error iterating GCP log entries",
+				"error",
+				err,
 				"filter",
 				c.config.LogFilter,
 			) // Use c.config.LogFilter for context
@@ -533,7 +520,7 @@ func (c *Client) processLogEntries(
 		// Check context after processing each entry to allow quick exit if
 		// needed
 		if ctx.Err() != nil {
-			klog.Info("Context cancelled after processing an entry. Stopping poll.")
+			slog.Info("Context cancelled after processing an entry. Stopping poll.")
 
 			pollFetchSuccessful = false
 
@@ -546,7 +533,7 @@ func (c *Client) processLogEntries(
 
 	if pollFetchSuccessful {
 		if entriesProcessedThisPoll > 0 {
-			klog.V(1).InfoS(
+			slog.Info(
 				"GCP poll cycle finished.",
 				"entriesProcessed", entriesProcessedThisPoll,
 				"durationSec", pollDuration,
@@ -554,7 +541,7 @@ func (c *Client) processLogEntries(
 				"latestEventInBatchTimestamp", latestTimestampInBatch.Format(time.RFC3339Nano),
 			)
 		} else {
-			klog.V(1).InfoS(
+			slog.Info(
 				"No new GCP log entries found in this poll cycle.",
 				"durationSec", pollDuration,
 				"queryWindowUsedEndedAt", queryWindowEndTime.Format(time.RFC3339Nano),

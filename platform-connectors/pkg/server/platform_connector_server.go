@@ -22,7 +22,7 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 /*
@@ -47,7 +47,7 @@ type PlatformConnectorServer struct {
 }
 
 func (p *PlatformConnectorServer) HealthEventOccuredV1(ctx context.Context, he *pb.HealthEvents) (*empty.Empty, error) {
-	klog.Infof("Health events %+v received", he)
+	slog.Info("Health events %+v received", he)
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 

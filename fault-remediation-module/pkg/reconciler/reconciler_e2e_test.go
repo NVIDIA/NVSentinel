@@ -44,7 +44,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
-	"k8s.io/klog/v2"
+	"log/slog"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -572,9 +572,9 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		go func() {
 			defer close(reconcilerDone)
 			mockWatcher.Start(ctx)
-			klog.Info("Test: Listening for events on the channel...")
+			slog.Info("Test: Listening for events on the channel...")
 			for event := range mockWatcher.Events() {
-				klog.Infof("Test: Event received: %+v", event)
+				slog.Info("Test: Event received: %+v", event)
 				reconcilerInstance.processEvent(ctx, event, mockWatcher, mockColl)
 			}
 		}()

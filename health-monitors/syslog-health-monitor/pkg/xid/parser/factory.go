@@ -18,7 +18,7 @@ import (
 	"fmt"
 
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 // ParserConfig holds configuration for parser creation
@@ -35,12 +35,12 @@ func CreateParser(config ParserConfig) (Parser, error) {
 			return nil, fmt.Errorf("XidAnalyserEndpoint is required when SidecarEnabled is true")
 		}
 
-		klog.Infof("Creating sidecar parser with endpoint: %s", config.XidAnalyserEndpoint)
+		slog.Info("Creating sidecar parser with endpoint: %s", config.XidAnalyserEndpoint)
 
 		return NewSidecarParser(config.XidAnalyserEndpoint, config.NodeName), nil
 	}
 
-	klog.Infof("Creating Excel parser with embedded mapping file")
+	slog.Info("Creating Excel parser with embedded mapping file")
 
 	errorResolutionMap, err := common.LoadErrorResolutionMap()
 	if err != nil {
@@ -52,7 +52,7 @@ func CreateParser(config ParserConfig) (Parser, error) {
 		return nil, fmt.Errorf("failed to load NVL5 decoding rules from embedded Excel file: %w", err)
 	}
 
-	klog.Infof("Loaded %d XID error resolution mappings and %d NVL5 rule types", len(errorResolutionMap), len(nvl5Rules))
+	slog.Info("Loaded %d XID error resolution mappings and %d NVL5 rule types", len(errorResolutionMap), len(nvl5Rules))
 
 	return NewCSVParser(config.NodeName, errorResolutionMap, nvl5Rules), nil
 }

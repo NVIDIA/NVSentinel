@@ -19,7 +19,7 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
-	klog "k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -95,7 +95,7 @@ func LoadConfig(filePath string) (*Config, error) {
 // applyDefaults assigns default values to zero-value fields.
 func applyDefaults(cfg *Config) {
 	if cfg.MaintenanceEventPollIntervalSeconds == 0 {
-		klog.Infof(
+		slog.Info(
 			"Configuration: 'maintenanceEventPollIntervalSeconds' not set, defaulting to %d",
 			DefaultMaintenanceEventPollIntervalSeconds,
 		)
@@ -104,7 +104,7 @@ func applyDefaults(cfg *Config) {
 	}
 
 	if cfg.TriggerQuarantineWorkflowTimeLimitMinutes == 0 {
-		klog.Infof(
+		slog.Info(
 			"Configuration: 'triggerQuarantineWorkflowTimeLimitMinutes' not set, defaulting to %d",
 			DefaultTriggerQuarantineWorkflowTimeLimitMinutes,
 		)
@@ -113,7 +113,7 @@ func applyDefaults(cfg *Config) {
 	}
 
 	if cfg.PostMaintenanceHealthyDelayMinutes == 0 {
-		klog.Infof(
+		slog.Info(
 			"Configuration: 'postMaintenanceHealthyDelayMinutes' not set or is 0, defaulting to %d",
 			DefaultPostMaintenanceHealthyDelayMinutes,
 		)
@@ -122,7 +122,7 @@ func applyDefaults(cfg *Config) {
 	}
 
 	if cfg.NodeReadinessTimeoutMinutes == 0 {
-		klog.Infof(
+		slog.Info(
 			"Configuration: 'nodeReadinessTimeoutMinutes' not set or is 0, defaulting to %d",
 			DefaultNodeReadinessTimeoutMinutes,
 		)

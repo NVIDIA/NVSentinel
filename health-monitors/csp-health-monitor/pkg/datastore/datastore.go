@@ -26,10 +26,11 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
+	"log/slog"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	klog "k8s.io/klog/v2"
 )
 
 const (
@@ -83,7 +84,8 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 
 	mongoCollection := os.Getenv("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME")
 	if mongoCollection == "" {
-		klog.Warningf("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME not set, using default: %s", DefaultMongoDBCollection)
+		slog.Warn("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME not set, using default",
+			"defaultCollection", DefaultMongoDBCollection)
 		mongoCollection = DefaultMongoDBCollection
 	}
 
@@ -111,10 +113,10 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 		TotalCACertIntervalSeconds: intervalCACertSeconds,
 	}
 
-	klog.Infof(
-		"Initializing MongoDB connection to %s, Database: %s, Collection: %s",
-		mongoURI, mongoDatabase, mongoCollection,
-	)
+	slog.Info("Initializing MongoDB connection",
+		"mongoURI", mongoURI,
+		"database", mongoDatabase,
+		"collection", mongoCollection)
 
 	collection, err := storewatcher.GetCollectionClient(ctx, mongoConfig)
 	if err != nil {
@@ -122,7 +124,7 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 		return nil, fmt.Errorf("error initializing MongoDB collection client: %w", err)
 	}
 
-	klog.Infof("MongoDB collection client initialized successfully.")
+	slog.Info("MongoDB collection client initialized successfully.")
 
 	// Ensure Indexes Exist
 	indexModels := []mongo.IndexModel{
@@ -154,9 +156,9 @@ func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStor
 	_, indexErr := indexView.CreateMany(ctx, indexModels)
 	if indexErr != nil {
 		// Consider adding a datastore index creation metric error here (but maybe only warning level)
-		klog.Warningf("Failed to create indexes (they might already exist): %v", indexErr)
+		slog.Warn("Failed to create indexes (they might already exist)", "error", indexErr)
 	} else {
-		klog.Info("Successfully created or ensured MongoDB indexes exist.")
+		slog.Info("Successfully created or ensured MongoDB indexes exist.")
 	}
 
 	return &MongoStore{
@@ -174,10 +176,11 @@ func getEnvAsInt(name string, defaultVal int) (int, error) {
 
 	value, err := strconv.Atoi(valueStr)
 	if err != nil {
-		klog.Warningf(
-			"Invalid integer value for environment variable %s: '%s'. Using default %d. Error: %v",
-			name, valueStr, defaultVal, err,
-		)
+		slog.Warn("Invalid integer value for environment variable; using default",
+			"name", name,
+			"value", valueStr,
+			"default", defaultVal,
+			"error", err)
 
 		return defaultVal, fmt.Errorf("invalid value for %s: %s", name, valueStr)
 	}
@@ -193,27 +196,30 @@ func (s *MongoStore) executeUpsert(ctx context.Context, filter bson.D, event *mo
 	var lastErr error
 
 	for i := 1; i <= maxRetries; i++ {
-		klog.V(3).Infof("Attempt %d to upsert maintenance event (EventID: %s)", i, event.EventID)
+		slog.Debug("Attempt to upsert maintenance event",
+			"attempt", i,
+			"eventID", event.EventID)
 
 		result, err := s.client.UpdateOne(ctx, filter, update, opts)
 		if err == nil {
 			switch {
 			case result.UpsertedCount > 0:
-				klog.V(2).Infof("Inserted new maintenance event (EventID: %s)", event.EventID)
+				slog.Debug("Inserted new maintenance event", "eventID", event.EventID)
 			case result.ModifiedCount > 0:
-				klog.V(2).Infof("Updated existing maintenance event (EventID: %s)", event.EventID)
+				slog.Debug("Updated existing maintenance event", "eventID", event.EventID)
 			default:
-				klog.V(2).Infof(
-					"Matched existing maintenance event but no fields changed (EventID: %s)",
-					event.EventID,
-				)
+				slog.Debug("Matched existing maintenance event but no fields changed",
+					"eventID", event.EventID)
 			}
 
 			return nil
 		}
 
 		lastErr = err
-		klog.Warningf("Attempt %d failed to upsert event (EventID: %s): %v; retrying...", i, event.EventID, err)
+		slog.Warn("Attempt failed to upsert event; retrying",
+			"attempt", i,
+			"eventID", event.EventID,
+			"error", err)
 		time.Sleep(retryDelay)
 	}
 
@@ -233,7 +239,7 @@ func (s *MongoStore) UpsertMaintenanceEvent(ctx context.Context, event *model.Ma
 	// Since Processor now prepares the event fully, we directly upsert.
 	// The fetchExistingEvent and mergeEvents logic is removed based on the confidence
 	// that each EventID is processed once in its final state by the Processor.
-	klog.V(3).Infof("Upserting event %s directly as prepared by Processor.", event.EventID)
+	slog.Debug("Upserting event directly as prepared by Processor", "eventID", event.EventID)
 
 	return s.executeUpsert(ctx, filter, event)
 }
@@ -255,10 +261,10 @@ func (s *MongoStore) FindEventsToTriggerQuarantine(
 		}},
 	}
 
-	klog.V(2).Infof(
-		"Querying for quarantine triggers: status=%s, scheduledStartTime=(%v, %v]",
-		model.StatusDetected, now.Format(time.RFC3339), triggerBefore.Format(time.RFC3339),
-	)
+	slog.Debug("Querying for quarantine triggers",
+		"status", model.StatusDetected,
+		"currentTime", now.Format(time.RFC3339),
+		"triggerBefore", triggerBefore.Format(time.RFC3339))
 
 	cursor, err := s.client.Find(ctx, filter)
 	if err != nil {
@@ -272,7 +278,7 @@ func (s *MongoStore) FindEventsToTriggerQuarantine(
 		return nil, fmt.Errorf("failed to decode maintenance events for quarantine trigger: %w", err)
 	}
 
-	klog.V(2).Infof("Found %d events potentially ready for quarantine trigger.", len(results))
+	slog.Debug("Found events potentially ready for quarantine trigger", "count", len(results))
 
 	return results, nil
 }
@@ -294,10 +300,9 @@ func (s *MongoStore) FindEventsToTriggerHealthy(
 		}},
 	}
 
-	klog.V(2).Infof(
-		"Querying for healthy triggers: status=%s, actualEndTime != nil AND actualEndTime <= %v",
-		model.StatusMaintenanceComplete, triggerIfEndedBefore.Format(time.RFC3339),
-	)
+	slog.Debug("Querying for healthy triggers",
+		"status", model.StatusMaintenanceComplete,
+		"actualEndTimeBefore", triggerIfEndedBefore.Format(time.RFC3339))
 
 	cursor, err := s.client.Find(ctx, filter)
 	if err != nil {
@@ -311,7 +316,7 @@ func (s *MongoStore) FindEventsToTriggerHealthy(
 		return nil, fmt.Errorf("failed to decode maintenance events for healthy trigger: %w", err)
 	}
 
-	klog.V(2).Infof("Found %d events potentially ready for healthy trigger.", len(results))
+	slog.Debug("Found events potentially ready for healthy trigger", "count", len(results))
 
 	return results, nil
 }
@@ -336,25 +341,30 @@ func (s *MongoStore) UpdateEventStatus(ctx context.Context, eventID string, newS
 	var result *mongo.UpdateResult
 
 	for i := 1; i <= maxRetries; i++ {
-		klog.V(3).Infof("Attempt %d to update status to '%s' for event (EventID: %s)",
-			i, newStatus, eventID)
+		slog.Debug("Attempt to update status for event",
+			"attempt", i,
+			"newStatus", newStatus,
+			"eventID", eventID)
 
 		result, err = s.client.UpdateOne(ctx, filter, update)
 		if err == nil {
 			if result.MatchedCount == 0 {
-				klog.Warningf("Attempted to update status for non-existent event (EventID: %s)", eventID)
+				slog.Warn("Attempted to update status for non-existent event", "eventID", eventID)
 				return nil // Not an error if event is gone
 			}
 
-			klog.V(2).Infof("Successfully updated status to '%s' for event (EventID: %s)",
-				newStatus, eventID)
+			slog.Debug("Successfully updated status for event",
+				"newStatus", newStatus,
+				"eventID", eventID)
 
 			return nil // Success
 		}
 
-		klog.Warningf(
-			"Attempt %d failed to update status for event (EventID: %s): %v. Retrying in %v...",
-			i, eventID, err, retryDelay)
+		slog.Warn("Attempt failed to update status for event; retrying",
+			"attempt", i,
+			"eventID", eventID,
+			"error", err,
+			"retryDelay", retryDelay)
 		time.Sleep(retryDelay)
 	}
 
@@ -379,28 +389,34 @@ func (s *MongoStore) GetLastProcessedEventTimestampByCSP(
 		SetSort(bson.D{bson.E{Key: "eventReceivedTimestamp", Value: -1}})
 		// Sort by internal received time
 
-	klog.V(2).Infof("Querying for last processed %s timestamp with filter: %v", cspNameForLog, filter)
+	slog.Debug("Querying for last processed timestamp",
+		"csp", cspNameForLog)
 
 	var latestEvent model.MaintenanceEvent
 	dbErr := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
 
 	if dbErr != nil {
 		if errors.Is(dbErr, mongo.ErrNoDocuments) {
-			klog.V(1).Infof("No previous %s event timestamp found in datastore (Cluster: %s)",
-				cspNameForLog, clusterName)
+			slog.Debug("No previous event timestamp found in datastore",
+				"csp", cspNameForLog,
+				"cluster", clusterName)
 			return time.Time{}, false, nil
 		}
 
-		klog.Errorf("Failed to query last processed %s log timestamp for cluster %s: %v",
-			cspNameForLog, clusterName, dbErr)
+		slog.Error("Failed to query last processed log timestamp",
+			"csp", cspNameForLog,
+			"cluster", clusterName,
+			"error", dbErr)
 
 		return time.Time{}, false, fmt.Errorf("failed to query last %s log timestamp: %w", cspNameForLog, dbErr)
 	}
 
 	// Use EventReceivedTimestamp as the marker for when we processed it
-	klog.V(1).Infof(
-		"Found last processed %s log timestamp for cluster %s: %v (EventID: %s)",
-		cspNameForLog, clusterName, latestEvent.EventReceivedTimestamp, latestEvent.EventID)
+	slog.Debug("Found last processed log timestamp",
+		"csp", cspNameForLog,
+		"cluster", clusterName,
+		"timestamp", latestEvent.EventReceivedTimestamp,
+		"eventID", latestEvent.EventID)
 
 	return latestEvent.EventReceivedTimestamp, true, nil
 }
@@ -428,32 +444,34 @@ func (s *MongoStore) FindLatestActiveEventByNodeAndType(
 	// Consider adding a secondary sort key if more deterministic behavior is needed in such rare cases.
 	findOptions := options.FindOne().SetSort(bson.D{bson.E{Key: "lastUpdatedTimestamp", Value: -1}})
 
-	klog.V(3).Infof("Querying for latest active event with filter: %v, sort: {lastUpdatedTimestamp: -1}", filter)
+	slog.Debug("Querying for latest active event",
+		"node", nodeName,
+		"maintenanceType", maintenanceType,
+		"sort", "lastUpdatedTimestamp: -1")
 
 	var latestEvent model.MaintenanceEvent
 
 	err := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			klog.V(2).
-				Infof("No active event found for Node: %s, Type: %s, Statuses: %v", nodeName, maintenanceType, statuses)
+			slog.Info("No active event found", "node", nodeName, "type", maintenanceType, "statuses", statuses)
 			return nil, false, nil
 		}
 
-		klog.Errorf(
-			"Failed to query latest active event for Node: %s, Type: %s, Statuses: %v: %v",
-			nodeName,
-			maintenanceType,
-			statuses,
-			err,
-		)
+		slog.Error("Failed to query latest active event",
+			"node", nodeName,
+			"type", maintenanceType,
+			"statuses", statuses,
+			"error", err)
 
 		return nil, false, fmt.Errorf("failed to query latest active event: %w", err)
 	}
 
-	klog.V(2).
-		Infof("Found latest active event %s for Node: %s, "+
-			"Type: %s, Statuses: %v", latestEvent.EventID, nodeName, maintenanceType, statuses)
+	slog.Info("Found latest active event",
+		"eventID", latestEvent.EventID,
+		"node", nodeName,
+		"type", maintenanceType,
+		"statuses", statuses)
 
 	return &latestEvent, true, nil
 }
@@ -475,7 +493,7 @@ func (s *MongoStore) FindLatestOngoingEventByNode(
 	err := s.client.FindOne(ctx, filter, opts).Decode(&event)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			klog.V(2).Infof("No ongoing event found for node %s", nodeName)
+			slog.Debug("No ongoing event found for node", "node", nodeName)
 
 			return nil, false, nil
 		}
@@ -483,7 +501,7 @@ func (s *MongoStore) FindLatestOngoingEventByNode(
 		return nil, false, fmt.Errorf("query latest ongoing event for node %s: %w", nodeName, err)
 	}
 
-	klog.V(2).Infof("Found ongoing event %s for node %s", event.EventID, nodeName)
+	slog.Debug("Found ongoing event", "eventID", event.EventID, "node", nodeName)
 
 	return &event, true, nil
 }
@@ -503,7 +521,9 @@ func (s *MongoStore) FindActiveEventsByStatuses(
 		bson.E{Key: "cspStatus", Value: bson.D{bson.E{Key: "$in", Value: statuses}}},
 	}
 
-	klog.V(2).Infof("Querying for active events with filter: %v", filter)
+	slog.Debug("Querying for active events",
+		"csp", csp,
+		"statuses", statuses)
 
 	cursor, err := s.client.Find(ctx, filter)
 	if err != nil {
@@ -517,7 +537,7 @@ func (s *MongoStore) FindActiveEventsByStatuses(
 		return nil, fmt.Errorf("failed to decode maintenance events for active events: %w", err)
 	}
 
-	klog.V(2).Infof("Found %d active events.", len(results))
+	slog.Debug("Found active events", "count", len(results))
 
 	return results, nil
 }

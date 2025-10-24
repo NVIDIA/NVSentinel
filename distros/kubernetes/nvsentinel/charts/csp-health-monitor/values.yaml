@@ -36,8 +36,8 @@ quarantineTriggerEngine:
     requests:
       cpu: "100m"
       memory: "128Mi"
-  # Klog verbosity for the sidecar, defaults to main container's logLevel if not set
-  logLevel: 1
+  # Log verbosity for the sidecar, defaults to main container's logLevel if not set
+  logLevel: info
   # Port for sidecar's Prometheus metrics endpoint
   metricsPort: 2113
 
@@ -57,8 +57,8 @@ imagePullSecrets: []
 # Optional pod annotations (fallback if global not available)
 podAnnotations: {}
 
-# Klog verbosity level for the main CSP health monitor container (e.g., 1=Info, 2=Debug, etc.)
-logLevel: 1
+# Log verbosity level for the main CSP health monitor container (e.g. "debug", "info", "warn", "error")
+logLevel: info
 
 # Mount path for MongoDB client certificates within the containers
 clientCertMountPath: "/etc/ssl/mongo-client"

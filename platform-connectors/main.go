@@ -17,10 +17,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
@@ -29,9 +31,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/json"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
@@ -50,32 +52,48 @@ var (
 	date    = "unknown"
 )
 
-//nolint:cyclop
-func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+func initLogger() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
 
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	})).With("module", "platform-connectors", "version", version)
+
+	slog.SetDefault(logger)
+}
+
+func main() {
+	initLogger()
+	slog.Info("Starting platform-connectors", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Platform connectors exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
-
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-
 	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "platform-connectors",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting platform-connectors", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	if *socket == "" {
-		klog.Fatalf("socket is not present")
+		return fmt.Errorf("socket is not present")
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -83,17 +101,18 @@ func main() {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // Ensure cancel is called on all exit paths
 
 	data, err := os.ReadFile(*configFilePath)
 	if err != nil {
-		klog.Fatalf("Failed to read platform-connector-configmap with err %s", err)
+		return fmt.Errorf("failed to read platform-connector-configmap with err %w", err)
 	}
 
 	result := make(map[string]interface{})
 
 	err = json.Unmarshal(data, &result)
 	if err != nil {
-		klog.Fatalf("Failed to unmarshal the configmap data with error %s", err)
+		return fmt.Errorf("failed to unmarshal platform-connector-configmap with err %w", err)
 	}
 
 	enableK8sPlatformConnector := result["enableK8sPlatformConnector"]
@@ -108,14 +127,14 @@ func main() {
 
 		qpsTemp, ok := result["K8sConnectorQps"].(float64)
 		if !ok {
-			klog.Fatalf("failed to convert K8sConnectorQps to float: %v", result["K8sConnectorQps"])
+			return fmt.Errorf("failed to convert K8sConnectorQps to float: %v", result["K8sConnectorQps"])
 		}
 
 		qps := float32(qpsTemp)
 
 		burst, ok := result["K8sConnectorBurst"].(int64)
 		if !ok {
-			klog.Fatalf("failed to convert K8sConnectorBurst to int: %v", result["K8sConnectorBurst"])
+			return fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", result["K8sConnectorBurst"])
 		}
 
 		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
@@ -133,12 +152,12 @@ func main() {
 
 	err = os.Remove(*socket)
 	if err != nil && !os.IsNotExist(err) {
-		klog.Fatalf("failed to remove existing socket with error %s", err)
+		return fmt.Errorf("failed to remove existing socket with error %s", err)
 	}
 
 	lis, err := net.Listen("unix", *socket)
 	if err != nil {
-		klog.Fatalf("Error creating platform-connector unixsocket %s", err)
+		return fmt.Errorf("failed to listen on unix socket %s: %w", *socket, err)
 	}
 
 	var opts []grpc.ServerOption
@@ -149,7 +168,8 @@ func main() {
 	go func() {
 		err = grpcServer.Serve(lis)
 		if err != nil {
-			klog.Fatalf("Not able to accept incoming connections. Error is %s", err)
+			slog.Error("Not able to accept incoming connections", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -158,14 +178,15 @@ func main() {
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+*metricsPort, nil)
 		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+			slog.Error("Failed to start metrics server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
-	klog.Infof("Waiting for signal")
+	slog.Info("Waiting for signal")
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigs
-	klog.Infof("Received signal %v", sig)
+	slog.Info("Received signal", "signal", sig)
 
 	close(stopCh)
 
@@ -179,4 +200,6 @@ func main() {
 	}
 
 	cancel()
+
+	return nil
 }

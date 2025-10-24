@@ -26,8 +26,9 @@ import (
 	"math"
 	"time"
 
+	"log/slog"
+
 	"golang.org/x/exp/maps"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -56,7 +57,7 @@ func NewSlidingWindowBreaker(ctx context.Context, cfg Config) (CircuitBreaker, e
 
 	err := cfg.EnsureConfigMap(ctx, StateClosed)
 	if err != nil {
-		klog.Errorf("Error ensuring circuit breaker config map: %v", err)
+		slog.Error("Error ensuring circuit breaker config map", "error", err)
 		return nil, fmt.Errorf("error ensuring circuit breaker config map: %w", err)
 	}
 
@@ -144,7 +145,9 @@ func (b *slidingWindowBreaker) AddCordonEvent(nodeName string) {
 		}
 	}
 
-	klog.V(3).Infof("Adding node %s to current bucket %d", nodeName, currentBucketIndex)
+	slog.Debug("Adding node to current bucket",
+		"node", nodeName,
+		"bucket", currentBucketIndex)
 	// Add node to current bucket
 	b.nodeToIndex[nodeName] = currentBucketIndex
 	b.indexToNodes[currentBucketIndex][nodeName] = true
@@ -179,12 +182,12 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 
 	totalNodes, err := b.getTotalNodesWithRetry(ctx)
 	if err != nil {
-		klog.Errorf("Failed to get total nodes after retries: %v", err)
+		slog.Error("Failed to get total nodes after retries", "error", err)
 		return false, fmt.Errorf("failed to get total nodes after retries: %w", err)
 	}
 
 	if totalNodes == 0 {
-		klog.Errorf("Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
+		slog.Error("Total nodes is still 0 after all retry attempts - cluster may have no GPU nodes")
 		return false, fmt.Errorf("total nodes is 0 after retries")
 	}
 
@@ -196,8 +199,10 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	threshold := int(math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100))
 	shouldTrip := recentCordonedNodes >= threshold
 
-	klog.Infof("Recent Total Cordoned Nodes: %d, Total Nodes: %d, TripPercentage: %f",
-		recentCordonedNodes, totalNodes, b.cfg.TripPercentage)
+	slog.Info("Recent cordoned nodes status",
+		"recentCordonedNodes", recentCordonedNodes,
+		"totalNodes", totalNodes,
+		"tripPercentage", b.cfg.TripPercentage)
 
 	SetFaultQuarantineBreakerUtilization(float64(recentCordonedNodes) / float64(totalNodes))
 	b.mu.Unlock()
@@ -205,7 +210,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	if shouldTrip {
 		err := b.ForceState(ctx, StateTripped)
 		if err != nil {
-			klog.Errorf("Error forcing circuit breaker state to TRIPPED: %v", err)
+			slog.Error("Error forcing circuit breaker state to TRIPPED", "error", err)
 			return true, fmt.Errorf("error forcing circuit breaker state to TRIPPED: %w", err)
 		}
 
@@ -228,11 +233,11 @@ func (b *slidingWindowBreaker) ForceState(ctx context.Context, s State) error {
 	b.mu.Unlock()
 
 	if err := b.cfg.WriteStateFn(ctx, s); err != nil {
-		klog.Errorf("Error writing circuit breaker state: %v", err)
+		slog.Error("Error writing circuit breaker state", "error", err)
 		return err
 	}
 
-	klog.Infof("ForceState: %s", s)
+	slog.Info("ForceState changed", "state", s)
 
 	return nil
 }
@@ -330,7 +335,10 @@ func (b *slidingWindowBreaker) getRetryConfig() (int, time.Duration, time.Durati
 
 // handleGetTotalNodesError handles API errors from GetTotalNodes
 func (b *slidingWindowBreaker) handleGetTotalNodesError(err error, attempt, maxRetries int) (int, error) {
-	klog.Errorf("GetTotalNodes failed on attempt %d/%d: %v", attempt+1, maxRetries+1, err)
+	slog.Error("GetTotalNodes failed on attempt",
+		"attempt", attempt+1,
+		"maxAttempts", maxRetries+1,
+		"error", err)
 
 	return 0, fmt.Errorf("GetTotalNodes failed: %w", err)
 }
@@ -338,8 +346,9 @@ func (b *slidingWindowBreaker) handleGetTotalNodesError(err error, attempt, maxR
 // handleSuccessfulNodeCount handles the success case when nodes > 0
 func (b *slidingWindowBreaker) handleSuccessfulNodeCount(totalNodes, attempt int) (int, error) {
 	if attempt > 0 {
-		klog.Infof("Circuit breaker retry successful: Got %d nodes after %d attempts",
-			totalNodes, attempt+1)
+		slog.Info("Circuit breaker retry successful",
+			"totalNodes", totalNodes,
+			"attempts", attempt+1)
 	}
 
 	return totalNodes, nil
@@ -350,8 +359,8 @@ func (b *slidingWindowBreaker) handleZeroNodes(attempt, maxRetries int) error {
 	lastErr := fmt.Errorf("GetTotalNodes returned 0 nodes (likely NodeInformer cache not synced yet)")
 
 	if attempt == 0 {
-		klog.Infof("Circuit breaker starting retries: NodeInformer cache may not be synced yet, "+
-			"will retry up to %d times", maxRetries)
+		slog.Info("Circuit breaker starting retries: NodeInformer cache may not be synced yet",
+			"maxRetries", maxRetries)
 	}
 
 	return lastErr
@@ -362,8 +371,10 @@ func (b *slidingWindowBreaker) performRetryDelay(ctx context.Context, attempt, m
 	initialDelay, maxDelay time.Duration) error {
 	delay := b.calculateBackoffDelay(attempt, initialDelay, maxDelay)
 
-	klog.V(3).Infof("Circuit breaker retry %d/%d: Got 0 nodes, retrying in %v "+
-		"(NodeInformer cache may still be syncing)", attempt+1, maxRetries, delay)
+	slog.Debug("Circuit breaker retry; got 0 nodes, retrying (NodeInformer cache may still be syncing)",
+		"attempt", attempt+1,
+		"maxRetries", maxRetries,
+		"delay", delay)
 
 	select {
 	case <-ctx.Done():
@@ -400,21 +411,18 @@ func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay,
 	actualNodes, err := b.cfg.GetTotalNodes(ctx)
 
 	if err != nil {
-		klog.Fatalf("Circuit breaker: All %d retry attempts exhausted. "+
-			"Failed to get node count from Kubernetes API: %v. "+
-			"Retry config: initial_delay=%v, max_delay=%v. "+
-			"Check cluster connectivity and RBAC permissions. "+
-			"Pod will restart.",
-			maxRetries, err, initialDelay, maxDelay)
+		slog.Error("Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",
+			"maxRetries", maxRetries,
+			"error", err,
+			"initialDelay", initialDelay,
+			"maxDelay", maxDelay)
 
 		return
 	}
 
-	klog.Fatalf("Circuit breaker: All %d retry attempts exhausted. "+
-		"Found %d total cluster nodes but 0 GPU nodes with required NVIDIA labels. "+
-		"Retry config: initial_delay=%v, max_delay=%v. "+
-		"Expected nodes with labels: nvidia.com/gpu.present=true, nvidia.com/gpu.deploy.dcgm=true. "+
-		"Install NVIDIA GPU Operator to enable GPU health monitoring. "+
-		"Pod will restart.",
-		maxRetries, actualNodes, initialDelay, maxDelay)
+	slog.Error("Circuit breaker: All retry attempts exhausted; found total cluster nodes but 0 GPU nodes with required NVIDIA labels; pod will restart",
+		"maxRetries", maxRetries,
+		"totalClusterNodes", actualNodes,
+		"initialDelay", initialDelay,
+		"maxDelay", maxDelay)
 }

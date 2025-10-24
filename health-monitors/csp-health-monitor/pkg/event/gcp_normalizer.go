@@ -21,11 +21,12 @@ import (
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 
+	"log/slog"
+
 	"cloud.google.com/go/logging"
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	auditpb "google.golang.org/genproto/googleapis/cloud/audit"
 	"google.golang.org/protobuf/types/known/structpb"
-	klog "k8s.io/klog/v2"
 )
 
 // GCP Compute Engine maintenance-related method names and messages.
@@ -61,7 +62,7 @@ func extractInstanceNameFromFQN(resourceNameFQN string) string {
 		return parts[len(parts)-1]
 	}
 
-	klog.V(3).Infof("Could not parse instance name from FQN: %s", resourceNameFQN)
+	slog.Debug("Could not parse instance name from FQN", "fqn", resourceNameFQN)
 
 	return ""
 }
@@ -130,13 +131,13 @@ func (n *GCPNormalizer) Normalize(
 
 	event, err := buildBaseEvent(entry, nodeName, clusterName)
 	if err != nil {
-		klog.V(1).Infof("GCP Normalizer: skipping entry due to validation: %v", err)
+		slog.Debug("GCP Normalizer: skipping entry due to validation", "error", err)
 		return nil, err
 	}
 
 	auditLog, err := decodeAuditPayload(entry)
 	if err != nil {
-		klog.ErrorS(err, "Unexpected payload type for GCP maintenance log entry", "insertID", entry.InsertID)
+		slog.Error("Unexpected payload type for GCP maintenance log entry", "error", err, "insertID", entry.InsertID)
 		return nil, err
 	}
 
@@ -146,7 +147,7 @@ func (n *GCPNormalizer) Normalize(
 
 	finalizeEventStatus(event, methodName, entry.InsertID)
 
-	klog.V(1).InfoS(
+	slog.Info(
 		"Normalized GCP event details",
 		"eventID", event.EventID,
 		"resourceType", event.ResourceType,
@@ -203,7 +204,10 @@ func parseMaintenanceFieldsFromProtoPayloadMetadata(metadataStruct *structpb.Str
 		if st, err := parseMetadataTime(stStr); err == nil {
 			event.ScheduledStartTime = st
 		} else {
-			klog.Warningf("Could not parse windowStartTime '%s' from metadata for event %s: %v", stStr, event.EventID, err)
+			slog.Warn("Could not parse windowStartTime from metadata",
+				"timeString", stStr,
+				"eventID", event.EventID,
+				"error", err)
 		}
 	}
 
@@ -212,7 +216,10 @@ func parseMaintenanceFieldsFromProtoPayloadMetadata(metadataStruct *structpb.Str
 		if et, err := parseMetadataTime(etStr); err == nil {
 			event.ScheduledEndTime = et
 		} else {
-			klog.Warningf("Could not parse windowEndTime '%s' from metadata for event %s: %v", etStr, event.EventID, err)
+			slog.Warn("Could not parse windowEndTime from metadata",
+				"timeString", etStr,
+				"eventID", event.EventID,
+				"error", err)
 		}
 	}
 }
@@ -244,7 +251,9 @@ func initializeEventFromLogEntry(entry *logging.Entry, nodeName string) *model.M
 	}
 
 	if entry.Resource == nil {
-		klog.Warningf("LogEntry %s (InsertID: %s) has no MonitoredResource block.", entry.LogName, entry.InsertID)
+		slog.Warn("LogEntry has no MonitoredResource block",
+			"logName", entry.LogName,
+			"insertID", entry.InsertID)
 		return event // Return partially filled event
 	}
 
@@ -290,10 +299,10 @@ func handleGcpCompletionMessage(event *model.MaintenanceEvent, methodName, rpcSt
 
 	if (methodName == GCPMethodUpcomingMaintenance || methodName == GCPMethodUpcomingInfraMaintenance) &&
 		strings.Contains(rpcStatusMessage, GCPMaintenanceCompletedMsg) {
-		klog.V(1).Infof(
-			"GCP maintenance completion message found for event %s (InsertID: %s): %s",
-			methodName, entryInsertID, rpcStatusMessage,
-		)
+		slog.Debug("GCP maintenance completion message found",
+			"method", methodName,
+			"insertID", entryInsertID,
+			"rpcStatusMessage", rpcStatusMessage)
 
 		event.CSPStatus = model.CSPStatusCompleted
 		if event.ActualEndTime == nil {
@@ -338,7 +347,7 @@ func updateEventFromAuditLog(
 		parseMaintenanceFieldsFromProtoPayloadMetadata(md, event)
 	}
 
-	klog.V(3).Infof("Parsed AuditLog payload for InsertID: %s", entryInsertID)
+	slog.Debug("Parsed AuditLog payload", "insertID", entryInsertID)
 
 	refineGcpStatusAndType(event, methodName)
 	handleGcpCompletionMessage(event, methodName, rpcStatusMessage, entryInsertID)
@@ -371,16 +380,18 @@ func finalizeEventStatus(event *model.MaintenanceEvent, methodName string, entry
 		}
 
 		if isGCPMaintenanceMethod(methodName) {
-			klog.V(1).Infof(
-				"CSPStatus is '%s' for known maintenance method %s (InsertID: %s). Defaulting internal status to '%s'.",
-				event.CSPStatus, methodName, entryInsertID, event.Status,
-			)
+			slog.Debug("CSPStatus unknown for known maintenance method; using default internal status",
+				"cspStatus", event.CSPStatus,
+				"method", methodName,
+				"insertID", entryInsertID,
+				"defaultStatus", event.Status)
 		}
 	default: // Handles any other unexpected CSPStatus values
-		klog.Warningf(
-			"Unexpected CSPStatus '%s' encountered for method %s (InsertID: %s). Defaulting internal status to '%s'.",
-			event.CSPStatus, methodName, entryInsertID, model.StatusDetected,
-		)
+		slog.Warn("Unexpected CSPStatus encountered; using default internal status",
+			"cspStatus", event.CSPStatus,
+			"method", methodName,
+			"insertID", entryInsertID,
+			"defaultStatus", model.StatusDetected)
 
 		if event.Status == "" { // Ensure internal status is at least Detected
 			event.Status = model.StatusDetected

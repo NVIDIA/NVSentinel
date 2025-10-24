@@ -67,7 +67,6 @@ require (
 	github.com/nvidia/nvsentinel/platform-connectors v0.0.0-20251002153030-9e1e7404df8a
 	github.com/nvidia/nvsentinel/statemanager v0.0.0-20251002153030-9e1e7404df8a
 	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0-20251002153030-9e1e7404df8a
-	k8s.io/klog/v2 v2.130.1
 )
 
 require (
@@ -91,6 +90,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/apiextensions-apiserver v0.34.1 // indirect
+	k8s.io/klog/v2 v2.130.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect

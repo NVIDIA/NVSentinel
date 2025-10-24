@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/klog/v2"
+	"log/slog"
 
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
@@ -57,19 +57,19 @@ func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, err
 		normPCI := xidHandler.normalizePCI(pciID)
 		xidHandler.pciToGPUUUID[normPCI] = gpuUUID
 
-		klog.Infof("Updated PCI->GPU UUID mapping: %s -> %s", normPCI, gpuUUID)
+		slog.Info("Updated PCI->GPU UUID mapping: %s -> %s", normPCI, gpuUUID)
 
 		return nil, nil
 	}
 
 	xidResp, err := xidHandler.parser.Parse(message)
 	if err != nil {
-		klog.V(4).Infof("XID parsing failed for message: %s, error: %v", message, err)
+		slog.Debug("XID parsing failed for message: %s, error: %v", message, err)
 		return nil, nil
 	}
 
 	if xidResp == nil || !xidResp.Success {
-		klog.V(4).Infof("No XID found in parsing: %s", message)
+		slog.Debug("No XID found in parsing: %s", message)
 		return nil, nil
 	}
 

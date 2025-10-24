@@ -35,7 +35,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	klog "k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -133,17 +133,17 @@ func NewClient(
 
 	healthAPIClient := health.NewFromConfig(awsSDKConfig)
 
-	klog.Infof("Successfully initialized AWS Health client for region %s", cfg.Region)
+	slog.Info("Successfully initialized AWS Health client for region %s", cfg.Region)
 
 	var k8sClient kubernetes.Interface
 
 	var k8sRestConfig *rest.Config
 
 	if kubeconfigPath != "" {
-		klog.Infof("AWS Client: Using kubeconfig from path: %s", kubeconfigPath)
+		slog.Info("AWS Client: Using kubeconfig from path: %s", kubeconfigPath)
 		k8sRestConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	} else {
-		klog.Info("AWS Client: KubeconfigPath not specified, attempting in-cluster config.")
+		slog.Info("AWS Client: KubeconfigPath not specified, attempting in-cluster config.")
 
 		k8sRestConfig, err = rest.InClusterConfig()
 	}
@@ -163,7 +163,7 @@ func NewClient(
 		return nil, fmt.Errorf("AWS client failed to create K8s clientset: %w", err)
 	}
 
-	klog.Info("AWS Client: Kubernetes clientset initialized successfully.")
+	slog.Info("AWS Client: Kubernetes clientset initialized successfully.")
 
 	normalizer, err := eventpkg.GetNormalizer(model.CSPAWS)
 	if err != nil {
@@ -188,7 +188,7 @@ func (c *AWSClient) GetName() model.CSP {
 
 // StartMonitoring polls the AWS Health API periodically.
 func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.MaintenanceEvent) error {
-	klog.Infof(
+	slog.Info(
 		"Starting AWS Health API polling every %d seconds in region %s",
 		c.config.PollingIntervalSeconds,
 		c.config.Region,
@@ -198,16 +198,16 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 	defer ticker.Stop()
 
 	lastEventProcessedTime := c.getInitialPollStartTime(ctx)
-	klog.V(2).Infof("Starting first poll from %v", lastEventProcessedTime)
+	slog.Debug("Starting first poll from %v", lastEventProcessedTime)
 
 	if err := c.pollNewEvents(ctx, eventChan, lastEventProcessedTime); err != nil {
-		klog.Errorf("Initial error polling AWS Health events: %v", err)
+		slog.Error("Initial error polling AWS Health events: %v", err)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			klog.Infof("Context cancelled, AWS monitoring stopped.\n")
+			slog.Info("Context cancelled, AWS monitoring stopped.\n")
 			return ctx.Err()
 		case <-ticker.C:
 			var wg sync.WaitGroup
@@ -219,7 +219,7 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 
 				if err := c.pollActiveEvents(ctx, eventChan); err != nil {
 					metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "updating_active_events_status_error").Inc()
-					klog.Errorf("Error refreshing active events status: %v", err)
+					slog.Error("Error refreshing active events status: %v", err)
 				}
 			}()
 
@@ -229,7 +229,7 @@ func (c *AWSClient) StartMonitoring(ctx context.Context, eventChan chan<- model.
 				pollStartTime := time.Now().UTC().Add(-time.Duration(c.config.PollingIntervalSeconds) * time.Second)
 				if err := c.pollNewEvents(ctx, eventChan, pollStartTime); err != nil {
 					metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "poll_events_error").Inc()
-					klog.Errorf("Error polling AWS Health events: %v", err)
+					slog.Error("Error polling AWS Health events: %v", err)
 				}
 			}()
 
@@ -247,7 +247,7 @@ func (c *AWSClient) getInitialPollStartTime(
 	defaultPollStartTime := time.Now().UTC().Add(-time.Duration(c.config.PollingIntervalSeconds) * time.Second)
 
 	if c.store == nil {
-		klog.Warningf("Datastore client is nil for GCP monitor. Starting poll from current time.")
+		slog.Warn("Datastore client is nil for GCP monitor. Starting poll from current time.")
 
 		return defaultPollStartTime
 	}
@@ -259,7 +259,7 @@ func (c *AWSClient) getInitialPollStartTime(
 		"AWS",
 	)
 	if errDb != nil {
-		klog.Warningf(
+		slog.Warn(
 			"Failed to get last processed AWS event timestamp for cluster %s from datastore: %v. "+
 				"Starting poll from current time.",
 			c.clusterName,
@@ -270,7 +270,7 @@ func (c *AWSClient) getInitialPollStartTime(
 	}
 
 	if found && !lastProcessedEventTS.IsZero() {
-		klog.Infof(
+		slog.Info(
 			"Resuming poll: last processed AWS event timestamp for cluster %s is %v. "+
 				"Next poll window will start after this.",
 			c.clusterName,
@@ -280,7 +280,7 @@ func (c *AWSClient) getInitialPollStartTime(
 		return lastProcessedEventTS
 	}
 
-	klog.Infof(
+	slog.Info(
 		"No previous AWS logs checkpoint found in datastore for cluster %s. "+
 			"Starting poll from current time.",
 		c.clusterName,
@@ -298,22 +298,22 @@ func (c *AWSClient) pollNewEvents(ctx context.Context,
 		metrics.CSPPollingDuration.WithLabelValues(string(model.CSPAWS)).Observe(time.Since(pollStart).Seconds())
 	}()
 
-	klog.V(2).Infof("Polling AWS Health API...")
+	slog.Debug("Polling AWS Health API...")
 
 	instanceIDs, err := c.getClusterInstanceNodeMap(ctx)
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "get_nodes_provider_id_error").Inc()
-		klog.Errorf("Error getting nodes provider IDs: %v\n", err)
+		slog.Error("Error getting nodes provider IDs: %v\n", err)
 
 		return fmt.Errorf("error getting nodes provider IDs: %w", err)
 	}
 
-	klog.V(2).Infof("Found nodes with instance IDs: %v", instanceIDs)
+	slog.Debug("Found nodes with instance IDs: %v", instanceIDs)
 
 	err = c.handleMaintenanceEvents(ctx, instanceIDs, eventChan, pollStartTime)
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "handle_maintenance_events_error").Inc()
-		klog.Errorf("Error polling AWS Health events: %v\n", err)
+		slog.Error("Error polling AWS Health events: %v\n", err)
 
 		return fmt.Errorf("error polling AWS Health events: %w", err)
 	}
@@ -328,16 +328,16 @@ func (c *AWSClient) handleMaintenanceEvents(
 	eventChan chan<- model.MaintenanceEvent,
 	pollStartTime time.Time,
 ) error {
-	klog.V(2).Infof("AWS Poll: Checking all maintenance events as of %v", pollStartTime)
+	slog.Debug("AWS Poll: Checking all maintenance events as of %v", pollStartTime)
 
 	events, err := c.pollEventsAPI(ctx, pollStartTime)
 	if err != nil {
-		klog.Errorf("Error polling AWS Health events: %v\n", err)
+		slog.Error("Error polling AWS Health events: %v\n", err)
 		return err
 	}
 
 	if len(events) == 0 {
-		klog.V(3).Infof("No AWS EC2 maintenance events found")
+		slog.Debug("No AWS EC2 maintenance events found")
 		return nil
 	}
 
@@ -347,24 +347,24 @@ func (c *AWSClient) handleMaintenanceEvents(
 		metrics.CSPEventsReceived.WithLabelValues(string(model.CSPAWS)).Inc()
 
 		if event.EventTypeCode == nil {
-			klog.V(4).Infof("Skipping event %s: EventTypeCode is nil", aws.ToString(event.Arn))
+			slog.Debug("Skipping event %s: EventTypeCode is nil", aws.ToString(event.Arn))
 			continue
 		}
 
 		if event.Arn == nil {
-			klog.V(4).Infof("Skipping event with nil ARN")
+			slog.Debug("Skipping event with nil ARN")
 			continue
 		}
 
 		if !isSupportedEventTypeCode(*event.EventTypeCode) {
 			metrics.CSPEventsByTypeUnsupported.WithLabelValues(string(model.CSPAWS), *event.EventTypeCode).Inc()
-			klog.V(3).Infof("Ignoring unsupported event type code %s for event %s",
+			slog.Debug("Ignoring unsupported event type code %s for event %s",
 				*event.EventTypeCode, aws.ToString(event.Arn))
 
 			continue
 		}
 
-		klog.V(3).Infof(
+		slog.Debug(
 			"Processing maintenance event %s (%s) with status %s",
 			aws.ToString(event.Arn), *event.EventTypeCode, string(event.StatusCode),
 		)
@@ -372,7 +372,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 		eventArnsMap[*event.Arn] = event
 	}
 
-	klog.Infof("Found %d AWS maintenance scheduled events", len(eventArnsMap))
+	slog.Info("Found %d AWS maintenance scheduled events", len(eventArnsMap))
 
 	var wg sync.WaitGroup
 
@@ -382,7 +382,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 		go func(eventID string, eventData types.Event) {
 			defer func() {
 				if r := recover(); r != nil {
-					klog.Errorf("Panic recovered while processing AWS Health event %s: %v", eventID, r)
+					slog.Error("Panic recovered while processing AWS Health event %s: %v", eventID, r)
 				}
 
 				wg.Done()
@@ -409,7 +409,7 @@ func (c *AWSClient) processSingleEntityForEvent(
 	eventChan chan<- model.MaintenanceEvent,
 ) {
 	if entity.EntityValue == nil {
-		klog.Warningf("Entity with nil EntityValue for event %s", eventArn)
+		slog.Warn("Entity with nil EntityValue for event %s", eventArn)
 		return
 	}
 
@@ -419,12 +419,12 @@ func (c *AWSClient) processSingleEntityForEvent(
 	if !ok {
 		// Not an instance in our cluster, or mapping failed. Already logged by
 		// getClusterInstanceNodeMap if node has no providerID.
-		// klog.V(4).Infof("Instance %s from event %s not found in current cluster node map", instanceID, eventArn)
+		// slog.Debug("Instance %s from event %s not found in current cluster node map", instanceID, eventArn)
 		return
 	}
 
 	if entity.EventArn == nil || entity.EntityArn == nil {
-		klog.Warningf(
+		slog.Warn(
 			"Affected entity for instance %s (event %s) doesn't have complete information. Missing EventArn or EntityArn: %+v",
 			instanceID,
 			eventArn,
@@ -447,7 +447,7 @@ func (c *AWSClient) processSingleEntityForEvent(
 	normalizedEvent, err := c.normalizer.Normalize(evt, eventMetadata)
 	if err != nil {
 		metrics.MainNormalizationErrors.WithLabelValues(string(model.CSPAWS)).Inc()
-		klog.Errorf(
+		slog.Error(
 			"Error normalizing AWS event for node %s (instance %s, event %s): %v",
 			nodeName,
 			instanceID,
@@ -461,12 +461,12 @@ func (c *AWSClient) processSingleEntityForEvent(
 	metrics.MainEventsToNormalize.WithLabelValues(string(model.CSPAWS)).Inc()
 	select {
 	case eventChan <- *normalizedEvent:
-		klog.Infof(
+		slog.Info(
 			"Dispatched maintenance event for node %s (instance %s) from AWS event %s",
 			nodeName, instanceID, eventArn,
 		)
 	case <-ctx.Done():
-		klog.Warningf(
+		slog.Warn(
 			"Context cancelled while sending event for node %s (instance %s, event %s)",
 			nodeName,
 			instanceID,
@@ -485,14 +485,14 @@ func (c *AWSClient) processAWSHealthEvent(
 	nodeMap map[string]string,
 	eventChan chan<- model.MaintenanceEvent,
 ) {
-	klog.V(3).Infof("Processing AWS Health event with ARN %s", eventArn)
+	slog.Debug("Processing AWS Health event with ARN %s", eventArn)
 
 	desc := c.getEventDescription(ctx, evt)
 	action := c.mapToValidAction(desc)
 
 	affectedEntities, err := c.getAffectedEntities(ctx, eventArn)
 	if err != nil {
-		klog.Errorf("Error getting affected entities for event %s: %v",
+		slog.Error("Error getting affected entities for event %s: %v",
 			eventArn, err)
 		return
 	}
@@ -514,14 +514,14 @@ func (c *AWSClient) getEventDescription(ctx context.Context, event types.Event) 
 
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "describe_event_details").Inc()
-		klog.Errorf("Error getting event details for event %s: %v",
+		slog.Error("Error getting event details for event %s: %v",
 			*event.Arn, err)
 
 		return ""
 	}
 
 	if len(detailedEvents.SuccessfulSet) == 0 {
-		klog.Errorf("No event details found for event %s", *event.Arn)
+		slog.Error("No event details found for event %s", *event.Arn)
 
 		return ""
 	}
@@ -539,7 +539,7 @@ func (c *AWSClient) getAffectedEntities(
 	ctx context.Context,
 	eventARN string,
 ) ([]types.AffectedEntity, error) {
-	klog.V(3).Infof("Fetching affected entities for event %s", eventARN)
+	slog.Debug("Fetching affected entities for event %s", eventARN)
 
 	start := time.Now()
 	detailedEvents, err := c.awsClient.DescribeAffectedEntities(ctx, &health.DescribeAffectedEntitiesInput{
@@ -557,9 +557,9 @@ func (c *AWSClient) getAffectedEntities(
 	}
 
 	if len(detailedEvents.Entities) == 0 {
-		klog.V(3).Infof("No affected entities found for event %s", eventARN)
+		slog.Debug("No affected entities found for event %s", eventARN)
 	} else {
-		klog.V(3).Infof(
+		slog.Debug(
 			"Found %d affected entities for event %s",
 			len(detailedEvents.Entities), eventARN,
 		)
@@ -571,7 +571,7 @@ func (c *AWSClient) getAffectedEntities(
 // pollActiveEvents fetch events in non-final states from our
 // collection and refresh their status against AWS Health.
 func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model.MaintenanceEvent) error {
-	klog.Info("Polling active events")
+	slog.Info("Polling active events")
 
 	activeEvents, err := c.store.FindActiveEventsByStatuses(ctx, model.CSPAWS, []string{
 		"upcoming",
@@ -582,11 +582,11 @@ func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model
 	}
 
 	if len(activeEvents) == 0 {
-		klog.V(3).Info("No active events in MaintenanceEvents collection")
+		slog.Debug("No active events in MaintenanceEvents collection")
 		return nil
 	}
 
-	klog.V(2).Infof("Refreshing status for %d active events", len(activeEvents))
+	slog.Debug("Refreshing status for %d active events", len(activeEvents))
 
 	for _, activeEvent := range activeEvents {
 		awsEvent, awsStatus, err := c.checkStatusOfKnownEvents(ctx, activeEvent)
@@ -595,7 +595,7 @@ func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model
 		}
 
 		if awsStatus == string(model.CSPStatusUnknown) {
-			klog.Warningf("AWS status is unknown for event %s", activeEvent.Metadata["eventArn"])
+			slog.Warn("AWS status is unknown for event %s", activeEvent.Metadata["eventArn"])
 
 			err := c.store.UpdateEventStatus(ctx, activeEvent.EventID, model.StatusError)
 			if err != nil {
@@ -618,7 +618,7 @@ func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model
 		normalizedEvent, err := c.normalizer.Normalize(awsEvent, eventMetadata)
 		if err != nil {
 			metrics.MainNormalizationErrors.WithLabelValues(string(model.CSPAWS)).Inc()
-			klog.Errorf(
+			slog.Error(
 				"Error normalizing AWS event for node %s (instance %s, event %s): %v",
 				nodeName,
 				instanceID,
@@ -637,12 +637,12 @@ func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model
 		metrics.MainEventsToNormalize.WithLabelValues(string(model.CSPAWS)).Inc()
 		select {
 		case eventChan <- *normalizedEvent:
-			klog.Infof(
+			slog.Info(
 				"Dispatched maintenance event for node %s (instance %s) from AWS event %s",
 				nodeName, instanceID, eventArn,
 			)
 		case <-ctx.Done():
-			klog.Warningf(
+			slog.Warn(
 				"Context cancelled while sending event for node %s (instance %s, event %s)",
 				nodeName,
 				instanceID,
@@ -681,15 +681,15 @@ func (c *AWSClient) pollEventsAPI(ctx context.Context, startTime time.Time) ([]t
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "DescribeEvents_api_error").Inc()
 
-		klog.Errorf("error while fetching maintenance events: %v", err)
+		slog.Error("error while fetching maintenance events: %v", err)
 
 		return nil, fmt.Errorf("error while fetching maintenance events: %w", err)
 	}
 
 	if len(events.Events) > 0 {
-		klog.V(2).Infof("Found %d scheduled maintenance events", len(events.Events))
+		slog.Debug("Found %d scheduled maintenance events", len(events.Events))
 	} else {
-		klog.V(2).Infof("No scheduled maintenance events found.")
+		slog.Debug("No scheduled maintenance events found.")
 	}
 
 	metrics.CSPAPIDuration.WithLabelValues(string(model.CSPAWS), "describe_events").
@@ -721,7 +721,7 @@ func (c *AWSClient) checkStatusOfKnownEvents(ctx context.Context, activeEvent mo
 
 // GetNodesProviderId returns a list of EC2 instance IDs for the nodes in this cluster
 func (c *AWSClient) getClusterInstanceNodeMap(ctx context.Context) (map[string]string, error) {
-	klog.V(3).Info("Fetching Kubernetes nodes to derive EC2 instance IDs")
+	slog.Debug("Fetching Kubernetes nodes to derive EC2 instance IDs")
 
 	nodes, err := c.k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -732,13 +732,13 @@ func (c *AWSClient) getClusterInstanceNodeMap(ctx context.Context) (map[string]s
 
 	for _, node := range nodes.Items {
 		if node.Spec.ProviderID == "" {
-			klog.Infof("Node %s has no providerID", node.Name)
+			slog.Info("Node %s has no providerID", node.Name)
 			continue
 		}
 
 		// Parse AWS provider ID format: aws:///us-east-1/i-0123456789abcdef0
 		if !strings.HasPrefix(node.Spec.ProviderID, "aws:///") {
-			klog.Infof("Node %s has non-AWS providerID: %s", node.Name, node.Spec.ProviderID)
+			slog.Info("Node %s has non-AWS providerID: %s", node.Name, node.Spec.ProviderID)
 			continue
 		}
 
@@ -751,13 +751,13 @@ func (c *AWSClient) getClusterInstanceNodeMap(ctx context.Context) (map[string]s
 		// Ensure it's a valid EC2 instance ID (i-xxxxxxxxxxxxxxxxx format)
 		if strings.HasPrefix(instanceID, "i-") {
 			instanceIDs[instanceID] = node.Name // Store node name as the value for mapping back
-			klog.V(2).Infof("Found instance ID %s for node %s", instanceID, node.Name)
+			slog.Debug("Found instance ID %s for node %s", instanceID, node.Name)
 		} else {
-			klog.Infof("Unexpected instance ID format for node %s: %s", node.Name, instanceID)
+			slog.Info("Unexpected instance ID format for node %s: %s", node.Name, instanceID)
 		}
 	}
 
-	klog.V(2).Infof("Found %d AWS EC2 instances in the cluster", len(instanceIDs))
+	slog.Debug("Found %d AWS EC2 instances in the cluster", len(instanceIDs))
 
 	return instanceIDs, nil
 }
@@ -784,7 +784,7 @@ func (c *AWSClient) mapToValidAction(desc string) pb.RecommenedAction {
 
 			default:
 				metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "map_to_valid_action_error").Inc()
-				klog.V(2).Infof(
+				slog.Debug(
 					"Found suggested action but not able to parse the string into proper format: %s",
 					section,
 				)

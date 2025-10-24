@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 // RebootNodeCRStatusChecker implements CRStatusChecker for RebootNode CRs
@@ -48,7 +48,7 @@ func NewRebootNodeCRStatusChecker(dynamicClient dynamic.Interface,
 // GetCRStatus retrieves the status of a RebootNode CR
 func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName string) (CRStatus, error) {
 	if c.dryRun {
-		klog.Infof("DRY-RUN: CR %s doesn't exist (dry-run mode)", crName)
+		slog.Info("DRY-RUN: CR %s doesn't exist (dry-run mode)", crName)
 		return CRStatusNotFound, nil // In dry-run, CRs don't actually exist
 	}
 
@@ -62,7 +62,7 @@ func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName stri
 	// Get GVR from GVK
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
-		klog.Errorf("Failed to get REST mapping for %s: %v", gvk, err)
+		slog.Error("Failed to get REST mapping for %s: %v", gvk, err)
 		return CRStatusNotFound, nil
 	}
 
@@ -70,11 +70,11 @@ func (c *RebootNodeCRStatusChecker) GetCRStatus(ctx context.Context, crName stri
 	resource, err := c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
 	if err != nil {
 		if meta.IsNoMatchError(err) {
-			klog.Infof("CR %s not found", crName)
+			slog.Info("CR %s not found", crName)
 			return CRStatusNotFound, nil
 		}
 
-		klog.Errorf("Failed to get CR %s: %v", crName, err)
+		slog.Error("Failed to get CR %s: %v", crName, err)
 
 		return CRStatusNotFound, nil
 	}
@@ -93,7 +93,7 @@ func (c *RebootNodeCRStatusChecker) extractRebootNodeStatus(obj *unstructured.Un
 	}
 
 	if !found {
-		klog.Warningf("No status field found in RebootNode CR %s", obj.GetName())
+		slog.Warn("No status field found in RebootNode CR %s", obj.GetName())
 		return CRStatusInProgress, nil // Assume in progress if no status
 	}
 
@@ -109,7 +109,7 @@ func (c *RebootNodeCRStatusChecker) extractRebootNodeStatus(obj *unstructured.Un
 	}
 
 	if !found {
-		klog.Warningf("No conditions found in RebootNode CR %s status", obj.GetName())
+		slog.Warn("No conditions found in RebootNode CR %s status", obj.GetName())
 		return CRStatusInProgress, nil
 	}
 

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"sync"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
@@ -29,7 +31,6 @@ import (
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 )
 
 type Reconciler struct {
@@ -86,7 +87,9 @@ func (r *Reconciler) ProcessEvent(ctx context.Context,
 		return fmt.Errorf("failed to evaluate event: %w", err)
 	}
 
-	klog.Infof("Evaluated action for node %s: %s", nodeName, actionResult.Action.String())
+	slog.Info("Evaluated action for node",
+		"node", nodeName,
+		"action", actionResult.Action.String())
 
 	return r.executeAction(ctx, actionResult, healthEventWithStatus, event, collection)
 }
@@ -100,7 +103,9 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return r.executeSkip(ctx, nodeName, healthEvent, event, collection)
 
 	case evaluator.ActionWait:
-		klog.Infof("Waiting for node %s (delay: %v)", nodeName, action.WaitDelay)
+		slog.Info("Waiting for node",
+			"node", nodeName,
+			"delay", action.WaitDelay)
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
 
 	case evaluator.ActionEvictImmediate:
@@ -129,7 +134,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 func (r *Reconciler) executeSkip(ctx context.Context,
 	nodeName string, healthEvent storeconnector.HealthEventWithStatus,
 	event bson.M, collection queue.MongoCollectionAPI) error {
-	klog.Infof("Skipping event for node %s", nodeName)
+	slog.Info("Skipping event for node", "node", nodeName)
 
 	// Track if this is a healthy event that canceled draining
 	if healthEvent.HealthEventStatus.NodeQuarantined != nil &&
@@ -141,11 +146,15 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 		podsEvictionStatus.Status = storeconnector.StatusSucceeded
 
 		if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
-			klog.Errorf("Failed to update MongoDB status for node %s: %v", nodeName, err)
+			slog.Error("Failed to update MongoDB status for node",
+				"node", nodeName,
+				"error", err)
 			return fmt.Errorf("failed to update MongoDB status for node %s: %w", nodeName, err)
 		}
 
-		klog.Infof("Updated MongoDB status for node %s to StatusSucceeded", nodeName)
+		slog.Info("Updated MongoDB status for node",
+			"node", nodeName,
+			"status", "succeeded")
 	}
 
 	r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, false)
@@ -206,15 +215,19 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context,
 
 		if err := r.informers.UpdateNodeEvent(ctx, nodeName, reason, message); err != nil {
 			// Don't fail the whole operation just because event update failed
-			klog.Errorf("Failed to update node event for %s: %v", nodeName, err)
+			slog.Error("Failed to update node event",
+				"node", nodeName,
+				"error", err)
 		}
 
-		klog.Infof("Pods still running on node %s, requeueing for later check: %v", nodeName, remainingPods)
+		slog.Info("Pods still running on node, requeueing for later check",
+			"node", nodeName,
+			"remainingPods", remainingPods)
 
 		return fmt.Errorf("waiting for pods to complete: %d pods remaining", len(remainingPods))
 	}
 
-	klog.Infof("All pods completed on node %s", nodeName)
+	slog.Info("All pods completed on node", "node", nodeName)
 
 	return fmt.Errorf("pod completion verified, requeuing for status update")
 }
@@ -235,7 +248,9 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context,
 
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
-		klog.Errorf("Failed to update node label to drain-succeeded for %s: %v", nodeName, err)
+		slog.Error("Failed to update node label to drain-succeeded",
+			"node", nodeName,
+			"error", err)
 		metrics.TotalEventProcessingError.WithLabelValues("label_update_error").Inc()
 	}
 
@@ -259,7 +274,9 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 	if *healthEvent.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
 		if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 			nodeName, statemanager.DrainingLabelValue, true); err != nil {
-			klog.Errorf("Failed to remove draining label for node %s: %v", nodeName, err)
+			slog.Error("Failed to remove draining label for node",
+				"node", nodeName,
+				"error", err)
 		}
 
 		metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(0)
@@ -271,7 +288,9 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 	if isDraining {
 		if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 			nodeName, statemanager.DrainingLabelValue, false); err != nil {
-			klog.Errorf("Failed to update node label to draining for %s: %v", nodeName, err)
+			slog.Error("Failed to update node label to draining",
+				"node", nodeName,
+				"error", err)
 			metrics.TotalEventProcessingError.WithLabelValues("label_update_error").Inc()
 		}
 
@@ -283,8 +302,8 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 
 func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *storeconnector.HealthEventWithStatus) {
 	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == nil {
-		klog.Warningf("NodeQuarantined is nil for node %s, skipping metrics update",
-			healthEventWithStatus.HealthEvent.NodeName)
+		slog.Warn("NodeQuarantined is nil, skipping metrics update",
+			"node", healthEventWithStatus.HealthEvent.NodeName)
 		return
 	}
 
@@ -297,13 +316,14 @@ func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *storeconnect
 		metrics.HealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
 			healthEventWithStatus.HealthEvent.CheckName).Inc()
 	case storeconnector.AlreadyQuarantined:
-		klog.Infof("Node %s is already quarantined", healthEventWithStatus.HealthEvent.NodeName)
+		slog.Info("Node already quarantined",
+			"node", healthEventWithStatus.HealthEvent.NodeName)
 		metrics.UnhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
 			healthEventWithStatus.HealthEvent.CheckName).Inc()
 	default:
-		klog.Warningf("Unknown NodeQuarantined status: %v for node %s",
-			*healthEventWithStatus.HealthEventStatus.NodeQuarantined,
-			healthEventWithStatus.HealthEvent.NodeName)
+		slog.Warn("Unknown NodeQuarantined status",
+			"node", healthEventWithStatus.HealthEvent.NodeName,
+			"status", *healthEventWithStatus.HealthEventStatus.NodeQuarantined)
 	}
 }
 
@@ -327,7 +347,9 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collec
 		return fmt.Errorf("error updating document with ID: %v, error: %w", document["_id"], err)
 	}
 
-	klog.Infof("Health event status has been updated, health event: %+v, status: %+v", event, userPodsEvictionStatus)
+	slog.Info("Health event status has been updated",
+		"documentID", document["_id"],
+		"evictionStatus", userPodsEvictionStatus.Status)
 	metrics.TotalEventsSuccessfullyProcessed.Inc()
 
 	return nil

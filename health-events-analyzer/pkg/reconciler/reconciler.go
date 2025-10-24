@@ -30,7 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -67,13 +67,13 @@ func (r *Reconciler) Start(ctx context.Context) {
 		r.config.MongoPipeline,
 	)
 	if err != nil {
-		klog.Fatalf("failed to create change stream watcher: %+v", err)
+		slog.Error("failed to create change stream watcher: %+v", err)
 	}
 	defer watcher.Close(ctx)
 
 	r.config.CollectionClient, err = storewatcher.GetCollectionClient(ctx, r.config.MongoHealthEventCollectionConfig)
 	if err != nil {
-		klog.Fatalf(
+		slog.Error(
 			"error initializing healthEventCollection client with config %+v for mongodb: %+v",
 			r.config.MongoHealthEventCollectionConfig,
 			err,
@@ -82,7 +82,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	watcher.Start(ctx)
 
-	klog.Info("Listening for events on the channel...")
+	slog.Info("Listening for events on the channel...")
 
 	for event := range watcher.Events() {
 		startTime := time.Now()
@@ -94,17 +94,17 @@ func (r *Reconciler) Start(ctx context.Context) {
 			event,
 			&healthEventWithStatus,
 		); err != nil {
-			klog.Errorf("Failed to unmarshal event: %+v", err)
+			slog.Error("Failed to unmarshal event: %+v", err)
 			totalEventProcessingError.WithLabelValues("unamrshal_doc_error").Inc()
 
 			if err := watcher.MarkProcessed(ctx); err != nil {
-				klog.Errorf("Error updating resume token: %+v", err)
+				slog.Error("Error updating resume token: %+v", err)
 			}
 
 			continue
 		}
 
-		klog.V(2).Infof("Received event: %+v", healthEventWithStatus)
+		slog.Debug("Received event: %+v", healthEventWithStatus)
 
 		totalEventsReceived.WithLabelValues(healthEventWithStatus.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
 
@@ -113,23 +113,23 @@ func (r *Reconciler) Start(ctx context.Context) {
 		var publishedNewEvent bool
 
 		for i := 1; i <= maxRetries; i++ {
-			klog.V(2).Infof("Attempt %d, handling event with ID %s", i, document["_id"])
+			slog.Debug("Attempt %d, handling event with ID %s", i, document["_id"])
 
 			publishedNewEvent, err = r.handleEvent(ctx, &healthEventWithStatus)
 			if err == nil {
 				totalEventsSuccessfullyProcessed.Inc()
 
 				if publishedNewEvent {
-					klog.Info("New fatal event published.")
+					slog.Info("New fatal event published.")
 					fatalEventsPublishedTotal.WithLabelValues(healthEventWithStatus.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
 				} else {
-					klog.Info("Fatal event is not published, rule set criteria didn't match.")
+					slog.Info("Fatal event is not published, rule set criteria didn't match.")
 				}
 
 				break
 			}
 
-			klog.Errorf("Error in handling the event with ID %s: %+v", document["_id"], err)
+			slog.Error("Error in handling the event with ID %s: %+v", document["_id"], err)
 
 			totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
 
@@ -137,7 +137,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		}
 
 		if err != nil {
-			klog.Errorf("Max attempt reached, error in handling the event with ID %s: %+v", document["_id"], err)
+			slog.Error("Max attempt reached, error in handling the event with ID %s: %+v", document["_id"], err)
 		}
 
 		duration := time.Since(startTime).Seconds()
@@ -150,18 +150,18 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		// Check if current event matches any sequence criteria in the rule
 		if matchesAnySequenceCriteria(rule, *event) && r.evaluateRule(ctx, rule, *event) {
-			klog.Infof("Rule '%s' matched for event: %+v", rule.Name, event)
+			slog.Info("Rule '%s' matched for event: %+v", rule.Name, event)
 
 			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
 			if !ok {
-				klog.Warningf("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
+				slog.Warn("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
 
 				actionVal = int32(platform_connectors.RecommenedAction_NONE)
 			}
 
 			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommenedAction(actionVal))
 			if err != nil {
-				klog.Errorf("Error in publishing the new fatal event: %+v", err)
+				slog.Error("Error in publishing the new fatal event: %+v", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
 
 				return false, err
@@ -170,10 +170,10 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 			return true, nil
 		}
 
-		klog.V(2).Infof("Rule '%s' didn't meet criteria", rule.Name)
+		slog.Debug("Rule '%s' didn't meet criteria", rule.Name)
 	}
 
-	klog.Infof("No rule matched for event: %+v", event)
+	slog.Info("No rule matched for event: %+v", event)
 
 	return false, nil
 }
@@ -285,11 +285,11 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 
 func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
-	klog.V(2).Infof("Evaluating rule '%s' for event: %+v", rule.Name, healthEventWithStatus)
+	slog.Debug("Evaluating rule '%s' for event: %+v", rule.Name, healthEventWithStatus)
 
 	timeWindow, err := time.ParseDuration(rule.TimeWindow)
 	if err != nil {
-		klog.Errorf("Failed to parse time window: %+v", err)
+		slog.Error("Failed to parse time window: %+v", err)
 		totalEventProcessingError.WithLabelValues("parse_time_window_error").Inc()
 
 		return false
@@ -299,13 +299,13 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	facets := bson.D{}
 
 	for i, seq := range rule.Sequence {
-		klog.V(2).Infof("Evaluating sequence: %+v", seq)
+		slog.Debug("Evaluating sequence: %+v", seq)
 
 		facetName := "sequence_" + strconv.Itoa(i)
 
 		matchCriteria, err := parseSequenceString(seq.Criteria, healthEventWithStatus.HealthEvent)
 		if err != nil {
-			klog.Errorf("Failed to parse sequence criteria: %v", err)
+			slog.Error("Failed to parse sequence criteria: %v", err)
 
 			totalEventProcessingError.WithLabelValues("parse_criteria_error").Inc()
 
@@ -351,7 +351,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 
 	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipeline)
 	if err != nil {
-		klog.Errorf("Failed to execute aggregation pipeline: %+v", err)
+		slog.Error("Failed to execute aggregation pipeline: %+v", err)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
 
 		return false
@@ -359,7 +359,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	defer cursor.Close(ctx)
 
 	if err = cursor.All(ctx, &result); err != nil {
-		klog.Errorf("Failed to decode cursor: %+v", err)
+		slog.Error("Failed to decode cursor: %+v", err)
 		totalEventProcessingError.WithLabelValues("decode_cursor_error").Inc()
 
 		return false
@@ -368,7 +368,7 @@ func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsA
 	if len(result) > 0 {
 		// Check if all criteria are met
 		if matched, ok := result[0]["ruleMatched"].(bool); ok && matched {
-			klog.V(2).Infof("All sequence conditions met for rule: %s", rule.Name)
+			slog.Debug("All sequence conditions met for rule: %s", rule.Name)
 			return true
 		}
 	}

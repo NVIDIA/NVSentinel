@@ -31,7 +31,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 type InitializationParams struct {
@@ -49,7 +49,7 @@ type Components struct {
 }
 
 func StartMetricsServer(port string) error {
-	klog.Infof("Starting a metrics port on : %s", port)
+	slog.Info("Starting a metrics port on : %s", port)
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -64,7 +64,7 @@ func StartMetricsServer(port string) error {
 	go func() {
 		err := server.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
-			klog.Errorf("Metrics server error: %v", err)
+			slog.Error("Metrics server error: %v", err)
 		}
 	}()
 
@@ -72,7 +72,7 @@ func StartMetricsServer(port string) error {
 }
 
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
-	klog.Info("Starting node drainer initialization")
+	slog.Info("Starting node drainer initialization")
 
 	envConfig, err := config.LoadEnvConfig()
 	if err != nil {
@@ -89,7 +89,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	if params.DryRun {
-		klog.Info("Running in dry-run mode")
+		slog.Info("Running in dry-run mode")
 	}
 
 	clientSet, err := initializeKubernetesClient(params.KubeconfigPath)
@@ -97,7 +97,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized kubernetes client")
+	slog.Info("Successfully initialized kubernetes client")
 
 	informersInstance, err := initializeInformers(clientSet, &tomlCfg.NotReadyTimeoutMinutes, params.DryRun)
 	if err != nil {
@@ -124,7 +124,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		collection,
 	)
 
-	klog.Info("Initialization completed successfully")
+	slog.Info("Initialization completed successfully")
 
 	return &Components{
 		Informers:    informersInstance,

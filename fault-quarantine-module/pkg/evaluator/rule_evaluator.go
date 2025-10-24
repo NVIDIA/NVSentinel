@@ -26,7 +26,7 @@ import (
 	platformconnectorprotos "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -51,7 +51,7 @@ type NodeRuleEvaluator struct {
 
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
 func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, error) {
-	klog.Infof("Creating HealthEventRuleEvaluator with expression: %s", expression)
+	slog.Info("Creating HealthEventRuleEvaluator with expression: %s", expression)
 
 	env, err := cel.NewEnv(
 		cel.Variable(eventObjKey, cel.AnyType),
@@ -112,7 +112,7 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 
 // NewNodeRuleEvaluator creates a new NodeRuleEvaluator
 func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
-	klog.Infof("Creating NodeRuleEvaluator with expression: %s", expression)
+	slog.Info("Creating NodeRuleEvaluator with expression: %s", expression)
 
 	// Create a CEL environment with declarations for node.labels and node.annotations
 	env, err := cel.NewEnv(
@@ -149,7 +149,7 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 
 // Evaluate the CEL expression against node metadata (labels and annotations)
 func (nm *NodeRuleEvaluator) Evaluate(event *platformconnectorprotos.HealthEvent) (common.RuleEvaluationResult, error) {
-	klog.Infof("Evaluating NodeRuleEvaluator for node %s", event.NodeName)
+	slog.Info("Evaluating NodeRuleEvaluator for node %s", event.NodeName)
 
 	// Get node metadata
 	nodeInfo, err := nm.getNode(event.NodeName)

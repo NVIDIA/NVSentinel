@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/klog/v2"
+	"log/slog"
 
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	lsnvlink "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid/lsnvlink"
@@ -39,7 +39,7 @@ func NewSXIDHandler(nodeName, defaultAgentName,
 func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
 	sxidErrorEvent, err := sxidHandler.extractInfoFromNVSwitchErrorMsg(message)
 	if err != nil {
-		klog.Errorf("error parsing line %s: %v", message, err)
+		slog.Error("error parsing line %s: %v", message, err)
 		return nil, err
 	}
 
@@ -49,7 +49,7 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 
 	gpuID, err := sxidHandler.getGPUID(sxidErrorEvent.PCI, sxidErrorEvent.Link)
 	if err != nil {
-		klog.Errorf("error in finding GPU ID with PCI %s and NVLink %d: %s",
+		slog.Error("error in finding GPU ID with PCI %s and NVLink %d: %s",
 			sxidErrorEvent.PCI,
 			sxidErrorEvent.Link,
 			err.Error(),
@@ -142,7 +142,7 @@ func (sxidHandler *SXIDHandler) getGPUID(pciAddress string, nvlink int) (int, er
 	// Try dynamic topology using PCI address
 	gpuID, err := provider.GetGPUFromPCINVLink(pciAddress, nvlink)
 	if err != nil {
-		klog.Errorf("Dynamic topology lookup failed for PCI %s: %s", pciAddress, err.Error())
+		slog.Error("Dynamic topology lookup failed for PCI %s: %s", pciAddress, err.Error())
 		return -1, fmt.Errorf("dynamic topology lookup failed for PCI %s: %w", pciAddress, err)
 	}
 

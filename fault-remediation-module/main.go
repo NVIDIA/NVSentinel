@@ -18,10 +18,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/reconciler"
@@ -31,8 +33,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -57,6 +57,31 @@ type config struct {
 	updateRetryDelaySeconds  int
 }
 
+// initLogger initializes the structured logger with the appropriate log level.
+func initLogger() {
+	level := slog.LevelInfo
+
+	// Set log level based on LOG_LEVEL environment variable or default to Info level
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	})).With("module", "fault-remediation-module", "version", version)
+
+	slog.SetDefault(logger)
+}
+
+// parseFlags parses command-line flags and returns a config struct.
 func parseFlags() *config {
 	cfg := &config{}
 
@@ -97,7 +122,7 @@ func getRequiredEnvVars() (*config, error) {
 		cfg.enableLogCollector = true
 	}
 
-	klog.InfoS("Configuration loaded",
+	slog.Info("Configuration loaded",
 		"namespace", cfg.namespace,
 		"version", cfg.version,
 		"apiGroup", cfg.apiGroup,
@@ -181,13 +206,14 @@ func getTokenConfig() (*storewatcher.TokenConfig, error) {
 }
 
 func startMetricsServer(metricsPort string) {
-	klog.Infof("Starting a metrics port on : %s", metricsPort)
+	slog.Info("Starting a metrics port on", "port", metricsPort)
 
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
-			klog.ErrorS(err, "Metrics server failed")
+			slog.Error("Metrics server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 }
@@ -224,14 +250,6 @@ func run() error {
 	// Parse flags and get configuration
 	cfg := parseFlags()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "fault-remediation-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
-
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
 	if err != nil {
@@ -265,7 +283,7 @@ func run() error {
 		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized k8sclient")
+	slog.Info("Successfully initialized k8sclient")
 
 	// Initialize and start reconciler
 	reconcilerCfg := reconciler.ReconcilerConfig{
@@ -289,17 +307,13 @@ func run() error {
 }
 
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	initLogger()
+	slog.Info("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Fatal error")
-		klog.Flush()
-		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
+		slog.Error("Fatal error", "error", err)
 		os.Exit(1)
 	}
-
-	klog.Flush()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

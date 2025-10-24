@@ -28,7 +28,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 const (
@@ -112,31 +112,31 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	klog.Infof("NodeInformer created, watching nodes with label %s=true", GpuNodeLabel)
+	slog.Info("NodeInformer created, watching nodes with label %s=true", GpuNodeLabel)
 
 	return ni, nil
 }
 
 // Run starts the informer and waits for cache sync.
 func (ni *NodeInformer) Run(stopCh <-chan struct{}) error {
-	klog.Info("Starting NodeInformer")
+	slog.Info("Starting NodeInformer")
 
 	// Start the informer goroutine
 	go ni.informer.Run(stopCh)
 
 	// Wait for the initial cache synchronization
-	klog.Info("Waiting for NodeInformer cache to sync...")
+	slog.Info("Waiting for NodeInformer cache to sync...")
 
 	if ok := cache.WaitForCacheSync(stopCh, ni.informerSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	klog.Info("NodeInformer cache synced")
+	slog.Info("NodeInformer cache synced")
 
 	_, err := ni.recalculateCounts()
 	if err != nil {
 		// Log the error but allow the informer to continue running
-		klog.Errorf("Initial count calculation failed: %v", err)
+		slog.Error("Initial count calculation failed: %v", err)
 	}
 
 	return nil
@@ -208,11 +208,11 @@ func getQuarantineAnnotations(annotations map[string]string) map[string]string {
 func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
-		klog.Errorf("Add event: expected Node object, got %T", obj)
+		slog.Error("Add event: expected Node object, got %T", obj)
 		return
 	}
 
-	klog.V(4).Infof("Node added: %s", node.Name)
+	slog.Debug("Node added: %s", node.Name)
 
 	ni.mutex.Lock()
 
@@ -256,15 +256,15 @@ func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node)
 		return false
 	}
 
-	klog.Infof("Detected manual uncordon of FQ-quarantined node: %s", newNode.Name)
+	slog.Info("Detected manual uncordon of FQ-quarantined node: %s", newNode.Name)
 
 	// Call the manual uncordon handler if registered
 	if ni.onManualUncordon != nil {
 		if err := ni.onManualUncordon(newNode.Name); err != nil {
-			klog.Errorf("Failed to handle manual uncordon for node %s: %v", newNode.Name, err)
+			slog.Error("Failed to handle manual uncordon for node %s: %v", newNode.Name, err)
 		}
 	} else {
-		klog.Warningf("Manual uncordon callback not registered for node %s - manual uncordon will not be handled",
+		slog.Warn("Manual uncordon callback not registered for node %s - manual uncordon will not be handled",
 			newNode.Name)
 	}
 
@@ -277,7 +277,7 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 
 	newNode, okNew := newObj.(*v1.Node)
 	if !okOld || !okNew {
-		klog.Errorf("Update event: expected Node objects, got %T and %T", oldObj, newObj)
+		slog.Error("Update event: expected Node objects, got %T and %T", oldObj, newObj)
 		return
 	}
 
@@ -296,12 +296,12 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 	if oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable ||
 		oldNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] !=
 			newNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey] {
-		klog.V(4).Infof("Node updated: %s (Unschedulable: %t -> %t)", newNode.Name,
+		slog.Debug("Node updated: %s (Unschedulable: %t -> %t)", newNode.Name,
 			oldNode.Spec.Unschedulable, newNode.Spec.Unschedulable)
 		ni.updateNodeQuarantineStatus(newNode)
 		ni.signalWork()
 	} else {
-		klog.V(4).Infof("Node update ignored (no relevant change): %s", newNode.Name)
+		slog.Debug("Node update ignored (no relevant change): %s", newNode.Name)
 	}
 
 	// Notify about quarantine annotation changes
@@ -360,18 +360,18 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		// Handle deletion notifications potentially wrapped in DeletedFinalStateUnknown
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
-			klog.Errorf("Delete event: expected Node object or DeletedFinalStateUnknown, got %T", obj)
+			slog.Error("Delete event: expected Node object or DeletedFinalStateUnknown, got %T", obj)
 			return
 		}
 
 		node, ok = tombstone.Obj.(*v1.Node)
 		if !ok {
-			klog.Errorf("Delete event: DeletedFinalStateUnknown contained non-Node object %T", tombstone.Obj)
+			slog.Error("Delete event: DeletedFinalStateUnknown contained non-Node object %T", tombstone.Obj)
 			return
 		}
 	}
 
-	klog.Infof("Node deleted: %s", node.Name)
+	slog.Info("Node deleted: %s", node.Name)
 
 	ni.mutex.Lock()
 
@@ -434,7 +434,7 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 				unschedulable++
 			}
 		} else {
-			klog.Warningf("Node %s found in informer cache despite missing label %s", node.Name, GpuNodeLabel)
+			slog.Warn("Node %s found in informer cache despite missing label %s", node.Name, GpuNodeLabel)
 		}
 	}
 
@@ -445,9 +445,9 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 	ni.mutex.Unlock()
 
 	if changed {
-		klog.V(2).Infof("Node counts updated: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d", total, unschedulable)
+		slog.Debug("Node counts updated: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d", total, unschedulable)
 	} else {
-		klog.V(4).Infof("Node counts recalculated, no change: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d",
+		slog.Debug("Node counts recalculated, no change: Total GPU Nodes=%d, Unschedulable GPU Nodes=%d",
 			total, unschedulable)
 	}
 
@@ -457,13 +457,13 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 // signalWork sends a non-blocking signal to the reconciler's work channel.
 func (ni *NodeInformer) signalWork() {
 	if ni.workSignal == nil {
-		klog.Errorf("No channel configured for node informer")
+		slog.Error("No channel configured for node informer")
 		return // No channel configured
 	}
 	select {
 	case ni.workSignal <- struct{}{}:
-		klog.V(3).Infof("Signalled work channel due to node change.")
+		slog.Debug("Signalled work channel due to node change.")
 	default:
-		klog.V(3).Infof("Work channel already signalled, skipping signal for node change.")
+		slog.Debug("Work channel already signalled, skipping signal for node change.")
 	}
 }

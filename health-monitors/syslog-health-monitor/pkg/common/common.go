@@ -24,7 +24,7 @@ import (
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 	"github.com/thedatashed/xlsxreader"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 // NVIDIA XID Error Catalog - Embedded Excel File
@@ -72,7 +72,7 @@ func MapActionStringToProto(s string) pb.RecommenedAction {
 	case "WORKFLOW_XID_48", "RESET_GPU", "RESET_FABRIC":
 		return pb.RecommenedAction_COMPONENT_RESET
 	default:
-		klog.Warningf("Unknown action string: %s, defaulting to CONTACT_SUPPORT", s)
+		slog.Warn("Unknown action string: %s, defaulting to CONTACT_SUPPORT", s)
 		return pb.RecommenedAction_CONTACT_SUPPORT
 	}
 }
@@ -90,7 +90,7 @@ type NVL5DecodingRule struct {
 func LoadErrorResolutionMap() (map[int]types.ErrorResolution, error) {
 	errorResolutionMap := make(map[int]types.ErrorResolution)
 
-	klog.Infof("Loading XID error resolution map from embedded Excel file")
+	slog.Info("Loading XID error resolution map from embedded Excel file")
 
 	xl, err := xlsxreader.NewReader(embeddedXidCatalog)
 	if err != nil {
@@ -120,7 +120,7 @@ func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule,
 		return nvl5DecodingMap, fmt.Errorf("sheet '%s' not found", sheetName)
 	}
 
-	klog.Infof("Loading NVL5 XID decoding rules from sheet: %s", sheetName)
+	slog.Info("Loading NVL5 XID decoding rules from sheet: %s", sheetName)
 
 	rowIndex := 0
 
@@ -133,7 +133,7 @@ func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule,
 
 		rule, err := parseNVL5Row(row)
 		if err != nil {
-			klog.V(2).Infof("Skipping NVL5 row %d: %v", rowIndex+1, err)
+			slog.Debug("Skipping NVL5 row %d: %v", rowIndex+1, err)
 			continue
 		}
 
@@ -144,7 +144,7 @@ func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule,
 		rowIndex++
 	}
 
-	klog.Infof("Successfully loaded NVL5 decoding rules for %d XID types", len(nvl5DecodingMap))
+	slog.Info("Successfully loaded NVL5 decoding rules for %d XID types", len(nvl5DecodingMap))
 
 	return nvl5DecodingMap, nil
 }
@@ -235,7 +235,7 @@ func processXidsSheet(xl *xlsxreader.XlsxFile, targetSheet string,
 		return errorResolutionMap, fmt.Errorf("no valid XID mappings found in embedded Excel file")
 	}
 
-	klog.Infof("Successfully loaded %d XID error resolution mappings from embedded Excel file", len(errorResolutionMap))
+	slog.Info("Successfully loaded %d XID error resolution mappings from embedded Excel file", len(errorResolutionMap))
 
 	return errorResolutionMap, nil
 }
@@ -253,7 +253,7 @@ func validateHeader(row xlsxreader.Row) error {
 
 func processDataRow(row xlsxreader.Row, rowIndex int, errorResolutionMap map[int]types.ErrorResolution) error {
 	if len(row.Cells) < 9 {
-		klog.Warningf("Row %d has insufficient columns (%d), expected at least 9. Skipping row.", rowIndex+1, len(row.Cells))
+		slog.Warn("Row %d has insufficient columns (%d), expected at least 9. Skipping row.", rowIndex+1, len(row.Cells))
 
 		return nil
 	}
@@ -268,7 +268,7 @@ func processDataRow(row xlsxreader.Row, rowIndex int, errorResolutionMap map[int
 	}
 
 	if actionStr == "" {
-		klog.Warningf("Row %d: No action found for XID code %s, skipping", rowIndex+1, codeStr)
+		slog.Warn("Row %d: No action found for XID code %s, skipping", rowIndex+1, codeStr)
 
 		return nil
 	}
@@ -287,7 +287,7 @@ func processDataRow(row xlsxreader.Row, rowIndex int, errorResolutionMap map[int
 	}
 	errorResolutionMap[code] = errRes
 
-	klog.V(2).Infof("Loaded XID %d -> %s", code, actionStr)
+	slog.Debug("Loaded XID %d -> %s", code, actionStr)
 
 	return nil
 }

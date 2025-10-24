@@ -21,7 +21,7 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
@@ -41,7 +41,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAnyRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				klog.Infof("Initialized ruleSetEvaluator: %+v", ruleSet)
+				slog.Info("Initialized ruleSetEvaluator: %+v", ruleSet)
 			}
 		}
 
@@ -53,7 +53,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAllRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				klog.Infof("Initialized ruleSetEvaluator: %+v", ruleSet)
+				slog.Info("Initialized ruleSetEvaluator: %+v", ruleSet)
 			}
 		}
 	}

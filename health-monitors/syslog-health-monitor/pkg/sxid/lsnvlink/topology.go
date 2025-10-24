@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 // TopologyLink represents a single NVLink connection
@@ -71,7 +71,7 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 			},
 		}
 		if err := globalTopologyProvider.GatherTopology(); err != nil {
-			klog.Fatalf("Failed to gather topology on initialization: %v", err)
+			slog.Error("Failed to gather topology on initialization: %v", err)
 		}
 	})
 
@@ -93,7 +93,7 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 	outputStr := strings.TrimSpace(string(nvlinkOutput))
 
 	if len(outputStr) == 0 || !strings.Contains(outputStr, "Link") {
-		klog.Infof("No NVLink information found, no NVSwitches on this node")
+		slog.Info("No NVLink information found, no NVSwitches on this node")
 
 		p.topology = &NVLinkTopology{
 			HasNVSwitch:          false,
@@ -108,7 +108,7 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 	topology, nvswitchPCIAddrs := p.parseNVLinkOutputWithPCIAddresses(outputStr)
 
 	if len(nvswitchPCIAddrs) == 0 {
-		klog.Infof("No NVSwitch devices found in NVLink topology")
+		slog.Info("No NVSwitch devices found in NVLink topology")
 
 		p.topology = &NVLinkTopology{
 			HasNVSwitch:          false,
@@ -126,7 +126,7 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 	p.topology = topology
 	p.buildReverseMaps()
 
-	klog.Infof("Successfully gathered NVLink topology (has_nvswitch=%v, %d GPUs, %d NVSwitches)",
+	slog.Info("Successfully gathered NVLink topology (has_nvswitch=%v, %d GPUs, %d NVSwitches)",
 		topology.HasNVSwitch, len(topology.Topology), len(topology.NVSwitchPCIAddresses))
 
 	// Log the complete topology details
@@ -137,14 +137,14 @@ func (p *DynamicTopologyProvider) GatherTopology() error {
 
 // logFullTopology logs the complete topology details for debugging and monitoring
 func (p *DynamicTopologyProvider) logFullTopology() {
-	klog.Infof("===== NVLink Topology Details =====")
-	klog.Infof("Timestamp: %s", p.topology.Timestamp)
-	klog.Infof("Has NVSwitch: %v", p.topology.HasNVSwitch)
+	slog.Info("===== NVLink Topology Details =====")
+	slog.Info("Timestamp: %s", p.topology.Timestamp)
+	slog.Info("Has NVSwitch: %v", p.topology.HasNVSwitch)
 
 	p.logNVSwitchPCIAddresses()
 	p.logGPUTopology()
 
-	klog.Infof("===================================")
+	slog.Info("===================================")
 }
 
 // logNVSwitchPCIAddresses logs the NVSwitch PCI addresses if present
@@ -153,21 +153,21 @@ func (p *DynamicTopologyProvider) logNVSwitchPCIAddresses() {
 		return
 	}
 
-	klog.Infof("NVSwitch PCI Addresses (%d total):", len(p.topology.NVSwitchPCIAddresses))
+	slog.Info("NVSwitch PCI Addresses (%d total):", len(p.topology.NVSwitchPCIAddresses))
 
 	for _, pciAddr := range p.topology.NVSwitchPCIAddresses {
-		klog.Infof("  %s", pciAddr)
+		slog.Info("  %s", pciAddr)
 	}
 }
 
 // logGPUTopology logs the GPU topology with NVLink connections
 func (p *DynamicTopologyProvider) logGPUTopology() {
 	if len(p.topology.Topology) == 0 {
-		klog.Infof("No GPUs with NVLinks found")
+		slog.Info("No GPUs with NVLinks found")
 		return
 	}
 
-	klog.Infof("GPU Topology (%d GPUs):", len(p.topology.Topology))
+	slog.Info("GPU Topology (%d GPUs):", len(p.topology.Topology))
 
 	// Sort GPU IDs for consistent output
 	gpuIDs := p.getSortedGPUIDs()
@@ -191,14 +191,14 @@ func (p *DynamicTopologyProvider) getSortedGPUIDs() []string {
 // logSingleGPU logs the topology for a single GPU
 func (p *DynamicTopologyProvider) logSingleGPU(gpuID string) {
 	gpuTopo := p.topology.Topology[gpuID]
-	klog.Infof("  GPU %s:", gpuID)
+	slog.Info("  GPU %s:", gpuID)
 
 	if len(gpuTopo.Links) == 0 {
-		klog.Infof("    No NVLinks")
+		slog.Info("    No NVLinks")
 		return
 	}
 
-	klog.Infof("    Links (%d total):", len(gpuTopo.Links))
+	slog.Info("    Links (%d total):", len(gpuTopo.Links))
 
 	// Sort link IDs for consistent output
 	var linkIDs []string
@@ -210,7 +210,7 @@ func (p *DynamicTopologyProvider) logSingleGPU(gpuID string) {
 
 	for _, linkID := range linkIDs {
 		link := gpuTopo.Links[linkID]
-		klog.Infof("      Link %s -> Remote PCI: %s, Remote Link: %d",
+		slog.Info("      Link %s -> Remote PCI: %s, Remote Link: %d",
 			linkID, link.RemotePCI, link.RemoteLink)
 	}
 }
@@ -295,7 +295,7 @@ func (p *DynamicTopologyProvider) buildReverseMaps() {
 	for gpuIDStr, gpuTopo := range p.topology.Topology {
 		gpuID, err := strconv.Atoi(gpuIDStr)
 		if err != nil {
-			klog.Warningf("Invalid GPU ID in topology: %s", gpuIDStr)
+			slog.Warn("Invalid GPU ID in topology: %s", gpuIDStr)
 			continue
 		}
 

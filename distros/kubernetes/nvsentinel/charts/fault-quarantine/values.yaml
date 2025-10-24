@@ -43,8 +43,8 @@ imagePullSecrets: []
 # Optional pod annotations (fallback if global not available)
 podAnnotations: {}
 
-# Log level for the fault quarantine module (klog verbosity)
-logLevel: 1
+# Log level for the fault quarantine module (e.g. "debug", "info", "warn", "error")
+logLevel: info
 
 clientCertMountPath: "/etc/ssl/mongo-client"
 

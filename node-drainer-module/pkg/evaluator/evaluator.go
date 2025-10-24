@@ -22,7 +22,7 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
 	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface) DrainEvaluator {
@@ -39,7 +39,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent stor
 	// Handle UnQuarantined events - cancel any ongoing drain
 	statusPtr := healthEvent.HealthEventStatus.NodeQuarantined
 	if statusPtr != nil && *statusPtr == storeconnector.UnQuarantined {
-		klog.Infof("Node %s became healthy (UnQuarantined), stopping drain", nodeName)
+		slog.Info("Node %s became healthy (UnQuarantined), stopping drain", nodeName)
 
 		return &DrainActionResult{
 			Action: ActionSkip,
@@ -47,7 +47,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent stor
 	}
 
 	if isTerminalStatus(healthEvent.HealthEventStatus.UserPodsEvictionStatus.Status) {
-		klog.Infof("Event for node %s is in terminal state, skipping", nodeName)
+		slog.Info("Event for node %s is in terminal state, skipping", nodeName)
 
 		return &DrainActionResult{
 			Action: ActionSkip,
@@ -57,7 +57,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent stor
 	if statusPtr != nil && *statusPtr == storeconnector.AlreadyQuarantined {
 		isDrained, err := mongodb.IsNodeAlreadyDrained(ctx, collection, nodeName)
 		if err != nil {
-			klog.Errorf("Failed to check if node %s is already drained: %v", nodeName, err)
+			slog.Error("Failed to check if node %s is already drained: %v", nodeName, err)
 
 			return &DrainActionResult{
 				Action:    ActionWait,
@@ -90,14 +90,14 @@ func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
 		healthEvent.HealthEvent.DrainOverrides.Force
 
 	if forceImmediateEviction {
-		klog.Infof("DrainOverrides.Force is true, forcing immediate eviction for all namespaces on node %s", nodeName)
+		slog.Info("DrainOverrides.Force is true, forcing immediate eviction for all namespaces on node %s", nodeName)
 	}
 
 	for _, userNamespace := range e.config.UserNamespaces {
 		matchedNamespaces, err := e.informers.GetNamespacesMatchingPattern(ctx,
 			userNamespace.Name, systemNamespaces, nodeName)
 		if err != nil {
-			klog.Errorf("Failed to get namespaces for pattern %s: %v", userNamespace.Name, err)
+			slog.Error("Failed to get namespaces for pattern %s: %v", userNamespace.Name, err)
 
 			return &DrainActionResult{
 				Action:    ActionWait,
@@ -113,7 +113,7 @@ func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
 		case userNamespace.Mode == config.ModeDeleteAfterTimeout:
 			ns.deleteAfterTimeoutNamespaces = append(ns.deleteAfterTimeoutNamespaces, matchedNamespaces...)
 		default:
-			klog.Errorf("unsupported mode: %s", userNamespace.Mode)
+			slog.Error("unsupported mode: %s", userNamespace.Mode)
 		}
 	}
 
@@ -124,7 +124,7 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 	if len(ns.immediateEvictionNamespaces) > 0 {
 		timeout := e.config.EvictionTimeoutInSeconds.Duration
 		if !e.informers.CheckIfAllPodsAreEvictedInImmediateMode(ctx, ns.immediateEvictionNamespaces, nodeName, timeout) {
-			klog.Infof("Performing immediate eviction for node %s", nodeName)
+			slog.Info("Performing immediate eviction for node %s", nodeName)
 
 			return &DrainActionResult{
 				Action:     ActionEvictImmediate,
@@ -148,7 +148,7 @@ func (e *NodeDrainEvaluator) getAction(ctx context.Context, ns namespaces, nodeN
 		}
 	}
 
-	klog.Infof("All pods evicted successfully on node %s", nodeName)
+	slog.Info("All pods evicted successfully on node %s", nodeName)
 
 	return &DrainActionResult{
 		Action: ActionUpdateStatus,
@@ -162,7 +162,7 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ns namespaces, node
 	for _, namespace := range ns.allowCompletionNamespaces {
 		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName)
 		if err != nil {
-			klog.Errorf("Failed to check pods in namespace %s on node %s: %v", namespace, nodeName, err)
+			slog.Error("Failed to check pods in namespace %s on node %s: %v", namespace, nodeName, err)
 
 			hasRemainingPods = true
 
@@ -176,7 +176,7 @@ func (e *NodeDrainEvaluator) handleAllowCompletionNamespaces(ns namespaces, node
 	}
 
 	if hasRemainingPods {
-		klog.Infof("Checking pod completion status for AllowCompletion namespaces on node %s", nodeName)
+		slog.Info("Checking pod completion status for AllowCompletion namespaces on node %s", nodeName)
 
 		return &DrainActionResult{
 			Action:     ActionCheckCompletion,
@@ -193,7 +193,7 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ns namespaces, n
 	for _, namespace := range ns.deleteAfterTimeoutNamespaces {
 		pods, err := e.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName)
 		if err != nil {
-			klog.Errorf("Failed to check pods in namespace %s on node %s: %v", namespace, nodeName, err)
+			slog.Error("Failed to check pods in namespace %s on node %s: %v", namespace, nodeName, err)
 
 			hasRemainingPods = true
 
@@ -207,7 +207,7 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ns namespaces, n
 	}
 
 	if hasRemainingPods {
-		klog.Infof("Deleting pods after timeout for DeleteAfterTimeout namespaces on node %s", nodeName)
+		slog.Info("Deleting pods after timeout for DeleteAfterTimeout namespaces on node %s", nodeName)
 
 		return &DrainActionResult{
 			Action:     ActionEvictWithTimeout,

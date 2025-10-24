@@ -28,7 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
+	"log/slog"
 
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	corev1 "k8s.io/api/core/v1"
@@ -90,7 +90,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 	}, func() error {
 		node, err := r.clientset.CoreV1().Nodes().Get(ctx, healthEvents[0].NodeName, metav1.GetOptions{})
 		if err != nil {
-			klog.Errorf("Error getting node: %s", err)
+			slog.Error("Error getting node: %s", err)
 			return err
 		}
 
@@ -168,7 +168,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 		_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
 		if err != nil {
 			for conditionType := range conditionToHealthEventsMap {
-				klog.Infof("Node condition %s update failed with error: %v", conditionType, err)
+				slog.Info("Node condition %s update failed with error: %v", conditionType, err)
 			}
 		}
 

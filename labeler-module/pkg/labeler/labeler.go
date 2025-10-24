@@ -20,6 +20,8 @@ import (
 	"regexp"
 	"time"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/labeler-module/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,7 +30,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 )
 
@@ -123,7 +124,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			AddFunc: func(obj any) {
 				if err := l.handlePodEvent(obj); err != nil {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					klog.Errorf("Failed to handle pod add event: %v", err)
+					slog.Error("Failed to handle pod add event", "error", err)
 				} else {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
 				}
@@ -132,20 +133,20 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 				oldPod, oldOk := oldObj.(*v1.Pod)
 				newPod, newOk := newObj.(*v1.Pod)
 				if !oldOk || !newOk {
-					klog.Errorf("Failed to cast objects to pods in UpdateFunc")
+					slog.Error("Failed to cast objects to pods in UpdateFunc")
 					return
 				}
 
 				oldReady := podutil.IsPodReady(oldPod)
 				newReady := podutil.IsPodReady(newPod)
 				if oldReady == newReady {
-					klog.V(4).Infof("Pod %s readiness unchanged (ready=%t)", newPod.Name, newReady)
+					slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
 					return
 				}
 
 				if err := l.handlePodEvent(newPod); err != nil {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					klog.Errorf("Failed to handle pod update event: %v", err)
+					slog.Error("Failed to handle pod update event", "error", err)
 				} else {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
 				}
@@ -153,7 +154,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			DeleteFunc: func(obj any) {
 				if err := l.handlePodDeleteEvent(obj); err != nil {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					klog.Errorf("Failed to handle pod delete event: %v", err)
+					slog.Error("Failed to handle pod delete event", "error", err)
 				} else {
 					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
 				}
@@ -164,7 +165,7 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to add event handler: %w", err)
 	}
 
-	klog.Info("Labeler created, watching DCGM and driver pods")
+	slog.Info("Labeler created, watching DCGM and driver pods")
 
 	return l, nil
 }
@@ -173,20 +174,20 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
-	klog.Info("Starting Labeler")
+	slog.Info("Starting Labeler")
 
 	go l.informer.Run(ctx.Done())
 
-	klog.Info("Waiting for Labeler cache to sync...")
+	slog.Info("Waiting for Labeler cache to sync...")
 
 	if ok := cache.WaitForCacheSync(ctx.Done(), l.informerSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	klog.Info("Labeler cache synced")
+	slog.Info("Labeler cache synced")
 
 	<-ctx.Done()
-	klog.Info("Labeler stopped")
+	slog.Info("Labeler stopped")
 
 	return nil
 }
@@ -316,10 +317,10 @@ func (l *Labeler) updateNodeLabels(nodeName, expectedDCGMVersion, expectedDriver
 
 			if expectedDCGMVersion == "" {
 				delete(node.Labels, DCGMVersionLabel)
-				klog.Infof("Removing DCGM version label from node %s", nodeName)
+				slog.Info("Removing DCGM version label from node", "node", nodeName)
 			} else {
 				node.Labels[DCGMVersionLabel] = expectedDCGMVersion
-				klog.Infof("Setting DCGM version label on node %s to %s", nodeName, expectedDCGMVersion)
+				slog.Info("Setting DCGM version label on node", "node", nodeName, "version", expectedDCGMVersion)
 			}
 		}
 
@@ -328,15 +329,15 @@ func (l *Labeler) updateNodeLabels(nodeName, expectedDCGMVersion, expectedDriver
 
 			if expectedDriverLabel == "" {
 				delete(node.Labels, DriverInstalledLabel)
-				klog.Infof("Removing driver installed label from node %s", nodeName)
+				slog.Info("Removing driver installed label from node", "node", nodeName)
 			} else {
 				node.Labels[DriverInstalledLabel] = expectedDriverLabel
-				klog.Infof("Setting driver installed label on node %s to %s", nodeName, expectedDriverLabel)
+				slog.Info("Setting driver installed label on node", "node", nodeName, "label", expectedDriverLabel)
 			}
 		}
 
 		if !needsUpdate {
-			klog.V(4).Infof("Node %s already has correct labels", nodeName)
+			slog.Debug("Node already has correct labels", "node", nodeName)
 			return nil
 		}
 

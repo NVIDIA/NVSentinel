@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"time"
 
+	"log/slog"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +32,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
 )
 
 // other modules may also update the node, so we need to make sure that we retry on conflict
@@ -87,19 +88,26 @@ func (c *FaultQuarantineClient) GetK8sClient() kubernetes.Interface {
 
 func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Context,
 	name, namespace string, initialStatus string) error {
-	klog.Infof("Ensuring circuit breaker config map %s in namespace %s with initial status %s",
-		name, namespace, initialStatus)
+	slog.Info("Ensuring circuit breaker config map",
+		"name", name,
+		"namespace", namespace,
+		"initialStatus", initialStatus)
 
 	cmClient := c.clientset.CoreV1().ConfigMaps(namespace)
 
 	_, err := cmClient.Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		klog.Infof("Circuit breaker config map %s in namespace %s already exists", name, namespace)
+		slog.Info("Circuit breaker config map already exists",
+			"name", name,
+			"namespace", namespace)
 		return nil
 	}
 
 	if !errors.IsNotFound(err) {
-		klog.Errorf("Error getting circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+		slog.Error("Error getting circuit breaker config map",
+			"name", name,
+			"namespace", namespace,
+			"error", err)
 		return err
 	}
 
@@ -110,7 +118,10 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 
 	_, err = cmClient.Create(ctx, cm, metav1.CreateOptions{})
 	if err != nil {
-		klog.Errorf("Error creating circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+		slog.Error("Error creating circuit breaker config map",
+			"name", name,
+			"namespace", namespace,
+			"error", err)
 	}
 
 	return err
@@ -121,11 +132,11 @@ func (c *FaultQuarantineClient) GetTotalGpuNodes(ctx context.Context) (int, erro
 	if c.nodeInformer.HasSynced() {
 		totalNodes, _, err := c.nodeInformer.GetGpuNodeCounts()
 		if err == nil {
-			klog.V(4).Infof("Got %d total GPU nodes from NodeInformer lister", totalNodes)
+			slog.Debug("Got total GPU nodes from NodeInformer lister", "totalNodes", totalNodes)
 			return totalNodes, nil
 		}
 
-		klog.V(2).Infof("NodeInformer failed, falling back to API: %v", err)
+		slog.Debug("NodeInformer failed, falling back to API", "error", err)
 	}
 
 	nodes, err := c.clientset.CoreV1().Nodes().List(ctx,
@@ -134,7 +145,7 @@ func (c *FaultQuarantineClient) GetTotalGpuNodes(ctx context.Context) (int, erro
 		return 0, fmt.Errorf("failed to list GPU nodes: %w", err)
 	}
 
-	klog.V(4).Infof("Got %d total GPU nodes from K8s API", len(nodes.Items))
+	slog.Debug("Got total GPU nodes from K8s API", "totalNodes", len(nodes.Items))
 
 	return len(nodes.Items), nil
 }
@@ -144,7 +155,9 @@ func (c *FaultQuarantineClient) SetNodeInformer(nodeInformer NodeInfoProvider) {
 }
 
 func (c *FaultQuarantineClient) ReadCircuitBreakerState(ctx context.Context, name, namespace string) (string, error) {
-	klog.Infof("Reading circuit breaker state from config map %s in namespace %s", name, namespace)
+	slog.Info("Reading circuit breaker state from config map",
+		"name", name,
+		"namespace", namespace)
 
 	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -164,7 +177,10 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, na
 	return retry.OnError(customBackoff, errors.IsConflict, func() error {
 		cm, err := cmClient.Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			klog.Errorf("Error getting circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+			slog.Error("Error getting circuit breaker config map",
+				"name", name,
+				"namespace", namespace,
+				"error", err)
 			return err
 		}
 
@@ -176,7 +192,10 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(ctx context.Context, na
 
 		_, err = cmClient.Update(ctx, cm, metav1.UpdateOptions{})
 		if err != nil {
-			klog.Errorf("Error updating circuit breaker config map %s in namespace %s: %v", name, namespace, err)
+			slog.Error("Error updating circuit breaker config map",
+				"name", name,
+				"namespace", namespace,
+				"error", err)
 		}
 
 		return err
@@ -211,7 +230,9 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 
 				// Check if the taint is already present, if not then add it
 				if _, exists := existingTaints[key]; !exists {
-					klog.Infof("Tainting node %s with taint config: %+v", nodename, taintConfig)
+					slog.Info("Tainting node with taint config",
+						"node", nodename,
+						"taintConfig", fmt.Sprintf("%+v", taintConfig))
 					existingTaints[key] = v1.Taint{
 						Key:    taintConfig.Key,
 						Value:  taintConfig.Value,
@@ -232,14 +253,16 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 			_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
 			if node.Spec.Unschedulable {
 				if exist {
-					klog.Infof("Node %s already cordoned by FQM; skipping taint/annotation updates", nodename)
+					slog.Info("Node already cordoned by FQM; skipping taint/annotation updates",
+						"node", nodename)
 					return nil
 				}
 
-				klog.Infof("Node %s is cordoned manually; applying FQM taints/annotations", nodename)
+				slog.Info("Node is cordoned manually; applying FQM taints/annotations",
+					"node", nodename)
 			} else {
 				// Cordoning the node since it is currently schedulable.
-				klog.Infof("Cordoning node %s", nodename)
+				slog.Info("Cordoning node", "node", nodename)
 
 				if !c.dryRunMode {
 					node.Spec.Unschedulable = true
@@ -253,7 +276,9 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 				node.Annotations = make(map[string]string)
 			}
 
-			klog.Infof("Setting annotations %+v on node %s", annotations, nodename)
+			slog.Info("Setting annotations on node",
+				"annotations", fmt.Sprintf("%+v", annotations),
+				"node", nodename)
 			// set annotations
 			for annotationKey, annotationValue := range annotations {
 				node.Annotations[annotationKey] = annotationValue
@@ -262,7 +287,7 @@ func (c *FaultQuarantineClient) TaintAndCordonNodeAndSetAnnotations(
 
 		// Labels check
 		if len(labels) > 0 {
-			klog.Infof("Adding labels on node %s", nodename)
+			slog.Info("Adding labels on node", "node", nodename)
 
 			for k, v := range labels {
 				node.Labels[k] = v
@@ -314,7 +339,9 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 				found := taintsAlreadyPresentOnNodeMap[key]
 				if !found {
-					klog.Infof("Node %s already does not have the taint: %+v", nodename, taintConfig)
+					slog.Info("Node already does not have the taint",
+						"node", nodename,
+						"taintConfig", fmt.Sprintf("%+v", taintConfig))
 				} else {
 					toRemove[taintConfig] = true
 				}
@@ -324,7 +351,9 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 				return nil
 			}
 
-			klog.Infof("Untainting node %s with taint config: %+v", nodename, toRemove)
+			slog.Info("Untainting node with taint config",
+				"node", nodename,
+				"toRemove", fmt.Sprintf("%+v", toRemove))
 
 			newTaints := []v1.Taint{}
 
@@ -342,7 +371,7 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 		// uncordon check
 		if isUnCordon {
-			klog.Infof("Uncordoning node %s", nodename)
+			slog.Info("Uncordoning node", "node", nodename)
 
 			if !c.dryRunMode {
 				node.Spec.Unschedulable = false
@@ -350,7 +379,7 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 
 			// Only add labels if labels map is provided (non-nil and non-empty)
 			if len(labels) > 0 {
-				klog.Infof("Adding labels on node %s", nodename)
+				slog.Info("Adding labels on node", "node", nodename)
 
 				for k, v := range labels {
 					node.Labels[k] = v
@@ -370,7 +399,9 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 		if len(annotationKeys) > 0 && node.Annotations != nil {
 			// remove annotations
 			for _, annotationKey := range annotationKeys {
-				klog.Infof("Removing annotation key %s from node %s", annotationKey, nodename)
+				slog.Info("Removing annotation key from node",
+					"annotationKey", annotationKey,
+					"node", nodename)
 				delete(node.Annotations, annotationKey)
 			}
 		}
@@ -378,7 +409,9 @@ func (c *FaultQuarantineClient) UnTaintAndUnCordonNodeAndRemoveAnnotations(
 		// Label check
 		if len(labelsToRemove) > 0 {
 			for _, labelKey := range labelsToRemove {
-				klog.Infof("Removing label key %s from node %s", labelKey, nodename)
+				slog.Info("Removing label key from node",
+					"labelKey", labelKey,
+					"node", nodename)
 				delete(node.Labels, labelKey)
 			}
 		}
@@ -460,7 +493,7 @@ func (c *FaultQuarantineClient) UpdateNodeAnnotations(
 			return err
 		}
 
-		klog.Infof("Successfully updated annotations for node %s", nodename)
+		slog.Info("Successfully updated annotations for node", "node", nodename)
 
 		return nil
 	})

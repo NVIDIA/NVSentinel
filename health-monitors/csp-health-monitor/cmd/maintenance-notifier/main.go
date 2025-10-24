@@ -20,17 +20,19 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"log/slog"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	klog "k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
@@ -52,6 +54,27 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
+
+func initLogger() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	})).With("module", "maintenance-notifier", "version", version)
+
+	slog.SetDefault(logger)
+}
 
 type appConfig struct {
 	configPath               string
@@ -79,11 +102,13 @@ func parseFlags() *appConfig {
 }
 
 func logStartupInfo(cfg *appConfig) {
-	klog.Infof("Using configuration file: %s", cfg.configPath)
-	klog.Infof("Platform Connector UDS Path: %s", cfg.udsPath)
-	klog.Infof("MongoDB Client Cert Mount Path: %s", cfg.mongoClientCertMountPath)
-	klog.Infof("Exposing sidecar metrics on port: %s", cfg.metricsPort)
-	klog.V(2).Infof("Klog verbosity level is set based on the -v flag for sidecar.")
+	slog.Info("Using",
+		"configuration file", cfg.configPath,
+		"platform connector UDS path", cfg.udsPath,
+		"mongoDB client cert mount path", cfg.mongoClientCertMountPath,
+		"exposing sidecar metrics on port", cfg.metricsPort,
+	)
+	slog.Debug("log verbosity level is set based on the -v flag for sidecar.")
 }
 
 func startMetricsServer(metricsPort string) {
@@ -101,18 +126,18 @@ func startMetricsServer(metricsPort string) {
 			IdleTimeout:  15 * time.Second,
 		}
 
-		klog.Infof("Metrics server (sidecar) starting to listen on %s", listenAddress)
+		slog.Info("metrics server (sidecar) starting to listen", "port", listenAddress)
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			klog.Errorf("Metrics server (sidecar) failed: %v", err)
+			slog.Error("metrics server (sidecar) failed", "error", err)
 		}
 
-		klog.Info("Metrics server (sidecar) stopped.")
+		slog.Info("Metrics server (sidecar) stopped.")
 	}()
 }
 
 func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorClient) {
-	klog.Infof("Sidecar attempting to connect to Platform Connector UDS at: unix:%s", udsPath)
+	slog.Info("Sidecar attempting to connect to Platform Connector UDS", "unix", udsPath)
 	target := fmt.Sprintf("unix:%s", udsPath)
 
 	opts := []grpc.DialOption{
@@ -122,10 +147,12 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		metrics.TriggerUDSSendErrors.Inc()
-		klog.Fatalf("Sidecar failed to dial Platform Connector UDS %s: %v", target, err)
+		slog.Error("Sidecar failed to dial Platform Connector UDS",
+			"target", target,
+			"error", err)
 	}
 
-	klog.Info("Sidecar successfully connected to Platform Connector UDS.")
+	slog.Info("Sidecar successfully connected to Platform Connector UDS.")
 
 	return conn, pb.NewPlatformConnectorClient(conn)
 }
@@ -137,41 +164,38 @@ func setupKubernetesClient() kubernetes.Interface {
 
 	restCfg, err = rest.InClusterConfig()
 	if err != nil {
-		klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
+		slog.Warn("trigger engine, failed to obtain in-cluster Kubernetes config", "error", err)
 		return nil
 	}
 
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		klog.Errorf("Trigger Engine: failed to create Kubernetes clientset: %v", err)
+		slog.Error("trigger engine, failed to create Kubernetes clientset", "error", err)
 		return nil
 	}
 
-	klog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
+	slog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
 
 	return k8sClient
 }
 
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	initLogger()
+	slog.Info("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
 
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	appCfg := parseFlags()
-
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "maintenance-notifier",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	logStartupInfo(appCfg)
 
 	cfg, err := config.LoadConfig(appCfg.configPath)
 	if err != nil {
-		klog.Fatalf("Failed to load configuration: %v", err)
+		return fmt.Errorf("failed to load configuration from %s: %v", appCfg.configPath, err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -181,17 +205,16 @@ func main() {
 
 	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
 	if err != nil {
-		klog.Fatalf("Failed to initialize datastore for sidecar: %v", err)
+		return fmt.Errorf("failed to initialize datastore: %v", err)
 	}
 
-	klog.Info("Datastore initialized successfully for sidecar.")
+	slog.Info("Datastore initialized successfully for sidecar.")
 
 	conn, platformConnectorClient := setupUDSConnection(appCfg.udsPath)
 	defer func() {
-		klog.Info("Closing UDS connection for sidecar.")
-
+		slog.Info("Closing UDS connection for sidecar.")
 		if errClose := conn.Close(); errClose != nil {
-			klog.Errorf("Error closing sidecar UDS connection: %v", errClose)
+			slog.Error("Error closing sidecar UDS connection", "error", errClose)
 		}
 	}()
 
@@ -199,8 +222,10 @@ func main() {
 
 	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 
-	klog.Info("Trigger engine starting...")
+	slog.Info("Trigger engine starting...")
 	engine.Start(ctx) // This is blocking
 
-	klog.Info("Quarantine Trigger Engine Sidecar shut down.")
+	slog.Info("Quarantine Trigger Engine Sidecar shut down.")
+
+	return nil
 }

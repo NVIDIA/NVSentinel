@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"k8s.io/klog/v2"
+	"log/slog"
 
 	platformconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -234,7 +234,7 @@ func TestK8sNodeConditions(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		klog.Errorf("Failed to create  node with err %s", err)
+		slog.Error("Failed to create  node with err %s", err)
 		os.Exit(1)
 	}
 	for testCase, healthEvent := range healthEventsList {
@@ -332,7 +332,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		klog.Errorf("Failed to create  node with err %s", err)
+		slog.Error("Failed to create  node with err %s", err)
 		os.Exit(1)
 	}
 

@@ -17,8 +17,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,8 +30,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -42,28 +44,51 @@ var (
 	driverAppLabel = flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
 )
 
+// initLogger initializes the structured logger with the appropriate log level.
+func initLogger() {
+	level := slog.LevelInfo
+
+	// Set log level based on LOG_LEVEL environment variable or default to Info level
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: true,
+	})).With("module", "labeler-module", "version", version)
+
+	slog.SetDefault(logger)
+}
+
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	initLogger()
+	slog.Info("Starting labeler-module", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	flag.Parse()
-
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "labeler-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting labeler-module", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		klog.Fatalf("Failed to create kubernetes config: %v", err)
+		return fmt.Errorf("error building config from flags: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		klog.Fatalf("Failed to create clientset: %v", err)
+		return fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -71,22 +96,25 @@ func main() {
 
 	labelerInstance, err := labeler.NewLabeler(clientset, 30*time.Second, *dcgmAppLabel, *driverAppLabel)
 	if err != nil {
-		klog.Fatalf("Failed to create labeler: %v", err)
+		return fmt.Errorf("error creating labeler instance: %w", err)
 	}
 
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		klog.Infof("Starting metrics server on port %s", *metricsPort)
+		slog.Info("Starting metrics server on port", "port", *metricsPort)
 
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		if err := http.ListenAndServe(":"+*metricsPort, nil); err != nil {
-			klog.Errorf("Failed to start metrics server: %v", err)
+			slog.Error("Failed to start metrics server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	if err := labelerInstance.Run(ctx); err != nil {
-		klog.Fatalf("Failed to run labeler: %v", err)
+		return fmt.Errorf("error running labeler: %w", err)
 	}
 
-	klog.Info("Node Labeler Module stopped")
+	slog.Info("Node Labeler Module stopped")
+
+	return nil
 }

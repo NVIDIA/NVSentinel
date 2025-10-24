@@ -24,7 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
+	"log/slog"
 )
 
 type EventWatcher struct {
@@ -52,11 +52,11 @@ func NewEventWatcher(
 }
 
 func (w *EventWatcher) Start(ctx context.Context) error {
-	klog.Info("Starting MongoDB event watcher")
+	slog.Info("Starting MongoDB event watcher")
 
 	// Cold start failure shouldn't prevent normal operation
 	if err := w.handleColdStart(ctx); err != nil {
-		klog.Errorf("Failed to handle cold start: %v", err)
+		slog.Error("Failed to handle cold start: %v", err)
 	}
 
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, w.mongoConfig, w.tokenConfig, w.mongoPipeline)
@@ -66,40 +66,40 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	defer watcher.Close(ctx)
 
 	watcher.Start(ctx)
-	klog.Info("MongoDB change stream watcher started successfully")
+	slog.Info("MongoDB change stream watcher started successfully")
 
 	for {
 		select {
 		case <-ctx.Done():
-			klog.Info("Context cancelled, stopping MongoDB event watcher")
+			slog.Info("Context cancelled, stopping MongoDB event watcher")
 			return nil
 		case event := <-watcher.Events():
 			if err := w.preprocessAndEnqueueEvent(ctx, event); err != nil {
-				klog.Errorf("Failed to preprocess and enqueue event: %v", err)
+				slog.Error("Failed to preprocess and enqueue event: %v", err)
 				continue
 			}
 
 			if err := watcher.MarkProcessed(ctx); err != nil {
-				klog.Errorf("Error updating resume token: %v", err)
+				slog.Error("Error updating resume token: %v", err)
 			}
 		}
 	}
 }
 
 func (w *EventWatcher) Stop() error {
-	klog.Info("Stopping MongoDB event watcher")
+	slog.Info("Stopping MongoDB event watcher")
 	return nil
 }
 
 func (w *EventWatcher) handleColdStart(ctx context.Context) error {
-	klog.Info("Handling cold start - processing existing in-progress events")
+	slog.Info("Handling cold start - processing existing in-progress events")
 
 	inProgressEvents, err := w.getInProgressEvents(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get in-progress events: %w", err)
 	}
 
-	klog.Infof("Found %d in-progress events to process", len(inProgressEvents))
+	slog.Info("Found %d in-progress events to process", len(inProgressEvents))
 
 	for _, event := range inProgressEvents {
 		// Wrap the event in the same format as change stream events
@@ -108,13 +108,13 @@ func (w *EventWatcher) handleColdStart(ctx context.Context) error {
 		}
 
 		if err := w.preprocessAndEnqueueEvent(ctx, wrappedEvent); err != nil {
-			klog.Errorf("Failed to enqueue cold start event: %v", err)
+			slog.Error("Failed to enqueue cold start event: %v", err)
 		} else {
 			metrics.TotalEventsReplayed.Inc()
 		}
 	}
 
-	klog.Info("Cold start processing completed")
+	slog.Info("Cold start processing completed")
 
 	return nil
 }
@@ -145,13 +145,13 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	}
 
 	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
-		klog.Infof("Skipping health event as it's already in terminal state: %+v",
+		slog.Info("Skipping health event as it's already in terminal state: %+v",
 			healthEventWithStatus.HealthEvent)
 		return nil
 	}
 
-	klog.Infof("Enqueuing event: %+v", healthEventWithStatus.HealthEvent)
-	klog.Infof("Current UserPodsEvictionStatus: %+v", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus)
+	slog.Info("Enqueuing event: %+v", healthEventWithStatus.HealthEvent)
+	slog.Info("Current UserPodsEvictionStatus: %+v", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus)
 
 	// Extract fullDocument to access the actual document _id
 	document, ok := event["fullDocument"].(bson.M)
@@ -175,7 +175,7 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	}
 
 	if result.ModifiedCount > 0 {
-		klog.Infof("Set initial eviction status to InProgress for node %s", healthEventWithStatus.HealthEvent.NodeName)
+		slog.Info("Set initial eviction status to InProgress for node %s", healthEventWithStatus.HealthEvent.NodeName)
 	}
 
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
