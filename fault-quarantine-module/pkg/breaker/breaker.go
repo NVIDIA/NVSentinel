@@ -304,7 +304,10 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 		}
 	}
 
-	b.logRetriesExhausted(maxRetries, initialDelay, maxDelay)
+	// All retries exhausted
+	if err := b.logRetriesExhausted(maxRetries, initialDelay, maxDelay); err != nil {
+		return 0, fmt.Errorf("error logging retries exhausted: %w", err)
+	}
 
 	result = resultError
 	errorType = "zero_nodes"
@@ -403,8 +406,10 @@ func (b *slidingWindowBreaker) calculateBackoffDelay(attempt int,
 	return delay
 }
 
-// logRetriesExhausted logs a summary when all retries are exhausted and crashes the pod
-func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay, maxDelay time.Duration) {
+// logRetriesExhausted logs a summary when all retries are exhausted and crashes the pod.
+// It attempts to get the actual node count for accurate error context.
+// Returns an error if unable to get the node count.
+func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay, maxDelay time.Duration) error {
 	// Get the actual node count from the last attempt to provide accurate error context
 	ctx := context.Background()
 	actualNodes, err := b.cfg.GetTotalNodes(ctx)
@@ -415,15 +420,11 @@ func (b *slidingWindowBreaker) logRetriesExhausted(maxRetries int, initialDelay,
 			"maxRetries", maxRetries,
 			"error", err,
 			"initialDelay", initialDelay,
+			"totalClusterNodes", actualNodes,
 			"maxDelay", maxDelay)
 
-		return
+		return nil
 	}
 
-	slog.Error(
-		"Circuit breaker: All retry attempts exhausted; found 0 GPU nodes with NVIDIA labels; pod will restart",
-		"maxRetries", maxRetries,
-		"totalClusterNodes", actualNodes,
-		"initialDelay", initialDelay,
-		"maxDelay", maxDelay)
+	return fmt.Errorf("error getting total nodes after %d retries", maxRetries)
 }
