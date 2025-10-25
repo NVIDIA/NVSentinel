@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -167,8 +166,7 @@ func startMetricsServer(metricsPort string) {
 			os.Exit(1)
 		}
 	}()
-	// Give the HTTP server a moment to start listening
-	time.Sleep(100 * time.Millisecond)
+
 	slog.Info("Metrics server goroutine started")
 }
 

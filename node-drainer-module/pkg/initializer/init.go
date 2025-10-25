@@ -73,8 +73,6 @@ func StartMetricsServer(port string) error {
 		}
 	}()
 
-	// Give the HTTP server a moment to start listening
-	time.Sleep(100 * time.Millisecond)
 	slog.Info("Metrics server goroutine started")
 
 	return nil

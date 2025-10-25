@@ -194,8 +194,6 @@ func startMetricsServer(metricsPort string) {
 			os.Exit(1)
 		}
 	}()
-	// Give the HTTP server a moment to start listening
-	time.Sleep(100 * time.Millisecond)
 	slog.Info("Metrics server goroutine started")
 }
 

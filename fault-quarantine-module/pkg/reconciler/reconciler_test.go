@@ -2409,9 +2409,6 @@ func TestManualUncordonEndToEnd(t *testing.T) {
 		t.Fatalf("Failed to simulate manual uncordon: %v", err)
 	}
 
-	// Wait for the event to be processed
-	time.Sleep(100 * time.Millisecond)
-
 	// Verify manual uncordon was detected and handled
 	mu.Lock()
 	if !manualUncordonCalled {

@@ -119,8 +119,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 
 		go connector.FetchAndProcessHealthMetric(ctx)
 
-		time.Sleep(100 * time.Millisecond)
-
 		// check that the event has been dequeued
 		require.Equal(t, 0, ringBuffer.CurrentLength())
 
@@ -162,8 +160,6 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		require.Equal(t, 1, ringBuffer.CurrentLength())
 
 		go connector.FetchAndProcessHealthMetric(ctx)
-
-		time.Sleep(100 * time.Millisecond)
 
 		// check that the event has been dequeued
 		require.Equal(t, 0, ringBuffer.CurrentLength())

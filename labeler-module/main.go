@@ -90,8 +90,7 @@ func run() error {
 			os.Exit(1)
 		}
 	}()
-	// Give the HTTP server a moment to start listening
-	time.Sleep(100 * time.Millisecond)
+
 	slog.Info("Metrics server goroutine started")
 
 	if err := labelerInstance.Run(ctx); err != nil {
