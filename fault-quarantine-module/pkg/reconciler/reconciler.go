@@ -343,7 +343,9 @@ func (r *Reconciler) Start(ctx context.Context) {
 				if healthEventIndex == 0 && currentEventInfo.HasProcessed {
 					err := r.healthEventBuffer.RemoveAt(healthEventIndex)
 					if err != nil {
-						slog.Error("Error removing event %s with error: %+v", healthEventWithStatus.HealthEvent.CheckName, err)
+						slog.Error("Error removing event",
+							"checkName", healthEventWithStatus.HealthEvent.CheckName,
+							"error", err)
 						continue
 					}
 
@@ -536,8 +538,9 @@ func (r *Reconciler) handleEvent(
 	// For healthy events, if there's no existing quarantine annotation,
 	// skip processing as there's no transition from unhealthy to healthy
 	if event.HealthEvent.IsHealthy && !quarantineAnnotationExists {
-		slog.Info("Skipping healthy event for node %s as there's no existing quarantine annotation, Event: %+v",
-			event.HealthEvent.NodeName, event.HealthEvent)
+		slog.Info("Skipping healthy event",
+			"node", event.HealthEvent.NodeName,
+			"event", event.HealthEvent)
 
 		return nil, common.RuleEvaluationNotApplicable
 	}

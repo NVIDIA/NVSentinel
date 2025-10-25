@@ -95,7 +95,10 @@ func initializeK8sConnector(
 		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	k8sConnector, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
+	}
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 

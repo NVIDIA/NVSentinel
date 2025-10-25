@@ -16,6 +16,7 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
@@ -54,11 +55,11 @@ func NewK8sConnector(
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{},
-) *K8sConnector {
+) (*K8sConnector, error) {
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		slog.Error("Error creating Kubernetes client", "error", err.Error())
+		return nil, fmt.Errorf("error creating in-cluster config: %w", err)
 	}
 
 	config.Burst = burst
@@ -66,12 +67,12 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		slog.Error("error creating clientset", "error", err.Error())
+		return nil, fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
 	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx)
 
-	return kubernetesConnector
+	return kubernetesConnector, nil
 }
 
 func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
