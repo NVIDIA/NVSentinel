@@ -49,3 +49,6 @@ dependencies:
   - name: labeler
     version: "0.1.0"
     condition: global.labeler.enabled
+  - name: janitor
+    version: "0.1.0"
+    condition: global.janitor.enabled

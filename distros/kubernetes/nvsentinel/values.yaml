@@ -154,6 +154,10 @@ global:
       # Container image repository for labeler module
       repository: ghcr.io/nvidia/nvsentinel-labeler-module
       pullPolicy: IfNotPresent
+  
+  # Janitor - performs remediation actions
+  janitor:
+    enabled: false
 
   # Image pull secrets for accessing private container registries
   # Must be created in the namespace before deploying NVSentinel
