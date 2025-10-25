@@ -75,6 +75,7 @@ k8s_yaml('./nvidia-dcgm-daemonset.yaml')
 
 include('../fault-quarantine-module/Tiltfile')
 include('../fault-remediation-module/Tiltfile')
+include('../janitor/Tiltfile')
 include('../node-drainer-module/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')

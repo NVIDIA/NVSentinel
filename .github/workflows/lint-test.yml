@@ -161,6 +161,7 @@ jobs:
           - labeler-module
           - node-drainer-module
           - fault-remediation-module
+          - janitor
     steps:
       - uses: actions/checkout@v4
 

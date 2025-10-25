@@ -50,6 +50,7 @@ declare -a dynamic_images=(
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-janitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"

@@ -31,6 +31,7 @@ if [ ! -f go.work ]; then
     ./fault-remediation-module \
     ./health-events-analyzer \
     ./health-monitors/csp-health-monitor \
+    ./janitor \
     ./labeler-module \
     ./node-drainer-module \
     ./platform-connectors
@@ -42,6 +43,7 @@ ko build -B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}-slim" \
   ./health-events-analyzer \
   ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+  ./janitor \
   ./labeler-module \
   ./node-drainer-module \
   ./platform-connectors 

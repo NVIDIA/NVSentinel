@@ -67,17 +67,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare environment variables
-        id: prepare
-        run: |
-          # Set safe ref name for container tags
-          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          echo "safe_ref_name=${SAFE_REF_NAME}" >> $GITHUB_OUTPUT
-
-          # Set container repository paths
-          echo "nvcr_container_repo=nvcr.io/${{ env.CONTAINER_ORG }}/nvsentinel" >> $GITHUB_OUTPUT
-          echo "container_org=${{ env.CONTAINER_ORG }}" >> $GITHUB_OUTPUT
-
       - name: Load tool versions from .versions.yaml
         id: load-versions
         run: |

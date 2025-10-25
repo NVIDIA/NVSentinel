@@ -83,6 +83,8 @@ jobs:
             make_command: 'make -C node-drainer-module docker-build'
           - component: fault-remediation-module
             make_command: 'make -C fault-remediation-module docker-build'
+          - component: janitor
+            make_command: 'make -C janitor docker-build'
           # Log Collection
           - component: log-collector
             make_command: 'make -C nvsentinel-log-collector docker-build-log-collector'

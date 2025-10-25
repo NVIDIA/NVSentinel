@@ -27,7 +27,8 @@ GO_MODULES := \
 	fault-quarantine-module \
 	labeler-module \
 	node-drainer-module \
-	fault-remediation-module
+	fault-remediation-module \
+	janitor
 
 PYTHON_MODULES := \
 	health-monitors/gpu-health-monitor
@@ -44,7 +45,7 @@ ALL_MODULES := $(GO_MODULES) $(PYTHON_MODULES) $(CONTAINER_MODULES)
 
 # Build all Docker images for local development
 .PHONY: build-all
-build-all: build-gpu-health-monitor build-syslog-health-monitor build-csp-health-monitor build-platform-connectors build-health-events-analyzer build-fault-quarantine-module build-labeler-module build-node-drainer-module build-fault-remediation-module build-log-collector
+build-all: build-gpu-health-monitor build-syslog-health-monitor build-csp-health-monitor build-platform-connectors build-health-events-analyzer build-fault-quarantine-module build-labeler-module build-node-drainer-module build-fault-remediation-module build-janitor build-log-collector
 	@echo "All Docker images built successfully for local development"
 
 # GPU health monitor (special case with DCGM variants)
@@ -104,6 +105,11 @@ build-fault-remediation-module:
 	@echo "Building fault remediation module..."
 	$(MAKE) -C ../fault-remediation-module docker-build
 
+.PHONY: build-janitor
+build-janitor:
+	@echo "Building janitor..."
+	$(MAKE) -C ../janitor docker-build
+
 .PHONY: build-log-collector
 build-log-collector:
 	@echo "Building log collector..."
@@ -116,7 +122,7 @@ build-log-collector:
 
 # Publish all Docker images to registry (CI-like behavior)
 .PHONY: publish-all
-publish-all: publish-gpu-health-monitor publish-syslog-health-monitor publish-csp-health-monitor publish-platform-connectors publish-health-events-analyzer publish-fault-quarantine-module publish-labeler-module publish-node-drainer-module publish-fault-remediation-module publish-log-collector
+publish-all: publish-gpu-health-monitor publish-syslog-health-monitor publish-csp-health-monitor publish-platform-connectors publish-health-events-analyzer publish-fault-quarantine-module publish-labeler-module publish-node-drainer-module publish-fault-remediation-module publish-janitor publish-log-collector
 	@echo "All Docker images published successfully to registry"
 
 # GPU health monitor publish (special case with DCGM variants)
@@ -176,6 +182,11 @@ publish-fault-remediation-module:
 	@echo "Publishing fault remediation module..."
 	$(MAKE) -C ../fault-remediation-module docker-publish
 
+.PHONY: publish-janitor
+publish-janitor:
+	@echo "Publishing janitor..."
+	$(MAKE) -C ../janitor docker-publish
+
 .PHONY: publish-log-collector
 publish-log-collector:
 	@echo "Publishing log collector..."
@@ -196,11 +207,11 @@ publish-health-monitors: publish-gpu-health-monitor publish-syslog-health-monito
 
 # Main modules group (non-health-monitors)
 .PHONY: build-main-modules
-build-main-modules: build-platform-connectors build-health-events-analyzer build-fault-quarantine-module build-labeler-module build-node-drainer-module build-fault-remediation-module build-log-collector
+build-main-modules: build-platform-connectors build-health-events-analyzer build-fault-quarantine-module build-labeler-module build-node-drainer-module build-fault-remediation-module build-janitor build-log-collector
 	@echo "All main module Docker images built successfully"
 
 .PHONY: publish-main-modules
-publish-main-modules: publish-platform-connectors publish-health-events-analyzer publish-fault-quarantine-module publish-labeler-module publish-node-drainer-module publish-fault-remediation-module publish-log-collector
+publish-main-modules: publish-platform-connectors publish-health-events-analyzer publish-fault-quarantine-module publish-labeler-module publish-node-drainer-module publish-fault-remediation-module publish-janitor publish-log-collector
 	@echo "All main module Docker images published successfully"
 
 # =============================================================================

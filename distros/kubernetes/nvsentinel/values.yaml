@@ -120,6 +120,16 @@ global:
       repository: ghcr.io/nvidia/nvsentinel-fault-remediation-module
       pullPolicy: IfNotPresent
 
+  # Janitor - performs cleanup and maintenance tasks for cluster resources
+  janitor:
+    # Enable janitor module
+    enabled: false
+
+    image:
+      # Container image repository for janitor module
+      repository: ghcr.io/nvidia/nvsentinel-janitor
+      pullPolicy: IfNotPresent
+
   # CSP Health Monitor - monitors cloud service provider maintenance events
   cspHealthMonitor:
     # Enable CSP health monitor (for AWS, GCP, Azure maintenance notifications)
@@ -154,10 +164,6 @@ global:
       # Container image repository for labeler module
       repository: ghcr.io/nvidia/nvsentinel-labeler-module
       pullPolicy: IfNotPresent
-  
-  # Janitor - performs remediation actions
-  janitor:
-    enabled: false
 
   # Image pull secrets for accessing private container registries
   # Must be created in the namespace before deploying NVSentinel
