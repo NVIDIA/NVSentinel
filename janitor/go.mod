@@ -4,9 +4,7 @@ go 1.24.0
 
 toolchain go1.24.8
 
-require k8s.io/klog/v2 v2.130.1
-
-require github.com/go-logr/logr v1.4.3 // indirect
+require github.com/nvidia/nvsentinel/commons v0.0.0-00010101000000-000000000000
 
 // Local replacements for internal modules
 replace github.com/nvidia/nvsentinel/statemanager => ../statemanager
@@ -30,3 +28,5 @@ replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+
+replace github.com/nvidia/nvsentinel/commons => ../commons

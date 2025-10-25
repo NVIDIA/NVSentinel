@@ -113,7 +113,6 @@ func main() {
 				"maxRetries", maxRetries,
 				"socketPath", socketPath)
 
-			//nolint:gocritic // Running klog.Flush() to ensure logs are flushed
 			os.Exit(1)
 		}
 

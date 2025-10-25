@@ -15,12 +15,12 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 )
 
 var (
@@ -31,35 +31,21 @@ var (
 )
 
 func run() error {
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "janitor",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting janitor module", "version", version, "commit", commit, "date", date)
-
-	// Wait for termination signal - business logic will be added here
-	klog.Info("Janitor module is running...")
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	sig := <-sigChan
-	klog.InfoS("Received signal, shutting down", "signal", sig)
+	slog.Info("Received signal, shutting down", "signal", sig)
 
 	return nil
 }
 
 func main() {
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("node-drainer-module", version)
+	slog.Info("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Fatal error")
-		klog.Flush()
-		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
+		slog.Error("Fatal error", "error", err)
 		os.Exit(1)
 	}
-
-	klog.Flush()
 }
