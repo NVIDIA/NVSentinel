@@ -198,7 +198,7 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	threshold := int(math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100))
 	shouldTrip := recentCordonedNodes >= threshold
 
-	slog.Info("Recent cordoned nodes status",
+	slog.Debug("Recent cordoned nodes status",
 		"recentCordonedNodes", recentCordonedNodes,
 		"totalNodes", totalNodes,
 		"tripPercentage", b.cfg.TripPercentage)
