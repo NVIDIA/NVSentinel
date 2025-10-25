@@ -60,7 +60,10 @@ func (b *HealthEventBuffer) RemoveAt(index int) error {
 		return fmt.Errorf("index out of bounds: %d", index)
 	}
 
-	slog.Info("Removing event at index", "index", index, "event", b.events[index].HealthEventWithStatus)
+	slog.Debug("Removing event at index",
+		"index", index,
+		"event", b.events[index].HealthEventWithStatus,
+	)
 
 	// Remove the element at index
 	b.events = append(b.events[:index], b.events[index+1:]...)
