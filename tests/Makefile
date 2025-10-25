@@ -15,6 +15,7 @@ test-ci:
 	nohup kubectl port-forward -n nvsentinel svc/simple-health-client 8080:8080 > /dev/null 2>&1 &
 	kubectl get po -Ao wide
 	kubectl get no -o wide
+	kubectl rollout restart deploy -l app.kubernetes.io/name=fault-quarantine -n nvsentinel
 	$(MAKE) test
 
 # Run end-to-end tests
