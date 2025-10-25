@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/labeler-module/pkg/labeler"
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"

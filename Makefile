@@ -64,7 +64,7 @@ GO_MODULES := \
 	fault-remediation-module \
 	store-client-sdk \
 	statemanager \
-	logger-sdk
+	commons
 
 
 # Python modules
@@ -447,10 +447,10 @@ lint-test-statemanager:
 	@echo "Linting and testing statemanager..."
 	$(MAKE) -C statemanager lint-test
 
-.PHONY: lint-test-logger-sdk
-lint-test-logger-sdk:
-	@echo "Linting and testing logger-sdk..."
-	$(MAKE) -C logger-sdk lint-test
+.PHONY: lint-test-commons
+lint-test-commons:
+	@echo "Linting and testing commons..."
+	$(MAKE) -C commons lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules

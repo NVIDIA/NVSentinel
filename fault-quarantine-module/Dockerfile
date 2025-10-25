@@ -29,7 +29,7 @@ COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY platform-connectors/go.mod platform-connectors/go.sum ./platform-connectors/
 COPY statemanager/go.mod statemanager/go.sum ./statemanager/
 COPY store-client-sdk/go.mod store-client-sdk/go.sum ./store-client-sdk/
-COPY logger-sdk/go.mod logger-sdk/go.sum ./logger-sdk/
+COPY commons/go.mod commons/go.sum ./commons/
 COPY fault-quarantine-module/go.mod fault-quarantine-module/go.sum ./fault-quarantine-module/
 
 WORKDIR /go/src/fault-quarantine-module
@@ -42,7 +42,7 @@ COPY fault-quarantine-module/ .
 COPY platform-connectors/ ../platform-connectors/
 COPY statemanager/ ../statemanager/
 COPY store-client-sdk/ ../store-client-sdk/
-COPY logger-sdk/ ../logger-sdk/
+COPY commons/ ../commons/
 COPY data-models/ ../data-models/
 
 RUN --mount=type=cache,target=/go/pkg/mod \

@@ -27,7 +27,7 @@ WORKDIR /go/src
 COPY data-models/go.mod data-models/go.sum ./data-models/
 COPY platform-connectors/go.mod platform-connectors/go.sum ./platform-connectors/
 COPY store-client-sdk/go.mod store-client-sdk/go.sum ./store-client-sdk/
-COPY logger-sdk/go.mod logger-sdk/go.sum ./logger-sdk/
+COPY commons/go.mod commons/go.sum ./commons/
 COPY health-events-analyzer/go.mod health-events-analyzer/go.sum ./health-events-analyzer/
 
 WORKDIR /go/src/health-events-analyzer
@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY data-models/ ../data-models/
 COPY platform-connectors/ ../platform-connectors/
 COPY store-client-sdk/ ../store-client-sdk/
-COPY logger-sdk/ ../logger-sdk/
+COPY commons/ ../commons/
 COPY health-events-analyzer/ .
 
 RUN --mount=type=cache,target=/go/pkg/mod \

@@ -52,4 +52,4 @@ replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-modu
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
 
-replace github.com/nvidia/nvsentinel/logger-sdk => ../logger-sdk
+replace github.com/nvidia/nvsentinel/commons => ../commons

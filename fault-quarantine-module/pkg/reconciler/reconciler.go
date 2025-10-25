@@ -1074,7 +1074,7 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 		return fmt.Errorf("error updating document with _id: %v, error: %w", document["_id"], err)
 	}
 
-	slog.Info("Document with _id: %v has been updated with status %s", document["_id"], *nodeQuarantinedStatus)
+	slog.Info("Document updated", "_id", document["_id"], "nodeQuarantinedStatus", *nodeQuarantinedStatus)
 
 	return nil
 }
@@ -1205,7 +1205,7 @@ func (r *Reconciler) updateCacheWithQuarantineAnnotations(nodeName string, newAn
 
 		// Update the cache with the modified annotations
 		r.nodeAnnotationsCache.Store(nodeName, annotations)
-		slog.Debug("Updated cache for node %s with quarantine annotations: %v", nodeName, newAnnotations)
+		slog.Debug("Updated cache", "node", nodeName, "annotations", newAnnotations)
 	} else {
 		// If not in cache, store a copy of the new annotations to prevent external mutations
 		annotationsCopy := make(map[string]string, len(newAnnotations))
@@ -1214,7 +1214,7 @@ func (r *Reconciler) updateCacheWithQuarantineAnnotations(nodeName string, newAn
 		}
 
 		r.nodeAnnotationsCache.Store(nodeName, annotationsCopy)
-		slog.Debug("Stored new annotations in cache for node %s: %v", nodeName, newAnnotations)
+		slog.Debug("Stored new annotations in cache", "node", nodeName, "annotations", newAnnotations)
 	}
 }
 
@@ -1287,7 +1287,7 @@ func (r *Reconciler) buildNodeAnnotationsCache(ctx context.Context) error {
 		r.nodeAnnotationsCache.Store(node.Name, quarantineAnnotations)
 
 		if len(quarantineAnnotations) > 0 {
-			slog.Debug("Cached quarantine annotations for node %s: %v", node.Name, quarantineAnnotations)
+			slog.Debug("Cached quarantine annotations", "node", node.Name, "annotations", quarantineAnnotations)
 		}
 
 		nodeCount++
@@ -1320,7 +1320,7 @@ func (r *Reconciler) removeManualUncordonAnnotationIfPresent(ctx context.Context
 			nil, // No labels to remove
 			nil, // No labels to add
 		); err != nil {
-			slog.Error("Failed to remove manual uncordon annotation from node %s: %v", nodeName, err)
+			slog.Error("Failed to remove manual uncordon annotation from node", "node", nodeName)
 		} else {
 			// Update cache to remove the manual uncordon annotation
 			r.updateCacheWithUnquarantineAnnotations(nodeName,
@@ -1338,7 +1338,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	// Get the current annotations from cache or API fallback
 	annotations, err := r.getNodeQuarantineAnnotations(ctx, nodeName)
 	if err != nil {
-		slog.Error("Failed to get annotations for manually uncordoned node %s: %v", nodeName, err)
 		return fmt.Errorf("failed to get annotations for manually uncordoned node %s: %w", nodeName, err)
 	}
 
@@ -1354,7 +1353,7 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 		// Parse taints to remove them
 		if err := json.Unmarshal([]byte(taintsStr), &taintsToRemove); err != nil {
-			slog.Error("Failed to unmarshal taints for manually uncordoned node %s: %v", nodeName, err)
+			return fmt.Errorf("failed to unmarshal taints for manually uncordoned node %s: %w", nodeName, err)
 		}
 	}
 
@@ -1382,7 +1381,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		[]string{statemanager.NVSentinelStateLabelKey},
 		nil, // No labels to add
 	); err != nil {
-		slog.Error("Failed to clean up annotations for manually uncordoned node %s: %v", nodeName, err)
 		processingErrors.WithLabelValues("manual_uncordon_cleanup_error").Inc()
 
 		return fmt.Errorf("failed to clean up annotations for manually uncordoned node %s: %w", nodeName, err)
@@ -1397,7 +1395,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		newAnnotations,
 		nil, // No labels to add
 	); err != nil {
-		slog.Error("Failed to add manual uncordon annotation to node %s: %v", nodeName, err)
 		return fmt.Errorf("failed to add manual uncordon annotation to node %s: %w", nodeName, err)
 	}
 

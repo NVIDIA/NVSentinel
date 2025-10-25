@@ -155,7 +155,7 @@ jobs:
           - platform-connectors
           - store-client-sdk
           - statemanager
-          - logger-sdk
+          - commons
           - health-events-analyzer
           - fault-quarantine-module
           - labeler-module

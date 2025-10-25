@@ -46,8 +46,8 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
 	github.com/aws/aws-sdk-go-v2/service/health v1.30.2
+	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
-	github.com/nvidia/nvsentinel/logger-sdk v0.0.0
 	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
@@ -151,4 +151,4 @@ replace github.com/nvidia/nvsentinel/node-drainer-module => ../../node-drainer-m
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../../fault-remediation-module
 
-replace github.com/nvidia/nvsentinel/logger-sdk => ../../logger-sdk
+replace github.com/nvidia/nvsentinel/commons => ../../commons

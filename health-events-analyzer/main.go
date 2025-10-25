@@ -24,11 +24,11 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"

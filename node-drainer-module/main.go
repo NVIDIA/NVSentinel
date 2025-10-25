@@ -23,7 +23,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
 )
 

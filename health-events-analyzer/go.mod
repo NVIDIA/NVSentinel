@@ -5,8 +5,8 @@ go 1.24.0
 toolchain go1.24.8
 
 require (
+	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
-	github.com/nvidia/nvsentinel/logger-sdk v0.0.0
 	github.com/nvidia/nvsentinel/platform-connectors v0.0.0
 	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
@@ -77,4 +77,4 @@ replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-modu
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
 
-replace github.com/nvidia/nvsentinel/logger-sdk => ../logger-sdk
+replace github.com/nvidia/nvsentinel/commons => ../commons

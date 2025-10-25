@@ -25,8 +25,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"

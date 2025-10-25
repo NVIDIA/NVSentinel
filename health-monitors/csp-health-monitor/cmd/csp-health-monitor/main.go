@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nvidia/nvsentinel/logger-sdk/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
