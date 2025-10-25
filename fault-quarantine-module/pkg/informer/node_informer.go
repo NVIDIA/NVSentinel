@@ -17,6 +17,7 @@ package informer
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -211,7 +212,7 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	if !ok {
 		slog.Error("Add event received unexpected type",
 			"expected", "*v1.Node",
-			"actualType", fmt.Sprintf("%T", obj))
+			"actualType", reflect.TypeOf(obj))
 		return
 	}
 
@@ -282,8 +283,8 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 	if !okOld || !okNew {
 		slog.Error("Update event received unexpected type",
 			"expected", "*v1.Node",
-			"oldType", fmt.Sprintf("%T", oldObj),
-			"newType", fmt.Sprintf("%T", newObj))
+			"oldType", reflect.TypeOf(oldObj),
+			"newType", reflect.TypeOf(newObj))
 		return
 	}
 
@@ -370,7 +371,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		if !ok {
 			slog.Error("Delete event received unexpected type",
 				"expected", "*v1.Node or DeletedFinalStateUnknown",
-				"actualType", fmt.Sprintf("%T", obj))
+				"actualType", reflect.TypeOf(obj))
 			return
 		}
 
@@ -378,7 +379,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		if !ok {
 			slog.Error("Delete event tombstone contained unexpected type",
 				"expected", "*v1.Node",
-				"actualType", fmt.Sprintf("%T", tombstone.Obj))
+				"actualType", reflect.TypeOf(tombstone.Obj))
 			return
 		}
 	}
