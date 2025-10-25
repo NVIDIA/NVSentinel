@@ -218,7 +218,7 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 	err := retry.OnError(retry.DefaultRetry, errors.IsConflict, func() error {
 		node, err := manager.clientSet.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+			return err
 		}
 
 		currentValue, exists := node.Labels[NVSentinelStateLabelKey]

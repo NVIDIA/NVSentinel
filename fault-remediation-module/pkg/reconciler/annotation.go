@@ -115,7 +115,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 				slog.Warn("Retryable error getting node", "node", nodeName, "error", err)
 			}
 
-			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+			return err
 		}
 
 		node = n

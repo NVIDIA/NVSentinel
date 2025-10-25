@@ -301,7 +301,7 @@ func (l *Labeler) updateNodeLabels(nodeName, expectedDCGMVersion, expectedDriver
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+			return err
 		}
 
 		if node.Labels == nil {

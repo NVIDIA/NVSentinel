@@ -478,7 +478,7 @@ func (c *FaultQuarantineClient) UpdateNodeAnnotations(
 	return retry.OnError(customBackoff, errors.IsConflict, func() error {
 		node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodename, metav1.GetOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to get node %s: %w", nodename, err)
+			return err
 		}
 
 		// Update annotations
