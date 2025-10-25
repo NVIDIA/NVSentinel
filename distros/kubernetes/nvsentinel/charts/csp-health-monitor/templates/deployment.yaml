@@ -60,7 +60,6 @@ spec:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          - "-v={{ .Values.logLevel }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -73,6 +72,9 @@ spec:
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel }}
           envFrom:
             - configMapRef:
                 name: mongodb-config
@@ -89,7 +91,6 @@ spec:
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--uds-path={{ .Values.udsPath }}"
           - "--metrics-port={{ .Values.quarantineTriggerEngine.metricsPort }}"
-          - "-v={{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"
           resources:
             {{- toYaml .Values.quarantineTriggerEngine.resources | default .Values.resources | nindent 12 }}
           ports:
@@ -104,6 +105,9 @@ spec:
             readOnly: true
           - name: platform-connector-uds
             mountPath: /run/nvsentinel
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}
           envFrom:
             - configMapRef:
                 name: mongodb-config

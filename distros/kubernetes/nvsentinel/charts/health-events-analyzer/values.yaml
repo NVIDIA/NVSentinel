@@ -37,7 +37,7 @@ serviceAccount:
 
 clientCertMountPath: "/etc/ssl/mongo-client"
 
-logLevel: 1
+logLevel: info
 
 config: |
   [[rules]]

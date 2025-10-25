@@ -18,6 +18,8 @@
 
 replicaCount: 1
 
+logLevel: info
+
 image:
   repository: ghcr.io/nvidia/nvsentinel-labeler-module
   pullPolicy: IfNotPresent

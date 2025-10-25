@@ -73,6 +73,9 @@ spec:
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel }}
           envFrom:
             - configMapRef:
                 name: mongodb-config

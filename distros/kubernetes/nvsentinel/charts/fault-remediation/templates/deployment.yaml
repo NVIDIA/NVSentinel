@@ -95,6 +95,8 @@ spec:
             value: {{ .Values.maintenanceResource.template.mountPath }}/{{ .Values.logCollector.manifestFileName }}
           - name: ENABLE_GCP_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableGcpSosCollection }}"
+          - name: LOG_LEVEL
+            value: {{ .Values.logLevel }}
           envFrom:
             - configMapRef:
                 name: mongodb-config
