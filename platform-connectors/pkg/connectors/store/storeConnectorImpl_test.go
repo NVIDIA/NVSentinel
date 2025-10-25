@@ -125,6 +125,7 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
 		cancel()
+		// Note: mtest framework handles MongoDB client cleanup
 	})
 
 	mt.Run("process health metrics when insert fails", func(mt *mtest.T) {
@@ -169,6 +170,7 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
 		cancel()
+		// Note: mtest framework handles MongoDB client cleanup
 	})
 }
 

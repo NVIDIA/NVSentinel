@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -101,18 +102,21 @@ func initializeK8sConnector(
 	return k8sRingBuffer, nil
 }
 
-func initializeMongoDBConnector(ctx context.Context, mongoClientCertMountPath string) error {
+func initializeMongoDBConnector(
+	ctx context.Context,
+	mongoClientCertMountPath string,
+) (*store.MongoDbStoreConnector, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
 	storeConnector, err := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, mongoClientCertMountPath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+		return nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
 	}
 
 	go storeConnector.FetchAndProcessHealthMetric(ctx)
 
-	return nil
+	return storeConnector, nil
 }
 
 func startGRPCServer(socket string) (net.Listener, error) {
@@ -160,6 +164,7 @@ func startMetricsServer(metricsPort string) {
 	slog.Info("Metrics server goroutine started")
 }
 
+//nolint:cyclop // Main run function complexity is acceptable
 func run() error {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
@@ -188,6 +193,8 @@ func run() error {
 
 	var k8sRingBuffer *ringbuffer.RingBuffer
 
+	var storeConnector *store.MongoDbStoreConnector
+
 	if config["enableK8sPlatformConnector"] == True {
 		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
@@ -196,7 +203,8 @@ func run() error {
 	}
 
 	if config["enableMongoDBStorePlatformConnector"] == True {
-		if err := initializeMongoDBConnector(ctx, *mongoClientCertMountPath); err != nil {
+		storeConnector, err = initializeMongoDBConnector(ctx, *mongoClientCertMountPath)
+		if err != nil {
 			return fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
 		}
 	}
@@ -222,6 +230,15 @@ func run() error {
 
 		lis.Close()
 		os.Remove(*socket)
+	}
+
+	if storeConnector != nil {
+		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer disconnectCancel()
+
+		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
+			slog.Error("Failed to disconnect MongoDB client", "error", err)
+		}
 	}
 
 	cancel()

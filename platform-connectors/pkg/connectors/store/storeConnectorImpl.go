@@ -169,13 +169,6 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 
 func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 	// Build an in-memory cache of entity states from existing documents in MongoDB
-	defer func() {
-		err := r.client.Disconnect(ctx)
-		if err != nil {
-			slog.Error("failed to close mongodb connection", "error", err)
-		}
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -196,6 +189,27 @@ func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context)
 			}
 		}
 	}
+}
+
+// Disconnect closes the MongoDB client connection
+// Safe to call multiple times - will not error if already disconnected
+func (r *MongoDbStoreConnector) Disconnect(ctx context.Context) error {
+	if r.client == nil {
+		return nil
+	}
+
+	err := r.client.Disconnect(ctx)
+	if err != nil {
+		// Log but don't return error if already disconnected
+		// This can happen in tests where mtest framework also disconnects
+		slog.Warn("Error disconnecting MongoDB client (may already be disconnected)", "error", err)
+
+		return nil
+	}
+
+	slog.Info("Successfully disconnected MongoDB client")
+
+	return nil
 }
 
 func (r *MongoDbStoreConnector) insertHealthEvents(
