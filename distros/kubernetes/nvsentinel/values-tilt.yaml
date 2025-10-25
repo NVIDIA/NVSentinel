@@ -85,6 +85,8 @@ platformConnector:
 
 mongodb-store:
   mongodb:
+    replicaCount: 1
+    
     nodeSelector:
       node-role.kubernetes.io/control-plane: ""
     
