@@ -103,6 +103,10 @@ mongodb-store:
       pullPolicy: "IfNotPresent"
 
     tls:
+      replicaset:
+        existingSecrets:
+          - "mongo-server-cert-0"
+      
       image:
         registry: "docker.io"
         repository: "bitnamilegacy/nginx"
