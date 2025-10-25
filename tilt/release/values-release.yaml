@@ -68,6 +68,10 @@ global:
   labeler:
     enabled: true
 
+  # Janitor - performs remediation action
+  janitor:
+    enabled: true
+
   # Install MongoDB for data persistence
   # Required for health event storage and processing
   installMongoDB: true

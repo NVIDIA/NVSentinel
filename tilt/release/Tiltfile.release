@@ -145,7 +145,6 @@ for i in range(num_gpu_nodes):
 # These DaemonSets run on fake nodes to simulate GPU operator environment
 k8s_yaml(os.path.join(base_dir, 'tilt', 'nvidia-driver-daemonset.yaml'))   # Simulates NVIDIA drivers
 k8s_yaml(os.path.join(base_dir, 'tilt', 'nvidia-dcgm-daemonset.yaml'))     # Simulates DCGM monitoring
-k8s_yaml(os.path.join(base_dir, 'tilt', 'janitor.dgxc.nvidia.com_rebootnodes.yaml'))  # Reboot CRD
 
 # =============================================================================
 # NVSentinel Deployment from Published Chart

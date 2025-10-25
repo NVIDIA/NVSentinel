@@ -73,6 +73,9 @@ global:
 
   kata:
     enabled: false
+  
+  janitor:
+    enabled: true
 
 platformConnector:
   mongodbStore:
