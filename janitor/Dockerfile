@@ -23,12 +23,18 @@ ENV CGO_ENABLED=0
 
 WORKDIR /go/src
 
-COPY janitor ./janitor
+# Copy go.mod and go.sum files for all dependencies first
+COPY commons/go.mod commons/go.sum ./commons/
+COPY janitor/go.mod janitor/go.sum ./janitor/
 
 WORKDIR /go/src/janitor
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download 
+
+# Copy the source code after go mod download
+COPY janitor/ .
+COPY commons/ ../commons/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o janitor main.go
