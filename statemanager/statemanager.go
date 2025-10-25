@@ -225,7 +225,9 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 
 		if removeStateLabel {
 			if !exists {
-				slog.Info("Label %s is already absent for node %s", NVSentinelStateLabelKey, nodeName)
+				slog.Info("Label already absent",
+					"node", nodeName,
+					"label", NVSentinelStateLabelKey)
 
 				return nil
 			}
