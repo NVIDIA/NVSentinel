@@ -209,7 +209,7 @@ func getQuarantineAnnotations(annotations map[string]string) map[string]string {
 func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
-		slog.Error("Add event: expected Node object, got %T", obj)
+		slog.Error("Add event, expected Node", "got", fmt.Sprintf("%T", obj))
 		return
 	}
 

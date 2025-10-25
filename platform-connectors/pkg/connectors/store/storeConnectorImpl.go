@@ -168,6 +168,14 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 }
 
 func (r *MongoDbStoreConnector) FetchAndProcessHealthMetric(ctx context.Context) {
+	// Build an in-memory cache of entity states from existing documents in MongoDB
+	defer func() {
+		err := r.client.Disconnect(ctx)
+		if err != nil {
+			slog.Error("failed to close mongodb connection", "error", err)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
