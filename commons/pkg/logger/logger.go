@@ -15,6 +15,7 @@
 package logger
 
 import (
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -43,6 +44,21 @@ func NewStructuredLogger(module, version, level string) *slog.Logger {
 		Level:     lev,
 		AddSource: addSource,
 	})).With("module", module, "version", version)
+}
+
+// NewLogLogger creates a new standard library log.Logger that writes logs
+// using the slog package with the specified log level.
+// Parameters:
+//   - level: The log level as a slog.Level.
+//
+// Returns:
+//   - *log.Logger: A pointer to the configured log.Logger instance.
+func NewLogLogger(level slog.Level, withSource bool) *log.Logger {
+	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: withSource,
+	})
+	return slog.NewLogLogger(handler, level)
 }
 
 // SetDefaultStructuredLogger initializes the structured logger with the
