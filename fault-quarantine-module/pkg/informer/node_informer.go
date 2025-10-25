@@ -213,6 +213,7 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 		slog.Error("Add event received unexpected type",
 			"expected", "*v1.Node",
 			"actualType", reflect.TypeOf(obj))
+
 		return
 	}
 
@@ -285,6 +286,7 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 			"expected", "*v1.Node",
 			"oldType", reflect.TypeOf(oldObj),
 			"newType", reflect.TypeOf(newObj))
+
 		return
 	}
 
@@ -372,6 +374,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 			slog.Error("Delete event received unexpected type",
 				"expected", "*v1.Node or DeletedFinalStateUnknown",
 				"actualType", reflect.TypeOf(obj))
+
 			return
 		}
 
@@ -380,6 +383,7 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 			slog.Error("Delete event tombstone contained unexpected type",
 				"expected", "*v1.Node",
 				"actualType", reflect.TypeOf(tombstone.Obj))
+
 			return
 		}
 	}

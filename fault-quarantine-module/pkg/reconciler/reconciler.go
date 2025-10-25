@@ -346,6 +346,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 						slog.Error("Error removing event",
 							"checkName", healthEventWithStatus.HealthEvent.CheckName,
 							"error", err)
+
 						continue
 					}
 
