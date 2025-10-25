@@ -71,7 +71,7 @@ spec:
             failureThreshold: 3
           env:
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel }}
+              value: "{{ .Values.logLevel }}"
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

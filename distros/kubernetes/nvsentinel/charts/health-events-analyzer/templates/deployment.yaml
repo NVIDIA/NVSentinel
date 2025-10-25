@@ -78,7 +78,7 @@ spec:
             mountPath: /var/run/
           env:
             - name: LOG_LEVEL
-              value: {{ .Values.logLevel }}
+              value: "{{ .Values.logLevel }}"
           envFrom:
             - configMapRef:
                 name: mongodb-config
