@@ -500,6 +500,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 			slog.Error("Failed to force delete pods on node",
 				"node", nodeName,
 				"error", err)
+
 			return fmt.Errorf("failed to force delete pods on node %s: %w", nodeName, err)
 		}
 

@@ -226,6 +226,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 			"config", r.config.MongoHealthEventCollectionConfig,
 			"error", err,
 		)
+
 		return
 	}
 

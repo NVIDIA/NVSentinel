@@ -66,6 +66,7 @@ func StartMetricsServer(port string) error {
 
 	go func() {
 		slog.Info("Starting metrics server", "port", port)
+
 		err := server.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
 			slog.Error("Metrics server error", "error", err)
