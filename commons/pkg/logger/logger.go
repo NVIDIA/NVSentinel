@@ -27,6 +27,7 @@ const (
 
 // NewStructuredLogger creates a new structured logger with the specified log level
 // Defined module name and version are included in the logger's context.
+// AddSource is enabled for debug level logging only.
 // Parameters:
 //   - module: The name of the module/application using the logger.
 //   - version: The version of the module/application (e.g., "v1.0.0").
@@ -36,10 +37,11 @@ const (
 //   - *slog.Logger: A pointer to the configured slog.Logger instance.
 func NewStructuredLogger(module, version, level string) *slog.Logger {
 	lev := ParseLogLevel(level)
+	addSource := lev <= slog.LevelDebug
 
 	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     lev,
-		AddSource: true,
+		AddSource: addSource,
 	})).With("module", module, "version", version)
 }
 
