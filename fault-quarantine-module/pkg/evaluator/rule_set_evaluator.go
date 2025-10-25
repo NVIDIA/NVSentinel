@@ -42,7 +42,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAnyRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				slog.Info("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
+				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
 			}
 		}
 
@@ -54,7 +54,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAllRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				slog.Info("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
+				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
 			}
 		}
 	}
