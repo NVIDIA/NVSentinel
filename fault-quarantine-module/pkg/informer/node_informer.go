@@ -209,7 +209,9 @@ func getQuarantineAnnotations(annotations map[string]string) map[string]string {
 func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
-		slog.Error("Add event, expected Node", "got", fmt.Sprintf("%T", obj))
+		slog.Error("Add event received unexpected type",
+			"expected", "*v1.Node",
+			"actualType", fmt.Sprintf("%T", obj))
 		return
 	}
 
@@ -278,7 +280,10 @@ func (ni *NodeInformer) handleUpdateNode(oldObj, newObj interface{}) {
 
 	newNode, okNew := newObj.(*v1.Node)
 	if !okOld || !okNew {
-		slog.Error("Update event: expected Node objects, got %T and %T", oldObj, newObj)
+		slog.Error("Update event received unexpected type",
+			"expected", "*v1.Node",
+			"oldType", fmt.Sprintf("%T", oldObj),
+			"newType", fmt.Sprintf("%T", newObj))
 		return
 	}
 
@@ -363,13 +368,17 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 		// Handle deletion notifications potentially wrapped in DeletedFinalStateUnknown
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
-			slog.Error("Delete event: expected Node object or DeletedFinalStateUnknown, got %T", obj)
+			slog.Error("Delete event received unexpected type",
+				"expected", "*v1.Node or DeletedFinalStateUnknown",
+				"actualType", fmt.Sprintf("%T", obj))
 			return
 		}
 
 		node, ok = tombstone.Obj.(*v1.Node)
 		if !ok {
-			slog.Error("Delete event: DeletedFinalStateUnknown contained non-Node object %T", tombstone.Obj)
+			slog.Error("Delete event tombstone contained unexpected type",
+				"expected", "*v1.Node",
+				"actualType", fmt.Sprintf("%T", tombstone.Obj))
 			return
 		}
 	}
