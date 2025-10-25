@@ -98,8 +98,6 @@ k8s_resource(
         'mongo-ca-issuer:issuer', 
         'selfsigned-ca-issuer:issuer',
         'mongo-server-cert-0:certificate',
-        'mongo-server-cert-1:certificate',
-        'mongo-server-cert-2:certificate',
         'mongo-app-client-cert:certificate',
         'mongo-dgxcops-client-cert:certificate'
     ],
