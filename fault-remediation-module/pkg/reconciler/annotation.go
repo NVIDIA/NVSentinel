@@ -112,7 +112,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 		n, err := m.kubeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			if isRetryableError(err) {
-				slog.Warn("Retryable error getting node %s: %v. Retrying...", nodeName, err)
+				slog.Warn("Retryable error getting node", "node", nodeName, "error", err)
 			}
 
 			return fmt.Errorf("failed to get node %s: %w", nodeName, err)

@@ -276,7 +276,7 @@ func (r *Reconciler) handleRemediationEvent(
 	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent)
 	if err != nil {
 		totalEventProcessingError.WithLabelValues("cr_status_check_error", nodeName).Inc()
-		slog.Error("Error checking existing CR status for node %s: %v", nodeName, err)
+		slog.Error("Error checking existing CR status", "node", nodeName, "error", err)
 	}
 
 	if !shouldCreateCR {
@@ -415,7 +415,7 @@ func (r *Reconciler) checkExistingCRStatus(
 	// Get current remediation state from node annotation
 	state, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
-		slog.Error("Error getting remediation state for node %s: %v", nodeName, err)
+		slog.Error("Error getting remediation state", "node", nodeName, "error", err)
 		// On error, allow creating CR
 		return true, "", nil
 	}
@@ -446,7 +446,7 @@ func (r *Reconciler) checkExistingCRStatus(
 	// Check the CR status
 	status, err := statusChecker.GetCRStatus(ctx, groupState.MaintenanceCR)
 	if err != nil {
-		slog.Error("Error checking CR status for %s: %v", groupState.MaintenanceCR, err)
+		slog.Error("Error checking CR status", "crName", groupState.MaintenanceCR, "error", err)
 		// On error checking status, assume NotFound
 		status = crstatus.CRStatusNotFound
 	}

@@ -344,7 +344,8 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
 			return nil
 		}
 
-		slog.Warn("Failed to store resume token for client %s: %v. Retrying...", w.clientName, err)
+		slog.Warn("Failed to store resume token for client, retrying",
+			"client", w.clientName, "error", err)
 		time.Sleep(w.resumeTokenUpdateInterval)
 	}
 }

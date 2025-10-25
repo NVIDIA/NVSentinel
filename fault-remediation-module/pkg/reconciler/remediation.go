@@ -233,8 +233,8 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	if group != "" && c.annotationManager != nil {
 		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
 			group, actualCRName); err != nil {
-			// Continue even if annotation update fails
-			log.Printf("Warning: Failed to update node annotation for %s: %v", healthEvent.NodeName, err)
+			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
+				"error", err)
 		}
 	}
 
@@ -258,7 +258,8 @@ func (c *FaultRemediationClient) handleCreateCRError(
 		if group != "" && c.annotationManager != nil {
 			if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
 				group, crName); err != nil {
-				log.Printf("Warning: Failed to update node annotation for %s: %v", healthEvent.NodeName, err)
+				slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
+					"error", err)
 			}
 		}
 

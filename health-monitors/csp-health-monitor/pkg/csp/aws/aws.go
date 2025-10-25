@@ -512,8 +512,7 @@ func (c *AWSClient) getEventDescription(ctx context.Context, event types.Event) 
 
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "describe_event_details").Inc()
-		slog.Error("Error getting event details for event %s: %v",
-			*event.Arn, err)
+		slog.Error("Error getting event details for event", "eventArn", *event.Arn, "error", err)
 
 		return ""
 	}

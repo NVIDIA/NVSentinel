@@ -137,9 +137,9 @@ func run() error {
 
 	eventChan := make(chan model.MaintenanceEvent, eventChannelSize)
 	// Processor is lightweight; it already encapsulates required dependencies.
-	eventProcessor := eventpkg.NewProcessor(cfg, store)
-	if eventProcessor == nil {
-		return fmt.Errorf("failed to initialize event processor")
+	eventProcessor, err := eventpkg.NewProcessor(cfg, store)
+	if err != nil {
+		return fmt.Errorf("failed to initialize event processor: %w", err)
 	}
 
 	slog.Info("Event processor initialized successfully.")

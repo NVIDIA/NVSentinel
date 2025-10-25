@@ -39,7 +39,7 @@ func NewSXIDHandler(nodeName, defaultAgentName,
 func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
 	sxidErrorEvent, err := sxidHandler.extractInfoFromNVSwitchErrorMsg(message)
 	if err != nil {
-		slog.Error("error parsing line %s: %v", message, err)
+		slog.Error("error parsing line", "line", message, "error", err.Error())
 		return nil, fmt.Errorf("failed to extract info from NVSwitch error message: %w", err)
 	}
 

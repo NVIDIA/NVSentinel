@@ -50,8 +50,6 @@ type Components struct {
 }
 
 func StartMetricsServer(port string) error {
-	slog.Info("Starting a metrics port on", "port", port)
-
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -67,11 +65,16 @@ func StartMetricsServer(port string) error {
 	}
 
 	go func() {
+		slog.Info("Starting metrics server", "port", port)
 		err := server.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
 			slog.Error("Metrics server error", "error", err)
 		}
 	}()
+
+	// Give the HTTP server a moment to start listening
+	time.Sleep(100 * time.Millisecond)
+	slog.Info("Metrics server goroutine started")
 
 	return nil
 }

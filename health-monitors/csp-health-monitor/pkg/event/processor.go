@@ -34,18 +34,17 @@ type Processor struct {
 	mu     sync.Mutex
 }
 
-// NewProcessor returns an initialised Processor. k8sMapper parameter is
+// NewProcessor returns an initialized Processor. k8sMapper parameter is
 // removed.
-func NewProcessor(cfg *config.Config, store datastore.Store) *Processor {
+func NewProcessor(cfg *config.Config, store datastore.Store) (*Processor, error) {
 	if cfg == nil || store == nil {
-		slog.Error("Cannot create Event Processor with nil dependencies (config or store)")
-		return nil // Should not be reached
+		return nil, fmt.Errorf("unable to create processor with nil dependencies (config or store)")
 	}
 
 	return &Processor{
 		config: cfg,
 		store:  store,
-	}
+	}, nil
 }
 
 // ensureClusterName sets the ClusterName on the event from config if missing.

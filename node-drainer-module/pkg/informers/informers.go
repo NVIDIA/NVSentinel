@@ -497,7 +497,9 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		}
 
 		if err := i.forceDeletePods(ctx, remainingPods); err != nil {
-			slog.Error("Failed to force delete pods on node %s: %v", nodeName, err)
+			slog.Error("Failed to force delete pods on node",
+				"node", nodeName,
+				"error", err)
 			return fmt.Errorf("failed to force delete pods on node %s: %w", nodeName, err)
 		}
 

@@ -183,20 +183,22 @@ func getTokenConfig() (*storewatcher.TokenConfig, error) {
 }
 
 func startMetricsServer(metricsPort string) {
-	slog.Info("Starting a metrics port on", "port", metricsPort)
-
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
+		slog.Info("Starting metrics server", "port", metricsPort)
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
 			slog.Error("Metrics server failed", "error", err)
 			os.Exit(1)
 		}
 	}()
+	// Give the HTTP server a moment to start listening
+	time.Sleep(100 * time.Millisecond)
+	slog.Info("Metrics server goroutine started")
 }
 
 func getMongoPipeline() mongo.Pipeline {

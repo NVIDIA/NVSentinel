@@ -186,6 +186,7 @@ func startMetricsServer(metricsPort string) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
+		slog.Info("Starting metrics server", "port", metricsPort)
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		err := http.ListenAndServe(":"+metricsPort, nil)
 		if err != nil {
@@ -193,6 +194,9 @@ func startMetricsServer(metricsPort string) {
 			os.Exit(1)
 		}
 	}()
+	// Give the HTTP server a moment to start listening
+	time.Sleep(100 * time.Millisecond)
+	slog.Info("Metrics server goroutine started")
 }
 
 func run() error {

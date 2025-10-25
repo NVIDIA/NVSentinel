@@ -25,13 +25,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/statemanager"
 
 	corev1 "k8s.io/api/core/v1"
@@ -380,7 +380,7 @@ func TestHandleQuarantinedNodeUnquarantine(t *testing.T) {
 		CheckName:        "GpuNvLinkWatch", // Must match the annotation
 		ComponentClass:   "GPU",            // Must match the annotation
 		Version:          1,
-		IsHealthy:        true,                                                                     // triggers unquarantine comparison
+		IsHealthy:        true,                                                    // triggers unquarantine comparison
 		EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, // Must match annotation
 	}
 

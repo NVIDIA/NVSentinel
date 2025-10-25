@@ -82,7 +82,7 @@ func run() error {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
-		slog.Info("Starting metrics server on port", "port", *metricsPort)
+		slog.Info("Starting metrics server", "port", *metricsPort)
 
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
 		if err := http.ListenAndServe(":"+*metricsPort, nil); err != nil {
@@ -90,6 +90,9 @@ func run() error {
 			os.Exit(1)
 		}
 	}()
+	// Give the HTTP server a moment to start listening
+	time.Sleep(100 * time.Millisecond)
+	slog.Info("Metrics server goroutine started")
 
 	if err := labelerInstance.Run(ctx); err != nil {
 		return fmt.Errorf("error running labeler: %w", err)

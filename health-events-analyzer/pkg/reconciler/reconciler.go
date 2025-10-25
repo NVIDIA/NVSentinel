@@ -69,6 +69,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	)
 	if err != nil {
 		slog.Error("Failed to create change stream watcher", "error", err)
+		return
 	}
 	defer watcher.Close(ctx)
 
@@ -79,6 +80,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 			"config", r.config.MongoHealthEventCollectionConfig,
 			"error", err,
 		)
+		return
 	}
 
 	watcher.Start(ctx)

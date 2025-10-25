@@ -258,8 +258,8 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 		// while still having the label reflect what modules are actually doing
 		validationErr := validateStateTransition(nodeName, currentValue, exists, newStateLabelValue)
 		if validationErr != nil {
-			slog.Warn("Invalid state transition for node %s: %v (proceeding with label update anyway)",
-				nodeName, validationErr)
+			slog.Warn("Invalid state transition", "node", nodeName,
+				"from", currentValue, "to", newStateLabelValue, "error", validationErr)
 		}
 
 		node.Labels[NVSentinelStateLabelKey] = string(newStateLabelValue)
