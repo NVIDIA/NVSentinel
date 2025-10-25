@@ -119,8 +119,10 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 
 		go connector.FetchAndProcessHealthMetric(ctx)
 
-		// check that the event has been dequeued
-		require.Equal(t, 0, ringBuffer.CurrentLength())
+		// Wait for the event to be processed
+		require.Eventually(t, func() bool {
+			return ringBuffer.CurrentLength() == 0
+		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
 		cancel()
 	})
@@ -161,8 +163,10 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 
 		go connector.FetchAndProcessHealthMetric(ctx)
 
-		// check that the event has been dequeued
-		require.Equal(t, 0, ringBuffer.CurrentLength())
+		// Wait for the event to be processed
+		require.Eventually(t, func() bool {
+			return ringBuffer.CurrentLength() == 0
+		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
 		cancel()
 	})
