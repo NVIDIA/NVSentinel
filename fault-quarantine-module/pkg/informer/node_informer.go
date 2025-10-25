@@ -469,7 +469,7 @@ func (ni *NodeInformer) recalculateCounts() (bool, error) {
 // signalWork sends a non-blocking signal to the reconciler's work channel.
 func (ni *NodeInformer) signalWork() {
 	if ni.workSignal == nil {
-		slog.Error("No channel configured for node informer")
+		slog.Error("No channel configured for node informer", "nodeInformer", ni)
 		return // No channel configured
 	}
 	select {
