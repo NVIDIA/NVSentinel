@@ -83,6 +83,12 @@ include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler-module/Tiltfile')
 
+# Override MongoDB image for ARM64 (macOS Apple Silicon)
+if os.name == 'posix' and str(local('uname -s')).strip() == 'Darwin' and str(local('uname -m')).strip() == 'arm64':
+    print('🍎 Detected macOS ARM64 - patching MongoDB image for Apple Silicon compatibility')
+    local('sed -i "" "s|repository: \\"bitnamilegacy/mongodb\\"|repository: \\"dlavrenuek/bitnami-mongodb-arm\\"|" ../distros/kubernetes/nvsentinel/values-tilt.yaml')
+    local('sed -i "" "/repository: \\"dlavrenuek\\/bitnami-mongodb-arm\\"/,/tag:/ s|tag: \\".*\\"|tag: \\"8.0.4\\"|" ../distros/kubernetes/nvsentinel/values-tilt.yaml')
+
 yaml = helm(
     '../distros/kubernetes/nvsentinel',
     name='nvsentinel',
