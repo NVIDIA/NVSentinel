@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-fault-remediation-module',
-    'KO_DOCKER_REPO=localhost:5001/nvsentinel ko build --bare ./',
+    'KO_DOCKER_REPO=localhost:5001 ko build --bare ./',
     deps=['./'],
-    skips_local_docker=True,
+    skips_local_docker=True
 )
