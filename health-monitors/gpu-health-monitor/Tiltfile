@@ -13,7 +13,7 @@
 # limitations under the License.
 
 docker_build(
-    "ghcr.io/nvidia/nvsentinel-gpu-health-monitor",
+    "ghcr.io/nvidia/nvsentinel/gpu-health-monitor",
     context="../..",
     dockerfile="./Dockerfile"
 )
