@@ -63,29 +63,14 @@ jobs:
       fail-fast: false  # Continue testing other containers even if one fails
       matrix:
         include:
-          # Health Monitors
+          # Health Monitors (Docker-based)
           - component: gpu-health-monitor-dcgm3
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm3'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
-          - component: csp-health-monitor
-            make_command: 'make -C health-monitors/csp-health-monitor docker-build'
-          # Core Modules
-          - component: health-events-analyzer
-            make_command: 'make -C health-events-analyzer docker-build'
-          - component: fault-quarantine-module
-            make_command: 'make -C fault-quarantine-module docker-build'
-          - component: labeler-module
-            make_command: 'make -C labeler-module docker-build'
-          - component: node-drainer-module
-            make_command: 'make -C node-drainer-module docker-build'
-          - component: fault-remediation-module
-            make_command: 'make -C fault-remediation-module docker-build'
-          - component: janitor
-            make_command: 'make -C janitor docker-build'
-          # Log Collection
+          # Log Collection (Docker-based)
           - component: log-collector
             make_command: 'make -C nvsentinel-log-collector docker-build-log-collector'
           - component: file-server-cleanup
@@ -151,18 +136,56 @@ jobs:
         with:
           make_command: ${{ matrix.make_command }}
 
+  # Test ko-based builds (Go modules)
+  ko-build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: prepare-environment
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - platform-connectors
+          - health-events-analyzer
+          - fault-quarantine-module
+          - labeler-module
+          - node-drainer-module
+          - fault-remediation-module
+          - janitor
+          - health-monitors/csp-health-monitor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          go-version: ${{ needs.prepare-environment.outputs.go_version }}
+
+      - name: Install ko
+        run: |
+          curl -sSfL https://github.com/ko-build/ko/releases/download/v0.18.0/ko_0.18.0_Linux_x86_64.tar.gz | tar -xzf - -C /tmp
+          sudo mv /tmp/ko /usr/local/bin/ko
+          ko version
+
+      - name: Test ko build for ${{ matrix.module }}
+        run: |
+          cd ${{ matrix.module }}
+          KO_DOCKER_REPO=ko.local ko build --bare --platform=linux/amd64 ./
+        env:
+          KO_DOCKER_REPO: ko.local
+
   container-build-summary:
     runs-on: ubuntu-latest
-    needs: container-build-test
+    needs: [container-build-test, ko-build-test]
     if: always()
     steps:
       - name: Check build results
         run: |
           echo "Container build validation completed"
-          if [[ "${{ needs.container-build-test.result }}" == "failure" ]]; then
+          if [[ "${{ needs.container-build-test.result }}" == "failure" ]] || [[ "${{ needs.ko-build-test.result }}" == "failure" ]]; then
             echo "❌ Some container builds failed"
             exit 1
-          elif [[ "${{ needs.container-build-test.result }}" == "cancelled" ]]; then
+          elif [[ "${{ needs.container-build-test.result }}" == "cancelled" ]] || [[ "${{ needs.ko-build-test.result }}" == "cancelled" ]]; then
             echo "⚠️ Container builds were cancelled"
             exit 1
           else
