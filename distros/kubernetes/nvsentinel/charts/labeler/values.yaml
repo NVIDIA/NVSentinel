@@ -29,7 +29,8 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount: {}
+serviceAccount: 
+  create: true
 
 podSecurityContext: {}
 

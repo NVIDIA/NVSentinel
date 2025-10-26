@@ -12,9 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
-    "ghcr.io/nvidia/nvsentinel/syslog-health-monitor",
-    context="../..",
-    dockerfile="./Dockerfile",
-    build_args={"BUILD_TAGS": "fake"}
-)
+crds:
+  enabled: true
+
+nodeSelector:
+  workload-type: system
+
+webhook:
+  nodeSelector:
+    workload-type: system
+
+cainjector:
+  nodeSelector:
+    workload-type: system
+
