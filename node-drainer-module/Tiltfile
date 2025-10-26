@@ -14,7 +14,6 @@
 
 custom_build(
     'ghcr.io/nvidia/nvsentinel-node-drainer-module',
-    'ko build --local --bare ./',
+    'KO_DOCKER_REPO=localhost:5001 ko build --bare ./',
     deps=['./'],
-    skips_local_docker=True,
 )
