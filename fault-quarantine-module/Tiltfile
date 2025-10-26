@@ -14,6 +14,6 @@
 
 custom_build(
     'ghcr.io/nvidia/nvsentinel-fault-quarantine-module',
-    'KO_DOCKER_REPO=localhost:5001 ko build --bare ./',
+    'KO_DOCKER_REPO=localhost:5001/nvsentinel ko build --bare ./',
     deps=['./'],
 )
