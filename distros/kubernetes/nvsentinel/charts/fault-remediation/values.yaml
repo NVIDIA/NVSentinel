@@ -69,7 +69,7 @@ logCollector:
   enabled: false
   manifestFileName: log-collector-job.yaml
   image:
-    repository: ghcr.io/nvidia/nvsentinel-log-collector
+    repository: ghcr.io/nvidia/nvsentinel/log-collector
     pullPolicy: IfNotPresent
   uploadURL: "http://nvsentinel-file-server.nvsentinel.svc.cluster.local/upload"
   gpuOperatorNamespaces: "gpu-operator"

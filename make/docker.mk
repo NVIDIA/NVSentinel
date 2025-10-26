@@ -65,7 +65,7 @@ docker-publish: setup-buildx ## Build and publish Docker image to registry
 		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
 		--push \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \
+		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(MODULE_NAME):$(SAFE_REF_NAME) \
 		-f $(MODULE_PATH)/Dockerfile \
 		.
 
