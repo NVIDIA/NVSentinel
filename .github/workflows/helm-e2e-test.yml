@@ -182,8 +182,9 @@ jobs:
           
           # Build ko images (8 Go modules)
           if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
-            # For PR branches: use ko.local and retag to localhost prefix
-            KO_DOCKER_REPO=ko.local make ko-build
+            # For PR branches: use ko.local with multi-platform support
+            # Note: ko.local with --platform builds for all platforms in .ko.yaml
+            KO_DOCKER_REPO=ko.local PLATFORMS="linux/amd64,linux/arm64" make ko-build
             
             # Retag ko.local images to match expected localhost prefix
             for module in fault-quarantine-module fault-remediation-module health-events-analyzer \
