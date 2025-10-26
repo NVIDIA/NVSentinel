@@ -181,7 +181,21 @@ jobs:
           make docker-all
           
           # Build ko images (8 Go modules)
-          make ko-build
+          if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
+            # For PR branches: use ko.local and retag to localhost prefix
+            KO_DOCKER_REPO=ko.local make ko-build
+            
+            # Retag ko.local images to match expected localhost prefix
+            for module in fault-quarantine-module fault-remediation-module health-events-analyzer \
+                         csp-health-monitor maintenance-notifier janitor labeler-module \
+                         node-drainer-module platform-connectors; do
+              docker tag "ko.local/${module}:${CI_COMMIT_REF_NAME}" \
+                        "${{ steps.registry-config.outputs.image_prefix }}/${module}:${CI_COMMIT_REF_NAME}" || true
+            done
+          else
+            # For main branch: build and let ko push to GHCR
+            make ko-build
+          fi
           
           docker images | grep "${{ steps.registry-config.outputs.image_prefix }}.*:${{ steps.ref-name.outputs.value }}" || docker images | grep nvsentinel
 
