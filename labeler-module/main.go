@@ -97,9 +97,11 @@ func run() error {
 	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
+
 		if err := srv.Serve(gCtx); err != nil {
 			slog.Error("Metrics server failed - continuing without metrics", "error", err)
 		}
+
 		return nil
 	})
 
