@@ -220,7 +220,12 @@ func (r *MongoDbStoreConnector) insertHealthEvents(
 	if err != nil {
 		return fmt.Errorf("failed to start MongoDB session: %w", err)
 	}
-	defer session.EndSession(ctx)
+
+	// CRITICAL: Use context.Background() for session cleanup to ensure it always completes
+	// even if the parent context is cancelled. This prevents session leaks in tests and
+	// production when operations are interrupted. MongoDB sessions must be properly closed
+	// regardless of operation success/failure/cancellation.
+	defer session.EndSession(context.Background())
 
 	callback := func(sessionContext mongo.SessionContext) (interface{}, error) {
 		healthEventWithStatusList := []interface{}{}

@@ -169,6 +169,10 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			return ringBuffer.CurrentLength() == 0
 		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
+		// Give the goroutine time to complete session cleanup after processing fails
+		// This prevents false positives in mtest's session leak detection
+		time.Sleep(50 * time.Millisecond)
+
 		cancel()
 		// Note: mtest framework handles MongoDB client cleanup
 	})
