@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load('ext://ko', 'ko_build')
-
-ko_build(
-    "ghcr.io/nvidia/nvsentinel-labeler-module",
-    "./",
+custom_build(
+    'ghcr.io/nvidia/nvsentinel-labeler-module',
+    'ko build --local --bare ./',
+    deps=['./'],
+    skips_local_docker=True,
 )

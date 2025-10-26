@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load('ext://ko', 'ko_build')
-
-ko_build(
-    "ghcr.io/nvidia/nvsentinel-csp-health-monitor",
-    "./",
+custom_build(
+    'ghcr.io/nvidia/nvsentinel-csp-health-monitor',
+    'ko build --local --bare ./cmd/csp-health-monitor',
+    deps=['./'],
+    skips_local_docker=True,
 )
