@@ -20,11 +20,9 @@
 # =============================================================================
 
 IS_GO_MODULE := 1
-HAS_DOCKER := 1
 
 # Health-events-analyzer specific settings
 CLEAN_EXTRA_FILES := health-events-analyzer
-DOCKER_EXTRA_ARGS :=
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
@@ -32,7 +30,6 @@ DOCKER_EXTRA_ARGS :=
 
 include ../make/common.mk
 include ../make/go.mk
-include ../make/docker.mk
 
 # =============================================================================
 # DEFAULT TARGET
@@ -52,8 +49,10 @@ help:
 	@echo "This module analyzes and processes health events from various sources."
 	@echo ""
 	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
-	@echo "Docker targets: docker, docker-build, docker-publish"
-
+	@echo ""
+	@echo "Build notes:"
+	@echo "  - Container images are built using ko (see Tiltfile)"
+	@echo ""
 	@echo "Main targets:"
 	@echo "  all        - Run lint-test (standardized default)"
 	@echo "  lint-test  - Run full lint and test suite"

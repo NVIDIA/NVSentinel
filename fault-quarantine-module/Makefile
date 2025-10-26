@@ -21,11 +21,9 @@
 
 # Module type and capabilities
 IS_GO_MODULE := 1
-HAS_DOCKER := 1
 
 # Fault-quarantine-module specific settings
 CLEAN_EXTRA_FILES := fault-quarantine-module
-DOCKER_EXTRA_ARGS :=
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
@@ -33,7 +31,6 @@ DOCKER_EXTRA_ARGS :=
 
 include ../make/common.mk
 include ../make/go.mk
-include ../make/docker.mk
 
 # =============================================================================
 # DEFAULT TARGET

@@ -37,7 +37,7 @@ if [ ! -f go.work ]; then
     ./platform-connectors
 fi
 
-ko build -B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}-slim" \
+ko build -B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}" \
   ./fault-quarantine-module \
   ./fault-remediation-module \
   ./health-events-analyzer \

@@ -21,11 +21,9 @@
 
 # Module type and capabilities
 IS_GO_MODULE := 1
-HAS_DOCKER := 1
 
 # Janitor specific settings
 CLEAN_EXTRA_FILES := janitor
-DOCKER_EXTRA_ARGS :=
 
 # Test setup commands for kubebuilder envtest
 TEST_SETUP_COMMANDS := \
@@ -38,7 +36,6 @@ TEST_SETUP_COMMANDS := \
 
 include ../make/common.mk
 include ../make/go.mk
-include ../make/docker.mk
 
 # =============================================================================
 # DEFAULT TARGET
