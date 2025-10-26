@@ -226,8 +226,8 @@ func (r *MongoDbStoreConnector) insertHealthEvents(
 	// production when operations are interrupted. MongoDB sessions must be properly closed
 	// regardless of operation success/failure/cancellation.
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	defer session.EndSession(cleanupCtx)
+	defer cancel()
 
 	callback := func(sessionContext mongo.SessionContext) (interface{}, error) {
 		healthEventWithStatusList := []interface{}{}

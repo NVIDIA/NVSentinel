@@ -40,9 +40,11 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -87,8 +89,9 @@ type Server interface {
 	// during shutdown. Returns nil on successful graceful shutdown.
 	Serve(ctx context.Context) error
 
-	// IsRunning returns true if the server is currently running.
+	// IsRunning returns true if the server is currently accepting connections.
 	// This method is thread-safe and can be called concurrently.
+	// Returns true only after the socket has been successfully bound.
 	IsRunning() bool
 }
 
@@ -373,8 +376,12 @@ func NewServer(opts ...Option) Server {
 	return s
 }
 
-// IsRunning returns true if the server is currently running.
+// IsRunning returns true if the server is currently running and accepting connections.
 // This method is thread-safe and can be called concurrently from multiple goroutines.
+//
+// The server is considered "running" after the socket has been successfully bound and
+// the server has started accepting connections. It returns false before the socket is
+// bound and after the server has stopped.
 //
 // Example:
 //
@@ -382,7 +389,7 @@ func NewServer(opts ...Option) Server {
 //	go srv.Serve(ctx)
 //	time.Sleep(100 * time.Millisecond) // Give server time to start
 //	if srv.IsRunning() {
-//	    log.Println("Server is running")
+//	    log.Println("Server is accepting connections")
 //	}
 func (s *server) IsRunning() bool {
 	s.mu.RLock()
@@ -436,11 +443,48 @@ func (s *server) Serve(ctx context.Context) error {
 		ErrorLog:       s.errLog,
 	}
 
+	// Create listener first so we can set running=true only after socket is bound
+	var (
+		listener net.Listener
+		err      error
+	)
+
+	if s.tlsConfig != nil {
+		// For TLS, create a regular listener and wrap it with TLS
+		listener, err = net.Listen("tcp", srv.Addr)
+		if err != nil {
+			return fmt.Errorf("failed to create listener: %w", err)
+		}
+
+		// Load TLS certificate
+		cert, certErr := tls.LoadX509KeyPair(s.tlsConfig.CertFile, s.tlsConfig.KeyFile)
+		if certErr != nil {
+			listener.Close()
+			return fmt.Errorf("failed to load TLS certificate: %w", certErr)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+
+		listener = tls.NewListener(listener, tlsConfig)
+
+		slog.Info("starting TLS server", "addr", srv.Addr)
+	} else {
+		listener, err = net.Listen("tcp", srv.Addr)
+		if err != nil {
+			return fmt.Errorf("failed to create listener: %w", err)
+		}
+
+		slog.Info("starting server", "addr", srv.Addr)
+	}
+
 	g, gCtx := errgroup.WithContext(ctx)
 
 	// Server goroutine
 	g.Go(func() error {
-		// Mark server as running when it starts listening
+		// Mark server as running AFTER socket is successfully bound
 		s.mu.Lock()
 		s.running = true
 		s.mu.Unlock()
@@ -452,16 +496,8 @@ func (s *server) Serve(ctx context.Context) error {
 			s.mu.Unlock()
 		}()
 
-		var err error
-
-		if s.tlsConfig != nil {
-			slog.Info("starting TLS server", "addr", srv.Addr)
-			err = srv.ListenAndServeTLS(s.tlsConfig.CertFile, s.tlsConfig.KeyFile)
-		} else {
-			slog.Info("starting server", "addr", srv.Addr)
-			err = srv.ListenAndServe()
-		}
-
+		// Serve using the pre-created listener
+		err := srv.Serve(listener)
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
