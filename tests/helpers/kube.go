@@ -318,7 +318,7 @@ func listAllRebootNodes(ctx context.Context, c klient.Client) (*unstructured.Uns
 	return rebootNodeList, nil
 }
 
-// WaitForRebootNodeCR waits for a RebootNode custom resource to be created for the node with the specified `nodeName` and returns the CR object.
+// WaitForRebootNodeCR waits for a RebootNode custom resource to be created and completed for the node with the specified `nodeName` and returns the CR object.
 func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
 
@@ -338,12 +338,19 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 			}
 
 			if nodeNameInCR == nodeName {
+				completionTime, found, err := unstructured.NestedString(item.Object, "status", "completionTime")
+				if err != nil || !found || completionTime == "" {
+					t.Logf("RebootNode for node %s: waiting for completion", nodeName)
+					return false
+				}
+
+				t.Logf("RebootNode for node %s completed", nodeName)
 				resultCR = &item
 				return true
 			}
 		}
 		return false
-	}, WaitTimeout, WaitInterval, "RebootNode CR should exist for node %s", nodeName)
+	}, WaitTimeout, WaitInterval, "RebootNode CR should complete for node %s", nodeName)
 
 	return resultCR
 }

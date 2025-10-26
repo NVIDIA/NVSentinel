@@ -135,6 +135,9 @@ jobs:
           - component: fault-remediation-module
             make_command: 'make -C fault-remediation-module docker-publish'
             container_name: 'nvsentinel-fault-remediation-module'
+          - component: janitor
+            make_command: 'make -C janitor docker-publish'
+            container_name: 'nvsentinel-janitor'
           - component: log-collector
             make_command: 'make -C nvsentinel-log-collector docker-publish-log-collector'
             container_name: 'nvsentinel-log-collector'
