@@ -136,9 +136,11 @@ func run() error {
 			stop() // Cancel context to trigger shutdown
 
 			slog.Info("Shutting down node drainer")
+
 			if errStop := components.EventWatcher.Stop(); errStop != nil {
 				return fmt.Errorf("failed to stop event watcher: %w", errStop)
 			}
+
 			components.QueueManager.Shutdown()
 			slog.Info("Node drainer stopped")
 
