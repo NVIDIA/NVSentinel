@@ -164,7 +164,7 @@ func initializeConnectors(
 	if config["enableK8sPlatformConnector"] == True {
 		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
