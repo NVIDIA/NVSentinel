@@ -149,7 +149,68 @@ func startGRPCServer(socket string) (net.Listener, error) {
 	return lis, nil
 }
 
-//nolint:cyclop // Main run function complexity is acceptable
+func initializeConnectors(
+	ctx context.Context,
+	config map[string]interface{},
+	stopCh chan struct{},
+	mongoClientCertMountPath string,
+) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, error) {
+	var (
+		k8sRingBuffer  *ringbuffer.RingBuffer
+		storeConnector *store.MongoDbStoreConnector
+		err            error
+	)
+
+	if config["enableK8sPlatformConnector"] == True {
+		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if config["enableMongoDBStorePlatformConnector"] == True {
+		storeConnector, err = initializeMongoDBConnector(ctx, mongoClientCertMountPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+		}
+	}
+
+	return k8sRingBuffer, storeConnector, nil
+}
+
+func cleanupResources(
+	socket string,
+	lis net.Listener,
+	k8sRingBuffer *ringbuffer.RingBuffer,
+	storeConnector *store.MongoDbStoreConnector,
+) error {
+	if lis != nil {
+		if k8sRingBuffer != nil {
+			k8sRingBuffer.ShutDownHealthMetricQueue()
+		}
+
+		if err := lis.Close(); err != nil {
+			slog.Error("Failed to close listener", "error", err)
+		}
+
+		// Remove the socket file
+		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+			slog.Error("Failed to remove socket file", "error", err)
+		}
+	}
+
+	if storeConnector != nil {
+		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer disconnectCancel()
+
+		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
+			return fmt.Errorf("error disconnecting MongoDB store connector: %w", err)
+		}
+	}
+
+	return nil
+}
+
 func run() error {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
@@ -176,22 +237,9 @@ func run() error {
 		return err
 	}
 
-	var k8sRingBuffer *ringbuffer.RingBuffer
-
-	var storeConnector *store.MongoDbStoreConnector
-
-	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
-		if err != nil {
-			return err
-		}
-	}
-
-	if config["enableMongoDBStorePlatformConnector"] == True {
-		storeConnector, err = initializeMongoDBConnector(ctx, *mongoClientCertMountPath)
-		if err != nil {
-			return fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
-		}
+	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
+	if err != nil {
+		return err
 	}
 
 	lis, err := startGRPCServer(*socket)
@@ -246,28 +294,9 @@ func run() error {
 
 		close(stopCh)
 
-		if lis != nil {
-			if k8sRingBuffer != nil {
-				k8sRingBuffer.ShutDownHealthMetricQueue()
-			}
-
-			if err := lis.Close(); err != nil {
-				slog.Error("Failed to close listener", "error", err)
-			}
-
-			// Remove the socket file
-			if err := os.Remove(*socket); err != nil && !os.IsNotExist(err) {
-				slog.Error("Failed to remove socket file", "error", err)
-			}
-		}
-
-		if storeConnector != nil {
-			disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer disconnectCancel()
-
-			if err := storeConnector.Disconnect(disconnectCtx); err != nil {
-				return fmt.Errorf("error disconnecting MongoDB store connector: %w", err)
-			}
+		// Cleanup all resources
+		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
+			return err
 		}
 
 		// Also cancel the root to propagate shutdown to any other goroutines.
