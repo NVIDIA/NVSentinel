@@ -16,24 +16,23 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
 	trigger "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/triggerengine"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/client-go/kubernetes"
@@ -99,31 +98,6 @@ func logStartupInfo(cfg *appConfig) {
 	slog.Debug("log verbosity level is set based on the -v flag for sidecar.")
 }
 
-func startMetricsServer(metricsPort string) {
-	// Start metrics endpoint in a separate goroutine
-	go func() {
-		listenAddress := fmt.Sprintf(":%s", metricsPort)
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-
-		server := &http.Server{
-			Addr:         listenAddress,
-			Handler:      mux,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  15 * time.Second,
-		}
-
-		slog.Info("metrics server (sidecar) starting to listen", "port", listenAddress)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("metrics server (sidecar) failed", "error", err)
-		}
-
-		slog.Info("Metrics server (sidecar) stopped.")
-	}()
-}
-
 func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorClient) {
 	slog.Info("Sidecar attempting to connect to Platform Connector UDS", "unix", udsPath)
 	target := fmt.Sprintf("unix:%s", udsPath)
@@ -176,10 +150,10 @@ func run() error {
 		return fmt.Errorf("failed to load configuration from %s: %w", appCfg.configPath, err)
 	}
 
+	// Create context with signal handling for graceful shutdown.
+	// This context will be cancelled when SIGINT or SIGTERM is received.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	startMetricsServer(appCfg.metricsPort)
 
 	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
 	if err != nil {
@@ -202,8 +176,47 @@ func run() error {
 
 	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 
-	slog.Info("Trigger engine starting...")
-	engine.Start(ctx) // This is blocking
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(appCfg.metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
+
+	// Create common HTTP server with metrics and health endpoints
+	server := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
+
+	// Use errgroup to manage concurrent goroutines with proper cancellation
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := server.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	// Start the trigger engine in a separate goroutine
+	g.Go(func() error {
+		slog.Info("Trigger engine starting...")
+		engine.Start(gCtx) // This is blocking
+		slog.Info("Trigger engine stopped.")
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("service error: %w", err)
+	}
 
 	slog.Info("Quarantine Trigger Engine Sidecar shut down.")
 

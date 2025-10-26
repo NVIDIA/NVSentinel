@@ -225,7 +225,9 @@ func (r *MongoDbStoreConnector) insertHealthEvents(
 	// even if the parent context is cancelled. This prevents session leaks in tests and
 	// production when operations are interrupted. MongoDB sessions must be properly closed
 	// regardless of operation success/failure/cancellation.
-	defer session.EndSession(context.Background())
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	defer session.EndSession(cleanupCtx)
 
 	callback := func(sessionContext mongo.SessionContext) (interface{}, error) {
 		healthEventWithStatusList := []interface{}{}

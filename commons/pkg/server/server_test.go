@@ -619,6 +619,126 @@ func TestWithTLS(t *testing.T) {
 	})
 }
 
+// TestIsRunning verifies that the IsRunning method correctly reports server state.
+func TestIsRunning(t *testing.T) {
+	t.Run("server not running initially", func(t *testing.T) {
+		port := getFreePort(t)
+		srv := NewServer(
+			WithPort(port),
+			WithSimpleHealth(),
+		)
+
+		s := srv.(*server)
+
+		if s.IsRunning() {
+			t.Error("expected IsRunning() to return false before server starts")
+		}
+	})
+
+	t.Run("server running after start", func(t *testing.T) {
+		port := getFreePort(t)
+		srv := NewServer(
+			WithPort(port),
+			WithSimpleHealth(),
+		)
+
+		s := srv.(*server)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Start server in goroutine
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- srv.Serve(ctx)
+		}()
+
+		// Wait for server to start
+		waitForServer(t, port, 2*time.Second)
+
+		if !s.IsRunning() {
+			t.Error("expected IsRunning() to return true after server starts")
+		}
+
+		// Stop server
+		cancel()
+
+		// Wait for server to stop
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error from Serve: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for server to stop")
+		}
+
+		// Give server time to clean up
+		time.Sleep(100 * time.Millisecond)
+
+		if s.IsRunning() {
+			t.Error("expected IsRunning() to return false after server stops")
+		}
+	})
+
+	t.Run("concurrent access to IsRunning", func(t *testing.T) {
+		port := getFreePort(t)
+		srv := NewServer(
+			WithPort(port),
+			WithSimpleHealth(),
+		)
+
+		s := srv.(*server)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Start server in goroutine
+		go func() {
+			_ = srv.Serve(ctx)
+		}()
+
+		// Wait for server to start
+		waitForServer(t, port, 2*time.Second)
+
+		// Spawn multiple goroutines that concurrently check IsRunning
+		var readCount atomic.Int32
+		g := errgroup.Group{}
+
+		for i := 0; i < 100; i++ {
+			g.Go(func() error {
+				for j := 0; j < 100; j++ {
+					if s.IsRunning() {
+						readCount.Add(1)
+					}
+					time.Sleep(time.Microsecond)
+				}
+				return nil
+			})
+		}
+
+		// Wait for all goroutines
+		if err := g.Wait(); err != nil {
+			t.Errorf("unexpected error from concurrent reads: %v", err)
+		}
+
+		// Verify we got many successful reads
+		if readCount.Load() == 0 {
+			t.Error("expected at least some IsRunning() calls to return true")
+		}
+
+		// Stop server
+		cancel()
+
+		// Give server time to stop
+		time.Sleep(200 * time.Millisecond)
+
+		if s.IsRunning() {
+			t.Error("expected IsRunning() to return false after server stops")
+		}
+	})
+}
+
 // Helper function to check if a string contains any of the given substrings.
 func containsAny(s string, substrings []string) bool {
 	for _, substr := range substrings {

@@ -430,6 +430,5 @@ images.json
 fault-quarantine-module/fault-quarantine-module
 fault-remediation-module/fault-remediation-module
 health-events-analyzer/health-events-analyzer
-service-health-dashboard/service-health-dashboard
 node-drainer-module/node-drainer-module
 platform-connectors/platform-connectors

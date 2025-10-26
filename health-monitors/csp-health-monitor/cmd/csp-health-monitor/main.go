@@ -20,15 +20,16 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
@@ -125,6 +126,8 @@ func run() error {
 
 	effectiveKubeconfigPath := *kubeconfig
 
+	// Create context with signal handling for graceful shutdown.
+	// This context will be cancelled when SIGINT or SIGTERM is received.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -151,29 +154,60 @@ func run() error {
 		store,
 	) // Pass kubeconfigPath for clients to init their own k8s clients
 
-	var wg sync.WaitGroup
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
 
-	startActiveMonitorAndLog(ctx, &wg, activeMonitor, eventChan)
+	// Create common HTTP server with metrics and health endpoints
+	server := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
 
-	wg.Add(1)
+	// Use errgroup to manage concurrent goroutines with proper cancellation
+	g, gCtx := errgroup.WithContext(ctx)
 
-	go func() {
-		defer wg.Done()
-		runEventProcessorLoop(ctx, eventChan, eventProcessor)
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := server.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	// Start the CSP monitor
+	g.Go(func() error {
+		var wg sync.WaitGroup
+
+		startActiveMonitorAndLog(gCtx, &wg, activeMonitor, eventChan)
+		wg.Wait()
+		slog.Info("Active monitor stopped.")
+
+		return nil
+	})
+
+	// Start the event processor
+	g.Go(func() error {
+		runEventProcessorLoop(gCtx, eventChan, eventProcessor)
 		slog.Info("Event processing loop stopped.")
-	}()
 
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		startMetricsServer(*metricsPort)
-	}()
+		return nil
+	})
 
 	slog.Info("CSP Health Monitor (Main Container) components started successfully.")
-	<-ctx.Done()
-	slog.Info("Shutdown signal received by main monitor. Waiting for components to shut down gracefully...")
-	wg.Wait()
+
+	// Wait for all goroutines to finish
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("service error: %w", err)
+	}
+
 	slog.Info("CSP Health Monitor (Main Container) shut down completed.")
 
 	return nil
@@ -224,29 +258,6 @@ func initActiveMonitor(
 	slog.Info("No CSP is explicitly enabled in the configuration (GCP or AWS).")
 
 	return nil
-}
-
-// startMetricsServer exposes Prometheus metrics for the main container.
-func startMetricsServer(port string) {
-	listenAddress := fmt.Sprintf(":%s", port)
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-
-	server := &http.Server{
-		Addr:         listenAddress,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  15 * time.Second,
-	}
-
-	slog.Info("Metrics server (main monitor) starting to listen", "metrics", listenAddress)
-
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("Metrics server (main monitor) failed", "error", err)
-	}
-
-	slog.Info("Metrics server (main monitor) stopped.")
 }
 
 // runEventProcessorLoop consumes normalized events from eventChan and hands

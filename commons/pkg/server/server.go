@@ -44,6 +44,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -85,6 +86,10 @@ type Server interface {
 	// It returns an error if the server fails to start or encounters an error
 	// during shutdown. Returns nil on successful graceful shutdown.
 	Serve(ctx context.Context) error
+
+	// IsRunning returns true if the server is currently running.
+	// This method is thread-safe and can be called concurrently.
+	IsRunning() bool
 }
 
 // HealthChecker defines the interface for components that can report their health status.
@@ -123,6 +128,8 @@ type server struct {
 	maxHeaderBytes  int            // Maximum header size in bytes
 	errLog          *log.Logger    // Optional error logger
 	tlsConfig       *TLSConfig     // Optional TLS configuration
+	mu              sync.RWMutex   // Protects running state
+	running         bool           // Indicates if server is currently running
 }
 
 // TLSConfig contains the certificate and key file paths for TLS/HTTPS support.
@@ -366,6 +373,24 @@ func NewServer(opts ...Option) Server {
 	return s
 }
 
+// IsRunning returns true if the server is currently running.
+// This method is thread-safe and can be called concurrently from multiple goroutines.
+//
+// Example:
+//
+//	srv := server.NewServer(server.WithPort(8080))
+//	go srv.Serve(ctx)
+//	time.Sleep(100 * time.Millisecond) // Give server time to start
+//	if srv.IsRunning() {
+//	    log.Println("Server is running")
+//	}
+func (s *server) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.running
+}
+
 // Serve starts the HTTP server and blocks until the context is cancelled or an error occurs.
 //
 // The server uses errgroup to manage two goroutines:
@@ -415,6 +440,18 @@ func (s *server) Serve(ctx context.Context) error {
 
 	// Server goroutine
 	g.Go(func() error {
+		// Mark server as running when it starts listening
+		s.mu.Lock()
+		s.running = true
+		s.mu.Unlock()
+
+		defer func() {
+			// Mark server as not running when it stops
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
+		}()
+
 		var err error
 
 		if s.tlsConfig != nil {
@@ -444,7 +481,7 @@ func (s *server) Serve(ctx context.Context) error {
 		shutdownStart := time.Now()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("server shutdown error: %w", err)
+			slog.Error("server shutdown error", "error", err)
 		}
 
 		slog.Info("server shutdown complete", "duration", time.Since(shutdownStart))

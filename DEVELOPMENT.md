@@ -497,6 +497,46 @@ docker login nvcr.io -u '$oauthtoken' -p "$NGC_PASSWORD"
 make -C docker list
 ```
 
+#### macOS/Docker Desktop Socket Directory Requirements
+
+**Problem:** On macOS with Docker Desktop, Unix domain sockets require the `/var/run` directory to exist inside containers, but this directory is not created by default in minimal container images.
+
+**Symptoms:**
+- Services fail to start with errors like: `failed to listen on unix socket /var/run/nvsentinel.sock: no such file or directory`
+- Tilt-based tests fail on macOS but pass on Linux
+- gRPC Unix socket connections fail
+
+**Solution:** The project includes a Tilt-specific Helm values file that creates the `/var/run` directory using an initContainer:
+
+```yaml
+# File: distros/kubernetes/nvsentinel/values-tilt-socket.yaml
+#
+# This values file is automatically included when running Tilt on macOS/Docker Desktop.
+# It adds an initContainer to create /var/run directory for Unix socket communication.
+
+global:
+  initContainers:
+    - name: create-run-dir
+      image: busybox:latest
+      command: ['sh', '-c', 'mkdir -p /var/run']
+      volumeMounts:
+        - name: socket-dir
+          mountPath: /var/run
+```
+
+**How it works:**
+1. The `tilt/Tiltfile` automatically includes `values-tilt-socket.yaml` for local development
+2. The initContainer runs before each service starts and creates the `/var/run` directory
+3. Services can then create Unix sockets at `/var/run/nvsentinel.sock`
+4. The socket directory is shared via an `emptyDir` volume mount
+
+**Platform-specific behavior:**
+- **macOS/Docker Desktop:** Requires the initContainer workaround (automatically applied in Tilt)
+- **Linux:** The `/var/run` directory typically exists in the container runtime environment
+- **Production/Kubernetes:** Uses standard Helm values without the initContainer (not needed)
+
+**Note:** This is a development-only workaround for local macOS environments. Production deployments on Linux do not require this configuration.
+
 ## 🧩 Module Development
 
 ### Creating a New Health Monitor
