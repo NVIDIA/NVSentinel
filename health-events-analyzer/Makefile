@@ -63,5 +63,5 @@ help:
 	@echo "  - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)"
 	@echo "  - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)"
 	@echo "  - For Tilt development, see Tiltfile"
-	@echo "  - Uses standardized repo-root build context"
+	@echo "  - Platforms configured in .ko.yaml (linux/amd64, linux/arm64)"
 
