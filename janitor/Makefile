@@ -48,8 +48,23 @@ all: lint-test ## Run lint-test (default target)
 # MODULE NOTES
 # =============================================================================
 # This module handles node reboot and maintenance operations.
-# - Uses standardized repo-root Docker build context
+# - Container images are built using ko (see Tiltfile)
+# - Uses standardized repo-root build context
 # - Multi-platform builds: linux/arm64,linux/amd64
 # - Build cache enabled for faster builds
 # Run 'make help' to see available targets
+
+# =============================================================================
+# KO BUILD TARGETS
+# =============================================================================
+
+.PHONY: ko-build
+ko-build: ## Build container image using ko
+	@echo "Building container image with ko..."
+	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
+
+.PHONY: ko-publish
+ko-publish: ## Build and publish container image using ko
+	@echo "Building and publishing container image with ko..."
+	@cd $(REPO_ROOT) && ./scripts/buildko.sh
 

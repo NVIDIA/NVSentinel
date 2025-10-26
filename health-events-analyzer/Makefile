@@ -60,8 +60,20 @@ help:
 	@echo "Individual targets:"
 	@echo "  vet, lint, test, coverage, build, binary"
 	@echo ""
-	@echo "Docker targets:"
-	@echo "  docker-build, docker-publish, image, publish"
-	@echo ""
-	@echo "Module-specific notes:"
-	@echo "  - Uses standardized repo-root Docker build context"
+	@echo "Build notes:"
+	@echo "  - Container images are built using ko (see Tiltfile)"
+	@echo "  - Uses standardized repo-root build context"
+
+# =============================================================================
+# KO BUILD TARGETS
+# =============================================================================
+
+.PHONY: ko-build
+ko-build: ## Build container image using ko
+	@echo "Building container image with ko..."
+	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
+
+.PHONY: ko-publish
+ko-publish: ## Build and publish container image using ko
+	@echo "Building and publishing container image with ko..."
+	@cd $(REPO_ROOT) && ./scripts/buildko.sh

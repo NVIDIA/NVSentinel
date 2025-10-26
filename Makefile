@@ -579,6 +579,17 @@ docker-publish-all: ## Build and publish all Docker images
 docker-setup-buildx: ## Setup Docker buildx builder
 	$(MAKE) -C docker setup-buildx
 
+# Ko targets - build Go container images without Docker
+.PHONY: ko-build
+ko-build: ## Build all ko-based container images locally
+	@echo "Building all ko-based container images..."
+	@./scripts/buildko.sh
+
+.PHONY: ko-publish
+ko-publish: ## Build and publish all ko-based container images
+	@echo "Building and publishing all ko-based container images..."
+	@./scripts/buildko.sh
+
 # GPU health monitor Docker targets (special cases with DCGM versions)
 .PHONY: docker-gpu-health-monitor-dcgm3
 docker-gpu-health-monitor-dcgm3:
