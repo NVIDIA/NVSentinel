@@ -77,11 +77,13 @@ ifeq ($(IS_KO_MODULE),1)
 .PHONY: ko-build
 ko-build: ## Build container image using ko
 	@echo "Building container image with ko..."
-	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
+	@test -f $(REPO_ROOT)/scripts/buildko.sh || (echo "Error: buildko.sh not found" && exit 1)
+	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh || (echo "Error: ko build failed" && exit 1)
 
 .PHONY: ko-publish
 ko-publish: ## Build and publish container image using ko
 	@echo "Building and publishing container image with ko..."
-	@cd $(REPO_ROOT) && ./scripts/buildko.sh
+	@test -f $(REPO_ROOT)/scripts/buildko.sh || (echo "Error: buildko.sh not found" && exit 1)
+	@cd $(REPO_ROOT) && ./scripts/buildko.sh || (echo "Error: ko publish failed" && exit 1)
 
 endif

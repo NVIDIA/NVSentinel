@@ -44,7 +44,10 @@ all: lint-test ## Run lint-test (default target)
 # MODULE NOTES
 # =============================================================================
 # This module handles fault detection and quarantine operations.
-# - Container images are built using ko (see Tiltfile)
+# - Container images are built using ko
+#   - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)
+#   - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)
+#   - For Tilt development, see Tiltfile
 # - Uses standardized repo-root build context
 # - Multi-platform builds: linux/arm64,linux/amd64
 # - Build cache enabled for faster builds

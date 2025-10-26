@@ -19,6 +19,12 @@ set -euo pipefail
 # This script wraps ko build for Tilt integration
 # Usage: ko-tilt-build.sh <module-dir> <expected-ref>
 
+if [ $# -ne 2 ]; then
+  echo "Error: Missing required arguments" >&2
+  echo "Usage: $0 <module-dir> <expected-ref>" >&2
+  exit 1
+fi
+
 MODULE_DIR="$1"
 EXPECTED_REF="$2"
 
