@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -544,9 +545,9 @@ func TestServerConcurrency(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		requestCount := 0
+		var requestCount atomic.Int32
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			requestCount++
+			requestCount.Add(1)
 			time.Sleep(10 * time.Millisecond) // Simulate work
 			w.WriteHeader(http.StatusOK)
 		})
@@ -582,8 +583,9 @@ func TestServerConcurrency(t *testing.T) {
 			t.Errorf("concurrent requests failed: %v", err)
 		}
 
-		if requestCount != numRequests {
-			t.Errorf("expected %d requests, got %d", numRequests, requestCount)
+		count := int(requestCount.Load())
+		if count != numRequests {
+			t.Errorf("expected %d requests, got %d", numRequests, count)
 		}
 	})
 }
