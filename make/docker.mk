@@ -34,7 +34,9 @@ docker-build: setup-buildx ## Build Docker image (multi-platform with cache)
 	$(DOCKER_LOAD_ARG) \
 	-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(MODULE_NAME):$(SAFE_REF_NAME) \
 	-f $(MODULE_PATH)/Dockerfile \
-	.# Simplified docker target (local builds)
+	.
+
+# Simplified docker target (local builds)
 .PHONY: docker
 docker: docker-build ## Build Docker image (alias for docker-build)
 

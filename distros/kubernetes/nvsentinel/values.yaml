@@ -66,7 +66,7 @@ global:
 
     image:
       # Container image repository for GPU health monitor
-      repository: ghcr.io/nvidia/nvsentinel-gpu-health-monitor
+      repository: ghcr.io/nvidia/nvsentinel/gpu-health-monitor
       # Image pull policy (IfNotPresent, Always, Never)
       pullPolicy: IfNotPresent
     
@@ -147,7 +147,7 @@ global:
 
     image:
       # Container image repository for syslog health monitor
-      repository: ghcr.io/nvidia/nvsentinel-syslog-health-monitor
+      repository: ghcr.io/nvidia/nvsentinel/syslog-health-monitor
       pullPolicy: IfNotPresent
 
     # XID (GPU error) analyzer sidecar configuration

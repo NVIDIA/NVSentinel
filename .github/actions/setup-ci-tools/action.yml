@@ -52,8 +52,7 @@ inputs:
     default: 'false'
   ko-version:
     description: 'Version of ko to install'
-    required: false
-    default: 'latest'
+    required: true
 
 runs:
   using: 'composite'

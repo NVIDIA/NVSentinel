@@ -41,11 +41,6 @@ on:
         required: false
         default: ''
         type: string
-      ko-version:
-        description: 'Version of ko to use for builds (default: latest)'
-        required: false
-        default: 'latest'
-        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

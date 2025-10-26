@@ -51,7 +51,7 @@ ko build -B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}" \
 echo "built refs:"
 cat digests.txt
 
-# digests.txt has: ghcr.io/nvidia/nvsentinel-fault-quarantine-module:v0.1.0-slim@sha256:9168...
+# digests.txt has: ghcr.io/nvidia/nvsentinel-fault-quarantine-module:v0.1.0@sha256:9168...
 # for attestation matrix we need subject-name WITHOUT tag, and the digest.
 jq -R -s '
   split("\n")
