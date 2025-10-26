@@ -15,8 +15,7 @@
 # Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-fault-quarantine-module',
-    'ko publish --bare --local --push=false ./ && ' +
-    'docker tag $(ko build --local --bare ./) $EXPECTED_REF && ' +
-    'docker push $EXPECTED_REF',
-    deps=['./']
+    'KO_DOCKER_REPO=127.0.0.1:5001/nvsentinel ko build --bare --platform=linux/amd64 ./',
+    deps=['./'],
+    skips_local_docker=True
 )
