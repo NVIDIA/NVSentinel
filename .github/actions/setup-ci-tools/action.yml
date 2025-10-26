@@ -192,6 +192,14 @@ runs:
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
+        
+        # Install ko with version validation
+        if [ -z "${{ inputs.ko-version }}" ]; then
+          echo "ERROR: ko-version input is empty!"
+          echo "This usually means the prepare-environment workflow didn't output the version correctly."
+          exit 1
+        fi
+        echo "Installing ko version: ${{ inputs.ko-version }}"
         go install github.com/google/ko@${{ inputs.ko-version }}
 
     - name: Set environment variables

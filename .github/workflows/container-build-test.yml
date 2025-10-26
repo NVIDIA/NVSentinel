@@ -94,6 +94,14 @@ jobs:
             echo "build=true" >> $GITHUB_OUTPUT
           fi
 
+      - name: Debug - Show version outputs
+        if: steps.should-build.outputs.build == 'true'
+        run: |
+          echo "Versions from prepare-environment:"
+          echo "  go_version: ${{ needs.prepare-environment.outputs.go_version }}"
+          echo "  python_version: ${{ needs.prepare-environment.outputs.python_version }}"
+          echo "  ko_version: ${{ needs.prepare-environment.outputs.ko_version }}"
+
       - name: Setup build environment
         if: steps.should-build.outputs.build == 'true'
         uses: ./.github/actions/setup-build-env
@@ -130,8 +138,9 @@ jobs:
         uses: ./.github/actions/build-container
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
-          # Disable registry cache for pull requests to avoid permission issues
-          DISABLE_REGISTRY_CACHE: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/')) && 'true' || 'false' }}
+          # Disable registry cache for validation builds (this is a test workflow, not publish)
+          # Registry cache writing requires special permissions that may not be available
+          DISABLE_REGISTRY_CACHE: 'true'
           # Disable --load flag in CI builds (causes issues with multi-platform builds)
           DOCKER_LOAD_ARG: ''
         with:
