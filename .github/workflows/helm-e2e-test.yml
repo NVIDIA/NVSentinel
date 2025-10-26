@@ -18,14 +18,8 @@ name: Helm Charts E2E Test
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'distros/kubernetes/nvsentinel/**'
-      - 'tilt/release/**'
-      - '.github/workflows/helm-e2e-test.yml'
-      - 'scripts/validate-nvsentinel.sh'
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,7 +28,6 @@ concurrency:
 permissions:
   contents: read
   actions: read
-  packages: write
 
 env:
   KIND_VERSION: '0.30.0'
@@ -134,45 +127,12 @@ jobs:
           helm version --short
           kwok --version
 
-      - name: Compute ref name with SHA
-        id: ref-name
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          echo "value=${SAFE_REF_NAME}-${SHORT_SHA}" >> $GITHUB_OUTPUT
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build container images
-        env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
-          CONTAINER_REGISTRY: ghcr.io
-          CONTAINER_ORG: ${{ github.repository }}
-          PLATFORMS: linux/amd64
-          DISABLE_REGISTRY_CACHE: true
-          VERSION: ${{ steps.ref-name.outputs.value }}
-          KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
-        run: |
-          # Build Docker images (gpu-health-monitor, syslog-health-monitor)
-          make docker-all
-          
-          # Build and publish ko images to GHCR
-          make ko-build
-          
-          docker images | grep "ghcr.io/nvidia/nvsentinel.*:${{ steps.ref-name.outputs.value }}" || docker images | grep nvsentinel
-
-      - name: Push images to GitHub Container Registry
-        env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
-        run: |
-          echo "Pushing images to GitHub Container Registry..."
-          make docker-push
-          make ko-publish
 
       - name: Create Kind cluster
         run: |
@@ -213,7 +173,7 @@ jobs:
 
       - name: Load images into Kind cluster
         env:
-          VERSION: ${{ steps.ref-name.outputs.value }}
+          VERSION: ${{ github.ref }}
         run: |
           # Pull and load all images from GHCR into Kind
           # This includes both Docker-built health monitors and ko-built modules
@@ -273,7 +233,7 @@ jobs:
 
       - name: Patch values for E2E testing
         env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+          CI_COMMIT_REF_NAME: ${{ github.ref }}
         run: |
           # Create patched values file
           cp tilt/release/values-release.yaml /tmp/values-patched.yaml
@@ -301,7 +261,7 @@ jobs:
 
       - name: Install NVSentinel via Helm
         env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+          CI_COMMIT_REF_NAME: ${{ github.ref }}
         run: |
           helm upgrade --install nvsentinel ./distros/kubernetes/nvsentinel \
             --create-namespace \
@@ -314,7 +274,7 @@ jobs:
 
       - name: Validate deployment with retry
         env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+          CI_COMMIT_REF_NAME: ${{ github.ref }}
         run: |
           chmod +x scripts/validate-nvsentinel.sh
           max_attempts=$((${{ env.VALIDATION_TIMEOUT_MINUTES }} * 60 / ${{ env.VALIDATION_INTERVAL_SECONDS }}))
@@ -341,7 +301,7 @@ jobs:
       - name: Collect debug artifacts
         if: failure()
         env:
-          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+          CI_COMMIT_REF_NAME: ${{ github.ref }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           mkdir -p /tmp/debug-artifacts

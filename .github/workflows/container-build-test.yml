@@ -182,7 +182,7 @@ jobs:
       - name: Test ko build for ${{ matrix.module }}
         run: |
           cd ${{ matrix.module }}
-          ko build --bare --platform=linux/amd64 ${{ matrix.path }}
+          ko build --bare --platform=linux/amd64,linux/arm64 ${{ matrix.path }}
         env:
           KO_DOCKER_REPO: ko.local
 
