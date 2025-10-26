@@ -440,7 +440,6 @@ make docker-all
 
 # Images will be tagged like:
 # ghcr.io/your-github-username/syslog-health-monitor:main
-```
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.x
 ```
@@ -1133,8 +1132,6 @@ make -C health-monitors/syslog-health-monitor docker-build
 # CI/Production: Build and push with --push (standardized)
 make -C health-monitors/syslog-health-monitor docker-publish
 ```
-
-## 📞 Getting Help
 
 ## 📞 Getting Help
 

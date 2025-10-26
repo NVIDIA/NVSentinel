@@ -117,14 +117,14 @@ docker-build-file-server-cleanup: setup-buildx
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
 		--network=host \
-	$(CACHE_FROM_ARG_CLEANUP) \
+		$(CACHE_FROM_ARG_CLEANUP) \
 		$(CACHE_TO_ARG_CLEANUP) \
 		$(DOCKER_LOAD_ARG) \
 		-f $(MODULE_PATH)/Dockerfile.cleanup \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/file-server-cleanup:$(SAFE_REF_NAME) \
 		.
 
-# Publish log-collector image to registry (CI/production)# Local-only Docker build (no remote cache, faster for local development)
+# Local-only Docker build (no remote cache, faster for local development)
 .PHONY: docker-build-local
 docker-build-local: setup-buildx docker-build-local-log-collector docker-build-local-file-server-cleanup
 

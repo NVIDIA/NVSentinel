@@ -448,9 +448,13 @@ nvsentinel/
 NVSentinel uses a monorepo structure. Build each module independently:
 
 ```bash
-# Build a specific module (example: platform-connectors)
+# Build a Docker-based module (example: gpu-health-monitor)
+cd health-monitors/gpu-health-monitor
+make docker-build-dcgm3  # or docker-build-dcgm4
+
+# Build Go modules using ko (example: platform-connectors)
 cd platform-connectors
-docker build -t platform-connectors .
+make docker-build
 
 # Or build Go binaries directly
 cd fault-quarantine-module
