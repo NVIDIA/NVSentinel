@@ -254,7 +254,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			slog.Warn("Context cancelled while waiting for node informer sync")
-			return fmt.Errorf("context cancelled while waiting for node informer sync: %w", ctx.Err())
+			return ctx.Err()
 		case <-time.After(5 * time.Second): // Check periodically
 			slog.Info("NodeInformer cache is not synced yet, waiting for 5 seconds")
 		}
@@ -304,13 +304,9 @@ func (r *Reconciler) Start(ctx context.Context) error {
 			if r.config.CircuitBreakerEnabled {
 				if tripped, err := r.cb.IsTripped(ctx); err != nil {
 					slog.Error("Error checking if circuit breaker is tripped", "error", err)
-					<-ctx.Done()
-
 					return fmt.Errorf("error checking if circuit breaker is tripped: %w", err)
 				} else if tripped {
-					slog.Error("Circuit breaker TRIPPED. Halting event processing until restart and breaker reset.")
-					<-ctx.Done()
-
+					slog.Error("Circuit breaker TRIPPED. Halting event processing.")
 					return fmt.Errorf("circuit breaker is tripped")
 				}
 			}

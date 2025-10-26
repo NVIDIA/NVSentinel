@@ -54,7 +54,7 @@ func NewStructuredLogger(module, version, level string) *slog.Logger {
 // Returns:
 //   - *log.Logger: A pointer to the configured log.Logger instance.
 func NewLogLogger(level slog.Level, withSource bool) *log.Logger {
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level:     level,
 		AddSource: withSource,
 	})

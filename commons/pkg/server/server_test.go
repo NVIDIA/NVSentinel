@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -233,6 +234,10 @@ func TestServerHealthEndpoints(t *testing.T) {
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
+		}
+
+		if contentType := resp.Header.Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
+			t.Errorf("expected Content-Type 'text/plain; charset=utf-8', got '%s'", contentType)
 		}
 	})
 }
@@ -617,12 +622,8 @@ func TestWithTLS(t *testing.T) {
 // Helper function to check if a string contains any of the given substrings.
 func containsAny(s string, substrings []string) bool {
 	for _, substr := range substrings {
-		if len(s) >= len(substr) {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
+		if strings.Contains(s, substr) {
+			return true
 		}
 	}
 	return false

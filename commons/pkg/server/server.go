@@ -217,6 +217,7 @@ func WithPrometheusMetrics() Option {
 func WithSimpleHealth() Option {
 	return func(s *server) {
 		s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
@@ -247,6 +248,7 @@ func WithSimpleHealth() Option {
 func WithHealthCheck(checker HealthChecker) Option {
 	return func(s *server) {
 		s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			if err := checker.Healthy(r.Context()); err != nil {
 				slog.Warn("health check failed", "error", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -288,6 +290,7 @@ func WithHealthCheck(checker HealthChecker) Option {
 func WithReadinessCheck(checker ReadinessChecker) Option {
 	return func(s *server) {
 		s.mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			if err := checker.Ready(r.Context()); err != nil {
 				slog.Debug("readiness check failed", "error", err)
 				w.WriteHeader(http.StatusServiceUnavailable)

@@ -128,6 +128,7 @@ func run() error {
 	g.Go(func() error {
 		select {
 		case <-ctx.Done():
+			slog.Info("Context cancelled, initiating shutdown")
 		case err := <-criticalError:
 			slog.Error("Critical component failure", "error", err)
 			stop() // Cancel context to trigger shutdown

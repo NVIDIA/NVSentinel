@@ -143,7 +143,6 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 		if err != nil {
 			slog.Error("Max attempt reached, error in handling the event", "eventID", document["_id"], "error", err)
-			return fmt.Errorf("max attempts reached, error in handling the event: %w", err)
 		}
 
 		duration := time.Since(startTime).Seconds()

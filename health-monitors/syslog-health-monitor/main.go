@@ -255,15 +255,19 @@ func run() error {
 		slog.Info("Syslog health monitor initialization complete, starting polling loop...")
 
 		// Polling loop
-		for range ticker.C {
-			slog.Info("Performing scheduled health check run...")
+		for {
+			select {
+			case <-gCtx.Done():
+				slog.Info("Polling loop stopped due to context cancellation")
+				return gCtx.Err()
+			case <-ticker.C:
+				slog.Info("Performing scheduled health check run...")
 
-			if err := fdHealthMonitor.Run(); err != nil {
-				return fmt.Errorf("error running syslog health monitor: %w", err)
+				if err := fdHealthMonitor.Run(); err != nil {
+					return fmt.Errorf("error running syslog health monitor: %w", err)
+				}
 			}
 		}
-
-		return nil
 	})
 
 	// Wait for both goroutines to finish

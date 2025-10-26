@@ -220,10 +220,15 @@ func run() error {
 	})
 
 	g.Go(func() error {
-		slog.Info("Waiting for signal")
+		slog.Info("Waiting for signal or context cancellation")
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-sigs
-		slog.Info("Received signal", "signal", sig)
+
+		select {
+		case sig := <-sigs:
+			slog.Info("Received signal", "signal", sig)
+		case <-gCtx.Done():
+			slog.Info("Context cancelled, initiating shutdown")
+		}
 
 		close(stopCh)
 
