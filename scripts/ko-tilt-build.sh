@@ -24,8 +24,9 @@ EXPECTED_REF="$2"
 
 cd "$MODULE_DIR"
 
-# Build with ko to a temporary local repository
-IMAGE=$(KO_DOCKER_REPO=ttl.sh ko build --bare --platform=linux/amd64 ./)
+# Build with ko to a temporary registry with a unique tag to avoid conflicts
+TEMP_TAG="tilt-$(date +%s)-$$"
+IMAGE=$(KO_DOCKER_REPO=ttl.sh/${TEMP_TAG} ko build --bare --platform=linux/amd64 ./)
 
 # Copy the image to the local registry with the expected tag
 crane cp "$IMAGE" "$EXPECTED_REF"
