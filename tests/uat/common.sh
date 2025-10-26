@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,9 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
-    "ghcr.io/nvidia/nvsentinel/syslog-health-monitor",
-    context="../..",
-    dockerfile="./Dockerfile",
-    build_args={"BUILD_TAGS": "fake"}
-)
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+error() {
+    log "ERROR: $*" >&2
+    exit 1
+}
+

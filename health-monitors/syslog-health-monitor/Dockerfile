@@ -13,9 +13,10 @@
 # limitations under the License.
 
 ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
-ARG BUILD_TAGS="systemd"
 
 FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
+
+ARG BUILD_TAGS="systemd"
 
 WORKDIR /go/src/nvsentinel
 
