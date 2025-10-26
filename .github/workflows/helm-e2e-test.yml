@@ -139,7 +139,8 @@ jobs:
         id: ref-name
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          SAFE_REF_NAME=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          echo "value=${SAFE_REF_NAME}-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
       - name: Set registry configuration
         id: registry-config
@@ -182,15 +183,7 @@ jobs:
           # Build ko images (8 Go modules)
           make ko-build
           
-          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          docker images | grep "${{ steps.registry-config.outputs.image_prefix }}.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
-          
-          # Push images to registry if on main branch
-          if [ "${{ steps.registry-config.outputs.use_local }}" = "false" ]; then
-            echo "Pushing images to GitHub Container Registry..."
-            make docker-push
-            make ko-publish
-          fi
+          docker images | grep "${{ steps.registry-config.outputs.image_prefix }}.*:${{ steps.ref-name.outputs.value }}" || docker images | grep nvsentinel
 
       - name: Create Kind cluster
         run: |
@@ -230,17 +223,24 @@ jobs:
           kubectl get nodes
 
       - name: Load images into Kind cluster
-        if: steps.registry-config.outputs.use_local == 'true'
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ steps.registry-config.outputs.image_prefix }}/.*:.*${SAFE_REF_NAME}")
+          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ steps.registry-config.outputs.image_prefix }}/.*:.*${CI_COMMIT_REF_NAME}")
           [ ${#images[@]} -eq 0 ] && { echo "No images found"; exit 1; }
 
           for image in "${images[@]}"; do
             kind load docker-image "$image" --name "${CLUSTER_NAME}"
           done
+
+      - name: Push images to GitHub Container Registry
+        if: steps.registry-config.outputs.use_local == 'false'
+        env:
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+        run: |
+          echo "Pushing images to GitHub Container Registry..."
+          make docker-push
+          make ko-publish
 
       - name: Install infrastructure dependencies
         run: |
@@ -276,20 +276,18 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          
-          # Replace repository URLs in chart files only if using local registry
-          if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
-            sed -i 's|ghcr\.io/nvidia/nvsentinel/|${{ steps.registry-config.outputs.image_prefix }}/|g' \
-              distros/kubernetes/nvsentinel/charts/*/values.yaml \
-              distros/kubernetes/nvsentinel/values.yaml
-          fi
+          # Replace repository URLs with correct prefix for current environment
+          # PR branches: ghcr.io/nvidia/nvsentinel/ -> localhost/nvsentinel-e2e/nvsentinel/
+          # Main branch: ghcr.io/nvidia/nvsentinel/ -> ghcr.io/nvidia/nvsentinel/ (no-op, uses loaded images)
+          sed -i 's|ghcr\.io/nvidia/nvsentinel/|${{ steps.registry-config.outputs.image_prefix }}/|g' \
+            distros/kubernetes/nvsentinel/charts/*/values.yaml \
+            distros/kubernetes/nvsentinel/values.yaml
 
           # Create patched values file
           cp tilt/release/values-release.yaml /tmp/values-patched.yaml
           sed -i '/^global:/a\
             image:\
-              tag: "'"${SAFE_REF_NAME}"'"\
+              tag: "'"${CI_COMMIT_REF_NAME}"'"\
             imagePullSecrets: []' /tmp/values-patched.yaml
 
           # Add MongoDB scheduling for real nodes only
@@ -313,12 +311,11 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           helm upgrade --install nvsentinel ./distros/kubernetes/nvsentinel \
             --create-namespace \
             --namespace ${{ env.NVSENTINEL_NAMESPACE }} \
             --values /tmp/values-patched.yaml \
-            --set global.image.tag="${SAFE_REF_NAME}" \
+            --set global.image.tag="${CI_COMMIT_REF_NAME}" \
             --debug
 
           kubectl get pods -n ${{ env.NVSENTINEL_NAMESPACE }}
@@ -327,12 +324,11 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           chmod +x scripts/validate-nvsentinel.sh
           max_attempts=$((${{ env.VALIDATION_TIMEOUT_MINUTES }} * 60 / ${{ env.VALIDATION_INTERVAL_SECONDS }}))
 
           for attempt in $(seq 1 $max_attempts); do
-            if ./scripts/validate-nvsentinel.sh --version "${SAFE_REF_NAME}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "${{ steps.registry-config.outputs.image_prefix }}" --verbose; then
+            if ./scripts/validate-nvsentinel.sh --version "${CI_COMMIT_REF_NAME}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "${{ steps.registry-config.outputs.image_prefix }}" --verbose; then
               echo "Validation passed on attempt $attempt"
               exit 0
             fi
