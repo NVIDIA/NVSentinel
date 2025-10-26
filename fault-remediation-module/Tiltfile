@@ -15,7 +15,8 @@
 # Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-fault-remediation-module',
-    'KO_DOCKER_REPO=127.0.0.1:5001/nvsentinel ko build --bare --platform=linux/amd64 ./',
+    'KO_DOCKER_REPO=127.0.0.1:5001 ko build --bare --platform=linux/amd64 ./ > /tmp/ko-ref.txt && ' +
+    'crane tag $(cat /tmp/ko-ref.txt) $EXPECTED_TAG',
     deps=['./'],
     skips_local_docker=True
 )
