@@ -219,6 +219,7 @@ func run() error {
 	// Then cancel the shared context so the cleanup goroutine proceeds.
 	g.Go(func() error {
 		defer cancel() // wake the signal/cleanup goroutine regardless of Serve outcome
+		slog.Info("Starting metrics server", "port", portInt)
 		return srv.Serve(gCtx)
 	})
 

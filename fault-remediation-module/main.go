@@ -280,6 +280,7 @@ func run() error {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
 		return srv.Serve(gCtx)
 	})
 
