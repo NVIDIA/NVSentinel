@@ -94,14 +94,6 @@ jobs:
             echo "build=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Debug - Show version outputs
-        if: steps.should-build.outputs.build == 'true'
-        run: |
-          echo "Versions from prepare-environment:"
-          echo "  go_version: ${{ needs.prepare-environment.outputs.go_version }}"
-          echo "  python_version: ${{ needs.prepare-environment.outputs.python_version }}"
-          echo "  ko_version: ${{ needs.prepare-environment.outputs.ko_version }}"
-
       - name: Setup build environment
         if: steps.should-build.outputs.build == 'true'
         uses: ./.github/actions/setup-build-env
