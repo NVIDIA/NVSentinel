@@ -50,6 +50,10 @@ inputs:
     description: 'Whether to install DCGM (requires sudo, may fail in some environments)'
     required: false
     default: 'false'
+  ko-version:
+    description: 'Version of ko to install'
+    required: false
+    default: 'latest'
 
 runs:
   using: 'composite'
@@ -189,7 +193,7 @@ runs:
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
-        go install github.com/google/ko@latest
+        go install github.com/google/ko@${{ inputs.ko-version }}
 
     - name: Set environment variables
       shell: bash

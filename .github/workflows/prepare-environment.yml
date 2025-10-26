@@ -48,6 +48,9 @@ on:
       shellcheck_version:
         description: 'shellcheck version'
         value: ${{ jobs.load-versions.outputs.shellcheck_version }}
+      ko_version:
+        description: 'ko version'
+        value: ${{ jobs.load-versions.outputs.ko_version }}
 
 jobs:
   load-versions:
@@ -64,6 +67,7 @@ jobs:
       grpcio_tools_version: ${{ steps.load-versions.outputs.grpcio_tools_version }}
       black_version: ${{ steps.load-versions.outputs.black_version }}
       shellcheck_version: ${{ steps.load-versions.outputs.shellcheck_version }}
+      ko_version: ${{ steps.load-versions.outputs.ko_version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -85,6 +89,7 @@ jobs:
           echo "grpcio_tools_version=$(yq '.protobuf.grpcio_tools' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "black_version=$(yq '.linting.black' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "shellcheck_version=$(yq '.linting.shellcheck' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "ko_version=$(yq '.container_tools.ko' .versions.yaml)" >> $GITHUB_OUTPUT
           
           echo "Loaded versions from .versions.yaml:"
           cat $GITHUB_OUTPUT
