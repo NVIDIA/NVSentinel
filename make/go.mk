@@ -67,3 +67,21 @@ clean: ## Clean build artifacts and test outputs
 	rm -f coverage.txt coverage.xml report.xml code-quality-report.json $(CLEAN_EXTRA_FILES)
 
 endif
+
+# =============================================================================
+# KO BUILD TARGETS (for modules using ko)
+# =============================================================================
+
+ifeq ($(IS_KO_MODULE),1)
+
+.PHONY: ko-build
+ko-build: ## Build container image using ko
+	@echo "Building container image with ko..."
+	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
+
+.PHONY: ko-publish
+ko-publish: ## Build and publish container image using ko
+	@echo "Building and publishing container image with ko..."
+	@cd $(REPO_ROOT) && ./scripts/buildko.sh
+
+endif

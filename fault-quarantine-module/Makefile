@@ -21,6 +21,7 @@
 
 # Module type and capabilities
 IS_GO_MODULE := 1
+IS_KO_MODULE := 1
 
 # Fault-quarantine-module specific settings
 CLEAN_EXTRA_FILES := fault-quarantine-module
@@ -49,16 +50,3 @@ all: lint-test ## Run lint-test (default target)
 # - Build cache enabled for faster builds
 # Run 'make help' to see available targets
 
-# =============================================================================
-# KO BUILD TARGETS
-# =============================================================================
-
-.PHONY: ko-build
-ko-build: ## Build container image using ko
-	@echo "Building container image with ko..."
-	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
-
-.PHONY: ko-publish
-ko-publish: ## Build and publish container image using ko
-	@echo "Building and publishing container image with ko..."
-	@cd $(REPO_ROOT) && ./scripts/buildko.sh

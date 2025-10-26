@@ -20,6 +20,7 @@
 # =============================================================================
 
 IS_GO_MODULE := 1
+IS_KO_MODULE := 1
 
 # Health-events-analyzer specific settings
 CLEAN_EXTRA_FILES := health-events-analyzer
@@ -50,9 +51,6 @@ help:
 	@echo ""
 	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
 	@echo ""
-	@echo "Build notes:"
-	@echo "  - Container images are built using ko (see Tiltfile)"
-	@echo ""
 	@echo "Main targets:"
 	@echo "  all        - Run lint-test (standardized default)"
 	@echo "  lint-test  - Run full lint and test suite"
@@ -64,16 +62,3 @@ help:
 	@echo "  - Container images are built using ko (see Tiltfile)"
 	@echo "  - Uses standardized repo-root build context"
 
-# =============================================================================
-# KO BUILD TARGETS
-# =============================================================================
-
-.PHONY: ko-build
-ko-build: ## Build container image using ko
-	@echo "Building container image with ko..."
-	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
-
-.PHONY: ko-publish
-ko-publish: ## Build and publish container image using ko
-	@echo "Building and publishing container image with ko..."
-	@cd $(REPO_ROOT) && ./scripts/buildko.sh

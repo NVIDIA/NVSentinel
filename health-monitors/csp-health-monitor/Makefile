@@ -7,6 +7,7 @@
 # =============================================================================
 
 IS_GO_MODULE := 1
+IS_KO_MODULE := 1
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
@@ -35,16 +36,3 @@ help:
 	@echo "Build notes:"
 	@echo "  - Container images are built using ko (see Tiltfile)"
 
-# =============================================================================
-# KO BUILD TARGETS
-# =============================================================================
-
-.PHONY: ko-build
-ko-build: ## Build container image using ko
-	@echo "Building container image with ko..."
-	@cd $(REPO_ROOT) && KO_DOCKER_REPO=$${KO_DOCKER_REPO:-ko.local} ./scripts/buildko.sh
-
-.PHONY: ko-publish
-ko-publish: ## Build and publish container image using ko
-	@echo "Building and publishing container image with ko..."
-	@cd $(REPO_ROOT) && ./scripts/buildko.sh
