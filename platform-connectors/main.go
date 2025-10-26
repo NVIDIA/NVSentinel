@@ -220,12 +220,14 @@ func run() error {
 	g.Go(func() error {
 		defer cancel() // wake the signal/cleanup goroutine regardless of Serve outcome
 		slog.Info("Starting metrics server", "port", portInt)
+
 		return srv.Serve(gCtx)
 	})
 
 	g.Go(func() error {
 		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 		defer func() {
 			// Always stop signal delivery and close channel to avoid leaks.
 			signal.Stop(sigs)
