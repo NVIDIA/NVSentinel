@@ -14,7 +14,7 @@
 
 # Build and deploy
 custom_build(
-    'ghcr.io/nvidia/nvsentinel-platform-connectors',
+    'ghcr.io/nvidia/nvsentinel/platform-connectors',
     '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
     deps=['./'],
     skips_local_docker=True

@@ -14,7 +14,7 @@
 
 # Build and deploy
 custom_build(
-    'ghcr.io/nvidia/nvsentinel-node-drainer-module',
+    'ghcr.io/nvidia/nvsentinel/node-drainer-module',
     '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
     deps=['./'],
     skips_local_docker=True

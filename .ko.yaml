@@ -52,6 +52,14 @@ builds:
     dir: node-drainer-module
     main: .
 
+  - id: janitor
+    dir: janitor
+    main: .
+
+  - id: platform-connectors
+    dir: platform-connectors
+    main: .
+
 labels:
   org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
   org.opencontainers.image.licenses: "Apache-2.0"

@@ -14,7 +14,7 @@
 
 # Build and deploy
 custom_build(
-    'ghcr.io/nvidia/nvsentinel-csp-health-monitor',
+    'ghcr.io/nvidia/nvsentinel/csp-health-monitor',
     '../../scripts/ko-tilt-build.sh . $EXPECTED_REF',
     deps=['./'],
     skips_local_docker=True
