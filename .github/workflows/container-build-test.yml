@@ -156,21 +156,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ needs.prepare-environment.outputs.go_version }}
 
-      - name: Install ko
-        run: |
-          curl -sSfL https://github.com/ko-build/ko/releases/download/v0.18.0/ko_0.18.0_Linux_x86_64.tar.gz | tar -xzf - -C /tmp
-          sudo mv /tmp/ko /usr/local/bin/ko
-          ko version
+      - name: Setup CI tools
+        uses: ./.github/actions/setup-ci-tools
 
       - name: Test ko build for ${{ matrix.module }}
         run: |
           cd ${{ matrix.module }}
-          KO_DOCKER_REPO=ko.local ko build --bare --platform=linux/amd64 ./
+          ko build --bare --platform=linux/amd64 ./
         env:
           KO_DOCKER_REPO: ko.local
 
