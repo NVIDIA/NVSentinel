@@ -87,7 +87,7 @@ global:
     enabled: false
     image:
       # Container image repository for health events analyzer
-      repository: ghcr.io/nvidia/nvsentinel-health-events-analyzer
+      repository: ghcr.io/nvidia/nvsentinel/health-events-analyzer
       pullPolicy: IfNotPresent
 
   # Fault Quarantine Module - isolates faulty nodes to prevent cascading failures
@@ -97,7 +97,7 @@ global:
 
     image:
       # Container image repository for fault quarantine module
-      repository: ghcr.io/nvidia/nvsentinel-fault-quarantine-module
+      repository: ghcr.io/nvidia/nvsentinel/fault-quarantine-module
       pullPolicy: IfNotPresent
 
   # Node Drainer Module - gracefully drains nodes before maintenance or replacement
@@ -107,7 +107,7 @@ global:
 
     image:
       # Container image repository for node drainer module
-      repository: ghcr.io/nvidia/nvsentinel-node-drainer-module
+      repository: ghcr.io/nvidia/nvsentinel/node-drainer-module
       pullPolicy: IfNotPresent
 
   # Fault Remediation Module - executes remediation workflows for detected faults
@@ -117,7 +117,7 @@ global:
 
     image:
       # Container image repository for fault remediation module
-      repository: ghcr.io/nvidia/nvsentinel-fault-remediation-module
+      repository: ghcr.io/nvidia/nvsentinel/fault-remediation-module
       pullPolicy: IfNotPresent
 
   # Janitor - performs cleanup and maintenance tasks for cluster resources
@@ -127,7 +127,7 @@ global:
 
     image:
       # Container image repository for janitor module
-      repository: ghcr.io/nvidia/nvsentinel-janitor
+      repository: ghcr.io/nvidia/nvsentinel/janitor
       pullPolicy: IfNotPresent
 
   # CSP Health Monitor - monitors cloud service provider maintenance events
@@ -137,7 +137,7 @@ global:
 
     image:
       # Container image repository for CSP health monitor
-      repository: ghcr.io/nvidia/nvsentinel-csp-health-monitor
+      repository: ghcr.io/nvidia/nvsentinel/csp-health-monitor
       pullPolicy: IfNotPresent
 
   # Syslog Health Monitor - monitors system logs for hardware errors and failures
@@ -162,7 +162,7 @@ global:
 
     image:
       # Container image repository for labeler module
-      repository: ghcr.io/nvidia/nvsentinel-labeler-module
+      repository: ghcr.io/nvidia/nvsentinel/labeler-module
       pullPolicy: IfNotPresent
 
   # Image pull secrets for accessing private container registries
@@ -203,7 +203,7 @@ global:
 platformConnector:
   image:
     # Container image repository for platform connector
-    repository: ghcr.io/nvidia/nvsentinel-platform-connectors
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
     pullPolicy: IfNotPresent
 
   # Resource limits and requests for platform connector pods

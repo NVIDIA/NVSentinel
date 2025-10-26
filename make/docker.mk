@@ -27,16 +27,14 @@ docker-build: setup-buildx ## Build Docker image (multi-platform with cache)
 	$(if $(filter true,$(DISABLE_REGISTRY_CACHE)),@echo "Registry cache disabled for this build")
 	cd $(REPO_ROOT) && docker buildx build \
 		--platform $(PLATFORMS) \
-		--network=host \
-		$(CACHE_FROM_ARG) \
-		$(CACHE_TO_ARG) \
-		$(DOCKER_EXTRA_ARGS) \
-		$(DOCKER_LOAD_ARG) \
-		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-$(MODULE_NAME):$(SAFE_REF_NAME) \
-		-f $(MODULE_PATH)/Dockerfile \
-		.
-
-# Simplified docker target (local builds)
+	--network=host \
+	$(CACHE_FROM_ARG) \
+	$(CACHE_TO_ARG) \
+	$(DOCKER_EXTRA_ARGS) \
+	$(DOCKER_LOAD_ARG) \
+	-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/$(MODULE_NAME):$(SAFE_REF_NAME) \
+	-f $(MODULE_PATH)/Dockerfile \
+	.# Simplified docker target (local builds)
 .PHONY: docker
 docker: docker-build ## Build Docker image (alias for docker-build)
 
