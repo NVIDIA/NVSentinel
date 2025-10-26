@@ -35,6 +35,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  packages: write
 
 env:
   KIND_VERSION: '0.30.0'
@@ -134,21 +135,46 @@ jobs:
           helm version --short
           kwok --version
 
-      - name: Compute ref name with short SHA
+      - name: Compute ref name with SHA
         id: ref-name
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
+      - name: Set registry configuration
+        id: registry-config
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "registry=ghcr.io" >> $GITHUB_OUTPUT
+            echo "org=${{ github.repository }}" >> $GITHUB_OUTPUT
+            echo "ko_repo=ghcr.io/${{ github.repository }}" >> $GITHUB_OUTPUT
+            echo "image_prefix=ghcr.io/nvidia/nvsentinel" >> $GITHUB_OUTPUT
+            echo "use_local=false" >> $GITHUB_OUTPUT
+          else
+            echo "registry=localhost" >> $GITHUB_OUTPUT
+            echo "org=nvsentinel-e2e" >> $GITHUB_OUTPUT
+            echo "ko_repo=localhost/nvsentinel-e2e/nvsentinel" >> $GITHUB_OUTPUT
+            echo "image_prefix=localhost/nvsentinel-e2e/nvsentinel" >> $GITHUB_OUTPUT
+            echo "use_local=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to GitHub Container Registry
+        if: steps.registry-config.outputs.use_local == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build container images locally
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
-          CONTAINER_REGISTRY: localhost
-          CONTAINER_ORG: nvsentinel-e2e
+          CONTAINER_REGISTRY: ${{ steps.registry-config.outputs.registry }}
+          CONTAINER_ORG: ${{ steps.registry-config.outputs.org }}
           PLATFORMS: linux/amd64
           DISABLE_REGISTRY_CACHE: true
           VERSION: ${{ steps.ref-name.outputs.value }}
-          KO_DOCKER_REPO: localhost/nvsentinel-e2e
+          KO_DOCKER_REPO: ${{ steps.registry-config.outputs.ko_repo }}
         run: |
           # Build Docker images (gpu-health-monitor, syslog-health-monitor)
           make docker-all
@@ -157,7 +183,14 @@ jobs:
           make ko-build
           
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          docker images | grep "localhost/nvsentinel-e2e/nvsentinel.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
+          docker images | grep "${{ steps.registry-config.outputs.image_prefix }}.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
+          
+          # Push images to registry if on main branch
+          if [ "${{ steps.registry-config.outputs.use_local }}" = "false" ]; then
+            echo "Pushing images to GitHub Container Registry..."
+            make docker-push
+            make ko-publish
+          fi
 
       - name: Create Kind cluster
         run: |
@@ -197,11 +230,12 @@ jobs:
           kubectl get nodes
 
       - name: Load images into Kind cluster
+        if: steps.registry-config.outputs.use_local == 'true'
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "localhost/nvsentinel-e2e/nvsentinel-.*:.*${SAFE_REF_NAME}")
+          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ steps.registry-config.outputs.image_prefix }}/.*:.*${SAFE_REF_NAME}")
           [ ${#images[@]} -eq 0 ] && { echo "No images found"; exit 1; }
 
           for image in "${images[@]}"; do
@@ -244,10 +278,12 @@ jobs:
         run: |
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
           
-          # Replace repository URLs in chart files
-          sed -i 's|ghcr\.io/nvidia/nvsentinel-|localhost/nvsentinel-e2e/nvsentinel-|g' \
-            distros/kubernetes/nvsentinel/charts/*/values.yaml \
-            distros/kubernetes/nvsentinel/values.yaml
+          # Replace repository URLs in chart files only if using local registry
+          if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
+            sed -i 's|ghcr\.io/nvidia/nvsentinel/|${{ steps.registry-config.outputs.image_prefix }}/|g' \
+              distros/kubernetes/nvsentinel/charts/*/values.yaml \
+              distros/kubernetes/nvsentinel/values.yaml
+          fi
 
           # Create patched values file
           cp tilt/release/values-release.yaml /tmp/values-patched.yaml
@@ -296,7 +332,7 @@ jobs:
           max_attempts=$((${{ env.VALIDATION_TIMEOUT_MINUTES }} * 60 / ${{ env.VALIDATION_INTERVAL_SECONDS }}))
 
           for attempt in $(seq 1 $max_attempts); do
-            if ./scripts/validate-nvsentinel.sh --version "${SAFE_REF_NAME}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "localhost/nvsentinel-e2e/nvsentinel" --verbose; then
+            if ./scripts/validate-nvsentinel.sh --version "${SAFE_REF_NAME}" --namespace "${{ env.NVSENTINEL_NAMESPACE }}" --image-pattern "${{ steps.registry-config.outputs.image_prefix }}" --verbose; then
               echo "Validation passed on attempt $attempt"
               exit 0
             fi
