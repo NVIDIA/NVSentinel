@@ -43,19 +43,19 @@ out="versions.txt"
 # ------- 1) Build dynamic list -------
 # Define array of dynamic images with their respective tags (sorted!)
 declare -a dynamic_images=(
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-csp-health-monitor:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-fault-quarantine-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-fault-remediation-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-file-server-cleanup:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-health-events-analyzer:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-janitor:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-labeler-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-log-collector:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-node-drainer-module:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-platform-connectors:${SAFE_REF_NAME}"
-  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel-syslog-health-monitor:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/csp-health-monitor:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/fault-quarantine-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/fault-remediation-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/file-server-cleanup:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/gpu-health-monitor:${SAFE_REF_NAME}-dcgm-3.x"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/gpu-health-monitor:${SAFE_REF_NAME}-dcgm-4.x"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/health-events-analyzer:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/janitor:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/labeler-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/log-collector:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/node-drainer-module:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/platform-connectors:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/syslog-health-monitor:${SAFE_REF_NAME}"
 )
 
 # Write dynamic images to output file

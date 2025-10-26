@@ -439,7 +439,7 @@ export CI_COMMIT_REF_NAME="main"
 make docker-all
 
 # Images will be tagged like:
-# ghcr.io/your-github-username/nvsentinel/syslog-health-monitor:main
+# ghcr.io/your-github-username/syslog-health-monitor:main
 ```
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-3.x
 # ghcr.io/nvidia/nvsentinel/gpu-health-monitor:main-dcgm-4.x

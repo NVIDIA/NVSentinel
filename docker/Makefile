@@ -140,13 +140,13 @@ setup-buildx:
 .PHONY: clean
 clean:
 	@echo "Removing nvsentinel Docker images..."
-	@docker images --format "{{.Repository}}:{{.Tag}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-" | xargs -r docker rmi || true
+	@docker images --format "{{.Repository}}:{{.Tag}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/" | xargs -r docker rmi || true
 
 # List built images
 .PHONY: list
 list:
 	@echo "nvsentinel Docker images:"
-	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel-" || echo "No nvsentinel images found"
+	@docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep "$(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/" || echo "No nvsentinel images found"
 
 # Help target
 .PHONY: help
