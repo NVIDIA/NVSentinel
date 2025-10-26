@@ -16,4 +16,5 @@ custom_build(
     'ghcr.io/nvidia/nvsentinel-csp-health-monitor',
     'KO_DOCKER_REPO=localhost:5001/nvsentinel ko build --bare ./cmd/csp-health-monitor',
     deps=['./'],
+    skips_local_docker=True,
 )

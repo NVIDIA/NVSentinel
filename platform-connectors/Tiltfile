@@ -16,4 +16,5 @@ custom_build(
     'ghcr.io/nvidia/nvsentinel-platform-connectors',
     'KO_DOCKER_REPO=localhost:5001/nvsentinel ko build --bare ./',
     deps=['./'],
+    skips_local_docker=True,
 )
