@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
@@ -209,7 +211,10 @@ func getMongoPipeline() mongo.Pipeline {
 }
 
 func run() error {
-	ctx := context.Background()
+	// Create a context that listens for OS interrupt signals (SIGINT, SIGTERM).
+	// This enables proper graceful shutdown in Kubernetes environments
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// Parse flags and get configuration
 	cfg := parseFlags()

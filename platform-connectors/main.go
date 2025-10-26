@@ -215,10 +215,9 @@ func run() error {
 	// Start server in errgroup alongside the store and k8s connectors
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Ensure that if the HTTP/metrics server exits (nil or error),
-	// Then cancel the shared context so the cleanup goroutine proceeds.
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
-		defer cancel() // wake the signal/cleanup goroutine regardless of Serve outcome
 		slog.Info("Starting metrics server", "port", portInt)
 
 		return srv.Serve(gCtx)

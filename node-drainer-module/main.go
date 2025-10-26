@@ -121,19 +121,26 @@ func run() error {
 	// Start server in errgroup alongside event watcher monitoring
 	g, gCtx := errgroup.WithContext(ctx)
 
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
-		return srv.Serve(gCtx)
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+		return nil
 	})
 
+	// Monitor for critical errors or graceful shutdown signals.
 	g.Go(func() error {
 		select {
-		case <-ctx.Done():
+		case <-gCtx.Done():
+			// Context was cancelled (SIGTERM/SIGINT or another goroutine failed)
 			slog.Info("Context cancelled, initiating shutdown")
-			return nil
 		case err := <-criticalError:
+			// Critical component (event watcher) failed
 			slog.Error("Critical component failure", "error", err)
-			stop() // Cancel context to trigger shutdown
+			stop() // Cancel context to trigger shutdown of other components
 
 			slog.Info("Shutting down node drainer")
 
@@ -146,6 +153,18 @@ func run() error {
 
 			return fmt.Errorf("critical component failure: %w", err)
 		}
+
+		// Normal shutdown path (context cancelled without critical error)
+		slog.Info("Shutting down node drainer")
+
+		if errStop := components.EventWatcher.Stop(); errStop != nil {
+			return fmt.Errorf("failed to stop event watcher: %w", errStop)
+		}
+
+		components.QueueManager.Shutdown()
+		slog.Info("Node drainer stopped")
+
+		return nil
 	})
 
 	// Wait for both goroutines to finish

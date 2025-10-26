@@ -212,9 +212,14 @@ func run() error {
 	// Start server and reconciler concurrently
 	g, gCtx := errgroup.WithContext(ctx)
 
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
-		return srv.Serve(gCtx)
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+		return nil
 	})
 
 	g.Go(func() error {
