@@ -86,6 +86,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		slog.Error("error initializing collection client for mongodb",
 			"config", r.Config.MongoConfig,
 			"error", err)
+
 		return fmt.Errorf("error initializing collection client for mongodb: %w", err)
 	}
 
