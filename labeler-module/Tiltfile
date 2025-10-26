@@ -15,7 +15,8 @@
 # Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-labeler-module',
-    'KO_DOCKER_REPO=localhost:5001 ko build --bare ./',
-    deps=['./'],
-    skips_local_docker=True
+    'ko publish --bare --local --push=false ./ && ' +
+    'docker tag $(ko build --local --bare ./) $EXPECTED_REF && ' +
+    'docker push $EXPECTED_REF',
+    deps=['./']
 )
