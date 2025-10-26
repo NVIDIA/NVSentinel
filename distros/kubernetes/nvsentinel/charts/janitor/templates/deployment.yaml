@@ -40,6 +40,62 @@ spec:
         - name: janitor
           image: "{{ .Values.global.janitor.image.repository | default "ghcr.io/nvidia/nvsentinel-janitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).janitor).image.pullPolicy | default "IfNotPresent" }}
+          env:
+            # Cloud Service Provider configuration
+            - name: CSP
+              value: {{ .Values.csp.provider | default "kind" | quote }}
+            {{- if eq (.Values.csp.provider | default "kind") "aws" }}
+            # AWS-specific environment variables
+            {{- if .Values.csp.aws.region }}
+            - name: AWS_REGION
+              value: {{ .Values.csp.aws.region | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq (.Values.csp.provider | default "kind") "gcp" }}
+            # GCP-specific environment variables  
+            {{- if .Values.csp.gcp.project }}
+            - name: GCP_PROJECT
+              value: {{ .Values.csp.gcp.project | quote }}
+            {{- end }}
+            {{- if .Values.csp.gcp.zone }}
+            - name: GCP_ZONE
+              value: {{ .Values.csp.gcp.zone | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq (.Values.csp.provider | default "kind") "azure" }}
+            # Azure-specific environment variables
+            {{- if .Values.csp.azure.subscriptionId }}
+            - name: AZURE_SUBSCRIPTION_ID
+              value: {{ .Values.csp.azure.subscriptionId | quote }}
+            {{- end }}
+            {{- if .Values.csp.azure.resourceGroup }}
+            - name: AZURE_RESOURCE_GROUP
+              value: {{ .Values.csp.azure.resourceGroup | quote }}
+            {{- end }}
+            {{- if .Values.csp.azure.location }}
+            - name: AZURE_LOCATION
+              value: {{ .Values.csp.azure.location | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq (.Values.csp.provider | default "kind") "oci" }}
+            # OCI-specific environment variables
+            {{- if .Values.csp.oci.region }}
+            - name: OCI_REGION
+              value: {{ .Values.csp.oci.region | quote }}
+            {{- end }}
+            {{- if .Values.csp.oci.compartment }}
+            - name: OCI_COMPARTMENT
+              value: {{ .Values.csp.oci.compartment | quote }}
+            {{- end }}
+            {{- if .Values.csp.oci.credentialsFile }}
+            - name: OCI_CREDENTIALS_FILE
+              value: {{ .Values.csp.oci.credentialsFile | quote }}
+            {{- end }}
+            {{- if .Values.csp.oci.profile }}
+            - name: OCI_PROFILE
+              value: {{ .Values.csp.oci.profile | quote }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
