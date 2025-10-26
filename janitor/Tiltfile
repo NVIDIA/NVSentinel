@@ -15,8 +15,7 @@
 # Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-janitor',
-    'IMAGE=$(KO_DOCKER_REPO=ko.local ko build --bare --platform=linux/amd64 ./) && ' +
-    'crane cp $IMAGE localhost:5001/$EXPECTED_IMAGE:$EXPECTED_TAG',
+    '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
     deps=['./'],
     skips_local_docker=True
 )

@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+#
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,10 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build and deploy
-custom_build(
-    'ghcr.io/nvidia/nvsentinel-labeler-module',
-    '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
-    deps=['./'],
-    skips_local_docker=True
-)
+set -euo pipefail
+
+# This script wraps ko build for Tilt integration
+# Usage: ko-tilt-build.sh <module-dir> <expected-ref>
+
+MODULE_DIR="$1"
+EXPECTED_REF="$2"
+
+cd "$MODULE_DIR"
+
+# Build with ko to a temporary local repository
+IMAGE=$(KO_DOCKER_REPO=ttl.sh ko build --bare --platform=linux/amd64 ./)
+
+# Copy the image to the local registry with the expected tag
+crane cp "$IMAGE" "$EXPECTED_REF"
+
+echo "$EXPECTED_REF"
