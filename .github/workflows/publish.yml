@@ -67,6 +67,7 @@ jobs:
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -196,6 +197,7 @@ jobs:
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
 
       # ko is already installed in the setup-ci-tools action
       - name: Authenticate to GHCR

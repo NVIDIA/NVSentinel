@@ -145,15 +145,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - platform-connectors
-          - health-events-analyzer
-          - fault-quarantine-module
-          - labeler-module
-          - node-drainer-module
-          - fault-remediation-module
-          - janitor
-          - health-monitors/csp-health-monitor
+        include:
+          - module: platform-connectors
+            path: .
+          - module: health-events-analyzer
+            path: .
+          - module: fault-quarantine-module
+            path: .
+          - module: labeler-module
+            path: .
+          - module: node-drainer-module
+            path: .
+          - module: fault-remediation-module
+            path: .
+          - module: janitor
+            path: .
+          - module: health-monitors/csp-health-monitor
+            path: ./cmd/csp-health-monitor
+          - module: health-monitors/csp-health-monitor
+            path: ./cmd/maintenance-notifier
     steps:
       - uses: actions/checkout@v4
 
@@ -172,7 +182,7 @@ jobs:
       - name: Test ko build for ${{ matrix.module }}
         run: |
           cd ${{ matrix.module }}
-          ko build --bare --platform=linux/amd64 ./
+          ko build --bare --platform=linux/amd64 ${{ matrix.path }}
         env:
           KO_DOCKER_REPO: ko.local
 

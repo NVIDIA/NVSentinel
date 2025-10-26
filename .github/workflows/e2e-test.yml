@@ -97,6 +97,7 @@ jobs:
           grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
+          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
