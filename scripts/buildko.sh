@@ -24,10 +24,10 @@ export GIT_COMMIT="${GIT_COMMIT:-dev}"
 export BUILD_DATE=$(date -u +%FT%TZ)
 
 # Build flags - use PLATFORMS env var if set, otherwise use .ko.yaml defaults
-KO_FLAGS="-B --image-refs=digests.txt --sbom=cyclonedx --tags=${VERSION}"
+KO_FLAGS=(-B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}")
 if [ -n "${PLATFORMS:-}" ]; then
   echo "Building for platforms: ${PLATFORMS}"
-  KO_FLAGS="${KO_FLAGS} --platform=${PLATFORMS}"
+  KO_FLAGS+=(--platform="${PLATFORMS}")
 fi
 
 # Ensure go.work file exists
@@ -44,7 +44,7 @@ if [ ! -f go.work ]; then
     ./platform-connectors
 fi
 
-ko build ${KO_FLAGS} \
+ko build "${KO_FLAGS[@]}" \
   ./fault-quarantine-module \
   ./fault-remediation-module \
   ./health-events-analyzer \

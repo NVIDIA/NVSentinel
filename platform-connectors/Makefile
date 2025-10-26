@@ -83,7 +83,7 @@ help:
 	@echo "  MODULE_NAME=$(MODULE_NAME)"
 	@echo "  REPO_ROOT=$(REPO_ROOT)"
 	@echo "  IS_GO_MODULE=1 (Go module with kubebuilder/envtest)"
-	@echo "  HAS_DOCKER=1 (Docker builds enabled)"
+	@echo "  IS_KO_MODULE=1 (ko container builds enabled)"
 	@echo ""
 	@echo "Main targets:"
 	@echo "  all        - Run lint-test (default)"

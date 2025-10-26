@@ -67,11 +67,5 @@ help:
 # MODULE NOTES
 # =============================================================================
 # This module handles node reboot and maintenance operations.
-# - Container images are built using ko
-#   - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)
-#   - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)
-#   - For Tilt development, see Tiltfile
-# - Platforms configured in .ko.yaml (linux/amd64, linux/arm64)
-# - Base image and build settings defined in .ko.yaml
-# Run 'make help' to see available targets
+# Run 'make help' to see all available targets and build instructions.
 

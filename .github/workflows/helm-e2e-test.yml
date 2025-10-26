@@ -182,16 +182,18 @@ jobs:
           
           # Build ko images (8 Go modules)
           if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
-            # For PR branches: use ko.local with multi-platform support
-            # Note: ko.local with --platform builds for all platforms in .ko.yaml
+            # For PR branches: use ko.local with explicit multi-platform support
+            # PLATFORMS env var is passed to buildko.sh which adds --platform flag to ko
+            # This overrides ko.local's default single-platform behavior
             KO_DOCKER_REPO=ko.local PLATFORMS="linux/amd64,linux/arm64" make ko-build
             
             # Retag ko.local images to match expected localhost prefix
             for module in fault-quarantine-module fault-remediation-module health-events-analyzer \
                          csp-health-monitor maintenance-notifier janitor labeler-module \
                          node-drainer-module platform-connectors; do
+              echo "Retagging ko.local/${module}:${CI_COMMIT_REF_NAME}"
               docker tag "ko.local/${module}:${CI_COMMIT_REF_NAME}" \
-                        "${{ steps.registry-config.outputs.image_prefix }}/${module}:${CI_COMMIT_REF_NAME}" || true
+                        "${{ steps.registry-config.outputs.image_prefix }}/${module}:${CI_COMMIT_REF_NAME}"
             done
           else
             # For main branch: build and let ko push to GHCR
@@ -241,10 +243,19 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ steps.registry-config.outputs.image_prefix }}/.*:.*${CI_COMMIT_REF_NAME}")
-          [ ${#images[@]} -eq 0 ] && { echo "No images found"; exit 1; }
-
+          # Load all images matching our tag
+          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep ":${CI_COMMIT_REF_NAME}$")
+          
+          if [ ${#images[@]} -eq 0 ]; then
+            echo "Error: No images found with tag ${CI_COMMIT_REF_NAME}"
+            echo "Available images:"
+            docker images | head -20
+            exit 1
+          fi
+          
+          echo "Loading ${#images[@]} images into Kind cluster..."
           for image in "${images[@]}"; do
+            echo "  Loading: $image"
             kind load docker-image "$image" --name "${CLUSTER_NAME}"
           done
 
