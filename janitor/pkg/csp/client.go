@@ -44,6 +44,14 @@ func NewClient(provider string) (Client, error) {
 	switch provider {
 	case "kind":
 		return &kindClient{}, nil
+	case "aws":
+		return NewAWSClientFromEnv()
+	case "gcp":
+		return &gcpClient{}, nil
+	case "azure":
+		return &azureClient{}, nil
+	case "oci":
+		return NewOCIClientFromEnv()
 	default:
 		return nil, fmt.Errorf("unsupported CSP provider: %s", provider)
 	}
