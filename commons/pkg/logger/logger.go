@@ -58,6 +58,7 @@ func NewLogLogger(level slog.Level, withSource bool) *log.Logger {
 		Level:     level,
 		AddSource: withSource,
 	})
+
 	return slog.NewLogLogger(handler, level)
 }
 

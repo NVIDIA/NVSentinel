@@ -253,6 +253,7 @@ func WithHealthCheck(checker HealthChecker) Option {
 				_, _ = w.Write([]byte(err.Error()))
 				return
 			}
+
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
@@ -292,6 +293,7 @@ func WithReadinessCheck(checker ReadinessChecker) Option {
 				_, _ = w.Write([]byte(err.Error()))
 				return
 			}
+
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		})
@@ -407,6 +409,7 @@ func (s *server) Serve(ctx context.Context) error {
 	// Server goroutine
 	g.Go(func() error {
 		var err error
+
 		if s.tlsConfig != nil {
 			slog.Info("starting TLS server", "addr", srv.Addr)
 			err = srv.ListenAndServeTLS(s.tlsConfig.CertFile, s.tlsConfig.KeyFile)
@@ -418,6 +421,7 @@ func (s *server) Serve(ctx context.Context) error {
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
+
 		return nil
 	})
 
@@ -429,6 +433,7 @@ func (s *server) Serve(ctx context.Context) error {
 		defer cancel()
 
 		slog.Info("shutting down server", "grace_period", s.shutdownTimeout)
+
 		shutdownStart := time.Now()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -436,6 +441,7 @@ func (s *server) Serve(ctx context.Context) error {
 		}
 
 		slog.Info("server shutdown complete", "duration", time.Since(shutdownStart))
+
 		return nil
 	})
 
