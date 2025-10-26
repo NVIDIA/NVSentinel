@@ -152,10 +152,10 @@ jobs:
             echo "image_prefix=ghcr.io/nvidia/nvsentinel" >> $GITHUB_OUTPUT
             echo "use_local=false" >> $GITHUB_OUTPUT
           else
-            echo "registry=localhost" >> $GITHUB_OUTPUT
-            echo "org=nvsentinel-e2e" >> $GITHUB_OUTPUT
-            echo "ko_repo=localhost/nvsentinel-e2e/nvsentinel" >> $GITHUB_OUTPUT
-            echo "image_prefix=localhost/nvsentinel-e2e/nvsentinel" >> $GITHUB_OUTPUT
+            echo "registry=localhost:5000" >> $GITHUB_OUTPUT
+            echo "org=nvsentinel" >> $GITHUB_OUTPUT
+            echo "ko_repo=localhost:5000/nvsentinel" >> $GITHUB_OUTPUT
+            echo "image_prefix=localhost:5000/nvsentinel" >> $GITHUB_OUTPUT
             echo "use_local=true" >> $GITHUB_OUTPUT
           fi
 
@@ -180,57 +180,72 @@ jobs:
           # Build Docker images (gpu-health-monitor, syslog-health-monitor)
           make docker-all
           
-          # Build ko images (8 Go modules)
-          if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
-            # For PR branches: build multi-platform images using ko's tarball export
-            # This preserves multi-platform manifests unlike ko.local + docker tag
-            
-            mkdir -p /tmp/ko-images
-            
-            # Build each module as multi-platform tarball
-            for module_info in \
-              "fault-quarantine-module:./fault-quarantine-module" \
-              "fault-remediation-module:./fault-remediation-module" \
-              "health-events-analyzer:./health-events-analyzer" \
-              "csp-health-monitor:./health-monitors/csp-health-monitor/cmd/csp-health-monitor" \
-              "maintenance-notifier:./health-monitors/csp-health-monitor/cmd/maintenance-notifier" \
-              "janitor:./janitor" \
-              "labeler-module:./labeler-module" \
-              "node-drainer-module:./node-drainer-module" \
-              "platform-connectors:./platform-connectors"; do
-              
-              module_name="${module_info%%:*}"
-              module_path="${module_info##*:}"
-              
-              echo "Building ${module_name} for linux/amd64,linux/arm64..."
-              KO_DOCKER_REPO=ko.local \
-                ko build --platform=linux/amd64,linux/arm64 \
-                --tarball="/tmp/ko-images/${module_name}.tar" \
-                --tags="${CI_COMMIT_REF_NAME}" \
-                "${module_path}"
-              
-              # Import tarball and tag with expected name
-              docker load -i "/tmp/ko-images/${module_name}.tar"
-              docker tag "ko.local/${module_name}:${CI_COMMIT_REF_NAME}" \
-                        "${{ steps.registry-config.outputs.image_prefix }}/${module_name}:${CI_COMMIT_REF_NAME}"
-            done
-          else
-            # For main branch: build and let ko push to GHCR
-            make ko-build
-          fi
+          # Ko images are built separately in next step for multi-platform support
           
           docker images | grep "${{ steps.registry-config.outputs.image_prefix }}.*:${{ steps.ref-name.outputs.value }}" || docker images | grep nvsentinel
+
+      - name: Start local registry for multi-platform images
+        if: steps.registry-config.outputs.use_local == 'true'
+        run: |
+          # Start a local Docker registry that can handle multi-platform manifests
+          docker run -d -p 5000:5000 --name registry registry:2
+          echo "Local registry started at localhost:5000"
+
+      - name: Build and push ko images to local registry
+        if: steps.registry-config.outputs.use_local == 'true'
+        env:
+          CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
+        run: |
+          # Build multi-platform images and push to local registry
+          for module_info in \
+            "fault-quarantine-module:./fault-quarantine-module" \
+            "fault-remediation-module:./fault-remediation-module" \
+            "health-events-analyzer:./health-events-analyzer" \
+            "csp-health-monitor:./health-monitors/csp-health-monitor/cmd/csp-health-monitor" \
+            "maintenance-notifier:./health-monitors/csp-health-monitor/cmd/maintenance-notifier" \
+            "janitor:./janitor" \
+            "labeler-module:./labeler-module" \
+            "node-drainer-module:./node-drainer-module" \
+            "platform-connectors:./platform-connectors"; do
+            
+            module_name="${module_info%%:*}"
+            module_path="${module_info##*:}"
+            
+            echo "Building ${module_name} for linux/amd64,linux/arm64..."
+            KO_DOCKER_REPO="localhost:5000/nvsentinel" \
+              ko build --platform=linux/amd64,linux/arm64 \
+              --bare \
+              --tags="${CI_COMMIT_REF_NAME}" \
+              "${module_path}"
+          done
+
+      - name: Build and publish ko images to GHCR
+        if: steps.registry-config.outputs.use_local == 'false'
+        env:
+          VERSION: ${{ steps.ref-name.outputs.value }}
+          KO_DOCKER_REPO: ${{ steps.registry-config.outputs.ko_repo }}
+        run: |
+          # For main branch: build and push to GHCR
+          make ko-build
 
       - name: Create Kind cluster
         run: |
           REGISTRY_MIRROR=$(jq -r '.["registry-mirrors"][0]? // empty' /etc/docker/daemon.json 2>/dev/null || echo "")
+          
+          # Get local registry container IP for Kind to connect to
+          REGISTRY_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' registry || echo "")
 
           cat > /tmp/kind-config.yaml <<EOF
           kind: Cluster
           apiVersion: kind.x-k8s.io/v1alpha4
           name: ${CLUSTER_NAME}
+          containerdConfigPatches:
+          $(if [[ -n "$REGISTRY_IP" ]]; then
+            echo "- |-"
+            echo "  [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:5000\"]"
+            echo "    endpoint = [\"http://${REGISTRY_IP}:5000\"]"
+          fi)
           $(if [[ -n "$REGISTRY_MIRROR" ]]; then
-            echo "containerdConfigPatches:"
             echo "- |-"
             echo "  [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"docker.io\"]"
             echo "    endpoint = [\"${REGISTRY_MIRROR}\"]"
@@ -257,26 +272,30 @@ jobs:
           kind create cluster --config=/tmp/kind-config.yaml
           kubectl cluster-info
           kubectl get nodes
+          
+          # Configure kubectl to trust the local registry
+          if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
+            echo "Kind cluster configured to pull from local registry at localhost:5000"
+          fi
 
-      - name: Load images into Kind cluster
+      - name: Load Docker images into Kind cluster
+        if: steps.registry-config.outputs.use_local == 'true'
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          # Load all images matching our tag
-          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep ":${CI_COMMIT_REF_NAME}$")
+          # Load Docker-built images (gpu/syslog monitors) into Kind
+          # Ko images will be pulled from the local registry
+          mapfile -t images < <(docker images --format "{{.Repository}}:{{.Tag}}" | grep "localhost.*health-monitor.*:${CI_COMMIT_REF_NAME}$")
           
-          if [ ${#images[@]} -eq 0 ]; then
-            echo "Error: No images found with tag ${CI_COMMIT_REF_NAME}"
-            echo "Available images:"
-            docker images | head -20
-            exit 1
+          if [ ${#images[@]} -gt 0 ]; then
+            echo "Loading ${#images[@]} Docker images into Kind..."
+            for image in "${images[@]}"; do
+              echo "  Loading: $image"
+              kind load docker-image "$image" --name "${CLUSTER_NAME}"
+            done
+          else
+            echo "No Docker images found to load"
           fi
-          
-          echo "Loading ${#images[@]} images into Kind cluster..."
-          for image in "${images[@]}"; do
-            echo "  Loading: $image"
-            kind load docker-image "$image" --name "${CLUSTER_NAME}"
-          done
 
       - name: Push images to GitHub Container Registry
         if: steps.registry-config.outputs.use_local == 'false'
@@ -286,6 +305,38 @@ jobs:
           echo "Pushing images to GitHub Container Registry..."
           make docker-push
           make ko-publish
+
+      - name: Load GHCR images into Kind cluster
+        if: steps.registry-config.outputs.use_local == 'false'
+        env:
+          VERSION: ${{ steps.ref-name.outputs.value }}
+          IMAGE_PREFIX: ${{ steps.registry-config.outputs.image_prefix }}
+        run: |
+          # Pull and load all images from GHCR into Kind
+          # This includes both Docker-built health monitors and ko-built modules
+          
+          # List of all modules
+          modules=(
+            "csp-health-monitor"
+            "gpu-health-monitor"
+            "syslog-health-monitor"
+            "fault-quarantine-module"
+            "fault-remediation-module"
+            "health-events-analyzer"
+            "janitor"
+            "labeler-module"
+            "maintenance-notifier"
+            "node-drainer-module"
+            "platform-connectors"
+          )
+          
+          echo "Pulling and loading images from GHCR..."
+          for module in "${modules[@]}"; do
+            image="${IMAGE_PREFIX}/${module}:${VERSION}"
+            echo "Processing: $image"
+            docker pull "$image"
+            kind load docker-image "$image" --name "${CLUSTER_NAME}"
+          done
 
       - name: Install infrastructure dependencies
         run: |
