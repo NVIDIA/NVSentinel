@@ -15,8 +15,8 @@
 # Build and deploy
 custom_build(
     'ghcr.io/nvidia/nvsentinel-health-events-analyzer',
-    'KO_DOCKER_REPO=127.0.0.1:5001 ko build --bare --platform=linux/amd64 ./ > /tmp/ko-ref.txt && ' +
-    'crane tag $(cat /tmp/ko-ref.txt) $EXPECTED_TAG',
+    'IMAGE=$(KO_DOCKER_REPO=kind.local ko build --bare --platform=linux/amd64 ./) && ' +
+    'crane cp $IMAGE localhost:5001/$EXPECTED_IMAGE:$EXPECTED_TAG',
     deps=['./'],
     skips_local_docker=True
 )
