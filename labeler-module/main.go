@@ -19,16 +19,17 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/labeler-module/pkg/labeler"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -76,28 +77,30 @@ func run() error {
 		return fmt.Errorf("error creating labeler instance: %w", err)
 	}
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
-		slog.Info("Starting metrics server", "port", *metricsPort)
-
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		if err := http.ListenAndServe(":"+*metricsPort, nil); err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	slog.Info("Metrics server goroutine started")
-
-	if err := labelerInstance.Run(ctx); err != nil {
-		return fmt.Errorf("error running labeler: %w", err)
+	// Parse metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	slog.Info("Node Labeler Module stopped")
+	// Create server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
 
-	return nil
+	// Start server in errgroup alongside the labeler
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return srv.Serve(gCtx)
+	})
+
+	g.Go(func() error {
+		return labelerInstance.Run(gCtx)
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

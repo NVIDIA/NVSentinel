@@ -14,18 +14,21 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/logger"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"gopkg.in/yaml.v3"
@@ -50,8 +53,18 @@ type ConfigFile struct {
 	Checks []fd.CheckDefinition `yaml:"checks"`
 }
 
-//nolint:cyclop,gocognit // todo
 func main() {
+	logger.SetDefaultStructuredLogger("syslog-health-monitor", version)
+	slog.Info("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
+
+//nolint:cyclop,gocognit // todo
+func run() error {
 	configFile := flag.String("config-file", "/etc/config/config.yaml",
 		"Path to the YAML configuration file for log checks.")
 	platformConnectorSocket := flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
@@ -67,14 +80,11 @@ func main() {
 
 	flag.Parse()
 
-	logger.SetDefaultStructuredLogger("syslog-health-monitor", version)
-	slog.Info("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
-
 	slog.Info("Parsed command line flags successfully")
 
 	nodeName := *nodeNameEnv
 	if nodeName == "" {
-		slog.Error("NODE_NAME env not set and --node-name flag not provided, cannot run.")
+		return fmt.Errorf("NODE_NAME env not set and --node-name flag not provided, cannot run")
 	}
 
 	slog.Info("Using node name", "node", nodeName)
@@ -109,11 +119,7 @@ func main() {
 				continue
 			}
 
-			slog.Error("Platform connector socket file not found after retries",
-				"maxRetries", maxRetries,
-				"socketPath", socketPath)
-
-			os.Exit(1)
+			return fmt.Errorf("platform connector socket file not found after retries: %w", statErr)
 		}
 
 		conn, err = grpc.NewClient(*platformConnectorSocket, opts...)
@@ -128,9 +134,7 @@ func main() {
 				continue
 			}
 
-			slog.Error("Failed to create gRPC client after retries",
-				"maxRetries", maxRetries,
-				"error", err)
+			return fmt.Errorf("failed to create gRPC client after retries: %w", err)
 		}
 
 		slog.Info("Successfully connected to platform connector", "attempt", attempt)
@@ -170,9 +174,7 @@ func main() {
 				continue
 			}
 
-			slog.Error("Config file not found after retries",
-				"maxRetries", maxConfigRetries,
-				"file", *configFile)
+			return fmt.Errorf("config file not found after retries: %w", statErr)
 		}
 
 		yamlFile, err = os.ReadFile(*configFile)
@@ -188,9 +190,7 @@ func main() {
 				continue
 			}
 
-			slog.Error("Failed to read config file after retries",
-				"maxRetries", maxConfigRetries,
-				"error", err)
+			return fmt.Errorf("failed to read config file after retries: %w", err)
 		}
 
 		slog.Info("Successfully read config file", "attempt", attempt)
@@ -202,11 +202,11 @@ func main() {
 
 	err = yaml.Unmarshal(yamlFile, &config)
 	if err != nil {
-		slog.Error("Error unmarshalling config file", "file", *configFile, "error", err)
+		return fmt.Errorf("error unmarshalling config file: %w", err)
 	}
 
 	if len(config.Checks) == 0 {
-		slog.Error("Error: No checks defined in the config file.")
+		return fmt.Errorf("no checks defined in the config file")
 	}
 
 	slog.Info("Creating syslog monitor", "checksCount", len(config.Checks))
@@ -214,13 +214,13 @@ func main() {
 	fdHealthMonitor, err := fd.NewSyslogMonitor(nodeName, config.Checks, client, defaultAgentName,
 		defaultComponentClass, *pollingIntervalFlag, *stateFileFlag, *xidAnalyserEndpoint)
 	if err != nil {
-		slog.Error("Error creating syslog health monitor", "error", err)
+		return fmt.Errorf("error creating syslog health monitor: %w", err)
 	}
 
 	// Parse polling interval
 	pollingInterval, err := time.ParseDuration(*pollingIntervalFlag)
 	if err != nil {
-		slog.Error("Error parsing polling interval", "interval", *pollingIntervalFlag, "error", err)
+		return fmt.Errorf("error parsing polling interval: %w", err)
 	}
 
 	slog.Info("Polling interval configured", "interval", pollingInterval)
@@ -228,27 +228,44 @@ func main() {
 	// Start metrics server
 	slog.Info("Starting metrics server", "port", *metricsPort)
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-		}
-	}()
-
-	ticker := time.NewTicker(pollingInterval)
-	defer ticker.Stop()
-
-	slog.Info("Configured checks", "checks", config.Checks)
-
-	slog.Info("Syslog health monitor initialization complete, starting polling loop...")
-	// Polling loop
-	for range ticker.C {
-		slog.Info("Performing scheduled health check run...")
-
-		if err := fdHealthMonitor.Run(); err != nil {
-			slog.Error("Error running syslog health monitor", "error", err)
-		}
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
+
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
+
+	// Start server in errgroup alongside polling loop
+	g, gCtx := errgroup.WithContext(context.Background())
+
+	g.Go(func() error {
+		return srv.Serve(gCtx)
+	})
+
+	g.Go(func() error {
+		ticker := time.NewTicker(pollingInterval)
+		defer ticker.Stop()
+
+		slog.Info("Configured checks", "checks", config.Checks)
+		slog.Info("Syslog health monitor initialization complete, starting polling loop...")
+
+		// Polling loop
+		for range ticker.C {
+			slog.Info("Performing scheduled health check run...")
+
+			if err := fdHealthMonitor.Run(); err != nil {
+				return fmt.Errorf("error running syslog health monitor: %w", err)
+			}
+		}
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

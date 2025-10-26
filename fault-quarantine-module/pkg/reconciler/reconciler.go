@@ -151,11 +151,11 @@ func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
 }
 
 // nolint: cyclop, gocognit //fix this as part of NGCC-21793
-func (r *Reconciler) Start(ctx context.Context) {
+func (r *Reconciler) Start(ctx context.Context) error {
 	nodeInformer, err := informer.NewNodeInformer(r.config.K8sClient.GetK8sClient(),
 		30*time.Minute, r.workSignal, r.nodeInfo)
 	if err != nil {
-		slog.Error("Failed to initialize node informer", "error", err)
+		return fmt.Errorf("failed to create NodeInformer: %w", err)
 	}
 
 	// Set the callback to decrement the metric when a quarantined node with annotations is deleted
@@ -177,7 +177,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(r.config.TomlConfig.RuleSets,
 		r.config.K8sClient.GetK8sClient(), nodeInformer)
 	if err != nil {
-		slog.Error("Failed to initialize all rule set evaluators", "error", err)
+		return fmt.Errorf("failed to initialize all rule set evaluators: %w", err)
 	}
 
 	r.SetLabelKeys(r.config.TomlConfig.LabelPrefix)
@@ -214,9 +214,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		r.config.MongoPipeline,
 	)
 	if err != nil {
-		slog.Error("Failed to create change stream watcher", "error", err)
-
-		return
+		return fmt.Errorf("failed to create MongoDB change stream watcher: %w", err)
 	}
 	defer watcher.Close(ctx)
 
@@ -228,12 +226,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 			"error", err,
 		)
 
-		return
+		return fmt.Errorf("failed to get health event collection client: %w", err)
 	}
 
 	err = r.nodeInfo.BuildQuarantinedNodesMap(r.config.K8sClient.GetK8sClient())
 	if err != nil {
-		slog.Error("Error fetching quarantined nodes", "error", err)
+		return fmt.Errorf("error fetching quarantined nodes: %w", err)
 	} else {
 		quarantinedNodesMap := r.nodeInfo.GetQuarantinedNodesCopy()
 
@@ -246,7 +244,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 	err = nodeInformer.Run(ctx.Done())
 	if err != nil {
-		slog.Error("Failed to run node informer", "error", err)
+		return fmt.Errorf("failed to run NodeInformer: %w", err)
 	}
 
 	// Wait for NodeInformer cache to sync before processing any events
@@ -256,7 +254,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			slog.Warn("Context cancelled while waiting for node informer sync")
-			return // Exit if context is cancelled during wait
+			return fmt.Errorf("context cancelled while waiting for node informer sync: %w", ctx.Err())
 		case <-time.After(5 * time.Second): // Check periodically
 			slog.Info("NodeInformer cache is not synced yet, waiting for 5 seconds")
 		}
@@ -265,7 +263,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 	// Build initial node annotations cache
 	if err := r.buildNodeAnnotationsCache(ctx); err != nil {
 		// Continue anyway, individual API calls will be made as fallback
-		slog.Error("Failed to build initial node annotations cache", "error", err)
+		return fmt.Errorf("failed to build initial node annotations cache: %w", err)
 	}
 
 	// If breaker is enabled and already tripped at startup, halt until restart/manual close
@@ -274,12 +272,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 			slog.Error("Error checking if circuit breaker is tripped", "error", err)
 			<-ctx.Done()
 
-			return
+			return fmt.Errorf("error checking if circuit breaker is tripped: %w", err)
 		} else if tripped {
 			slog.Error("Fault Quarantine circuit breaker is TRIPPED. Halting event dequeuing indefinitely.")
 			<-ctx.Done()
 
-			return
+			return fmt.Errorf("circuit breaker is tripped at startup")
 		}
 	}
 
@@ -300,7 +298,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			slog.Info("Context canceled. Exiting fault-quarantine event consumer.")
-			return
+			return nil
 		case <-r.workSignal: // Wait for a signal (semaphore acquired)
 			// Only check circuit breaker if it's enabled
 			if r.config.CircuitBreakerEnabled {
@@ -308,12 +306,12 @@ func (r *Reconciler) Start(ctx context.Context) {
 					slog.Error("Error checking if circuit breaker is tripped", "error", err)
 					<-ctx.Done()
 
-					return
+					return fmt.Errorf("error checking if circuit breaker is tripped: %w", err)
 				} else if tripped {
 					slog.Error("Circuit breaker TRIPPED. Halting event processing until restart and breaker reset.")
 					<-ctx.Done()
 
-					return
+					return fmt.Errorf("circuit breaker is tripped")
 				}
 			}
 			// Get current queue length

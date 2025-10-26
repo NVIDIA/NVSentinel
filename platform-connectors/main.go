@@ -20,20 +20,21 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
 )
@@ -148,25 +149,6 @@ func startGRPCServer(socket string) (net.Listener, error) {
 	return lis, nil
 }
 
-func startMetricsServer(metricsPort string) {
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
-		slog.Info("Starting metrics server", "port", metricsPort)
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+metricsPort, nil)
-		if err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	slog.Info("Metrics server goroutine started")
-}
-
 //nolint:cyclop // Main run function complexity is acceptable
 func run() error {
 	socket := flag.String("socket", "", "unix socket path")
@@ -217,34 +199,57 @@ func run() error {
 		return err
 	}
 
-	startMetricsServer(*metricsPort)
-
-	slog.Info("Waiting for signal")
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigs
-	slog.Info("Received signal", "signal", sig)
-
-	close(stopCh)
-
-	if lis != nil {
-		if k8sRingBuffer != nil {
-			k8sRingBuffer.ShutDownHealthMetricQueue()
-		}
-
-		lis.Close()
-		os.Remove(*socket)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	if storeConnector != nil {
-		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer disconnectCancel()
+	// Create server
+	srv := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
 
-		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
-			slog.Error("Failed to disconnect MongoDB client", "error", err)
+	// Start server in errgroup alongside the store and k8s connectors
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return srv.Serve(gCtx)
+	})
+
+	g.Go(func() error {
+		slog.Info("Waiting for signal")
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigs
+		slog.Info("Received signal", "signal", sig)
+
+		close(stopCh)
+
+		if lis != nil {
+			if k8sRingBuffer != nil {
+				k8sRingBuffer.ShutDownHealthMetricQueue()
+			}
+
+			lis.Close()
+			os.Remove(*socket)
 		}
-	}
 
-	cancel()
+		if storeConnector != nil {
+			disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer disconnectCancel()
 
-	return nil
+			if err := storeConnector.Disconnect(disconnectCtx); err != nil {
+				return fmt.Errorf("error disconnecting MongoDB store connector: %w", err)
+			}
+		}
+
+		cancel()
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

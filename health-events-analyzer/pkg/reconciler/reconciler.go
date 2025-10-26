@@ -60,7 +60,9 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 	return &Reconciler{config: cfg}
 }
 
-func (r *Reconciler) Start(ctx context.Context) {
+// Start begins the reconciliation process by listening to change stream events
+// and processing them accordingly.
+func (r *Reconciler) Start(ctx context.Context) error {
 	watcher, err := storewatcher.NewChangeStreamWatcher(
 		ctx,
 		r.config.MongoHealthEventCollectionConfig,
@@ -68,9 +70,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		r.config.MongoPipeline,
 	)
 	if err != nil {
-		slog.Error("Failed to create change stream watcher", "error", err)
-
-		return
+		return fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 	defer watcher.Close(ctx)
 
@@ -82,7 +82,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 			"error", err,
 		)
 
-		return
+		return fmt.Errorf("failed to initialize healthEventCollection client: %w", err)
 	}
 
 	watcher.Start(ctx)
@@ -143,12 +143,15 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 		if err != nil {
 			slog.Error("Max attempt reached, error in handling the event", "eventID", document["_id"], "error", err)
+			return fmt.Errorf("max attempts reached, error in handling the event: %w", err)
 		}
 
 		duration := time.Since(startTime).Seconds()
 
 		eventHandlingDuration.Observe(duration)
 	}
+
+	return nil
 }
 
 func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.HealthEventWithStatus) (bool, error) {

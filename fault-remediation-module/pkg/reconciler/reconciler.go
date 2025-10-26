@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -69,12 +68,11 @@ func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
 	}
 }
 
-func (r *Reconciler) Start(ctx context.Context) {
+func (r *Reconciler) Start(ctx context.Context) error {
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, r.Config.MongoConfig, r.Config.TokenConfig,
 		r.Config.MongoPipeline)
 	if err != nil {
-		slog.Error("Failed to create change stream watcher", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("error initializing change stream watcher: %w", err)
 	}
 
 	defer func() {
@@ -88,6 +86,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 		slog.Error("error initializing collection client for mongodb",
 			"config", r.Config.MongoConfig,
 			"error", err)
+		return fmt.Errorf("error initializing collection client for mongodb: %w", err)
 	}
 
 	watcher.Start(ctx)
@@ -97,6 +96,8 @@ func (r *Reconciler) Start(ctx context.Context) {
 		slog.Info("Event received", "event", event)
 		r.processEvent(ctx, event, watcher, collection)
 	}
+
+	return nil
 }
 
 // processEvent handles a single event from the watcher

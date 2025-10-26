@@ -21,10 +21,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -102,28 +105,49 @@ func run() error {
 
 	slog.Info("All components started successfully")
 
-	if err := initializer.StartMetricsServer(*metricsPort); err != nil {
-		return fmt.Errorf("failed to start metrics server: %w", err)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	select {
-	case <-ctx.Done():
-	case err := <-criticalError:
-		slog.Error("Critical component failure", "error", err)
-		stop() // Cancel context to trigger shutdown
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
 
-		return fmt.Errorf("critical component failure: %w", err)
-	}
+	// Start server in errgroup alongside event watcher monitoring
+	g, gCtx := errgroup.WithContext(ctx)
 
-	slog.Info("Shutting down node drainer")
+	g.Go(func() error {
+		return srv.Serve(gCtx)
+	})
 
-	if err := components.EventWatcher.Stop(); err != nil {
-		return fmt.Errorf("failed to stop event watcher: %w", err)
-	}
+	g.Go(func() error {
+		select {
+		case <-ctx.Done():
+		case err := <-criticalError:
+			slog.Error("Critical component failure", "error", err)
+			stop() // Cancel context to trigger shutdown
 
-	components.QueueManager.Shutdown()
+			return fmt.Errorf("critical component failure: %w", err)
+		}
 
-	slog.Info("Node drainer stopped")
+		slog.Info("Shutting down node drainer")
 
-	return nil
+		if err := components.EventWatcher.Stop(); err != nil {
+			return fmt.Errorf("failed to stop event watcher: %w", err)
+		}
+
+		components.QueueManager.Shutdown()
+
+		slog.Info("Node drainer stopped")
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

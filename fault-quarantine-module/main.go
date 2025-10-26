@@ -19,7 +19,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,11 +27,12 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -179,24 +179,6 @@ func createPipeline() mongo.Pipeline {
 	}
 }
 
-func startMetricsServer(metricsPort string) {
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
-		})
-		slog.Info("Starting metrics server", "port", metricsPort)
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+metricsPort, nil)
-		if err != nil {
-			slog.Error("Failed to start metrics server", "error", err)
-			os.Exit(1)
-		}
-	}()
-	slog.Info("Metrics server goroutine started")
-}
-
 func run() error {
 	// Create a context that gets cancelled on OS interrupt signals
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -264,11 +246,32 @@ func run() error {
 	// Pass the workSignal channel to the Reconciler
 	rec := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 
-	startMetricsServer(*metricsPort)
+	// Parse the port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
 
-	rec.Start(ctx)
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
 
-	return nil
+	// Start server and reconciler concurrently
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return srv.Serve(gCtx)
+	})
+
+	g.Go(func() error {
+		return rec.Start(gCtx)
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

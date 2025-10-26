@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
@@ -29,7 +28,6 @@ import (
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -47,35 +45,6 @@ type Components struct {
 	Informers    *informers.Informers
 	EventWatcher *mongodb.EventWatcher
 	QueueManager queue.EventQueueManager
-}
-
-func StartMetricsServer(port string) error {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
-	go func() {
-		slog.Info("Starting metrics server", "port", port)
-
-		err := server.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
-			slog.Error("Metrics server error", "error", err)
-		}
-	}()
-
-	slog.Info("Metrics server goroutine started")
-
-	return nil
 }
 
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
