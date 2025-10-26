@@ -182,18 +182,37 @@ jobs:
           
           # Build ko images (8 Go modules)
           if [ "${{ steps.registry-config.outputs.use_local }}" = "true" ]; then
-            # For PR branches: use ko.local with explicit multi-platform support
-            # PLATFORMS env var is passed to buildko.sh which adds --platform flag to ko
-            # This overrides ko.local's default single-platform behavior
-            KO_DOCKER_REPO=ko.local PLATFORMS="linux/amd64,linux/arm64" make ko-build
+            # For PR branches: build multi-platform images using ko's tarball export
+            # This preserves multi-platform manifests unlike ko.local + docker tag
             
-            # Retag ko.local images to match expected localhost prefix
-            for module in fault-quarantine-module fault-remediation-module health-events-analyzer \
-                         csp-health-monitor maintenance-notifier janitor labeler-module \
-                         node-drainer-module platform-connectors; do
-              echo "Retagging ko.local/${module}:${CI_COMMIT_REF_NAME}"
-              docker tag "ko.local/${module}:${CI_COMMIT_REF_NAME}" \
-                        "${{ steps.registry-config.outputs.image_prefix }}/${module}:${CI_COMMIT_REF_NAME}"
+            mkdir -p /tmp/ko-images
+            
+            # Build each module as multi-platform tarball
+            for module_info in \
+              "fault-quarantine-module:./fault-quarantine-module" \
+              "fault-remediation-module:./fault-remediation-module" \
+              "health-events-analyzer:./health-events-analyzer" \
+              "csp-health-monitor:./health-monitors/csp-health-monitor/cmd/csp-health-monitor" \
+              "maintenance-notifier:./health-monitors/csp-health-monitor/cmd/maintenance-notifier" \
+              "janitor:./janitor" \
+              "labeler-module:./labeler-module" \
+              "node-drainer-module:./node-drainer-module" \
+              "platform-connectors:./platform-connectors"; do
+              
+              module_name="${module_info%%:*}"
+              module_path="${module_info##*:}"
+              
+              echo "Building ${module_name} for linux/amd64,linux/arm64..."
+              KO_DOCKER_REPO=ko.local \
+                ko build --platform=linux/amd64,linux/arm64 \
+                --tarball="/tmp/ko-images/${module_name}.tar" \
+                --tags="${CI_COMMIT_REF_NAME}" \
+                "${module_path}"
+              
+              # Import tarball and tag with expected name
+              docker load -i "/tmp/ko-images/${module_name}.tar"
+              docker tag "ko.local/${module_name}:${CI_COMMIT_REF_NAME}" \
+                        "${{ steps.registry-config.outputs.image_prefix }}/${module_name}:${CI_COMMIT_REF_NAME}"
             done
           else
             # For main branch: build and let ko push to GHCR
