@@ -147,10 +147,17 @@ jobs:
           CONTAINER_ORG: nvsentinel-e2e
           PLATFORMS: linux/amd64
           DISABLE_REGISTRY_CACHE: true
+          VERSION: ${{ steps.ref-name.outputs.value }}
+          KO_DOCKER_REPO: localhost/nvsentinel-e2e
         run: |
+          # Build Docker images (gpu-health-monitor, syslog-health-monitor)
           make docker-all
+          
+          # Build ko images (8 Go modules)
+          make ko-build
+          
           SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME}" | sed 's/\//-/g')
-          docker images | grep "localhost/nvsentinel-e2e/nvsentinel-.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
+          docker images | grep "localhost/nvsentinel-e2e/nvsentinel.*:${SAFE_REF_NAME}" || docker images | grep nvsentinel
 
       - name: Create Kind cluster
         run: |
