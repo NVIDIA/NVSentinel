@@ -8,7 +8,7 @@
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// WITHOUT WARRANTIES OR CONDITIONS KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
@@ -129,24 +129,20 @@ func run() error {
 		select {
 		case <-ctx.Done():
 			slog.Info("Context cancelled, initiating shutdown")
+			return nil
 		case err := <-criticalError:
 			slog.Error("Critical component failure", "error", err)
 			stop() // Cancel context to trigger shutdown
 
+			slog.Info("Shutting down node drainer")
+			if errStop := components.EventWatcher.Stop(); errStop != nil {
+				return fmt.Errorf("failed to stop event watcher: %w", errStop)
+			}
+			components.QueueManager.Shutdown()
+			slog.Info("Node drainer stopped")
+
 			return fmt.Errorf("critical component failure: %w", err)
 		}
-
-		slog.Info("Shutting down node drainer")
-
-		if err := components.EventWatcher.Stop(); err != nil {
-			return fmt.Errorf("failed to stop event watcher: %w", err)
-		}
-
-		components.QueueManager.Shutdown()
-
-		slog.Info("Node drainer stopped")
-
-		return nil
 	})
 
 	// Wait for both goroutines to finish

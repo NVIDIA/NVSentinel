@@ -215,13 +215,21 @@ func run() error {
 	// Start server in errgroup alongside the store and k8s connectors
 	g, gCtx := errgroup.WithContext(ctx)
 
+	// Ensure that if the HTTP/metrics server exits (nil or error),
+	// Then cancel the shared context so the cleanup goroutine proceeds.
 	g.Go(func() error {
+		defer cancel() // wake the signal/cleanup goroutine regardless of Serve outcome
 		return srv.Serve(gCtx)
 	})
 
 	g.Go(func() error {
-		slog.Info("Waiting for signal or context cancellation")
+		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+		defer func() {
+			// Always stop signal delivery and close channel to avoid leaks.
+			signal.Stop(sigs)
+			close(sigs)
+		}()
 
 		select {
 		case sig := <-sigs:
@@ -237,8 +245,14 @@ func run() error {
 				k8sRingBuffer.ShutDownHealthMetricQueue()
 			}
 
-			lis.Close()
-			os.Remove(*socket)
+			if err := lis.Close(); err != nil {
+				slog.Error("Failed to close listener", "error", err)
+			}
+
+			// Remove the socket file
+			if err := os.Remove(*socket); err != nil && !os.IsNotExist(err) {
+				slog.Error("Failed to remove socket file", "error", err)
+			}
 		}
 
 		if storeConnector != nil {
@@ -250,6 +264,7 @@ func run() error {
 			}
 		}
 
+		// Also cancel the root to propagate shutdown to any other goroutines.
 		cancel()
 
 		return nil
