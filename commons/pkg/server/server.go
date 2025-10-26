@@ -251,6 +251,7 @@ func WithHealthCheck(checker HealthChecker) Option {
 				slog.Warn("health check failed", "error", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = w.Write([]byte(err.Error()))
+
 				return
 			}
 
@@ -291,6 +292,7 @@ func WithReadinessCheck(checker ReadinessChecker) Option {
 				slog.Debug("readiness check failed", "error", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = w.Write([]byte(err.Error()))
+
 				return
 			}
 
