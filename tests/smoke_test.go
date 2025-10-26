@@ -168,7 +168,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Remediation CR is created", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Remediation CR is created and completes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
