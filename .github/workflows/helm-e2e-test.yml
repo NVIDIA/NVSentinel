@@ -127,13 +127,6 @@ jobs:
           helm version --short
           kwok --version
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create Kind cluster
         run: |
           REGISTRY_MIRROR=$(jq -r '.["registry-mirrors"][0]? // empty' /etc/docker/daemon.json 2>/dev/null || echo "")
@@ -170,36 +163,6 @@ jobs:
           kind create cluster --config=/tmp/kind-config.yaml
           kubectl cluster-info
           kubectl get nodes
-
-      - name: Load images into Kind cluster
-        env:
-          VERSION: ${{ github.ref }}
-        run: |
-          # Pull and load all images from GHCR into Kind
-          # This includes both Docker-built health monitors and ko-built modules
-          
-          # List of all modules
-          modules=(
-            "csp-health-monitor"
-            "gpu-health-monitor"
-            "syslog-health-monitor"
-            "fault-quarantine-module"
-            "fault-remediation-module"
-            "health-events-analyzer"
-            "janitor"
-            "labeler-module"
-            "maintenance-notifier"
-            "node-drainer-module"
-            "platform-connectors"
-          )
-          
-          echo "Pulling and loading images from GHCR..."
-          for module in "${modules[@]}"; do
-            image="ghcr.io/nvidia/nvsentinel/${module}:${VERSION}"
-            echo "Processing: $image"
-            docker pull "$image"
-            kind load docker-image "$image" --name "${CLUSTER_NAME}"
-          done
 
       - name: Install infrastructure dependencies
         run: |

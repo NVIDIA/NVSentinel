@@ -38,7 +38,7 @@ spec:
       serviceAccountName: {{ include "janitor.serviceAccountName" . }}
       containers:
         - name: janitor
-          image: "{{ .Values.global.janitor.image.repository | default "ghcr.io/nvidia/nvsentinel-janitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.global.janitor.image.repository | default "ghcr.io/nvidia/nvsentinel/janitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).janitor).image.pullPolicy | default "IfNotPresent" }}
           env:
             # Cloud Service Provider configuration

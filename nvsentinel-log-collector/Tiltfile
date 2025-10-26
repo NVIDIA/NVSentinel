@@ -13,7 +13,7 @@
 # limitations under the License.
 
 docker_build(
-    "ghcr.io/nvidia/nvsentinel-log-collector",
+    "ghcr.io/nvidia/nvsentinel/log-collector",
     context=".",
     dockerfile="./Dockerfile"
 )

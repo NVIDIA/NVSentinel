@@ -53,7 +53,7 @@ spec:
           type: DirectoryOrCreate
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel/csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           command: ["/app/csp-health-monitor"]
           args:
@@ -81,7 +81,7 @@ spec:
                 optional: true
 
         - name: maintenance-notifier
-          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel/csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           securityContext:
             runAsUser: 0

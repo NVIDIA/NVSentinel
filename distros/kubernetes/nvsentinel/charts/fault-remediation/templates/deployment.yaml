@@ -46,7 +46,7 @@ spec:
           - name: MAINTENANCE_API_GROUP
             value: {{ .Values.maintenanceResource.apiGroup }}
 
-          image: "{{ ((.Values.global).faultRemediationModule).image.repository | default "ghcr.io/nvidia/nvsentinel-fault-remediation-module" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ ((.Values.global).faultRemediationModule).image.repository | default "ghcr.io/nvidia/nvsentinel/fault-remediation-module" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).faultRemediationModule).image.pullPolicy | default "IfNotPresent" }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

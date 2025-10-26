@@ -106,21 +106,21 @@ jobs:
         include:
           - component: gpu-health-monitor-dcgm3
             make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm3'
-            container_name: 'nvsentinel-gpu-health-monitor'
+            container_name: 'nvsentinel/gpu-health-monitor'
             tag_suffix: '-dcgm-3.x'
           - component: gpu-health-monitor-dcgm4
             make_command: 'make -C health-monitors/gpu-health-monitor docker-publish-dcgm4'
-            container_name: 'nvsentinel-gpu-health-monitor'
+            container_name: 'nvsentinel/gpu-health-monitor'
             tag_suffix: '-dcgm-4.x'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
-            container_name: 'nvsentinel-syslog-health-monitor'
+            container_name: 'nvsentinel/syslog-health-monitor'
           - component: log-collector
             make_command: 'make -C nvsentinel-log-collector docker-publish-log-collector'
-            container_name: 'nvsentinel-log-collector'
+            container_name: 'nvsentinel/log-collector'
           - component: file-server-cleanup
             make_command: 'make -C nvsentinel-log-collector docker-publish-file-server-cleanup'
-            container_name: 'nvsentinel-file-server-cleanup'
+            container_name: 'nvsentinel/file-server-cleanup'
     steps:
       - uses: actions/checkout@v4
         with:

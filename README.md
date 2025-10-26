@@ -450,7 +450,7 @@ NVSentinel uses a monorepo structure. Build each module independently:
 ```bash
 # Build a specific module (example: platform-connectors)
 cd platform-connectors
-docker build -t nvsentinel-platform-connectors .
+docker build -t platform-connectors .
 
 # Or build Go binaries directly
 cd fault-quarantine-module
