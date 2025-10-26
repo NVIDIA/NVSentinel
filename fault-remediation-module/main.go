@@ -284,9 +284,22 @@ func run() error {
 	// Start server and reconciler concurrently
 	g, gCtx := errgroup.WithContext(ctx)
 
+	// Start the metrics/health server.
+	// DESIGN DECISION: Metrics server failures are logged but do NOT terminate the service.
+	// Rationale:
+	// - The core business logic (fault remediation) is more critical than metrics
+	// - A port conflict or permission issue shouldn't prevent remediation operations
+	// - Operators can detect missing metrics via monitoring systems
+	// - Service can still function and remediate faults without metrics endpoint
+	// If metrics are deemed critical, change this to: return srv.Serve(gCtx)
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
-		return srv.Serve(gCtx)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
 	})
 
 	g.Go(func() error {

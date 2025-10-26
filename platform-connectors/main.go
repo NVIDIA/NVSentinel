@@ -220,7 +220,11 @@ func run() error {
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
 
-		return srv.Serve(gCtx)
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
 	})
 
 	g.Go(func() error {
