@@ -29,8 +29,8 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel \
   --create-namespace
 
-# View available versions
-helm search repo oci://ghcr.io/nvidia/nvsentinel --versions
+# View chart information
+helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.2.0
 ```
 
 ## ✨ Key Features
@@ -169,6 +169,7 @@ global:
     enabled: true
   syslogHealthMonitor:
     enabled: true
+
   cspHealthMonitor:
     enabled: false  # Cloud provider integration
   
@@ -336,6 +337,7 @@ We welcome contributions! Here's how to get started:
 - 🧪 Add tests and increase coverage
 - 🔧 Submit pull requests to fix issues
 - 💬 Help others in [discussions](https://github.com/NVIDIA/NVSentinel/discussions)
+- 🔒 **Security Issues**: See our [Security Policy](SECURITY.md)
 
 **Getting Started**:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
