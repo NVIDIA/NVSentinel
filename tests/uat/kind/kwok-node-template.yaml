@@ -1,0 +1,59 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Node
+metadata:
+  annotations:
+    node.alpha.kubernetes.io/ttl: "0"
+    kwok.x-k8s.io/node: fake
+  labels:
+    beta.kubernetes.io/arch: amd64
+    beta.kubernetes.io/os: linux
+    kubernetes.io/hostname: kwok-node-PLACEHOLDER
+    kubernetes.io/os: linux
+    kubernetes.io/role: agent
+    node-role.kubernetes.io/agent: ""
+    nvidia.com/gpu.present: "true"
+    nvidia.com/gpu.deploy.dcgm: "true"
+    nvidia.com/gpu.deploy.driver: "true"
+    type: kwok
+  name: kwok-node-PLACEHOLDER
+spec:
+  taints:
+  - effect: NoSchedule
+    key: nvidia.com/gpu
+status:
+  allocatable:
+    cpu: "224"
+    memory: 1024Gi
+    nvidia.com/gpu: "8"
+    pods: "110"
+  capacity:
+    cpu: "224"
+    memory: 1024Gi
+    nvidia.com/gpu: "8"
+    pods: "110"
+  nodeInfo:
+    architecture: amd64
+    bootID: ""
+    containerRuntimeVersion: ""
+    kernelVersion: ""
+    kubeProxyVersion: fake
+    kubeletVersion: fake
+    machineID: ""
+    operatingSystem: linux
+    osImage: ""
+    systemUUID: ""
+  phase: Running
