@@ -15,12 +15,6 @@
 name: 'Setup CI Environment'
 description: 'Install all CI tools and setup build environment'
 
-inputs:
-  install-dcgm:
-    description: 'Whether to install DCGM (requires sudo, may fail in some environments)'
-    required: false
-    default: 'false'
-
 runs:
   using: 'composite'
   steps:
