@@ -93,7 +93,7 @@ while IFS= read -r dockerfile; do
             
             if [[ "${DRY_RUN}" == "false" ]]; then
                 # Update Go version in Dockerfile
-                # Match patterns like: golang:1.25-bookworm, etc.
+                # Match patterns like: golang:1.25-trixie, etc.
                 sed -i.bak -E "s/(FROM.*golang:)[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?/\1${GO_VERSION}\3/g" "${dockerfile}"
                 rm "${dockerfile}.bak"
             fi
@@ -111,7 +111,7 @@ while IFS= read -r dockerfile; do
             
             if [[ "${DRY_RUN}" == "false" ]]; then
                 # Update Python version in Dockerfile
-                # Match patterns like: python:3.11-alpine, python:3.12-bookworm, etc.
+                # Match patterns like: python:3.11-alpine, python:3.12-trixie, etc.
                 sed -i.bak -E "s/(FROM.*python:)[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?/\1${PYTHON_VERSION}\3/g" "${dockerfile}"
                 rm "${dockerfile}.bak"
             fi
