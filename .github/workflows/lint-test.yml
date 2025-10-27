@@ -254,7 +254,7 @@ jobs:
           echo "✅ Coverage consolidation completed successfully"
 
       - name: Upload consolidated coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: consolidated-code-coverage
           path: consolidated-coverage/coverage.txt
@@ -446,7 +446,7 @@ jobs:
           echo "✅ Coverage consolidation completed successfully"
 
       - name: Upload consolidated coverage baseline
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: consolidated-code-coverage
           path: consolidated-coverage/coverage.txt

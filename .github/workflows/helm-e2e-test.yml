@@ -278,7 +278,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: helm-e2e-kind-logs-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -286,7 +286,7 @@ jobs:
 
       - name: Upload debugging artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: helm-e2e-debug-artifacts-${{ github.run_id }}
           path: /tmp/debug-artifacts/

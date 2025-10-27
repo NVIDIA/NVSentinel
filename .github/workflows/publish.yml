@@ -91,7 +91,7 @@ jobs:
           cat versions.txt
 
       - name: Upload versions.txt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: versions
           path: versions.txt
