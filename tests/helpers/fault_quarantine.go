@@ -230,6 +230,15 @@ func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client
 				return false
 			}
 		}
+
+		// Also wait for nvsentinel-state label to be cleared
+		if node.Labels != nil {
+			if _, exists := node.Labels[NVSentinelStateLabelKey]; exists {
+				t.Logf("Node %s still has nvsentinel-state label", nodeName)
+				return false
+			}
+		}
+
 		return true
 	}, WaitTimeout, WaitInterval)
 	t.Logf("Node %s cleaned up successfully", nodeName)

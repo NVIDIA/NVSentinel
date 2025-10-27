@@ -426,10 +426,7 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 	}, WaitTimeout, WaitInterval)
 	t.Log("Node cordoned successfully")
 
-	t.Log("Step 3: Wait for drain to complete")
-	WaitForNodeLabel(ctx, t, client, nodeName, NVSentinelStateLabelKey, DrainSucceededLabelValue)
-
-	t.Log("Step 4: Verify MongoDB event status: Quarantined + Succeeded")
+	t.Log("Step 3: Verify MongoDB drain status (persists even after label changes)")
 	WaitForMongoHealthEventStatus(ctx, t, client, nodeName, "Quarantined", "Succeeded")
 
 	t.Log("Full remediation flow trigger completed")

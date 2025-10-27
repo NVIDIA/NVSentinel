@@ -753,3 +753,103 @@ func RestartDeployment(ctx context.Context, c klient.Client, name, namespace str
 
 	return fmt.Errorf("failed to restart deployment after %d retries: %w", maxRetries, lastErr)
 }
+
+// CheckNodeConditionExists checks if a node has a specific condition type and reason
+func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName string, conditionType v1.NodeConditionType, reason string) (bool, *v1.NodeCondition) {
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err != nil {
+		return false, nil
+	}
+
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == conditionType && condition.Reason == reason {
+			return true, &condition
+		}
+	}
+	return false, nil
+}
+
+// CheckNodeEventExists checks if an event exists for a node with specific type and reason
+func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string) (bool, *v1.Event) {
+	eventList := &v1.EventList{}
+	err := c.Resources().List(ctx, eventList)
+	if err != nil {
+		return false, nil
+	}
+
+	for _, event := range eventList.Items {
+		if event.InvolvedObject.Kind == "Node" &&
+			event.InvolvedObject.Name == nodeName &&
+			event.Type == eventType &&
+			event.Reason == eventReason {
+			return true, &event
+		}
+	}
+	return false, nil
+}
+
+// RemoveNodeCondition removes a specific condition from a node
+func RemoveNodeCondition(ctx context.Context, c klient.Client, nodeName string, conditionType v1.NodeConditionType) error {
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	newConditions := []v1.NodeCondition{}
+	for _, condition := range node.Status.Conditions {
+		if condition.Type != conditionType {
+			newConditions = append(newConditions, condition)
+		}
+	}
+
+	node.Status.Conditions = newConditions
+	err = c.Resources().UpdateStatus(ctx, node)
+	if err != nil {
+		return fmt.Errorf("failed to update node status: %w", err)
+	}
+
+	return nil
+}
+
+// SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node
+func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName string, managed bool) error {
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Labels == nil {
+		node.Labels = make(map[string]string)
+	}
+
+	if managed {
+		node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "true"
+	} else {
+		node.Labels["k8saas.nvidia.com/ManagedByNVSentinel"] = "false"
+	}
+
+	err = c.Resources().Update(ctx, node)
+	if err != nil {
+		return fmt.Errorf("failed to update node labels: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveNodeManagedByNVSentinelLabel removes the ManagedByNVSentinel label from a node
+func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, nodeName string) error {
+	node, err := GetNodeByName(ctx, c, nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if node.Labels != nil {
+		delete(node.Labels, "k8saas.nvidia.com/ManagedByNVSentinel")
+		err = c.Resources().Update(ctx, node)
+		if err != nil {
+			return fmt.Errorf("failed to update node labels: %w", err)
+		}
+	}
+
+	return nil
+}
