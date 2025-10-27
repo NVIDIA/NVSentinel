@@ -40,13 +40,9 @@ permissions:
   attestations: write
 
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   build-image-list:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
-    needs: prepare-environment
     outputs:
       versions: ${{ steps.build-list.outputs.versions }}
     steps:
@@ -55,20 +51,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
-          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -99,9 +82,8 @@ jobs:
           retention-days: 90
 
   container-publish:
-    runs-on: linux-amd64-cpu4
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 60
-    needs: prepare-environment
     strategy:
       matrix:
         include:
@@ -128,20 +110,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
-          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -171,7 +140,6 @@ jobs:
   build-images:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
-    needs: prepare-environment
     permissions:
       contents: read
       packages: write
@@ -189,20 +157,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
-          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -216,7 +171,7 @@ jobs:
             echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
           fi
 
-      # ko is already installed in the setup-ci-tools action
+      # ko is already installed in the setup-ci-env action
       - name: Authenticate to GHCR
         shell: bash
         run: echo ${{ secrets.GITHUB_TOKEN }} | ko login ghcr.io -u ${{ github.actor }} --password-stdin

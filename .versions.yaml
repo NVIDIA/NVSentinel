@@ -19,7 +19,7 @@
 # Makefiles should reference this file as the single source of truth.
 #
 # Usage:
-#   - GitHub Actions: Read and parse this file in prepare-environment.yml
+#   - GitHub Actions: Read and parse this file in versions.yaml
 #   - Makefiles: Source versions using yq or similar YAML parser
 #   - Documentation: Reference this file for version requirements
 #
@@ -55,10 +55,18 @@ protobuf:
 # Linting & Validation
 linting:
   shellcheck: 'v0.11.0'
-  addlicense: 'latest'
+  addlicense: 'v1.2.0'
   black: '25.9.0'
 
 # Container Tools
 container_tools:
   docker_buildx: 'latest'
   ko: 'v0.18.0'
+
+# Testing & E2E Tools
+testing_tools:
+  kind: '0.30.0'
+  helm: 'v3.14.4'
+  kwok: 'v0.7.0'
+  ctlptl: '0.8.43'
+  tilt: '0.35.2'

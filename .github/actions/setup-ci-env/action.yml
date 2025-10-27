@@ -12,50 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: 'Setup CI Tools'
-description: 'Install all CI tools matching ci.Dockerfile'
+name: 'Setup CI Environment'
+description: 'Install all CI tools and setup build environment'
 
 inputs:
-  go-version:
-    description: 'Go version to install'
-    required: true
-  python-version:
-    description: 'Python version to install'
-    required: true
-  poetry-version:
-    description: 'Poetry version to install'
-    required: true
-  golangci-lint-version:
-    description: 'golangci-lint version to install'
-    required: true
-  protobuf-version:
-    description: 'Protocol Buffers version to install'
-    required: true
-  protoc-gen-go-version:
-    description: 'protoc-gen-go version to install'
-    required: true
-  protoc-gen-go-grpc-version:
-    description: 'protoc-gen-go-grpc version to install'
-    required: true
-  grpcio-tools-version:
-    description: 'grpcio-tools version to install'
-    required: true
-  black-version:
-    description: 'black version to install'
-    required: true
-  shellcheck-version:
-    description: 'shellcheck version to install'
-    required: true
-  ko-version:
-    description: 'Version of ko to install'
-    required: true
-  setup-envtest-version:
-    description: 'Version of setup-envtest to install'
-    required: true
+  install-dcgm:
+    description: 'Whether to install DCGM (requires sudo, may fail in some environments)'
+    required: false
+    default: 'false'
 
 runs:
   using: 'composite'
   steps:
+    - name: Load versions from .versions.yaml
+      id: versions
+      shell: bash
+      run: |
+        # Install yq for YAML parsing if not already available
+        if ! command -v yq &> /dev/null; then
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+        fi
+        
+        # Load all versions from .versions.yaml
+        echo "go_version=$(yq '.languages.go' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "python_version=$(yq '.languages.python' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "poetry_version=$(yq '.build_tools.poetry' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "golangci_lint_version=$(yq '.go_tools.golangci_lint' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "protobuf_version=$(yq '.protobuf.protobuf' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "protoc_gen_go_version=$(yq '.protobuf.protoc_gen_go' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "protoc_gen_go_grpc_version=$(yq '.protobuf.protoc_gen_go_grpc' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "grpcio_tools_version=$(yq '.protobuf.grpcio_tools' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "black_version=$(yq '.linting.black' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "shellcheck_version=$(yq '.linting.shellcheck' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "addlicense_version=$(yq '.linting.addlicense' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "ko_version=$(yq '.container_tools.ko' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "setup_envtest_version=$(yq '.go_tools.setup_envtest' .versions.yaml)" >> $GITHUB_OUTPUT
+
     - name: Install base dependencies
       shell: bash
       run: |
@@ -65,7 +58,7 @@ runs:
     - name: Set up Python
       uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
       with:
-        python-version: ${{ inputs.python-version }}
+        python-version: ${{ steps.versions.outputs.python_version }}
         cache: 'pip'
 
     - name: Cache Poetry dependencies
@@ -74,15 +67,15 @@ runs:
         path: |
           ~/.cache/pypoetry
           ~/.cache/pip
-        key: ${{ runner.os }}-poetry-${{ inputs.poetry-version }}-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
+        key: ${{ runner.os }}-poetry-${{ steps.versions.outputs.poetry_version }}-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
         restore-keys: |
-          ${{ runner.os }}-poetry-${{ inputs.poetry-version }}-
+          ${{ runner.os }}-poetry-${{ steps.versions.outputs.poetry_version }}-
           ${{ runner.os }}-poetry-
 
     - name: Install Poetry
       shell: bash
       run: |
-        pip install --break-system-packages poetry==${{ inputs.poetry-version }} || pip install poetry==${{ inputs.poetry-version }}
+        pip install --break-system-packages poetry==${{ steps.versions.outputs.poetry_version }} || pip install poetry==${{ steps.versions.outputs.poetry_version }}
 
     - name: Install Helm
       uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
@@ -93,7 +86,7 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
       with:
         path: ~/.local/share/helm/plugins
-        key: ${{ runner.os }}-helm-plugins-${{ hashFiles('.github/actions/setup-ci-tools/action.yml') }}
+        key: ${{ runner.os }}-helm-plugins-${{ hashFiles('.github/actions/setup-ci-env/action.yml') }}
         restore-keys: |
           ${{ runner.os }}-helm-plugins-
 
@@ -105,7 +98,7 @@ runs:
     - name: Set up Go
       uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
       with:
-        go-version: ${{ inputs.go-version }}
+        go-version: ${{ steps.versions.outputs.go_version }}
         cache: true
         cache-dependency-path: |
           **/go.sum
@@ -116,7 +109,7 @@ runs:
       run: |
         go install github.com/boumenot/gocover-cobertura@latest
         go install gotest.tools/gotestsum@latest
-        curl -fsSL --retry 3 --keepalive-time 2 https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ inputs.golangci-lint-version }}
+        curl -fsSL --retry 3 --keepalive-time 2 https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ steps.versions.outputs.golangci_lint_version }}
 
     - name: Cache Protocol Buffers
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
@@ -124,7 +117,7 @@ runs:
         path: |
           /usr/local/bin/protoc
           /usr/local/include/google
-        key: ${{ runner.os }}-protoc-${{ inputs.protobuf-version }}
+        key: ${{ runner.os }}-protoc-${{ steps.versions.outputs.protobuf_version }}
         restore-keys: |
           ${{ runner.os }}-protoc-
 
@@ -132,11 +125,11 @@ runs:
       shell: bash
       run: |
         # Check if protoc is already cached
-        if command -v protoc &> /dev/null && protoc --version | grep -q "${{ inputs.protobuf-version }}"; then
+        if command -v protoc &> /dev/null && protoc --version | grep -q "${{ steps.versions.outputs.protobuf_version }}"; then
           echo "Protocol Buffers already installed from cache"
         else
-          echo "Installing Protocol Buffers ${{ inputs.protobuf-version }}"
-          PROTOBUF_VERSION="${{ inputs.protobuf-version }}"
+          echo "Installing Protocol Buffers ${{ steps.versions.outputs.protobuf_version }}"
+          PROTOBUF_VERSION="${{ steps.versions.outputs.protobuf_version }}"
           PROTOBUF_VERSION_NO_V="${PROTOBUF_VERSION#v}"
           ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64) echo aarch_64;; *) echo $(uname -m);; esac)
           wget -q https://github.com/protocolbuffers/protobuf/releases/download/${PROTOBUF_VERSION}/protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}.zip
@@ -146,15 +139,15 @@ runs:
           sudo cp -r protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}/include/google /usr/local/include/
           rm -rf protoc-${PROTOBUF_VERSION_NO_V}-linux-${ARCH}*
         fi
-        go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ inputs.protoc-gen-go-version }}
-        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ inputs.protoc-gen-go-grpc-version }}
-        pip install grpcio==${{ inputs.grpcio-tools-version }} grpcio-tools==${{ inputs.grpcio-tools-version }} black==${{ inputs.black-version }}
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ steps.versions.outputs.protoc_gen_go_version }}
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ steps.versions.outputs.protoc_gen_go_grpc_version }}
+        pip install grpcio==${{ steps.versions.outputs.grpcio_tools_version }} grpcio-tools==${{ steps.versions.outputs.grpcio_tools_version }} black==${{ steps.versions.outputs.black_version }}
 
     - name: Cache shellcheck
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
       with:
         path: /usr/local/bin/shellcheck
-        key: ${{ runner.os }}-shellcheck-${{ inputs.shellcheck-version }}
+        key: ${{ runner.os }}-shellcheck-${{ steps.versions.outputs.shellcheck_version }}
         restore-keys: |
           ${{ runner.os }}-shellcheck-
 
@@ -162,12 +155,12 @@ runs:
       shell: bash
       run: |
         # Check if shellcheck is already cached
-        if command -v shellcheck &> /dev/null && shellcheck --version | grep -q "${{ inputs.shellcheck-version }}"; then
+        if command -v shellcheck &> /dev/null && shellcheck --version | grep -q "${{ steps.versions.outputs.shellcheck_version }}"; then
           echo "shellcheck already installed from cache"
         else
-          echo "Installing shellcheck ${{ inputs.shellcheck-version }}"
+          echo "Installing shellcheck ${{ steps.versions.outputs.shellcheck_version }}"
           ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64) echo aarch64;; *) echo $(uname -m);; esac)
-          curl -fsSL --retry 3 --keepalive-time 2 "https://github.com/koalaman/shellcheck/releases/download/${{ inputs.shellcheck-version }}/shellcheck-${{ inputs.shellcheck-version }}.linux.${ARCH}.tar.xz" | \
+          curl -fsSL --retry 3 --keepalive-time 2 "https://github.com/koalaman/shellcheck/releases/download/${{ steps.versions.outputs.shellcheck_version }}/shellcheck-${{ steps.versions.outputs.shellcheck_version }}.linux.${ARCH}.tar.xz" | \
             sudo tar -xJ --wildcards -C /usr/local/bin/ --strip-components=1 "*/shellcheck"
           sudo chmod +x /usr/local/bin/shellcheck
         fi
@@ -175,13 +168,13 @@ runs:
     - name: Install additional Go tools
       shell: bash
       run: |
-        go install github.com/google/addlicense@latest
+        go install github.com/google/addlicense@${{ steps.versions.outputs.addlicense_version }}
         # Pin setup-envtest to avoid Go version compatibility issues
         # Using version from .versions.yaml
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ inputs.setup-envtest-version }}
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
-        go install github.com/google/ko@${{ inputs.ko-version }}
+        go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 
     - name: Set environment variables
       shell: bash
