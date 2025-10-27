@@ -43,7 +43,7 @@ go_tools:
   golangci_lint: 'v1.64.8'
   gotestsum: 'v1.13.0'
   gocover_cobertura: 'v1.4.0'
-  setup_envtest: 'release-0.19'  # Pinned to avoid Go 1.25+ requirement
+  setup_envtest: 'v0.22.3'
   goimports: 'v0.30.0'
   crane: 'v0.20.2'
 
