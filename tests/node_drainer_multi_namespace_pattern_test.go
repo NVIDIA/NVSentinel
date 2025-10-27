@@ -1,4 +1,4 @@
-// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,7 +69,7 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		t.Log("Triggering drain")
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error")
+			WithMessage("GPU Fallen off the bus")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 

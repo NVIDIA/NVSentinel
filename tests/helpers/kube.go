@@ -1,4 +1,4 @@
-// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -769,23 +769,49 @@ func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName str
 	return false, nil
 }
 
-// CheckNodeEventExists checks if an event exists for a node with specific type and reason
-func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string) (bool, *v1.Event) {
+// CheckNodeEventExists checks if an event exists for a node with specific type and optional reason/time filters
+// - eventReason: if empty, reason is not checked
+// - afterTime: if zero, time is not checked
+func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string, afterTime ...time.Time) (bool, *v1.Event) {
 	eventList := &v1.EventList{}
 	err := c.Resources().List(ctx, eventList)
 	if err != nil {
 		return false, nil
 	}
 
+	var timeFilter time.Time
+	if len(afterTime) > 0 {
+		timeFilter = afterTime[0]
+	}
+
 	for _, event := range eventList.Items {
-		if event.InvolvedObject.Kind == "Node" &&
-			event.InvolvedObject.Name == nodeName &&
-			event.Type == eventType &&
-			event.Reason == eventReason {
-			return true, &event
+		// Check basic node event match
+		if event.InvolvedObject.Kind != "Node" ||
+			event.InvolvedObject.Name != nodeName ||
+			event.Type != eventType {
+			continue
 		}
+
+		// Check reason if provided
+		if eventReason != "" && event.Reason != eventReason {
+			continue
+		}
+
+		// Check time filter if provided
+		if !timeFilter.IsZero() {
+			if !event.FirstTimestamp.After(timeFilter) && !event.LastTimestamp.After(timeFilter) {
+				continue
+			}
+		}
+
+		return true, &event
 	}
 	return false, nil
+}
+
+// CheckNodeEventExistsAfterTime checks if a node event exists and was created/updated after the specified time
+func CheckNodeEventExistsAfterTime(ctx context.Context, c klient.Client, nodeName string, eventType string, afterTime time.Time) (bool, *v1.Event) {
+	return CheckNodeEventExists(ctx, c, nodeName, eventType, "", afterTime)
 }
 
 // RemoveNodeCondition removes a specific condition from a node
@@ -852,4 +878,34 @@ func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, no
 	}
 
 	return nil
+}
+
+// GetPodOnWorkerNode returns a running pod matching the given name pattern on a real worker node
+func GetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client, namespace, podNamePattern string) (*v1.Pod, error) {
+	t.Helper()
+
+	pods := &v1.PodList{}
+	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
+		opts.FieldSelector = fmt.Sprintf("metadata.namespace=%s", namespace)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods in namespace %s: %w", namespace, err)
+	}
+
+	for _, pod := range pods.Items {
+		if !regexp.MustCompile(podNamePattern).MatchString(pod.Name) {
+			continue
+		}
+
+		if pod.Status.Phase != v1.PodRunning {
+			continue
+		}
+
+		if regexp.MustCompile("worker").MatchString(pod.Spec.NodeName) && !regexp.MustCompile("kwok").MatchString(pod.Spec.NodeName) {
+			t.Logf("Found pod %s on worker node %s", pod.Name, pod.Spec.NodeName)
+			return &pod, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no running pod matching pattern '%s' found on real worker nodes", podNamePattern)
 }

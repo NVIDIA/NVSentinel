@@ -1,4 +1,4 @@
-// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -327,7 +327,7 @@ func SendDrainCompletedEvent(ctx context.Context, t *testing.T, nodeName string,
 	t.Logf("Sending drain completed event to node %s with recommended action %d", nodeName, recommendedAction)
 	event := NewHealthEvent(nodeName).
 		WithErrorCode("79").
-		WithMessage("XID 79 error - drain completed").
+		WithMessage("GPU Fallen off the bus - drain completed").
 		WithRecommendedAction(recommendedAction)
 
 	tempFile := SendHealthEvent(ctx, t, event)

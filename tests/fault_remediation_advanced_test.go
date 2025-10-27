@@ -1,4 +1,4 @@
-// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -213,7 +213,7 @@ func TestConcurrentRemediationEvents(t *testing.T) {
 
 		fatalEvent1 := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error - event 1").
+			WithMessage("GPU Fallen off the bus - event 1").
 			WithRecommendedAction(2)
 		tempFile1 := helpers.SendHealthEvent(ctx, t, fatalEvent1)
 		defer os.Remove(tempFile1)
