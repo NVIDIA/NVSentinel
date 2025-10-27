@@ -238,6 +238,9 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
+      - name: Install E2E testing tools
+        uses: ./.github/actions/install-e2e-tools
+
       - name: Compute ref name with short SHA
         id: ref-name
         run: |
@@ -249,6 +252,27 @@ jobs:
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Prep system for multi-node Kind cluster
+        run: |
+          # System configuration for Kind multi-node setup
+          sudo systemctl stop apparmor || echo "unable to stop apparmor"
+          sudo systemctl disable apparmor || echo "unable to disable apparmor"
+          sudo modprobe br_netfilter || echo "unable to run modprobe"
+
+          # Network configuration
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+
+          # File system limits for Kind
+          sudo sysctl -w fs.inotify.max_user_watches=524288
+          sudo sysctl -w fs.inotify.max_user_instances=1024
+
+          # IPTables cleanup and configuration
+          sudo iptables -F && sudo iptables -X && sudo iptables -t nat -F && sudo iptables -t nat -X && sudo iptables -t mangle -F && sudo iptables -t mangle -X && sudo iptables -P INPUT ACCEPT && sudo iptables -P FORWARD ACCEPT -w 5 && sudo iptables -P OUTPUT ACCEPT -w 5
+          sudo systemctl restart docker
 
       - name: Create Kind cluster using make
         env:

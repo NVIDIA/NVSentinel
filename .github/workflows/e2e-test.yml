@@ -63,16 +63,6 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
-      - name: Load versions from .versions.yaml
-        id: versions
-        run: |
-          KIND_VERSION=$(yq eval '.testing_tools.kind' .versions.yaml)
-          CTLPTL_VERSION=$(yq eval '.testing_tools.ctlptl' .versions.yaml)
-          TILT_VERSION=$(yq eval '.testing_tools.tilt' .versions.yaml)
-          echo "kind_version=${KIND_VERSION}" >> $GITHUB_OUTPUT
-          echo "ctlptl_version=${CTLPTL_VERSION}" >> $GITHUB_OUTPUT
-          echo "tilt_version=${TILT_VERSION}" >> $GITHUB_OUTPUT
-
       - name: Workaround for freeing up more disk space
         run: |
           sudo rm -rf /usr/local/lib/android
@@ -110,82 +100,8 @@ jobs:
           sudo iptables -F && sudo iptables -X && sudo iptables -t nat -F && sudo iptables -t nat -X && sudo iptables -t mangle -F && sudo iptables -t mangle -X && sudo iptables -P INPUT ACCEPT && sudo iptables -P FORWARD ACCEPT -w 5 && sudo iptables -P OUTPUT ACCEPT -w 5
           sudo systemctl restart docker
 
-      - name: Cache E2E testing tools
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
-        with:
-          path: |
-            /usr/local/bin/ctlptl
-            /usr/local/bin/kind
-            /usr/local/bin/kubectl
-            /usr/local/bin/tilt
-          key: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ steps.versions.outputs.kind_version }}-${{ steps.versions.outputs.ctlptl_version }}-${{ steps.versions.outputs.tilt_version }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-e2e-tools-
-
-      - name: Detect runner architecture
-        run: |
-          echo "Matrix configuration: ${{ matrix.arch_name }} (${{ matrix.arch }})"
-          echo "Runner: ${{ matrix.runner }}"
-          echo "Runner OS: ${{ runner.os }}"
-          echo "Runner architecture: ${{ runner.arch }}"
-          echo "System architecture (uname -m): $(uname -m)"
-          echo "Cache key will be: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ steps.versions.outputs.kind_version }}-${{ steps.versions.outputs.ctlptl_version }}-${{ steps.versions.outputs.tilt_version }}"
-
       - name: Install E2E testing tools
-        run: |
-          # Install ctlptl (if not cached)
-          CTLPTL_VERSION="${{ steps.versions.outputs.ctlptl_version }}"
-          if command -v ctlptl &> /dev/null && ctlptl version | grep -q "v${CTLPTL_VERSION}"; then
-            echo "ctlptl v${CTLPTL_VERSION} already installed from cache"
-          else
-            echo "Installing ctlptl v${CTLPTL_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 https://github.com/tilt-dev/ctlptl/releases/download/v${CTLPTL_VERSION}/ctlptl.${CTLPTL_VERSION}.linux.${ARCH}.tar.gz | sudo tar -xzv -C /usr/local/bin ctlptl
-          fi
-
-          # Install Kind (if not cached)
-          KIND_VERSION="${{ steps.versions.outputs.kind_version }}"
-          if command -v kind &> /dev/null && kind version | grep -q "${KIND_VERSION}"; then
-            echo "Kind v${KIND_VERSION} already installed from cache"
-          else
-            echo "Installing Kind v${KIND_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 -o ./kind https://kind.sigs.k8s.io/dl/v${KIND_VERSION}/kind-linux-${ARCH}
-            chmod +x ./kind
-            sudo mv ./kind /usr/local/bin/kind
-          fi
-
-          # Install kubectl (if not cached)
-          if command -v kubectl &> /dev/null; then
-            echo "kubectl already installed from cache"
-          else
-            echo "Installing kubectl..."
-            ARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 -O "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl"
-            chmod +x kubectl
-            sudo mv ./kubectl /usr/local/bin/kubectl
-          fi
-
-          # Install Tilt (if not cached)
-          TILT_VERSION="${{ steps.versions.outputs.tilt_version }}"
-          if command -v tilt &> /dev/null && tilt version | grep -q "${TILT_VERSION}"; then
-            echo "Tilt v${TILT_VERSION} already installed from cache"
-          else
-            echo "Installing Tilt v${TILT_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            TEMP_DIR=$(mktemp -d)
-            curl -fsSL --retry 3 --keepalive-time 2 https://github.com/tilt-dev/tilt/releases/download/v${TILT_VERSION}/tilt.${TILT_VERSION}.linux.${ARCH}.tar.gz | tar -xzv -C "$TEMP_DIR" tilt
-            sudo mv "$TEMP_DIR/tilt" /usr/local/bin/
-            rm -rf "$TEMP_DIR"
-          fi
-
-          # Verify installations
-          echo "Verifying tool installations:"
-          echo "ctlptl: $(ctlptl version)"
-          echo "Kind: $(kind version)"
-          echo "kubectl: $(kubectl version --client)"
-          echo "Tilt: $(tilt version)"
-          echo "Docker: $(docker version --format '{{.Client.Version}}')"
+        uses: ./.github/actions/install-e2e-tools
 
       - name: Configure Helm repositories
         run: |
