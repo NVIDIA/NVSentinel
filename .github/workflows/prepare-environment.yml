@@ -73,7 +73,7 @@ jobs:
       shellcheck_version: ${{ steps.load-versions.outputs.shellcheck_version }}
       ko_version: ${{ steps.load-versions.outputs.ko_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
       - name: Load tool versions from .versions.yaml
         id: load-versions

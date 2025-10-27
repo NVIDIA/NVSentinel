@@ -50,7 +50,7 @@ jobs:
     outputs:
       versions: ${{ steps.build-list.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -91,7 +91,7 @@ jobs:
           cat versions.txt
 
       - name: Upload versions.txt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: versions
           path: versions.txt
@@ -122,7 +122,7 @@ jobs:
             make_command: 'make -C nvsentinel-log-collector docker-publish-file-server-cleanup'
             container_name: 'nvsentinel/file-server-cleanup'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 

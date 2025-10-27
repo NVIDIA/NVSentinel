@@ -44,7 +44,7 @@ jobs:
       pull-requests: write   # Required for posting comments
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Setup build environment
       uses: ./.github/actions/setup-build-env
@@ -62,7 +62,7 @@ jobs:
         ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         languages: go
         build-mode: manual
@@ -74,7 +74,7 @@ jobs:
         make build-all
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         category: "/language:go"
 
@@ -107,7 +107,7 @@ jobs:
       packages: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Setup build environment
       uses: ./.github/actions/setup-build-env
@@ -125,7 +125,7 @@ jobs:
         ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         languages: go
         build-mode: manual
@@ -137,6 +137,6 @@ jobs:
         make build-all
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         category: "/language:go"

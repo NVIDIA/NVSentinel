@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 60
     needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
       - name: Workaround for freeing up more disk space
         run: |
@@ -79,7 +79,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Cache Helm e2e testing tools
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             /usr/local/bin/kind
@@ -278,7 +278,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: helm-e2e-kind-logs-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -286,7 +286,7 @@ jobs:
 
       - name: Upload debugging artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: helm-e2e-debug-artifacts-${{ github.run_id }}
           path: /tmp/debug-artifacts/
