@@ -119,20 +119,23 @@ Device:
     FieldValues:
       FunctionReturn: 0
       ReturnValue:
-        effective_ber:
-          fieldId: 220
+        # Inforom Valid field (84) - Used by DCGM_HEALTH_WATCH_INFOROM
+        InforomValid:
+          fieldId: 84
           scopeId: 0
           timestamp: 0
           latencyUsec: 0
           valueType: 3
-          nvmlReturn: 3  # NVML_ERROR_NOT_SUPPORTED
-          value: 0
-        symbol_errors:
-          fieldId: 221
+          nvmlReturn: 0  # NVML_SUCCESS
+          value: 1  # Default: valid (1), inject 0 for error
+        
+        # Memory SBE field (395) - Used by DCGM_HEALTH_WATCH_MEM
+        MemorySBE:
+          fieldId: 395
           scopeId: 0
           timestamp: 0
           latencyUsec: 0
           valueType: 3
-          nvmlReturn: 3  # NVML_ERROR_NOT_SUPPORTED
-          value: 0
+          nvmlReturn: 0  # NVML_SUCCESS
+          value: 0  # Default: no errors
 

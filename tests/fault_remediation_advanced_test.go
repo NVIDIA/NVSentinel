@@ -126,8 +126,9 @@ func TestRemediationModuleRestart(t *testing.T) {
 			return node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		t.Log("Verify drain completed via MongoDB (persists even if label already changed)")
+		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
+			"Quarantined", "Succeeded")
 
 		t.Log("Step 2: Restart fault-remediation module before CR creation")
 		helpers.RestartFaultRemediationDeployment(ctx, t, client)
@@ -234,9 +235,7 @@ func TestConcurrentRemediationEvents(t *testing.T) {
 			return node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
+		t.Log("Verify drain completed via MongoDB (persists even if label already changed)")
 		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
 			"Quarantined", "Succeeded")
 
