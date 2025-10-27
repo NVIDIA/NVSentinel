@@ -19,6 +19,13 @@ on:
     branches:
       - main
       - "pull-request/[0-9]+"
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/*.yaml'
+      - '.github/*.yml'
+      - '.github/headers/**'
     tags:
       - 'v*'
   workflow_dispatch:
