@@ -25,7 +25,7 @@ NVIDIA offers acknowledgement for externally reported security issues under our 
 
 For all security-related concerns: https://www.nvidia.com/en-us/security
 
-## NVSentinel Supply Chain Transparency
+## Supply Chain Security
 
 NVSentinel provides supply chain security artifacts for all container images:
 
@@ -34,11 +34,11 @@ NVSentinel provides supply chain security artifacts for all container images:
 
 ### Setup
 
-Export variables for the image you want to verify:
+Export variables for the image you want to verify, for example:
 
 ```shell
 export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine-module"
-export DIGEST="sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
+export DIGEST="sha256:4558fc8a81f26e9dffa513c253de45ffaaca0b41e0bdd7842938778b63c66e1d"
 export IMAGE_DIGEST="$IMAGE@$DIGEST"
 export IMAGE_SBOM="$IMAGE:sha256-$(echo "$DIGEST" | cut -d: -f2).sbom"
 ```
