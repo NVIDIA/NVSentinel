@@ -74,7 +74,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v0.1.0  # Check releases for latest
+NVSENTINEL_VERSION=v0.2.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
@@ -90,7 +90,7 @@ kubectl get pods -n nvsentinel
 kubectl get nodes  # Verify GPU nodes are visible
 
 # Run comprehensive validation
-./scripts/validate-nvsentinel.sh --version v0.1.0 --verbose
+./scripts/validate-nvsentinel.sh --version v0.2.0 --verbose
 ```
 
 > **Testing**: The example above uses default settings. For testing with simulated GPU nodes, use [`tilt/release/values-release.yaml`](tilt/release/values-release.yaml). For production, customize values for your environment.
