@@ -48,6 +48,10 @@ runs:
         echo "addlicense_version=$(yq '.linting.addlicense' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "ko_version=$(yq '.container_tools.ko' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "setup_envtest_version=$(yq '.go_tools.setup_envtest' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "gotestsum_version=$(yq '.go_tools.gotestsum' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "gocover_cobertura_version=$(yq '.go_tools.gocover_cobertura' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
 
     - name: Install base dependencies
       shell: bash
@@ -107,8 +111,8 @@ runs:
     - name: Install Go tools
       shell: bash
       run: |
-        go install github.com/boumenot/gocover-cobertura@latest
-        go install gotest.tools/gotestsum@latest
+        go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
+        go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
         curl -fsSL --retry 3 --keepalive-time 2 https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ steps.versions.outputs.golangci_lint_version }}
 
     - name: Cache Protocol Buffers
@@ -172,8 +176,8 @@ runs:
         # Pin setup-envtest to avoid Go version compatibility issues
         # Using version from .versions.yaml
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ steps.versions.outputs.setup_envtest_version }}
-        go install golang.org/x/tools/cmd/goimports@latest
-        go install github.com/google/go-containerregistry/cmd/crane@latest
+        go install golang.org/x/tools/cmd/goimports@${{ steps.versions.outputs.goimports_version }}
+        go install github.com/google/go-containerregistry/cmd/crane@${{ steps.versions.outputs.crane_version }}
         go install github.com/google/ko@${{ steps.versions.outputs.ko_version }}
 
     - name: Set environment variables

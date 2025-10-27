@@ -44,6 +44,8 @@ go_tools:
   gotestsum: 'v1.13.0'
   gocover_cobertura: 'v1.4.0'
   setup_envtest: 'release-0.19'  # Pinned to avoid Go 1.25+ requirement
+  goimports: 'v0.30.0'
+  crane: 'v0.20.2'
 
 # Protocol Buffers / gRPC
 protobuf:
