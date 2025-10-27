@@ -1,0 +1,46 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-nvsentinel-image-attestation
+  annotations:
+    policies.kyverno.io/title: Verify NVSentinel Image Attestations
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      This policy verifies that NVSentinel container images have valid SLSA Build 
+      Provenance attestations signed by the official GitHub Actions workflow. 
+      It ensures images were built from the official NVIDIA/NVSentinel repository 
+      with proper attestations before allowing them to run in the cluster.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-nvsentinel-attestation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/nvidia/nvsentinel/*"
+          attestations:
+            - type: https://slsa.dev/provenance/v1
+              conditions:
+                all:
+                  - key: "{{ builder.id }}"
+                    operator: Equals
+                    value: "https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main"
+                  - key: "{{ invocation.configSource.uri }}"
+                    operator: Equals
+                    value: "git+https://github.com/NVIDIA/NVSentinel@refs/heads/main"
+              attestors:
+                - entries:
+                    - keyless:
+                        subject: "https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main"
+                        issuer: "https://token.actions.githubusercontent.com"
+                        rekor:
+                          url: "https://rekor.sigstore.dev"
