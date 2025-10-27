@@ -90,15 +90,59 @@ For detailed development instructions, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Developer Certificate of Origin
 
-All commits must be signed off to certify the Developer Certificate of Origin (DCO) from [developercertificate.org](http://developercertificate.org/).
+The sign-off is a simple signature at the end of the description for the patch.
+Your signature certifies that you wrote the patch or otherwise have the right
+to pass it on as an open-source patch.
 
-**To sign off, add this line to every commit message**:
+The rules are pretty simple, and sign-off means that you certify the DCO below
+(from [developercertificate.org](http://developercertificate.org/)):
 
 ```
-Signed-off-by: Joe Smith <joe.smith@email.com>
+Developer Certificate of Origin
+Version 1.1
+
+Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+1 Letterman Drive
+Suite D4700
+San Francisco, CA, 94129
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+Developer's Certificate of Origin 1.1
+
+By making a contribution to this project, I certify that:
+
+(a) The contribution was created in whole or in part by me and I
+    have the right to submit it under the open source license
+    indicated in the file; or
+
+(b) The contribution is based upon previous work that, to the best
+    of my knowledge, is covered under an appropriate open source
+    license and I have the right under that license to submit that
+    work with modifications, whether created in whole or in part
+    by me, under the same open source license (unless I am
+    permitted to submit under a different license), as indicated
+    in the file; or
+
+(c) The contribution was provided directly to me by some other
+    person who certified (a), (b) or (c) and I have not modified
+    it.
+
+(d) I understand and agree that this project and the contribution
+    are public and that a record of the contribution (including all
+    personal information I submit with it, including my sign-off) is
+    maintained indefinitely and may be redistributed consistent with
+    this project or the open source license(s) involved.
 ```
 
-Use your real name (no pseudonyms or anonymous contributions).
+To sign off, you just add the following line to every git commit message:
+
+```
+    Signed-off-by: Joe Smith <joe.smith@email.com>
+```
+
+> Note: You must use your real name (sorry, no pseudonyms or anonymous contributions).
 
 **Automatic sign-off**:
 ```bash
@@ -108,6 +152,7 @@ git commit -s  # Automatically adds sign-off
 ```
 
 **DCO Summary**: By signing off, you certify that:
+
 - (a) You created the contribution and have the right to submit it under the project's open source license
 - (b) The contribution is based on previous work covered by an appropriate license
 - (c) The contribution was provided to you by someone who certified (a) or (b)
