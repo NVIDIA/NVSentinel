@@ -31,7 +31,7 @@ For standard releases from the main branch.
 3. **Verify artifacts**:
    - Container images in GitHub Container Registry
    - GitHub release with `versions.txt`
-   - Helm chart at `ghcr.io/nvidia/nvsentinel`
+   - Helm chart at `oci://ghcr.io/nvidia/nvsentinel`
 
 ### Method 2: Manual Release
 
