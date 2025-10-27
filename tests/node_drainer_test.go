@@ -1,4 +1,4 @@
-// Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		return newCtx
 	})
 
-	feature.Assess("immediate mode evicts pods quickly", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("immediate mode evicts pods immediately", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
@@ -55,11 +55,11 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error")
+			WithMessage("GPU Fallen off the bus")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying immediate-test pod evicted quickly")
+		t.Log("Verifying immediate-test pod evicted immediately")
 		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediatePods)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
@@ -82,7 +82,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error")
+			WithMessage("GPU Fallen off the bus")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
@@ -124,7 +124,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error")
+			WithMessage("GPU Fallen off the bus")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
@@ -167,7 +167,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
-			WithMessage("XID 79 error")
+			WithMessage("GPU Fallen off the bus")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 

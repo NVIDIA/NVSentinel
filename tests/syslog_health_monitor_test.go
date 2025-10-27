@@ -17,14 +17,11 @@ package tests
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -34,7 +31,7 @@ import (
 const (
 	syslogHealthMonitorNamespace = "nvsentinel"
 	stubJournalHTTPPort          = 9091
-	syslogPollingInterval        = 20 * time.Second
+	keySyslogPod                 = "syslogPod"
 )
 
 // TestSyslogHealthMonitorXIDDetection tests both fatal and non-fatal XID error detection
@@ -50,7 +47,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		syslogPod, err = getSyslogHealthMonitorPod(ctx, t, client)
+		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, syslogHealthMonitorNamespace, "syslog-health-monitor")
 		require.NoError(t, err, "failed to find syslog health monitor pod")
 		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
 
@@ -86,10 +83,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		require.NoError(t, err, "failed to inject fatal XID error: %s", stderr)
 		t.Logf("Injection successful: %s", stdout)
 
-		t.Logf("Step 2: Waiting for syslog monitor polling cycle (%v)", syslogPollingInterval)
-		time.Sleep(syslogPollingInterval + 5*time.Second)
-
-		t.Logf("Step 3: Verifying node condition on %s", nodeName)
+		t.Logf("Step 2: Verifying node condition on %s", nodeName)
 		require.Eventually(t, func() bool {
 			found, condition := helpers.CheckNodeConditionExists(ctx, client, nodeName,
 				v1.NodeConditionType("SysLogsXIDError"), "SysLogsXIDErrorIsNotHealthy")
@@ -112,7 +106,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 		xidMessage := "NVRM: Xid (PCI:0000:02:00): 13, pid=456, name=xid_trigger, Graphics Exception on (GPC 1, TPC 0)"
 
-		t.Logf("Step 4: Injecting non-fatal XID 13 error on pod %s", pod.Name)
+		t.Logf("Step 3: Injecting non-fatal XID 13 error on pod %s", pod.Name)
 		command := []string{
 			"/bin/sh", "-c",
 			fmt.Sprintf("curl -X POST http://localhost:%d/add -d '%s'", stubJournalHTTPPort, xidMessage),
@@ -122,10 +116,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		require.NoError(t, err, "failed to inject non-fatal XID error: %s", stderr)
 		t.Logf("Injection successful: %s", stdout)
 
-		t.Logf("Step 5: Waiting for syslog monitor polling cycle (%v)", syslogPollingInterval)
-		time.Sleep(syslogPollingInterval + 5*time.Second)
-
-		t.Logf("Step 6: Verifying event (not node condition) on %s", nodeName)
+		t.Logf("Step 4: Verifying event (not node condition) on %s", nodeName)
 		require.Eventually(t, func() bool {
 			found, event := helpers.CheckNodeEventExists(ctx, client, nodeName,
 				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
@@ -164,38 +155,3 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
-
-// getSyslogHealthMonitorPod returns a syslog health monitor pod running on a real worker node
-func getSyslogHealthMonitorPod(ctx context.Context, t *testing.T, client klient.Client) (*v1.Pod, error) {
-	t.Helper()
-
-	pods := &v1.PodList{}
-	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
-		opts.FieldSelector = fmt.Sprintf("metadata.namespace=%s", syslogHealthMonitorNamespace)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list syslog health monitor pods: %w", err)
-	}
-
-	for _, pod := range pods.Items {
-		if !strings.Contains(pod.Name, "syslog-health-monitor") {
-			continue
-		}
-
-		if pod.Status.Phase != v1.PodRunning {
-			continue
-		}
-
-		if strings.Contains(pod.Spec.NodeName, "worker") && !strings.Contains(pod.Spec.NodeName, "kwok") {
-			t.Logf("Found syslog health monitor pod %s on worker node %s", pod.Name, pod.Spec.NodeName)
-			return &pod, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no syslog health monitor pod found on real worker nodes")
-}
-
-// Context keys for syslog tests
-const (
-	keySyslogPod = "syslogPod"
-)

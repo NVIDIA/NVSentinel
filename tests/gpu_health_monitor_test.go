@@ -17,14 +17,11 @@ package tests
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -50,7 +47,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		gpuHealthMonitorPod, err = getGPUHealthMonitorPodOnWorkerNode(ctx, t, client)
+		gpuHealthMonitorPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, gpuHealthMonitorNamespace, "gpu-health-monitor")
 		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
 		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
 
@@ -166,34 +163,4 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 	})
 
 	testEnv.Test(t, feature.Feature())
-}
-
-// getGPUHealthMonitorPodOnWorkerNode returns a GPU health monitor pod running on a real worker node
-func getGPUHealthMonitorPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client) (*v1.Pod, error) {
-	t.Helper()
-
-	pods := &v1.PodList{}
-	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
-		opts.FieldSelector = fmt.Sprintf("metadata.namespace=%s", gpuHealthMonitorNamespace)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list GPU health monitor pods: %w", err)
-	}
-
-	for _, pod := range pods.Items {
-		if !strings.Contains(pod.Name, "gpu-health-monitor") {
-			continue
-		}
-
-		if pod.Status.Phase != v1.PodRunning {
-			continue
-		}
-
-		if strings.Contains(pod.Spec.NodeName, "worker") && !strings.Contains(pod.Spec.NodeName, "kwok") {
-			t.Logf("Found GPU health monitor pod %s on worker node %s", pod.Name, pod.Spec.NodeName)
-			return &pod, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no GPU health monitor pod found on worker nodes")
 }
