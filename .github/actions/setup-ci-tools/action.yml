@@ -174,10 +174,11 @@ runs:
       run: |
         go install github.com/google/addlicense@latest
         # Pin setup-envtest to avoid Go version compatibility issues
-        # Latest versions require Go 1.25+, pinning to v0.19.1, last 1.24 compatible version
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.19.1
+        # Using release-0.19 branch which is compatible with Go 1.24
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
+        go install github.com/google/ko@${{ inputs.ko-version }}
         go install github.com/google/ko@${{ inputs.ko-version }}
 
     - name: Set environment variables
