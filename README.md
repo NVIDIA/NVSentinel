@@ -337,7 +337,6 @@ We welcome contributions! Here's how to get started:
 - 🧪 Add tests and increase coverage
 - 🔧 Submit pull requests to fix issues
 - 💬 Help others in [discussions](https://github.com/NVIDIA/NVSentinel/discussions)
-- 🔒 **Security Issues**: See our [Security Policy](SECURITY.md)
 
 **Getting Started**:
 1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
@@ -351,6 +350,12 @@ All contributors must sign their commits (DCO). See the contributing guide for d
 - 🐛 **Bug Reports**: [Create an issue](https://github.com/NVIDIA/NVSentinel/issues/new)
 - ❓ **Questions**: [Start a discussion](https://github.com/NVIDIA/NVSentinel/discussions/new?category=q-a)
 - 🔒 **Security**: See [Security Policy](SECURITY.md)
+
+### Stay Connected
+
+- ⭐ **Star this repository** to show your support
+- 👀 **Watch** for updates on releases and announcements
+- 🔗 **Share** NVSentinel with others who might benefit
 
 ## 📄 License
 
