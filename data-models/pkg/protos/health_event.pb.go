@@ -37,21 +37,21 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type RecommenedAction int32
+type RecommendedAction int32
 
 const (
-	RecommenedAction_NONE            RecommenedAction = 0
-	RecommenedAction_COMPONENT_RESET RecommenedAction = 2
-	RecommenedAction_CONTACT_SUPPORT RecommenedAction = 5
-	RecommenedAction_RESTART_VM      RecommenedAction = 15
-	RecommenedAction_RESTART_BM      RecommenedAction = 24
-	RecommenedAction_REPLACE_VM      RecommenedAction = 25
-	RecommenedAction_UNKNOWN         RecommenedAction = 99
+	RecommendedAction_NONE            RecommendedAction = 0
+	RecommendedAction_COMPONENT_RESET RecommendedAction = 2
+	RecommendedAction_CONTACT_SUPPORT RecommendedAction = 5
+	RecommendedAction_RESTART_VM      RecommendedAction = 15
+	RecommendedAction_RESTART_BM      RecommendedAction = 24
+	RecommendedAction_REPLACE_VM      RecommendedAction = 25
+	RecommendedAction_UNKNOWN         RecommendedAction = 99
 )
 
-// Enum value maps for RecommenedAction.
+// Enum value maps for RecommendedAction.
 var (
-	RecommenedAction_name = map[int32]string{
+	RecommendedAction_name = map[int32]string{
 		0:  "NONE",
 		2:  "COMPONENT_RESET",
 		5:  "CONTACT_SUPPORT",
@@ -60,7 +60,7 @@ var (
 		25: "REPLACE_VM",
 		99: "UNKNOWN",
 	}
-	RecommenedAction_value = map[string]int32{
+	RecommendedAction_value = map[string]int32{
 		"NONE":            0,
 		"COMPONENT_RESET": 2,
 		"CONTACT_SUPPORT": 5,
@@ -71,30 +71,30 @@ var (
 	}
 )
 
-func (x RecommenedAction) Enum() *RecommenedAction {
-	p := new(RecommenedAction)
+func (x RecommendedAction) Enum() *RecommendedAction {
+	p := new(RecommendedAction)
 	*p = x
 	return p
 }
 
-func (x RecommenedAction) String() string {
+func (x RecommendedAction) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (RecommenedAction) Descriptor() protoreflect.EnumDescriptor {
+func (RecommendedAction) Descriptor() protoreflect.EnumDescriptor {
 	return file_health_event_proto_enumTypes[0].Descriptor()
 }
 
-func (RecommenedAction) Type() protoreflect.EnumType {
+func (RecommendedAction) Type() protoreflect.EnumType {
 	return &file_health_event_proto_enumTypes[0]
 }
 
-func (x RecommenedAction) Number() protoreflect.EnumNumber {
+func (x RecommendedAction) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use RecommenedAction.Descriptor instead.
-func (RecommenedAction) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use RecommendedAction.Descriptor instead.
+func (RecommendedAction) EnumDescriptor() ([]byte, []int) {
 	return file_health_event_proto_rawDescGZIP(), []int{0}
 }
 
@@ -211,7 +211,7 @@ type HealthEvent struct {
 	IsFatal             bool                   `protobuf:"varint,5,opt,name=isFatal,proto3" json:"isFatal,omitempty"`
 	IsHealthy           bool                   `protobuf:"varint,6,opt,name=isHealthy,proto3" json:"isHealthy,omitempty"`
 	Message             string                 `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	RecommendedAction   RecommenedAction       `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommenedAction" json:"recommendedAction,omitempty"`
+	RecommendedAction   RecommendedAction      `protobuf:"varint,8,opt,name=recommendedAction,proto3,enum=datamodels.RecommendedAction" json:"recommendedAction,omitempty"`
 	ErrorCode           []string               `protobuf:"bytes,9,rep,name=errorCode,proto3" json:"errorCode,omitempty"`
 	EntitiesImpacted    []*Entity              `protobuf:"bytes,10,rep,name=entitiesImpacted,proto3" json:"entitiesImpacted,omitempty"`
 	Metadata            map[string]string      `protobuf:"bytes,11,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -302,11 +302,11 @@ func (x *HealthEvent) GetMessage() string {
 	return ""
 }
 
-func (x *HealthEvent) GetRecommendedAction() RecommenedAction {
+func (x *HealthEvent) GetRecommendedAction() RecommendedAction {
 	if x != nil {
 		return x.RecommendedAction
 	}
-	return RecommenedAction_NONE
+	return RecommendedAction_NONE
 }
 
 func (x *HealthEvent) GetErrorCode() []string {
@@ -423,7 +423,7 @@ const file_health_event_proto_rawDesc = "" +
 	"\n" +
 	"entityType\x18\x01 \x01(\tR\n" +
 	"entityType\x12 \n" +
-	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\x81\x06\n" +
+	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\x82\x06\n" +
 	"\vHealthEvent\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12&\n" +
@@ -431,8 +431,8 @@ const file_health_event_proto_rawDesc = "" +
 	"\tcheckName\x18\x04 \x01(\tR\tcheckName\x12\x18\n" +
 	"\aisFatal\x18\x05 \x01(\bR\aisFatal\x12\x1c\n" +
 	"\tisHealthy\x18\x06 \x01(\bR\tisHealthy\x12\x18\n" +
-	"\amessage\x18\a \x01(\tR\amessage\x12J\n" +
-	"\x11recommendedAction\x18\b \x01(\x0e2\x1c.datamodels.RecommenedActionR\x11recommendedAction\x12\x1c\n" +
+	"\amessage\x18\a \x01(\tR\amessage\x12K\n" +
+	"\x11recommendedAction\x18\b \x01(\x0e2\x1d.datamodels.RecommendedActionR\x11recommendedAction\x12\x1c\n" +
 	"\terrorCode\x18\t \x03(\tR\terrorCode\x12>\n" +
 	"\x10entitiesImpacted\x18\n" +
 	" \x03(\v2\x12.datamodels.EntityR\x10entitiesImpacted\x12A\n" +
@@ -446,8 +446,8 @@ const file_health_event_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\">\n" +
 	"\x12BehaviourOverrides\x12\x14\n" +
 	"\x05force\x18\x01 \x01(\bR\x05force\x12\x12\n" +
-	"\x04skip\x18\x02 \x01(\bR\x04skip*\x83\x01\n" +
-	"\x10RecommenedAction\x12\b\n" +
+	"\x04skip\x18\x02 \x01(\bR\x04skip*\x84\x01\n" +
+	"\x11RecommendedAction\x12\b\n" +
 	"\x04NONE\x10\x00\x12\x13\n" +
 	"\x0fCOMPONENT_RESET\x10\x02\x12\x13\n" +
 	"\x0fCONTACT_SUPPORT\x10\x05\x12\x0e\n" +
@@ -457,9 +457,9 @@ const file_health_event_proto_rawDesc = "" +
 	"RESTART_BM\x10\x18\x12\x0e\n" +
 	"\n" +
 	"REPLACE_VM\x10\x19\x12\v\n" +
-	"\aUNKNOWN\x10c2_\n" +
-	"\x11PlatformConnector\x12J\n" +
-	"\x14HealthEventOccuredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
+	"\aUNKNOWN\x10c2`\n" +
+	"\x11PlatformConnector\x12K\n" +
+	"\x15HealthEventOccurredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"
 
 var (
 	file_health_event_proto_rawDescOnce sync.Once
@@ -476,7 +476,7 @@ func file_health_event_proto_rawDescGZIP() []byte {
 var file_health_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_health_event_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_health_event_proto_goTypes = []any{
-	(RecommenedAction)(0),         // 0: datamodels.RecommenedAction
+	(RecommendedAction)(0),        // 0: datamodels.RecommendedAction
 	(*HealthEvents)(nil),          // 1: datamodels.HealthEvents
 	(*Entity)(nil),                // 2: datamodels.Entity
 	(*HealthEvent)(nil),           // 3: datamodels.HealthEvent
@@ -487,14 +487,14 @@ var file_health_event_proto_goTypes = []any{
 }
 var file_health_event_proto_depIdxs = []int32{
 	3, // 0: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
-	0, // 1: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommenedAction
+	0, // 1: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommendedAction
 	2, // 2: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
 	5, // 3: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
 	6, // 4: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
 	4, // 5: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
 	4, // 6: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
-	1, // 7: datamodels.PlatformConnector.HealthEventOccuredV1:input_type -> datamodels.HealthEvents
-	7, // 8: datamodels.PlatformConnector.HealthEventOccuredV1:output_type -> google.protobuf.Empty
+	1, // 7: datamodels.PlatformConnector.HealthEventOccurredV1:input_type -> datamodels.HealthEvents
+	7, // 8: datamodels.PlatformConnector.HealthEventOccurredV1:output_type -> google.protobuf.Empty
 	8, // [8:9] is the sub-list for method output_type
 	7, // [7:8] is the sub-list for method input_type
 	7, // [7:7] is the sub-list for extension type_name

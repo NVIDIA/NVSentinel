@@ -53,13 +53,6 @@ updates:
     labels: ["dependencies"]
 
   - package-ecosystem: "gomod"
-    directory: "/statemanager"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies"]
-
-  - package-ecosystem: "gomod"
     directory: "/store-client-sdk"
     target-branch: "main"
     schedule:

@@ -190,7 +190,7 @@ func TestHandleMaintenanceEvents(t *testing.T) {
 		assert.Equal(t, testService, event.ResourceType)
 		assert.Equal(t, startTime, *event.ScheduledStartTime)
 		assert.Equal(t, endTime, *event.ScheduledEndTime)
-		assert.Equal(t, pb.RecommenedAction_RESTART_VM.String(), event.RecommendedAction)
+		assert.Equal(t, pb.RecommendedAction_RESTART_VM.String(), event.RecommendedAction)
 	default:
 		t.Error("Expected to receive an event, but none was received")
 	}
@@ -805,7 +805,7 @@ func TestInstanceRebootEvent(t *testing.T) {
 		assert.Equal(t, testInstanceID, event.ResourceID)
 		assert.Equal(t, model.StatusDetected, event.Status)
 		assert.Contains(t, event.Metadata["eventTypeCode"], "INSTANCE_REBOOT")
-		assert.Equal(t, pb.RecommenedAction_RESTART_VM.String(), event.RecommendedAction)
+		assert.Equal(t, pb.RecommendedAction_RESTART_VM.String(), event.RecommendedAction)
 	default:
 		t.Error("Expected to receive an instance reboot event, but none was received")
 	}

@@ -17,7 +17,7 @@ package crstatus
 import (
 	"fmt"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
@@ -44,7 +44,7 @@ func NewCRStatusCheckerFactory(
 }
 
 // GetStatusChecker returns the appropriate status checker for the given recommended action
-func (f *CRStatusCheckerFactory) GetStatusChecker(action platformconnector.RecommenedAction) (CRStatusChecker, error) {
+func (f *CRStatusCheckerFactory) GetStatusChecker(action protos.RecommendedAction) (CRStatusChecker, error) {
 	// Determine which equivalence group this action belongs to
 	group := common.GetRemediationGroupForAction(action)
 

@@ -34,14 +34,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PlatformConnector_HealthEventOccuredV1_FullMethodName = "/datamodels.PlatformConnector/HealthEventOccuredV1"
+	PlatformConnector_HealthEventOccurredV1_FullMethodName = "/datamodels.PlatformConnector/HealthEventOccurredV1"
 )
 
 // PlatformConnectorClient is the client API for PlatformConnector service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PlatformConnectorClient interface {
-	HealthEventOccuredV1(ctx context.Context, in *HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	HealthEventOccurredV1(ctx context.Context, in *HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type platformConnectorClient struct {
@@ -52,10 +52,10 @@ func NewPlatformConnectorClient(cc grpc.ClientConnInterface) PlatformConnectorCl
 	return &platformConnectorClient{cc}
 }
 
-func (c *platformConnectorClient) HealthEventOccuredV1(ctx context.Context, in *HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *platformConnectorClient) HealthEventOccurredV1(ctx context.Context, in *HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, PlatformConnector_HealthEventOccuredV1_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, PlatformConnector_HealthEventOccurredV1_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (c *platformConnectorClient) HealthEventOccuredV1(ctx context.Context, in *
 // All implementations must embed UnimplementedPlatformConnectorServer
 // for forward compatibility.
 type PlatformConnectorServer interface {
-	HealthEventOccuredV1(context.Context, *HealthEvents) (*emptypb.Empty, error)
+	HealthEventOccurredV1(context.Context, *HealthEvents) (*emptypb.Empty, error)
 	mustEmbedUnimplementedPlatformConnectorServer()
 }
 
@@ -77,8 +77,8 @@ type PlatformConnectorServer interface {
 // pointer dereference when methods are called.
 type UnimplementedPlatformConnectorServer struct{}
 
-func (UnimplementedPlatformConnectorServer) HealthEventOccuredV1(context.Context, *HealthEvents) (*emptypb.Empty, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method HealthEventOccuredV1 not implemented")
+func (UnimplementedPlatformConnectorServer) HealthEventOccurredV1(context.Context, *HealthEvents) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HealthEventOccurredV1 not implemented")
 }
 func (UnimplementedPlatformConnectorServer) mustEmbedUnimplementedPlatformConnectorServer() {}
 func (UnimplementedPlatformConnectorServer) testEmbeddedByValue()                           {}
@@ -101,20 +101,20 @@ func RegisterPlatformConnectorServer(s grpc.ServiceRegistrar, srv PlatformConnec
 	s.RegisterService(&PlatformConnector_ServiceDesc, srv)
 }
 
-func _PlatformConnector_HealthEventOccuredV1_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _PlatformConnector_HealthEventOccurredV1_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(HealthEvents)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(PlatformConnectorServer).HealthEventOccuredV1(ctx, in)
+		return srv.(PlatformConnectorServer).HealthEventOccurredV1(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: PlatformConnector_HealthEventOccuredV1_FullMethodName,
+		FullMethod: PlatformConnector_HealthEventOccurredV1_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(PlatformConnectorServer).HealthEventOccuredV1(ctx, req.(*HealthEvents))
+		return srv.(PlatformConnectorServer).HealthEventOccurredV1(ctx, req.(*HealthEvents))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -127,8 +127,8 @@ var PlatformConnector_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*PlatformConnectorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "HealthEventOccuredV1",
-			Handler:    _PlatformConnector_HealthEventOccuredV1_Handler,
+			MethodName: "HealthEventOccurredV1",
+			Handler:    _PlatformConnector_HealthEventOccurredV1_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

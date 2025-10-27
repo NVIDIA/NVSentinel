@@ -11,23 +11,23 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
-class RecommenedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
-    NONE: _ClassVar[RecommenedAction]
-    COMPONENT_RESET: _ClassVar[RecommenedAction]
-    CONTACT_SUPPORT: _ClassVar[RecommenedAction]
-    RESTART_VM: _ClassVar[RecommenedAction]
-    RESTART_BM: _ClassVar[RecommenedAction]
-    REPLACE_VM: _ClassVar[RecommenedAction]
-    UNKNOWN: _ClassVar[RecommenedAction]
+    NONE: _ClassVar[RecommendedAction]
+    COMPONENT_RESET: _ClassVar[RecommendedAction]
+    CONTACT_SUPPORT: _ClassVar[RecommendedAction]
+    RESTART_VM: _ClassVar[RecommendedAction]
+    RESTART_BM: _ClassVar[RecommendedAction]
+    REPLACE_VM: _ClassVar[RecommendedAction]
+    UNKNOWN: _ClassVar[RecommendedAction]
 
-NONE: RecommenedAction
-COMPONENT_RESET: RecommenedAction
-CONTACT_SUPPORT: RecommenedAction
-RESTART_VM: RecommenedAction
-RESTART_BM: RecommenedAction
-REPLACE_VM: RecommenedAction
-UNKNOWN: RecommenedAction
+NONE: RecommendedAction
+COMPONENT_RESET: RecommendedAction
+CONTACT_SUPPORT: RecommendedAction
+RESTART_VM: RecommendedAction
+RESTART_BM: RecommendedAction
+REPLACE_VM: RecommendedAction
+UNKNOWN: RecommendedAction
 
 class HealthEvents(_message.Message):
     __slots__ = ("version", "events")
@@ -96,7 +96,7 @@ class HealthEvent(_message.Message):
     isFatal: bool
     isHealthy: bool
     message: str
-    recommendedAction: RecommenedAction
+    recommendedAction: RecommendedAction
     errorCode: _containers.RepeatedScalarFieldContainer[str]
     entitiesImpacted: _containers.RepeatedCompositeFieldContainer[Entity]
     metadata: _containers.ScalarMap[str, str]
@@ -113,7 +113,7 @@ class HealthEvent(_message.Message):
         isFatal: bool = ...,
         isHealthy: bool = ...,
         message: _Optional[str] = ...,
-        recommendedAction: _Optional[_Union[RecommenedAction, str]] = ...,
+        recommendedAction: _Optional[_Union[RecommendedAction, str]] = ...,
         errorCode: _Optional[_Iterable[str]] = ...,
         entitiesImpacted: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ...,
         metadata: _Optional[_Mapping[str, str]] = ...,

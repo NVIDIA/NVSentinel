@@ -73,7 +73,7 @@ func main() {
 		defer cancel()
 
 		log.Printf("Sending health event for node: %s", healthEvent.NodeName)
-		_, err = client.HealthEventOccuredV1(ctx, healthEvents)
+		_, err = client.HealthEventOccurredV1(ctx, healthEvents)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to send health event: %v", err), http.StatusInternalServerError)
 			return

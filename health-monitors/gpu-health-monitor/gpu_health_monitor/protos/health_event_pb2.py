@@ -21,7 +21,7 @@ from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x12health_event.proto\x12\ndatamodels\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto"H\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\'\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x17.datamodels.HealthEvent"1\n\x06\x45ntity\x12\x12\n\nentityType\x18\x01 \x01(\t\x12\x13\n\x0b\x65ntityValue\x18\x02 \x01(\t"\xb0\x04\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12\x37\n\x11recommendedAction\x18\x08 \x01(\x0e\x32\x1c.datamodels.RecommenedAction\x12\x11\n\terrorCode\x18\t \x03(\t\x12,\n\x10\x65ntitiesImpacted\x18\n \x03(\x0b\x32\x12.datamodels.Entity\x12\x37\n\x08metadata\x18\x0b \x03(\x0b\x32%.datamodels.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x10\n\x08nodeName\x18\r \x01(\t\x12;\n\x13quarantineOverrides\x18\x0e \x01(\x0b\x32\x1e.datamodels.BehaviourOverrides\x12\x36\n\x0e\x64rainOverrides\x18\x0f \x01(\x0b\x32\x1e.datamodels.BehaviourOverrides\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01"1\n\x12\x42\x65haviourOverrides\x12\r\n\x05\x66orce\x18\x01 \x01(\x08\x12\x0c\n\x04skip\x18\x02 \x01(\x08*\x83\x01\n\x10RecommenedAction\x12\x08\n\x04NONE\x10\x00\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x13\n\x0f\x43ONTACT_SUPPORT\x10\x05\x12\x0e\n\nRESTART_VM\x10\x0f\x12\x0e\n\nRESTART_BM\x10\x18\x12\x0e\n\nREPLACE_VM\x10\x19\x12\x0b\n\x07UNKNOWN\x10\x63\x32_\n\x11PlatformConnector\x12J\n\x14HealthEventOccuredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty"\x00\x42\x35Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3'
+    b'\n\x12health_event.proto\x12\ndatamodels\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1bgoogle/protobuf/empty.proto"H\n\x0cHealthEvents\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\'\n\x06\x65vents\x18\x02 \x03(\x0b\x32\x17.datamodels.HealthEvent"1\n\x06\x45ntity\x12\x12\n\nentityType\x18\x01 \x01(\t\x12\x13\n\x0b\x65ntityValue\x18\x02 \x01(\t"\xb1\x04\n\x0bHealthEvent\x12\x0f\n\x07version\x18\x01 \x01(\r\x12\r\n\x05\x61gent\x18\x02 \x01(\t\x12\x16\n\x0e\x63omponentClass\x18\x03 \x01(\t\x12\x11\n\tcheckName\x18\x04 \x01(\t\x12\x0f\n\x07isFatal\x18\x05 \x01(\x08\x12\x11\n\tisHealthy\x18\x06 \x01(\x08\x12\x0f\n\x07message\x18\x07 \x01(\t\x12\x38\n\x11recommendedAction\x18\x08 \x01(\x0e\x32\x1d.datamodels.RecommendedAction\x12\x11\n\terrorCode\x18\t \x03(\t\x12,\n\x10\x65ntitiesImpacted\x18\n \x03(\x0b\x32\x12.datamodels.Entity\x12\x37\n\x08metadata\x18\x0b \x03(\x0b\x32%.datamodels.HealthEvent.MetadataEntry\x12\x36\n\x12generatedTimestamp\x18\x0c \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x10\n\x08nodeName\x18\r \x01(\t\x12;\n\x13quarantineOverrides\x18\x0e \x01(\x0b\x32\x1e.datamodels.BehaviourOverrides\x12\x36\n\x0e\x64rainOverrides\x18\x0f \x01(\x0b\x32\x1e.datamodels.BehaviourOverrides\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01"1\n\x12\x42\x65haviourOverrides\x12\r\n\x05\x66orce\x18\x01 \x01(\x08\x12\x0c\n\x04skip\x18\x02 \x01(\x08*\x84\x01\n\x11RecommendedAction\x12\x08\n\x04NONE\x10\x00\x12\x13\n\x0f\x43OMPONENT_RESET\x10\x02\x12\x13\n\x0f\x43ONTACT_SUPPORT\x10\x05\x12\x0e\n\nRESTART_VM\x10\x0f\x12\x0e\n\nRESTART_BM\x10\x18\x12\x0e\n\nREPLACE_VM\x10\x19\x12\x0b\n\x07UNKNOWN\x10\x63\x32`\n\x11PlatformConnector\x12K\n\x15HealthEventOccurredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty"\x00\x42\x35Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3'
 )
 
 _globals = globals()
@@ -32,18 +32,18 @@ if not _descriptor._USE_C_DESCRIPTORS:
     _globals["DESCRIPTOR"]._serialized_options = b"Z3github.com/nvidia/nvsentinel/data-models/pkg/protos"
     _globals["_HEALTHEVENT_METADATAENTRY"]._loaded_options = None
     _globals["_HEALTHEVENT_METADATAENTRY"]._serialized_options = b"8\001"
-    _globals["_RECOMMENEDACTION"]._serialized_start = 836
-    _globals["_RECOMMENEDACTION"]._serialized_end = 967
+    _globals["_RECOMMENDEDACTION"]._serialized_start = 837
+    _globals["_RECOMMENDEDACTION"]._serialized_end = 969
     _globals["_HEALTHEVENTS"]._serialized_start = 96
     _globals["_HEALTHEVENTS"]._serialized_end = 168
     _globals["_ENTITY"]._serialized_start = 170
     _globals["_ENTITY"]._serialized_end = 219
     _globals["_HEALTHEVENT"]._serialized_start = 222
-    _globals["_HEALTHEVENT"]._serialized_end = 782
-    _globals["_HEALTHEVENT_METADATAENTRY"]._serialized_start = 735
-    _globals["_HEALTHEVENT_METADATAENTRY"]._serialized_end = 782
-    _globals["_BEHAVIOUROVERRIDES"]._serialized_start = 784
-    _globals["_BEHAVIOUROVERRIDES"]._serialized_end = 833
-    _globals["_PLATFORMCONNECTOR"]._serialized_start = 969
-    _globals["_PLATFORMCONNECTOR"]._serialized_end = 1064
+    _globals["_HEALTHEVENT"]._serialized_end = 783
+    _globals["_HEALTHEVENT_METADATAENTRY"]._serialized_start = 736
+    _globals["_HEALTHEVENT_METADATAENTRY"]._serialized_end = 783
+    _globals["_BEHAVIOUROVERRIDES"]._serialized_start = 785
+    _globals["_BEHAVIOUROVERRIDES"]._serialized_end = 834
+    _globals["_PLATFORMCONNECTOR"]._serialized_start = 971
+    _globals["_PLATFORMCONNECTOR"]._serialized_end = 1067
 # @@protoc_insertion_point(module_scope)

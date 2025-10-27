@@ -19,8 +19,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -31,7 +31,7 @@ func IsNodeAlreadyDrained(ctx context.Context, collection queue.MongoCollectionA
 	filter := bson.M{
 		"healthevent.nodename": nodeName,
 		"healtheventstatus.nodequarantined": bson.M{
-			"$in": []string{string(storeconnector.Quarantined), string(storeconnector.UnQuarantined)},
+			"$in": []string{string(model.Quarantined), string(model.UnQuarantined)},
 		},
 	}
 
@@ -57,7 +57,7 @@ func IsNodeAlreadyDrained(ctx context.Context, collection queue.MongoCollectionA
 		return false, fmt.Errorf("invalid nodequarantined format for node %s", nodeName)
 	}
 
-	if nodeQuarantined == string(storeconnector.UnQuarantined) {
+	if nodeQuarantined == string(model.UnQuarantined) {
 		return false, nil
 	}
 
@@ -71,5 +71,5 @@ func IsNodeAlreadyDrained(ctx context.Context, collection queue.MongoCollectionA
 		return false, nil
 	}
 
-	return drainStatus == string(storeconnector.StatusSucceeded), nil
+	return drainStatus == string(model.StatusSucceeded), nil
 }

@@ -44,7 +44,7 @@ func TestCSVParser_Parse(t *testing.T) {
 		expectedSuccess   bool
 		expectedXIDCode   int
 		expectedPCIAddr   string
-		expectedAction    pb.RecommenedAction
+		expectedAction    pb.RecommendedAction
 		expectedMnemonic  string
 		expectedErrorCode string
 	}{
@@ -54,7 +54,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   149,
 			expectedPCIAddr:   "0018:01:00",
-			expectedAction:    pb.RecommenedAction_COMPONENT_RESET,
+			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
 			expectedMnemonic:  "NETIR_LINK_EVT/NETIR_LINK_DOWN",
 			expectedErrorCode: "149.NETIR_LINK_EVT",
 		},
@@ -64,7 +64,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   32,
 			expectedPCIAddr:   "0000:66:00",
-			expectedAction:    pb.RecommenedAction_NONE,
+			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 32",
 			expectedErrorCode: "32",
 		},
@@ -74,7 +74,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   46,
 			expectedPCIAddr:   "0000:3f:00",
-			expectedAction:    pb.RecommenedAction_COMPONENT_RESET,
+			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
 			expectedMnemonic:  "XID 46",
 			expectedErrorCode: "46",
 		},
@@ -84,7 +84,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   69,
 			expectedPCIAddr:   "0001:ab:cd",
-			expectedAction:    pb.RecommenedAction_NONE,
+			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 69",
 			expectedErrorCode: "69",
 		},
@@ -94,7 +94,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   8,
 			expectedPCIAddr:   "0000:9b:00",
-			expectedAction:    pb.RecommenedAction_NONE,
+			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 8",
 			expectedErrorCode: "8",
 		},
@@ -104,7 +104,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedSuccess:   true,
 			expectedXIDCode:   999,
 			expectedPCIAddr:   "0000:66:00",
-			expectedAction:    pb.RecommenedAction_CONTACT_SUPPORT,
+			expectedAction:    pb.RecommendedAction_CONTACT_SUPPORT,
 			expectedMnemonic:  "XID 999",
 			expectedErrorCode: "999",
 		},
@@ -155,10 +155,10 @@ func TestCSVParser_Parse(t *testing.T) {
 			assert.Equal(t, tc.expectedErrorCode, result.Result.Name, "Name should match")
 
 			if tc.expectedXIDCode != 999 {
-				assert.NotEqual(t, pb.RecommenedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
+				assert.NotEqual(t, pb.RecommendedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
 					"XID %d should have a specific mapping from real CSV, not default CONTACT_SUPPORT", tc.expectedXIDCode)
 			} else {
-				assert.Equal(t, pb.RecommenedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
+				assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,
 					"Unknown XID should default to CONTACT_SUPPORT")
 			}
 

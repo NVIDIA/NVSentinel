@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	platform_connectors "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platform_connectors "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.mongodb.org/mongo-driver/bson"
@@ -38,7 +38,7 @@ type mockPublisher struct {
 	mock.Mock
 }
 
-func (m *mockPublisher) HealthEventOccuredV1(ctx context.Context, events *platform_connectors.HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (m *mockPublisher) HealthEventOccurredV1(ctx context.Context, events *platform_connectors.HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	args := m.Called(ctx, events)
 	return args.Get(0).(*emptypb.Empty), args.Error(1)
 }
@@ -107,7 +107,7 @@ var (
 			RecommendedAction: "COMPONENT_RESET",
 		},
 	}
-	healthEvent = storeconnector.HealthEventWithStatus{
+	healthEvent = model.HealthEventWithStatus{
 		CreatedAt: time.Now(),
 		HealthEvent: &platform_connectors.HealthEvent{
 			NodeName: "node1",
@@ -174,7 +174,7 @@ func TestHandleEvent(t *testing.T) {
 			Version: 1,
 			Events:  []*platform_connectors.HealthEvent{healthEvent.HealthEvent},
 		}
-		mockPublisher.On("HealthEventOccuredV1", ctx, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
+		mockPublisher.On("HealthEventOccurredV1", ctx, expectedHealthEvents).Return(&emptypb.Empty{}, nil)
 
 		reconciler := Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
@@ -195,7 +195,7 @@ func TestHandleEvent(t *testing.T) {
 	})
 
 	t.Run("no rules match", func(t *testing.T) {
-		healthEvent = storeconnector.HealthEventWithStatus{
+		healthEvent = model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &platform_connectors.HealthEvent{
 				NodeName: "node1",
@@ -223,11 +223,11 @@ func TestHandleEvent(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, published)
 		mockClient.AssertNotCalled(t, "Aggregate")
-		mockPublisher.AssertNotCalled(t, "HealthEventOccuredV1")
+		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
 
 	t.Run("one sequence matched", func(t *testing.T) {
-		healthEvent = storeconnector.HealthEventWithStatus{
+		healthEvent = model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &platform_connectors.HealthEvent{
 				NodeName: "node1",
@@ -258,7 +258,7 @@ func TestHandleEvent(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, published)
 		mockClient.AssertExpectations(t)
-		mockPublisher.AssertNotCalled(t, "HealthEventOccuredV1")
+		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
 
 	t.Run("empty rules list", func(t *testing.T) {
@@ -277,6 +277,6 @@ func TestHandleEvent(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, published)
 		mockClient.AssertNotCalled(t, "Aggregate")
-		mockPublisher.AssertNotCalled(t, "HealthEventOccuredV1")
+		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
 }

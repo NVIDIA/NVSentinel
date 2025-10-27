@@ -271,7 +271,7 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 			for _, check := range sm.checks {
 				message := "No Health Failures"
 				errRes := types.ErrorResolution{
-					RecommendedAction: pb.RecommenedAction_NONE,
+					RecommendedAction: pb.RecommendedAction_NONE,
 				}
 				healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
 				sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
@@ -787,7 +787,7 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 	}
 
 	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := sm.pcClient.HealthEventOccuredV1(context.Background(), healthEvents)
+		_, err := sm.pcClient.HealthEventOccurredV1(context.Background(), healthEvents)
 		if err == nil {
 			slog.Info("Successfully sent health events", "events", healthEvents)
 			return true, nil

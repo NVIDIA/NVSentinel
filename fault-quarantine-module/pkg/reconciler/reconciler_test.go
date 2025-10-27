@@ -25,14 +25,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -219,7 +219,7 @@ func TestHandleEvent(t *testing.T) {
 	}
 
 	// Create a wrapper around the health event
-	healthEventWithStatus := &store.HealthEventWithStatus{
+	healthEventWithStatus := &model.HealthEventWithStatus{
 		HealthEvent: event,
 	}
 
@@ -244,7 +244,7 @@ func TestHandleEvent(t *testing.T) {
 		t.Errorf("Expected isQuarantined to be non-nil")
 	}
 
-	if isQuarantined != nil && *isQuarantined == store.UnQuarantined {
+	if isQuarantined != nil && *isQuarantined == model.UnQuarantined {
 		t.Errorf("Node should be quarantined due to rules")
 	}
 
@@ -291,7 +291,7 @@ func TestHandleEventNoRulesTriggered(t *testing.T) {
 	}
 
 	// Create a wrapper around the health event
-	healthEventWithStatus := &store.HealthEventWithStatus{
+	healthEventWithStatus := &model.HealthEventWithStatus{
 		HealthEvent: event,
 	}
 
@@ -523,14 +523,14 @@ func TestHandleEvent_ManualUncordonThenHealthEvent(t *testing.T) {
 			{EntityType: "GPU", EntityValue: "0"},
 		},
 	}
-	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: healthEvent}
+	healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: healthEvent}
 
 	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
 
 	if status == nil {
 		t.Fatalf("Expected non-nil status when node is manually uncordoned and annotation should be removed")
 	}
-	if *status != store.UnQuarantined {
+	if *status != model.UnQuarantined {
 		t.Errorf("Expected status UnQuarantined after manual uncordon and annotation removal, got %v", *status)
 	}
 	if !annotationRemoved {
@@ -613,7 +613,7 @@ func TestMultiGPUPartialHealthyEvent(t *testing.T) {
 	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
 
 	// Test 1: Partial healthy event (only GPU 4 recovers)
-	partialHealthyEvent := &store.HealthEventWithStatus{
+	partialHealthyEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			CheckName:      "GpuNvlinkWatch",
@@ -638,7 +638,7 @@ func TestMultiGPUPartialHealthyEvent(t *testing.T) {
 	if uncordonCalled {
 		t.Errorf("Expected node to remain cordoned for partial GPU recovery")
 	}
-	if status == nil || *status != store.AlreadyQuarantined {
+	if status == nil || *status != model.AlreadyQuarantined {
 		t.Errorf("Expected AlreadyQuarantined status for partial recovery, got %v", status)
 	}
 
@@ -647,7 +647,7 @@ func TestMultiGPUPartialHealthyEvent(t *testing.T) {
 	uncordonCalled = false
 
 	// Test 2: Full healthy event (all GPUs recover)
-	fullHealthyEvent := &store.HealthEventWithStatus{
+	fullHealthyEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			CheckName:      "GpuNvlinkWatch",
@@ -700,7 +700,7 @@ func TestMultiGPUPartialHealthyEvent(t *testing.T) {
 	if !uncordonCalled {
 		t.Errorf("Expected node to be uncordoned when all GPUs recover")
 	}
-	if status == nil || *status != store.UnQuarantined {
+	if status == nil || *status != model.UnQuarantined {
 		t.Errorf("Expected UnQuarantined status for full recovery, got %v", status)
 	}
 }
@@ -750,7 +750,7 @@ func TestSkipRedundantCordoning(t *testing.T) {
 	r := NewReconciler(ctx, ReconcilerConfig{K8sClient: k8sMock}, nil)
 
 	// New event with different checkName
-	newEvent := &store.HealthEventWithStatus{
+	newEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			CheckName:      "GpuMemWatch", // Different check
@@ -767,7 +767,7 @@ func TestSkipRedundantCordoning(t *testing.T) {
 
 	status, _ := r.handleEvent(ctx, newEvent, nil, rulesetsConfig{})
 
-	if status == nil || *status != store.AlreadyQuarantined {
+	if status == nil || *status != model.AlreadyQuarantined {
 		t.Errorf("Expected AlreadyQuarantined status for redundant cordoning, got %v", status)
 	}
 }
@@ -817,7 +817,7 @@ func TestSkipDuplicateUnhealthyEntities(t *testing.T) {
 	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
 
 	// New event with same entities (GPU 0) - should be skipped
-	duplicateEvent := &store.HealthEventWithStatus{
+	duplicateEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			CheckName:      "GpuNvlinkWatch",
@@ -840,13 +840,13 @@ func TestSkipDuplicateUnhealthyEntities(t *testing.T) {
 		t.Errorf("UpdateNodeAnnotations should not be called for duplicate entities")
 	}
 
-	if status == nil || *status != store.AlreadyQuarantined {
+	if status == nil || *status != model.AlreadyQuarantined {
 		t.Errorf("Expected AlreadyQuarantined status for duplicate entities, got %v", status)
 	}
 
 	// Now test with a mix of existing and new entities
 	updateCalled = false
-	mixedEvent := &store.HealthEventWithStatus{
+	mixedEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			CheckName:      "GpuNvlinkWatch",
@@ -868,7 +868,7 @@ func TestSkipDuplicateUnhealthyEntities(t *testing.T) {
 		t.Errorf("UpdateNodeAnnotations should be called when new entities are present")
 	}
 
-	if status == nil || *status != store.AlreadyQuarantined {
+	if status == nil || *status != model.AlreadyQuarantined {
 		t.Errorf("Expected AlreadyQuarantined status after updating with new entities, got %v", status)
 	}
 }
@@ -911,7 +911,7 @@ func TestHandleHealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 	}, nil)
 
 	// Healthy event
-	event := &store.HealthEventWithStatus{
+	event := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:  "node1",
 			IsHealthy: true,
@@ -981,7 +981,7 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 	r.SetLabelKeys("k88s.nvidia.com/")
 
 	// Unhealthy event
-	event := &store.HealthEventWithStatus{
+	event := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:  "node1",
 			IsHealthy: false,
@@ -991,7 +991,7 @@ func TestHandleUnhealthyEventWithoutQuarantineAnnotation(t *testing.T) {
 	status, _ := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 
 	// Status should be Quarantined for unhealthy events that trigger rules
-	if status == nil || *status != store.Quarantined {
+	if status == nil || *status != model.Quarantined {
 		t.Errorf("Expected Quarantined status for unhealthy event, got %v", status)
 	}
 
@@ -1064,7 +1064,7 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Create a wrapper around the health event
-		healthEventWithStatus := &store.HealthEventWithStatus{
+		healthEventWithStatus := &model.HealthEventWithStatus{
 			HealthEvent: event,
 		}
 
@@ -1117,7 +1117,7 @@ func TestHandleEventRuleEvaluationRetry(t *testing.T) {
 		}
 
 		// Create a wrapper around the health event
-		healthEventWithStatus := &store.HealthEventWithStatus{
+		healthEventWithStatus := &model.HealthEventWithStatus{
 			HealthEvent: event,
 		}
 
@@ -1222,7 +1222,7 @@ func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
 	}
 
 	event := &protos.HealthEvent{NodeName: "node1"}
-	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: event}
+	healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: event}
 
 	status, _ := r.handleEvent(ctx, healthEventWithStatus, ruleSetEvals,
 		rulesetsConfig{
@@ -1247,7 +1247,7 @@ func TestHandleEventNodeAlreadyCordonedManually(t *testing.T) {
 		t.Fatalf("Expected non-nil status returned from handleEvent")
 	}
 
-	if *status != store.Quarantined {
+	if *status != model.Quarantined {
 		t.Errorf("Expected status to be Quarantined, got %v", *status)
 	}
 
@@ -1321,14 +1321,14 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMStillQuarantined(t *testing.T) {
 		IsHealthy: false,
 	}
 
-	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: incomingEvent}
+	healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: incomingEvent}
 
 	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
 
 	if status == nil {
 		t.Fatalf("Expected non-nil status when node already quarantined by FQM")
 	}
-	if *status != store.AlreadyQuarantined {
+	if *status != model.AlreadyQuarantined {
 		t.Errorf("Expected status AlreadyQuarantined, got %v", *status)
 	}
 
@@ -1412,14 +1412,14 @@ func TestHandleEventNodeAlreadyQuarantinedByFQMUnquarantine(t *testing.T) {
 		}},
 	}
 
-	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: incomingEvent}
+	healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: incomingEvent}
 
 	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
 
 	if status == nil {
 		t.Fatalf("Expected non-nil status when node already quarantined by FQM")
 	}
-	if *status != store.UnQuarantined {
+	if *status != model.UnQuarantined {
 		t.Errorf("Expected status UnQuarantined after healthy event, got %v", *status)
 	}
 
@@ -1517,7 +1517,7 @@ func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
 
 	// Test 1: First event - should use cache (empty annotations)
 	event1 := &protos.HealthEvent{NodeName: "node1"}
-	healthEventWithStatus1 := &store.HealthEventWithStatus{HealthEvent: event1}
+	healthEventWithStatus1 := &model.HealthEventWithStatus{HealthEvent: event1}
 
 	// Mock evaluator that returns success
 	ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
@@ -1534,7 +1534,7 @@ func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
 		t.Errorf("Expected 0 API calls (should use cache), got %d", apiCallCount)
 	}
 
-	if status1 == nil || *status1 != store.Quarantined {
+	if status1 == nil || *status1 != model.Quarantined {
 		t.Errorf("Expected Quarantined status, got %v", status1)
 	}
 
@@ -1558,7 +1558,7 @@ func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
 		ComponentClass: event1.ComponentClass,
 		Version:        event1.Version,
 	}
-	healthEventWithStatus2 := &store.HealthEventWithStatus{HealthEvent: event2}
+	healthEventWithStatus2 := &model.HealthEventWithStatus{HealthEvent: event2}
 
 	// Update mock to return quarantine annotations if API is called (shouldn't be)
 	k8sMock.getNodeAnnotationsFn = func(ctx context.Context, nodeName string) (map[string]string, error) {
@@ -1573,7 +1573,7 @@ func TestCacheConsistencyDuringQuarantineUnquarantine(t *testing.T) {
 		t.Errorf("Expected 0 API calls for second event (should use cache), got %d", apiCallCount)
 	}
 
-	if status2 == nil || *status2 != store.UnQuarantined {
+	if status2 == nil || *status2 != model.UnQuarantined {
 		t.Errorf("Expected UnQuarantined status, got %v", status2)
 	}
 
@@ -1709,7 +1709,7 @@ func TestManualUncordonWithCache(t *testing.T) {
 			{EntityType: "GPU", EntityValue: "0"},
 		},
 	}
-	healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: healthyEvent}
+	healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: healthyEvent}
 
 	apiCallCount = 0 // Reset counter
 	status, _ := r.handleEvent(ctx, healthEventWithStatus, nil, rulesetsConfig{})
@@ -1718,7 +1718,7 @@ func TestManualUncordonWithCache(t *testing.T) {
 		t.Errorf("Expected 0 API calls (should use cache), got %d", apiCallCount)
 	}
 
-	if status == nil || *status != store.UnQuarantined {
+	if status == nil || *status != model.UnQuarantined {
 		t.Errorf("Expected UnQuarantined status after manual uncordon + healthy event, got %v", status)
 	}
 
@@ -2015,7 +2015,7 @@ func TestCachePerformanceWithManyEvents(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		nodeName := fmt.Sprintf("node%d", i%100)
 		event := &protos.HealthEvent{NodeName: nodeName}
-		healthEventWithStatus := &store.HealthEventWithStatus{HealthEvent: event}
+		healthEventWithStatus := &model.HealthEventWithStatus{HealthEvent: event}
 
 		// Mock evaluator that returns not applicable
 		ruleSetEvals := []evaluator.RuleSetEvaluatorIface{
@@ -2920,7 +2920,7 @@ func TestBackwardCompatibilityAppendNewEvent(t *testing.T) {
 	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
 
 	// New fatal event for a different GPU
-	newEvent := &store.HealthEventWithStatus{
+	newEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			Agent:          "gpu-health-monitor",
@@ -2985,7 +2985,7 @@ func TestBackwardCompatibilityAppendNewEvent(t *testing.T) {
 		t.Errorf("New event not found in new format")
 	}
 
-	if status == nil || *status != store.AlreadyQuarantined {
+	if status == nil || *status != model.AlreadyQuarantined {
 		t.Errorf("Expected AlreadyQuarantined status, got %v", status)
 	}
 }
@@ -3046,7 +3046,7 @@ func TestBackwardCompatibilityHealthyEventRemoval(t *testing.T) {
 	r.nodeInfo.MarkNodeQuarantineStatusCache("node1", true, true)
 
 	// Corresponding healthy event
-	healthyEvent := &store.HealthEventWithStatus{
+	healthyEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			NodeName:       "node1",
 			Agent:          "gpu-health-monitor",
@@ -3074,7 +3074,7 @@ func TestBackwardCompatibilityHealthyEventRemoval(t *testing.T) {
 	}
 
 	// Verify status
-	if status == nil || *status != store.UnQuarantined {
+	if status == nil || *status != model.UnQuarantined {
 		t.Errorf("Expected UnQuarantined status, got %v", status)
 	}
 
@@ -3193,7 +3193,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	}
 
 	// Test 1: Initial GPU 1 failure should quarantine node
-	gpu1FailEvent := &store.HealthEventWithStatus{
+	gpu1FailEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			Agent:          "gpu-health-monitor",
 			ComponentClass: "GPU",
@@ -3211,7 +3211,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	}
 
 	status1, _ := r.handleEvent(ctx, gpu1FailEvent, ruleSetEvals, rulesetsConf)
-	if status1 == nil || *status1 != store.Quarantined {
+	if status1 == nil || *status1 != model.Quarantined {
 		t.Errorf("Expected GPU 1 failure to quarantine node, got status: %v", status1)
 	}
 
@@ -3223,7 +3223,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 
 	// Test 2: GPU 2 failure should be added to existing quarantine
 	updateAnnotationsCalled = false
-	gpu2FailEvent := &store.HealthEventWithStatus{
+	gpu2FailEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			Agent:          "gpu-health-monitor",
 			ComponentClass: "GPU",
@@ -3241,7 +3241,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	}
 
 	status2, _ := r.handleEvent(ctx, gpu2FailEvent, ruleSetEvals, rulesetsConf)
-	if status2 == nil || *status2 != store.AlreadyQuarantined {
+	if status2 == nil || *status2 != model.AlreadyQuarantined {
 		t.Errorf("Expected GPU 2 failure to be added to quarantine, got status: %v", status2)
 	}
 
@@ -3261,7 +3261,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	// Test 3: GPU 1 recovery should remove only GPU 1, node stays quarantined
 	updateAnnotationsCalled = false
 	uncordonCalled = false
-	gpu1RecoveryEvent := &store.HealthEventWithStatus{
+	gpu1RecoveryEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			Agent:          "gpu-health-monitor",
 			ComponentClass: "GPU",
@@ -3277,7 +3277,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	}
 
 	status3, _ := r.handleEvent(ctx, gpu1RecoveryEvent, ruleSetEvals, rulesetsConf)
-	if status3 == nil || *status3 != store.AlreadyQuarantined {
+	if status3 == nil || *status3 != model.AlreadyQuarantined {
 		t.Errorf("Expected partial recovery to keep node quarantined, got status: %v", status3)
 	}
 
@@ -3300,7 +3300,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	// Test 4: GPU 2 recovery should uncordon node
 	updateAnnotationsCalled = false
 	uncordonCalled = false
-	gpu2RecoveryEvent := &store.HealthEventWithStatus{
+	gpu2RecoveryEvent := &model.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
 			Agent:          "gpu-health-monitor",
 			ComponentClass: "GPU",
@@ -3316,7 +3316,7 @@ func TestEntityLevelQuarantineAndRecovery(t *testing.T) {
 	}
 
 	status4, _ := r.handleEvent(ctx, gpu2RecoveryEvent, ruleSetEvals, rulesetsConf)
-	if status4 == nil || *status4 != store.UnQuarantined {
+	if status4 == nil || *status4 != model.UnQuarantined {
 		t.Errorf("Expected complete recovery to unquarantine node, got status: %v", status4)
 	}
 

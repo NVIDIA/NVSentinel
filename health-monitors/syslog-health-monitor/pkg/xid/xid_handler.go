@@ -93,9 +93,9 @@ func (xidHandler *XIDHandler) normalizePCI(pci string) string {
 	return pci
 }
 
-func (xidHandler *XIDHandler) determineFatality(recommendedAction pb.RecommenedAction) bool {
-	return !slices.Contains([]pb.RecommenedAction{
-		pb.RecommenedAction_NONE,
+func (xidHandler *XIDHandler) determineFatality(recommendedAction pb.RecommendedAction) bool {
+	return !slices.Contains([]pb.RecommendedAction{
+		pb.RecommendedAction_NONE,
 	}, recommendedAction)
 }
 

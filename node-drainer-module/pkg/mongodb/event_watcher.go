@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -122,7 +122,7 @@ func (w *EventWatcher) handleColdStart(ctx context.Context) error {
 
 func (w *EventWatcher) getInProgressEvents(ctx context.Context) ([]bson.M, error) {
 	filter := bson.M{
-		"healtheventstatus.userpodsevictionstatus.status": storeconnector.StatusInProgress,
+		"healtheventstatus.userpodsevictionstatus.status": model.StatusInProgress,
 	}
 
 	cursor, err := w.collection.Find(ctx, filter)
@@ -140,7 +140,7 @@ func (w *EventWatcher) getInProgressEvents(ctx context.Context) ([]bson.M, error
 }
 
 func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson.M) error {
-	healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+	healthEventWithStatus := model.HealthEventWithStatus{}
 	if err := storewatcher.UnmarshalFullDocumentFromEvent(event, &healthEventWithStatus); err != nil {
 		return fmt.Errorf("failed to unmarshal health event: %w", err)
 	}
@@ -163,11 +163,11 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 
 	filter := bson.M{
 		"_id": document["_id"],
-		"healtheventstatus.userpodsevictionstatus.status": bson.M{"$ne": storeconnector.StatusInProgress},
+		"healtheventstatus.userpodsevictionstatus.status": bson.M{"$ne": model.StatusInProgress},
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"healtheventstatus.userpodsevictionstatus.status": storeconnector.StatusInProgress,
+			"healtheventstatus.userpodsevictionstatus.status": model.StatusInProgress,
 		},
 	}
 
@@ -186,8 +186,8 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	return w.queueManager.EnqueueEvent(ctx, nodeName, event, w.collection)
 }
 
-func isTerminalStatus(status storeconnector.Status) bool {
-	return status == storeconnector.StatusSucceeded ||
-		status == storeconnector.StatusFailed ||
-		status == storeconnector.AlreadyDrained
+func isTerminalStatus(status model.Status) bool {
+	return status == model.StatusSucceeded ||
+		status == model.StatusFailed ||
+		status == model.AlreadyDrained
 }

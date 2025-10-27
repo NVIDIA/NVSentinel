@@ -91,17 +91,17 @@ func TestDetermineFatality(t *testing.T) {
 
 	testCases := []struct {
 		name     string
-		code     pb.RecommenedAction
+		code     pb.RecommendedAction
 		fatality bool
 	}{
 		{
 			name:     "Fatal XID",
-			code:     pb.RecommenedAction_CONTACT_SUPPORT,
+			code:     pb.RecommendedAction_CONTACT_SUPPORT,
 			fatality: true,
 		},
 		{
 			name:     "Non-Fatal XID",
-			code:     pb.RecommenedAction_NONE,
+			code:     pb.RecommendedAction_NONE,
 			fatality: false,
 		},
 	}
@@ -191,7 +191,7 @@ func TestProcessLine(t *testing.T) {
 				assert.Equal(t, "GPU", event.ComponentClass)
 				assert.False(t, event.IsHealthy)
 				assert.True(t, event.IsFatal)
-				assert.Equal(t, pb.RecommenedAction_CONTACT_SUPPORT, event.RecommendedAction)
+				assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, event.RecommendedAction)
 				assert.Contains(t, event.Message, "GPU has fallen off the bus")
 				assert.Contains(t, event.ErrorCode, "Xid 79")
 				require.Len(t, event.EntitiesImpacted, 1)
@@ -367,7 +367,7 @@ func TestCreateHealthEventFromResponse(t *testing.T) {
 				assert.Equal(t, "GPU", event.ComponentClass)
 				assert.False(t, event.IsHealthy)
 				assert.True(t, event.IsFatal)
-				assert.Equal(t, pb.RecommenedAction_CONTACT_SUPPORT, event.RecommendedAction)
+				assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, event.RecommendedAction)
 				assert.Contains(t, event.Message, "GPU has fallen off the bus")
 				assert.Contains(t, event.Message, "CONTACT_SUPPORT")
 				assert.Contains(t, event.ErrorCode, "Xid 79")

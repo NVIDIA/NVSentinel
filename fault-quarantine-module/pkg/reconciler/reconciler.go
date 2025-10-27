@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
@@ -33,8 +35,6 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -404,7 +404,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 				if err != nil {
 					slog.Error("Error updating Node quarantine status", "error", err)
 					processingErrors.WithLabelValues("update_quarantine_status_error").Inc()
-				} else if *isNodeQuarantined == storeconnector.Quarantined || *isNodeQuarantined == storeconnector.UnQuarantined {
+				} else if *isNodeQuarantined == model.Quarantined || *isNodeQuarantined == model.UnQuarantined {
 					// Only count as successfully processed if there was an actual state change
 					// AlreadyQuarantined means the event was skipped (already counted in handleEvent)
 					totalEventsSuccessfullyProcessed.Inc()
@@ -464,7 +464,7 @@ func (r *Reconciler) watchEvents(watcher *storewatcher.ChangeStreamWatcher) {
 	for event := range watcher.Events() {
 		totalEventsReceived.Inc()
 
-		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+		healthEventWithStatus := model.HealthEventWithStatus{}
 		err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
 			&healthEventWithStatus,
@@ -492,11 +492,11 @@ func (r *Reconciler) watchEvents(watcher *storewatcher.ChangeStreamWatcher) {
 //nolint:cyclop,gocognit,nestif //fix this as part of NGCC-21793
 func (r *Reconciler) handleEvent(
 	ctx context.Context,
-	event *storeconnector.HealthEventWithStatus,
+	event *model.HealthEventWithStatus,
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	rulesetsConfig rulesetsConfig,
-) (*storeconnector.Status, common.RuleEvaluationResult) {
-	var status storeconnector.Status
+) (*model.Status, common.RuleEvaluationResult) {
+	var status model.Status
 
 	quarantineAnnotationExists := false
 
@@ -522,9 +522,9 @@ func (r *Reconciler) handleEvent(
 		if r.handleQuarantinedNode(ctx, event.HealthEvent) {
 			totalEventsSkipped.Inc()
 
-			status = storeconnector.AlreadyQuarantined
+			status = model.AlreadyQuarantined
 		} else {
-			status = storeconnector.UnQuarantined
+			status = model.UnQuarantined
 		}
 
 		return &status, common.RuleEvaluationNotApplicable
@@ -767,7 +767,7 @@ func (r *Reconciler) handleEvent(
 	}
 
 	if isNodeQuarantined {
-		status = storeconnector.Quarantined
+		status = model.Quarantined
 	} else {
 		return nil, common.RuleEvaluationNotApplicable
 	}
@@ -1053,7 +1053,7 @@ func (r *Reconciler) updateNodeQuarantineStatus(
 	ctx context.Context,
 	healthEventCollection *mongo.Collection,
 	event bson.M,
-	nodeQuarantinedStatus *storeconnector.Status,
+	nodeQuarantinedStatus *model.Status,
 ) error {
 	if nodeQuarantinedStatus == nil {
 		return fmt.Errorf("nodeQuarantinedStatus is nil")

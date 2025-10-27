@@ -28,7 +28,7 @@ import (
 
 /*
 In the code coverage report, this file is contributing 0%. Reason is since the healthEvents message send
-by the gpu health monitor is received by function HealthEventOccuredV1 and in order to test the functionality
+by the gpu health monitor is received by function HealthEventOccurredV1 and in order to test the functionality
 completely, we need simulate the queue enqueue and dequeue operations along with initializing the
 PlatformConnectorServer. it will get really complex.Hence, ignoring this file as part of unit testing for now.
 */
@@ -47,7 +47,8 @@ type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
 }
 
-func (p *PlatformConnectorServer) HealthEventOccuredV1(ctx context.Context, he *pb.HealthEvents) (*empty.Empty, error) {
+func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
+	he *pb.HealthEvents) (*empty.Empty, error) {
 	slog.Info("Health events received", "events", he)
 
 	healthEventsReceived.Add(float64(len(he.Events)))

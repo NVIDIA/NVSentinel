@@ -64,7 +64,6 @@ GO_MODULES := \
 	fault-remediation-module \
 	janitor \
 	store-client-sdk \
-	statemanager \
 	commons
 
 
@@ -448,11 +447,6 @@ lint-test-janitor:
 lint-test-store-client-sdk:
 	@echo "Linting and testing store-client-sdk..."
 	$(MAKE) -C store-client-sdk lint-test
-
-.PHONY: lint-test-statemanager
-lint-test-statemanager:
-	@echo "Linting and testing statemanager..."
-	$(MAKE) -C statemanager lint-test
 
 .PHONY: lint-test-commons
 lint-test-commons:

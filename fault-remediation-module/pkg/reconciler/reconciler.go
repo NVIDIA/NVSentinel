@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -54,8 +54,8 @@ type Reconciler struct {
 }
 
 type HealthEventDoc struct {
-	ID                                   primitive.ObjectID `bson:"_id"`
-	storeconnector.HealthEventWithStatus `bson:",inline"`
+	ID                          primitive.ObjectID `bson:"_id"`
+	model.HealthEventWithStatus `bson:",inline"`
 }
 
 func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
@@ -122,7 +122,7 @@ func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher Wat
 	nodeName := healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName
 	nodeQuarantined := healthEventWithStatus.HealthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	if nodeQuarantined != nil && *nodeQuarantined == storeconnector.UnQuarantined {
+	if nodeQuarantined != nil && *nodeQuarantined == model.UnQuarantined {
 		r.handleUnquarantineEvent(ctx, nodeName, watcher)
 		return
 	}
@@ -131,11 +131,11 @@ func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher Wat
 }
 
 func (r *Reconciler) shouldSkipEvent(ctx context.Context,
-	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+	healthEventWithStatus model.HealthEventWithStatus) bool {
 	action := healthEventWithStatus.HealthEvent.RecommendedAction
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
-	if action == platformconnector.RecommenedAction_NONE {
+	if action == protos.RecommendedAction_NONE {
 		slog.Info("Skipping event for node: recommended action is NONE (no remediation needed)",
 			"node", nodeName)
 		return true
@@ -165,8 +165,8 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 }
 
 // runLogCollector runs log collector for non-NONE actions if enabled
-func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *platformconnector.HealthEvent) {
-	if healthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE ||
+func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *protos.HealthEvent) {
+	if healthEvent.RecommendedAction == protos.RecommendedAction_NONE ||
 		!r.Config.EnableLogCollector {
 		return
 	}
@@ -404,7 +404,7 @@ func (r *Reconciler) handleCRStatus(
 // and determines whether to create a new CR based on its status
 func (r *Reconciler) checkExistingCRStatus(
 	ctx context.Context,
-	healthEvent *platformconnector.HealthEvent,
+	healthEvent *protos.HealthEvent,
 ) (bool, string, error) {
 	nodeName := healthEvent.NodeName
 	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)

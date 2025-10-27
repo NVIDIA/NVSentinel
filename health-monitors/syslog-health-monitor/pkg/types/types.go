@@ -31,5 +31,5 @@ type Handler interface {
 }
 
 type ErrorResolution struct {
-	RecommendedAction pb.RecommenedAction
+	RecommendedAction pb.RecommendedAction
 }

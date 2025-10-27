@@ -329,7 +329,7 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 		)
 	}
 
-	actionEnum, ok := pb.RecommenedAction_value[event.RecommendedAction]
+	actionEnum, ok := pb.RecommendedAction_value[event.RecommendedAction]
 	if !ok {
 		slog.Warn(
 			"Unknown recommended action '%s' for event %s. Defaulting to NONE.",
@@ -337,7 +337,7 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 			event.EventID,
 		)
 
-		actionEnum = int32(pb.RecommenedAction_NONE)
+		actionEnum = int32(pb.RecommendedAction_NONE)
 	}
 
 	healthEvent := &pb.HealthEvent{
@@ -347,7 +347,7 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 		IsFatal:           isFatal,
 		IsHealthy:         isHealthy,
 		Message:           message,
-		RecommendedAction: pb.RecommenedAction(actionEnum),
+		RecommendedAction: pb.RecommendedAction(actionEnum),
 		EntitiesImpacted: []*pb.Entity{
 			{
 				EntityType:  event.ResourceType,
@@ -401,7 +401,7 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 			"fatal", healthEvent.IsFatal,
 			"healthy", healthEvent.IsHealthy)
 
-		_, attemptErr := e.udsClient.HealthEventOccuredV1(ctx, healthEvents)
+		_, attemptErr := e.udsClient.HealthEventOccurredV1(ctx, healthEvents)
 		lastErr = attemptErr // Store the error from this attempt
 
 		if attemptErr == nil {

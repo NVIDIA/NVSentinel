@@ -25,6 +25,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
@@ -43,26 +44,8 @@ require (
 )
 
 // Local replacements for internal modules
-replace github.com/nvidia/nvsentinel/statemanager => ../../statemanager
-
-replace github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor => ../../health-monitors/csp-health-monitor
-
-replace github.com/nvidia/nvsentinel/platform-connectors => ../../platform-connectors
-
 replace github.com/nvidia/nvsentinel/data-models => ../../data-models
 
 replace github.com/nvidia/nvsentinel/store-client-sdk => ../../store-client-sdk
-
-replace github.com/nvidia/nvsentinel/health-event-client => ../../health-event-client
-
-replace github.com/nvidia/nvsentinel/health-events-analyzer => ../../health-events-analyzer
-
-replace github.com/nvidia/nvsentinel/fault-quarantine-module => ../../fault-quarantine-module
-
-replace github.com/nvidia/nvsentinel/labeler-module => ../../labeler-module
-
-replace github.com/nvidia/nvsentinel/node-drainer-module => ../../node-drainer-module
-
-replace github.com/nvidia/nvsentinel/fault-remediation-module => ../../fault-remediation-module
 
 replace github.com/nvidia/nvsentinel/commons => ../../commons
