@@ -203,6 +203,7 @@ PROTOC_GEN_GO_GRPC_VERSION=$(yq '.protobuf.protoc_gen_go_grpc' .versions.yaml)
 GRPCIO_TOOLS_VERSION=$(yq '.protobuf.grpcio_tools' .versions.yaml)
 BLACK_VERSION=$(yq '.linting.black' .versions.yaml)
 SHELLCHECK_VERSION=$(yq '.linting.shellcheck' .versions.yaml)
+CTLPTL_VERSION=$(yq '.testing_tools.ctlptl' .versions.yaml)
 
 echo ""
 log_info "Target Versions:"
@@ -463,7 +464,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 brew install tilt-dev/tap/ctlptl
             elif [[ "${OS}" == "linux" ]]; then
-                go install github.com/tilt-dev/ctlptl/cmd/ctlptl@latest
+                go install github.com/tilt-dev/ctlptl/cmd/ctlptl@v${CTLPTL_VERSION}
                 sudo cp "$(go env GOPATH)/bin/ctlptl" /usr/local/bin/
             fi
             log_success "ctlptl installed"

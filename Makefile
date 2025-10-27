@@ -98,40 +98,37 @@ all: lint-test-all ## Run lint-test-all (default target)
 # Show loaded tool versions
 .PHONY: show-versions
 show-versions: ## Display all tool versions loaded from .versions.yaml
-	@echo "=== Tool Versions (from .versions.yaml) ==="
-	@echo "Languages:"
-	@echo "  Go:                     $(GO_VERSION)"
-	@echo "  Python:                 $(PYTHON_VERSION)"
-	@echo ""
-	@echo "Build Tools:"
-	@echo "  Poetry:                 $(POETRY_VERSION)"
-	@echo ""
-	@echo "Go Tools:"
-	@echo "  golangci-lint:          $(GOLANGCI_LINT_VERSION)"
-	@echo "  gotestsum:              $(GOTESTSUM_VERSION)"
-	@echo "  gocover-cobertura:      $(GOCOVER_COBERTURA_VERSION)"
-	@echo ""
-	@echo "Protocol Buffers:"
-	@echo "  protobuf:               $(PROTOBUF_VERSION)"
-	@echo "  protoc-gen-go:          $(PROTOC_GEN_GO_VERSION)"
-	@echo "  protoc-gen-go-grpc:     $(PROTOC_GEN_GO_GRPC_VERSION)"
-	@echo "  grpcio-tools:           $(GRPCIO_TOOLS_VERSION)"
-	@echo ""
-	@echo "Linting:"
-	@echo "  black:                  $(BLACK_VERSION)"
-	@echo "  shellcheck:             $(SHELLCHECK_VERSION)"
-	@echo "  addlicense:             $(ADDLICENSE_VERSION)"
-	@echo ""
-	@echo "Container Tools:"
-	@echo "  docker-buildx:          $(DOCKER_BUILDX_VERSION)"
-	@echo "  ko:                     $(KO_VERSION)"
-	@echo "==========================================="
 ifndef YQ
-	@echo ""
-	@echo "⚠️  WARNING: yq not found - using default versions"
-	@echo "   Install yq for automatic version loading:"
+	@echo "⚠️  ERROR: yq is required to display versions"
+	@echo "   Install yq for version management:"
 	@echo "   macOS:  brew install yq"
 	@echo "   Linux:  See https://github.com/mikefarah/yq"
+	@exit 1
+else
+	@echo "=== Tool Versions (from .versions.yaml) ==="
+	@echo ""
+	@$(YQ) eval '.languages | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Languages:" && cat)
+	@echo ""
+	@$(YQ) eval '.build_tools | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Build Tools:" && cat)
+	@echo ""
+	@$(YQ) eval '.go_tools | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Go Tools:" && cat)
+	@echo ""
+	@$(YQ) eval '.protobuf | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Protocol Buffers:" && cat)
+	@echo ""
+	@$(YQ) eval '.linting | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Linting:" && cat)
+	@echo ""
+	@$(YQ) eval '.container_tools | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Container Tools:" && cat)
+	@echo ""
+	@$(YQ) eval '.testing_tools | to_entries | .[] | "  " + .key + ": " + .value' .versions.yaml | \
+		(echo "Testing & E2E Tools:" && cat)
+	@echo ""
+	@echo "==========================================="
 endif
 
 # Setup development environment

@@ -47,10 +47,12 @@ fi
 # Load versions from .versions.yaml
 GO_VERSION=$(yq '.languages.go' "${VERSIONS_FILE}")
 PYTHON_VERSION=$(yq '.languages.python' "${VERSIONS_FILE}")
+POETRY_VERSION=$(yq '.build_tools.poetry' "${VERSIONS_FILE}")
 
 echo "=== Dockerfile Version Update Tool ==="
 echo "Go version:     ${GO_VERSION}"
 echo "Python version: ${PYTHON_VERSION}"
+echo "Poetry version: ${POETRY_VERSION}"
 echo ""
 
 # Determine mode
@@ -111,6 +113,23 @@ while IFS= read -r dockerfile; do
                 # Update Python version in Dockerfile
                 # Match patterns like: python:3.11-alpine, python:3.12-bookworm, etc.
                 sed -i.bak -E "s/(FROM.*python:)[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?/\1${PYTHON_VERSION}\3/g" "${dockerfile}"
+                rm "${dockerfile}.bak"
+            fi
+        fi
+    fi
+    
+    # Check for Poetry installations
+    if grep -q "pip install poetry==" "${dockerfile}"; then
+        CURRENT_POETRY=$(grep "pip install poetry==" "${dockerfile}" | sed -E 's/.*poetry==([0-9.]+).*/\1/' | head -1)
+        
+        if [[ "${CURRENT_POETRY}" != "${POETRY_VERSION}" ]]; then
+            echo "📝 ${RELATIVE_PATH}"
+            echo "   Poetry: ${CURRENT_POETRY} → ${POETRY_VERSION}"
+            CHANGED=true
+            
+            if [[ "${DRY_RUN}" == "false" ]]; then
+                # Update Poetry version in pip install commands
+                sed -i.bak -E "s/(pip install poetry==)[0-9]+\.[0-9]+(\.[0-9]+)?/\1${POETRY_VERSION}/g" "${dockerfile}"
                 rm "${dockerfile}.bak"
             fi
         fi
