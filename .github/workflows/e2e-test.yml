@@ -28,7 +28,7 @@ on:
       - main
       - "pull-request/[0-9]+"
     paths-ignore:
-      - '*.md'
+      - '**/*.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/*.yaml'
