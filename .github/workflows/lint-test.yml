@@ -206,7 +206,7 @@ jobs:
           go-version: 'stable'
 
       - name: Download all coverage artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: "*-results"
           path: coverage-artifacts
@@ -398,7 +398,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download all coverage artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           pattern: "*-results"
           path: coverage-artifacts
