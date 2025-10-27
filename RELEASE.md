@@ -31,7 +31,7 @@ For standard releases from the main branch.
 3. **Verify artifacts**:
    - Container images in GitHub Container Registry
    - GitHub release with `versions.txt`
-   - Helm chart at `ghcr.io/[org]/nvsentinel`
+   - Helm chart at `ghcr.io/nvidia/nvsentinel`
 
 ### Method 2: Manual Release
 
@@ -49,12 +49,16 @@ For rebuilding from existing tags or emergency releases.
 
 ## Workflow Pipeline
 
-```
-Tag Push → Lint & Test (quality gates)
-        ↓
-        Publish Containers (all components)
-        ↓
-        Release (GitHub release + Helm chart)
+```mermaid
+graph LR
+    A[Tag Push] --> B[Lint & Test<br/>quality gates]
+    B --> C[Publish Containers<br/>all components]
+    C --> D[Release<br/>GitHub release + Helm chart]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#e8f5e9
+    style D fill:#f3e5f5
 ```
 
 ## Released Components
@@ -75,7 +79,7 @@ Tag Push → Lint & Test (quality gates)
 
 **Artifacts**:
 - GitHub release with `versions.txt`
-- Helm chart at `oci://ghcr.io/[org]/nvsentinel`
+- Helm chart at `oci://ghcr.io/nvidia/nvsentinel`
 
 ## Quality Gates
 
@@ -101,18 +105,18 @@ All releases must pass:
 # Verify versions.txt contains all components
 # Check container registry for images
 # Test Helm chart installation
-helm install nvsentinel oci://ghcr.io/[org]/nvsentinel --version v1.2.3
+helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 ```
 
 ## Release Artifacts
 
 ### Generated Artifacts (Example: v1.2.3)
 
-**Container Images** published to `ghcr.io/[org]/`:
+**Container Images** published to `ghcr.io/nvidia/`:
 - All 13 components tagged with `v1.2.3`
 - Example: `fault-quarantine-module:v1.2.3`
 
-**Helm Chart**: `oci://ghcr.io/[org]/nvsentinel:v1.2.3`
+**Helm Chart**: `oci://ghcr.io/nvidia/nvsentinel:v1.2.3`
 
 **GitHub Release**: Includes `versions.txt` with complete artifact list and SHAs
 
@@ -126,13 +130,13 @@ helm install nvsentinel oci://ghcr.io/[org]/nvsentinel --version v1.2.3
 **Commands**:
 ```bash
 # Pull container image
-docker pull ghcr.io/[org]/syslog-health-monitor:v1.2.3
+docker pull ghcr.io/nvidia/syslog-health-monitor:v1.2.3
 
 # Install Helm chart
-helm install test oci://ghcr.io/[org]/nvsentinel --version v1.2.3
+helm install test oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 
 # View chart metadata
-helm show chart oci://ghcr.io/[org]/nvsentinel --version v1.2.3
+helm show chart oci://ghcr.io/nvidia/nvsentinel --version v1.2.3
 ```
 
 ### Authentication
