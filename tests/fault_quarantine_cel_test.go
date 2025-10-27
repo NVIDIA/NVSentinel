@@ -120,16 +120,6 @@ func TestRulesetPriority(t *testing.T) {
 			ExpectAnnotation: true,
 		})
 
-		t.Log("Checking taint details on node")
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		t.Logf("Node taints: %+v", node.Spec.Taints)
-
-		annotation, exists := node.Annotations["quarantineHealthEventAppliedTaints"]
-		if exists {
-			t.Logf("Applied taints annotation: %s", annotation)
-		}
-
 		return ctx
 	})
 
@@ -162,7 +152,6 @@ func TestMultipleRulesMatching(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying Rule A applies taint without cordon")
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
 			ExpectTaint: &v1.Taint{
 				Key:    "GPUHealth",
@@ -173,10 +162,6 @@ func TestMultipleRulesMatching(t *testing.T) {
 			ExpectAnnotation: true,
 		})
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		t.Logf("Node after Rule A: cordoned=%v, taints=%+v", node.Spec.Unschedulable, node.Spec.Taints)
-
 		return ctx
 	})
 
@@ -184,27 +169,7 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Cleaning up XID 143 quarantine")
-		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("143").
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("XID 143 cleared")
-		tempHealthy := helpers.SendHealthEvent(ctx, t, healthyEvent)
-		defer os.Remove(tempHealthy)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			if node.Annotations != nil {
-				if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
-					return false
-				}
-			}
-			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("79")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
@@ -227,30 +192,7 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Cleaning up XID 79 quarantine")
-		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("XID 79 cleared")
-		tempHealthy := helpers.SendHealthEvent(ctx, t, healthyEvent)
-		defer os.Remove(tempHealthy)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			if node.Spec.Unschedulable {
-				return false
-			}
-			if node.Annotations != nil {
-				if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
-					return false
-				}
-			}
-			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithCheckName("GpuInforomWatch").
@@ -275,30 +217,7 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Cleaning up GpuInforomWatch quarantine")
-		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithCheckName("GpuInforomWatch").
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("GpuInforomWatch cleared")
-		tempHealthy := helpers.SendHealthEvent(ctx, t, healthyEvent)
-		defer os.Remove(tempHealthy)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			if node.Spec.Unschedulable {
-				return false
-			}
-			if node.Annotations != nil {
-				if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
-					return false
-				}
-			}
-			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("62")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
@@ -424,20 +343,16 @@ func TestManualUncordonWithAnnotationRetention(t *testing.T) {
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
 		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
-		return newCtx
-	})
-
-	feature.Assess("quarantine applied", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile := helpers.SendHealthEvent(ctx, t, event)
+		tempFile := helpers.SendHealthEvent(newCtx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		helpers.AssertQuarantineState(newCtx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
 			ExpectTaint: &v1.Taint{
 				Key:    "AggregatedNodeHealth",
 				Value:  "False",
@@ -447,14 +362,13 @@ func TestManualUncordonWithAnnotationRetention(t *testing.T) {
 			ExpectAnnotation: true,
 		})
 
-		return ctx
+		return newCtx
 	})
 
 	feature.Assess("manual uncordon keeps annotation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Logf("Manually uncordoning node %s", testCtx.NodeName)
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 		require.NoError(t, err)
 
@@ -462,7 +376,6 @@ func TestManualUncordonWithAnnotationRetention(t *testing.T) {
 		err = client.Resources().Update(ctx, node)
 		require.NoError(t, err)
 
-		t.Log("Verifying node uncordoned but annotation retained")
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
@@ -474,7 +387,6 @@ func TestManualUncordonWithAnnotationRetention(t *testing.T) {
 			_, exists := node.Annotations["quarantineHealthEvent"]
 			return exists
 		}, helpers.WaitTimeout, helpers.WaitInterval)
-		t.Logf("Confirmed: node %s uncordoned with annotation retained", testCtx.NodeName)
 
 		return ctx
 	})
@@ -538,14 +450,12 @@ func TestMultipleEntityTracking(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Sending error for GPU 1 (second entity)")
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithEntity("GPU", "1").
 			WithErrorCode("79")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying both entities tracked in annotation")
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
@@ -562,11 +472,7 @@ func TestMultipleEntityTracking(t *testing.T) {
 				return false
 			}
 
-			if len(events) == 2 {
-				t.Logf("Both entities tracked: GPU 0 and GPU 1")
-				return true
-			}
-			return false
+			return len(events) == 2
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		return ctx
@@ -576,7 +482,6 @@ func TestMultipleEntityTracking(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Clearing error for GPU 0 (partial recovery)")
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithEntity("GPU", "0").
 			WithHealthy(true).
@@ -585,7 +490,6 @@ func TestMultipleEntityTracking(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying node still quarantined (GPU 1 still failed)")
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
@@ -593,7 +497,6 @@ func TestMultipleEntityTracking(t *testing.T) {
 			}
 
 			if !node.Spec.Unschedulable {
-				t.Log("Node uncordoned prematurely")
 				return false
 			}
 
@@ -607,11 +510,7 @@ func TestMultipleEntityTracking(t *testing.T) {
 				return false
 			}
 
-			if len(events) == 1 {
-				t.Logf("Partial recovery: only GPU 1 tracked now")
-				return true
-			}
-			return false
+			return len(events) == 1
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		return ctx
@@ -621,8 +520,6 @@ func TestMultipleEntityTracking(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		// TODO: Remove after KACE-1709 fix is merged
-		t.Log("Clearing error for GPU 1 (complete recovery)")
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithEntity("GPU", "1").
 			WithHealthy(true).

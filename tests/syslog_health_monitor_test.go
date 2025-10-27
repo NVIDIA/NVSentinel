@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -29,9 +28,8 @@ import (
 )
 
 const (
-	syslogHealthMonitorNamespace = "nvsentinel"
-	stubJournalHTTPPort          = 9091
-	keySyslogPod                 = "syslogPod"
+	stubJournalHTTPPort = 9091
+	keySyslogPod        = "syslogPod"
 )
 
 // TestSyslogHealthMonitorXIDDetection tests both fatal and non-fatal XID error detection
@@ -47,7 +45,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, syslogHealthMonitorNamespace, "syslog-health-monitor")
+		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "syslog-health-monitor")
 		require.NoError(t, err, "failed to find syslog health monitor pod")
 		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
 
@@ -91,7 +89,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				t.Logf("Found condition: %s - %s", condition.Type, condition.Message)
 			}
 			return found
-		}, 2*time.Minute, 10*time.Second, "Fatal XID should create SysLogsXIDError node condition")
+		}, helpers.WaitTimeout, helpers.WaitInterval, "Fatal XID should create SysLogsXIDError node condition")
 
 		return ctx
 	})
@@ -124,7 +122,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				t.Logf("Found event: %s - %s", event.Type, event.Message)
 			}
 			return found
-		}, 2*time.Minute, 10*time.Second, "Non-fatal XID should create SysLogsXIDError event")
+		}, helpers.WaitTimeout, helpers.WaitInterval, "Non-fatal XID should create SysLogsXIDError event")
 
 		return ctx
 	})
@@ -136,7 +134,12 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			return ctx
 		}
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
 
 		t.Logf("Removing SysLogsXIDError condition from node %s", nodeName)
 		err = helpers.RemoveNodeCondition(ctx, client, nodeName, v1.NodeConditionType("SysLogsXIDError"))

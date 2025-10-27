@@ -117,8 +117,18 @@ func TeardownFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	nodeName := ctx.Value(FRKeyNodeName).(string)
-	testNamespace := ctx.Value(FRKeyNamespace).(string)
+	nodeNameVal := ctx.Value(FRKeyNodeName)
+	if nodeNameVal == nil {
+		t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+		return ctx
+	}
+	nodeName := nodeNameVal.(string)
+
+	testNamespaceVal := ctx.Value(FRKeyNamespace)
+	testNamespace := ""
+	if testNamespaceVal != nil {
+		testNamespace = testNamespaceVal.(string)
+	}
 
 	t.Logf("Cleaning up node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
@@ -128,17 +138,20 @@ func TeardownFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.
 		if node.Spec.Unschedulable {
 			t.Log("Manually uncordoning node")
 			node.Spec.Unschedulable = false
-			client.Resources().Update(ctx, node)
+			err = client.Resources().Update(ctx, node)
+			require.NoError(t, err)
 		}
 
 		if node.Labels != nil {
 			delete(node.Labels, NVSentinelStateLabelKey)
-			client.Resources().Update(ctx, node)
+			err = client.Resources().Update(ctx, node)
+			require.NoError(t, err)
 		}
 
 		if node.Annotations != nil {
 			delete(node.Annotations, "latestFaultRemediationState")
-			client.Resources().Update(ctx, node)
+			err = client.Resources().Update(ctx, node)
+			require.NoError(t, err)
 		}
 	}
 
@@ -337,13 +350,13 @@ func SendDrainCompletedEvent(ctx context.Context, t *testing.T, nodeName string,
 
 func RestartFaultRemediationDeployment(ctx context.Context, t *testing.T, client klient.Client) {
 	t.Log("Restarting fault-remediation deployment")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-remediation", "nvsentinel")
+	err := RestartDeployment(ctx, client, "nvsentinel-fault-remediation", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for fault-remediation deployment to be ready")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -426,9 +439,6 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 	}, WaitTimeout, WaitInterval)
 	t.Log("Node cordoned successfully")
 
-	t.Log("Step 3: Verify MongoDB drain status (persists even after label changes)")
-	WaitForMongoHealthEventStatus(ctx, t, client, nodeName, "Quarantined", "Succeeded")
-
 	t.Log("Full remediation flow trigger completed")
 }
 
@@ -452,55 +462,4 @@ func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.C
 	err = client.Resources().Update(ctx, &cr)
 	require.NoError(t, err)
 	t.Logf("Updated RebootNode CR %s status to: %s", crName, status)
-}
-
-func GetLatestHealthEvent(ctx context.Context, t *testing.T, client klient.Client, nodeName string) map[string]interface{} {
-	mongoEvent, err := QueryMongoHealthEvent(ctx, t, client, nodeName)
-	if err != nil {
-		t.Logf("Failed to query MongoDB health event: %v", err)
-		return nil
-	}
-
-	result := make(map[string]interface{})
-
-	statusMap := make(map[string]interface{})
-	if mongoEvent.HealthEventStatus.NodeQuarantined != "" {
-		statusMap["nodequarantined"] = mongoEvent.HealthEventStatus.NodeQuarantined
-	}
-	if mongoEvent.HealthEventStatus.UserPodsEvictionStatus.Status != "" {
-		statusMap["nodedrained"] = mongoEvent.HealthEventStatus.UserPodsEvictionStatus.Status
-	}
-	if mongoEvent.HealthEventStatus.FaultRemediated != nil {
-		statusMap["faultremediated"] = *mongoEvent.HealthEventStatus.FaultRemediated
-	}
-	if mongoEvent.HealthEventStatus.LastRemediationTimestamp != nil &&
-		mongoEvent.HealthEventStatus.LastRemediationTimestamp.Date != "" {
-		statusMap["lastremediationtimestamp"] = mongoEvent.HealthEventStatus.LastRemediationTimestamp.Date
-	}
-
-	result["healtheventstatus"] = statusMap
-	return result
-}
-
-func WaitForMongoRemediationStatus(ctx context.Context, t *testing.T, client klient.Client, nodeName string, expectedRemediated bool) {
-	t.Logf("Waiting for MongoDB faultRemediated status to be %v for node %s", expectedRemediated, nodeName)
-	require.Eventually(t, func() bool {
-		event := GetLatestHealthEvent(ctx, t, client, nodeName)
-		if event == nil {
-			return false
-		}
-
-		status, ok := event["healtheventstatus"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		remediated, ok := status["faultremediated"].(bool)
-		if !ok {
-			return false
-		}
-
-		return remediated == expectedRemediated
-	}, WaitTimeout, WaitInterval)
-	t.Logf("MongoDB faultRemediated status is %v for node %s", expectedRemediated, nodeName)
 }

@@ -15,6 +15,7 @@
 package helpers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -35,6 +36,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
@@ -42,6 +47,9 @@ import (
 const (
 	WaitTimeout  = 10 * time.Minute
 	WaitInterval = 30 * time.Second
+
+	// NVSentinelNamespace is the default namespace where NVSentinel components are deployed
+	NVSentinelNamespace = "nvsentinel"
 )
 
 // WaitForNodesCordonState waits for nodes with names specified in `nodeNames` to be either cordoned or uncrodoned based on `shouldCordon`. If `shouldCordon` is
@@ -908,4 +916,39 @@ func GetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client,
 	}
 
 	return nil, fmt.Errorf("no running pod matching pattern '%s' found on real worker nodes", podNamePattern)
+}
+
+// ExecInPod executes a command in a pod and returns stdout, stderr
+func ExecInPod(ctx context.Context, restConfig *rest.Config, namespace, podName, containerName string, command []string) (string, string, error) {
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create clientset: %w", err)
+	}
+
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&v1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+
+	return stdout.String(), stderr.String(), err
 }

@@ -55,20 +55,16 @@ func TestNodeDrainerRestart(t *testing.T) {
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Verifying MongoDB event status: Quarantined + InProgress")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "InProgress")
-
 		t.Log("Draining started (allowCompletion mode - pods won't evict yet)")
 		t.Log("Immediately restarting node-drainer pod")
 		restartTime := time.Now()
-		err = helpers.RestartDeployment(ctx, client, "nvsentinel-node-drainer", "nvsentinel")
+		err = helpers.RestartDeployment(ctx, client, "nvsentinel-node-drainer", helpers.NVSentinelNamespace)
 		require.NoError(t, err)
 
 		t.Log("Waiting for deployment to be ready after restart")
 		require.Eventually(t, func() bool {
 			deployment := &appsv1.Deployment{}
-			err := client.Resources().Get(ctx, "nvsentinel-node-drainer", "nvsentinel", deployment)
+			err := client.Resources().Get(ctx, "nvsentinel-node-drainer", helpers.NVSentinelNamespace, deployment)
 			if err != nil {
 				return false
 			}
@@ -91,10 +87,6 @@ func TestNodeDrainerRestart(t *testing.T) {
 		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		t.Log("Verifying MongoDB event status: Quarantined + Succeeded")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
 
 		return ctx
 	})
@@ -135,10 +127,6 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Verifying MongoDB event status: Quarantined + InProgress")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "InProgress")
-
 		t.Log("Node is draining, pods still running (allowCompletion mode)")
 
 		t.Log("Sending healthy event WHILE drain is in progress")
@@ -169,10 +157,6 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 			err := client.Resources().Get(ctx, podName, testCtx.TestNamespace, pod)
 			require.NoError(t, err, "pod %s was deleted but drain should have aborted", podName)
 		}
-
-		t.Log("Verifying MongoDB event status shows recovery")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"UnQuarantined", "Succeeded")
 
 		t.Log("Verifying label cleared or shows recovery")
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)

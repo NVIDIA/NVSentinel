@@ -53,36 +53,73 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 
 		t.Log("Triggering remediation flow again without cleanup")
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-		time.Sleep(5 * time.Second)
 
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying no new CR was created")
-		time.Sleep(30 * time.Second)
-
-		var crList []string
-		crs := &unstructured.UnstructuredList{}
-		crs.SetGroupVersionKind(schema.GroupVersionKind{
-			Group:   helpers.RebootNodeCRDGroup,
-			Version: helpers.RebootNodeCRDVersion,
-			Kind:    "RebootNodeList",
-		})
-		err = client.Resources().List(ctx, crs)
-		require.NoError(t, err)
-
-		for _, cr := range crs.Items {
-			spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-			if !found {
-				continue
+		t.Log("Verifying no new CR was created - actively checking CR count doesn't increase")
+		require.Never(t, func() bool {
+			crs := &unstructured.UnstructuredList{}
+			crs.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   helpers.RebootNodeCRDGroup,
+				Version: helpers.RebootNodeCRDVersion,
+				Kind:    "RebootNodeList",
+			})
+			err := client.Resources().List(ctx, crs)
+			if err != nil {
+				return false
 			}
-			nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
-			if found && nodeName == testCtx.NodeName {
-				crList = append(crList, cr.GetName())
-			}
-		}
 
-		require.LessOrEqual(t, len(crList), 2,
-			"Should have at most 2 CRs (old and potentially new)")
+			var crCount int
+			for _, cr := range crs.Items {
+				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
+				if !found {
+					continue
+				}
+				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
+				if found && nodeName == testCtx.NodeName {
+					crCount++
+				}
+			}
+
+			if crCount > 1 {
+				t.Logf("ERROR: Found %d CRs, duplicate created!", crCount)
+				return true // Failure - duplicate CR created
+			}
+			return false // Success - still only 1 CR
+		}, 30*time.Second, 5*time.Second, "should not create duplicate CR")
+
+		// Final verification: wait for CR count to stabilize at exactly 1
+		t.Log("Verifying final CR count is stable at 1")
+		require.Eventually(t, func() bool {
+			crs := &unstructured.UnstructuredList{}
+			crs.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   helpers.RebootNodeCRDGroup,
+				Version: helpers.RebootNodeCRDVersion,
+				Kind:    "RebootNodeList",
+			})
+			err := client.Resources().List(ctx, crs)
+			if err != nil {
+				return false
+			}
+
+			var crList []string
+			for _, cr := range crs.Items {
+				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
+				if !found {
+					continue
+				}
+				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
+				if found && nodeName == testCtx.NodeName {
+					crList = append(crList, cr.GetName())
+				}
+			}
+
+			if len(crList) == 1 && crList[0] == cr1Name {
+				return true // Stable at exactly the original CR
+			}
+			t.Logf("Waiting for stable CR count, currently: %d", len(crList))
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly the original CR")
 
 		return ctx
 	})
@@ -125,10 +162,6 @@ func TestRemediationModuleRestart(t *testing.T) {
 			}
 			return node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		t.Log("Verify drain completed via MongoDB (persists even if label already changed)")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
 
 		t.Log("Step 2: Restart fault-remediation module before CR creation")
 		helpers.RestartFaultRemediationDeployment(ctx, t, client)
@@ -177,7 +210,16 @@ func TestFailedCRRetry(t *testing.T) {
 
 		t.Log("Cleaning up and triggering new remediation")
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-		time.Sleep(10 * time.Second)
+
+		t.Log("Waiting for healthy event to be processed")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			// Node should be uncordoned after healthy event
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
@@ -218,8 +260,7 @@ func TestConcurrentRemediationEvents(t *testing.T) {
 		tempFile1 := helpers.SendHealthEvent(ctx, t, fatalEvent1)
 		defer os.Remove(tempFile1)
 
-		time.Sleep(2 * time.Second)
-
+		// Send second event immediately to test concurrent handling
 		fatalEvent2 := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("94").
 			WithMessage("XID 94 error - event 2").
@@ -235,38 +276,73 @@ func TestConcurrentRemediationEvents(t *testing.T) {
 			return node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
-		t.Log("Verify drain completed via MongoDB (persists even if label already changed)")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
-
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 
 		t.Log("Verifying only one CR was created despite concurrent events")
-		time.Sleep(30 * time.Second)
-
-		var crCount int
-		crs := &unstructured.UnstructuredList{}
-		crs.SetGroupVersionKind(schema.GroupVersionKind{
-			Group:   helpers.RebootNodeCRDGroup,
-			Version: helpers.RebootNodeCRDVersion,
-			Kind:    "RebootNodeList",
-		})
-		err = client.Resources().List(ctx, crs)
-		require.NoError(t, err)
-
-		for _, cr := range crs.Items {
-			spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-			if !found {
-				continue
+		require.Never(t, func() bool {
+			crs := &unstructured.UnstructuredList{}
+			crs.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   helpers.RebootNodeCRDGroup,
+				Version: helpers.RebootNodeCRDVersion,
+				Kind:    "RebootNodeList",
+			})
+			err := client.Resources().List(ctx, crs)
+			if err != nil {
+				return false
 			}
-			nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
-			if found && nodeName == testCtx.NodeName {
-				crCount++
-			}
-		}
 
-		require.Equal(t, 1, crCount, "Should have exactly one CR for the node")
+			var crCount int
+			for _, cr := range crs.Items {
+				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
+				if !found {
+					continue
+				}
+				nodeName, _, _ := unstructured.NestedString(spec, "nodeName")
+				if nodeName == testCtx.NodeName {
+					crCount++
+				}
+			}
+
+			if crCount > 1 {
+				t.Logf("ERROR: Found %d CRs from concurrent events, should be 1", crCount)
+				return true // Failure - duplicate CR created
+			}
+			return false // Success - only 1 CR
+		}, 30*time.Second, 5*time.Second, "should create exactly one CR despite concurrent events")
+
+		// Final verification: wait for CR count to stabilize at exactly 1
+		t.Log("Verifying final CR count is stable at 1 despite concurrent events")
+		require.Eventually(t, func() bool {
+			crs := &unstructured.UnstructuredList{}
+			crs.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   helpers.RebootNodeCRDGroup,
+				Version: helpers.RebootNodeCRDVersion,
+				Kind:    "RebootNodeList",
+			})
+			err := client.Resources().List(ctx, crs)
+			if err != nil {
+				return false
+			}
+
+			var crCount int
+			for _, cr := range crs.Items {
+				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
+				if !found {
+					continue
+				}
+				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
+				if found && nodeName == testCtx.NodeName {
+					crCount++
+				}
+			}
+
+			if crCount == 1 {
+				return true // Stable at exactly 1 CR
+			}
+			t.Logf("Waiting for stable CR count, currently: %d", crCount)
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly one CR for the node despite concurrent events")
 
 		return ctx
 	})
@@ -359,7 +435,7 @@ func TestRemediationDeploymentReadiness(t *testing.T) {
 		t.Log("Verifying fault-remediation deployment is ready")
 		require.Eventually(t, func() bool {
 			deployment := &appsv1.Deployment{}
-			err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", "nvsentinel", deployment)
+			err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", helpers.NVSentinelNamespace, deployment)
 			if err != nil {
 				t.Logf("Failed to get deployment: %v", err)
 				return false

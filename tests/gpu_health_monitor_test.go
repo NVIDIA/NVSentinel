@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -29,9 +28,8 @@ import (
 )
 
 const (
-	gpuHealthMonitorNamespace = "nvsentinel"
-	dcgmServiceHost           = "nvidia-dcgm.gpu-operator.svc"
-	dcgmServicePort           = "5555"
+	dcgmServiceHost = "nvidia-dcgm.gpu-operator.svc"
+	dcgmServicePort = "5555"
 )
 
 // TestGPUHealthMonitorMultipleErrors verifies GPU health monitor handles multiple concurrent errors
@@ -47,7 +45,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		gpuHealthMonitorPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, gpuHealthMonitorNamespace, "gpu-health-monitor")
+		gpuHealthMonitorPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
 		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
 		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
 
@@ -80,26 +78,26 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			{"Memory", "395", "1", "GpuMemWatch", "GpuMemWatchIsNotHealthy"},
 		}
 
-		for _, err := range errors {
-			t.Logf("Injecting %s error on node %s", err.name, nodeName)
+		for _, dcgmError := range errors {
+			t.Logf("Injecting %s error on node %s", dcgmError.name, nodeName)
 			cmd := []string{"/bin/sh", "-c",
 				fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f %s -v %s",
-					dcgmServiceHost, dcgmServicePort, err.fieldID, err.value)}
+					dcgmServiceHost, dcgmServicePort, dcgmError.fieldID, dcgmError.value)}
 
-			stdout, stderr, execErr := helpers.ExecInPod(ctx, restConfig, gpuHealthMonitorNamespace, gpuHealthMonitorPod.Name, "", cmd)
-			require.NoError(t, execErr, "failed to inject %s error: %s", err.name, stderr)
-			require.Contains(t, stdout, "Successfully injected", "%s error injection failed", err.name)
+			stdout, stderr, execErr := helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
+			require.NoError(t, execErr, "failed to inject %s error: %s", dcgmError.name, stderr)
+			require.Contains(t, stdout, "Successfully injected", "%s error injection failed", dcgmError.name)
 		}
 
 		t.Logf("Waiting for node conditions to appear")
 		require.Eventually(t, func() bool {
 			foundConditions := make(map[string]bool)
-			for _, err := range errors {
+			for _, dcgmError := range errors {
 				found, condition := helpers.CheckNodeConditionExists(ctx, client, nodeName,
-					v1.NodeConditionType(err.condition), err.reason)
-				foundConditions[err.condition] = found
+					v1.NodeConditionType(dcgmError.condition), dcgmError.reason)
+				foundConditions[dcgmError.condition] = found
 				if found {
-					t.Logf("Found %s condition: %s", err.condition, condition.Message)
+					t.Logf("Found %s condition: %s", dcgmError.condition, condition.Message)
 				}
 			}
 
@@ -112,7 +110,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			}
 
 			return allFound
-		}, 3*time.Minute, 10*time.Second, "all injected error conditions should appear")
+		}, helpers.WaitTimeout, helpers.WaitInterval, "all injected error conditions should appear")
 
 		return ctx
 	})
@@ -124,7 +122,12 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			return ctx
 		}
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
 		restConfig := client.RESTConfig()
 
 		clearCommands := []struct {
@@ -142,14 +145,14 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			cmd := []string{"/bin/sh", "-c",
 				fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f %s -v %s",
 					dcgmServiceHost, dcgmServicePort, clear.fieldID, clear.value)}
-			_, _, _ = helpers.ExecInPod(ctx, restConfig, gpuHealthMonitorNamespace, gpuHealthMonitorPod.Name, "", cmd)
+			_, _, _ = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
 		}
 
 		t.Logf("Removing node conditions from %s", nodeName)
-		for _, clear := range clearCommands {
-			err := helpers.RemoveNodeCondition(ctx, client, nodeName, v1.NodeConditionType(clear.condition))
+		for _, dcgmError := range clearCommands {
+			err := helpers.RemoveNodeCondition(ctx, client, nodeName, v1.NodeConditionType(dcgmError.condition))
 			if err != nil {
-				t.Logf("Warning: failed to remove %s condition: %v", clear.condition, err)
+				t.Logf("Warning: failed to remove %s condition: %v", dcgmError.condition, err)
 			}
 		}
 

@@ -58,17 +58,17 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	}
 
 	t.Log("Backing up current node-drainer configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", "nvsentinel")
+	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", "nvsentinel")
+	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Restarting node-drainer deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-node-drainer", "nvsentinel")
+	err = RestartDeployment(ctx, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Selecting test node")
@@ -114,8 +114,18 @@ func TeardownNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Confi
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	nodeName := ctx.Value(NDKeyNodeName).(string)
-	testNamespace := ctx.Value(NDKeyTestNamespace).(string)
+	nodeNameVal := ctx.Value(NDKeyNodeName)
+	if nodeNameVal == nil {
+		t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+		return ctx
+	}
+	nodeName := nodeNameVal.(string)
+
+	testNamespaceVal := ctx.Value(NDKeyTestNamespace)
+	testNamespace := ""
+	if testNamespaceVal != nil {
+		testNamespace = testNamespaceVal.(string)
+	}
 
 	t.Logf("Cleaning up test namespace: %s", testNamespace)
 	DeleteNamespace(ctx, t, client, testNamespace)
@@ -130,15 +140,18 @@ func TeardownNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Confi
 		client.Resources().Update(ctx, node)
 	}
 
-	backupPath := ctx.Value(NDKeyConfigMapBackupPath).(string)
-	t.Logf("Restoring configmap from: %s", backupPath)
-	err = CreateConfigMapFromFilePath(ctx, client, backupPath, "node-drainer-config", "nvsentinel")
-	assert.NoError(t, err)
+	backupPathVal := ctx.Value(NDKeyConfigMapBackupPath)
+	if backupPathVal != nil {
+		backupPath := backupPathVal.(string)
+		t.Logf("Restoring configmap from: %s", backupPath)
+		err = CreateConfigMapFromFilePath(ctx, client, backupPath, "node-drainer-config", NVSentinelNamespace)
+		assert.NoError(t, err)
 
-	os.Remove(backupPath)
+		os.Remove(backupPath)
+	}
 
 	t.Log("Restarting node-drainer deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-node-drainer", "nvsentinel")
+	err = RestartDeployment(ctx, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	return ctx
@@ -224,7 +237,8 @@ func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, 
 				Namespace: namespace,
 			},
 		}
-		client.Resources().Delete(ctx, pod)
+		err := client.Resources().Delete(ctx, pod)
+		require.NoError(t, err, "failed to delete pod %s", podName)
 	}
 }
 
