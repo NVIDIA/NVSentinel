@@ -1,97 +1,85 @@
 # NVSentinel Development Guide
 
-Welcome to the NVSentinel development team! This guide will help you understand the project structure, development workflows, and best practices for contributing to the codebase.
+This guide covers project structure, development workflows, and best practices for contributing to NVSentinel.
 
 ## 📋 Table of Contents
 
-- [Getting Started](#getting-started)
-- [Project Architecture](#project-architecture)
-- [Development Environment Setup](#development-environment-setup)
-- [Development Workflows](#development-workflows)
-- [Module Development](#module-development)
-- [Testing](#testing)
-- [Code Standards](#code-standards)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Debugging](#debugging)
-- [Common Tasks](#common-tasks)
+- [Getting Started](#-getting-started)
+- [Project Architecture](#-project-architecture)
+- [Development Environment Setup](#-development-environment-setup)
+- [Development Workflows](#-development-workflows)
+- [Module Development](#-module-development)
+- [Testing](#-testing)
+- [Code Standards](#-code-standards)
+- [CI/CD Pipeline](#-cicd-pipeline)
+- [Debugging](#-debugging)
+- [Makefile Reference](#-makefile-reference)
 
 ## 🚀 Getting Started
 
 ### Quick Setup
 
-Clone the repository:
-
 ```bash
 git clone https://github.com/nvidia/nvsentinel.git
 cd nvsentinel
+make dev-env-setup  # Install all dependencies
 ```
 
 ### Tool Version Management
 
-NVSentinel uses a centralized version management file (`.versions.yaml`) to ensure consistency across:
-
+NVSentinel uses `.versions.yaml` for centralized version management across:
 - Local development
 - CI/CD pipelines
 - Container builds
-- Documentation
 
-**View Current Versions:**
-
+**View current versions**:
 ```bash
 make show-versions
 ```
 
 ### Prerequisites
 
-Before you start developing you will need the following tools. 
-
-**Required Tools:**
-- [Go](https://golang.org/dl/)
+**Core Tools** (required):
+- [Go 1.25+](https://golang.org/dl/) - See `.versions.yaml` for exact version
 - [Docker](https://docs.docker.com/get-docker/)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/)
 - [Helm 3.0+](https://helm.sh/docs/intro/install/)
-- [Protocol Buffers Compiler (protoc)](https://grpc.io/docs/protoc-installation/)
+- [Protocol Buffers Compiler](https://grpc.io/docs/protoc-installation/)
 - [yq](https://github.com/mikefarah/yq) - YAML processor for version management
 
-**Development Tools:**
+**Development Tools**:
 - [golangci-lint](https://golangci-lint.run/usage/install/)
-- [gotestsum](https://github.com/gotestyourself/gotestsum) - Enhanced test runner
-- [gocover-cobertura](https://github.com/boumenot/gocover-cobertura) - Coverage reporting
-- [addlicense](https://github.com/google/addlicense) - License header management
+- [gotestsum](https://github.com/gotestyourself/gotestsum)
+- [gocover-cobertura](https://github.com/boumenot/gocover-cobertura)
+- [addlicense](https://github.com/google/addlicense)
 - [Poetry](https://python-poetry.org/)
 - [shellcheck](https://github.com/koalaman/shellcheck)
 
-**Optional but Recommended:**
-- [Tilt](https://tilt.dev/) - Local Kubernetes development
-- [ctlptl](https://github.com/tilt-dev/ctlptl) - Declarative local Kubernetes cluster management
-- [Kind](https://kind.sigs.k8s.io/) - Local Kubernetes clusters (managed via ctlptl)
-- [MongoDB Compass](https://www.mongodb.com/products/compass) - Database GUI
+**Optional** (for local Kubernetes development):
+- [Tilt](https://tilt.dev/)
+- [ctlptl](https://github.com/tilt-dev/ctlptl)
+- [Kind](https://kind.sigs.k8s.io/)
+- [MongoDB Compass](https://www.mongodb.com/products/compass)
 
-The quickest way to install and ensure correct versions of these tools is via our interactive setup:
-
+**Quick install** (installs and configures all tools):
 ```bash
 make dev-env-setup
 ```
 
-This setup process will:
+This will:
+- Detect your OS (Linux/macOS) and architecture
+- Install yq and check for required tools
+- Install development and Go tools
+- Configure Python gRPC tools
 
-- Detect your OS (Linux/macOS) and architecture (amd64/arm64)
-- Install yq for version management
-- Check and install required tools (Go, Docker, Python, Poetry)
-- Install development tools (Helm, kubectl, protoc, shellcheck, Tilt, Kind, ctlptl)
-- Install Go development tools (golangci-lint, gotestsum, etc.)
-- Install Python gRPC tools
+### Build System
 
-### Build System Architecture
-
-The project uses a **unified build system**:
-
-**Build System Features:**
-- **Unified Interface**: All modules support common targets (`all`, `lint-test`, `clean`, etc.)
-- **Technology-Aware**: Go modules, Python modules, and shell scripts use appropriate tooling
-- **Delegation Pattern**: Higher-level Makefiles delegate to individual modules
-- **Repo-Root Context**: All Docker builds use consistent repo-root context for proper path resolution
-- **Multi-Platform Support**: Built-in support for `linux/arm64,linux/amd64` via Docker buildx
+**Unified build system** features:
+- **Consistent interface**: All modules support common targets (`all`, `lint-test`, `clean`)
+- **Technology-aware**: Appropriate tooling for Go, Python, and shell scripts
+- **Delegation pattern**: Top-level Makefiles delegate to individual modules
+- **Repo-root context**: Docker builds use consistent paths
+- **Multi-platform support**: Built-in `linux/arm64,linux/amd64` via Docker buildx
 
 ## 🏗️ Project Architecture
 

@@ -16,31 +16,27 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 
 ### Prerequisites
 
-- Kubernetes cluster 1.25+
+- Kubernetes 1.25+
 - Helm 3.0+
-- NVIDIA GPU Operator (includes DCGM service required for GPU monitoring)
+- NVIDIA GPU Operator (includes DCGM for GPU monitoring)
 
 ### Installation
 
 ```bash
-# Install from GitHub Container Registry (recommended)
-helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version vX.Y.Z
+# Install from GitHub Container Registry
+helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+  --version vX.Y.Z \
+  --namespace nvsentinel \
+  --create-namespace
 
-# Or install with custom values
-helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version vX.Y.Z -f values.yaml
-
-# To see available versions
+# View available versions
 helm search repo oci://ghcr.io/nvidia/nvsentinel --versions
 ```
 
-> **Authentication Note**: The NVSentinel packages are hosted as private packages. You may need to authenticate with GitHub Container Registry:
+> **Authentication**: For private repositories, authenticate first:
 > ```bash
-> # Login to GitHub Container Registry
 > echo $GITHUB_TOKEN | helm registry login ghcr.io -u $GITHUB_USERNAME --password-stdin
 > ```
-
-
-> **Note**: DCGM (Data Center GPU Manager) is included with the NVIDIA GPU Operator and provides the telemetry data required for GPU health monitoring.
 
 ## ✨ Key Features
 
@@ -52,15 +48,11 @@ helm search repo oci://ghcr.io/nvidia/nvsentinel --versions
 - **📊 Persistent Storage**: MongoDB-based event store with change streams for real-time updates
 - **🛡️ Graceful Handling**: Coordinated workload eviction with configurable timeouts
 
-## 🧪 Quick test with any Kubernetes cluster
+## 🧪 Complete Setup Guide
 
-**Prerequisites**: Kubernetes 1.25+, Helm 3.0+, NVIDIA GPU Operator installed
+For a full installation with all dependencies, follow these steps:
 
-NVSentinel requires a few infrastructure components for certificate management and monitoring. Here's a complete installation walkthrough:
-
-### 1. Install cert-manager (TLS certificates)
-
-NVSentinel uses mTLS for secure MongoDB connections. Install cert-manager to handle certificate lifecycle:
+### 1. Install cert-manager (for TLS)
 
 ```bash
 helm repo add jetstack https://charts.jetstack.io --force-update
@@ -70,9 +62,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --wait
 ```
 
-### 2. Install Prometheus (metrics collection)
-
-Install Prometheus operator for NVSentinel metrics and monitoring. We disable unnecessary components for a minimal setup:
+### 2. Install Prometheus (for metrics)
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
@@ -88,39 +78,29 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 
 ### 3. Install NVSentinel
 
-Now install NVSentinel itself. Use the latest stable version from the releases page:
-
 ```bash
-NVSENTINEL_VERSION=v0.1.0  # Check releases for latest version
-BASE_DIR="$(pwd)"
+NVSENTINEL_VERSION=v0.1.0  # Check releases for latest
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --create-namespace \
-  --namespace nvsentinel \
+  --namespace nvsentinel --create-namespace \
   --version "$NVSENTINEL_VERSION" \
-  --values "${BASE_DIR}/tilt/release/values-release.yaml" \
   --timeout 15m \
-  --wait-for-jobs \
   --wait
 ```
 
-> **Note**: The example uses [`tilt/release/values-release.yaml`](tilt/release/values-release.yaml) which is optimized for testing with fake GPU nodes. For production clusters, customize the values or omit the `--values` flag to use chart defaults.
-
-### 4. Verify installation
-
-Check that all pods are running:
+### 4. Verify Installation
 
 ```bash
 kubectl get pods -n nvsentinel
-kubectl get nodes  # Should show your GPU nodes
+kubectl get nodes  # Verify GPU nodes are visible
 
 # Run comprehensive validation
 ./scripts/validate-nvsentinel.sh --version v0.1.0 --verbose
 ```
 
-> **Tip**: Use the [`scripts/validate-nvsentinel.sh`](scripts/validate-nvsentinel.sh) script for comprehensive deployment validation including image versions, pod health, and certificate status.
+> **Testing**: The example above uses default settings. For testing with simulated GPU nodes, use [`tilt/release/values-release.yaml`](tilt/release/values-release.yaml). For production, customize values for your environment.
 
-**Next steps**: By default, only health monitoring is enabled. See [Configuration](#-configuration) to enable fault quarantine and remediation modules for production clusters.
+> **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
 
 
 ## 🏗️ Architecture
@@ -130,57 +110,72 @@ NVSentinel follows a microservices architecture with modular health monitors and
 ```mermaid
 graph TB
     subgraph "Health Monitors"
-        GPU["GPU Health Monitor"]
-        SYS["Syslog Health Monitor"]
-        CSP["CSP Health Monitor"]
+        GPU["GPU Health Monitor<br/>(DCGM Integration)"]
+        SYS["Syslog Health Monitor<br/>(Journalctl)"]
+        CSP["CSP Health Monitor<br/>(CSP APIs)"]
     end
     
     subgraph "Core Processing"
-        PC["Platform Connectors"]
-        STORE[("MongoDB Store<br/>Event Database")]
-        FQ["Fault Quarantine"]
-        ND["Node Drainer"]
-        FR["Fault Remediation"]
-        HEA["Health Events Analyzer"]
+        PC["Platform Connectors<br/>(gRPC Server)"]
+        STORE[("MongoDB Store<br/>(Event Database)")]
+        FQ["Fault Quarantine<br/>(Node Cordon)"]
+        ND["Node Drainer<br/>(Workload Eviction)"]
+        FR["Fault Remediation<br/>(Break-Fix Integration)"]
+        HEA["Health Events Analyzer<br/>(Pattern Analysis)"]
+        LBL["Labeler<br/>(Node Labels)"]
     end
     
-    GPU --> PC
-    SYS --> PC
-    CSP --> PC
-
+    subgraph "Kubernetes Cluster"
+        K8S["Kubernetes API<br/>(Nodes, Pods, Events)"]
+    end
     
-    PC --> STORE
+    GPU -->|gRPC| PC
+    SYS -->|gRPC| PC
+    CSP -->|gRPC| PC
     
-    FQ -.->|watches| STORE
-    ND -.->|watches| STORE
-    FR -.->|watches| STORE
-    HEA -.->|watches| STORE
+    PC -->|persist| STORE
+    PC <-->|update status| K8S
+    
+    FQ -.->|watch changes| STORE
+    FQ -->|cordon| K8S
+    
+    ND -.->|watch changes| STORE
+    ND -->|drain| K8S
+    
+    FR -.->|watch changes| STORE
+    FR -->|create CRDs| K8S
+    
+    HEA -.->|watch changes| STORE
+    
+    LBL -->|update labels| K8S
 ```
 
 **Data Flow**:
-1. **Health Monitors** detect hardware/software faults and send events via gRPC
-2. **Platform Connectors** receive and persist events to MongoDB
-3. **Core Modules** independently watch MongoDB for relevant events via change streams
-4. **Each module** acts autonomously based on their configured rules and policies
+1. **Health Monitors** detect hardware/software faults and send events via gRPC to Platform Connectors
+2. **Platform Connectors** validate, persist events to MongoDB, and update Kubernetes node conditions
+3. **Core Modules** independently watch MongoDB change streams for relevant events
+4. **Modules** interact with Kubernetes API to cordon, drain, label nodes, and create remediation CRDs
+5. **Labeler** monitors pods to automatically label nodes with DCGM and driver versions
 
-> **Note**: Modules operate independently and don't communicate directly with each other. All coordination happens through the shared MongoDB event store using change streams.
+> **Note**: All modules operate independently without direct communication. Coordination happens through MongoDB change streams and Kubernetes API.
 
 ## ⚙️ Configuration
 
-### Quick Configuration
+### Global Settings
 
-Enable/disable modules and set global options:
+Control module enablement and behavior:
 
 ```yaml
 global:
-  # Global settings
-  dryRun: false  # Enable for testing without actual actions
+  dryRun: false  # Test mode - no actual actions
   
   # Health Monitors (enabled by default)
   gpuHealthMonitor:
     enabled: true
   syslogHealthMonitor:
     enabled: true
+  cspHealthMonitor:
+    enabled: false  # Cloud provider integration
   
   # Core Modules (disabled by default - enable for production)
   faultQuarantineModule:
@@ -191,22 +186,18 @@ global:
     enabled: false
   healthEventsAnalyzer:
     enabled: false
-  
-  # Cloud Monitors (disabled by default)
-  cspHealthMonitor:
-    enabled: false
 ```
 
-For detailed configuration options for each module, see the [Module Details](#-module-details) section below.
+For detailed per-module configuration, see [Module Details](#-module-details).
 
 ## 📦 Module Details
 
 ### 🔍 Health Monitors
 
-### GPU Health Monitor
-**Purpose**: Monitors GPU hardware health via DCGM, detecting thermal issues, ECC errors, and XID events.
+#### GPU Health Monitor
+Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events.
 
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   gpuHealthMonitor:
@@ -218,40 +209,22 @@ global:
       port: 5555
 ```
 
-**Features**:
-- Real-time GPU telemetry monitoring
-- XID error detection and classification
-- Temperature and power monitoring
-- ECC error tracking
+#### Syslog Health Monitor
+Analyzes system logs for hardware and software fault patterns via journalctl.
 
-
-### Syslog Health Monitor
-**Purpose**: Analyzes system logs for hardware and software fault patterns.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   syslogHealthMonitor:
     enabled: true
-pollingInterval: "30m"  # How often to check logs
+pollingInterval: "30m"
 stateFile: "/var/run/syslog_health_monitor/state.json"
-securityContext:
-  capabilities:
-    add: ["SYSLOG", "SYS_ADMIN"]
 ```
 
-**Features**:
-- Journalctl integration
-- Regex pattern matching
-- Persistent cursor state
-- Configurable lookback periods
+#### CSP Health Monitor
+Integrates with cloud provider APIs (GCP/AWS) for maintenance events.
 
-
-
-### CSP Health Monitor
-**Purpose**: Integrates with cloud service provider APIs for maintenance events and health notifications.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   cspHealthMonitor:
@@ -259,25 +232,14 @@ global:
 cspName: "gcp"  # or "aws"
 configToml:
   maintenanceEventPollIntervalSeconds: 60
-  gcp:
-    targetProjectId: "your-project"
-    apiPollingIntervalSeconds: 60
-  aws:
-    accountId: "123456789012"
-    region: "us-east-1"
 ```
-
-**Features**:
-- GCP and AWS maintenance event detection
-- Proactive node quarantine for scheduled maintenance
-- Cloud provider API integration
 
 ### 🏗️ Core Modules
 
-### Platform Connectors
-**Purpose**: Receives health events from monitors via gRPC, persists them to MongoDB, and updates Kubernetes node status.
+#### Platform Connectors
+Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status.
 
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 platformConnector:
   mongodbStore:
@@ -285,46 +247,27 @@ platformConnector:
     connectionString: "mongodb://nvsentinel-mongodb:27017"
 ```
 
-**Features**:
-- gRPC server interface for health monitors
-- Event validation and persistence
-- MongoDB integration with TLS support
-- Updates Kubernetes node conditions based on health events
-- Creates Kubernetes events for node health status changes
+#### Fault Quarantine Module
+Watches MongoDB for health events and cordons nodes based on configurable rules.
 
-### Fault Quarantine Module
-**Purpose**: Watches MongoDB for health events and cordons nodes based on configurable rule sets.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   faultQuarantineModule:
     enabled: false
-logLevel: 1
 config: |
-  label-prefix = "k8saas.nvidia.com/"
   [[rule-sets]]
     name = "GPU fatal error ruleset"
     [[rule-sets.match.all]]
-      kind = "HealthEvent"
       expression = "event.isFatal == true"
     [rule-sets.cordon]
       shouldCordon = true
 ```
 
-**Features**:
-- Watches MongoDB change streams for new events
-- TOML-based rule configuration
-- Multi-condition rule evaluation
-- Percentage-based cordon limits
-- Label-based node management
+#### Node Drainer Module
+Gracefully evicts workloads from cordoned nodes with configurable policies.
 
-
-
-### Node Drainer Module
-**Purpose**: Watches MongoDB for cordoned nodes and gracefully evicts workloads with configurable policies.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   nodeDrainerModule:
@@ -336,19 +279,10 @@ config: |
   mode = "AllowCompletion"
 ```
 
-**Features**:
-- Watches MongoDB change streams for node cordon events
-- Configurable eviction timeouts
-- Namespace-specific drain policies
-- Workload completion awareness
-- Graceful termination handling
+#### Fault Remediation Module
+Triggers external break-fix systems after drain completion.
 
-
-
-### Fault Remediation Module
-**Purpose**: Watches MongoDB for drain completion events and triggers external break-fix systems.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   faultRemediationModule:
@@ -356,47 +290,27 @@ global:
 maintenanceResource:
   apiGroup: "janitor.dgxc.nvidia.com"
   namespace: "dgxc-janitor"
-  rebootResource:
-    name: "rebootnodes"
 ```
 
-**Features**:
-- Watches MongoDB change streams for remediation trigger events
-- Kubernetes CRD integration
-- Template-based remediation workflows
-- External system integration
+#### Health Events Analyzer
+Analyzes event patterns and generates recommended actions.
 
-
-
-### Health Events Analyzer
-**Purpose**: Watches MongoDB change streams to analyze event patterns and generate recommended actions.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 global:
   healthEventsAnalyzer:
     enabled: false
-logLevel: 1
 config: |
   [[rules]]
-  name = "XID13->XID31 Detection"
+  name = "XID Pattern Detection"
   time_window = "30m"
   recommended_action = "COMPONENT_RESET"
 ```
 
-**Features**:
-- Watches MongoDB change streams for health event patterns
-- Time-window based pattern analysis
-- Sequential event correlation
-- Automated action recommendations
-- Complex rule evaluation
+#### MongoDB Store
+Persistent storage for health events with real-time change streams.
 
-
-
-### MongoDB Store
-**Purpose**: Provides persistent storage for health events with real-time change streams.
-
-**Key Configuration Options**:
+**Key Configuration**:
 ```yaml
 mongodb:
   architecture: replicaset
@@ -407,17 +321,7 @@ mongodb:
     enabled: true
     mTLS:
       enabled: true
-  resources:
-    requests:
-      cpu: 1
-      memory: 1.5Gi
 ```
-
-**Features**:
-- High availability replica set
-- TLS/mTLS encryption
-- Change stream notifications
-- Automatic credential management
 
 ## 📋 Requirements
 
@@ -427,81 +331,29 @@ mongodb:
 - **Storage**: Persistent storage for MongoDB (recommended 10GB+)
 - **Network**: Cluster networking for inter-service communication
 
-## 🛠️ Development
-
-### Project Structure
-
-```
-nvsentinel/
-├── health-monitors/          # Individual health monitor implementations
-├── platform-connectors/     # gRPC platform connector services
-├── fault-quarantine-module/ # Node quarantine logic
-├── node-drainer-module/     # Workload draining coordination
-├── fault-remediation-module/# External remediation integration
-├── store-client-sdk/        # MongoDB client SDK
-├── distros/kubernetes/      # Helm charts and manifests
-└── testcases/              # Test suites and utilities
-```
-
-### Building
-
-NVSentinel uses a monorepo structure. Build each module independently:
-
-```bash
-# Build a Docker-based module (example: gpu-health-monitor)
-cd health-monitors/gpu-health-monitor
-make docker-build-dcgm3  # or docker-build-dcgm4
-
-# Build Go modules using ko (example: platform-connectors)
-cd platform-connectors
-make docker-build
-
-# Or build Go binaries directly
-cd fault-quarantine-module
-go build ./...
-
-# Run tests for a module
-cd health-monitors/syslog-health-monitor
-go test ./...
-```
-
 ## 🤝 Contributing
 
-We welcome contributions from the community! There are many ways to get involved:
+We welcome contributions! Here's how to get started:
 
-### Ways to Contribute
+**Ways to Contribute**:
+- 🐛 Report bugs and request features via [issues](https://github.com/NVIDIA/NVSentinel/issues)
+- 📝 Improve documentation
+- 🧪 Add tests and increase coverage
+- 🔧 Submit pull requests to fix issues
+- 💬 Help others in [discussions](https://github.com/NVIDIA/NVSentinel/discussions)
 
-- 🐛 **Report bugs** - Help us identify and fix issues
-- 💡 **Request features** - Share ideas for improvements
-- 📝 **Improve documentation** - Make our docs clearer and more comprehensive
-- 🧪 **Add tests** - Increase test coverage and reliability
-- 🔧 **Fix issues** - Submit pull requests to resolve bugs
-- 💬 **Help others** - Answer questions in discussions and issues
-
-### Getting Started
-
-1. **Read our [Contributing Guide](CONTRIBUTING.md)** for detailed guidelines
-2. **Check our [Development Guide](DEVELOPMENT.md)** for setup instructions
-3. **Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues)** for contribution opportunities
-4. **Join the [discussions](https://github.com/NVIDIA/NVSentinel/discussions)** to connect with the community
+**Getting Started**:
+1. Read the [Contributing Guide](CONTRIBUTING.md) for guidelines
+2. Check the [Development Guide](DEVELOPMENT.md) for setup instructions
+3. Browse [open issues](https://github.com/NVIDIA/NVSentinel/issues) for opportunities
 
 All contributors must sign their commits (DCO). See the contributing guide for details.
 
-## 💬 Community & Support
+## 💬 Support
 
-### Get Help
-
-- 🐛 **Bug Reports**: [Create an issue](https://github.com/NVIDIA/NVSentinel/issues/new?template=bug_report.yml)
-- 💡 **Feature Requests**: [Request a feature](https://github.com/NVIDIA/NVSentinel/issues/new?template=feature_request.yml)
+- 🐛 **Bug Reports**: [Create an issue](https://github.com/NVIDIA/NVSentinel/issues/new)
 - ❓ **Questions**: [Start a discussion](https://github.com/NVIDIA/NVSentinel/discussions/new?category=q-a)
-- 💬 **General Discussion**: [Join our discussions](https://github.com/NVIDIA/NVSentinel/discussions)
-- 🔒 **Security Issues**: See our [Security Policy](SECURITY.md)
-
-### Stay Connected
-
-- ⭐ **Star this repository** to show your support
-- 👀 **Watch** for updates on releases and announcements
-- 🔗 **Share** NVSentinel with others who might benefit
+- 🔒 **Security**: See [Security Policy](SECURITY.md)
 
 ## 📄 License
 
