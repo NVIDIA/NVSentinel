@@ -179,7 +179,6 @@ runs:
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
         go install github.com/google/ko@${{ inputs.ko-version }}
-        go install github.com/google/ko@${{ inputs.ko-version }}
 
     - name: Set environment variables
       shell: bash
