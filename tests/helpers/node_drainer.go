@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
@@ -58,45 +57,20 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	}
 
 	t.Log("Backing up current node-drainer configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
+	backupPath, err := backgupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
+	err = createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Restarting node-drainer deployment")
 	err = RestartDeployment(ctx, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	t.Log("Selecting test node")
-	nodes, err := GetAllNodesNames(ctx, client)
-	require.NoError(t, err)
-	require.NotEmpty(t, nodes)
-
-	startIdx := int(float64(len(nodes)) * 0.50)
-	if startIdx >= len(nodes) {
-		startIdx = len(nodes) - 1
-	}
-	unusedNodes := nodes[startIdx:]
-
-	var nodeName string
-	for _, name := range unusedNodes {
-		node, err := GetNodeByName(ctx, client, name)
-		if err != nil {
-			continue
-		}
-		if !node.Spec.Unschedulable {
-			nodeName = name
-			break
-		}
-	}
-	if nodeName == "" {
-		nodeName = unusedNodes[0]
-	}
-	t.Logf("Selected node: %s", nodeName)
+	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, NDKeyNodeName, nodeName)
@@ -144,7 +118,7 @@ func TeardownNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Confi
 	if backupPathVal != nil {
 		backupPath := backupPathVal.(string)
 		t.Logf("Restoring configmap from: %s", backupPath)
-		err = CreateConfigMapFromFilePath(ctx, client, backupPath, "node-drainer-config", NVSentinelNamespace)
+		err = createConfigMapFromFilePath(ctx, client, backupPath, "node-drainer-config", NVSentinelNamespace)
 		assert.NoError(t, err)
 
 		os.Remove(backupPath)
@@ -176,90 +150,4 @@ func CreatePodsFromTemplate(ctx context.Context, t *testing.T, client klient.Cli
 
 	t.Logf("Created pod: %s", pod.Name)
 	return []string{pod.Name}
-}
-
-func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, nodeName, labelKey, expectedValue string) {
-	t.Logf("Waiting for node %s to have label %s=%s", nodeName, labelKey, expectedValue)
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			return false
-		}
-		if node.Labels == nil {
-			return false
-		}
-		value, exists := node.Labels[labelKey]
-		if !exists {
-			return false
-		}
-		return value == expectedValue
-	}, WaitTimeout, WaitInterval)
-	t.Logf("Node %s has label %s=%s", nodeName, labelKey, expectedValue)
-}
-
-func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
-	t.Logf("Waiting for %d pods to be deleted from namespace %s", len(podNames), namespace)
-	require.Eventually(t, func() bool {
-		for _, podName := range podNames {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, namespace, pod)
-			if err == nil {
-				t.Logf("Pod %s still exists", podName)
-				return false
-			}
-		}
-		return true
-	}, WaitTimeout, WaitInterval)
-	t.Logf("All pods deleted from namespace %s", namespace)
-}
-
-func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
-	t.Logf("Waiting for %d pods to be running in namespace %s", len(podNames), namespace)
-	for _, podName := range podNames {
-		require.Eventually(t, func() bool {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, namespace, pod)
-			if err != nil {
-				return false
-			}
-			return pod.Status.Phase == v1.PodRunning
-		}, WaitTimeout, WaitInterval)
-	}
-	t.Logf("All %d pods running", len(podNames))
-}
-
-func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
-	t.Logf("Deleting %d pods from namespace %s", len(podNames), namespace)
-	for _, podName := range podNames {
-		pod := &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podName,
-				Namespace: namespace,
-			},
-		}
-		err := client.Resources().Delete(ctx, pod)
-		require.NoError(t, err, "failed to delete pod %s", podName)
-	}
-}
-
-func WaitForNodeDrainEvent(ctx context.Context, t *testing.T, client klient.Client, nodeName, eventType, eventReason string) {
-	t.Logf("Waiting for node event: type=%s, reason=%s on node %s", eventType, eventReason, nodeName)
-	require.Eventually(t, func() bool {
-		events := &v1.EventList{}
-		err := client.Resources().List(ctx, events)
-		if err != nil {
-			return false
-		}
-
-		for _, event := range events.Items {
-			if event.InvolvedObject.Kind == "Node" &&
-				event.InvolvedObject.Name == nodeName &&
-				event.Type == eventType &&
-				event.Reason == eventReason {
-				t.Logf("Found node event: %s/%s - %s", eventType, eventReason, event.Message)
-				return true
-			}
-		}
-		return false
-	}, WaitTimeout, WaitInterval)
 }

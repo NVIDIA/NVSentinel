@@ -62,8 +62,8 @@ func TestFullRemediationFlow(t *testing.T) {
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		t.Log("Step 3: Wait for remediation-succeeded label")
-		helpers.WaitForNodeRemediationLabel(ctx, t, client, testCtx.NodeName,
-			helpers.RemediationSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
 
 		t.Log("Step 4: Verify RebootNode CR was created")
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
@@ -147,8 +147,8 @@ func TestSkipRemediationCR(t *testing.T) {
 		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
 
 		t.Log("Verifying remediation-failed label is set")
-		helpers.WaitForNodeRemediationLabel(ctx, t, client, testCtx.NodeName,
-			helpers.RemediationFailedLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			helpers.NVSentinelStateLabelKey, helpers.RemediationFailedLabelValue)
 
 		return ctx
 	})

@@ -20,14 +20,13 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
@@ -57,13 +56,13 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 	testCtx := &QuarantineTestContext{}
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	backupPath, err := backgupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
+	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Restarting fault-quarantine deployment")
@@ -82,35 +81,7 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 	}, WaitTimeout, WaitInterval)
 	t.Log("Deployment ready")
 
-	t.Log("Selecting test node from unused node pool")
-	nodes, err := GetAllNodesNames(ctx, client)
-	require.NoError(t, err)
-	require.NotEmpty(t, nodes)
-
-	startIdx := int(float64(len(nodes)) * 0.50)
-	if startIdx >= len(nodes) {
-		startIdx = len(nodes) - 1
-	}
-	unusedNodes := nodes[startIdx:]
-
-	var nodeName string
-	for _, name := range unusedNodes {
-		node, err := GetNodeByName(ctx, client, name)
-		if err != nil {
-			continue
-		}
-		if !node.Spec.Unschedulable {
-			nodeName = name
-			break
-		}
-	}
-	if nodeName == "" {
-		nodeName = unusedNodes[0]
-		t.Logf("No uncordoned node found, using: %s", nodeName)
-	} else {
-		t.Logf("Selected uncordoned node: %s (from index %d)", nodeName, startIdx)
-	}
-
+	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, CELKeyNodeName, nodeName)
 	ctx = context.WithValue(ctx, CELKeyConfigMapBackupPath, testCtx.ConfigMapBackupPath)
@@ -163,7 +134,7 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	if backupPathVal != nil {
 		backupPath := backupPathVal.(string)
 		t.Logf("Restoring configmap from: %s", backupPath)
-		err = CreateConfigMapFromFilePath(ctx, client, backupPath, "fault-quarantine-config", NVSentinelNamespace)
+		err = createConfigMapFromFilePath(ctx, client, backupPath, "fault-quarantine-config", NVSentinelNamespace)
 		assert.NoError(t, err)
 
 		os.Remove(backupPath)
@@ -188,30 +159,8 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	return ctx
 }
 
-func SendHealthEvent(ctx context.Context, t *testing.T, event *HealthEventTemplate) string {
-	t.Logf("Sending health event to node %s: checkName=%s, isFatal=%v",
-		event.NodeName, event.CheckName, event.IsFatal)
-	tempFile, err := SendHealthEventWithTemplate(event.NodeName, event)
-	require.NoError(t, err)
-	t.Logf("Health event sent successfully")
-	return tempFile
-}
-
-func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
-	t.Logf("Sending generic healthy event to node %s", nodeName)
-	event := NewHealthEvent(nodeName).
-		WithHealthy(true).
-		WithFatal(false).
-		WithMessage("No health failures").
-		WithComponentClass("GPU").
-		WithErrorCode("")
-
-	event.ErrorCode = nil
-
-	tempFile := SendHealthEvent(ctx, t, event)
-	defer os.Remove(tempFile)
-}
-
+// SendHealthyEventAndWaitForCleanup sends a healthy event and waits for quarantine-specific cleanup
+// (uncordoned, taints removed, quarantine annotations cleared, nvsentinel-state label cleared).
 func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
 	t.Logf("Sending healthy event and waiting for cleanup on node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
@@ -252,6 +201,7 @@ func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client
 	t.Logf("Node %s cleaned up successfully", nodeName)
 }
 
+// SendHealthyEventsAsync sends healthy events to multiple nodes and waits for quarantine cleanup on all of them.
 func SendHealthyEventsAsync(ctx context.Context, t *testing.T, client klient.Client, nodeNames []string) {
 	t.Logf("Sending healthy events to %d nodes asynchronously", len(nodeNames))
 
@@ -431,22 +381,22 @@ func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	return cm.Data["status"]
 }
 
+// SetCircuitBreakerThreshold sets the circuit breaker threshold on the fault-quarantine deployment.
+// Returns the original deployment configuration.
 func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient.Client, percentage int, duration string) *appsv1.Deployment {
 	t.Logf("Setting circuit breaker threshold to %d%% with duration %s", percentage, duration)
 
 	var originalDeployment *appsv1.Deployment
-	maxRetries := 5
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	// Use retry utility to handle conflicts
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
+			return err
 		}
 
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		require.NoError(t, err)
-
-		if attempt == 0 {
+		// Save original on first attempt
+		if originalDeployment == nil {
 			originalDeployment = deployment.DeepCopy()
 		}
 
@@ -476,18 +426,12 @@ func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient
 			t.Log("Warning: CB args not found in deployment, may already be set or missing")
 		}
 
-		err = client.Resources().Update(ctx, deployment)
-		if err != nil {
-			if apierrors.IsConflict(err) && attempt < maxRetries-1 {
-				continue
-			}
-			require.NoError(t, err)
-		}
-		break
-	}
+		return client.Resources().Update(ctx, deployment)
+	})
+	require.NoError(t, err, "failed to set circuit breaker threshold")
 
 	t.Log("Restarting deployment with new CB threshold")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with new CB threshold")
@@ -505,18 +449,15 @@ func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient
 	return originalDeployment
 }
 
+// EnsureDryRunDisabled ensures dry-run mode is disabled on the fault-quarantine deployment.
 func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Client) {
 	t.Log("Ensuring dry-run mode is disabled on fault-quarantine deployment")
 
-	maxRetries := 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
-		}
-
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		require.NoError(t, err)
+		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
+			return err
+		}
 
 		needsUpdate := false
 		for i := range deployment.Spec.Template.Spec.Containers {
@@ -545,21 +486,15 @@ func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Clien
 
 		if !needsUpdate {
 			t.Log("Dry-run already disabled")
-			return
+			return nil
 		}
 
-		err = client.Resources().Update(ctx, deployment)
-		if err != nil {
-			if apierrors.IsConflict(err) && attempt < maxRetries-1 {
-				continue
-			}
-			require.NoError(t, err)
-		}
-		break
-	}
+		return client.Resources().Update(ctx, deployment)
+	})
+	require.NoError(t, err, "failed to disable dry-run mode")
 
 	t.Log("Restarting deployment with dry-run disabled")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with dry-run disabled")
@@ -575,22 +510,19 @@ func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Clien
 	t.Log("Deployment ready with dry-run disabled")
 }
 
+// EnableDryRunMode enables dry-run mode on the fault-quarantine deployment and returns the original deployment.
 func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *appsv1.Deployment {
 	t.Log("Enabling dry-run mode on fault-quarantine deployment")
 
 	var originalDeployment *appsv1.Deployment
-	maxRetries := 5
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
+			return err
 		}
 
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		require.NoError(t, err)
-
-		if attempt == 0 {
+		if originalDeployment == nil {
 			originalDeployment = deployment.DeepCopy()
 		}
 
@@ -610,18 +542,12 @@ func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *
 			}
 		}
 
-		err = client.Resources().Update(ctx, deployment)
-		if err != nil {
-			if apierrors.IsConflict(err) && attempt < maxRetries-1 {
-				continue
-			}
-			require.NoError(t, err)
-		}
-		break
-	}
+		return client.Resources().Update(ctx, deployment)
+	})
+	require.NoError(t, err, "failed to enable dry-run mode")
 
 	t.Log("Restarting deployment with dry-run enabled")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with dry-run mode")
@@ -639,34 +565,23 @@ func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *
 	return originalDeployment
 }
 
+// RestoreFQDeployment restores the fault-quarantine deployment to its original configuration.
 func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client, original *appsv1.Deployment) {
 	t.Log("Restoring original fault-quarantine deployment")
 
-	maxRetries := 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
-		}
-
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		current := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, original.Name, original.Namespace, current)
-		if err != nil {
-			return
+		if err := client.Resources().Get(ctx, original.Name, original.Namespace, current); err != nil {
+			return err
 		}
 
 		current.Spec = original.Spec
-		err = client.Resources().Update(ctx, current)
-		if err != nil {
-			if apierrors.IsConflict(err) && attempt < maxRetries-1 {
-				continue
-			}
-			assert.NoError(t, err)
-		}
-		break
-	}
+		return client.Resources().Update(ctx, current)
+	})
+	assert.NoError(t, err, "failed to restore deployment")
 
 	t.Log("Restarting deployment with restored config")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with restored config")

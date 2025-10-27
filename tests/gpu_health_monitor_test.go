@@ -64,7 +64,10 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
+		nodeNameVal := ctx.Value(keyNodeName)
+		require.NotNil(t, nodeNameVal, "nodeName not found in context")
+		nodeName := nodeNameVal.(string)
+
 		restConfig := client.RESTConfig()
 
 		errors := []struct {
@@ -93,8 +96,14 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		require.Eventually(t, func() bool {
 			foundConditions := make(map[string]bool)
 			for _, dcgmError := range errors {
-				found, condition := helpers.CheckNodeConditionExists(ctx, client, nodeName,
-					v1.NodeConditionType(dcgmError.condition), dcgmError.reason)
+				condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+					dcgmError.condition, dcgmError.reason)
+				if err != nil {
+					t.Logf("Error checking condition %s: %v", dcgmError.condition, err)
+					foundConditions[dcgmError.condition] = false
+					continue
+				}
+				found := condition != nil
 				foundConditions[dcgmError.condition] = found
 				if found {
 					t.Logf("Found %s condition: %s", dcgmError.condition, condition.Message)
@@ -141,18 +150,18 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		}
 
 		t.Logf("Clearing injected errors on node %s", nodeName)
-		for _, clear := range clearCommands {
+		for _, clearCmd := range clearCommands {
 			cmd := []string{"/bin/sh", "-c",
 				fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f %s -v %s",
-					dcgmServiceHost, dcgmServicePort, clear.fieldID, clear.value)}
+					dcgmServiceHost, dcgmServicePort, clearCmd.fieldID, clearCmd.value)}
 			_, _, _ = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
 		}
 
 		t.Logf("Removing node conditions from %s", nodeName)
-		for _, dcgmError := range clearCommands {
-			err := helpers.RemoveNodeCondition(ctx, client, nodeName, v1.NodeConditionType(dcgmError.condition))
+		for _, clearCmd := range clearCommands {
+			err := helpers.RemoveNodeCondition(ctx, client, nodeName, clearCmd.condition)
 			if err != nil {
-				t.Logf("Warning: failed to remove %s condition: %v", dcgmError.condition, err)
+				t.Logf("Warning: failed to remove %s condition: %v", clearCmd.condition, err)
 			}
 		}
 
