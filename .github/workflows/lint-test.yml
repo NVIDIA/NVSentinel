@@ -88,6 +88,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
@@ -132,6 +133,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Run lint and test
         run: make -C health-monitors/${{ matrix.component }} lint-test
@@ -180,6 +182,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Run lint and test
         run: make -C ${{ matrix.component }} lint-test

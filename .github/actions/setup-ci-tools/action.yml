@@ -49,6 +49,9 @@ inputs:
   ko-version:
     description: 'Version of ko to install'
     required: true
+  setup-envtest-version:
+    description: 'Version of setup-envtest to install'
+    required: true
 
 runs:
   using: 'composite'
@@ -174,8 +177,8 @@ runs:
       run: |
         go install github.com/google/addlicense@latest
         # Pin setup-envtest to avoid Go version compatibility issues
-        # Using release-0.19 branch which is compatible with Go 1.24
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.19
+        # Using version from .versions.yaml
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@${{ inputs.setup-envtest-version }}
         go install golang.org/x/tools/cmd/goimports@latest
         go install github.com/google/go-containerregistry/cmd/crane@latest
         go install github.com/google/ko@${{ inputs.ko-version }}

@@ -68,6 +68,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -140,6 +141,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Compute ref name with short SHA
         id: ref-name
@@ -200,6 +202,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Compute ref name with short SHA
         id: ref-name

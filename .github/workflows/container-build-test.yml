@@ -85,6 +85,7 @@ jobs:
           black-version: ${{ needs.prepare-environment.outputs.black_version }}
           shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
           ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+          setup-envtest-version: ${{ needs.prepare-environment.outputs.setup_envtest_version }}
 
       - name: Build container for ${{ matrix.component }}
         run: echo "Building container for ${{ matrix.component }}..."

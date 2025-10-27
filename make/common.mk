@@ -52,6 +52,13 @@ DOCKER_LOAD_ARG ?= --load
 # TOOL CONFIGURATION
 # =============================================================================
 
+# Helper to read versions from .versions.yaml
+VERSIONS_FILE := $(REPO_ROOT)/.versions.yaml
+get-version = $(shell yq '.$(1)' $(VERSIONS_FILE) 2>/dev/null || echo "")
+
+# Setup-envtest version (used in modules with kubebuilder tests)
+SETUP_ENVTEST_VERSION := $(call get-version,go_tools.setup_envtest)
+
 # Go binary and tools (standardized versions)
 GO := go
 GOLANGCI_LINT := golangci-lint

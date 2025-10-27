@@ -29,17 +29,18 @@ CLEAN_EXTRA_FILES := platform-connectors
 # Exclude protobuf files from test coverage
 TEST_EXCLUDE_PACKAGES := -e pkg/protos
 
-# Special kubebuilder setup for envtest-based tests
-TEST_SETUP_COMMANDS := export PATH="$$GOPATH/bin:$$PATH" && \
-                      go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
-                      export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) &&
-
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
 # =============================================================================
 
 include ../make/common.mk
 include ../make/go.mk
+
+# Special kubebuilder setup for envtest-based tests
+# Version is centrally managed in .versions.yaml
+TEST_SETUP_COMMANDS := export PATH="$$GOPATH/bin:$$PATH" && \
+                      go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) && \
+                      export KUBEBUILDER_ASSETS=$$(setup-envtest use -p path 1.30.0) &&
 
 # =============================================================================
 # DEFAULT TARGET

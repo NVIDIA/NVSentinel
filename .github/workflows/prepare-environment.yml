@@ -55,6 +55,9 @@ on:
       ko_version:
         description: 'ko version'
         value: ${{ jobs.load-versions.outputs.ko_version }}
+      setup_envtest_version:
+        description: 'setup-envtest version'
+        value: ${{ jobs.load-versions.outputs.setup_envtest_version }}
 
 jobs:
   load-versions:
@@ -72,6 +75,7 @@ jobs:
       black_version: ${{ steps.load-versions.outputs.black_version }}
       shellcheck_version: ${{ steps.load-versions.outputs.shellcheck_version }}
       ko_version: ${{ steps.load-versions.outputs.ko_version }}
+      setup_envtest_version: ${{ steps.load-versions.outputs.setup_envtest_version }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
@@ -94,6 +98,7 @@ jobs:
           echo "black_version=$(yq '.linting.black' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "shellcheck_version=$(yq '.linting.shellcheck' .versions.yaml)" >> $GITHUB_OUTPUT
           echo "ko_version=$(yq '.container_tools.ko' .versions.yaml)" >> $GITHUB_OUTPUT
+          echo "setup_envtest_version=$(yq '.go_tools.setup_envtest' .versions.yaml)" >> $GITHUB_OUTPUT
           
           echo "Loaded versions from .versions.yaml:"
           cat $GITHUB_OUTPUT

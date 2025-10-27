@@ -49,6 +49,9 @@ inputs:
   ko-version:
     description: 'Version of ko to install'
     required: true
+  setup-envtest-version:
+    description: 'Version of setup-envtest to install'
+    required: true
 
 runs:
   using: 'composite'
@@ -67,3 +70,4 @@ runs:
         black-version: ${{ inputs.black-version }}
         shellcheck-version: ${{ inputs.shellcheck-version }}
         ko-version: ${{ inputs.ko-version }}
+        setup-envtest-version: ${{ inputs.setup-envtest-version }}
