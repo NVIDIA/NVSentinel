@@ -1,8 +1,8 @@
 module github.com/nvidia/nvsentinel/data-models
 
-go 1.24.0
+go 1.25
 
-toolchain go1.24.8
+toolchain go1.25.3
 
 require (
 	google.golang.org/grpc v1.76.0

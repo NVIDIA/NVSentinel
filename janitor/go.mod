@@ -1,8 +1,8 @@
 module github.com/nvidia/nvsentinel/janitor
 
-go 1.24.0
+go 1.25
 
-toolchain go1.24.8
+toolchain go1.25.3
 
 require (
 	cloud.google.com/go/compute v1.36.1
