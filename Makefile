@@ -17,25 +17,12 @@ GO_CACHE_DIR ?= $(shell go env GOCACHE)
 YQ := $(shell command -v yq 2> /dev/null)
 
 ifndef YQ
-$(warning yq not found - using default versions. Install yq for version management: brew install yq)
-GOLANGCI_LINT_VERSION := v1.64.8
-GOTESTSUM_VERSION := latest
-GOCOVER_COBERTURA_VERSION := latest
-GO_VERSION := 1.24
-PYTHON_VERSION := 3.11
-POETRY_VERSION := 1.8.2
-PROTOBUF_VERSION := v27.1
-PROTOC_GEN_GO_VERSION := v1.36.6
-PROTOC_GEN_GO_GRPC_VERSION := v1.3.0
-GRPCIO_TOOLS_VERSION := 1.75.1
-BLACK_VERSION:= '25.9.0'
-SHELLCHECK_VERSION := v0.11.0
-ADDLICENSE_VERSION := latest
-DOCKER_BUILDX_VERSION := latest
-KO_VERSION := v0.18.0
-else
+$(error yq is required but not found. Install it with: brew install yq (macOS) or see https://github.com/mikefarah/yq)
+endif
+
 # Load versions from .versions.yaml
 ADDLICENSE_VERSION := $(shell $(YQ) '.linting.addlicense' .versions.yaml)
+BLACK_VERSION := $(shell $(YQ) '.linting.black' .versions.yaml)
 DOCKER_BUILDX_VERSION := $(shell $(YQ) '.container_tools.docker_buildx' .versions.yaml)
 GO_VERSION := $(shell $(YQ) '.languages.go' .versions.yaml)
 GOCOVER_COBERTURA_VERSION := $(shell $(YQ) '.go_tools.gocover_cobertura' .versions.yaml)
@@ -48,9 +35,7 @@ PROTOBUF_VERSION := $(shell $(YQ) '.protobuf.protobuf' .versions.yaml)
 PROTOC_GEN_GO_GRPC_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go_grpc' .versions.yaml)
 PROTOC_GEN_GO_VERSION := $(shell $(YQ) '.protobuf.protoc_gen_go' .versions.yaml)
 PYTHON_VERSION := $(shell $(YQ) '.languages.python' .versions.yaml)
-BLACK_VERSION := $(shell $(YQ) '.linting.black' .versions.yaml)
 SHELLCHECK_VERSION := $(shell $(YQ) '.linting.shellcheck' .versions.yaml)
-endif
 
 # Go modules with specific patterns from CI
 GO_MODULES := \
