@@ -14,7 +14,7 @@
 
 ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
 
-FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
+FROM public.ecr.aws/docker/library/golang:1.25-trixie AS builder
 
 ARG BUILD_TAGS="systemd"
 

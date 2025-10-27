@@ -1,8 +1,8 @@
 module github.com/nvidia/nvsentinel/health-events-analyzer
 
-go 1.24.0
+go 1.25
 
-toolchain go1.24.8
+toolchain go1.25.3
 
 require (
 	github.com/BurntSushi/toml v1.5.0

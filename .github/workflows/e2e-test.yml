@@ -44,15 +44,7 @@ permissions:
   contents: read       # Required for checking out code
   actions: read        # Required for artifact operations
 
-env:
-  KIND_VERSION: '0.30.0'
-  CTLPTL_VERSION: '0.8.43'
-  TILT_VERSION: '0.35.2'
-
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   e2e-test:
     strategy:
       fail-fast: false  # Allow both architectures to complete even if one fails
@@ -68,9 +60,18 @@ jobs:
     name: "E2E Tests (${{ matrix.arch_name }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      - name: Load versions from .versions.yaml
+        id: versions
+        run: |
+          KIND_VERSION=$(yq eval '.testing_tools.kind' .versions.yaml)
+          CTLPTL_VERSION=$(yq eval '.testing_tools.ctlptl' .versions.yaml)
+          TILT_VERSION=$(yq eval '.testing_tools.tilt' .versions.yaml)
+          echo "kind_version=${KIND_VERSION}" >> $GITHUB_OUTPUT
+          echo "ctlptl_version=${CTLPTL_VERSION}" >> $GITHUB_OUTPUT
+          echo "tilt_version=${TILT_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Workaround for freeing up more disk space
         run: |
@@ -83,22 +84,10 @@ jobs:
           docker system prune -f
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
 
       - name: Prep system for multi-node Kind cluster
         run: |
@@ -122,14 +111,14 @@ jobs:
           sudo systemctl restart docker
 
       - name: Cache E2E testing tools
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             /usr/local/bin/ctlptl
             /usr/local/bin/kind
             /usr/local/bin/kubectl
             /usr/local/bin/tilt
-          key: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ env.KIND_VERSION }}-${{ env.CTLPTL_VERSION }}-${{ env.TILT_VERSION }}
+          key: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ steps.versions.outputs.kind_version }}-${{ steps.versions.outputs.ctlptl_version }}-${{ steps.versions.outputs.tilt_version }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-e2e-tools-
 
@@ -140,12 +129,12 @@ jobs:
           echo "Runner OS: ${{ runner.os }}"
           echo "Runner architecture: ${{ runner.arch }}"
           echo "System architecture (uname -m): $(uname -m)"
-          echo "Cache key will be: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ env.KIND_VERSION }}-${{ env.CTLPTL_VERSION }}-${{ env.TILT_VERSION }}"
+          echo "Cache key will be: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ steps.versions.outputs.kind_version }}-${{ steps.versions.outputs.ctlptl_version }}-${{ steps.versions.outputs.tilt_version }}"
 
       - name: Install E2E testing tools
         run: |
           # Install ctlptl (if not cached)
-          CTLPTL_VERSION="${{ env.CTLPTL_VERSION }}"
+          CTLPTL_VERSION="${{ steps.versions.outputs.ctlptl_version }}"
           if command -v ctlptl &> /dev/null && ctlptl version | grep -q "v${CTLPTL_VERSION}"; then
             echo "ctlptl v${CTLPTL_VERSION} already installed from cache"
           else
@@ -155,7 +144,7 @@ jobs:
           fi
 
           # Install Kind (if not cached)
-          KIND_VERSION="${{ env.KIND_VERSION }}"
+          KIND_VERSION="${{ steps.versions.outputs.kind_version }}"
           if command -v kind &> /dev/null && kind version | grep -q "${KIND_VERSION}"; then
             echo "Kind v${KIND_VERSION} already installed from cache"
           else
@@ -178,7 +167,7 @@ jobs:
           fi
 
           # Install Tilt (if not cached)
-          TILT_VERSION="${{ env.TILT_VERSION }}"
+          TILT_VERSION="${{ steps.versions.outputs.tilt_version }}"
           if command -v tilt &> /dev/null && tilt version | grep -q "${TILT_VERSION}"; then
             echo "Tilt v${TILT_VERSION} already installed from cache"
           else
@@ -265,7 +254,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: e2e-kind-logs-${{ matrix.arch }}-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -273,7 +262,7 @@ jobs:
 
       - name: Upload debug artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: e2e-debug-artifacts-${{ matrix.arch }}-${{ github.run_id }}
           path: /tmp/debug-artifacts/

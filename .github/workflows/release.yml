@@ -35,15 +35,11 @@ permissions:
   actions: read        # Required for downloading artifacts
 
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   build-image-list:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 30
-    needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -68,7 +64,7 @@ jobs:
           cat versions.txt
 
       - name: Upload versions.txt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: versions
           path: versions.txt
@@ -77,16 +73,14 @@ jobs:
   helm-publish:
     runs-on: linux-amd64-cpu4
     timeout-minutes: 45
-    needs:
-      - prepare-environment
-      - build-image-list
+    needs: build-image-list
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Install helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
         with:
           version: 'latest'
 
@@ -119,24 +113,23 @@ jobs:
     runs-on: linux-amd64-cpu4
     timeout-minutes: 15
     needs:
-      - prepare-environment
       - build-image-list
       - helm-publish
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Download versions.txt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
         with:
           name: versions
           path: .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090  # v2.4.1
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}

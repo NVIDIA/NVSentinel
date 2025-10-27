@@ -32,7 +32,7 @@ on:
       # Workflow files
       - '.github/workflows/container-build-test.yml'
       - '.github/actions/build-container/**'
-      - '.github/actions/setup-build-env/**'
+      - '.github/actions/setup-ci-env/**'
   workflow_dispatch:
 
 concurrency:
@@ -45,13 +45,9 @@ permissions:
   packages: write      # Required for GHCR build cache access
 
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   container-build-test:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 45
-    needs: prepare-environment
     strategy:
       fail-fast: false  # Continue testing other containers even if one fails
       matrix:
@@ -69,22 +65,10 @@ jobs:
           - component: file-server-cleanup
             make_command: 'make -C nvsentinel-log-collector docker-build-file-server-cleanup'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Build container for ${{ matrix.component }}
         run: echo "Building container for ${{ matrix.component }}..."
@@ -111,7 +95,6 @@ jobs:
   ko-build-test:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 30
-    needs: prepare-environment
     strategy:
       fail-fast: false
       matrix:
@@ -135,19 +118,10 @@ jobs:
           - module: health-monitors/csp-health-monitor
             path: ./cmd/maintenance-notifier
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-
-      - name: Install ko
-        shell: bash
-        run: |
-          # Install ko for container builds
-          go install github.com/google/ko@${{ needs.prepare-environment.outputs.ko_version }}
-          ko version
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
 
       - name: Test ko build for ${{ matrix.module }}
         run: |

@@ -17,7 +17,7 @@
 ARG TAG=v3.1.13
 ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM public.ecr.aws/docker/library/golang:1.24-bullseye AS builder
+FROM public.ecr.aws/docker/library/golang:1.25-trixie AS builder
 
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0

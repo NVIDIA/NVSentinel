@@ -30,9 +30,6 @@ permissions:
   actions: read
 
 env:
-  KIND_VERSION: '0.30.0'
-  HELM_VERSION: 'v3.14.4'
-  KWOK_VERSION: 'v0.7.0'
   CLUSTER_NAME: 'helm-e2e-test'
   NVSENTINEL_NAMESPACE: 'nvsentinel'
   VALIDATION_TIMEOUT_MINUTES: '10'
@@ -40,16 +37,22 @@ env:
   FAKE_GPU_NODE_COUNT: '3'
 
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   helm-e2e-test:
     name: "Helm Charts E2E Test"
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
-    needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      - name: Load versions from .versions.yaml
+        id: versions
+        run: |
+          KIND_VERSION=$(yq eval '.testing_tools.kind' .versions.yaml)
+          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
+          KWOK_VERSION=$(yq eval '.testing_tools.kwok' .versions.yaml)
+          echo "kind_version=${KIND_VERSION}" >> $GITHUB_OUTPUT
+          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+          echo "kwok_version=${KWOK_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Workaround for freeing up more disk space
         run: |
@@ -61,25 +64,13 @@ jobs:
           docker system prune -f
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Cache Helm e2e testing tools
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             /usr/local/bin/kind
@@ -87,7 +78,7 @@ jobs:
             /usr/local/bin/helm
             /usr/local/bin/kwok
             /usr/local/bin/kwokctl
-          key: ${{ runner.os }}-${{ runner.arch }}-helm-e2e-tools-${{ env.KIND_VERSION }}-${{ env.HELM_VERSION }}-${{ env.KWOK_VERSION }}
+          key: ${{ runner.os }}-${{ runner.arch }}-helm-e2e-tools-${{ steps.versions.outputs.kind_version }}-${{ steps.versions.outputs.helm_version }}-${{ steps.versions.outputs.kwok_version }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-helm-e2e-tools-
 
@@ -96,8 +87,8 @@ jobs:
           ARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
 
           # Install Kind
-          if ! command -v kind &> /dev/null || ! kind version | grep -q "${{ env.KIND_VERSION }}"; then
-            curl -fsSL --retry 3 -o ./kind https://github.com/kubernetes-sigs/kind/releases/download/v${{ env.KIND_VERSION }}/kind-linux-${ARCH}
+          if ! command -v kind &> /dev/null || ! kind version | grep -q "${{ steps.versions.outputs.kind_version }}"; then
+            curl -fsSL --retry 3 -o ./kind https://github.com/kubernetes-sigs/kind/releases/download/v${{ steps.versions.outputs.kind_version }}/kind-linux-${ARCH}
             chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
           fi
 
@@ -108,15 +99,15 @@ jobs:
           fi
 
           # Install Helm
-          if ! command -v helm &> /dev/null || ! helm version --short | grep -q "${{ env.HELM_VERSION }}"; then
-            curl -fsSL --retry 3 https://get.helm.sh/helm-${{ env.HELM_VERSION }}-linux-${ARCH}.tar.gz | tar -xzO linux-${ARCH}/helm | sudo tee /usr/local/bin/helm > /dev/null
+          if ! command -v helm &> /dev/null || ! helm version --short | grep -q "${{ steps.versions.outputs.helm_version }}"; then
+            curl -fsSL --retry 3 https://get.helm.sh/helm-${{ steps.versions.outputs.helm_version }}-linux-${ARCH}.tar.gz | tar -xzO linux-${ARCH}/helm | sudo tee /usr/local/bin/helm > /dev/null
             sudo chmod +x /usr/local/bin/helm
           fi
 
           # Install KWOK
-          if ! command -v kwok &> /dev/null || ! kwok --version | grep -q "${{ env.KWOK_VERSION }}"; then
-            curl -fsSL --retry 3 -o /tmp/kwok https://github.com/kubernetes-sigs/kwok/releases/download/${{ env.KWOK_VERSION }}/kwok-linux-${ARCH}
-            curl -fsSL --retry 3 -o /tmp/kwokctl https://github.com/kubernetes-sigs/kwok/releases/download/${{ env.KWOK_VERSION }}/kwokctl-linux-${ARCH}
+          if ! command -v kwok &> /dev/null || ! kwok --version | grep -q "${{ steps.versions.outputs.kwok_version }}"; then
+            curl -fsSL --retry 3 -o /tmp/kwok https://github.com/kubernetes-sigs/kwok/releases/download/${{ steps.versions.outputs.kwok_version }}/kwok-linux-${ARCH}
+            curl -fsSL --retry 3 -o /tmp/kwokctl https://github.com/kubernetes-sigs/kwok/releases/download/${{ steps.versions.outputs.kwok_version }}/kwokctl-linux-${ARCH}
             chmod +x /tmp/kwok /tmp/kwokctl
             sudo mv /tmp/kwok /tmp/kwokctl /usr/local/bin/
           fi
@@ -278,7 +269,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: helm-e2e-kind-logs-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -286,7 +277,7 @@ jobs:
 
       - name: Upload debugging artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: helm-e2e-debug-artifacts-${{ github.run_id }}
           path: /tmp/debug-artifacts/

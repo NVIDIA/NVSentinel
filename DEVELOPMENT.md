@@ -750,7 +750,6 @@ The project uses GitHub Actions for continuous integration with the following wo
 
 4. **`publish.yml`**: Container image publishing
 5. **`release.yml`**: Semantic release automation
-6. **`prepare-environment.yml`**: Shared environment setup for all workflows
 
 ### Local CI Simulation
 
@@ -784,8 +783,8 @@ gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverag
 ### GitHub Actions Environment
 
 The CI environment uses:
+- Consistent tool versions managed in `.versions.yaml`
 - Shared build environment setup via `.github/actions/setup-build-env`
-- Consistent tool versions managed in `prepare-environment.yml`
 - Artifact uploads for test results and coverage reports
 - Private repository access handled via SSH keys
 

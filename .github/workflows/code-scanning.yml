@@ -29,40 +29,24 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   codeql-pr-analysis:
     if: startsWith(github.ref, 'refs/heads/pull-request/')
     name: CodeQL PR Analysis
     runs-on: linux-amd64-cpu32
     timeout-minutes: 360
-    needs: prepare-environment
     permissions:
       security-events: write
       packages: read
       pull-requests: write   # Required for posting comments
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Setup build environment
-      uses: ./.github/actions/setup-build-env
-      with:
-        go-version: ${{ needs.prepare-environment.outputs.go_version }}
-        python-version: ${{ needs.prepare-environment.outputs.python_version }}
-        poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-        golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-        protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-        protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-        protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-        grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-        black-version: ${{ needs.prepare-environment.outputs.black_version }}
-        shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-        ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+      uses: ./.github/actions/setup-ci-env
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         languages: go
         build-mode: manual
@@ -74,7 +58,7 @@ jobs:
         make build-all
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         category: "/language:go"
 
@@ -101,31 +85,18 @@ jobs:
     name: CodeQL Baseline Analysis
     runs-on: linux-amd64-cpu4
     timeout-minutes: 360
-    needs: prepare-environment
     permissions:
       security-events: write
       packages: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
     - name: Setup build environment
-      uses: ./.github/actions/setup-build-env
-      with:
-        go-version: ${{ needs.prepare-environment.outputs.go_version }}
-        python-version: ${{ needs.prepare-environment.outputs.python_version }}
-        poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-        golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-        protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-        protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-        protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-        grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-        black-version: ${{ needs.prepare-environment.outputs.black_version }}
-        shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-        ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+      uses: ./.github/actions/setup-ci-env
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         languages: go
         build-mode: manual
@@ -137,6 +108,6 @@ jobs:
         make build-all
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+      uses: github/codeql-action/analyze@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
       with:
         category: "/language:go"
