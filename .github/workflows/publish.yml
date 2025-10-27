@@ -207,3 +207,108 @@ jobs:
           subject-name: ${{ matrix.image.name }}
           subject-digest: ${{ matrix.image.digest }}
           push-to-registry: true
+
+  e2e-test:
+    name: "E2E Test Published Images"
+    runs-on: linux-amd64-cpu32
+    timeout-minutes: 60
+    needs:
+      - container-publish
+      - build-images
+      - attest
+    env:
+      CLUSTER_NAME: 'nvsentinel-uat'
+      FAKE_GPU_NODE_COUNT: '10'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Workaround for freeing up more disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo docker system prune -f
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Kind cluster using make
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+        run: |
+          make cluster-create
+
+      - name: Install NVSentinel using UAT script
+        env:
+          NVSENTINEL_VERSION: ${{ steps.ref-name.outputs.value }}
+          CSP: kind
+          FAKE_GPU_NODE_COUNT: ${{ env.FAKE_GPU_NODE_COUNT }}
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+        run: |
+          cd tests/uat
+          ./install-apps.sh
+
+      - name: Validate NVSentinel deployment
+        env:
+          VERSION: ${{ steps.ref-name.outputs.value }}
+        run: |
+          ./scripts/validate-nvsentinel.sh --version "${VERSION}"
+
+      - name: Export Kind logs
+        if: always()
+        run: |
+          mkdir -p /tmp/kind-logs
+          kind export logs /tmp/kind-logs --name "${CLUSTER_NAME}" || true
+
+      - name: Collect debug artifacts
+        if: failure()
+        env:
+          VERSION: ${{ steps.ref-name.outputs.value }}
+        run: |
+          mkdir -p /tmp/debug-artifacts
+          kubectl get all --all-namespaces > /tmp/debug-artifacts/all-resources.yaml || true
+          kubectl get events --all-namespaces --sort-by='.lastTimestamp' > /tmp/debug-artifacts/all-events.yaml || true
+          kubectl get pods -n nvsentinel -o yaml > /tmp/debug-artifacts/nvsentinel-pods.yaml || true
+          kubectl logs -n nvsentinel --all-containers=true --tail=500 > /tmp/debug-artifacts/nvsentinel-logs.txt || true
+          docker images > /tmp/debug-artifacts/docker-images.txt
+          df -h > /tmp/debug-artifacts/disk-usage.txt
+
+      - name: Upload Kind logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-kind-logs-${{ github.run_id }}
+          path: /tmp/kind-logs/
+          retention-days: 7
+
+      - name: Upload debugging artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-debug-artifacts-${{ github.run_id }}
+          path: /tmp/debug-artifacts/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name "${CLUSTER_NAME}" || true
+          docker system prune -f || true
