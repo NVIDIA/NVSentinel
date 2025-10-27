@@ -23,10 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	platform_connectors "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -94,7 +94,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 		document := event["fullDocument"].(bson.M)
 
-		healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+		healthEventWithStatus := model.HealthEventWithStatus{}
 		if err := storewatcher.UnmarshalFullDocumentFromEvent(
 			event,
 			&healthEventWithStatus,
@@ -153,20 +153,20 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	return nil
 }
 
-func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.HealthEventWithStatus) (bool, error) {
+func (r *Reconciler) handleEvent(ctx context.Context, event *model.HealthEventWithStatus) (bool, error) {
 	for _, rule := range r.config.HealthEventsAnalyzerRules.Rules {
 		// Check if current event matches any sequence criteria in the rule
 		if matchesAnySequenceCriteria(rule, *event) && r.evaluateRule(ctx, rule, *event) {
 			slog.Debug("Rule matched for event", "rule", rule.Name, "event", event)
 
-			actionVal, ok := platform_connectors.RecommenedAction_value[rule.RecommendedAction]
+			actionVal, ok := platform_connectors.RecommendedAction_value[rule.RecommendedAction]
 			if !ok {
 				slog.Warn("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
 
-				actionVal = int32(platform_connectors.RecommenedAction_NONE)
+				actionVal = int32(platform_connectors.RecommendedAction_NONE)
 			}
 
-			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommenedAction(actionVal))
+			err := r.config.Publisher.Publish(ctx, event.HealthEvent, platform_connectors.RecommendedAction(actionVal))
 			if err != nil {
 				slog.Error("Error in publishing the new fatal event", "error", err)
 				publisher.FatalEventPublishingError.WithLabelValues("event_publishing_to_UDS_error").Inc()
@@ -187,7 +187,7 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *storeconnector.Heal
 
 // matchesAnySequenceCriteria checks if the current event matches any sequence criteria in the rule
 func matchesAnySequenceCriteria(rule config.HealthEventsAnalyzerRule,
-	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+	healthEventWithStatus model.HealthEventWithStatus) bool {
 	for _, seq := range rule.Sequence {
 		if matchesSequenceCriteria(seq.Criteria, healthEventWithStatus.HealthEvent) {
 			return true
@@ -291,7 +291,7 @@ func getValueFromPath(path string, event *platform_connectors.HealthEvent) inter
 }
 
 func (r *Reconciler) evaluateRule(ctx context.Context, rule config.HealthEventsAnalyzerRule,
-	healthEventWithStatus storeconnector.HealthEventWithStatus) bool {
+	healthEventWithStatus model.HealthEventWithStatus) bool {
 	slog.Debug("Evaluating rule for event", "rule", rule.Name, "event", healthEventWithStatus)
 
 	timeWindow, err := time.ParseDuration(rule.TimeWindow)

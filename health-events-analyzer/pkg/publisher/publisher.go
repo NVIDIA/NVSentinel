@@ -59,7 +59,7 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 	}
 
 	err := wait.ExponentialBackoff(backoff, func() (bool, error) {
-		_, err := p.platformConnectorClient.HealthEventOccuredV1(ctx, healthEvents)
+		_, err := p.platformConnectorClient.HealthEventOccurredV1(ctx, healthEvents)
 
 		if err == nil {
 			slog.Debug("Successfully sent health events", "events", healthEvents)
@@ -93,7 +93,7 @@ func NewPublisher(platformConnectorClient pb.PlatformConnectorClient) *Publisher
 }
 
 func (p *PublisherConfig) Publish(ctx context.Context, event *pb.HealthEvent,
-	recommendedAction pb.RecommenedAction) error {
+	recommendedAction pb.RecommendedAction) error {
 	// Create the health events request
 	event.IsFatal = true
 	event.RecommendedAction = recommendedAction

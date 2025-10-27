@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -32,7 +32,7 @@ var (
 )
 
 type healthEvents struct {
-	healthEvent               *platformconnector.HealthEvent
+	healthEvent               *protos.HealthEvent
 	expectedHealthEventOutput string
 }
 
@@ -53,11 +53,11 @@ func TestNewRingBuffer(t *testing.T) {
 func TestRingBuffer_Queue(t *testing.T) {
 	healthEventsList := []healthEvents{
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"44"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -66,11 +66,11 @@ func TestRingBuffer_Queue(t *testing.T) {
 			expectedHealthEventOutput: "GpuXidError",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
 				Message:            "DCGM_FR_EC_HARDWARE_MEMORY: 0",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"ThermalWatchWarn"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -79,11 +79,11 @@ func TestRingBuffer_Queue(t *testing.T) {
 			expectedHealthEventOutput: "GpuThermalWatch",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
 				Message:            "DCGM_FR_PCI_REPLAY_RATE: 0",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"PcieWatchWarn"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -93,7 +93,7 @@ func TestRingBuffer_Queue(t *testing.T) {
 		},
 	}
 	for _, healthEvent := range healthEventsList {
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
 		ringBuffer.Enqueue(&healthEvents)
 	}
@@ -120,16 +120,16 @@ func TestRingBuffer_DequeueWithCancelledContext(t *testing.T) {
 
 	cancel()
 
-	healthEvent := &platformconnector.HealthEvent{
+	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuXidError",
 		IsHealthy:          false,
-		EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 		ErrorCode:          []string{"44"},
 		IsFatal:            true,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := platformconnector.HealthEvents{Version: 1, Events: []*platformconnector.HealthEvent{healthEvent}}
+	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 	ringBuffer.Enqueue(&healthEvents)
 
 	result := ringBuffer.Dequeue()
@@ -142,16 +142,16 @@ func TestRingBuffer_HealthMetricEleProcessingFailed(t *testing.T) {
 	ctx := context.Background()
 	ringBuffer := NewRingBuffer("testProcessingFailed", ctx)
 
-	healthEvent := &platformconnector.HealthEvent{
+	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuXidError",
 		IsHealthy:          false,
-		EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 		ErrorCode:          []string{"44"},
 		IsFatal:            true,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := platformconnector.HealthEvents{Version: 1, Events: []*platformconnector.HealthEvent{healthEvent}}
+	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 
 	ringBuffer.Enqueue(&healthEvents)
 	item := ringBuffer.Dequeue()
@@ -167,16 +167,16 @@ func TestRingBuffer_ShutDown(t *testing.T) {
 	ctx := context.Background()
 	ringBuffer := NewRingBuffer("testShutdown", ctx)
 
-	healthEvent := &platformconnector.HealthEvent{
+	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuXidError",
 		IsHealthy:          false,
-		EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 		ErrorCode:          []string{"44"},
 		IsFatal:            true,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		ComponentClass:     "gpu",
 	}
-	healthEvents := platformconnector.HealthEvents{Version: 1, Events: []*platformconnector.HealthEvent{healthEvent}}
+	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 	ringBuffer.Enqueue(&healthEvents)
 
 	ringBuffer.ShutDownHealthMetricQueue()
@@ -201,16 +201,16 @@ func TestRingBuffer_CurrentLength(t *testing.T) {
 	}
 
 	for range 3 {
-		healthEvent := &platformconnector.HealthEvent{
+		healthEvent := &protos.HealthEvent{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "gpu",
 		}
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: []*platformconnector.HealthEvent{healthEvent}}
+		healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 		ringBuffer.Enqueue(&healthEvents)
 	}
 

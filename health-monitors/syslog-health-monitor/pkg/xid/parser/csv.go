@@ -101,7 +101,7 @@ func (p *CSVParser) parseNVL5XID(message string) (*Response, error) {
 
 	var ruleMnemonic string
 
-	var recommendedAction pb.RecommenedAction
+	var recommendedAction pb.RecommendedAction
 
 	for _, rule := range rules {
 		if p.matchesNVL5Rule(rule, intrInfo, errorStatusStr) {
@@ -148,7 +148,7 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	pciAddr := m[1]
 
-	var recommendedAction pb.RecommenedAction = pb.RecommenedAction_CONTACT_SUPPORT
+	var recommendedAction pb.RecommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
 	if errRes, found := p.errorResolutionMap[xidCode]; found {
 		recommendedAction = errRes.RecommendedAction
 		slog.Info("Found action for XID code",

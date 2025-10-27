@@ -21,13 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/reconciler"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"github.com/stretchr/testify/assert"
@@ -54,7 +54,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 		nodeName             string
 		namespaces           []string
 		pods                 []*v1.Pod
-		nodeQuarantined      storeconnector.Status
+		nodeQuarantined      model.Status
 		drainForce           bool
 		existingNodeLabels   map[string]string
 		mongoFindOneResponse *bson.M
@@ -66,7 +66,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "ImmediateEviction mode evicts pods",
 			nodeName:        "test-node",
 			namespaces:      []string{"immediate-test"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "immediate-test"},
@@ -96,7 +96,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "DrainOverrides.Force overrides all namespace modes",
 			nodeName:        "force-node",
 			namespaces:      []string{"completion-test", "timeout-test"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			drainForce:      true,
 			pods: []*v1.Pod{
 				{
@@ -143,7 +143,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "UnQuarantined event removes draining label",
 			nodeName:        "healthy-node",
 			namespaces:      []string{"test-ns"},
-			nodeQuarantined: storeconnector.UnQuarantined,
+			nodeQuarantined: model.UnQuarantined,
 			pods:            []*v1.Pod{},
 			existingNodeLabels: map[string]string{
 				statemanager.NVSentinelStateLabelKey: string(statemanager.DrainingLabelValue),
@@ -166,7 +166,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "AllowCompletion mode waits for pods to complete",
 			nodeName:        "completion-node",
 			namespaces:      []string{"completion-test"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "running-pod", Namespace: "completion-test"},
@@ -202,7 +202,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "Terminal state events are skipped",
 			nodeName:        "terminal-node",
 			namespaces:      []string{"test-ns"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			pods:            []*v1.Pod{},
 			expectError:     false,
 			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
@@ -213,13 +213,13 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "AlreadyQuarantined with already drained node",
 			nodeName:        "already-drained-node",
 			namespaces:      []string{"test-ns"},
-			nodeQuarantined: storeconnector.AlreadyQuarantined,
+			nodeQuarantined: model.AlreadyQuarantined,
 			pods:            []*v1.Pod{},
 			mongoFindOneResponse: &bson.M{
 				"healtheventstatus": bson.M{
-					"nodequarantined": string(storeconnector.Quarantined),
+					"nodequarantined": string(model.Quarantined),
 					"userpodsevictionstatus": bson.M{
-						"status": string(storeconnector.StatusSucceeded),
+						"status": string(model.StatusSucceeded),
 					},
 				},
 			},
@@ -232,7 +232,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "DaemonSet pods are ignored during eviction",
 			nodeName:        "daemonset-node",
 			namespaces:      []string{"immediate-test"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -262,7 +262,7 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			name:            "Immediate eviction completes in single pass",
 			nodeName:        "single-pass-node",
 			namespaces:      []string{"immediate-test"},
-			nodeQuarantined: storeconnector.Quarantined,
+			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "immediate-test"},
@@ -371,7 +371,7 @@ func TestReconciler_DryRunMode(t *testing.T) {
 
 	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
 		nodeName:        nodeName,
-		nodeQuarantined: storeconnector.Quarantined,
+		nodeQuarantined: model.Quarantined,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
@@ -617,7 +617,7 @@ func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, n
 
 type healthEventOptions struct {
 	nodeName        string
-	nodeQuarantined storeconnector.Status
+	nodeQuarantined model.Status
 	drainForce      bool
 }
 
@@ -635,9 +635,9 @@ func createHealthEvent(opts healthEventOptions) bson.M {
 		"fullDocument": bson.M{
 			"_id":         opts.nodeName + "-event",
 			"healthevent": healthEvent,
-			"healtheventstatus": storeconnector.HealthEventStatus{
+			"healtheventstatus": model.HealthEventStatus{
 				NodeQuarantined:        &opts.nodeQuarantined,
-				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusInProgress},
+				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusInProgress},
 			},
 			"createdAt": time.Now(),
 		},
@@ -648,7 +648,7 @@ func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQ
 	t.Helper()
 	event := createHealthEvent(healthEventOptions{
 		nodeName:        nodeName,
-		nodeQuarantined: storeconnector.Quarantined,
+		nodeQuarantined: model.Quarantined,
 	})
 	require.NoError(t, queueMgr.EnqueueEvent(ctx, nodeName, event, collection))
 }

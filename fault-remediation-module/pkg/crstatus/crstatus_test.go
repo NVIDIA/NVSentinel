@@ -17,7 +17,7 @@ package crstatus
 import (
 	"testing"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -45,37 +45,37 @@ func TestCRStatusCheckerFactory_GetStatusChecker(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		action      platformconnector.RecommenedAction
+		action      protos.RecommendedAction
 		expectError bool
 	}{
 		{
 			name:        "COMPONENT_RESET returns RebootNode checker",
-			action:      platformconnector.RecommenedAction_COMPONENT_RESET,
+			action:      protos.RecommendedAction_COMPONENT_RESET,
 			expectError: false,
 		},
 		{
 			name:        "RESTART_VM returns RebootNode checker",
-			action:      platformconnector.RecommenedAction_RESTART_VM,
+			action:      protos.RecommendedAction_RESTART_VM,
 			expectError: false,
 		},
 		{
 			name:        "RESTART_BM returns RebootNode checker",
-			action:      platformconnector.RecommenedAction_RESTART_BM,
+			action:      protos.RecommendedAction_RESTART_BM,
 			expectError: false,
 		},
 		{
 			name:        "CONTACT_SUPPORT returns error (no checker available)",
-			action:      platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			action:      protos.RecommendedAction_CONTACT_SUPPORT,
 			expectError: true,
 		},
 		{
 			name:        "NONE returns error (no checker available)",
-			action:      platformconnector.RecommenedAction_NONE,
+			action:      protos.RecommendedAction_NONE,
 			expectError: true,
 		},
 		{
 			name:        "UNKNOWN returns error (no checker available)",
-			action:      platformconnector.RecommenedAction_UNKNOWN,
+			action:      protos.RecommendedAction_UNKNOWN,
 			expectError: true,
 		},
 	}

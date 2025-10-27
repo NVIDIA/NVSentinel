@@ -20,14 +20,14 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 )
 
 type DrainEvaluator interface {
 	EvaluateEvent(context.Context,
-		storeconnector.HealthEventWithStatus, queue.MongoCollectionAPI) (*DrainActionResult, error)
+		model.HealthEventWithStatus, queue.MongoCollectionAPI) (*DrainActionResult, error)
 }
 
 type NodeDrainEvaluator struct {

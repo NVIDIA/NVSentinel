@@ -20,13 +20,13 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -73,7 +73,7 @@ func (r *Reconciler) Shutdown() {
 
 func (r *Reconciler) ProcessEvent(ctx context.Context,
 	event bson.M, collection queue.MongoCollectionAPI, nodeName string) error {
-	healthEventWithStatus := storeconnector.HealthEventWithStatus{}
+	healthEventWithStatus := model.HealthEventWithStatus{}
 	if err := storewatcher.UnmarshalFullDocumentFromEvent(event, &healthEventWithStatus); err != nil {
 		return fmt.Errorf("failed to unmarshal health event: %w", err)
 	}
@@ -95,7 +95,7 @@ func (r *Reconciler) ProcessEvent(ctx context.Context,
 }
 
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
-	healthEvent storeconnector.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
+	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	switch action.Action {
@@ -133,18 +133,18 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 }
 
 func (r *Reconciler) executeSkip(ctx context.Context,
-	nodeName string, healthEvent storeconnector.HealthEventWithStatus,
+	nodeName string, healthEvent model.HealthEventWithStatus,
 	event bson.M, collection queue.MongoCollectionAPI) error {
 	slog.Info("Skipping event for node", "node", nodeName)
 
 	// Track if this is a healthy event that canceled draining
 	if healthEvent.HealthEventStatus.NodeQuarantined != nil &&
-		*healthEvent.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
+		*healthEvent.HealthEventStatus.NodeQuarantined == model.UnQuarantined {
 		metrics.HealthyEventWithContextCancellation.Inc()
 
 		// Update MongoDB status to StatusSucceeded for healthy events that cancel draining
 		podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-		podsEvictionStatus.Status = storeconnector.StatusSucceeded
+		podsEvictionStatus.Status = model.StatusSucceeded
 
 		if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
 			slog.Error("Failed to update MongoDB status for node",
@@ -165,7 +165,7 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 }
 
 func (r *Reconciler) executeImmediateEviction(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent storeconnector.HealthEventWithStatus) error {
+	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	for _, namespace := range action.Namespaces {
 		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout); err != nil {
@@ -177,7 +177,7 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context,
 }
 
 func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent storeconnector.HealthEventWithStatus) error {
+	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	timeoutMinutes := int(action.Timeout.Minutes())
 
@@ -190,7 +190,7 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
 }
 
 func (r *Reconciler) executeCheckCompletion(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent storeconnector.HealthEventWithStatus) error {
+	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	allPodsComplete := true
 
@@ -235,18 +235,18 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context,
 }
 
 func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
-	healthEvent storeconnector.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
+	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
 	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = storeconnector.AlreadyDrained
+	podsEvictionStatus.Status = model.AlreadyDrained
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
 }
 
 func (r *Reconciler) executeUpdateStatus(ctx context.Context,
-	healthEvent storeconnector.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
+	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = storeconnector.StatusSucceeded
+	podsEvictionStatus.Status = model.StatusSucceeded
 
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
@@ -267,13 +267,13 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context,
 }
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
-	nodeName string, healthEvent *storeconnector.HealthEventWithStatus, isDraining bool) {
+	nodeName string, healthEvent *model.HealthEventWithStatus, isDraining bool) {
 	if healthEvent.HealthEventStatus.NodeQuarantined == nil {
 		return
 	}
 
 	// Handle UnQuarantined events - remove draining label
-	if *healthEvent.HealthEventStatus.NodeQuarantined == storeconnector.UnQuarantined {
+	if *healthEvent.HealthEventStatus.NodeQuarantined == model.UnQuarantined {
 		if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 			nodeName, statemanager.DrainingLabelValue, true); err != nil {
 			slog.Error("Failed to remove draining label for node",
@@ -302,7 +302,7 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 	}
 }
 
-func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *storeconnector.HealthEventWithStatus) {
+func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *model.HealthEventWithStatus) {
 	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == nil {
 		slog.Warn("NodeQuarantined is nil, skipping metrics update",
 			"node", healthEventWithStatus.HealthEvent.NodeName)
@@ -311,13 +311,13 @@ func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *storeconnect
 
 	//nolint:exhaustive
 	switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
-	case storeconnector.Quarantined:
+	case model.Quarantined:
 		metrics.UnhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
 			healthEventWithStatus.HealthEvent.CheckName).Inc()
-	case storeconnector.UnQuarantined:
+	case model.UnQuarantined:
 		metrics.HealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
 			healthEventWithStatus.HealthEvent.CheckName).Inc()
-	case storeconnector.AlreadyQuarantined:
+	case model.AlreadyQuarantined:
 		slog.Info("Node already quarantined",
 			"node", healthEventWithStatus.HealthEvent.NodeName)
 		metrics.UnhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
@@ -330,7 +330,7 @@ func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *storeconnect
 }
 
 func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collection queue.MongoCollectionAPI,
-	event bson.M, userPodsEvictionStatus *storeconnector.OperationStatus) error {
+	event bson.M, userPodsEvictionStatus *model.OperationStatus) error {
 	document, ok := event["fullDocument"].(bson.M)
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)

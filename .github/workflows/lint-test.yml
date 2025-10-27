@@ -125,7 +125,6 @@ jobs:
         component:
           - platform-connectors
           - store-client-sdk
-          - statemanager
           - commons
           - health-events-analyzer
           - fault-quarantine-module

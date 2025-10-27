@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -247,11 +247,11 @@ func NewMongoPipeline() mongo.Pipeline {
 				bson.E{Key: "operationType", Value: "update"},
 				bson.E{Key: "$or", Value: bson.A{
 					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.Quarantined}}}},
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.Quarantined}}}},
 					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.AlreadyQuarantined}}}},
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.AlreadyQuarantined}}}},
 					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: store.UnQuarantined}}}},
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.UnQuarantined}}}},
 				}},
 			}},
 		},

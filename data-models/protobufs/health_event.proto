@@ -21,7 +21,7 @@ import "google/protobuf/empty.proto";
 option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
 
 service PlatformConnector {
-  rpc HealthEventOccuredV1(HealthEvents) returns (google.protobuf.Empty) {}
+  rpc HealthEventOccurredV1(HealthEvents) returns (google.protobuf.Empty) {}
 }
 
 message HealthEvents {
@@ -29,7 +29,7 @@ message HealthEvents {
   repeated HealthEvent events = 2;
 }
 
-enum RecommenedAction {
+enum RecommendedAction {
   NONE = 0;
   COMPONENT_RESET = 2;
   CONTACT_SUPPORT = 5;
@@ -55,7 +55,7 @@ message HealthEvent {
   bool isFatal = 5;
   bool isHealthy = 6;
   string message = 7;
-  RecommenedAction recommendedAction = 8;
+  RecommendedAction recommendedAction = 8;
   repeated string errorCode = 9;
   repeated Entity entitiesImpacted = 10;
 

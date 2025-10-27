@@ -25,7 +25,7 @@ import (
 	"text/template"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
 
@@ -71,7 +71,7 @@ type TemplateData struct {
 	TemplateMountPath string
 	TemplateFileName  string
 	HealthEventID     string
-	RecommendedAction platformconnector.RecommenedAction
+	RecommendedAction protos.RecommendedAction
 }
 
 // nolint: cyclop // todo
@@ -163,7 +163,7 @@ func (c *FaultRemediationClient) GetAnnotationManager() NodeAnnotationManagerInt
 
 // GetStatusCheckerForAction returns the appropriate status checker for the given action
 func (c *FaultRemediationClient) GetStatusCheckerForAction(
-	action platformconnector.RecommenedAction,
+	action protos.RecommendedAction,
 ) (crstatus.CRStatusChecker, error) {
 	return c.statusCheckerFactory.GetStatusChecker(action)
 }
@@ -246,7 +246,7 @@ func (c *FaultRemediationClient) handleCreateCRError(
 	ctx context.Context,
 	err error,
 	crName string,
-	healthEvent *platformconnector.HealthEvent,
+	healthEvent *protos.HealthEvent,
 ) (bool, string) {
 	// Check if the CR already exists
 	if apierrors.IsAlreadyExists(err) {

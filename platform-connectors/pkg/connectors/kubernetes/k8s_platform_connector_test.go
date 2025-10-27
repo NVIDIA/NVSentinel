@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"github.com/stretchr/testify/require"
@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 }
 
 type healthConditionList struct {
-	healthEvent                 *platformconnector.HealthEvent
+	healthEvent                 *protos.HealthEvent
 	ExpectedOutputReason        string
 	ExpectedOutputMessage       string
 	ExpectedHealthFailureStatus string
@@ -123,15 +123,15 @@ func getNode() *corev1.Node {
 func TestK8sNodeConditions(t *testing.T) {
 	healthEventsList := []*healthConditionList{
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          true,
-				EntitiesImpacted:   []*platformconnector.Entity{},
+				EntitiesImpacted:   []*protos.Entity{},
 				ErrorCode:          []string{},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "Pcie watch error on GPU 0",
 				NodeName:           "testnode",
 			},
@@ -141,16 +141,16 @@ func TestK8sNodeConditions(t *testing.T) {
 			ExpectedHealthFailureStatus: "False",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          true,
 				Message:            "",
-				EntitiesImpacted:   []*platformconnector.Entity{},
+				EntitiesImpacted:   []*protos.Entity{},
 				ErrorCode:          []string{},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_NONE,
+				RecommendedAction:  protos.RecommendedAction_NONE,
 				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "No Health Failures",
@@ -159,15 +159,15 @@ func TestK8sNodeConditions(t *testing.T) {
 			ExpectedHealthFailureStatus: "False",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "Pcie error on GPU 0",
 				NodeName:           "testnode",
 			},
@@ -177,16 +177,16 @@ func TestK8sNodeConditions(t *testing.T) {
 			ExpectedHealthFailureStatus: "True",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"44"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=CONTACT_SUPPORT;",
@@ -195,16 +195,16 @@ func TestK8sNodeConditions(t *testing.T) {
 			ExpectedHealthFailureStatus: "True",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"45"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_NONE,
+				RecommendedAction:  protos.RecommendedAction_NONE,
 				NodeName:           "testnode",
 			},
 			ExpectedOutputMessage:       "ErrorCode:44 GPU:0 Recommended Action=CONTACT_SUPPORT;ErrorCode:45 GPU:0 Recommended Action=NONE;",
@@ -213,15 +213,15 @@ func TestK8sNodeConditions(t *testing.T) {
 			ExpectedHealthFailureStatus: "True",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "Thermal watch error on GPU 0",
 				NodeName:           "testnode",
 			},
@@ -238,7 +238,7 @@ func TestK8sNodeConditions(t *testing.T) {
 		os.Exit(1)
 	}
 	for testCase, healthEvent := range healthEventsList {
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent.healthEvent)
 		err := k8sConnector.processHealthEvents(ctx, &healthEvents)
 		if err != nil {
@@ -279,15 +279,15 @@ func TestK8sNodeConditions(t *testing.T) {
 func TestK8sNodeEvents(t *testing.T) {
 	healthEventsList := []*healthConditionList{
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuPcieWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "PCI Replay Rate error on GPU 0",
 			},
 			ExpectedOutputMessage:       "ErrorCode:DCGM_FR_PCI_REPLAY_RATE GPU:0 PCI Replay Rate error on GPU 0 Recommended Action=UNKNOWN;",
@@ -295,15 +295,15 @@ func TestK8sNodeEvents(t *testing.T) {
 			ExpectedOutputConditionType: "GpuPcieWatch",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 				NodeName:           "testnode",
 			},
@@ -312,15 +312,15 @@ func TestK8sNodeEvents(t *testing.T) {
 			ExpectedOutputConditionType: "GpuThermalWatch",
 		},
 		{
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				Message:            "Thermal error on GPU 0",
 				NodeName:           "testnode",
 			},
@@ -336,7 +336,7 @@ func TestK8sNodeEvents(t *testing.T) {
 		os.Exit(1)
 	}
 
-	healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+	healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 	for _, event := range healthEventsList {
 		healthEvents.Events = append(healthEvents.Events, event.healthEvent)
 	}
@@ -405,27 +405,27 @@ func equalStringSlices(a, b []string) bool {
 func TestAddMessageIfNotExist(t *testing.T) {
 	tests := []struct {
 		messages []string
-		event    *platformconnector.HealthEvent
+		event    *protos.HealthEvent
 		expected []string
 	}{
 		{
 			messages: []string{},
-			event: &platformconnector.HealthEvent{
+			event: &protos.HealthEvent{
 				ErrorCode:         []string{"E001"},
-				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				Message:           "msg1",
-				RecommendedAction: platformconnector.RecommenedAction_COMPONENT_RESET,
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 				NodeName:          "testnode",
 			},
 			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=COMPONENT_RESET"},
 		},
 		{
 			messages: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=COMPONENT_RESET"},
-			event: &platformconnector.HealthEvent{
+			event: &protos.HealthEvent{
 				ErrorCode:         []string{"E002"},
-				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				Message:           "msg2",
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_VM,
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
 				NodeName:          "testnode",
 			},
 			expected: []string{
@@ -435,11 +435,11 @@ func TestAddMessageIfNotExist(t *testing.T) {
 		},
 		{
 			messages: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=COMPONENT_RESET"},
-			event: &platformconnector.HealthEvent{
+			event: &protos.HealthEvent{
 				ErrorCode:         []string{"E001"},
-				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				Message:           "msg1",
-				RecommendedAction: platformconnector.RecommenedAction_COMPONENT_RESET,
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 				NodeName:          "testnode",
 			},
 			expected: []string{"ErrorCode:E001 GPU:0 msg1 Recommended Action=COMPONENT_RESET"},
@@ -449,11 +449,11 @@ func TestAddMessageIfNotExist(t *testing.T) {
 				"ErrorCode:E001 GPU:0 msg1 Recommended Action=COMPONENT_RESET",
 				"ErrorCode:E002 GPU:1 msg2 Recommended Action=RESTART_VM",
 			},
-			event: &platformconnector.HealthEvent{
+			event: &protos.HealthEvent{
 				ErrorCode:         []string{"E002"},
-				EntitiesImpacted:  []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				EntitiesImpacted:  []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				Message:           "msg2",
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_VM,
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
 				NodeName:          "testnode",
 			},
 			expected: []string{
@@ -471,8 +471,8 @@ func TestAddMessageIfNotExist(t *testing.T) {
 	}
 }
 
-func convertToEntityPointers(entities []platformconnector.Entity) []*platformconnector.Entity {
-	entityPointers := make([]*platformconnector.Entity, len(entities))
+func convertToEntityPointers(entities []protos.Entity) []*protos.Entity {
+	entityPointers := make([]*protos.Entity, len(entities))
 	for i := range entities {
 		entityPointers[i] = &entities[i]
 	}
@@ -482,7 +482,7 @@ func convertToEntityPointers(entities []platformconnector.Entity) []*platformcon
 func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 	tests := []struct {
 		messages         []string
-		EntitiesImpacted []platformconnector.Entity
+		EntitiesImpacted []protos.Entity
 		checkName        string
 		expected         []string
 		componentClass   string
@@ -490,7 +490,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 	}{
 		{
 			messages:         []string{" GPU:0 error", " GPU:1 error"},
-			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted: []protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			checkName:        "GpuErrorCheck",
 			expected:         []string{" GPU:1 error"},
 			componentClass:   "GPU",
@@ -498,7 +498,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 		},
 		{
 			messages:         []string{"NIC:eth0 error", "NIC:eth1 error"},
-			EntitiesImpacted: []platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
+			EntitiesImpacted: []protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
 			checkName:        "InfiniBandErrorCheck",
 			expected:         []string{"NIC:eth1 error"},
 			componentClass:   "NIC",
@@ -506,7 +506,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 		},
 		{
 			messages:         []string{" NVSWITCH:0 error", " NVSWITCH:1 error"},
-			EntitiesImpacted: []platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			EntitiesImpacted: []protos.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			checkName:        "NvswitchErrorFromKmsgWatch",
 			expected:         []string{" NVSWITCH:1 error"},
 			componentClass:   "NVSWITCH",
@@ -514,7 +514,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 		},
 		{
 			messages:         []string{" GPU:0 error", " GPU:1 error"},
-			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+			EntitiesImpacted: []protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 			checkName:        "SomeOtherCheck",
 			expected:         []string{" GPU:0 error"},
 			componentClass:   "GPU",
@@ -523,7 +523,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 
 		{
 			messages:         []string{" GPU:0 error", " GPU:1 error"},
-			EntitiesImpacted: []platformconnector.Entity{{EntityType: "GPU", EntityValue: "2"}},
+			EntitiesImpacted: []protos.Entity{{EntityType: "GPU", EntityValue: "2"}},
 			checkName:        "GpuErrorCheck",
 			expected:         []string{" GPU:0 error", " GPU:1 error"},
 			componentClass:   "GPU",
@@ -564,39 +564,39 @@ func TestUpdateHealthEventReason(t *testing.T) {
 func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 	fixedTime := time.Date(2025, 1, 16, 5, 13, 23, 0, time.UTC)
 
-	healthEventsList := []platformconnector.HealthEvent{
+	healthEventsList := []protos.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "gpu",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "XID44 error on GPU 0",
 			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "InfiniBandErrorCheck",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "network",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "InfiniBand error on mlx5_0",
 			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			ErrorCode:          []string{"SWITCH_ERROR"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(fixedTime),
 			ComponentClass:     "nvswitch",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "Nvswitch error on nvswitch0",
 			NodeName:           "testnode",
 		},
@@ -628,7 +628,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
 		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
@@ -664,39 +664,39 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 }
 
 func TestUpdateNodeCondition_NewCondition(t *testing.T) {
-	healthEventsList := []*platformconnector.HealthEvent{
+	healthEventsList := []*protos.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"44"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "gpu",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "XID44 error on GPU 0",
 			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "InfiniBandErrorCheck",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "NIC", EntityValue: "mlx5_0"}},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "network",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "InfiniBand error on mlx5_0",
 			NodeName:           "testnode",
 		},
 		{
 			CheckName:          "NvswitchErrorFromKmsgWatch",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			ErrorCode:          []string{"SWITCH_ERROR"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			ComponentClass:     "nvswitch",
-			RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 			Message:            "Nvswitch error on nvswitch0",
 			NodeName:           "testnode",
 		},
@@ -719,7 +719,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		}
 
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
 		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
@@ -761,21 +761,21 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 	healthEventsList := []struct {
 		conditionType   corev1.NodeConditionType
 		existingMsg     string
-		healthEvent     *platformconnector.HealthEvent
+		healthEvent     *protos.HealthEvent
 		expectedMessage string
 	}{
 		{
 			conditionType: "GpuXidError",
 			existingMsg:   "GPU:0 error",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				ErrorCode:          []string{"45"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				Message:            "XID45 error on GPU 1",
 				NodeName:           "testnode",
 			},
@@ -784,14 +784,14 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 		{
 			conditionType: "EthernetErrorCheck",
 			existingMsg:   "NIC:eth0 error",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "EthernetErrorCheck",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth1"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "NIC", EntityValue: "eth1"}},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "network",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				Message:            "error on eth1",
 				NodeName:           "testnode",
 			},
@@ -800,15 +800,15 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 		{
 			conditionType: "NvswitchErrorFromKmsgWatch",
 			existingMsg:   " nvswitch0 error",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "NvswitchErrorFromKmsgWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "1"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "NVSWITCH", EntityValue: "1"}},
 				ErrorCode:          []string{"SWITCH_ERROR"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "nvswitch",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				Message:            "Nvswitch error on nvswitch1",
 				NodeName:           "testnode",
 			},
@@ -840,7 +840,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, testCase.healthEvent)
 		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
@@ -877,25 +877,25 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 	testCases := []struct {
 		conditionType    corev1.NodeConditionType
 		existingMsg      string
-		entitiesImpacted []*platformconnector.Entity
+		entitiesImpacted []*protos.Entity
 		expectedMessage  string
 	}{
 		{
 			conditionType:    "GpuXidError",
 			existingMsg:      "GPU:0 error;GPU:1 error;",
-			entitiesImpacted: []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			entitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			expectedMessage:  "GPU:1 error;",
 		},
 		{
 			conditionType:    "InfiniBandErrorCheck",
 			existingMsg:      "NIC:eth0 error;NIC:eth1 error;",
-			entitiesImpacted: []*platformconnector.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
+			entitiesImpacted: []*protos.Entity{{EntityType: "NIC", EntityValue: "eth0"}},
 			expectedMessage:  "NIC:eth1 error;",
 		},
 		{
 			conditionType:    "NvswitchErrorFromKmsgWatch",
 			existingMsg:      "NVSWITCH:0 error;NVSWITCH:1 error;",
-			entitiesImpacted: []*platformconnector.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
+			entitiesImpacted: []*protos.Entity{{EntityType: "NVSWITCH", EntityValue: "0"}},
 			expectedMessage:  "NVSWITCH:1 error;",
 		},
 	}
@@ -924,7 +924,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			t.Fatalf("Failed to create node: %v", err)
 		}
 
-		healthEvent := &platformconnector.HealthEvent{
+		healthEvent := &protos.HealthEvent{
 			CheckName:          string(testCase.conditionType),
 			IsHealthy:          true,
 			EntitiesImpacted:   testCase.entitiesImpacted,
@@ -932,7 +932,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 			NodeName:           "testnode",
 		}
 
-		healthEvents := platformconnector.HealthEvents{Version: 1, Events: make([]*platformconnector.HealthEvent, 0)}
+		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
 
 		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
@@ -1301,17 +1301,17 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 	tests := []struct {
 		name        string
 		nodeName    string
-		healthEvent *platformconnector.HealthEvent
+		healthEvent *protos.HealthEvent
 		expectError bool
 		setupNode   bool
 	}{
 		{
 			name:     "node not found",
 			nodeName: "nonexistent-node",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				NodeName:           "nonexistent-node",
@@ -1322,10 +1322,10 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 		{
 			name:     "empty node name",
 			nodeName: "",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				NodeName:           "",
@@ -1336,10 +1336,10 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 		{
 			name:     "successful update with no existing conditions",
 			nodeName: "test-node-success",
-			healthEvent: &platformconnector.HealthEvent{
+			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				NodeName:           "test-node-success",
@@ -1369,8 +1369,8 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			healthEvents := &platformconnector.HealthEvents{
-				Events: []*platformconnector.HealthEvent{tt.healthEvent},
+			healthEvents := &protos.HealthEvents{
+				Events: []*protos.HealthEvent{tt.healthEvent},
 			}
 
 			err := connector.updateNodeConditions(localCtx, healthEvents.Events)

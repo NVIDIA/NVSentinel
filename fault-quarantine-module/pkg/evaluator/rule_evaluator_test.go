@@ -179,7 +179,7 @@ func TestRoundTrip(t *testing.T) {
 		IsFatal:            true,
 		IsHealthy:          false,
 		Message:            "test-message",
-		RecommendedAction:  protos.RecommenedAction_RESTART_VM,
+		RecommendedAction:  protos.RecommendedAction_RESTART_VM,
 		ErrorCode:          []string{"E001", "E002"},
 		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "GPU-0"}},
 		Metadata:           map[string]string{"key1": "value1"},
@@ -200,7 +200,7 @@ func TestRoundTrip(t *testing.T) {
 		"isFatal":           true,
 		"isHealthy":         false,
 		"message":           "test-message",
-		"recommendedAction": float64(protos.RecommenedAction_RESTART_VM),
+		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
 		"errorCode":         []interface{}{"E001", "E002"},
 		"entitiesImpacted": []interface{}{
 			map[string]interface{}{

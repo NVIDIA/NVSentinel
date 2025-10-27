@@ -6,7 +6,7 @@ toolchain go1.24.8
 
 require (
 	github.com/go-logr/logr v1.4.3
-	github.com/nvidia/nvsentinel/statemanager v0.0.0
+	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.1
 	github.com/stretchr/testify v1.11.1
@@ -18,7 +18,6 @@ require (
 )
 
 require (
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -58,11 +57,9 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/otel v1.38.0 // indirect
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
-	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/mod v0.29.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
 	golang.org/x/oauth2 v0.32.0 // indirect
 	golang.org/x/sys v0.37.0 // indirect
@@ -87,24 +84,6 @@ require (
 // Local replacements for internal modules
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
-replace github.com/nvidia/nvsentinel/statemanager => ../statemanager
-
-replace github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor => ../health-monitors/csp-health-monitor
-
-replace github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor => ../health-monitors/syslog-health-monitor
-
-replace github.com/nvidia/nvsentinel/platform-connectors => ../platform-connectors
-
 replace github.com/nvidia/nvsentinel/store-client-sdk => ../store-client-sdk
 
-replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
-
-replace github.com/nvidia/nvsentinel/health-events-analyzer => ../health-events-analyzer
-
-replace github.com/nvidia/nvsentinel/fault-quarantine-module => ../fault-quarantine-module
-
-replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
-
-replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
-
-replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+replace github.com/nvidia/nvsentinel/commons => ../commons

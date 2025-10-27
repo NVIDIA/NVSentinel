@@ -36,8 +36,8 @@ class PlatformConnectorStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.HealthEventOccuredV1 = channel.unary_unary(
-            "/datamodels.PlatformConnector/HealthEventOccuredV1",
+        self.HealthEventOccurredV1 = channel.unary_unary(
+            "/datamodels.PlatformConnector/HealthEventOccurredV1",
             request_serializer=health__event__pb2.HealthEvents.SerializeToString,
             response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             _registered_method=True,
@@ -47,7 +47,7 @@ class PlatformConnectorStub(object):
 class PlatformConnectorServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def HealthEventOccuredV1(self, request, context):
+    def HealthEventOccurredV1(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
@@ -56,8 +56,8 @@ class PlatformConnectorServicer(object):
 
 def add_PlatformConnectorServicer_to_server(servicer, server):
     rpc_method_handlers = {
-        "HealthEventOccuredV1": grpc.unary_unary_rpc_method_handler(
-            servicer.HealthEventOccuredV1,
+        "HealthEventOccurredV1": grpc.unary_unary_rpc_method_handler(
+            servicer.HealthEventOccurredV1,
             request_deserializer=health__event__pb2.HealthEvents.FromString,
             response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
         ),
@@ -72,7 +72,7 @@ class PlatformConnector(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def HealthEventOccuredV1(
+    def HealthEventOccurredV1(
         request,
         target,
         options=(),
@@ -87,7 +87,7 @@ class PlatformConnector(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            "/datamodels.PlatformConnector/HealthEventOccuredV1",
+            "/datamodels.PlatformConnector/HealthEventOccurredV1",
             health__event__pb2.HealthEvents.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,

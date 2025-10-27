@@ -254,10 +254,10 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
     def get_recommended_action_from_dcgm_error_map(self, error_code):
         if error_code in self.dcgm_errors_info_dict:
             recommended_action = self.dcgm_errors_info_dict[error_code]
-            if recommended_action in platformconnector_pb2.RecommenedAction.keys():
-                return platformconnector_pb2.RecommenedAction.Value(recommended_action)
+            if recommended_action in platformconnector_pb2.RecommendedAction.keys():
+                return platformconnector_pb2.RecommendedAction.Value(recommended_action)
 
-        return platformconnector_pb2.RecommenedAction.CONTACT_SUPPORT
+        return platformconnector_pb2.RecommendedAction.CONTACT_SUPPORT
 
     def send_health_event_with_retries(self, health_events: list[platformconnector_pb2.HealthEvent]):
         delay = INITIAL_DELAY
@@ -265,7 +265,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             with grpc.insecure_channel(f"unix://{self._socket_path}") as chan:
                 stub = platformconnector_pb2_grpc.PlatformConnectorStub(chan)
                 try:
-                    stub.HealthEventOccuredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
+                    stub.HealthEventOccurredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
                     metrics.health_events_insertion_to_uds_succeed.inc()
                     metrics.health_events_insertion_to_uds_error.set(0.0)
                     return True

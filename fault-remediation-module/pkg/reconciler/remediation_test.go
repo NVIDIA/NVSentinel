@@ -19,8 +19,8 @@ import (
 	"testing"
 	"text/template"
 
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
@@ -248,7 +248,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 		name              string
 		nodeName          string
 		dryRun            bool
-		recommendedAction platformconnector.RecommenedAction
+		recommendedAction protos.RecommendedAction
 		shouldSucceed     bool
 		expectedError     bool
 		shouldCreate      bool
@@ -257,7 +257,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			name:              "Successful rebootnode creation",
 			nodeName:          "test-node-1",
 			dryRun:            false,
-			recommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			recommendedAction: protos.RecommendedAction_RESTART_BM,
 			shouldSucceed:     true,
 			expectedError:     false,
 			shouldCreate:      true,
@@ -266,7 +266,7 @@ func TestCreateRebootNodeResource(t *testing.T) {
 			name:              "Skip rebootnode creation with dry run",
 			nodeName:          "test-node-2",
 			dryRun:            true,
-			recommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			recommendedAction: protos.RecommendedAction_RESTART_BM,
 			shouldSucceed:     true,
 			expectedError:     false,
 			shouldCreate:      false,
@@ -327,8 +327,8 @@ spec:
 			// Create a HealthEventDoc object
 			healthEventDoc := &HealthEventDoc{
 				ID: primitive.NewObjectID(),
-				HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-					HealthEvent: &platformconnector.HealthEvent{
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
 						NodeName:          tt.nodeName,
 						RecommendedAction: tt.recommendedAction,
 					},

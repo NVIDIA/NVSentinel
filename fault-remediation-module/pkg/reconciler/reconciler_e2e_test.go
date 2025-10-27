@@ -25,12 +25,12 @@ import (
 	"text/template"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 
-	"github.com/nvidia/nvsentinel/statemanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -200,10 +200,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Process Event 1
 		healthEventDoc := &HealthEventDoc{
 			ID: primitive.NewObjectID(),
-			HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-				HealthEvent: &platformconnector.HealthEvent{
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+					RecommendedAction: protos.RecommendedAction_RESTART_BM,
 				},
 			},
 		}
@@ -254,10 +254,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &HealthEventDoc{
 			ID: primitive.NewObjectID(),
-			HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-				HealthEvent: &platformconnector.HealthEvent{
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+					RecommendedAction: protos.RecommendedAction_RESTART_BM,
 				},
 			},
 		}
@@ -302,10 +302,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &HealthEventDoc{
 			ID: primitive.NewObjectID(),
-			HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-				HealthEvent: &platformconnector.HealthEvent{
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+					RecommendedAction: protos.RecommendedAction_RESTART_BM,
 				},
 			},
 		}
@@ -327,10 +327,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 2: Create retry CR
 		event2 := &HealthEventDoc{
 			ID: primitive.NewObjectID(),
-			HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-				HealthEvent: &platformconnector.HealthEvent{
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+					RecommendedAction: protos.RecommendedAction_RESTART_BM,
 				},
 			},
 		}
@@ -370,10 +370,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: COMPONENT_RESET
 		event1 := &HealthEventDoc{
 			ID: primitive.NewObjectID(),
-			HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-				HealthEvent: &platformconnector.HealthEvent{
+			HealthEventWithStatus: model.HealthEventWithStatus{
+				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: platformconnector.RecommenedAction_COMPONENT_RESET,
+					RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 				},
 			},
 		}
@@ -383,9 +383,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
 		// Event 2: RESTART_VM (same group)
-		event2Health := &platformconnector.HealthEvent{
+		event2Health := &protos.HealthEvent{
 			NodeName:          nodeName,
-			RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		}
 
 		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event2Health)
@@ -394,8 +394,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		assert.Equal(t, firstCRName, existingCR)
 
 		// Verify both actions map to same group
-		group1 := common.GetRemediationGroupForAction(platformconnector.RecommenedAction_COMPONENT_RESET)
-		group2 := common.GetRemediationGroupForAction(platformconnector.RecommenedAction_RESTART_BM)
+		group1 := common.GetRemediationGroupForAction(protos.RecommendedAction_COMPONENT_RESET)
+		group2 := common.GetRemediationGroupForAction(protos.RecommendedAction_RESTART_BM)
 		assert.Equal(t, group1, group2, "Both actions should be in same equivalence group")
 		assert.Equal(t, "restart", group1)
 
@@ -439,10 +439,10 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 1: RESTART_VM creates CR-1
 	event1 := &HealthEventDoc{
 		ID: primitive.NewObjectID(),
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-			HealthEvent: &platformconnector.HealthEvent{
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          nodeName,
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		},
 	}
@@ -457,9 +457,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 2: COMPONENT_RESET (same group, CR in progress) - should be skipped
 	updateRebootNodeStatus(ctx, t, crName1, "InProgress")
 
-	event2 := &platformconnector.HealthEvent{
+	event2 := &protos.HealthEvent{
 		NodeName:          nodeName,
-		RecommendedAction: platformconnector.RecommenedAction_COMPONENT_RESET,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 	}
 	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2)
 	assert.NoError(t, err)
@@ -474,9 +474,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 3: CR succeeds - subsequent event still skipped
 	updateRebootNodeStatus(ctx, t, crName1, "Succeeded")
 
-	event3 := &platformconnector.HealthEvent{
+	event3 := &protos.HealthEvent{
 		NodeName:          nodeName,
-		RecommendedAction: platformconnector.RecommenedAction_RESTART_VM,
+		RecommendedAction: protos.RecommendedAction_RESTART_VM,
 	}
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3)
 	assert.NoError(t, err)
@@ -485,9 +485,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
 
-	event4 := &platformconnector.HealthEvent{
+	event4 := &protos.HealthEvent{
 		NodeName:          nodeName,
-		RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+		RecommendedAction: protos.RecommendedAction_RESTART_BM,
 	}
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4)
 	assert.NoError(t, err)
@@ -501,10 +501,10 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 5: Create retry CR
 	event5 := &HealthEventDoc{
 		ID: primitive.NewObjectID(),
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-			HealthEvent: &platformconnector.HealthEvent{
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          nodeName,
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		},
 	}
@@ -582,7 +582,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 
 		// Event 1: Send quarantine event through channel
 		eventID1 := primitive.NewObjectID()
-		event1 := createQuarantineEvent(eventID1, nodeName, platformconnector.RecommenedAction_RESTART_BM)
+		event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 		eventsChan <- event1
 
 		// Wait for CR creation
@@ -633,7 +633,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		updateCountBefore := updateCalled
 
 		eventID2 := primitive.NewObjectID()
-		event2 := createQuarantineEvent(eventID2, nodeName, platformconnector.RecommenedAction_COMPONENT_RESET)
+		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_COMPONENT_RESET)
 		eventsChan <- event2
 
 		// Wait for event to be processed and verify deduplication
@@ -723,16 +723,16 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 }
 
 // Helper to create quarantine event
-func createQuarantineEvent(eventID primitive.ObjectID, nodeName string, action platformconnector.RecommenedAction) bson.M {
+func createQuarantineEvent(eventID primitive.ObjectID, nodeName string, action protos.RecommendedAction) bson.M {
 	return bson.M{
 		"operationType": "update",
 		"fullDocument": bson.M{
 			"_id": eventID,
 			"healtheventstatus": bson.M{
 				"userpodsevictionstatus": bson.M{
-					"status": storeconnector.StatusSucceeded,
+					"status": model.StatusSucceeded,
 				},
-				"nodequarantined": storeconnector.Quarantined,
+				"nodequarantined": model.Quarantined,
 			},
 			"healthevent": bson.M{
 				"nodename":          nodeName,
@@ -749,9 +749,9 @@ func createUnquarantineEvent(nodeName string) bson.M {
 		"fullDocument": bson.M{
 			"_id": primitive.NewObjectID(),
 			"healtheventstatus": bson.M{
-				"nodequarantined": storeconnector.UnQuarantined,
+				"nodequarantined": model.UnQuarantined,
 				"userpodsevictionstatus": bson.M{
-					"status": storeconnector.StatusSucceeded,
+					"status": model.StatusSucceeded,
 				},
 			},
 			"healthevent": bson.M{

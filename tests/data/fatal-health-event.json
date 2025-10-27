@@ -5,7 +5,7 @@
     "checkName": "GpuXidError",
     "isFatal": true,
     "isHealthy": false,
-    "message": "XID error occured",
+    "message": "XID error occurred",
     "recommendedAction": 15,
     "errorCode": [
         "79"

@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson"
@@ -54,7 +54,7 @@ func (m *MockK8sClient) GetAnnotationManager() NodeAnnotationManagerInterface {
 	return m.annotationManagerOverride
 }
 
-func (m *MockK8sClient) GetStatusCheckerForAction(action platformconnector.RecommenedAction) (crstatus.CRStatusChecker, error) {
+func (m *MockK8sClient) GetStatusCheckerForAction(action protos.RecommendedAction) (crstatus.CRStatusChecker, error) {
 	// Use override if set
 	if m.statusCheckerOverride != nil {
 		return m.statusCheckerOverride, nil
@@ -182,19 +182,19 @@ func TestHandleEvent(t *testing.T) {
 	tests := []struct {
 		name              string
 		nodeName          string
-		recommendedAction platformconnector.RecommenedAction
+		recommendedAction protos.RecommendedAction
 		shouldSucceed     bool
 	}{
 		{
 			name:              "Successful RESTART_VM action",
 			nodeName:          "node1",
-			recommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			recommendedAction: protos.RecommendedAction_RESTART_BM,
 			shouldSucceed:     true,
 		},
 		{
 			name:              "Failed RESTART_VM action",
 			nodeName:          "node2",
-			recommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			recommendedAction: protos.RecommendedAction_RESTART_BM,
 			shouldSucceed:     false,
 		},
 	}
@@ -216,8 +216,8 @@ func TestHandleEvent(t *testing.T) {
 			r := NewReconciler(cfg, false)
 			healthEventDoc := &HealthEventDoc{
 				ID: primitive.NewObjectID(),
-				HealthEventWithStatus: storeconnector.HealthEventWithStatus{
-					HealthEvent: &platformconnector.HealthEvent{
+				HealthEventWithStatus: model.HealthEventWithStatus{
+					HealthEvent: &protos.HealthEvent{
 						NodeName:          tt.nodeName,
 						RecommendedAction: tt.recommendedAction,
 					},
@@ -257,15 +257,15 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := HealthEventDoc{
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
-			HealthEvent: &platformconnector.HealthEvent{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          "node1",
-				RecommendedAction: platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction: protos.RecommendedAction_UNKNOWN,
 			},
-			HealthEventStatus: storeconnector.HealthEventStatus{
-				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
-				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+			HealthEventStatus: model.HealthEventStatus{
+				NodeQuarantined:        ptr.To(model.Quarantined),
+				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
 				FaultRemediated:        nil,
 			},
 		},
@@ -308,15 +308,15 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := HealthEventDoc{
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
-			HealthEvent: &platformconnector.HealthEvent{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          "node1",
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: storeconnector.HealthEventStatus{
-				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
-				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+			HealthEventStatus: model.HealthEventStatus{
+				NodeQuarantined:        ptr.To(model.Quarantined),
+				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
 				FaultRemediated:        nil,
 			},
 		},
@@ -359,15 +359,15 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := HealthEventDoc{
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
-			HealthEvent: &platformconnector.HealthEvent{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          "node1",
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: storeconnector.HealthEventStatus{
-				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
-				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+			HealthEventStatus: model.HealthEventStatus{
+				NodeQuarantined:        ptr.To(model.Quarantined),
+				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
 				FaultRemediated:        nil,
 			},
 		},
@@ -399,15 +399,15 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
 	healthEvent := HealthEventDoc{
-		HealthEventWithStatus: storeconnector.HealthEventWithStatus{
+		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
-			HealthEvent: &platformconnector.HealthEvent{
+			HealthEvent: &protos.HealthEvent{
 				NodeName:          "node1",
-				RecommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: storeconnector.HealthEventStatus{
-				NodeQuarantined:        ptr.To(storeconnector.Quarantined),
-				UserPodsEvictionStatus: storeconnector.OperationStatus{Status: storeconnector.StatusSucceeded},
+			HealthEventStatus: model.HealthEventStatus{
+				NodeQuarantined:        ptr.To(model.Quarantined),
+				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
 				FaultRemediated:        nil,
 			},
 		},
@@ -437,35 +437,35 @@ func TestShouldSkipEvent(t *testing.T) {
 	tests := []struct {
 		name              string
 		nodeName          string
-		recommendedAction platformconnector.RecommenedAction
+		recommendedAction protos.RecommendedAction
 		shouldSkip        bool
 		description       string
 	}{
 		{
 			name:              "Skip NONE action",
 			nodeName:          "test-node-1",
-			recommendedAction: platformconnector.RecommenedAction_NONE,
+			recommendedAction: protos.RecommendedAction_NONE,
 			shouldSkip:        true,
 			description:       "NONE actions should be skipped",
 		},
 		{
 			name:              "Process RESTART_VM action",
 			nodeName:          "test-node-2",
-			recommendedAction: platformconnector.RecommenedAction_RESTART_BM,
+			recommendedAction: protos.RecommendedAction_RESTART_BM,
 			shouldSkip:        false,
 			description:       "RESTART_VM actions should not be skipped",
 		},
 		{
 			name:              "Skip CONTACT_SUPPORT action",
 			nodeName:          "test-node-3",
-			recommendedAction: platformconnector.RecommenedAction_CONTACT_SUPPORT,
+			recommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
 			shouldSkip:        true,
 			description:       "Unsupported CONTACT_SUPPORT action should be skipped",
 		},
 		{
 			name:              "Skip unknown action",
 			nodeName:          "test-node-4",
-			recommendedAction: platformconnector.RecommenedAction(999),
+			recommendedAction: protos.RecommendedAction(999),
 			shouldSkip:        true,
 			description:       "Unknown actions should be skipped",
 		},
@@ -473,11 +473,11 @@ func TestShouldSkipEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			healthEvent := &platformconnector.HealthEvent{
+			healthEvent := &protos.HealthEvent{
 				NodeName:          tt.nodeName,
 				RecommendedAction: tt.recommendedAction,
 			}
-			healthEventWithStatus := storeconnector.HealthEventWithStatus{
+			healthEventWithStatus := model.HealthEventWithStatus{
 				HealthEvent: healthEvent,
 			}
 
@@ -515,11 +515,11 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 	}
 	r := NewReconciler(cfg, false)
 
-	he := &platformconnector.HealthEvent{NodeName: "test-node-none", RecommendedAction: platformconnector.RecommenedAction_NONE}
-	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
+	he := &protos.HealthEvent{NodeName: "test-node-none", RecommendedAction: protos.RecommendedAction_NONE}
+	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector run before skipping
-	if event.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE && r.Config.EnableLogCollector {
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
 		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
@@ -657,11 +657,11 @@ func TestLogCollectorDisabled(t *testing.T) {
 	}
 	r := NewReconciler(cfg, false)
 
-	he := &platformconnector.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: platformconnector.RecommenedAction_NONE}
-	event := storeconnector.HealthEventWithStatus{HealthEvent: he}
+	he := &protos.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: protos.RecommendedAction_NONE}
+	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector should NOT run when disabled
-	if event.HealthEvent.RecommendedAction == platformconnector.RecommenedAction_NONE && r.Config.EnableLogCollector {
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
 		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
@@ -748,7 +748,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 		name          string
 		existingCR    string
 		crStatus      crstatus.CRStatus
-		currentAction platformconnector.RecommenedAction
+		currentAction protos.RecommendedAction
 		expectedSkip  bool
 		description   string
 	}{
@@ -756,7 +756,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			name:          "NoCR_AllowRemediation",
 			existingCR:    "",
 			crStatus:      crstatus.CRStatusNotFound,
-			currentAction: platformconnector.RecommenedAction_RESTART_BM,
+			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  false,
 			description:   "Should allow remediation when no CR exists",
 		},
@@ -764,7 +764,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			name:          "CRSucceeded_SkipRemediation",
 			existingCR:    "maintenance-node-123",
 			crStatus:      crstatus.CRStatusSucceeded,
-			currentAction: platformconnector.RecommenedAction_RESTART_BM,
+			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  true,
 			description:   "Should skip remediation when CR succeeded",
 		},
@@ -772,7 +772,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			name:          "CRInProgress_SkipRemediation",
 			existingCR:    "maintenance-node-456",
 			crStatus:      crstatus.CRStatusInProgress,
-			currentAction: platformconnector.RecommenedAction_RESTART_BM,
+			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  true,
 			description:   "Should skip remediation when CR is in progress",
 		},
@@ -780,7 +780,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			name:          "CRFailed_AllowRemediation",
 			existingCR:    "maintenance-node-789",
 			crStatus:      crstatus.CRStatusFailed,
-			currentAction: platformconnector.RecommenedAction_RESTART_BM,
+			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  false,
 			description:   "Should allow remediation when CR failed",
 		},
@@ -810,7 +810,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
 			r := NewReconciler(cfg, false)
 
-			healthEvent := &platformconnector.HealthEvent{
+			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
 				RecommendedAction: tt.currentAction,
 			}
@@ -831,40 +831,40 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 	// Test that different actions in the same equivalence group are handled correctly
 	tests := []struct {
 		name           string
-		existingAction platformconnector.RecommenedAction
-		newEventAction platformconnector.RecommenedAction
+		existingAction protos.RecommendedAction
+		newEventAction protos.RecommendedAction
 		crStatus       crstatus.CRStatus
 		shouldCreateCR bool
 		description    string
 	}{
 		{
 			name:           "ComponentReset_vs_NodeReboot_SameGroup_InProgress",
-			existingAction: platformconnector.RecommenedAction_COMPONENT_RESET,
-			newEventAction: platformconnector.RecommenedAction_RESTART_BM,
+			existingAction: protos.RecommendedAction_COMPONENT_RESET,
+			newEventAction: protos.RecommendedAction_RESTART_BM,
 			crStatus:       crstatus.CRStatusInProgress,
 			shouldCreateCR: false,
 			description:    "Should skip RESTART_VM when COMPONENT_RESET CR is in progress (same group)",
 		},
 		{
 			name:           "NodeReboot_vs_RestartVM_SameGroup_Succeeded",
-			existingAction: platformconnector.RecommenedAction_RESTART_BM,
-			newEventAction: platformconnector.RecommenedAction_RESTART_VM,
+			existingAction: protos.RecommendedAction_RESTART_BM,
+			newEventAction: protos.RecommendedAction_RESTART_VM,
 			crStatus:       crstatus.CRStatusSucceeded,
 			shouldCreateCR: false,
 			description:    "Should skip RESTART_VM when RESTART_VM CR succeeded (same group)",
 		},
 		{
 			name:           "ResetGPU_vs_RestartBM_SameGroup_Failed",
-			existingAction: platformconnector.RecommenedAction_COMPONENT_RESET,
-			newEventAction: platformconnector.RecommenedAction_RESTART_BM,
+			existingAction: protos.RecommendedAction_COMPONENT_RESET,
+			newEventAction: protos.RecommendedAction_RESTART_BM,
 			crStatus:       crstatus.CRStatusFailed,
 			shouldCreateCR: true,
 			description:    "Should allow RESTART_BM when COMPONENT_RESET CR failed (same group)",
 		},
 		{
 			name:           "ComponentReset_vs_NONE_NotInGroup",
-			existingAction: platformconnector.RecommenedAction_COMPONENT_RESET,
-			newEventAction: platformconnector.RecommenedAction_NONE,
+			existingAction: protos.RecommendedAction_COMPONENT_RESET,
+			newEventAction: protos.RecommendedAction_NONE,
 			crStatus:       crstatus.CRStatusSucceeded,
 			shouldCreateCR: false, // NONE actions are skipped in shouldSkipEvent
 			description:    "NONE action handling is independent of CR status",
@@ -895,7 +895,7 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
 			r := NewReconciler(cfg, false)
 
-			healthEvent := &platformconnector.HealthEvent{
+			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
 				RecommendedAction: tt.newEventAction,
 			}

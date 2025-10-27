@@ -33,13 +33,13 @@ func TestActionMapping(t *testing.T) {
 		{
 			name:          "Valid Action",
 			actionStr:     "RESTART_APP",
-			expectedCode:  int(pb.RecommenedAction_NONE),
+			expectedCode:  int(pb.RecommendedAction_NONE),
 			expectMapping: true,
 		},
 		{
 			name:          "Unknown Action",
 			actionStr:     "UNKNOWN_ACTION",
-			expectedCode:  int(pb.RecommenedAction_CONTACT_SUPPORT),
+			expectedCode:  int(pb.RecommendedAction_CONTACT_SUPPORT),
 			expectMapping: false,
 		},
 	}
@@ -47,7 +47,7 @@ func TestActionMapping(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			action := MapActionStringToProto(tc.actionStr)
-			assert.Equal(t, pb.RecommenedAction(tc.expectedCode), action)
+			assert.Equal(t, pb.RecommendedAction(tc.expectedCode), action)
 		})
 	}
 }
@@ -58,58 +58,58 @@ func TestLoadErrorResolutionMap(t *testing.T) {
 	assert.NotEmpty(t, errorMap)
 
 	if res, found := errorMap[46]; found {
-		assert.Equal(t, pb.RecommenedAction_COMPONENT_RESET, res.RecommendedAction)
+		assert.Equal(t, pb.RecommendedAction_COMPONENT_RESET, res.RecommendedAction)
 	}
 
 	if res, found := errorMap[32]; found {
-		assert.Equal(t, pb.RecommenedAction_NONE, res.RecommendedAction)
+		assert.Equal(t, pb.RecommendedAction_NONE, res.RecommendedAction)
 	}
 }
 
 func TestMapActionStringToProto(t *testing.T) {
 	testcases := []struct {
 		input          string
-		expectedOutput pb.RecommenedAction
+		expectedOutput pb.RecommendedAction
 	}{
 		{
 			input:          "COMPONENT_RESET",
-			expectedOutput: pb.RecommenedAction_COMPONENT_RESET,
+			expectedOutput: pb.RecommendedAction_COMPONENT_RESET,
 		},
 		{
 			input:          "RESTART_APP",
-			expectedOutput: pb.RecommenedAction_NONE,
+			expectedOutput: pb.RecommendedAction_NONE,
 		},
 		{
 			input:          "CONTACT_SUPPORT",
-			expectedOutput: pb.RecommenedAction_CONTACT_SUPPORT,
+			expectedOutput: pb.RecommendedAction_CONTACT_SUPPORT,
 		},
 		{
 			input:          "IGNORE",
-			expectedOutput: pb.RecommenedAction_NONE,
+			expectedOutput: pb.RecommendedAction_NONE,
 		},
 		{
 			input:          "WORKFLOW_XID_48",
-			expectedOutput: pb.RecommenedAction_COMPONENT_RESET,
+			expectedOutput: pb.RecommendedAction_COMPONENT_RESET,
 		},
 		{
 			input:          "RESET_GPU",
-			expectedOutput: pb.RecommenedAction_COMPONENT_RESET,
+			expectedOutput: pb.RecommendedAction_COMPONENT_RESET,
 		},
 		{
 			input:          "RESET_FABRIC",
-			expectedOutput: pb.RecommenedAction_COMPONENT_RESET,
+			expectedOutput: pb.RecommendedAction_COMPONENT_RESET,
 		},
 		{
 			input:          "NONE",
-			expectedOutput: pb.RecommenedAction_NONE,
+			expectedOutput: pb.RecommendedAction_NONE,
 		},
 		{
 			input:          "  CONTACT_SUPPORT  ",
-			expectedOutput: pb.RecommenedAction_CONTACT_SUPPORT,
+			expectedOutput: pb.RecommendedAction_CONTACT_SUPPORT,
 		},
 		{
 			input:          "SOME_UNKNOWN_ACTION",
-			expectedOutput: pb.RecommenedAction_CONTACT_SUPPORT,
+			expectedOutput: pb.RecommendedAction_CONTACT_SUPPORT,
 		},
 	}
 

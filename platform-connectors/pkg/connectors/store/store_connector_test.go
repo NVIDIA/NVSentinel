@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -49,8 +49,8 @@ func TestInsertHealthEvents(t *testing.T) {
 			collection: mt.Coll,
 		}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{{ComponentClass: "abc"}},
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{{ComponentClass: "abc"}},
 		}
 
 		err := connector.insertHealthEvents(context.Background(), healthEvents)
@@ -73,8 +73,8 @@ func TestInsertHealthEvents(t *testing.T) {
 			collection: mt.Coll,
 		}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{{ComponentClass: "abc"}},
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{{ComponentClass: "abc"}},
 		}
 
 		err := connector.insertHealthEvents(context.Background(), healthEvents)
@@ -107,10 +107,10 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			mtest.CreateSuccessResponse(), // InsertMany
 		)
 
-		healthEvent := &platformconnector.HealthEvent{}
+		healthEvent := &protos.HealthEvent{}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{healthEvent},
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{healthEvent},
 		}
 
 		ringBuffer.Enqueue(healthEvents)
@@ -152,10 +152,10 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			}),
 		)
 
-		healthEvent := &platformconnector.HealthEvent{}
+		healthEvent := &protos.HealthEvent{}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{healthEvent},
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{healthEvent},
 		}
 
 		ringBuffer.Enqueue(healthEvents)
@@ -346,8 +346,8 @@ func TestInsertHealthEvents_ErrorScenarios(t *testing.T) {
 			collection: mt.Coll,
 		}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{
 				{
 					ComponentClass: "gpu",
 					CheckName:      "GpuXidError",
@@ -379,8 +379,8 @@ func TestInsertHealthEvents_ErrorScenarios(t *testing.T) {
 			collection: mt.Coll,
 		}
 
-		healthEvents := &platformconnector.HealthEvents{
-			Events: []*platformconnector.HealthEvent{
+		healthEvents := &protos.HealthEvents{
+			Events: []*protos.HealthEvent{
 				{
 					ComponentClass: "gpu",
 					CheckName:      "GpuXidError",
