@@ -107,7 +107,8 @@ runs:
       run: |
         go install github.com/boumenot/gocover-cobertura@${{ steps.versions.outputs.gocover_cobertura_version }}
         go install gotest.tools/gotestsum@${{ steps.versions.outputs.gotestsum_version }}
-        curl -fsSL --retry 3 --keepalive-time 2 https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ steps.versions.outputs.golangci_lint_version }}
+        # Install golangci-lint from source to ensure it's built with the current Go version
+        go install github.com/golangci/golangci-lint/cmd/golangci-lint@${{ steps.versions.outputs.golangci_lint_version }}
 
     - name: Cache Protocol Buffers
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
