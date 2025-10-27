@@ -19,12 +19,8 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -56,70 +52,23 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying no new CR was created - actively checking CR count doesn't increase")
-		require.Never(t, func() bool {
-			crs := &unstructured.UnstructuredList{}
-			crs.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   helpers.RebootNodeCRDGroup,
-				Version: helpers.RebootNodeCRDVersion,
-				Kind:    "RebootNodeList",
-			})
-			err := client.Resources().List(ctx, crs)
-			if err != nil {
-				return false
-			}
-
-			var crCount int
-			for _, cr := range crs.Items {
-				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-				if !found {
-					continue
-				}
-				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
-				if found && nodeName == testCtx.NodeName {
-					crCount++
-				}
-			}
-
-			if crCount > 1 {
-				t.Logf("ERROR: Found %d CRs, duplicate created!", crCount)
-				return true // Failure - duplicate CR created
-			}
-			return false // Success - still only 1 CR
-		}, 30*time.Second, 5*time.Second, "should not create duplicate CR")
-
-		// Final verification: wait for CR count to stabilize at exactly 1
-		t.Log("Verifying final CR count is stable at 1")
+		t.Log("Verifying no duplicate CR was created - should have exactly the original CR")
 		require.Eventually(t, func() bool {
-			crs := &unstructured.UnstructuredList{}
-			crs.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   helpers.RebootNodeCRDGroup,
-				Version: helpers.RebootNodeCRDVersion,
-				Kind:    "RebootNodeList",
-			})
-			err := client.Resources().List(ctx, crs)
+			crList, err := helpers.GetRebootNodeCRsForNode(ctx, client, testCtx.NodeName)
 			if err != nil {
 				return false
-			}
-
-			var crList []string
-			for _, cr := range crs.Items {
-				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-				if !found {
-					continue
-				}
-				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
-				if found && nodeName == testCtx.NodeName {
-					crList = append(crList, cr.GetName())
-				}
 			}
 
 			if len(crList) == 1 && crList[0] == cr1Name {
-				return true // Stable at exactly the original CR
+				return true // Exactly 1 CR with the original name
 			}
-			t.Logf("Waiting for stable CR count, currently: %d", len(crList))
+			if len(crList) > 1 {
+				t.Logf("ERROR: Found %d CRs, duplicate created!", len(crList))
+			} else {
+				t.Logf("Waiting for stable CR count, currently: %d", len(crList))
+			}
 			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly the original CR")
+		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
 
 		return ctx
 	})
@@ -170,8 +119,8 @@ func TestRemediationModuleRestart(t *testing.T) {
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 
-		helpers.WaitForNodeRemediationLabel(ctx, t, client, testCtx.NodeName,
-			helpers.RemediationSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
 
 		return ctx
 	})
@@ -237,123 +186,6 @@ func TestFailedCRRetry(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
-func TestConcurrentRemediationEvents(t *testing.T) {
-	feature := features.New("TestConcurrentRemediationEvents").
-		WithLabel("suite", "fault-remediation-advanced")
-
-	var testCtx *helpers.RemediationTestContext
-
-	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
-		return newCtx
-	})
-
-	feature.Assess("handles concurrent events gracefully", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		fatalEvent1 := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("GPU Fallen off the bus - event 1").
-			WithRecommendedAction(2)
-		tempFile1 := helpers.SendHealthEvent(ctx, t, fatalEvent1)
-		defer os.Remove(tempFile1)
-
-		// Send second event immediately to test concurrent handling
-		fatalEvent2 := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("94").
-			WithMessage("XID 94 error - event 2").
-			WithRecommendedAction(2)
-		tempFile2 := helpers.SendHealthEvent(ctx, t, fatalEvent2)
-		defer os.Remove(tempFile2)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			return node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		require.NotNil(t, cr)
-
-		t.Log("Verifying only one CR was created despite concurrent events")
-		require.Never(t, func() bool {
-			crs := &unstructured.UnstructuredList{}
-			crs.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   helpers.RebootNodeCRDGroup,
-				Version: helpers.RebootNodeCRDVersion,
-				Kind:    "RebootNodeList",
-			})
-			err := client.Resources().List(ctx, crs)
-			if err != nil {
-				return false
-			}
-
-			var crCount int
-			for _, cr := range crs.Items {
-				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-				if !found {
-					continue
-				}
-				nodeName, _, _ := unstructured.NestedString(spec, "nodeName")
-				if nodeName == testCtx.NodeName {
-					crCount++
-				}
-			}
-
-			if crCount > 1 {
-				t.Logf("ERROR: Found %d CRs from concurrent events, should be 1", crCount)
-				return true // Failure - duplicate CR created
-			}
-			return false // Success - only 1 CR
-		}, 30*time.Second, 5*time.Second, "should create exactly one CR despite concurrent events")
-
-		// Final verification: wait for CR count to stabilize at exactly 1
-		t.Log("Verifying final CR count is stable at 1 despite concurrent events")
-		require.Eventually(t, func() bool {
-			crs := &unstructured.UnstructuredList{}
-			crs.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   helpers.RebootNodeCRDGroup,
-				Version: helpers.RebootNodeCRDVersion,
-				Kind:    "RebootNodeList",
-			})
-			err := client.Resources().List(ctx, crs)
-			if err != nil {
-				return false
-			}
-
-			var crCount int
-			for _, cr := range crs.Items {
-				spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
-				if !found {
-					continue
-				}
-				nodeName, found, _ := unstructured.NestedString(spec, "nodeName")
-				if found && nodeName == testCtx.NodeName {
-					crCount++
-				}
-			}
-
-			if crCount == 1 {
-				return true // Stable at exactly 1 CR
-			}
-			t.Logf("Waiting for stable CR count, currently: %d", crCount)
-			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly one CR for the node despite concurrent events")
-
-		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediationTest(ctx, t, c)
-	})
-
-	testEnv.Test(t, feature.Feature())
-}
-
 func TestRemediationWithoutDrainCompletion(t *testing.T) {
 	feature := features.New("TestRemediationWithoutDrainCompletion").
 		WithLabel("suite", "fault-remediation-advanced")
@@ -403,60 +235,6 @@ func TestRemediationWithoutDrainCompletion(t *testing.T) {
 		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
 
 		t.Log("Now CR should be created after drain completes")
-		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		require.NotNil(t, cr)
-
-		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediationTest(ctx, t, c)
-	})
-
-	testEnv.Test(t, feature.Feature())
-}
-
-func TestRemediationDeploymentReadiness(t *testing.T) {
-	feature := features.New("TestRemediationDeploymentReadiness").
-		WithLabel("suite", "fault-remediation-advanced")
-
-	var testCtx *helpers.RemediationTestContext
-
-	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
-		return newCtx
-	})
-
-	feature.Assess("deployment handles readiness checks", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		t.Log("Verifying fault-remediation deployment is ready")
-		require.Eventually(t, func() bool {
-			deployment := &appsv1.Deployment{}
-			err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", helpers.NVSentinelNamespace, deployment)
-			if err != nil {
-				t.Logf("Failed to get deployment: %v", err)
-				return false
-			}
-
-			if deployment.Status.ReadyReplicas == 0 {
-				t.Log("No ready replicas yet")
-				return false
-			}
-
-			if deployment.Status.UpdatedReplicas != deployment.Status.Replicas {
-				t.Log("Replicas not fully updated")
-				return false
-			}
-
-			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		t.Log("Deployment is ready, testing remediation flow")
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
-
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 

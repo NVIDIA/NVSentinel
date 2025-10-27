@@ -73,6 +73,15 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
 
+		t.Log("Waiting for node to be uncordoned after healthy event")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
+
 		allowCompletionPods := helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "allowcompletion-test")
 		helpers.WaitForPodsRunning(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 
@@ -112,6 +121,15 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		require.NoError(t, err)
 
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		t.Log("Waiting for node to be uncordoned after healthy event")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		deleteTimeoutPods := helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "delete-timeout-test")
 		helpers.WaitForPodsRunning(ctx, t, client, "delete-timeout-test", deleteTimeoutPods)
@@ -155,6 +173,15 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		require.NoError(t, err)
 
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		t.Log("Waiting for node to be uncordoned after healthy event")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		kubeSystemPods := helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "kube-system")
 		immediatePods := helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "immediate-test")

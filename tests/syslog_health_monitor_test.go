@@ -83,12 +83,17 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 		t.Logf("Step 2: Verifying node condition on %s", nodeName)
 		require.Eventually(t, func() bool {
-			found, condition := helpers.CheckNodeConditionExists(ctx, client, nodeName,
-				v1.NodeConditionType("SysLogsXIDError"), "SysLogsXIDErrorIsNotHealthy")
-			if found {
-				t.Logf("Found condition: %s - %s", condition.Type, condition.Message)
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil {
+				t.Logf("Error checking condition: %v", err)
+				return false
 			}
-			return found
+			if condition != nil {
+				t.Logf("Found condition: %s - %s", condition.Type, condition.Message)
+				return true
+			}
+			return false
 		}, helpers.WaitTimeout, helpers.WaitInterval, "Fatal XID should create SysLogsXIDError node condition")
 
 		return ctx
@@ -142,7 +147,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		nodeName := nodeNameVal.(string)
 
 		t.Logf("Removing SysLogsXIDError condition from node %s", nodeName)
-		err = helpers.RemoveNodeCondition(ctx, client, nodeName, v1.NodeConditionType("SysLogsXIDError"))
+		err = helpers.RemoveNodeCondition(ctx, client, nodeName, "SysLogsXIDError")
 		if err != nil {
 			t.Logf("Warning: failed to remove SysLogsXIDError condition: %v", err)
 		}

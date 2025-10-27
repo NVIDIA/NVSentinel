@@ -43,6 +43,17 @@ func TestBasicCELMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 79 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
+
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
@@ -65,8 +76,6 @@ func TestBasicCELMatching(t *testing.T) {
 	feature.Assess("event doesn't match CEL expression", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
-
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithCheckName("UnknownCheck").
@@ -101,6 +110,18 @@ func TestRulesetPriority(t *testing.T) {
 	feature.Assess("higher priority rule's taint effect wins", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
+
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithComponentClass("GPU").
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 79 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithComponentClass("GPU").
@@ -146,6 +167,17 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithErrorCode("143").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 143 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
+
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("143").
 			WithMessage("XID 143 error")
@@ -169,7 +201,16 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 79 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("79")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
@@ -192,7 +233,16 @@ func TestMultipleRulesMatching(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithCheckName("GpuInforomWatch").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("GPU InfoROM watch cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithCheckName("GpuInforomWatch").
@@ -216,8 +266,6 @@ func TestMultipleRulesMatching(t *testing.T) {
 	feature.Assess("XID 62 matches Rule D exclusion", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
-
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("62")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
@@ -264,6 +312,17 @@ func TestCordonBehavior(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 79 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
+
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("79")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
@@ -285,7 +344,16 @@ func TestCordonBehavior(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithErrorCode("143").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("XID 143 cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).WithErrorCode("143")
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
@@ -308,7 +376,17 @@ func TestCordonBehavior(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		t.Cleanup(func() {
+			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+				WithCheckName("GpuInforomWatch").
+				WithComponentClass("GPU").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("GpuInforomWatch cleared")
+			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
+			defer os.Remove(tempFile)
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithCheckName("GpuInforomWatch").
@@ -449,6 +527,29 @@ func TestMultipleEntityTracking(t *testing.T) {
 	feature.Assess("second entity failure tracked", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
+
+		// Register cleanup - clears both entities in case recovery tests don't run
+		t.Cleanup(func() {
+			healthyEvent0 := helpers.NewHealthEvent(testCtx.NodeName).
+				WithEntity("GPU", "0").
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("GPU 0 healthy")
+			tempFile0 := helpers.SendHealthEvent(ctx, t, healthyEvent0)
+			defer os.Remove(tempFile0)
+
+			healthyEvent1 := helpers.NewHealthEvent(testCtx.NodeName).
+				WithEntity("GPU", "1").
+				WithErrorCode("79").
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("GPU 1 healthy")
+			tempFile1 := helpers.SendHealthEvent(ctx, t, healthyEvent1)
+			defer os.Remove(tempFile1)
+
+			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithEntity("GPU", "1").

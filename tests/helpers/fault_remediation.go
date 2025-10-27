@@ -71,35 +71,7 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 	t.Log("Cleaning up existing rebootnode CRs")
 	CleanupRebootNodeCRs(ctx, t, client)
 
-	t.Log("Selecting test node from unused node pool")
-	nodes, err := GetAllNodesNames(ctx, client)
-	require.NoError(t, err)
-	require.NotEmpty(t, nodes)
-
-	startIdx := int(float64(len(nodes)) * 0.50)
-	if startIdx >= len(nodes) {
-		startIdx = len(nodes) - 1
-	}
-	unusedNodes := nodes[startIdx:]
-
-	var nodeName string
-	for _, name := range unusedNodes {
-		node, err := GetNodeByName(ctx, client, name)
-		if err != nil {
-			continue
-		}
-		if !node.Spec.Unschedulable {
-			nodeName = name
-			break
-		}
-	}
-	if nodeName == "" {
-		nodeName = unusedNodes[0]
-		t.Logf("No uncordoned node found, using: %s", nodeName)
-	} else {
-		t.Logf("Selected uncordoned node: %s", nodeName)
-	}
-
+	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, FRKeyNodeName, nodeName)
 	ctx = context.WithValue(ctx, FRKeyNamespace, testNamespace)
@@ -188,32 +160,32 @@ func EnsureRebootNodeCRD(ctx context.Context, t *testing.T, client klient.Client
 
 	t.Log("RebootNode CRD not found, attempting to create")
 	crdDef := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "apiextensions.k8s.io/v1",
 			"kind":       "CustomResourceDefinition",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name": crdName,
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"group": RebootNodeCRDGroup,
-				"versions": []interface{}{
-					map[string]interface{}{
+				"versions": []any{
+					map[string]any{
 						"name":    RebootNodeCRDVersion,
 						"served":  true,
 						"storage": true,
-						"schema": map[string]interface{}{
-							"openAPIV3Schema": map[string]interface{}{
+						"schema": map[string]any{
+							"openAPIV3Schema": map[string]any{
 								"type": "object",
-								"properties": map[string]interface{}{
-									"spec": map[string]interface{}{
+								"properties": map[string]any{
+									"spec": map[string]any{
 										"type": "object",
-										"properties": map[string]interface{}{
-											"nodeName": map[string]interface{}{
+										"properties": map[string]any{
+											"nodeName": map[string]any{
 												"type": "string",
 											},
 										},
 									},
-									"status": map[string]interface{}{
+									"status": map[string]any{
 										"type":                                 "object",
 										"x-kubernetes-preserve-unknown-fields": true,
 									},
@@ -223,11 +195,11 @@ func EnsureRebootNodeCRD(ctx context.Context, t *testing.T, client klient.Client
 					},
 				},
 				"scope": "Cluster",
-				"names": map[string]interface{}{
+				"names": map[string]any{
 					"plural":   RebootNodeCRDPlural,
 					"singular": "rebootnode",
 					"kind":     "RebootNode",
-					"shortNames": []interface{}{
+					"shortNames": []any{
 						"rn",
 					},
 				},
@@ -278,57 +250,47 @@ func CleanupRebootNodeCRs(ctx context.Context, t *testing.T, client klient.Clien
 	time.Sleep(2 * time.Second)
 }
 
-func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	t.Logf("Waiting to verify no RebootNode CR exists for node %s", nodeName)
-	time.Sleep(30 * time.Second)
-
-	var crList unstructured.UnstructuredList
-	crList.SetGroupVersionKind(schema.GroupVersionKind{
+// GetRebootNodeCRsForNode returns all RebootNode CR names for a specific node
+func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName string) ([]string, error) {
+	crs := &unstructured.UnstructuredList{}
+	crs.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   RebootNodeCRDGroup,
 		Version: RebootNodeCRDVersion,
 		Kind:    "RebootNodeList",
 	})
 
-	err := client.Resources().List(ctx, &crList)
+	err := client.Resources().List(ctx, crs)
+	if err != nil {
+		return nil, err
+	}
+
+	var crList []string
+	for _, cr := range crs.Items {
+		spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
+		if !found {
+			continue
+		}
+		crNodeName, found, _ := unstructured.NestedString(spec, "nodeName")
+		if found && crNodeName == nodeName {
+			crList = append(crList, cr.GetName())
+		}
+	}
+
+	return crList, nil
+}
+
+func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
+	t.Logf("Waiting to verify no RebootNode CR exists for node %s", nodeName)
+	time.Sleep(30 * time.Second)
+
+	crList, err := GetRebootNodeCRsForNode(ctx, client, nodeName)
 	if err != nil {
 		t.Logf("Failed to list RebootNode CRs: %v", err)
 		return
 	}
 
-	for _, cr := range crList.Items {
-		spec, found, err := unstructured.NestedMap(cr.Object, "spec")
-		if !found || err != nil {
-			continue
-		}
-
-		crNodeName, found, err := unstructured.NestedString(spec, "nodeName")
-		if !found || err != nil {
-			continue
-		}
-
-		require.NotEqual(t, nodeName, crNodeName, "RebootNode CR should not exist for node %s", nodeName)
-	}
-
+	require.Empty(t, crList, "RebootNode CR should not exist for node %s", nodeName)
 	t.Logf("Verified no RebootNode CR exists for node %s", nodeName)
-}
-
-func WaitForNodeRemediationLabel(ctx context.Context, t *testing.T, client klient.Client, nodeName, expectedValue string) {
-	t.Logf("Waiting for node %s to have remediation label: %s=%s", nodeName, NVSentinelStateLabelKey, expectedValue)
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			return false
-		}
-		if node.Labels == nil {
-			return false
-		}
-		value, exists := node.Labels[NVSentinelStateLabelKey]
-		if !exists {
-			return false
-		}
-		return value == expectedValue
-	}, WaitTimeout, WaitInterval)
-	t.Logf("Node %s has remediation label %s=%s", nodeName, NVSentinelStateLabelKey, expectedValue)
 }
 
 func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemplate {
@@ -453,7 +415,7 @@ func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.C
 	err := client.Resources().Get(ctx, crName, "", &cr)
 	require.NoError(t, err)
 
-	statusMap := map[string]interface{}{
+	statusMap := map[string]any{
 		"state": status,
 	}
 	err = unstructured.SetNestedMap(cr.Object, statusMap, "status")
