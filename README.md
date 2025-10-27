@@ -25,18 +25,13 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 ```bash
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version vX.Y.Z \
+  --version v0.2.0 \
   --namespace nvsentinel \
   --create-namespace
 
 # View available versions
 helm search repo oci://ghcr.io/nvidia/nvsentinel --versions
 ```
-
-> **Authentication**: For private repositories, authenticate first:
-> ```bash
-> echo $GITHUB_TOKEN | helm registry login ghcr.io -u $GITHUB_USERNAME --password-stdin
-> ```
 
 ## ✨ Key Features
 
