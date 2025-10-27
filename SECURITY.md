@@ -67,7 +67,7 @@ crane blob "$IMAGE@$SBOM_DIGEST"
 ```json
 {
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "sbom-sha256:850e8fd3...",
+  "name": "sbom-sha256:4558fc8a...",
   "spdxVersion": "SPDX-2.3",
   "creationInfo": {
     "created": "2025-10-13T16:04:04Z",
