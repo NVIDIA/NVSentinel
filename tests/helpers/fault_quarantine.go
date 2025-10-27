@@ -57,23 +57,23 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 	testCtx := &QuarantineTestContext{}
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "fault-quarantine-config", "nvsentinel")
+	backupPath, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", "nvsentinel")
+	err = CreateConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Restarting fault-quarantine deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -122,7 +122,12 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	nodeName := ctx.Value(CELKeyNodeName).(string)
+	nodeNameVal := ctx.Value(CELKeyNodeName)
+	if nodeNameVal == nil {
+		t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+		return ctx
+	}
+	nodeName := nodeNameVal.(string)
 
 	t.Logf("Cleaning up node %s", nodeName)
 
@@ -154,21 +159,24 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	}, WaitTimeout, WaitInterval)
 	t.Logf("Node %s cleaned successfully", nodeName)
 
-	backupPath := ctx.Value(CELKeyConfigMapBackupPath).(string)
-	t.Logf("Restoring configmap from: %s", backupPath)
-	err = CreateConfigMapFromFilePath(ctx, client, backupPath, "fault-quarantine-config", "nvsentinel")
-	assert.NoError(t, err)
+	backupPathVal := ctx.Value(CELKeyConfigMapBackupPath)
+	if backupPathVal != nil {
+		backupPath := backupPathVal.(string)
+		t.Logf("Restoring configmap from: %s", backupPath)
+		err = CreateConfigMapFromFilePath(ctx, client, backupPath, "fault-quarantine-config", NVSentinelNamespace)
+		assert.NoError(t, err)
 
-	os.Remove(backupPath)
+		os.Remove(backupPath)
+	}
 
 	t.Log("Restarting fault-quarantine deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready after restore")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -371,7 +379,7 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "fault-quarantine-circuit-breaker",
-			Namespace: "nvsentinel",
+			Namespace: NVSentinelNamespace,
 		},
 		Data: map[string]string{
 			"status": state,
@@ -381,7 +389,7 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	existingCM := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "fault-quarantine-circuit-breaker",
-			Namespace: "nvsentinel",
+			Namespace: NVSentinelNamespace,
 		},
 	}
 	_ = client.Resources().Delete(ctx, existingCM)
@@ -390,13 +398,13 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	require.NoError(t, err)
 
 	t.Log("Restarting fault-quarantine deployment to pick up CB state")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with new CB state")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -411,7 +419,7 @@ func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	require.NoError(t, err)
 
 	cm := &v1.ConfigMap{}
-	err = client.Resources().Get(ctx, "fault-quarantine-circuit-breaker", "nvsentinel", cm)
+	err = client.Resources().Get(ctx, "fault-quarantine-circuit-breaker", NVSentinelNamespace, cm)
 	if err != nil {
 		return ""
 	}
@@ -435,7 +443,7 @@ func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient
 		}
 
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		require.NoError(t, err)
 
 		if attempt == 0 {
@@ -479,13 +487,13 @@ func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient
 	}
 
 	t.Log("Restarting deployment with new CB threshold")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with new CB threshold")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -507,7 +515,7 @@ func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Clien
 		}
 
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		require.NoError(t, err)
 
 		needsUpdate := false
@@ -551,13 +559,13 @@ func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Clien
 	}
 
 	t.Log("Restarting deployment with dry-run disabled")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with dry-run disabled")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -579,7 +587,7 @@ func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *
 		}
 
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		require.NoError(t, err)
 
 		if attempt == 0 {
@@ -613,13 +621,13 @@ func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *
 	}
 
 	t.Log("Restarting deployment with dry-run enabled")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with dry-run mode")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}
@@ -658,13 +666,13 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 	}
 
 	t.Log("Restarting deployment with restored config")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", "nvsentinel")
+	err := RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	t.Log("Waiting for deployment to be ready with restored config")
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", "nvsentinel", deployment)
+		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
 		if err != nil {
 			return false
 		}

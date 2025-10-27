@@ -146,6 +146,10 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 	return tempFile.Name(), nil
 }
 
+// SendHealthEventWithTemplate sends a health event and returns the temp file path.
+// The caller is responsible for cleaning up the temp file with defer os.Remove(tempFile).
+//
+// For automatic cleanup, use SendHealthEventWithAutoCleanup instead.
 func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (string, error) {
 	tempFile, err := event.WriteToTempFile()
 	if err != nil {
@@ -159,4 +163,21 @@ func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (s
 	}
 
 	return tempFile, nil
+}
+
+// SendHealthEventWithAutoCleanup sends a health event and automatically cleans up the temp file.
+// Use this when you don't need to control the temp file lifetime.
+func SendHealthEventWithAutoCleanup(nodeName string, event *HealthEventTemplate) error {
+	tempFile, err := event.WriteToTempFile()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tempFile)
+
+	err = SendHealthEventsToNodes([]string{nodeName}, tempFile)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

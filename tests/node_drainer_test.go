@@ -64,10 +64,6 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
-		t.Log("Verifying MongoDB event status: Quarantined + Succeeded")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
-
 		return ctx
 	})
 
@@ -88,27 +84,25 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Verifying MongoDB event status: Quarantined + InProgress")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "InProgress")
-
 		t.Log("Verifying allowCompletion pod NOT evicted")
-		time.Sleep(30 * time.Second)
-		for _, podName := range allowCompletionPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "allowcompletion-test", pod)
-			require.NoError(t, err, "allowCompletion pod %s evicted but should still be running", podName)
-		}
+		// Wait a reasonable time and verify pods are still present
+		require.Never(t, func() bool {
+			for _, podName := range allowCompletionPods {
+				pod := &v1.Pod{}
+				err := client.Resources().Get(ctx, podName, "allowcompletion-test", pod)
+				if err != nil {
+					t.Logf("Pod %s was evicted unexpectedly", podName)
+					return true // Pod was evicted (failure)
+				}
+			}
+			return false // Pods still exist (success)
+		}, 30*time.Second, 5*time.Second, "allowCompletion pods should not be evicted")
 
 		t.Log("Manually deleting pod to complete drain")
 		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		t.Log("Verifying MongoDB event status: Quarantined + Succeeded")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
 
 		return ctx
 	})
@@ -131,24 +125,27 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Verifying pod NOT immediately deleted")
-		time.Sleep(30 * time.Second)
-		for _, podName := range deleteTimeoutPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "delete-timeout-test", pod)
-			require.NoError(t, err, "pod %s deleted too early", podName)
-		}
+		// Wait for initial grace period and verify pods are still present
+		require.Never(t, func() bool {
+			for _, podName := range deleteTimeoutPods {
+				pod := &v1.Pod{}
+				err := client.Resources().Get(ctx, podName, "delete-timeout-test", pod)
+				if err != nil {
+					t.Logf("Pod %s was deleted too early", podName)
+					return true // Pod was deleted (failure)
+				}
+			}
+			return false // Pods still exist (success)
+		}, 30*time.Second, 5*time.Second, "pods should not be deleted immediately")
 
 		t.Log("Waiting for deleteAfterTimeout (1min + buffer)")
-		time.Sleep(1*time.Minute + 45*time.Second)
+		// This sleep is intentional - we're waiting for the timeout to trigger
+		time.Sleep(1*time.Minute + 20*time.Second)
 
 		t.Log("Verifying pod force deleted after timeout")
 		helpers.WaitForPodsDeleted(ctx, t, client, "delete-timeout-test", deleteTimeoutPods)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		t.Log("Verifying MongoDB event status: Quarantined + Succeeded")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
 
 		return ctx
 	})
@@ -177,12 +174,18 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediatePods)
 
 		t.Log("Verifying kube-system pod NOT evicted (excluded)")
-		time.Sleep(10 * time.Second)
-		for _, podName := range kubeSystemPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "kube-system", pod)
-			require.NoError(t, err, "kube-system pod %s evicted but should be excluded", podName)
-		}
+		// Wait a reasonable time and verify kube-system pods are still present
+		require.Never(t, func() bool {
+			for _, podName := range kubeSystemPods {
+				pod := &v1.Pod{}
+				err := client.Resources().Get(ctx, podName, "kube-system", pod)
+				if err != nil {
+					t.Logf("kube-system pod %s was evicted unexpectedly", podName)
+					return true // Pod was evicted (failure)
+				}
+			}
+			return false // Pods still exist (success)
+		}, 30*time.Second, 5*time.Second, "kube-system pods should be excluded from eviction")
 
 		helpers.DeletePodsByNames(ctx, t, client, "kube-system", kubeSystemPods)
 

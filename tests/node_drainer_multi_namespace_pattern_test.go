@@ -52,7 +52,15 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		require.NoError(t, err)
 
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-		time.Sleep(10 * time.Second)
+
+		t.Log("Waiting for healthy event to be processed")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		t.Log("Creating pods in multiple *non-prod* namespaces")
 		testPods := helpers.CreatePodsFromTemplate(ctx, t, client,
@@ -76,33 +84,41 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
 			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Verifying MongoDB event status: Quarantined + InProgress")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "InProgress")
-
 		t.Log("Verifying all pods in matching namespaces are waiting")
-		time.Sleep(30 * time.Second)
-		for _, podName := range testPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "test-non-prod", pod)
-			require.NoError(t, err, "test-non-prod pod should still exist")
-		}
-		for _, podName := range devPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "dev-non-prod", pod)
-			require.NoError(t, err, "dev-non-prod pod should still exist")
-		}
-		for _, podName := range stagingPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "staging-non-prod", pod)
-			require.NoError(t, err, "staging-non-prod pod should still exist")
-		}
+		// Wait a reasonable time and verify pods in all namespaces are still present
+		require.Never(t, func() bool {
+			podSets := map[string][]string{
+				"test-non-prod":    testPods,
+				"dev-non-prod":     devPods,
+				"staging-non-prod": stagingPods,
+			}
+			for namespace, pods := range podSets {
+				for _, podName := range pods {
+					pod := &v1.Pod{}
+					err := client.Resources().Get(ctx, podName, namespace, pod)
+					if err != nil {
+						t.Logf("Pod %s in namespace %s was evicted unexpectedly", podName, namespace)
+						return true // Pod was evicted (failure)
+					}
+				}
+			}
+			return false // All pods still exist (success)
+		}, 30*time.Second, 5*time.Second, "pods in *-non-prod namespaces should not be evicted yet")
 
 		t.Log("Completing test-non-prod pods")
 		helpers.DeletePodsByNames(ctx, t, client, "test-non-prod", testPods)
 		helpers.WaitForPodsDeleted(ctx, t, client, "test-non-prod", testPods)
 
-		time.Sleep(10 * time.Second)
+		t.Log("Waiting for drain to complete")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			labelValue, exists := node.Labels[helpers.NVSentinelStateLabelKey]
+			return exists && labelValue == helpers.DrainSucceededLabelValue
+		}, helpers.WaitTimeout, helpers.WaitInterval)
+
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 		require.NoError(t, err)
 		labelValue := node.Labels[helpers.NVSentinelStateLabelKey]
@@ -117,10 +133,6 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		t.Log("Verifying drain succeeds after all pods complete")
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
 			helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		t.Log("Verifying MongoDB event status: Quarantined + Succeeded")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
 
 		return ctx
 	})

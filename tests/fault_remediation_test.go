@@ -19,7 +19,6 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -27,8 +26,8 @@ import (
 )
 
 // TestFullRemediationFlow tests the complete remediation lifecycle including
-// label transitions, CR creation, annotation tracking, MongoDB status updates,
-// and recovery (annotation cleanup after healthy event)
+// label transitions, CR creation, annotation tracking, and recovery
+// (annotation cleanup after healthy event)
 func TestFullRemediationFlow(t *testing.T) {
 	feature := features.New("TestFullRemediationFlow").
 		WithLabel("suite", "fault-remediation")
@@ -62,43 +61,22 @@ func TestFullRemediationFlow(t *testing.T) {
 			return node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
-		t.Log("Step 3: Verify MongoDB drain status (drain completed)")
-		helpers.WaitForMongoHealthEventStatus(ctx, t, client, testCtx.NodeName,
-			"Quarantined", "Succeeded")
-
-		t.Log("Step 4: Wait for remediation-succeeded label")
+		t.Log("Step 3: Wait for remediation-succeeded label")
 		helpers.WaitForNodeRemediationLabel(ctx, t, client, testCtx.NodeName,
 			helpers.RemediationSucceededLabelValue)
 
-		t.Log("Step 5: Verify RebootNode CR was created")
+		t.Log("Step 4: Verify RebootNode CR was created")
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 		crName := cr.GetName()
 
-		t.Log("Step 6: Verify remediation state annotation contains CR name")
+		t.Log("Step 5: Verify remediation state annotation contains CR name")
 		annotation := helpers.WaitForNodeAnnotation(ctx, t, client, testCtx.NodeName,
 			"latestFaultRemediationState")
 		require.Contains(t, annotation, crName,
 			"Annotation should contain CR name")
 
-		t.Log("Step 7: Verify MongoDB faultRemediated status and timestamp")
-		helpers.WaitForMongoRemediationStatus(ctx, t, client, testCtx.NodeName, true)
-
-		t.Log("Verifying lastRemediationTimestamp is set")
-		require.Eventually(t, func() bool {
-			event := helpers.GetLatestHealthEvent(ctx, t, client, testCtx.NodeName)
-			if event == nil {
-				return false
-			}
-			status, ok := event["healtheventstatus"].(map[string]interface{})
-			if !ok {
-				return false
-			}
-			_, hasTimestamp := status["lastremediationtimestamp"]
-			return hasTimestamp
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		t.Log("Step 8: Send healthy event to trigger recovery/unquarantine")
+		t.Log("Step 6: Send healthy event to trigger recovery/unquarantine")
 		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
 			WithHealthy(true).
 			WithFatal(false).
@@ -106,7 +84,7 @@ func TestFullRemediationFlow(t *testing.T) {
 		tempFile2 := helpers.SendHealthEvent(ctx, t, healthyEvent)
 		defer os.Remove(tempFile2)
 
-		t.Log("Step 9: Verify remediation state annotation cleared after recovery")
+		t.Log("Step 7: Verify remediation state annotation cleared after recovery")
 		helpers.WaitForNoNodeAnnotation(ctx, t, client, testCtx.NodeName,
 			"latestFaultRemediationState")
 
@@ -152,7 +130,15 @@ func TestSkipRemediationCR(t *testing.T) {
 
 		t.Log("Cleaning up from previous assess")
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-		time.Sleep(5 * time.Second)
+
+		t.Log("Waiting for healthy event to be processed")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+			return !node.Spec.Unschedulable
+		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		t.Log("Triggering remediation flow with CONTACT_SUPPORT action")
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 5)

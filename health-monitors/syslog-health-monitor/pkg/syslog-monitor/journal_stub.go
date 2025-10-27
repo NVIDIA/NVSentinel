@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 )
 
@@ -80,6 +82,10 @@ func (j *StubJournal) GetData(field string) (string, error) {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 
+	if j.currentPosition < 0 || j.currentPosition >= len(journal) {
+		return "", fmt.Errorf("invalid current position: %d", j.currentPosition)
+	}
+
 	return journal[j.currentPosition], nil
 }
 
@@ -129,7 +135,12 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 		return fmt.Errorf("invalid cursor format: %s", cursor)
 	}
 
+	if index < 0 || index >= len(journal) {
+		return fmt.Errorf("invalid current position: %d", index)
+	}
+
 	j.currentPosition = index
+
 	return nil
 }
 
@@ -140,7 +151,7 @@ func (j *StubJournal) SeekTail() error {
 	}
 
 	if len(journal) > 0 {
-		j.currentPosition = 0
+		j.currentPosition = len(journal) - 1
 	} else {
 		j.currentPosition = -1
 	}
@@ -192,7 +203,14 @@ func GetDefaultJournalFactory() JournalFactory {
 			w.WriteHeader(http.StatusOK)
 		})
 
-		http.ListenAndServe(":"+HTTP_SERVER_PORT, nil)
+		slog.Info("starting HTTP server", "port", HTTP_SERVER_PORT)
+
+		//nolint:gosec
+		err := http.ListenAndServe(":"+HTTP_SERVER_PORT, nil)
+		if err != nil {
+			slog.Error("failed to start HTTP server", "error", err)
+			os.Exit(1)
+		}
 	}()
 
 	return NewStubJournalFactory()

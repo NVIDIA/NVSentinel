@@ -51,13 +51,13 @@ FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
 
 RUN apt-get update && apt-get install -y \
     systemd-sysv \
+    libsystemd0 \
+    liblz4-1 \
+    libzstd1 \
+    curl \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /go/src/nvsentinel/health-monitors/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
-
-RUN apt-get update && \
-    apt-get install -y libsystemd0 liblz4-1 libzstd1 curl \
-    && rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["/app/syslog-health-monitor"] 
