@@ -12,7 +12,10 @@ This test suite creates a production-like Kubernetes cluster on a CSP, installs 
 
 - **kubectl** (v1.28+)
 - **helm** (v3.0+)
+- **yq** (v4.0+) - YAML processor for parsing `.versions.yaml`
 - **CSP-specific tools** (AWS CLI, eksctl, etc.) - see CSP-specific README
+
+Install yq: https://github.com/mikefarah/yq
 
 ### CSP-specific Setup
 
@@ -46,18 +49,29 @@ export AWS_REGION="us-east-1"
 
 ```bash
 cd tests/uat
+
+# For local Kind cluster (default)
 ./run.sh
+
+# For AWS EKS cluster
+CSP=aws ./run.sh
 ```
 
 The script will:
-1. Create cluster with CPU and GPU nodes
-2. Install Prometheus, cert-manager, GPU Operator, NVSentinel
+1. Create cluster with CPU and GPU nodes (or fake nodes for Kind)
+2. Install Prometheus, cert-manager, GPU Operator (or fake GPU stack for Kind), NVSentinel
 3. Run UAT tests
 4. Optionally delete cluster on completion
 
 ## Environment Variables
 
-### Required
+### Version Configuration
+
+Tool versions are automatically loaded from `.versions.yaml` in the repository root. This includes:
+- `KWOK_VERSION` - Kubernetes WithOut Kubelet (for fake nodes in Kind)
+- Other versions can be overridden via environment variables if needed
+
+### Required (for Cloud CSPs)
 
 | Variable | Description |
 |----------|-------------|
@@ -68,24 +82,34 @@ The script will:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CSP` | `aws` | Cloud service provider |
+| `CSP` | `kind` | Cloud service provider (`kind`, `aws`, `azure`, `gcp`, `oci`) |
 | `CLUSTER_NAME` | `nvsentinel-uat` | Cluster name |
-| `AWS_REGION` | `us-east-1` | AWS region |
-| `K8S_VERSION` | `1.34` | Kubernetes version |
-| `GPU_AVAILABILITY_ZONE` | `e` | AZ suffix for GPU nodes |
-| `CPU_NODE_TYPE` | `m7a.4xlarge` | Instance type for CPU nodes |
-| `CPU_NODE_COUNT` | `3` | Number of CPU nodes |
-| `GPU_NODE_TYPE` | `p5.48xlarge` | Instance type for GPU nodes |
-| `GPU_NODE_COUNT` | `2` | Number of GPU nodes |
+| `AWS_REGION` | `us-east-1` | AWS region (AWS only) |
+| `K8S_VERSION` | `1.34` | Kubernetes version (cloud CSPs) |
+| `GPU_AVAILABILITY_ZONE` | `e` | AZ suffix for GPU nodes (AWS only) |
+| `CPU_NODE_TYPE` | `m7a.4xlarge` | Instance type for CPU nodes (cloud CSPs) |
+| `CPU_NODE_COUNT` | `3` | Number of CPU nodes (cloud CSPs) |
+| `GPU_NODE_TYPE` | `p5.48xlarge` | Instance type for GPU nodes (cloud CSPs) |
+| `GPU_NODE_COUNT` | `2` | Number of GPU nodes (cloud CSPs) |
+| `FAKE_GPU_NODE_COUNT` | `10` | Number of fake GPU nodes (Kind only) |
 
 ### Optional - Application Versions
 
+All versions are automatically loaded from `.versions.yaml`:
+
+| Component | Version Source | Description |
+|----------|---------|-------------|
+| Prometheus Operator | `.versions.yaml` → `cluster.prometheus_operator` | Prometheus helm chart version |
+| GPU Operator | `.versions.yaml` → `cluster.gpu_operator` | GPU Operator helm chart version |
+| cert-manager | `.versions.yaml` → `cluster.cert_manager` | cert-manager helm chart version |
+| KWOK | `.versions.yaml` → `testing_tools.kwok` | Kubernetes WithOut Kubelet (fake nodes for Kind) |
+
+For NVSentinel:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NVSENTINEL_TAG` | `main` | Docker image tag |
-| `PROMETHEUS_OPERATOR_VERSION` | `78.5.0` | Prometheus helm chart version |
-| `GPU_OPERATOR_VERSION` | `v25.10.0` | GPU Operator helm chart version |
-| `CERT_MANAGER_VERSION` | `1.19.1` | cert-manager helm chart version |
+| `NVSENTINEL_VERSION` | *(required)* | NVSentinel helm chart version/tag |
+| `NVSENTINEL_TAG` | `main` | Docker image tag for NVSentinel |
 
 ### Optional - Cleanup
 

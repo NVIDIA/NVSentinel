@@ -29,7 +29,7 @@
 # For manual verification of images outside the cluster, see:
 # distros/kubernetes/nvsentinel/policies/README.md
 
-set -uo pipefail
+set -euo pipefail
 
 # Colors for output
 readonly RED='\033[0;31m'
@@ -307,11 +307,14 @@ EOF
         log_error "✗ Valid image was blocked by policy (unexpected)"
     fi
     
-    # Test with an invalid/unsigned image
+    # Test with an invalid/unsigned image that matches the policy pattern
+    # Use a NVSentinel-like image name but from Docker Hub (no attestation)
     local test_pod_invalid="policy-test-invalid-$$"
-    log_info "Testing with unsigned image (should be blocked)..."
+    log_info "Testing with unsigned NVSentinel image (should be blocked)..."
     
-    if cat <<EOF | kubectl apply -f - 2>&1 | grep -q "admission webhook.*denied"; then
+    # Try to create a pod with a fake NVSentinel image that won't have valid attestations
+    # This will be blocked because it matches ghcr.io/nvidia/nvsentinel/** pattern
+    if cat <<EOF | kubectl apply -f - 2>&1 | grep -q "admission webhook.*denied\|no matching signatures"; then
 apiVersion: v1
 kind: Pod
 metadata:
@@ -322,13 +325,41 @@ metadata:
 spec:
   containers:
   - name: test
-    image: busybox:latest
+    image: ghcr.io/nvidia/nvsentinel/fake-unsigned-image:latest
     command: ["/bin/sh", "-c", "sleep 10"]
   restartPolicy: Never
 EOF
-        log_success "✓ Invalid image was correctly blocked by policy"
+        log_success "✓ Invalid NVSentinel image was correctly blocked by policy"
     else
-        log_warn "Could not verify that invalid images are blocked"
+        log_warn "Could not verify that invalid images are blocked (expected for non-existent images)"
+    fi
+    
+    # Test that non-NVSentinel images are NOT blocked
+    local test_pod_other="policy-test-other-$$"
+    log_info "Testing with non-NVSentinel image (should be allowed)..."
+    
+    cat <<EOF | kubectl apply -f - &> /dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${test_pod_other}
+  namespace: ${NVSENTINEL_NS}
+  labels:
+    test: policy-verification
+spec:
+  containers:
+  - name: test
+    image: busybox:latest
+    command: ["/bin/sh", "-c", "sleep 5"]
+  restartPolicy: Never
+EOF
+    
+    sleep 2
+    if kubectl get pod "${test_pod_other}" -n "${NVSENTINEL_NS}" &> /dev/null; then
+        log_success "✓ Non-NVSentinel image was allowed (policy only applies to ghcr.io/nvidia/nvsentinel/**)"
+        kubectl delete pod "${test_pod_other}" -n "${NVSENTINEL_NS}" --grace-period=0 --force &> /dev/null || true
+    else
+        log_error "✗ Non-NVSentinel image was blocked (unexpected - policy should only apply to NVSentinel images)"
     fi
     
     # Clean up

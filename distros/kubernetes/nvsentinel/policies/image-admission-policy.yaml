@@ -1,8 +1,20 @@
 ---
 # ClusterImagePolicy for verifying NVSentinel container images
+#
+# SCOPE: This policy ONLY applies to images matching ghcr.io/nvidia/nvsentinel/**
+#        - Other images in the namespace are NOT verified or blocked
+#        - Development images (localhost:*) are NOT subject to this policy
+#        - Third-party images (databases, sidecars, etc.) are NOT affected
+#
 # This policy uses Sigstore Policy Controller to verify that NVSentinel images
 # have valid SLSA Build Provenance attestations signed by the official 
 # GitHub Actions workflow using keyless signing with Fulcio/Rekor.
+#
+# Configuration required:
+# 1. Label namespace: kubectl label namespace nvsentinel policy.sigstore.dev/include=true
+# 2. Configure no-match-policy to allow non-matching images:
+#    kubectl create configmap config-policy-controller -n cosign-system \
+#      --from-literal=no-match-policy=allow --dry-run=client -o yaml | kubectl apply -f -
 apiVersion: policy.sigstore.dev/v1beta1
 kind: ClusterImagePolicy
 metadata:
@@ -13,10 +25,13 @@ metadata:
       Provenance attestations signed by the official GitHub Actions workflow. 
       Ensures images were built from the official NVIDIA/NVSentinel repository 
       with proper attestations before allowing them to run in the cluster.
+      Only applies to ghcr.io/nvidia/nvsentinel/** images.
     category: Supply Chain Security
     severity: high
 spec:
-  # Match all NVSentinel images from the official GHCR registry
+  # Match ONLY official NVSentinel images from GHCR
+  # This glob pattern ensures only NVSentinel images are verified
+  # All other images (third-party, development, etc.) are not affected
   images:
     - glob: "ghcr.io/nvidia/nvsentinel/**"
   
@@ -41,15 +56,13 @@ spec:
           policy:
             type: cue
             data: |
-              import "strings"
-              
               // Validate the builder is the official GitHub Actions workflow
               predicateType: "https://slsa.dev/provenance/v1"
               predicate: buildDefinition: {
                 buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
                 externalParameters: {
                   workflow: {
-                    ref: strings.HasPrefix("refs/heads/") || strings.HasPrefix("refs/tags/")
+                    ref: =~"^refs/(heads|tags)/"
                     repository: "https://github.com/NVIDIA/NVSentinel"
                   }
                 }

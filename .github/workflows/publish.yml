@@ -145,14 +145,27 @@ jobs:
         id: get-digest
         run: |
           IMAGE_TAG="${{ matrix.container_name }}:${{ steps.ref-name.outputs.value }}${{ matrix.tag_suffix }}"
-          DIGEST=$(crane digest "ghcr.io/${{ github.repository }}/${IMAGE_TAG}")
+          IMAGE_REF="ghcr.io/${{ github.repository }}/${IMAGE_TAG}"
+          
+          echo "Retrieving digest for: ${IMAGE_REF}"
+          if ! DIGEST=$(crane digest "${IMAGE_REF}"); then
+            echo "ERROR: Failed to retrieve digest for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+          
+          if [ -z "${DIGEST}" ]; then
+            echo "ERROR: Retrieved empty digest for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+          
+          echo "Successfully retrieved digest: ${DIGEST}"
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
 
       - name: Attest build provenance
         id: attest
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0
         with:
-          subject-name: ${{ matrix.container_name }}
+          subject-name: ghcr.io/${{ github.repository }}/${{ matrix.container_name }}
           subject-digest: ${{ steps.get-digest.outputs.digest }}
           push-to-registry: true
 

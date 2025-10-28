@@ -19,7 +19,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
-CSP="${CSP:-aws}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
+
+# Verify yq is available for parsing versions
+if ! command -v yq &> /dev/null; then
+    error "yq is required but not installed. Please install yq: https://github.com/mikefarah/yq"
+fi
+
+# Load versions from .versions.yaml
+KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
+KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")
+PROMETHEUS_OPERATOR_VERSION=$(yq eval '.cluster.prometheus_operator' "$VERSIONS_FILE")
+GPU_OPERATOR_VERSION=$(yq eval '.cluster.gpu_operator' "$VERSIONS_FILE")
+CERT_MANAGER_VERSION=$(yq eval '.cluster.cert_manager' "$VERSIONS_FILE")
+
+# Configuration
+CSP="${CSP:-kind}"  # Default to kind for local development
 CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-uat}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 K8S_VERSION="${K8S_VERSION:-1.34}"
@@ -30,9 +46,7 @@ GPU_NODE_TYPE="${GPU_NODE_TYPE:-p5.48xlarge}"
 GPU_NODE_COUNT="${GPU_NODE_COUNT:-2}"
 CAPACITY_RESERVATION_ID="${CAPACITY_RESERVATION_ID:-}"
 
-PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-78.5.0}"
-GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v25.10.0}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-1.19.1}"
+# NVSentinel configuration
 NVSENTINEL_VERSION="${NVSENTINEL_VERSION:-}"
 NVSENTINEL_TAG="${NVSENTINEL_TAG:-main}"
 

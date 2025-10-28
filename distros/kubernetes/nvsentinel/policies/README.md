@@ -1,6 +1,17 @@
 # NVSentinel Image Admission Policies
 
-This directory contains Kubernetes admission policies for enforcing supply chain security of NVSentinel container images in your cluster. These policies ensure that only verified NVSentinel images with valid SLSA Build Provenance attestations can be deployed to your Kubernetes cluster.
+This directory contains Kubernetes admission policies for enforcing supply chain security of NVSentinel container images in your cluster. These policies ensure that only verified NVSentinel images with valid SLSA Build Provenance attestations can be deployed.
+
+## Scope
+
+**Important:** These policies are designed to be used **only in the `nvsentinel` namespace** and **only apply to official NVSentinel images** from `ghcr.io/nvidia/nvsentinel/**`.
+
+- ✅ **Verified**: Images matching `ghcr.io/nvidia/nvsentinel/**` with valid attestations
+- ✅ **Allowed**: All other images (third-party dependencies, sidecar containers, etc.)
+- ✅ **Allowed**: Development images (e.g., `localhost:5001/*`)
+- ❌ **Blocked**: NVSentinel images without valid SLSA attestations
+
+This ensures the policy doesn't interfere with other workloads in the namespace while still protecting NVSentinel deployments.
 
 ## Prerequisites
 
@@ -24,17 +35,29 @@ helm install policy-controller sigstore/policy-controller -n cosign-system --cre
 
 ## Namespace Configuration
 
-By default, Policy Controller operates in **opt-in** mode. Label namespaces where you want to enforce policies:
+By default, Policy Controller operates in **opt-in** mode. Label the `nvsentinel` namespace to enforce policies:
 
 ```bash
-# Enable policy enforcement for a namespace
-kubectl label namespace nvsentinel-system policy.sigstore.dev/include=true
-kubectl label namespace production policy.sigstore.dev/include=true
+# Enable policy enforcement for the nvsentinel namespace
+kubectl label namespace nvsentinel policy.sigstore.dev/include=true
 ```
+
+**Important Configuration:**
+
+To ensure only NVSentinel images are subject to verification (allowing third-party images like databases, monitoring tools, etc.), configure the `no-match-policy`:
+
+```bash
+kubectl create configmap config-policy-controller \
+  -n cosign-system \
+  --from-literal=no-match-policy=allow \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+This allows images that don't match any `ClusterImagePolicy` pattern to run without verification.
 
 ## Policy
 
-The provide [image-admission-policy.yaml](image-admission-policy.yaml) file contains a `ClusterImagePolicy` that enforces image verification for all NVSentinel images. It verifies that NVSentinel container images have valid SLSA Build Provenance attestations:
+The provided [image-admission-policy.yaml](image-admission-policy.yaml) file contains a `ClusterImagePolicy` that enforces image verification for all NVSentinel images. It verifies that NVSentinel container images have valid SLSA Build Provenance attestations:
 
 - **Scope**: All pods using `ghcr.io/nvidia/nvsentinel/**` images
 - **Verification**: 
@@ -77,7 +100,7 @@ To verify any NVSentinel image manually, you can use either the GitHub (`gh`) or
 export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine-module"
 export DIGEST="sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
 
-gh attestation verify "oci://$IMAGE_DIGEST" \
+gh attestation verify "oci://${IMAGE}@${DIGEST}" \
   -R NVIDIA/NVSentinel \
   --bundle-from-oci \
   --signer-workflow 'NVIDIA/NVSentinel/.github/workflows/publish\.yml@refs/heads/main' \
@@ -102,7 +125,7 @@ cosign verify-attestation "${IMAGE}@${DIGEST}" \
 
 ### What's being verified
 
-GitHub's SLSA attestations are stored with the image in the OCI registry. Either of the above command will verify:
+GitHub's SLSA attestations are stored with the image in the OCI registry. Either of the above commands will verify:
 
 * ✅ **Issuer**: https://token.actions.githubusercontent.com
 * ✅ **Subject**: Uses regex to match the specific workflow path

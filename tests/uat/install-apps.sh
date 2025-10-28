@@ -19,18 +19,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
+
+# Verify yq is available for parsing versions
+if ! command -v yq &> /dev/null; then
+    error "yq is required but not installed. Please install yq: https://github.com/mikefarah/yq"
+fi
+
+# Load versions from .versions.yaml
+KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
+KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")
+HELM_VERSION=$(yq eval '.testing_tools.helm' "$VERSIONS_FILE")
+PROMETHEUS_OPERATOR_VERSION=$(yq eval '.cluster.prometheus_operator' "$VERSIONS_FILE")
+GPU_OPERATOR_VERSION=$(yq eval '.cluster.gpu_operator' "$VERSIONS_FILE")
+CERT_MANAGER_VERSION=$(yq eval '.cluster.cert_manager' "$VERSIONS_FILE")
+
+# Configuration
 CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-uat}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-CSP="${CSP:-aws}"
-
-PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-78.5.0}"
-GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v25.10.0}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-1.19.1}"
+CSP="${CSP:-kind}"  # Default to kind for local development
 NVSENTINEL_VERSION="${NVSENTINEL_VERSION:-}"
-KWOK_VERSION="${KWOK_VERSION:-v0.7.0}"
 FAKE_GPU_NODE_COUNT="${FAKE_GPU_NODE_COUNT:-10}"
 
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VALUES_DIR="${SCRIPT_DIR}/${CSP}"
 
 PROMETHEUS_VALUES="${VALUES_DIR}/prometheus-operator-values.yaml"
@@ -76,13 +87,14 @@ install_cert_manager() {
 }
 
 install_kwok() {
-    log "Installing KWOK (version $KWOK_VERSION)..."
+    log "Installing KWOK (app version: $KWOK_VERSION, chart version: $KWOK_CHART_VERSION)..."
     
     helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
     helm repo update
     
     if ! helm upgrade --install kwok sigs-kwok/kwok \
         --namespace kube-system \
+        --version "$KWOK_CHART_VERSION" \
         --set hostNetwork=true \
         --wait \
         --timeout=5m; then
@@ -93,6 +105,7 @@ install_kwok() {
     
     if ! helm upgrade --install kwok-stage-fast sigs-kwok/stage-fast \
         --namespace kube-system \
+        --version "$KWOK_CHART_VERSION" \
         --wait \
         --timeout=5m; then
         error "Failed to install KWOK stage-fast"
@@ -218,6 +231,12 @@ install_nvsentinel() {
 
 main() {
     log "Starting application installation for NVSentinel UAT testing..."
+    log "Target CSP: $CSP (override with CSP=<aws|azure|gcp|kind|oci>)"
+    log "Versions from .versions.yaml:"
+    log "  - KWOK: $KWOK_VERSION (chart: $KWOK_CHART_VERSION)"
+    log "  - Prometheus Operator: $PROMETHEUS_OPERATOR_VERSION"
+    log "  - GPU Operator: $GPU_OPERATOR_VERSION"
+    log "  - cert-manager: $CERT_MANAGER_VERSION"
     
     install_prometheus_operator
     install_cert_manager

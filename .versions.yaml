@@ -70,5 +70,12 @@ testing_tools:
   kind: '0.30.0'
   helm: 'v3.14.4'
   kwok: 'v0.7.0'
+  kwok_chart: '0.2.0'  # KWOK Helm chart version (different from app version)
   ctlptl: '0.8.43'
   tilt: '0.35.2'
+
+# Cluster Dependencies
+cluster:
+  prometheus_operator: '78.5.0'
+  gpu_operator: 'v25.10.0'
+  cert_manager: '1.19.1'
