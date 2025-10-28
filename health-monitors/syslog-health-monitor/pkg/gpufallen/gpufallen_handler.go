@@ -229,8 +229,7 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		RecommendedAction:  pb.RecommendedAction_RESTART_BM,
 		ErrorCode:          []string{"GPU_FALLEN_OFF_BUS"},
 		Metadata: map[string]string{
-			"JOURNAL_MESSAGE": event.message,
-			"PCI_ADDRESS":     event.pciAddr,
+			"PCI_ADDRESS": event.pciAddr,
 		},
 	}
 
