@@ -233,15 +233,6 @@ install_nvsentinel() {
     log "Using chart: $NVSENTINEL_CHART"
     log "Using values: $NVSENTINEL_VALUES"
     
-    # Check if running on ARM64 and add architecture-specific values
-    if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
-        if [[ -f "$NVSENTINEL_ARM64_VALUES" ]]; then
-            log "Detected ARM64 architecture, using ARM64-specific values"
-        else
-            log "WARNING: ARM64 architecture detected but ARM64 values file not found: $NVSENTINEL_ARM64_VALUES"
-        fi
-    fi
-    
     local extra_set_args=()
     if [[ "$CSP" == "aws" ]]; then
         local aws_account_id
@@ -265,8 +256,13 @@ install_nvsentinel() {
     )
     
     # Add ARM64-specific values if on ARM architecture
-    if [[ ("$ARCH" == "arm64" || "$ARCH" == "aarch64") && -f "$NVSENTINEL_ARM64_VALUES" ]]; then
-        helm_args+=("--values" "$NVSENTINEL_ARM64_VALUES")
+    if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
+        if [[ -f "$NVSENTINEL_ARM64_VALUES" ]]; then
+            log "Using ARM64-specific values: $NVSENTINEL_ARM64_VALUES"
+            helm_args+=("--values" "$NVSENTINEL_ARM64_VALUES")
+        else
+            log "WARNING: ARM64 architecture detected but ARM64 values file not found: $NVSENTINEL_ARM64_VALUES"
+        fi
     fi
     
     helm_args+=("--set" "global.image.tag=$NVSENTINEL_VERSION")
