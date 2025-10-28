@@ -28,9 +28,9 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
 	"golang.org/x/sync/errgroup"
 
@@ -193,16 +193,16 @@ func getMongoPipeline() mongo.Pipeline {
 					// Watch for quarantine events (for remediation)
 					bson.D{
 						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: bson.D{
-							bson.E{Key: "$in", Value: bson.A{store.StatusSucceeded, store.AlreadyDrained}},
+							bson.E{Key: "$in", Value: bson.A{model.StatusSucceeded, model.AlreadyDrained}},
 						}},
 						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: bson.D{
-							bson.E{Key: "$in", Value: bson.A{store.Quarantined, store.AlreadyQuarantined}},
+							bson.E{Key: "$in", Value: bson.A{model.Quarantined, model.AlreadyQuarantined}},
 						}},
 					},
 					// Watch for unquarantine events (for annotation cleanup)
 					bson.D{
-						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: store.UnQuarantined},
-						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: store.StatusSucceeded},
+						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: model.UnQuarantined},
+						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: model.StatusSucceeded},
 					},
 				}},
 			}},

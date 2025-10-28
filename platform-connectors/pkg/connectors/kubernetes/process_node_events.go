@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,11 +41,11 @@ const (
 )
 
 //nolint:cyclop, gocognit
-func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []*platformconnector.HealthEvent) error {
+func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []*protos.HealthEvent) error {
 	sortedHealthEvents := slices.Clone(healthEvents)
 
 	// sort in ascending order
-	slices.SortFunc(sortedHealthEvents, func(a, b *platformconnector.HealthEvent) int {
+	slices.SortFunc(sortedHealthEvents, func(a, b *protos.HealthEvent) int {
 		ti := a.GeneratedTimestamp
 		tj := b.GeneratedTimestamp
 
@@ -73,7 +73,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 		return 0
 	})
 
-	conditionToHealthEventsMap := make(map[corev1.NodeConditionType][]*platformconnector.HealthEvent)
+	conditionToHealthEventsMap := make(map[corev1.NodeConditionType][]*protos.HealthEvent)
 
 	for _, event := range sortedHealthEvents {
 		if !event.IsHealthy && !event.IsFatal {
@@ -194,7 +194,7 @@ func (r *K8sConnector) parseMessages(message string) []string {
 	return messages
 }
 
-func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *platformconnector.HealthEvent) []string {
+func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *protos.HealthEvent) []string {
 	newMessage := r.constructHealthEventMessage(healthEvent)
 
 	for _, msg := range messages {
@@ -207,7 +207,7 @@ func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *plat
 }
 
 func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
-	entities []*platformconnector.Entity) []string {
+	entities []*protos.Entity) []string {
 	var newMessages []string
 
 	for _, msg := range messages {
@@ -289,7 +289,7 @@ func (r *K8sConnector) updateHealthEventReason(checkName string, isHealthy bool)
 	return fmt.Sprintf("%s%s", checkName, status)
 }
 
-func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.HealthEvent) string {
+func (r *K8sConnector) fetchHealthEventMessage(healthEvent *protos.HealthEvent) string {
 	message := ""
 
 	if healthEvent.IsHealthy {
@@ -301,7 +301,7 @@ func (r *K8sConnector) fetchHealthEventMessage(healthEvent *platformconnector.He
 	return message
 }
 
-func (r *K8sConnector) constructHealthEventMessage(healthEvent *platformconnector.HealthEvent) string {
+func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEvent) string {
 	message := ""
 
 	for _, errorCode := range healthEvent.ErrorCode {
@@ -321,7 +321,7 @@ func (r *K8sConnector) constructHealthEventMessage(healthEvent *platformconnecto
 	return message
 }
 
-func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *platformconnector.HealthEvents) error {
+func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
 	var nodeConditions []corev1.NodeCondition
 
 	for _, healthEvent := range healthEvents.Events {

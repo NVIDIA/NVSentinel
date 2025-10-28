@@ -271,7 +271,6 @@ check_job "create-mongodb-database"
 echo "=== Deployments ==="
 check_deployment "nvsentinel-fault-quarantine" 1
 check_deployment "nvsentinel-fault-remediation" 1
-check_deployment "nvsentinel-health-events-analyzer" 1
 check_deployment "nvsentinel-labeler" 1
 check_deployment "nvsentinel-node-drainer" 1
 check_optional_deployment "simple-health-client" 1

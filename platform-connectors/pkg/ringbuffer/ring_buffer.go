@@ -19,22 +19,22 @@ import (
 	"errors"
 	"log/slog"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 
 	"k8s.io/client-go/util/workqueue"
 )
 
 type RingBuffer struct {
 	ringBufferIdentifier string
-	healthMetricQueue    workqueue.TypedRateLimitingInterface[*platformconnector.HealthEvents]
+	healthMetricQueue    workqueue.TypedRateLimitingInterface[*protos.HealthEvents]
 	ctx                  context.Context
 }
 
 func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
 	workqueue.SetProvider(prometheusMetricsProvider{})
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[*platformconnector.HealthEvents](),
-		workqueue.TypedRateLimitingQueueConfig[*platformconnector.HealthEvents]{
+		workqueue.DefaultTypedControllerRateLimiter[*protos.HealthEvents](),
+		workqueue.TypedRateLimitingQueueConfig[*protos.HealthEvents]{
 			Name: ringBufferName,
 		},
 	)
@@ -46,11 +46,11 @@ func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
 	}
 }
 
-func (rb *RingBuffer) Enqueue(data *platformconnector.HealthEvents) {
+func (rb *RingBuffer) Enqueue(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Add(data)
 }
 
-func (rb *RingBuffer) Dequeue() *platformconnector.HealthEvents {
+func (rb *RingBuffer) Dequeue() *protos.HealthEvents {
 	healthEvents, quit := rb.healthMetricQueue.Get()
 	if quit {
 		slog.Info("quitting from queue processing")
@@ -67,11 +67,11 @@ func (rb *RingBuffer) Dequeue() *platformconnector.HealthEvents {
 	return healthEvents
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *platformconnector.HealthEvents) {
+func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Done(data)
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *platformconnector.HealthEvents) {
+func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 }
 

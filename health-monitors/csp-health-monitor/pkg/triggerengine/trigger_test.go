@@ -121,7 +121,7 @@ type MockUDSClient struct {
 	mock.Mock
 }
 
-func (m *MockUDSClient) HealthEventOccuredV1(
+func (m *MockUDSClient) HealthEventOccurredV1(
 	ctx context.Context,
 	in *pb.HealthEvents,
 	opts ...grpc.CallOption,
@@ -223,7 +223,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				ResourceType:      "gce_instance",
 				ResourceID:        "instance-123",
 				NodeName:          "node-a",
-				RecommendedAction: pb.RecommenedAction_RESTART_VM.String(),
+				RecommendedAction: pb.RecommendedAction_RESTART_VM.String(),
 				Metadata:          map[string]string{"key": "value"},
 			},
 			isHealthy:   false,
@@ -237,7 +237,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				IsFatal:           true,
 				IsHealthy:         false,
 				Message:           maintenanceScheduledMessage,
-				RecommendedAction: pb.RecommenedAction_RESTART_VM,
+				RecommendedAction: pb.RecommendedAction_RESTART_VM,
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "gce_instance", EntityValue: "instance-123"},
 				},
@@ -265,7 +265,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				IsFatal:           false,
 				IsHealthy:         true,
 				Message:           maintenanceCompletedMessage,
-				RecommendedAction: pb.RecommenedAction_NONE,
+				RecommendedAction: pb.RecommendedAction_NONE,
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "EC2", EntityValue: "i-abcdef"},
 				},
@@ -328,7 +328,7 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				IsFatal:           true,
 				IsHealthy:         false,
 				Message:           maintenanceScheduledMessage,
-				RecommendedAction: pb.RecommenedAction_NONE, // Defaults to NONE
+				RecommendedAction: pb.RecommendedAction_NONE, // Defaults to NONE
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "gce_instance", EntityValue: "instance-789"},
 				},
@@ -411,7 +411,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 		NodeName:          "node-1",
 		ResourceType:      "gce_instance",
 		ResourceID:        "instance-abc",
-		RecommendedAction: pb.RecommenedAction_NONE.String(),
+		RecommendedAction: pb.RecommendedAction_NONE.String(),
 	}
 
 	tests := []struct {
@@ -436,7 +436,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			message:        maintenanceScheduledMessage,
 			targetDBStatus: model.StatusQuarantineTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(&emptypb.Empty{}, nil).
 					Once()
 				mStore.On("UpdateEventStatus", ctx, currentEvent.EventID, currentTargetDBStatus).Return(nil).Once()
@@ -456,7 +456,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			message:        maintenanceCompletedMessage,
 			targetDBStatus: model.StatusHealthyTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(&emptypb.Empty{}, nil).
 					Once()
 				mStore.On("UpdateEventStatus", ctx, currentEvent.EventID, currentTargetDBStatus).Return(nil).Once()
@@ -485,7 +485,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			expectError:           true,
 			expectedErrorContains: "missing NodeName",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
-				mUDSClient.AssertNotCalled(t, "HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything)
+				mUDSClient.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything)
 				mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
 			},
 		},
@@ -507,7 +507,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			expectError:           true,
 			expectedErrorContains: "missing required fields",
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
-				mUDSClient.AssertNotCalled(t, "HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything)
+				mUDSClient.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything)
 				mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
 			},
 		},
@@ -520,7 +520,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			message:        maintenanceScheduledMessage,
 			targetDBStatus: model.StatusQuarantineTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(nil, status.Error(codes.Internal, "internal UDS error")).
 					Once()
 
@@ -542,12 +542,12 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			message:        maintenanceScheduledMessage,
 			targetDBStatus: model.StatusQuarantineTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(nil, status.Error(codes.Unavailable, "UDS temporarily unavailable")).
 					Once()
 
 					// First attempt fails
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(&emptypb.Empty{}, nil).
 					Once()
 
@@ -570,7 +570,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			targetDBStatus: model.StatusQuarantineTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
 				// udsMaxRetries is the original const value from trigger.go (which is 5)
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(nil, status.Error(codes.Unavailable, "UDS unavailable")).
 					Times(udsMaxRetries)
 			},
@@ -590,7 +590,7 @@ func TestProcessAndSendTrigger(t *testing.T) {
 			message:        maintenanceScheduledMessage,
 			targetDBStatus: model.StatusQuarantineTriggered,
 			setupMocks: func(mStore *MockDatastore, mUDSClient *MockUDSClient, currentEvent model.MaintenanceEvent, currentTargetDBStatus model.InternalStatus) {
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.Anything, mock.Anything).
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.Anything, mock.Anything).
 					Return(&emptypb.Empty{}, nil).
 					Once()
 				mStore.On("UpdateEventStatus", ctx, currentEvent.EventID, currentTargetDBStatus).
@@ -645,10 +645,10 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 	cfg := newTestConfig()
 
 	defaultQuarantineEvent := model.MaintenanceEvent{
-		EventID: "q-event-1", NodeName: "node-q1", ResourceType: "test", ResourceID: "q-id1", RecommendedAction: pb.RecommenedAction_NONE.String(),
+		EventID: "q-event-1", NodeName: "node-q1", ResourceType: "test", ResourceID: "q-id1", RecommendedAction: pb.RecommendedAction_NONE.String(),
 	}
 	defaultHealthyEvent := model.MaintenanceEvent{
-		EventID: "h-event-1", NodeName: "node-h1", ResourceType: "test", ResourceID: "h-id1", RecommendedAction: pb.RecommenedAction_NONE.String(),
+		EventID: "h-event-1", NodeName: "node-h1", ResourceType: "test", ResourceID: "h-id1", RecommendedAction: pb.RecommendedAction_NONE.String(),
 	}
 
 	tests := []struct {
@@ -671,7 +671,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 			expectError: false,
 			verifyMocks: func(t *testing.T, mStore *MockDatastore, mUDSClient *MockUDSClient) {
 				mStore.AssertExpectations(t)
-				mUDSClient.AssertNotCalled(t, "HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything)
+				mUDSClient.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything)
 			},
 		},
 		{
@@ -684,7 +684,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 					Return([]model.MaintenanceEvent{}, nil).
 					Once()
 				// processAndSendTrigger mocks for defaultQuarantineEvent
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultQuarantineEvent.NodeName &&
 						events.Events[0].IsFatal
 				}), mock.Anything).Return(&emptypb.Empty{}, nil).Once()
@@ -708,7 +708,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 					Return([]model.MaintenanceEvent{defaultHealthyEvent}, nil).
 					Once()
 				// processAndSendTrigger mocks for defaultHealthyEvent
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultHealthyEvent.NodeName &&
 						events.Events[0].IsHealthy
 				}), mock.Anything).Return(&emptypb.Empty{}, nil).Once()
@@ -770,7 +770,7 @@ func TestCheckAndTriggerEvents(t *testing.T) {
 					Return([]model.MaintenanceEvent{defaultHealthyEvent}, nil).
 					Once()
 				// Mocks for successful healthy event
-				mUDSClient.On("HealthEventOccuredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
+				mUDSClient.On("HealthEventOccurredV1", ctx, mock.MatchedBy(func(events *pb.HealthEvents) bool {
 					return len(events.Events) == 1 && events.Events[0].NodeName == defaultHealthyEvent.NodeName &&
 						events.Events[0].IsHealthy
 				}), mock.Anything).Return(&emptypb.Empty{}, nil).Once()
@@ -822,7 +822,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	cfg := newTestConfig()
 
 	healthyEvent := model.MaintenanceEvent{
-		EventID: "h-event-deferred", NodeName: "node-deferred", ResourceType: "test", ResourceID: "h-id", RecommendedAction: pb.RecommenedAction_NONE.String(),
+		EventID: "h-event-deferred", NodeName: "node-deferred", ResourceType: "test", ResourceID: "h-id", RecommendedAction: pb.RecommendedAction_NONE.String(),
 	}
 
 	mockClient := createMockClientWithNotReadyNode(healthyEvent.NodeName)
@@ -834,7 +834,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{healthyEvent}, nil).Once()
 	mStore.On("FindEventsToTriggerHealthy", ctx, mock.AnythingOfType("time.Duration")).Return([]model.MaintenanceEvent{}, nil).Once()
 
-	mUDSClient.On("HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
+	mUDSClient.On("HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything).Return(&emptypb.Empty{}, nil).Once()
 	mStore.On("UpdateEventStatus", mock.AnythingOfType("*context.timerCtx"), healthyEvent.EventID, model.StatusHealthyTriggered).Return(nil).Once()
 
 	engine := NewEngine(cfg, mStore, mUDSClient, mockClient)
@@ -842,7 +842,7 @@ func TestHealthyTriggerWaitsForNodeReady(t *testing.T) {
 
 	err := engine.checkAndTriggerEvents(ctx)
 	assert.NoError(t, err)
-	mUDSClient.AssertNotCalled(t, "HealthEventOccuredV1", mock.Anything, mock.Anything, mock.Anything)
+	mUDSClient.AssertNotCalled(t, "HealthEventOccurredV1", mock.Anything, mock.Anything, mock.Anything)
 	mStore.AssertNotCalled(t, "UpdateEventStatus", mock.Anything, mock.Anything, mock.Anything)
 
 	node, _ := mockClient.CoreV1().Nodes().Get(ctx, healthyEvent.NodeName, metav1.GetOptions{})

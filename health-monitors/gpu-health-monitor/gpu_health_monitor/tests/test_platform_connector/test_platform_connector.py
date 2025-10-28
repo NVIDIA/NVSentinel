@@ -37,7 +37,7 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
         self.health_events: platformconnector_pb2.HealthEvents = None
         self.health_event: platformconnector_pb2.HealthEvent = None
 
-    def HealthEventOccuredV1(self, request: platformconnector_pb2.HealthEvents, context: Any):
+    def HealthEventOccurredV1(self, request: platformconnector_pb2.HealthEvents, context: Any):
         assert isinstance(request, platformconnector_pb2.HealthEvents) == True
         self.health_events = request.events
         return platformconnector_pb2.HealthEvents()
@@ -45,7 +45,7 @@ class PlatformConnectorServicer(platformconnector_pb2_grpc.PlatformConnectorServ
 
 class TestPlatformConnectors(unittest.TestCase):
 
-    def test_health_event_occured(self):
+    def test_health_event_occurred(self):
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
@@ -126,7 +126,7 @@ class TestPlatformConnectors(unittest.TestCase):
             if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
                 assert event.errorCode[0] == "DCGM_FR_CORRUPT_INFOROM"
                 assert event.entitiesImpacted[0].entityValue == "0"
-                assert event.recommendedAction == platformconnector_pb2.RecommenedAction.COMPONENT_RESET
+                assert event.recommendedAction == platformconnector_pb2.RecommendedAction.COMPONENT_RESET
             else:
                 assert event.isHealthy == True
                 assert event.checkName != ""
@@ -280,7 +280,7 @@ class TestPlatformConnectors(unittest.TestCase):
         assert nvlink_failure_event.isFatal == True
         assert nvlink_failure_event.isHealthy == False
         assert nvlink_failure_event.entitiesImpacted[0].entityValue == "0"
-        assert nvlink_failure_event.recommendedAction == platformconnector_pb2.RecommenedAction.COMPONENT_RESET
+        assert nvlink_failure_event.recommendedAction == platformconnector_pb2.RecommendedAction.COMPONENT_RESET
         assert nvlink_failure_event.metadata["SerialNumber"] == "1650924060039"
 
         # Verify all 4 NvLink failures are in the message

@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 
 	"github.com/hashicorp/go-multierror"
 	v1 "k8s.io/api/core/v1"
@@ -469,7 +469,7 @@ func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason
 }
 
 func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string, namespaces []string,
-	timeout int, event *storeconnector.HealthEventWithStatus) error {
+	timeout int, event *model.HealthEventWithStatus) error {
 	drainTimeout, err := i.getNodeDrainTimeout(timeout, event)
 	if err != nil {
 		slog.Error("Failed to get node drain timeout", "error", err)
@@ -537,7 +537,7 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 }
 
 func (i *Informers) getNodeDrainTimeout(timeout int,
-	event *storeconnector.HealthEventWithStatus) (time.Duration, error) {
+	event *model.HealthEventWithStatus) (time.Duration, error) {
 	elapsed := time.Since(event.CreatedAt)
 	drainTimeout := time.Duration(timeout) * time.Minute
 

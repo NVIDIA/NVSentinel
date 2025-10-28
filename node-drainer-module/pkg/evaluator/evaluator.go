@@ -19,10 +19,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 )
 
 func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface) DrainEvaluator {
@@ -32,13 +32,13 @@ func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface) 
 	}
 }
 
-func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent storeconnector.HealthEventWithStatus,
+func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	collection queue.MongoCollectionAPI) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	// Handle UnQuarantined events - cancel any ongoing drain
 	statusPtr := healthEvent.HealthEventStatus.NodeQuarantined
-	if statusPtr != nil && *statusPtr == storeconnector.UnQuarantined {
+	if statusPtr != nil && *statusPtr == model.UnQuarantined {
 		slog.Info("Node became healthy (UnQuarantined), stopping drain", "node", nodeName)
 
 		return &DrainActionResult{
@@ -54,7 +54,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent stor
 		}, nil
 	}
 
-	if statusPtr != nil && *statusPtr == storeconnector.AlreadyQuarantined {
+	if statusPtr != nil && *statusPtr == model.AlreadyQuarantined {
 		isDrained, err := mongodb.IsNodeAlreadyDrained(ctx, collection, nodeName)
 		if err != nil {
 			slog.Error("Failed to check if node %s is already drained: %v", nodeName, err)
@@ -77,7 +77,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent stor
 }
 
 func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
-	healthEvent storeconnector.HealthEventWithStatus) (*DrainActionResult, error) {
+	healthEvent model.HealthEventWithStatus) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 	systemNamespaces := e.config.SystemNamespaces
 
@@ -230,8 +230,8 @@ func (e *NodeDrainEvaluator) handleDeleteAfterTimeoutNamespaces(ns namespaces, n
 	return nil
 }
 
-func isTerminalStatus(status storeconnector.Status) bool {
-	return status == storeconnector.StatusSucceeded ||
-		status == storeconnector.StatusFailed ||
-		status == storeconnector.AlreadyDrained
+func isTerminalStatus(status model.Status) bool {
+	return status == model.StatusSucceeded ||
+		status == model.StatusFailed ||
+		status == model.AlreadyDrained
 }

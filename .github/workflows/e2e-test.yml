@@ -28,7 +28,7 @@ on:
       - main
       - "pull-request/[0-9]+"
     paths-ignore:
-      - '*.md'
+      - '**/*.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/*.yaml'
@@ -44,18 +44,8 @@ permissions:
   contents: read       # Required for checking out code
   actions: read        # Required for artifact operations
 
-env:
-  # E2E-specific tool versions (not duplicated elsewhere)
-  KIND_VERSION: '0.30.0'
-  CTLPTL_VERSION: '0.8.43'
-  TILT_VERSION: '0.35.2'
-
 jobs:
-  prepare-environment:
-    uses: ./.github/workflows/prepare-environment.yml
-
   e2e-test:
-    # Run E2E tests on both AMD64 and ARM64 architectures in parallel
     strategy:
       fail-fast: false  # Allow both architectures to complete even if one fails
       matrix:
@@ -70,9 +60,8 @@ jobs:
     name: "E2E Tests (${{ matrix.arch_name }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: prepare-environment
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
       - name: Workaround for freeing up more disk space
         run: |
@@ -85,22 +74,10 @@ jobs:
           docker system prune -f
 
       - name: Setup build environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          go-version: ${{ needs.prepare-environment.outputs.go_version }}
-          python-version: ${{ needs.prepare-environment.outputs.python_version }}
-          poetry-version: ${{ needs.prepare-environment.outputs.poetry_version }}
-          golangci-lint-version: ${{ needs.prepare-environment.outputs.golangci_lint_version }}
-          protobuf-version: ${{ needs.prepare-environment.outputs.protobuf_version }}
-          protoc-gen-go-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_version }}
-          protoc-gen-go-grpc-version: ${{ needs.prepare-environment.outputs.protoc_gen_go_grpc_version }}
-          grpcio-tools-version: ${{ needs.prepare-environment.outputs.grpcio_tools_version }}
-          black-version: ${{ needs.prepare-environment.outputs.black_version }}
-          shellcheck-version: ${{ needs.prepare-environment.outputs.shellcheck_version }}
-          ko-version: ${{ needs.prepare-environment.outputs.ko_version }}
+        uses: ./.github/actions/setup-ci-env
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
 
       - name: Prep system for multi-node Kind cluster
         run: |
@@ -123,82 +100,8 @@ jobs:
           sudo iptables -F && sudo iptables -X && sudo iptables -t nat -F && sudo iptables -t nat -X && sudo iptables -t mangle -F && sudo iptables -t mangle -X && sudo iptables -P INPUT ACCEPT && sudo iptables -P FORWARD ACCEPT -w 5 && sudo iptables -P OUTPUT ACCEPT -w 5
           sudo systemctl restart docker
 
-      - name: Cache E2E testing tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            /usr/local/bin/ctlptl
-            /usr/local/bin/kind
-            /usr/local/bin/kubectl
-            /usr/local/bin/tilt
-          key: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ env.KIND_VERSION }}-${{ env.CTLPTL_VERSION }}-${{ env.TILT_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-e2e-tools-
-
-      - name: Detect runner architecture
-        run: |
-          echo "Matrix configuration: ${{ matrix.arch_name }} (${{ matrix.arch }})"
-          echo "Runner: ${{ matrix.runner }}"
-          echo "Runner OS: ${{ runner.os }}"
-          echo "Runner architecture: ${{ runner.arch }}"
-          echo "System architecture (uname -m): $(uname -m)"
-          echo "Cache key will be: ${{ runner.os }}-${{ runner.arch }}-e2e-tools-${{ env.KIND_VERSION }}-${{ env.CTLPTL_VERSION }}-${{ env.TILT_VERSION }}"
-
       - name: Install E2E testing tools
-        run: |
-          # Install ctlptl (if not cached)
-          CTLPTL_VERSION="${{ env.CTLPTL_VERSION }}"
-          if command -v ctlptl &> /dev/null && ctlptl version | grep -q "v${CTLPTL_VERSION}"; then
-            echo "ctlptl v${CTLPTL_VERSION} already installed from cache"
-          else
-            echo "Installing ctlptl v${CTLPTL_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 https://github.com/tilt-dev/ctlptl/releases/download/v${CTLPTL_VERSION}/ctlptl.${CTLPTL_VERSION}.linux.${ARCH}.tar.gz | sudo tar -xzv -C /usr/local/bin ctlptl
-          fi
-
-          # Install Kind (if not cached)
-          KIND_VERSION="${{ env.KIND_VERSION }}"
-          if command -v kind &> /dev/null && kind version | grep -q "${KIND_VERSION}"; then
-            echo "Kind v${KIND_VERSION} already installed from cache"
-          else
-            echo "Installing Kind v${KIND_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 -o ./kind https://kind.sigs.k8s.io/dl/v${KIND_VERSION}/kind-linux-${ARCH}
-            chmod +x ./kind
-            sudo mv ./kind /usr/local/bin/kind
-          fi
-
-          # Install kubectl (if not cached)
-          if command -v kubectl &> /dev/null; then
-            echo "kubectl already installed from cache"
-          else
-            echo "Installing kubectl..."
-            ARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            curl -fsSL --retry 3 --keepalive-time 2 -O "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl"
-            chmod +x kubectl
-            sudo mv ./kubectl /usr/local/bin/kubectl
-          fi
-
-          # Install Tilt (if not cached)
-          TILT_VERSION="${{ env.TILT_VERSION }}"
-          if command -v tilt &> /dev/null && tilt version | grep -q "${TILT_VERSION}"; then
-            echo "Tilt v${TILT_VERSION} already installed from cache"
-          else
-            echo "Installing Tilt v${TILT_VERSION}..."
-            ARCH=$(case $(uname -m) in x86_64) echo x86_64;; aarch64|arm64) echo arm64;; *) echo $(uname -m);; esac)
-            TEMP_DIR=$(mktemp -d)
-            curl -fsSL --retry 3 --keepalive-time 2 https://github.com/tilt-dev/tilt/releases/download/v${TILT_VERSION}/tilt.${TILT_VERSION}.linux.${ARCH}.tar.gz | tar -xzv -C "$TEMP_DIR" tilt
-            sudo mv "$TEMP_DIR/tilt" /usr/local/bin/
-            rm -rf "$TEMP_DIR"
-          fi
-
-          # Verify installations
-          echo "Verifying tool installations:"
-          echo "ctlptl: $(ctlptl version)"
-          echo "Kind: $(kind version)"
-          echo "kubectl: $(kubectl version --client)"
-          echo "Tilt: $(tilt version)"
-          echo "Docker: $(docker version --format '{{.Client.Version}}')"
+        uses: ./.github/actions/install-e2e-tools
 
       - name: Configure Helm repositories
         run: |
@@ -226,12 +129,6 @@ jobs:
           CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}"
         run: |
           make cluster-create
-
-      - name: Override MongoDB image for ARM64
-        if: matrix.arch == 'arm64'
-        run: |
-          sed -i 's/repository: "bitnamilegacy\/mongodb"/repository: "dlavrenuek\/bitnami-mongodb-arm"/' distros/kubernetes/nvsentinel/values-tilt.yaml
-          sed -i 's/tag: "8.0.3-debian-12-r1"/tag: "8.0.4"/' distros/kubernetes/nvsentinel/values-tilt.yaml
 
       - name: Run E2E tests
         env:
@@ -273,7 +170,7 @@ jobs:
 
       - name: Upload Kind logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: e2e-kind-logs-${{ matrix.arch }}-${{ github.run_id }}
           path: /tmp/kind-logs/
@@ -281,7 +178,7 @@ jobs:
 
       - name: Upload debug artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
           name: e2e-debug-artifacts-${{ matrix.arch }}-${{ github.run_id }}
           path: /tmp/debug-artifacts/
@@ -290,13 +187,8 @@ jobs:
       - name: Cleanup Docker resources
         if: always()
         run: |
-          # Remove all containers (running and stopped)
           docker rm -f $(docker ps -a -q) || true
-          # Remove all images
           docker rmi -f $(docker images -q -a) || true
-          # Remove all volumes
           docker volume prune -f || true
-          # Remove all networks (except default ones)
           docker network prune -f || true
-          # Clean up build cache
           docker builder prune -f || true

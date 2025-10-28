@@ -19,7 +19,7 @@
 # Makefiles should reference this file as the single source of truth.
 #
 # Usage:
-#   - GitHub Actions: Read and parse this file in prepare-environment.yml
+#   - GitHub Actions: Read and parse this file in versions.yaml
 #   - Makefiles: Source versions using yq or similar YAML parser
 #   - Documentation: Reference this file for version requirements
 #
@@ -31,7 +31,7 @@
 
 # Language Versions
 languages:
-  go: '1.24'
+  go: '1.25'
   python: '3.10'
 
 # Build & Package Management
@@ -43,6 +43,9 @@ go_tools:
   golangci_lint: 'v1.64.8'
   gotestsum: 'v1.13.0'
   gocover_cobertura: 'v1.4.0'
+  setup_envtest: 'latest'
+  goimports: 'v0.30.0'
+  crane: 'v0.20.2'
 
 # Protocol Buffers / gRPC
 protobuf:
@@ -54,10 +57,18 @@ protobuf:
 # Linting & Validation
 linting:
   shellcheck: 'v0.11.0'
-  addlicense: 'latest'
+  addlicense: 'v1.2.0'
   black: '25.9.0'
 
 # Container Tools
 container_tools:
   docker_buildx: 'latest'
   ko: 'v0.18.0'
+
+# Testing & E2E Tools
+testing_tools:
+  kind: '0.30.0'
+  helm: 'v3.14.4'
+  kwok: 'v0.7.0'
+  ctlptl: '0.8.43'
+  tilt: '0.35.2'

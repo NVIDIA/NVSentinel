@@ -69,9 +69,9 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 		fmt.Sprint(sxidErrorEvent.NVSwitch),
 	).Inc()
 
-	errRes := pb.RecommenedAction_NONE
+	errRes := pb.RecommendedAction_NONE
 	if sxidErrorEvent.IsFatal {
-		errRes = pb.RecommenedAction_CONTACT_SUPPORT
+		errRes = pb.RecommendedAction_CONTACT_SUPPORT
 	}
 
 	event := &pb.HealthEvent{

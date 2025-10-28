@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package store
+package model
 
 import (
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type Status string
@@ -49,7 +49,7 @@ type HealthEventStatus struct {
 }
 
 type HealthEventWithStatus struct {
-	CreatedAt         time.Time                      `bson:"createdAt"`
-	HealthEvent       *platformconnector.HealthEvent `bson:"healthevent,omitempty"`
-	HealthEventStatus HealthEventStatus              `bson:"healtheventstatus"`
+	CreatedAt         time.Time           `bson:"createdAt"`
+	HealthEvent       *protos.HealthEvent `bson:"healthevent,omitempty"`
+	HealthEventStatus HealthEventStatus   `bson:"healtheventstatus"`
 }

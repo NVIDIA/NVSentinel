@@ -1,0 +1,7 @@
+# ARM64-specific overrides for Tilt development
+mongodb-store:
+  mongodb:
+    image:
+      repository: "dlavrenuek/bitnami-mongodb-arm"
+      tag: "8.0.4"
+

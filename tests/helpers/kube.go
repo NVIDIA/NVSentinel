@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/statemanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v2"
 	appsv1 "k8s.io/api/apps/v1"

@@ -24,7 +24,8 @@ import (
 	"strconv"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -214,7 +215,7 @@ func (r *MongoDbStoreConnector) Disconnect(ctx context.Context) error {
 
 func (r *MongoDbStoreConnector) insertHealthEvents(
 	ctx context.Context,
-	healthEvents *platformconnector.HealthEvents,
+	healthEvents *protos.HealthEvents,
 ) error {
 	session, err := r.client.StartSession()
 	if err != nil {
@@ -233,7 +234,7 @@ func (r *MongoDbStoreConnector) insertHealthEvents(
 		healthEventWithStatusList := []interface{}{}
 
 		for _, healthEvent := range healthEvents.GetEvents() {
-			healthEventWithStatusObj := HealthEventWithStatus{
+			healthEventWithStatusObj := model.HealthEventWithStatus{
 				CreatedAt:   time.Now().UTC(),
 				HealthEvent: healthEvent,
 			}

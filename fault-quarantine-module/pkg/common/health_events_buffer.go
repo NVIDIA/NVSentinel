@@ -19,14 +19,14 @@ import (
 	"fmt"
 	"log/slog"
 
-	storeconnector "github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
 
 // healthEventInfo represents information about a health event
 type HealthEventInfo struct {
-	HealthEventWithStatus *storeconnector.HealthEventWithStatus
+	HealthEventWithStatus *model.HealthEventWithStatus
 	EventBson             bson.M
 	HasProcessed          bool
 }
@@ -46,7 +46,7 @@ func NewHealthEventBuffer(ctx context.Context) *HealthEventBuffer {
 }
 
 // Add adds a health event at the end of the buffer.
-func (b *HealthEventBuffer) Add(event *storeconnector.HealthEventWithStatus, eventBson bson.M) {
+func (b *HealthEventBuffer) Add(event *model.HealthEventWithStatus, eventBson bson.M) {
 	b.events = append(b.events, HealthEventInfo{
 		HealthEventWithStatus: event,
 		EventBson:             eventBson,

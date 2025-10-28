@@ -1,112 +1,100 @@
 # Security
 
-NVIDIA is dedicated to the security and trust of our software products and services, including all source code repositories managed through our organization.
+NVIDIA is dedicated to the security and trust of our software products and services, including all source code repositories.
 
-If you need to report a security issue, please use the appropriate contact points outlined below. **Please do not report security vulnerabilities through GitHub.**
+**Please do not report security vulnerabilities through GitHub.**
 
-## Reporting Potential Security Vulnerability in an NVIDIA Product
+## Reporting Security Vulnerabilities
 
 To report a potential security vulnerability in any NVIDIA product:
-- Web: [Security Vulnerability Submission Form](https://www.nvidia.com/object/submit-security-vulnerability.html)
-- E-Mail: psirt@nvidia.com
-    - We encourage you to use the following PGP key for secure email communication: [NVIDIA public PGP Key for communication](https://www.nvidia.com/en-us/security/pgp-key)
-    - Please include the following information:
-        - Product/Driver name and version/branch that contains the vulnerability
-     - Type of vulnerability (code execution, denial of service, buffer overflow, etc.)
-        - Instructions to reproduce the vulnerability
-        - Proof-of-concept or exploit code
-        - Potential impact of the vulnerability, including how an attacker could exploit the vulnerability
 
-While NVIDIA currently does not have a bug bounty program, we do offer acknowledgement when an externally reported security issue is addressed under our coordinated vulnerability disclosure policy. Please visit our [Product Security Incident Response Team (PSIRT)](https://www.nvidia.com/en-us/security/psirt-policies/) policies page for more information.
+- **Web**: [Security Vulnerability Submission Form](https://www.nvidia.com/object/submit-security-vulnerability.html)
+- **Email**: psirt@nvidia.com
+  - Use [NVIDIA PGP Key](https://www.nvidia.com/en-us/security/pgp-key) for secure communication
 
-## NVIDIA Product Security
+**Include in your report**:
+- Product/Driver name and version
+- Type of vulnerability (code execution, denial of service, buffer overflow, etc.)
+- Steps to reproduce
+- Proof-of-concept or exploit code
+- Potential impact and exploitation method
 
-For all security-related concerns, please visit NVIDIA's Product Security portal at https://www.nvidia.com/en-us/security
+NVIDIA offers acknowledgement for externally reported security issues under our coordinated vulnerability disclosure policy. Visit [PSIRT Policies](https://www.nvidia.com/en-us/security/psirt-policies/) for details.
 
-## NVSentinel Transparency
+## Product Security Resources
 
-The artifacts that NVSentinel produces provide: 
+For all security-related concerns: https://www.nvidia.com/en-us/security
 
-* SBOM Attestation - what's inside of each container image (e.g. pkg, lib, components, etc)
-* SLSA Build Provenance - how and where these images were created 
+## Supply Chain Security
 
-For purposes of demonstration we will use one of the images: 
+NVSentinel provides supply chain security artifacts for all container images:
+
+- **SBOM Attestation**: Complete inventory of packages, libraries, and components
+- **SLSA Build Provenance**: Verifiable build information (how and where images were created)
+
+### Setup
+
+Export variables for the image you want to verify, for example:
 
 ```shell
 export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine-module"
-export DIGEST="sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
+export DIGEST="sha256:4558fc8a81f26e9dffa513c253de45ffaaca0b41e0bdd7842938778b63c66e1d"
 export IMAGE_DIGEST="$IMAGE@$DIGEST"
 export IMAGE_SBOM="$IMAGE:sha256-$(echo "$DIGEST" | cut -d: -f2).sbom"
 ```
 
-### (optional) Authenticate to GHCR
-
-NVSentinel container images are published in GitHub Container Registry (GHCR). Authenticate to the registry if you have not done so already:
-
+**Authentication** (if needed):
 ```shell
 docker login ghcr.io
 ```
 
-### SPDX SBOM
+### SPDX SBOM (Software Bill of Materials)
 
-A Software Bill of Materials (SBOM) is a detailed inventory of all components, libraries, dependencies, and tools that make up a software application. SBOM provides visibility into the supply chain of software that was used to build NVSentinel images, identifying the origins, versions, and potential vulnerabilities of each component. These SBOMs are generated in [SPDX](https://spdx.dev/) (Software Package Data Exchange) v2.3 format. 
+A Software Bill of Materials (SBOM) provides a detailed inventory of all components in a container image. NVSentinel generates SBOMs in [SPDX](https://spdx.dev/) v2.3 format.
 
-To access the SBOM in the GHCR, first query the SBOM manifest: 
+**Query SBOM**:
 
 ```shell
+# Get SBOM manifest digest
 export SBOM_DIGEST=$(crane manifest $IMAGE_SBOM | jq -r '.layers[0].digest')
-```
 
-Finally query the actual SBOM using the `text/spdx+json` layer digest: 
-
-```shell
+# Retrieve SBOM content
 crane blob "$IMAGE@$SBOM_DIGEST"
 ```
 
-The SBOM is pretty long, here is an abbreviated version: 
+**Example SBOM output** (abbreviated):
 
 ```json
 {
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "sbom-sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6",
+  "name": "sbom-sha256:4558fc8a...",
   "spdxVersion": "SPDX-2.3",
   "creationInfo": {
     "created": "2025-10-13T16:04:04Z",
-    "creators": [
-      "Tool: ko v0.18.0"
-    ]
+    "creators": ["Tool: ko v0.18.0"]
   },
-  "dataLicense": "CC0-1.0",
-  "documentNamespace": "http://spdx.org/spdxdocs/ko/sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6",
-  "documentDescribes": [
-    "SPDXRef-Package-sha256-850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
-  ],
   "packages": [
     {
-      "SPDXID": "SPDXRef-Package-sha256-850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6",
-      "name": "sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6",
-      "filesAnalyzed": false,
-      "licenseDeclared": "NOASSERTION",
-      "licenseConcluded": "NOASSERTION",
-      "downloadLocation": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
+      "SPDXID": "SPDXRef-Package-sha256-850e8fd3...",
+      "name": "sha256:850e8fd3...",
       "primaryPackagePurpose": "CONTAINER",
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:oci/image@sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6?mediaType=application%2Fvnd.oci.image.manifest.v1%2Bjson",
           "referenceType": "purl"
         }
       ]
-    },
-...
+    }
+  ]
+}
 ```
-
 ### SLSA Build Provenance
 
-> All NVSentinel attestations can be viewed at https://github.com/NVIDIA/NVSentinel/attestations
+SLSA (Supply chain Levels for Software Artifacts) provides verifiable information about how images were built.
 
-To verify any single image:
+**View all attestations**: https://github.com/NVIDIA/NVSentinel/attestations
+
+**Verify a specific image**:
 
 ```shell
 gh attestation verify "oci://$IMAGE_DIGEST" \
@@ -117,3 +105,8 @@ gh attestation verify "oci://$IMAGE_DIGEST" \
   --cert-oidc-issuer https://token.actions.githubusercontent.com \
   --format json --jq '.[].verificationResult.summary'
 ```
+
+This verifies:
+- The image was built by the official NVSentinel publish workflow
+- The build occurred in the NVIDIA/NVSentinel repository
+- The build was properly signed and attested

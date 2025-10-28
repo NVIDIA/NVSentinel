@@ -18,7 +18,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/statemanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -143,7 +143,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
 		assert.Equal(t, "True", string(nodeCondition.Status))
 		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:79 gpu:0 XID error occured Recommended Action=RESTART_VM;", nodeCondition.Message)
+		assert.Equal(t, "ErrorCode:79 gpu:0 XID error occurred Recommended Action=RESTART_VM;", nodeCondition.Message)
 
 		return ctx
 	})
@@ -334,7 +334,7 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
 		assert.Equal(t, "True", string(nodeCondition.Status))
 		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:145 gpu:0 XID error occured Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
+		assert.Equal(t, "ErrorCode:145 gpu:0 XID error occurred Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
 
 		return ctx
 	})

@@ -275,7 +275,7 @@ type mockPlatformConnectorClient struct {
 	RecordedHealthEvents []*pb.HealthEvents
 }
 
-func (m *mockPlatformConnectorClient) HealthEventOccuredV1(ctx context.Context, events *pb.HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (m *mockPlatformConnectorClient) HealthEventOccurredV1(ctx context.Context, events *pb.HealthEvents, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	m.RecordedHealthEvents = append(m.RecordedHealthEvents, events)
 	return &emptypb.Empty{}, nil
 }
@@ -344,7 +344,7 @@ func TestPrepareHealthEvent(t *testing.T) {
 
 	message := "test message"
 	errRes := types.ErrorResolution{
-		RecommendedAction: pb.RecommenedAction_RESTART_BM,
+		RecommendedAction: pb.RecommendedAction_RESTART_BM,
 	}
 	healthEvents := fd.prepareHealthEventWithAction(check, message, false, errRes)
 
@@ -454,7 +454,7 @@ func (mh *mockHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
 		IsFatal:           true,
 		IsHealthy:         false,
 		NodeName:          mh.nodeName,
-		RecommendedAction: pb.RecommenedAction_RESTART_BM,
+		RecommendedAction: pb.RecommendedAction_RESTART_BM,
 		ErrorCode:         []string{"123"},
 	}
 

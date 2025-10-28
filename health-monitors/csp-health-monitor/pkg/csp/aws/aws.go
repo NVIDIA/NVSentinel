@@ -403,7 +403,7 @@ func (c *AWSClient) processSingleEntityForEvent(
 	evt types.Event,
 	entity types.AffectedEntity,
 	desc string,
-	action pb.RecommenedAction,
+	action pb.RecommendedAction,
 	nodeMap map[string]string,
 	eventChan chan<- model.MaintenanceEvent,
 ) {
@@ -764,7 +764,7 @@ func (c *AWSClient) getClusterInstanceNodeMap(ctx context.Context) (map[string]s
 	return instanceIDs, nil
 }
 
-func (c *AWSClient) mapToValidAction(desc string) pb.RecommenedAction {
+func (c *AWSClient) mapToValidAction(desc string) pb.RecommendedAction {
 	// Split the description into individual lines for easier parsing.
 	lines := strings.Split(desc, "\n")
 
@@ -776,23 +776,23 @@ func (c *AWSClient) mapToValidAction(desc string) pb.RecommenedAction {
 
 			switch {
 			case strings.Contains(section, "reset") && strings.Contains(section, "component"):
-				return pb.RecommenedAction_COMPONENT_RESET
+				return pb.RecommendedAction_COMPONENT_RESET
 
 			case strings.Contains(section, "stop and start") || strings.Contains(section, "reboot"):
-				return pb.RecommenedAction_RESTART_VM
+				return pb.RecommendedAction_RESTART_VM
 
 			case strings.Contains(section, "replace the instance") || strings.Contains(section, "launch a new"):
-				return pb.RecommenedAction_REPLACE_VM
+				return pb.RecommendedAction_REPLACE_VM
 
 			default:
 				metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "map_to_valid_action_error").Inc()
 				slog.Debug("Found suggested action but unable to parse",
 					"section", section)
 
-				return pb.RecommenedAction_NONE
+				return pb.RecommendedAction_NONE
 			}
 		}
 	}
 	// default action if no recommended action section is found
-	return pb.RecommenedAction_NONE
+	return pb.RecommendedAction_NONE
 }

@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	platformconnector "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -63,19 +63,19 @@ func TestK8sConnector_WithEnvtest_NodeConditionUpdate(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "XID 48 detected",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "test-node",
 			},
 		},
@@ -145,19 +145,19 @@ func TestK8sConnector_WithEnvtest_NodeConditionClear(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          true,
 				Message:            "No errors",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_NONE,
+				RecommendedAction:  protos.RecommendedAction_NONE,
 				NodeName:           "test-node",
 			},
 		},
@@ -202,19 +202,19 @@ func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
 				Message:            "GPU temperature warning",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				NodeName:           "test-node",
 			},
 		},
@@ -271,11 +271,11 @@ func TestK8sConnector_WithEnvtest_AddMessages(t *testing.T) {
 	defer close(stopCh)
 	connector := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := []*platformconnector.HealthEvent{
+	healthEvents := []*protos.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 			ErrorCode:          []string{"48"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -331,11 +331,11 @@ func TestK8sConnector_WithEnvtest_RemoveMessages(t *testing.T) {
 	defer close(stopCh)
 	connector := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := []*platformconnector.HealthEvent{
+	healthEvents := []*protos.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          true,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			GeneratedTimestamp: timestamppb.New(time.Now()),
 			NodeName:           "test-node",
 		},
@@ -377,12 +377,12 @@ func TestK8sConnector_WithEnvtest_MultipleEventsForSameNode(t *testing.T) {
 	defer close(stopCh)
 	connector := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEventsProto := &platformconnector.HealthEvents{
-		Events: []*platformconnector.HealthEvent{
+	healthEventsProto := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -391,7 +391,7 @@ func TestK8sConnector_WithEnvtest_MultipleEventsForSameNode(t *testing.T) {
 			{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				ErrorCode:          []string{"THERMAL_WARNING"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -462,11 +462,11 @@ func TestK8sConnector_WithEnvtest_TransitionTimeUpdates(t *testing.T) {
 	defer close(stopCh)
 	connector := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := []*platformconnector.HealthEvent{
+	healthEvents := []*protos.HealthEvent{
 		{
 			CheckName:          "GpuXidError",
 			IsHealthy:          false,
-			EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+			EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 			ErrorCode:          []string{"48"},
 			IsFatal:            true,
 			GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -510,18 +510,18 @@ func TestK8sConnector_WithEnvtest_EventCountIncrement(t *testing.T) {
 	defer close(stopCh)
 	connector := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvent := &platformconnector.HealthEvent{
+	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuThermalWatch",
 		IsHealthy:          false,
-		EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+		EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 		ErrorCode:          []string{"THERMAL_WARNING"},
 		IsFatal:            false,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		NodeName:           "test-node",
 	}
 
-	healthEventsProto := &platformconnector.HealthEvents{
-		Events: []*platformconnector.HealthEvent{healthEvent},
+	healthEventsProto := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{healthEvent},
 	}
 
 	err = connector.processHealthEvents(ctx, healthEventsProto)
@@ -562,19 +562,19 @@ func TestK8sConnector_WithEnvtest_NodeNotFound(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "XID 48 detected",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "non-existent-node",
 			},
 		},
@@ -606,9 +606,9 @@ func TestK8sConnector_WithEnvtest_EmptyHealthEvents(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events:  []*platformconnector.HealthEvent{},
+		Events:  []*protos.HealthEvent{},
 	}
 
 	err = k8sConn.processHealthEvents(ctx, healthEvents)
@@ -635,14 +635,14 @@ func TestK8sConnector_WithEnvtest_MultipleEntities(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName: "GpuXidError",
 				IsHealthy: false,
 				Message:   "Multiple GPUs affected",
-				EntitiesImpacted: []*platformconnector.Entity{
+				EntitiesImpacted: []*protos.Entity{
 					{EntityType: "GPU", EntityValue: "0"},
 					{EntityType: "GPU", EntityValue: "1"},
 					{EntityType: "GPU", EntityValue: "2"},
@@ -652,7 +652,7 @@ func TestK8sConnector_WithEnvtest_MultipleEntities(t *testing.T) {
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "test-node",
 			},
 		},
@@ -699,19 +699,19 @@ func TestK8sConnector_WithEnvtest_SpecialCharactersInMessage(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "Error: GPU failed with status <critical> @10:30AM",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "test-node",
 			},
 		},
@@ -755,43 +755,43 @@ func TestK8sConnector_WithEnvtest_MultipleCheckTypes(t *testing.T) {
 
 	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx)
 
-	healthEvents := &platformconnector.HealthEvents{
+	healthEvents := &protos.HealthEvents{
 		Version: 1,
-		Events: []*platformconnector.HealthEvent{
+		Events: []*protos.HealthEvent{
 			{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
 				Message:            "XID error",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_CONTACT_SUPPORT,
+				RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
 				NodeName:           "test-node",
 			},
 			{
 				CheckName:          "GpuThermalWatch",
 				IsHealthy:          false,
 				Message:            "Temperature warning",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "GPU", EntityValue: "1"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
 				ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
 				IsFatal:            false,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "gpu",
-				RecommendedAction:  platformconnector.RecommenedAction_UNKNOWN,
+				RecommendedAction:  protos.RecommendedAction_UNKNOWN,
 				NodeName:           "test-node",
 			},
 			{
 				CheckName:          "InfinibandLinkFlapping",
 				IsHealthy:          false,
 				Message:            "Link flapping detected",
-				EntitiesImpacted:   []*platformconnector.Entity{{EntityType: "IB", EntityValue: "mlx5_0"}},
+				EntitiesImpacted:   []*protos.Entity{{EntityType: "IB", EntityValue: "mlx5_0"}},
 				ErrorCode:          []string{},
 				IsFatal:            true,
 				GeneratedTimestamp: timestamppb.New(time.Now()),
 				ComponentClass:     "network",
-				RecommendedAction:  platformconnector.RecommenedAction_RESTART_BM,
+				RecommendedAction:  protos.RecommendedAction_RESTART_BM,
 				NodeName:           "test-node",
 			},
 		},

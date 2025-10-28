@@ -84,24 +84,15 @@ include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler-module/Tiltfile')
 
-# Override MongoDB image for ARM64 (macOS Apple Silicon)
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt-socket.yaml'  # Ensures /var/run exists for socket
 ]
-if os.name == 'posix' and str(local('uname -s')).strip() == 'Darwin' and str(local('uname -m')).strip() == 'arm64':
-    print('🍎 Detected macOS ARM64 - using ARM64-compatible MongoDB image')
-    # Create a temporary override file for ARM64 MongoDB image
-    arm64_override = """
-mongodb-store:
-  mongodb:
-    image:
-      repository: "dlavrenuek/bitnami-mongodb-arm"
-      tag: "8.0.4"
-"""
-    local('cat > /tmp/nvsentinel-arm64-override.yaml << EOF\n' + arm64_override + 'EOF')
-    values_files.append('/tmp/nvsentinel-arm64-override.yaml')
+
+arch = str(local('uname -m')).strip()
+if arch in ['arm64', 'aarch64']:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-arm64.yaml')
 
 yaml = helm(
     '../distros/kubernetes/nvsentinel',

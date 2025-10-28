@@ -246,7 +246,7 @@ func initializeEventFromLogEntry(entry *logging.Entry, nodeName string) *model.M
 		NodeName:               nodeName,
 		Status:                 model.StatusDetected,
 		Metadata:               make(map[string]string),
-		RecommendedAction:      pb.RecommenedAction_NONE.String(),
+		RecommendedAction:      pb.RecommendedAction_NONE.String(),
 	}
 
 	if entry.Resource == nil {
