@@ -228,13 +228,6 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		NodeName:           h.nodeName,
 		RecommendedAction:  pb.RecommendedAction_RESTART_BM,
 		ErrorCode:          []string{"GPU_FALLEN_OFF_BUS"},
-		Metadata: map[string]string{
-			"PCI_ADDRESS": event.pciAddr,
-		},
-	}
-
-	if event.pciID != "" {
-		healthEvent.Metadata["PCI_ID"] = event.pciID
 	}
 
 	return &pb.HealthEvents{
