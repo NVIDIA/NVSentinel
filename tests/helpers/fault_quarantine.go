@@ -65,21 +65,10 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	t.Log("Restarting fault-quarantine deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod to load new configuration")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	require.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready")
+	t.Log("Fault-quarantine pod restarted with new configuration")
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
@@ -140,21 +129,10 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 		os.Remove(backupPath)
 	}
 
-	t.Log("Restarting fault-quarantine deployment")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod to load restored configuration")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	assert.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready after restore")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready after restore")
+	t.Log("Fault-quarantine pod restarted with restored configuration")
 
 	return ctx
 }
@@ -347,21 +325,10 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	err = client.Resources().Create(ctx, cm)
 	require.NoError(t, err)
 
-	t.Log("Restarting fault-quarantine deployment to pick up CB state")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod to pick up CB state")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	require.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready with new CB state")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready with new CB state")
+	t.Log("Fault-quarantine pod restarted with new CB state")
 }
 
 func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config) string {
@@ -430,21 +397,10 @@ func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient
 	})
 	require.NoError(t, err, "failed to set circuit breaker threshold")
 
-	t.Log("Restarting deployment with new CB threshold")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod with new CB threshold")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	require.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready with new CB threshold")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready with new CB threshold")
+	t.Log("Fault-quarantine pod restarted with new CB threshold")
 
 	return originalDeployment
 }
@@ -493,21 +449,10 @@ func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Clien
 	})
 	require.NoError(t, err, "failed to disable dry-run mode")
 
-	t.Log("Restarting deployment with dry-run disabled")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod with dry-run disabled")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	require.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready with dry-run disabled")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready with dry-run disabled")
+	t.Log("Fault-quarantine pod restarted with dry-run disabled")
 }
 
 // EnableDryRunMode enables dry-run mode on the fault-quarantine deployment and returns the original deployment.
@@ -546,21 +491,10 @@ func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *
 	})
 	require.NoError(t, err, "failed to enable dry-run mode")
 
-	t.Log("Restarting deployment with dry-run enabled")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod with dry-run enabled")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	require.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready with dry-run mode")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready with dry-run mode")
+	t.Log("Fault-quarantine pod restarted with dry-run mode")
 
 	return originalDeployment
 }
@@ -580,19 +514,8 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 	})
 	assert.NoError(t, err, "failed to restore deployment")
 
-	t.Log("Restarting deployment with restored config")
-	err = RestartDeployment(ctx, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	t.Log("Restarting fault-quarantine pod with restored config")
+	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
 	assert.NoError(t, err)
-
-	t.Log("Waiting for deployment to be ready with restored config")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Deployment ready with restored config")
+	t.Log("Fault-quarantine pod restarted with restored config")
 }

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -58,19 +57,8 @@ func TestNodeDrainerRestart(t *testing.T) {
 		t.Log("Draining started (allowCompletion mode - pods won't evict yet)")
 		t.Log("Immediately restarting node-drainer pod")
 		restartTime := time.Now()
-		err = helpers.RestartDeployment(ctx, client, "nvsentinel-node-drainer", helpers.NVSentinelNamespace)
+		err = helpers.RestartPodByDeletion(ctx, t, client, helpers.NVSentinelNamespace, "app.kubernetes.io/name=node-drainer")
 		require.NoError(t, err)
-
-		t.Log("Waiting for deployment to be ready after restart")
-		require.Eventually(t, func() bool {
-			deployment := &appsv1.Deployment{}
-			err := client.Resources().Get(ctx, "nvsentinel-node-drainer", helpers.NVSentinelNamespace, deployment)
-			if err != nil {
-				return false
-			}
-			return deployment.Status.ReadyReplicas > 0 &&
-				deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		t.Log("Checking for new node events after restart (proves drainer picked up work)")
 		require.Eventually(t, func() bool {

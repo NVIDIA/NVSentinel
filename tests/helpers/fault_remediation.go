@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -311,21 +310,9 @@ func SendDrainCompletedEvent(ctx context.Context, t *testing.T, nodeName string,
 }
 
 func RestartFaultRemediationDeployment(ctx context.Context, t *testing.T, client klient.Client) {
-	t.Log("Restarting fault-remediation deployment")
-	err := RestartDeployment(ctx, client, "nvsentinel-fault-remediation", NVSentinelNamespace)
+	t.Log("Restarting fault-remediation pod")
+	err := RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-remediation")
 	require.NoError(t, err)
-
-	t.Log("Waiting for fault-remediation deployment to be ready")
-	require.Eventually(t, func() bool {
-		deployment := &appsv1.Deployment{}
-		err := client.Resources().Get(ctx, "nvsentinel-fault-remediation", NVSentinelNamespace, deployment)
-		if err != nil {
-			return false
-		}
-		return deployment.Status.ReadyReplicas > 0 &&
-			deployment.Status.UpdatedReplicas == deployment.Status.Replicas
-	}, WaitTimeout, WaitInterval)
-	t.Log("Fault-remediation deployment ready")
 }
 
 func GetNodeAnnotation(ctx context.Context, t *testing.T, client klient.Client, nodeName, annotationKey string) (string, bool) {

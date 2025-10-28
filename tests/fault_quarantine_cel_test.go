@@ -528,29 +528,6 @@ func TestMultipleEntityTracking(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		// Register cleanup - clears both entities in case recovery tests don't run
-		t.Cleanup(func() {
-			healthyEvent0 := helpers.NewHealthEvent(testCtx.NodeName).
-				WithEntity("GPU", "0").
-				WithErrorCode("79").
-				WithHealthy(true).
-				WithFatal(false).
-				WithMessage("GPU 0 healthy")
-			tempFile0 := helpers.SendHealthEvent(ctx, t, healthyEvent0)
-			defer os.Remove(tempFile0)
-
-			healthyEvent1 := helpers.NewHealthEvent(testCtx.NodeName).
-				WithEntity("GPU", "1").
-				WithErrorCode("79").
-				WithHealthy(true).
-				WithFatal(false).
-				WithMessage("GPU 1 healthy")
-			tempFile1 := helpers.SendHealthEvent(ctx, t, healthyEvent1)
-			defer os.Remove(tempFile1)
-
-			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
-		})
-
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithEntity("GPU", "1").
 			WithErrorCode("79")
@@ -591,27 +568,39 @@ func TestMultipleEntityTracking(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
+		t.Logf("Waiting for partial recovery - GPU 0 should be removed, GPU 1 should remain")
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
+				t.Logf("Failed to get node: %v", err)
 				return false
 			}
 
 			if !node.Spec.Unschedulable {
+				t.Logf("Node is not cordoned (expected cordoned)")
 				return false
 			}
 
 			annotation, exists := node.Annotations["quarantineHealthEvent"]
 			if !exists {
+				t.Logf("Quarantine annotation does not exist")
 				return false
 			}
 
 			var events []map[string]interface{}
 			if err := json.Unmarshal([]byte(annotation), &events); err != nil {
+				t.Logf("Failed to unmarshal annotation: %v", err)
 				return false
 			}
 
-			return len(events) == 1
+			t.Logf("Current annotation has %d events (expecting 1)", len(events))
+			if len(events) != 1 {
+				t.Logf("Annotation content: %s", annotation)
+				return false
+			}
+
+			t.Logf("Partial recovery successful: 1 event remaining")
+			return true
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
 		return ctx
