@@ -246,6 +246,10 @@ jobs:
       - name: Install E2E testing tools
         uses: ./.github/actions/install-e2e-tools
 
+      - name: Configure ctlptl registry authentication
+        run: |
+          ./scripts/configure-ctlptl-registry.sh
+
       - name: Compute ref name with short SHA
         id: ref-name
         run: |
@@ -282,6 +286,7 @@ jobs:
       - name: Create Kind cluster using make
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTLPTL_YAML: ctlptl-config.yaml
         run: |
           make cluster-create
 

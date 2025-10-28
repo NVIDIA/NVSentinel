@@ -112,7 +112,6 @@ jobs:
 
       - name: Configure ctlptl registry authentication
         run: |
-          chmod +x scripts/configure-ctlptl-registry.sh
           ./scripts/configure-ctlptl-registry.sh
 
       - name: Compute ref name with short SHA

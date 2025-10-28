@@ -19,7 +19,7 @@
 # MODULE-SPECIFIC CONFIGURATION
 # =============================================================================
 
-# Logger-sdk specific settings (library module - no Docker or binary)
+# commons specific settings (library module - no Docker or binary)
 IS_GO_MODULE := 1
 HAS_DOCKER := 0
 

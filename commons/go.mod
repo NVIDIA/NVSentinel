@@ -1,4 +1,4 @@
-module github.com/nvidia/nvsentinel/logger-sdk
+module github.com/nvidia/nvsentinel/commons
 
 go 1.25
 
