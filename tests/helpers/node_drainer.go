@@ -57,7 +57,7 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	}
 
 	t.Log("Backing up current node-drainer configmap")
-	backupPath, err := backgupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
+	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
@@ -66,8 +66,8 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	err = createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	t.Log("Restarting node-drainer pod")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=node-drainer")
+	t.Log("Restarting node-drainer deployment")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
@@ -124,8 +124,8 @@ func TeardownNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Confi
 		os.Remove(backupPath)
 	}
 
-	t.Log("Restarting node-drainer pod")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=node-drainer")
+	t.Log("Restarting node-drainer deployment")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	return ctx

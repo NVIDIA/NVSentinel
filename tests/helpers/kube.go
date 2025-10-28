@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -715,7 +716,8 @@ func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath,
 	return fmt.Errorf("failed to create config map after %d retries: %w", maxRetries, lastErr)
 }
 
-func backgupConfigMap(ctx context.Context, c klient.Client, name, namespace string) (string, error) {
+// BackupConfigMap backs up a configmap to a temporary file and returns the file path.
+func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) (string, error) {
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -737,13 +739,142 @@ func backgupConfigMap(ctx context.Context, c klient.Client, name, namespace stri
 	return filepath, nil
 }
 
+// WaitForDeploymentRollout waits for a deployment rollout to complete.
+// This checks the same conditions as `kubectl rollout status` and verifies at least one pod is ready.
+func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client, name, namespace string) {
+	t.Logf("Waiting for rollout to complete for deployment %s/%s", namespace, name)
+
+	require.Eventually(t, func() bool {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
+			t.Logf("Error getting deployment: %v", err)
+			return false
+		}
+
+		// Check all conditions for a successful rollout (same as kubectl rollout status)
+		if deployment.Spec.Replicas == nil {
+			t.Logf("Deployment spec replicas is nil")
+			return false
+		}
+
+		expectedReplicas := *deployment.Spec.Replicas
+
+		if deployment.Status.UpdatedReplicas != expectedReplicas {
+			t.Logf("Waiting: UpdatedReplicas=%d, Expected=%d", deployment.Status.UpdatedReplicas, expectedReplicas)
+			return false
+		}
+
+		if deployment.Status.ReadyReplicas != expectedReplicas {
+			t.Logf("Waiting: ReadyReplicas=%d, Expected=%d", deployment.Status.ReadyReplicas, expectedReplicas)
+			return false
+		}
+
+		if deployment.Status.AvailableReplicas != expectedReplicas {
+			t.Logf("Waiting: AvailableReplicas=%d, Expected=%d", deployment.Status.AvailableReplicas, expectedReplicas)
+			return false
+		}
+
+		if deployment.Status.ObservedGeneration < deployment.Generation {
+			t.Logf("Waiting: ObservedGeneration=%d, Generation=%d", deployment.Status.ObservedGeneration, deployment.Generation)
+			return false
+		}
+
+		// Find the current ReplicaSet (highest revision) to verify we're checking the right pods
+		rsList := &appsv1.ReplicaSetList{}
+		rsLabelSelector := ""
+		rsLabels := []string{}
+		for k, v := range deployment.Spec.Selector.MatchLabels {
+			rsLabels = append(rsLabels, fmt.Sprintf("%s=%s", k, v))
+		}
+		rsLabelSelector = strings.Join(rsLabels, ",")
+
+		if err := c.Resources(namespace).List(ctx, rsList, resources.WithLabelSelector(rsLabelSelector)); err != nil {
+			t.Logf("Error listing ReplicaSets: %v", err)
+			return false
+		}
+
+		// Find the ReplicaSet with highest revision (current one)
+		var currentRS *appsv1.ReplicaSet
+		highestRevision := int64(-1)
+		for i := range rsList.Items {
+			rs := &rsList.Items[i]
+			if rs.Annotations == nil {
+				continue
+			}
+			revisionStr := rs.Annotations["deployment.kubernetes.io/revision"]
+			if revisionStr == "" {
+				continue
+			}
+			revision := int64(0)
+			fmt.Sscanf(revisionStr, "%d", &revision)
+			if revision > highestRevision {
+				highestRevision = revision
+				currentRS = rs
+			}
+		}
+
+		if currentRS == nil {
+			t.Logf("Could not find current ReplicaSet")
+			return false
+		}
+
+		currentPodTemplateHash := currentRS.Labels["pod-template-hash"]
+		t.Logf("Current ReplicaSet: %s (revision: %d, hash: %s)", currentRS.Name, highestRevision, currentPodTemplateHash)
+
+		// Now verify at least one pod from the current ReplicaSet is ready
+		labelSelector := ""
+		labels := []string{}
+		for k, v := range deployment.Spec.Selector.MatchLabels {
+			labels = append(labels, fmt.Sprintf("%s=%s", k, v))
+		}
+		labelSelector = strings.Join(labels, ",")
+
+		pods := &v1.PodList{}
+		if err := c.Resources(namespace).List(ctx, pods, resources.WithLabelSelector(labelSelector)); err != nil {
+			t.Logf("Error listing pods: %v", err)
+			return false
+		}
+
+		readyPodFound := false
+		for _, pod := range pods.Items {
+			if pod.DeletionTimestamp != nil {
+				continue
+			}
+
+			podHash := pod.Labels["pod-template-hash"]
+			if podHash != currentPodTemplateHash {
+				t.Logf("Skipping pod %s from old ReplicaSet (hash: %s)", pod.Name, podHash)
+				continue
+			}
+
+			if pod.Status.Phase == v1.PodRunning && IsPodReady(pod) {
+				t.Logf("Found ready pod from current ReplicaSet: %s", pod.Name)
+				readyPodFound = true
+				break
+			}
+		}
+
+		if !readyPodFound {
+			t.Logf("No ready pod from current ReplicaSet found yet")
+			return false
+		}
+
+		t.Logf("Rollout complete: all %d replicas are updated, ready, and available", expectedReplicas)
+		return true
+	}, WaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
+
+	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
+}
+
 // RestartDeployment triggers a rolling restart of the specified deployment by updating
-// the restartedAt annotation on the pod template. Uses retry.RetryOnConflict for automatic
-// retry handling with exponential backoff.
-func RestartDeployment(ctx context.Context, c klient.Client, name, namespace string) error {
+// the restartedAt annotation on the pod template, then waits for the rollout to complete.
+// Uses retry.RetryOnConflict for automatic retry handling with exponential backoff.
+func RestartDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string) error {
+	t.Logf("Triggering rollout restart for deployment %s/%s", namespace, name)
+
 	restartTime := time.Now().Format(time.RFC3339)
 
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
 			return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
@@ -760,6 +891,13 @@ func RestartDeployment(ctx context.Context, c klient.Client, name, namespace str
 
 		return nil
 	})
+
+	if err != nil {
+		return fmt.Errorf("failed to trigger rollout restart: %w", err)
+	}
+
+	WaitForDeploymentRollout(ctx, t, c, name, namespace)
+	return nil
 }
 
 // CheckNodeConditionExists checks if a node has a specific condition type and reason.
@@ -1023,63 +1161,4 @@ func IsPodReady(pod v1.Pod) bool {
 		}
 	}
 	return false
-}
-
-func RestartPodByDeletion(ctx context.Context, t *testing.T, client klient.Client, namespace string, labelSelector string) error {
-	t.Logf("Deleting pod with selector '%s' to force restart", labelSelector)
-
-	pods := &v1.PodList{}
-	err := client.Resources(namespace).List(ctx, pods, resources.WithLabelSelector(labelSelector))
-	if err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	if len(pods.Items) == 0 {
-		return fmt.Errorf("no pods found with selector %s", labelSelector)
-	}
-
-	oldPodName := pods.Items[0].Name
-	t.Logf("Existing pod to delete: %s", oldPodName)
-
-	err = DeletePod(ctx, client, namespace, oldPodName)
-	if err != nil {
-		return fmt.Errorf("failed to delete pod: %w", err)
-	}
-
-	t.Logf("Pod deleted, waiting for new pod to appear")
-
-	var newPodName string
-	require.Eventually(t, func() bool {
-		pods := &v1.PodList{}
-		err := client.Resources(namespace).List(ctx, pods,
-			resources.WithLabelSelector(labelSelector))
-		if err != nil {
-			t.Logf("Error listing pods: %v", err)
-			return false
-		}
-
-		if len(pods.Items) > 0 && pods.Items[0].Name != oldPodName {
-			newPodName = pods.Items[0].Name
-			t.Logf("New pod %s found", newPodName)
-			return true
-		}
-		return false
-	}, WaitTimeout, WaitInterval, "new pod with selector %s should appear", labelSelector)
-
-	t.Logf("Waiting for new pod %s to be ready", newPodName)
-	require.Eventually(t, func() bool {
-		var pod v1.Pod
-		err := client.Resources().Get(ctx, newPodName, namespace, &pod)
-		if err != nil {
-			return false
-		}
-		ready := IsPodReady(pod)
-		if !ready {
-			t.Logf("Pod %s not ready yet", newPodName)
-		}
-		return ready
-	}, WaitTimeout, WaitInterval, "pod %s should be ready", newPodName)
-
-	t.Logf("New pod %s is ready", newPodName)
-	return nil
 }

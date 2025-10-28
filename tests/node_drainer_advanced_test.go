@@ -55,9 +55,9 @@ func TestNodeDrainerRestart(t *testing.T) {
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Draining started (allowCompletion mode - pods won't evict yet)")
-		t.Log("Immediately restarting node-drainer pod")
+		t.Log("Immediately restarting node-drainer deployment")
 		restartTime := time.Now()
-		err = helpers.RestartPodByDeletion(ctx, t, client, helpers.NVSentinelNamespace, "app.kubernetes.io/name=node-drainer")
+		err = helpers.RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", helpers.NVSentinelNamespace)
 		require.NoError(t, err)
 
 		t.Log("Checking for new node events after restart (proves drainer picked up work)")
@@ -188,17 +188,6 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-
-		t.Log("Waiting for healthy event to be processed")
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			return !node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
 		t.Log("Creating pods in multiple *non-prod* namespaces")
 		testPods := helpers.CreatePodsFromTemplate(ctx, t, client,
 			"data/busybox-pods.yaml", testCtx.NodeName, "test-non-prod")
@@ -246,20 +235,16 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		helpers.DeletePodsByNames(ctx, t, client, "test-non-prod", testPods)
 		helpers.WaitForPodsDeleted(ctx, t, client, "test-non-prod", testPods)
 
-		t.Log("Waiting for drain to complete")
-		require.Eventually(t, func() bool {
+		t.Log("Verifying drain does NOT complete yet (other namespaces still have pods)")
+		require.Never(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			if err != nil {
 				return false
 			}
 			labelValue, exists := node.Labels[helpers.NVSentinelStateLabelKey]
+			// Return true if drain completed (which should NOT happen)
 			return exists && labelValue == helpers.DrainSucceededLabelValue
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		labelValue := node.Labels[helpers.NVSentinelStateLabelKey]
-		require.Equal(t, helpers.DrainingLabelValue, labelValue, "should still be draining")
+		}, 15*time.Second, 3*time.Second, "drain should NOT complete while other namespaces have pods")
 
 		t.Log("Completing all remaining pods")
 		helpers.DeletePodsByNames(ctx, t, client, "dev-non-prod", devPods)
