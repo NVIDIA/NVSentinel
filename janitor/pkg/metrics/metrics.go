@@ -90,3 +90,13 @@ var GlobalMetrics *ActionMetrics
 func init() {
 	GlobalMetrics = NewActionMetrics()
 }
+
+// IncActionCount is a convenience function to increment action count using the global instance
+func IncActionCount(actionType, status, node string) {
+	GlobalMetrics.IncActionCount(actionType, status, node)
+}
+
+// RecordActionMTTR is a convenience function to record MTTR using the global instance
+func RecordActionMTTR(actionType string, duration time.Duration) {
+	GlobalMetrics.RecordActionMTTR(actionType, duration)
+}

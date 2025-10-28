@@ -57,8 +57,33 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
+          - DELETE
         resources:
           - rebootnodes
+        scope: "*"
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+  - name: vterminatenode-v1alpha1.kb.io
+    clientConfig:
+      service:
+        name: {{ include "janitor.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-janitor-dgxc-nvidia-com-v1alpha1-terminatenode
+        port: {{ .Values.webhook.port }}
+    rules:
+      - apiGroups:
+          - janitor.dgxc.nvidia.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - terminatenodes
         scope: "*"
     admissionReviewVersions:
       - v1

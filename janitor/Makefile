@@ -33,6 +33,10 @@ CLEAN_EXTRA_FILES := janitor
 include ../make/common.mk
 include ../make/go.mk
 
+# Paths for generated files (must be after common.mk to get REPO_ROOT)
+API_DIR := api/v1alpha1
+CRD_OUTPUT_DIR := $(REPO_ROOT)/distros/kubernetes/nvsentinel/charts/janitor/crds
+
 # Test setup commands for kubebuilder envtest
 # Version is centrally managed in .versions.yaml
 TEST_SETUP_COMMANDS := \
@@ -47,6 +51,28 @@ TEST_SETUP_COMMANDS := \
 all: lint-test ## Run lint-test (default target)
 
 # =============================================================================
+# CODE GENERATION TARGETS
+# =============================================================================
+
+.PHONY: generate
+generate: ## Generate CRDs and move them to Helm chart directory
+	@echo "Generating CRDs for janitor..."
+	@# Install controller-gen if not present
+	@which controller-gen > /dev/null || (echo "Installing controller-gen..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest)
+	@# Generate CRDs into api/v1alpha1 directory
+	@controller-gen crd paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
+	@# Move generated CRDs to Helm chart crds directory
+	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."
+	@mkdir -p $(CRD_OUTPUT_DIR)
+	@mv ./$(API_DIR)/*.yaml $(CRD_OUTPUT_DIR)/
+	@echo "CRDs generated and moved successfully!"
+	@echo "Generated files:"
+	@ls -1 $(CRD_OUTPUT_DIR)/*.yaml
+
+.PHONY: manifests
+manifests: generate ## Alias for generate (for compatibility)
+
+# =============================================================================
 # MODULE HELP
 # =============================================================================
 
@@ -55,6 +81,7 @@ help:
 	@echo "janitor Makefile - Using nvsentinel make/*.mk standards"
 	@echo ""
 	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
+	@echo "Generation targets: generate, manifests"
 	@echo "Ko targets: ko-build, ko-publish"
 	@echo ""
 	@echo "Build notes:"
@@ -69,4 +96,3 @@ help:
 # =============================================================================
 # This module handles node reboot and maintenance operations.
 # Run 'make help' to see all available targets and build instructions.
-

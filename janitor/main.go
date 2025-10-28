@@ -16,10 +16,13 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,6 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
@@ -69,48 +74,62 @@ func main() {
 
 // nolint:cyclop,gocyclo,gocognit
 func run() error {
-	var metricsAddr string
-
-	var probeAddr string
-
-	var enableLeaderElection bool
-
-	var configFile string
-
-	var webhookPort int
-
-	var webhookCertPath string
-
-	var webhookCertName string
-
-	var webhookCertKey string
-
-	var enableHTTP2 bool
-
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
-	flag.StringVar(&configFile, "config", "", "Path to configuration file")
-	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port for the webhook server")
-	flag.StringVar(
-		&webhookCertPath,
-		"webhook-cert-path",
-		"",
-		"The directory that contains the webhook certificate.",
+	var (
+		metricsAddr                                      string
+		metricsCertPath, metricsCertName, metricsCertKey string
+		webhookCertPath, webhookCertName, webhookCertKey string
+		probeAddr                                        string
+		configAddr                                       string
+		enableLeaderElection                             bool
+		secureMetrics                                    bool
+		enableHTTP2                                      bool
+		configFile                                       string
+		// Leader election tuning parameters
+		leaseDuration time.Duration
+		renewDeadline time.Duration
+		retryPeriod   time.Duration
 	)
+
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
+		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&configAddr, "config-bind-address", ":8082", "The address the config endpoint binds to.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager. "+
+			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&secureMetrics, "metrics-secure", false,
+		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
 	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.")
+	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
+	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the webhook server")
+		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&configFile, "config", "", "The path to the configuration file.")
+
+	// Leader election flags
+	// Defaulting to pretty high values, we were hitting some crashes
+	// with the default values. Janitor as a project is not sensitive
+	// to slow leader transitions so high defaults are okay.
+	flag.DurationVar(&leaseDuration, "lease-duration", 90*time.Second,
+		"The duration that non-leader candidates will wait to force acquire leadership.")
+	flag.DurationVar(&renewDeadline, "renew-deadline", 60*time.Second,
+		"The duration that the acting controlplane will retry refreshing leadership before giving up.")
+	flag.DurationVar(&retryPeriod, "retry-period", 5*time.Second,
+		"The duration the LeaderElector clients should wait between tries of actions.")
 
 	flag.Parse()
 
 	slog.Info("Parsed flags",
 		"metrics-bind-address", metricsAddr,
 		"health-probe-bind-address", probeAddr,
+		"config-bind-address", configAddr,
 		"leader-elect", enableLeaderElection,
 		"config", configFile,
-		"webhook-port", webhookPort)
+		"secure-metrics", secureMetrics)
 
 	// Load configuration from file
 	cfg, err := config.LoadConfig(configFile)
@@ -120,13 +139,36 @@ func run() error {
 	}
 
 	slog.Info("Loaded configuration",
+		"rebootNode.enabled", cfg.RebootNode.Enabled,
 		"rebootNode.timeout", cfg.RebootNode.Timeout,
+		"terminateNode.enabled", cfg.TerminateNode.Enabled,
+		"terminateNode.timeout", cfg.TerminateNode.Timeout,
 		"global.manualMode", cfg.Global.ManualMode)
 
-	// Setup TLS options for webhook server
-	var tlsOpts []func(*tls.Config)
+	// Start a simple HTTP server for the /config endpoint
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
 
-	var webhookCertWatcher *certwatcher.CertWatcher
+			if err := json.NewEncoder(w).Encode(cfg); err != nil {
+				slog.Error("Failed to encode configuration as JSON", "error", err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+
+				return
+			}
+		})
+
+		slog.Info("Starting config HTTP server", "address", configAddr)
+
+		// nolint:gosec // G114: Config endpoint is for internal debugging/monitoring
+		if err := http.ListenAndServe(configAddr, mux); err != nil {
+			slog.Error("Config HTTP server failed", "error", err)
+		}
+	}()
+
+	// Setup TLS options
+	var tlsOpts []func(*tls.Config)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	if !enableHTTP2 {
@@ -136,15 +178,10 @@ func run() error {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Setup controller manager options
-	mgrOptions := ctrl.Options{
-		Scheme:                 scheme,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "janitor.dgxc.nvidia.com",
-	}
+	// Create watchers for metrics and webhooks certificates
+	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
 
-	// Configure webhook server
+	// Initial webhook TLS options
 	webhookTLSOpts := tlsOpts
 
 	if len(webhookCertPath) > 0 {
@@ -167,19 +204,65 @@ func run() error {
 		})
 	}
 
-	mgrOptions.WebhookServer = webhook.NewServer(webhook.Options{
-		Port:    webhookPort,
+	webhookServer := webhook.NewServer(webhook.Options{
 		TLSOpts: webhookTLSOpts,
 	})
 
-	slog.Info("Webhook server configured", "port", webhookPort)
+	// Metrics endpoint configuration
+	metricsServerOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: secureMetrics,
+		TLSOpts:       tlsOpts,
+	}
+
+	if secureMetrics {
+		// FilterProvider is used to protect the metrics endpoint with authn/authz.
+		// These configurations ensure that only authorized users and service accounts
+		// can access the metrics endpoint. The RBAC are configured in the Helm chart.
+		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+
+	// If the certificate is not specified, controller-runtime will automatically
+	// generate self-signed certificates for the metrics server. While convenient for development and testing,
+	// this setup is not recommended for production.
+	if len(metricsCertPath) > 0 {
+		slog.Info("Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", metricsCertPath,
+			"metrics-cert-name", metricsCertName,
+			"metrics-cert-key", metricsCertKey)
+
+		metricsCertWatcher, err = certwatcher.New(
+			filepath.Join(metricsCertPath, metricsCertName),
+			filepath.Join(metricsCertPath, metricsCertKey),
+		)
+		if err != nil {
+			slog.Error("Failed to initialize metrics certificate watcher", "error", err)
+			return err
+		}
+
+		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
+			config.GetCertificate = metricsCertWatcher.GetCertificate
+		})
+	}
 
 	// Setup controller manager
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOptions)
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsServerOptions,
+		WebhookServer:          webhookServer,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "janitor.dgxc.nvidia.com",
+		LeaseDuration:          &leaseDuration,
+		RenewDeadline:          &renewDeadline,
+		RetryPeriod:            &retryPeriod,
+	})
 	if err != nil {
 		slog.Error("Unable to create manager", "error", err)
 		return err
 	}
+
+	slog.Info("Manager created successfully")
 
 	// Setup RebootNode controller
 	if err = (&controller.RebootNodeReconciler{
@@ -191,15 +274,36 @@ func run() error {
 		return err
 	}
 
-	// Setup webhook
-	if err = webhookv1alpha1.SetupRebootNodeWebhookWithManager(mgr, &cfg.RebootNode); err != nil {
-		slog.Error("Unable to create webhook", "webhook", "RebootNode", "error", err)
+	// Setup TerminateNode controller
+	if err = (&controller.TerminateNodeReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Config: &cfg.TerminateNode,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("Unable to create controller", "controller", "TerminateNode", "error", err)
 		return err
 	}
 
-	slog.Info("RebootNode validation webhook registered")
+	slog.Info("RebootNode and TerminateNode controllers registered")
 
-	// Add certificate watcher to manager if configured
+	// Setup unified webhook for all Janitor CRDs
+	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {
+		slog.Error("Unable to create webhook", "webhook", "Janitor", "error", err)
+		return err
+	}
+
+	slog.Info("Janitor validation webhook registered for all CRDs")
+
+	// Add certificate watchers to manager if configured
+	if metricsCertWatcher != nil {
+		slog.Info("Adding metrics certificate watcher to manager")
+
+		if err := mgr.Add(metricsCertWatcher); err != nil {
+			slog.Error("Unable to add metrics certificate watcher to manager", "error", err)
+			return err
+		}
+	}
+
 	if webhookCertWatcher != nil {
 		slog.Info("Adding webhook certificate watcher to manager")
 

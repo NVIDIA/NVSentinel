@@ -97,7 +97,7 @@ There are no services load balancing requests between MongoDB(&reg;) nodes; inst
 
 ## Prerequisites
 
-- Kubernetes 1.23+
+- Kubernetes 1.25+
 - Helm 3.8.0+
 - PV provisioner support in the underlying infrastructure
 

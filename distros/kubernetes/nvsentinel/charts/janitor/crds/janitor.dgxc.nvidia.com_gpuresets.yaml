@@ -17,28 +17,29 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.1
-  name: terminatenodes.janitor.dgxc.nvidia.com
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: gpuresets.janitor.dgxc.nvidia.com
 spec:
   group: janitor.dgxc.nvidia.com
   names:
-    kind: TerminateNode
-    listKind: TerminateNodeList
-    plural: terminatenodes
-    singular: terminatenode
+    kind: GPUReset
+    listKind: GPUResetList
+    plural: gpuresets
+    singular: gpureset
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.nodeName
+    - description: The target node for the GPU reset
+      jsonPath: .spec.nodeName
       name: Node
       type: string
-    - jsonPath: .status.conditions[?(@.type=='NodeTerminated')].status
-      name: NodeTerminated
-      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: TerminateNode is the Schema for the terminatenodes API
+        description: GPUReset is the Schema for the gpuresets API.
         properties:
           apiVersion:
             description: |-
@@ -58,23 +59,43 @@ spec:
           metadata:
             type: object
           spec:
-            description: TerminateNodeSpec defines the desired state of TerminateNode
+            description: GPUResetSpec defines the desired state of GPUReset.
             properties:
-              force:
-                default: false
-                description: Force indicates whether to force reboot the node
-                type: boolean
               nodeName:
-                description: NodeName is the name of the node to reboot
+                description: NodeName identifies the node which contains the GPUs
+                  to reset.
+                minLength: 1
                 type: string
+              selector:
+                description: |-
+                  Selector is used to target one or more specific devices to reset.
+                  If this field is omitted or empty, all GPUs on the node will be reset.
+                properties:
+                  pciBusIDs:
+                    description: |-
+                      PCIBusIDs is a list of GPU PCI bus IDs.
+                      Format: "domain:bus:device.function" (e.g., "0000:01:00.0").
+                    items:
+                      pattern: ^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]{1}$
+                      type: string
+                    type: array
+                  uuids:
+                    description: UUIDs is a list of GPU UUIDs.
+                    items:
+                      pattern: ^GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                      type: string
+                    type: array
+                type: object
             required:
             - nodeName
             type: object
           status:
-            description: TerminateNodeStatus defines the observed state of TerminateNode
+            description: GPUResetStatus defines the observed state of GPUReset.
             properties:
               completionTime:
-                description: CompletionTime is the time when the reboot was completed
+                description: |-
+                  CompletionTime is the time at which the reset operation finished,
+                  regardless of the outcome (success or failure).
                 format: date-time
                 type: string
               conditions:
@@ -136,7 +157,8 @@ spec:
                   type: object
                 type: array
               startTime:
-                description: StartTime is the time when the reboot was initiated
+                description: StartTime is the time at which the reset operation began
+                  processing.
                 format: date-time
                 type: string
             type: object

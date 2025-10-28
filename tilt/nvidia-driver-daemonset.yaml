@@ -27,7 +27,7 @@ spec:
         app: nvidia-driver-daemonset
     spec:
       containers:
-      - image: ubuntu:22.04
+      - image: public.ecr.aws/docker/library/ubuntu:22.04
         command: ["sleep", "infinity"]
         name: nvidia-driver-ctr
       tolerations:

@@ -24,8 +24,9 @@ import (
 
 // Config represents the janitor configuration structure
 type Config struct {
-	Global     GlobalConfig               `mapstructure:"global" json:"global"`
-	RebootNode RebootNodeControllerConfig `mapstructure:"rebootNodeController" json:"rebootNodeController"`
+	Global        GlobalConfig                  `mapstructure:"global" json:"global"`
+	RebootNode    RebootNodeControllerConfig    `mapstructure:"rebootNodeController" json:"rebootNodeController"`
+	TerminateNode TerminateNodeControllerConfig `mapstructure:"terminateNodeController" json:"terminateNodeController"`
 }
 
 // GlobalConfig contains global janitor settings
@@ -42,11 +43,26 @@ type NodeConfig struct {
 
 // RebootNodeControllerConfig contains configuration for reboot node controller
 type RebootNodeControllerConfig struct {
+	// Enabled indicates if the controller is enabled
+	Enabled bool
 	// ManualMode indicates if the controller should skip sending reboot signals
 	ManualMode bool
 	// Timeout for reboot operations
 	Timeout time.Duration
 	// NodeExclusions defines label selectors for nodes that should be excluded from reboot operations
+	// Nodes matching any of these label selectors will be rejected by the admission webhook
+	NodeExclusions []metav1.LabelSelector
+}
+
+// TerminateNodeControllerConfig contains configuration for terminate node controller
+type TerminateNodeControllerConfig struct {
+	// Enabled indicates if the controller is enabled
+	Enabled bool
+	// ManualMode indicates if the controller should skip sending terminate signals
+	ManualMode bool
+	// Timeout for terminate operations
+	Timeout time.Duration
+	// NodeExclusions defines label selectors for nodes that should be excluded from terminate operations
 	// Nodes matching any of these label selectors will be rejected by the admission webhook
 	NodeExclusions []metav1.LabelSelector
 }
@@ -78,22 +94,9 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	config = applyEffectiveConfig(config)
+	// Apply node exclusions from global config to controller-specific configs
+	config.RebootNode.NodeExclusions = config.Global.Nodes.Exclusions
+	config.TerminateNode.NodeExclusions = config.Global.Nodes.Exclusions
 
 	return &config, nil
-}
-
-// applyEffectiveConfig applies inheritance and overrides to the configuration
-func applyEffectiveConfig(config Config) Config {
-	if config.RebootNode.Timeout == 0 {
-		config.RebootNode.Timeout = config.Global.Timeout
-	}
-
-	if config.Global.ManualMode {
-		config.RebootNode.ManualMode = true
-	}
-
-	config.RebootNode.NodeExclusions = config.Global.Nodes.Exclusions
-
-	return config
 }

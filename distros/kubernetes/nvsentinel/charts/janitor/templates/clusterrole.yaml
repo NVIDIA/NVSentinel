@@ -26,6 +26,7 @@ rules:
   - get
   - list
   - watch
+  - delete
 - apiGroups:
   - ""
   resources:
@@ -58,6 +59,32 @@ rules:
   - janitor.dgxc.nvidia.com
   resources:
   - rebootnodes/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - terminatenodes
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - terminatenodes/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - terminatenodes/finalizers
   verbs:
   - update
 

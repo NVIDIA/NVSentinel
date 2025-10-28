@@ -20,15 +20,17 @@ metadata:
 data:
   config.yaml: |
     global:
-      timeout: {{ .Values.config.timeout | default "30m" }}
+      timeout: {{ .Values.config.timeout | default "25m" }}
       manualMode: {{ .Values.config.manualMode | default false }}
       {{- if .Values.config.nodes.exclusions }}
       nodes:
         exclusions:
         {{- range .Values.config.nodes.exclusions }}
-          - matchLabels:
+          - {{- if .matchLabels }}
+            matchLabels:
             {{- range $key, $value := .matchLabels }}
               {{ $key }}: {{ $value | quote }}
+            {{- end }}
             {{- end }}
             {{- if .matchExpressions }}
             matchExpressions:
@@ -47,5 +49,11 @@ data:
       {{- end }}
     
     rebootNodeController:
-      timeout: {{ .Values.config.controllers.rebootNode.timeout | default .Values.config.timeout }}
-
+      enabled: {{ if (hasKey .Values.config.controllers.rebootNode "enabled") }}{{ .Values.config.controllers.rebootNode.enabled }}{{ else }}true{{ end }}
+      timeout: {{ .Values.config.controllers.rebootNode.timeout | default .Values.config.timeout | default "25m" }}
+      manualMode: {{ .Values.config.manualMode | default false }}
+    
+    terminateNodeController:
+      enabled: {{ if (hasKey .Values.config.controllers.terminateNode "enabled") }}{{ .Values.config.controllers.terminateNode.enabled }}{{ else }}true{{ end }}
+      timeout: {{ .Values.config.controllers.terminateNode.timeout | default .Values.config.timeout | default "25m" }}
+      manualMode: {{ .Values.config.manualMode | default false }}

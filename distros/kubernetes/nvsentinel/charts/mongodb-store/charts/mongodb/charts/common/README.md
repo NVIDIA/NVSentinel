@@ -34,7 +34,7 @@ Bitnami charts can be used with [Kubeapps](https://kubeapps.dev/) for deployment
 
 ## Prerequisites
 
-- Kubernetes 1.23+
+- Kubernetes 1.25+
 - Helm 3.8.0+
 
 ## Parameters

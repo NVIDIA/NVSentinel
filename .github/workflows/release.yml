@@ -18,6 +18,13 @@ on:
   push:
     tags:
       - 'v*'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/*.yaml'
+      - '.github/*.yml'
+      - '.github/headers/**'
   workflow_dispatch:
     inputs:
       tag:
