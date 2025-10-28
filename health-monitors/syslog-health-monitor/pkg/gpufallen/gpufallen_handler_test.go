@@ -194,7 +194,6 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
-		defer handler.Close()
 		defer handler.Close() // Cleanup goroutine to prevent leaks
 
 		// Process XID message first
