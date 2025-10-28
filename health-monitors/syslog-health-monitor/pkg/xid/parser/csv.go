@@ -23,15 +23,16 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/patterns"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
 )
 
 var (
-	reXidPattern = regexp.MustCompile(
-		`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): (\d+)(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
-	)
+	// reXidPattern uses the canonical XID pattern from the patterns package
+	reXidPattern = patterns.XIDPattern
 
+	// reXidNVL5Pattern matches NVIDIA NVL5 XID messages with subcode and intrinfo
 	reXidNVL5Pattern = regexp.MustCompile(
 		`NVRM: Xid \(PCI:([^)]+)\): (\d+)(?:, pid=[^,]*)?(?:, name=[^,]*)?, ` +
 			`(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+Link\s+(-?\d+)\s+\((0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)`,

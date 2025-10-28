@@ -16,6 +16,7 @@ package gpufallen
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -27,14 +28,27 @@ import (
 // NewGPUFallenHandler creates a new GPUFallenHandler instance.
 func NewGPUFallenHandler(nodeName, defaultAgentName,
 	defaultComponentClass, checkName string) (*GPUFallenHandler, error) {
-	return &GPUFallenHandler{
+	h := &GPUFallenHandler{
 		nodeName:              nodeName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
 		recentXIDs:            make(map[string]xidRecord),
 		xidWindow:             5 * time.Minute, // Remember XIDs for 5 minutes
-	}, nil
+	}
+
+	// Start background cleanup goroutine to prevent unbounded memory growth
+	go h.cleanupExpiredXIDs()
+
+	return h, nil
+}
+
+// SetXIDWindow sets the time window for tracking XID errors.
+// This is primarily used for testing with shorter time windows.
+func (h *GPUFallenHandler) SetXIDWindow(window time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.xidWindow = window
 }
 
 // ProcessLine processes a single syslog line and returns any generated health events.
@@ -62,6 +76,10 @@ func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
 	xidCode := 0
 	// Parse XID code (matches[2])
 	if _, err := fmt.Sscanf(matches[2], "%d", &xidCode); err != nil {
+		slog.Warn("Failed to parse XID code from message",
+			"pci_address", pciAddr,
+			"xid_string", matches[2],
+			"error", err)
 		return
 	}
 
@@ -75,17 +93,50 @@ func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
 }
 
 // hasRecentXID checks if a PCI address has had an XID error within the time window
+// and opportunistically cleans up expired entries to prevent memory leaks
 func (h *GPUFallenHandler) hasRecentXID(pciAddr string) bool {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	record, exists := h.recentXIDs[pciAddr]
+	h.mu.RUnlock()
+
 	if !exists {
 		return false
 	}
 
 	// Check if the XID is still within the time window
-	return time.Since(record.timestamp) < h.xidWindow
+	isRecent := time.Since(record.timestamp) < h.xidWindow
+
+	// If expired, remove it from the map to prevent memory leaks
+	if !isRecent {
+		h.mu.Lock()
+		// Double-check after acquiring write lock (entry might have been updated)
+		if record, exists := h.recentXIDs[pciAddr]; exists && time.Since(record.timestamp) >= h.xidWindow {
+			delete(h.recentXIDs, pciAddr)
+		}
+		h.mu.Unlock()
+	}
+
+	return isRecent
+}
+
+// cleanupExpiredXIDs runs periodically to remove expired XID entries
+// This prevents unbounded memory growth from XIDs on GPUs that never experience fallen-off errors
+func (h *GPUFallenHandler) cleanupExpiredXIDs() {
+	// Start with initial cleanup interval, but check dynamically for changes
+	ticker := time.NewTicker(1 * time.Minute) // Check every minute for production use
+	defer ticker.Stop()
+
+	for range ticker.C {
+		h.mu.Lock()
+		now := time.Now()
+		window := h.xidWindow // Read current window value
+		for pciAddr, record := range h.recentXIDs {
+			if now.Sub(record.timestamp) >= window {
+				delete(h.recentXIDs, pciAddr)
+			}
+		}
+		h.mu.Unlock()
+	}
 }
 
 func (h *GPUFallenHandler) parseGPUFallenError(message string) *gpuFallenErrorEvent {
@@ -135,8 +186,8 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		})
 	}
 
-	// Increment metrics
-	gpuFallenCounterMetric.WithLabelValues(h.nodeName, event.pciAddr).Inc()
+	// Increment metrics (node-level only to avoid cardinality explosion)
+	gpuFallenCounterMetric.WithLabelValues(h.nodeName).Inc()
 
 	healthEvent := &pb.HealthEvent{
 		Version:            1,

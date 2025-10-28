@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gpufallen
+package patterns
 
-import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-)
+import "regexp"
 
-var (
-	// Counter metric for GPU fallen off bus errors
-	gpuFallenCounterMetric = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "syslog_health_monitor_gpu_fallen_errors",
-			Help: "Total number of GPU fallen off bus errors detected",
-		},
-		[]string{"node"},
-	)
+// XIDPattern matches standard NVIDIA XID error messages in the format:
+// "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process, Ch 00000001"
+// This pattern is the canonical definition used across all handlers for
+// detecting and parsing XID errors. If the XID format changes, this is the
+// single source of truth that needs to be updated.
+var XIDPattern = regexp.MustCompile(
+	`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): (\d+)(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
 )

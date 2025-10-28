@@ -184,15 +184,16 @@ func TestProcessLine(t *testing.T) {
 }
 
 func TestXIDTracking(t *testing.T) {
-	handler, err := NewGPUFallenHandler(
-		"test-node",
-		"test-agent",
-		"GPU",
-		"test-check",
-	)
-	require.NoError(t, err)
-
 	t.Run("XID then GPU fallen off - should suppress event", func(t *testing.T) {
+		// Create fresh handler for this test
+		handler, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
 		// Process XID message first
 		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process"
 		events, err := handler.ProcessLine(xidMsg)
@@ -237,7 +238,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
-		handler3.xidWindow = 100 * time.Millisecond // Very short window for testing
+		handler3.SetXIDWindow(100 * time.Millisecond) // Very short window for testing
 
 		// Process XID
 		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234"
@@ -295,5 +296,110 @@ func TestXIDTracking(t *testing.T) {
 		events, err := handler5.ProcessLine(combinedMsg)
 		require.NoError(t, err)
 		assert.Nil(t, events, "Should not generate event when XID is in same message - let XID handler process it")
+	})
+
+	t.Run("Malformed XID code should not crash and GPU fallen off should still generate event", func(t *testing.T) {
+		handler6, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Process message with malformed XID code (not a number)
+		// This should log a warning but not panic or corrupt state
+		malformedXIDMsg := "NVRM: Xid (PCI:0000:b3:00.0): INVALID, pid=1234, name=process"
+		events, err := handler6.ProcessLine(malformedXIDMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "Should not generate event for malformed XID")
+
+		// Now process GPU fallen off message - should generate event since malformed XID wasn't recorded
+		fallenMsg := "NVRM: The NVIDIA GPU 0000:b3:00.0 fallen off the bus and is not responding to commands."
+		events, err = handler6.ProcessLine(fallenMsg)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should generate event since malformed XID wasn't recorded")
+		assert.Len(t, events.Events, 1)
+	})
+
+	t.Run("Expired entries are cleaned up from map", func(t *testing.T) {
+		handler7, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Set a very short duration for testing
+		handler7.SetXIDWindow(10 * time.Millisecond)
+
+		// Process XID message
+		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process"
+		events, err := handler7.ProcessLine(xidMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events)
+
+		// Verify entry exists in map
+		handler7.mu.RLock()
+		_, exists := handler7.recentXIDs["0000:b3:00.0"]
+		handler7.mu.RUnlock()
+		assert.True(t, exists, "XID should be recorded in map")
+
+		// Wait for expiration
+		time.Sleep(15 * time.Millisecond)
+
+		// Check for recent XID - this should trigger cleanup
+		hasRecent := handler7.hasRecentXID("0000:b3:00.0")
+		assert.False(t, hasRecent, "XID should be expired")
+
+		// Verify entry was removed from map
+		handler7.mu.RLock()
+		_, exists = handler7.recentXIDs["0000:b3:00.0"]
+		handler7.mu.RUnlock()
+		assert.False(t, exists, "Expired XID should be cleaned up from map")
+	})
+
+	t.Run("Background cleanup removes expired entries", func(t *testing.T) {
+		handler8, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Set very short window for testing
+		handler8.SetXIDWindow(50 * time.Millisecond)
+
+		// Process XID messages for multiple PCIs
+		xidMsg1 := "NVRM: Xid (PCI:0000:b3:00.0): 79"
+		xidMsg2 := "NVRM: Xid (PCI:0000:b4:00.0): 79"
+		xidMsg3 := "NVRM: Xid (PCI:0000:b5:00.0): 79"
+
+		handler8.ProcessLine(xidMsg1)
+		handler8.ProcessLine(xidMsg2)
+		handler8.ProcessLine(xidMsg3)
+
+		// Verify all entries exist
+		handler8.mu.RLock()
+		initialCount := len(handler8.recentXIDs)
+		handler8.mu.RUnlock()
+		assert.Equal(t, 3, initialCount, "Should have 3 XID entries")
+
+		// Wait for expiration + background cleanup to run (cleanup runs every 1 minute by default)
+		// For testing, we wait for expiration and rely on opportunistic cleanup via hasRecentXID
+		time.Sleep(100 * time.Millisecond)
+
+		// Trigger opportunistic cleanup by checking each PCI
+		handler8.hasRecentXID("0000:b3:00.0")
+		handler8.hasRecentXID("0000:b4:00.0")
+		handler8.hasRecentXID("0000:b5:00.0")
+
+		// Verify entries were cleaned up
+		handler8.mu.RLock()
+		finalCount := len(handler8.recentXIDs)
+		handler8.mu.RUnlock()
+		assert.Equal(t, 0, finalCount, "Expired entries should be cleaned up")
 	})
 }

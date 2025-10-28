@@ -18,26 +18,20 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/patterns"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 
 	"github.com/thedatashed/xlsxreader"
 )
 
-var (
-	// XIDPattern matches NVIDIA XID error messages in the format:
-	// "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process, Ch 00000001"
-	// This pattern is used for detecting and filtering XID-related messages.
-	// Reuses the same pattern as the XID parser to ensure consistency.
-	XIDPattern = regexp.MustCompile(
-		`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): (\d+)(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
-	)
-)
+// XIDPattern is the canonical pattern for detecting XID errors.
+// Re-exported from the patterns package for convenience.
+var XIDPattern = patterns.XIDPattern
 
 // NVIDIA XID Error Catalog - Embedded Excel File
 //
