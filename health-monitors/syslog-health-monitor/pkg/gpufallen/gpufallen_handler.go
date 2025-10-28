@@ -92,6 +92,7 @@ func (h *GPUFallenHandler) parseGPUFallenError(message string) *gpuFallenErrorEv
 	// Try to extract PCI ID if present in the message
 	pciID := ""
 	pciIDMatch := rePCIIDPattern.FindStringSubmatch(message)
+
 	if len(pciIDMatch) >= 2 {
 		pciID = pciIDMatch[1]
 	}
