@@ -50,13 +50,38 @@ type QuarantineAssertion struct {
 }
 
 func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) (context.Context, *QuarantineTestContext) {
+	ctx, testCtx, _ := SetupQuarantineTestWithOptions(ctx, t, c, configMapPath, nil)
+	return ctx, testCtx
+}
+
+// QuarantineSetupOptions provides options for setting up quarantine tests.
+type QuarantineSetupOptions struct {
+	// CircuitBreakerPercentage sets the CB percentage threshold (0 to skip)
+	CircuitBreakerPercentage int
+	// CircuitBreakerDuration sets the CB duration (empty to skip)
+	CircuitBreakerDuration string
+	// CircuitBreakerState sets the initial CB state (empty to skip)
+	CircuitBreakerState string
+	// DryRun sets dry-run mode (nil to skip, otherwise pointer to bool value)
+	DryRun *bool
+	// SkipRestart skips the deployment restart (useful when chaining operations)
+	SkipRestart bool
+}
+
+// SetupQuarantineTestWithOptions sets up a quarantine test with additional configuration options.
+// This allows combining multiple deployment modifications into a single rollout.
+// Returns (context, testContext, originalDeployment) - originalDeployment is nil if no deployment changes were made.
+func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envconf.Config,
+	configMapPath string, opts *QuarantineSetupOptions) (context.Context, *QuarantineTestContext, *appsv1.Deployment) {
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
 	testCtx := &QuarantineTestContext{}
+	var originalDeployment *appsv1.Deployment
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupPath, err := backgupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	backupPath, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
@@ -65,17 +90,40 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	t.Log("Restarting fault-quarantine pod to load new configuration")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	require.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with new configuration")
+	argUpdates := make(map[string]string)
+	if opts != nil {
+		if opts.CircuitBreakerPercentage > 0 {
+			t.Logf("Will set circuit breaker threshold: %d%%, duration: %s",
+				opts.CircuitBreakerPercentage, opts.CircuitBreakerDuration)
+			argUpdates["--circuit-breaker-percentage="] = fmt.Sprintf("--circuit-breaker-percentage=%d", opts.CircuitBreakerPercentage)
+			argUpdates["--circuit-breaker-duration="] = fmt.Sprintf("--circuit-breaker-duration=%s", opts.CircuitBreakerDuration)
+		}
+		if opts.DryRun != nil {
+			t.Logf("Will set dry-run mode to: %v", *opts.DryRun)
+			argUpdates["--dry-run="] = fmt.Sprintf("--dry-run=%v", *opts.DryRun)
+		}
+	}
+
+	if len(argUpdates) > 0 {
+		originalDeployment = modifyFaultQuarantineDeploymentArgs(ctx, t, client, argUpdates)
+	}
+
+	if opts != nil && opts.CircuitBreakerState != "" {
+		updateCircuitBreakerStateConfigMap(ctx, t, client, opts.CircuitBreakerState)
+	}
+
+	if opts == nil || !opts.SkipRestart {
+		t.Log("Restarting fault-quarantine deployment to load all configuration changes")
+		err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, CELKeyNodeName, nodeName)
 	ctx = context.WithValue(ctx, CELKeyConfigMapBackupPath, testCtx.ConfigMapBackupPath)
 
-	return ctx, testCtx
+	return ctx, testCtx, originalDeployment
 }
 
 func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
@@ -129,10 +177,9 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 		os.Remove(backupPath)
 	}
 
-	t.Log("Restarting fault-quarantine pod to load restored configuration")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
+	t.Log("Restarting fault-quarantine deployment to load restored configuration")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	assert.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with restored configuration")
 
 	return ctx
 }
@@ -304,31 +351,13 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "fault-quarantine-circuit-breaker",
-			Namespace: NVSentinelNamespace,
-		},
-		Data: map[string]string{
-			"status": state,
-		},
-	}
+	// Use helper to update CB state configmap
+	updateCircuitBreakerStateConfigMap(ctx, t, client, state)
 
-	existingCM := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "fault-quarantine-circuit-breaker",
-			Namespace: NVSentinelNamespace,
-		},
-	}
-	_ = client.Resources().Delete(ctx, existingCM)
-
-	err = client.Resources().Create(ctx, cm)
+	// Restart deployment to pick up the new CB state
+	t.Log("Restarting fault-quarantine deployment to pick up CB state")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
-
-	t.Log("Restarting fault-quarantine pod to pick up CB state")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	require.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with new CB state")
 }
 
 func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config) string {
@@ -348,157 +377,6 @@ func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	return cm.Data["status"]
 }
 
-// SetCircuitBreakerThreshold sets the circuit breaker threshold on the fault-quarantine deployment.
-// Returns the original deployment configuration.
-func SetCircuitBreakerThreshold(ctx context.Context, t *testing.T, client klient.Client, percentage int, duration string) *appsv1.Deployment {
-	t.Logf("Setting circuit breaker threshold to %d%% with duration %s", percentage, duration)
-
-	var originalDeployment *appsv1.Deployment
-
-	// Use retry utility to handle conflicts
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		deployment := &appsv1.Deployment{}
-		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
-			return err
-		}
-
-		// Save original on first attempt
-		if originalDeployment == nil {
-			originalDeployment = deployment.DeepCopy()
-		}
-
-		updated := false
-		for i := range deployment.Spec.Template.Spec.Containers {
-			container := &deployment.Spec.Template.Spec.Containers[i]
-			if container.Name == "fault-quarantine" {
-				newArgs := []string{}
-				for _, arg := range container.Args {
-					if strings.HasPrefix(arg, "--circuit-breaker-percentage=") {
-						newArgs = append(newArgs, fmt.Sprintf("--circuit-breaker-percentage=%d", percentage))
-						updated = true
-					} else if strings.HasPrefix(arg, "--circuit-breaker-duration=") {
-						newArgs = append(newArgs, fmt.Sprintf("--circuit-breaker-duration=%s", duration))
-						updated = true
-					} else {
-						newArgs = append(newArgs, arg)
-					}
-				}
-				deployment.Spec.Template.Spec.Containers[i].Args = newArgs
-				t.Logf("Updated container args: %v", newArgs)
-				break
-			}
-		}
-
-		if !updated {
-			t.Log("Warning: CB args not found in deployment, may already be set or missing")
-		}
-
-		return client.Resources().Update(ctx, deployment)
-	})
-	require.NoError(t, err, "failed to set circuit breaker threshold")
-
-	t.Log("Restarting fault-quarantine pod with new CB threshold")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	require.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with new CB threshold")
-
-	return originalDeployment
-}
-
-// EnsureDryRunDisabled ensures dry-run mode is disabled on the fault-quarantine deployment.
-func EnsureDryRunDisabled(ctx context.Context, t *testing.T, client klient.Client) {
-	t.Log("Ensuring dry-run mode is disabled on fault-quarantine deployment")
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		deployment := &appsv1.Deployment{}
-		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
-			return err
-		}
-
-		needsUpdate := false
-		for i := range deployment.Spec.Template.Spec.Containers {
-			container := &deployment.Spec.Template.Spec.Containers[i]
-			if container.Name == "fault-quarantine" {
-				newArgs := []string{}
-				for _, arg := range container.Args {
-					if strings.HasPrefix(arg, "--dry-run=") {
-						if arg != "--dry-run=false" {
-							newArgs = append(newArgs, "--dry-run=false")
-							needsUpdate = true
-						} else {
-							newArgs = append(newArgs, arg)
-						}
-					} else {
-						newArgs = append(newArgs, arg)
-					}
-				}
-				if needsUpdate {
-					deployment.Spec.Template.Spec.Containers[i].Args = newArgs
-					t.Logf("Updated dry-run args: %v", newArgs)
-				}
-				break
-			}
-		}
-
-		if !needsUpdate {
-			t.Log("Dry-run already disabled")
-			return nil
-		}
-
-		return client.Resources().Update(ctx, deployment)
-	})
-	require.NoError(t, err, "failed to disable dry-run mode")
-
-	t.Log("Restarting fault-quarantine pod with dry-run disabled")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	require.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with dry-run disabled")
-}
-
-// EnableDryRunMode enables dry-run mode on the fault-quarantine deployment and returns the original deployment.
-func EnableDryRunMode(ctx context.Context, t *testing.T, client klient.Client) *appsv1.Deployment {
-	t.Log("Enabling dry-run mode on fault-quarantine deployment")
-
-	var originalDeployment *appsv1.Deployment
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		deployment := &appsv1.Deployment{}
-		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
-			return err
-		}
-
-		if originalDeployment == nil {
-			originalDeployment = deployment.DeepCopy()
-		}
-
-		for i := range deployment.Spec.Template.Spec.Containers {
-			container := &deployment.Spec.Template.Spec.Containers[i]
-			if container.Name == "fault-quarantine" {
-				newArgs := []string{}
-				for _, arg := range container.Args {
-					if strings.HasPrefix(arg, "--dry-run=") {
-						newArgs = append(newArgs, "--dry-run=true")
-					} else {
-						newArgs = append(newArgs, arg)
-					}
-				}
-				deployment.Spec.Template.Spec.Containers[i].Args = newArgs
-				break
-			}
-		}
-
-		return client.Resources().Update(ctx, deployment)
-	})
-	require.NoError(t, err, "failed to enable dry-run mode")
-
-	t.Log("Restarting fault-quarantine pod with dry-run enabled")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	require.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with dry-run mode")
-
-	return originalDeployment
-}
-
 // RestoreFQDeployment restores the fault-quarantine deployment to its original configuration.
 func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client, original *appsv1.Deployment) {
 	t.Log("Restoring original fault-quarantine deployment")
@@ -514,8 +392,82 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 	})
 	assert.NoError(t, err, "failed to restore deployment")
 
-	t.Log("Restarting fault-quarantine pod with restored config")
-	err = RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-quarantine")
-	assert.NoError(t, err)
-	t.Log("Fault-quarantine pod restarted with restored config")
+	t.Log("Waiting for rollout to complete with restored config")
+	WaitForDeploymentRollout(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+}
+
+// modifyFaultQuarantineDeploymentArgs is a generic helper to modify fault-quarantine deployment args.
+// argUpdates is a map of arg prefix -> new value (e.g., "--dry-run=" -> "--dry-run=true")
+// Returns the original deployment before modifications.
+func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, client klient.Client,
+	argUpdates map[string]string) *appsv1.Deployment {
+
+	var originalDeployment *appsv1.Deployment
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
+			return err
+		}
+
+		// Capture original deployment on first iteration
+		if originalDeployment == nil {
+			originalDeployment = deployment.DeepCopy()
+		}
+
+		// Find fault-quarantine container and update args
+		for i := range deployment.Spec.Template.Spec.Containers {
+			container := &deployment.Spec.Template.Spec.Containers[i]
+			if container.Name == "fault-quarantine" {
+				newArgs := []string{}
+				for _, arg := range container.Args {
+					updated := false
+					for prefix, newValue := range argUpdates {
+						if strings.HasPrefix(arg, prefix) {
+							newArgs = append(newArgs, newValue)
+							updated = true
+							break
+						}
+					}
+					if !updated {
+						newArgs = append(newArgs, arg)
+					}
+				}
+				deployment.Spec.Template.Spec.Containers[i].Args = newArgs
+				break
+			}
+		}
+
+		return client.Resources().Update(ctx, deployment)
+	})
+	require.NoError(t, err, "failed to modify deployment args")
+
+	return originalDeployment
+}
+
+// updateCircuitBreakerStateConfigMap updates the CB state configmap (without restarting deployment).
+func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, client klient.Client, state string) {
+	t.Logf("Updating circuit breaker state configmap to: %s", state)
+
+	cm := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "fault-quarantine-circuit-breaker",
+			Namespace: NVSentinelNamespace,
+		},
+		Data: map[string]string{
+			"status": state,
+		},
+	}
+
+	// Delete existing CM (ignore errors)
+	existingCM := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "fault-quarantine-circuit-breaker",
+			Namespace: NVSentinelNamespace,
+		},
+	}
+	_ = client.Resources().Delete(ctx, existingCM)
+
+	err := client.Resources().Create(ctx, cm)
+	require.NoError(t, err, "failed to create CB state configmap")
 }

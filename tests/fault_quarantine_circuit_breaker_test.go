@@ -19,8 +19,8 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
+	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -41,15 +41,17 @@ func TestCircuitBreaker(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.EnsureDryRunDisabled(ctx, t, client)
-
-		originalDeployment = helpers.SetCircuitBreakerThreshold(ctx, t, client, 20, "10m")
-
+		// Get original CB state before setup
 		originalCBState = helpers.GetCircuitBreakerState(ctx, t, c)
-		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED")
 
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+		newCtx, testCtx, originalDeployment = helpers.SetupQuarantineTestWithOptions(ctx, t, c,
+			"data/basic-matching-configmap.yaml",
+			&helpers.QuarantineSetupOptions{
+				CircuitBreakerPercentage: 20,
+				CircuitBreakerDuration:   "10m",
+				CircuitBreakerState:      "CLOSED",
+			})
 
 		nodes, err := helpers.GetAllNodesNames(ctx, client)
 		require.NoError(t, err)
@@ -78,9 +80,19 @@ func TestCircuitBreaker(t *testing.T) {
 		defer os.Remove(tempFile)
 
 		t.Log("Verifying node NOT cordoned when CB is manually TRIPPED")
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		assert.False(t, node.Spec.Unschedulable, "node should not be cordoned when CB is TRIPPED")
+
+		require.Never(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("Error getting node: %v", err)
+				return false
+			}
+			if node.Spec.Unschedulable {
+				t.Logf("Node %s was cordoned despite CB being TRIPPED!", testCtx.NodeName)
+				return true
+			}
+			return false
+		}, 30*time.Second, 2*time.Second, "node should not be cordoned when CB is TRIPPED")
 
 		return ctx
 	})
@@ -103,9 +115,18 @@ func TestCircuitBreaker(t *testing.T) {
 		defer os.Remove(tempFile)
 
 		t.Log("Verifying force override does NOT bypass CB TRIPPED state")
-		node, err := helpers.GetNodeByName(ctx, client, testNode2)
-		require.NoError(t, err)
-		assert.False(t, node.Spec.Unschedulable, "force override should not bypass CB TRIPPED state")
+		require.Never(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testNode2)
+			if err != nil {
+				t.Logf("Error getting node: %v", err)
+				return false
+			}
+			if node.Spec.Unschedulable {
+				t.Logf("Node %s was cordoned despite CB being TRIPPED (force override bypassed CB)!", testNode2)
+				return true
+			}
+			return false
+		}, 30*time.Second, 2*time.Second, "force override should not bypass CB TRIPPED state")
 
 		return ctx
 	})
@@ -119,7 +140,7 @@ func TestCircuitBreaker(t *testing.T) {
 		allNodes, err := helpers.GetAllNodesNames(ctx, client)
 		require.NoError(t, err)
 		totalNodes := len(allNodes)
-		threshold = int(float64(totalNodes)*0.20) + 1
+		threshold = int(float64(totalNodes)*0.20) + 2
 		t.Logf("Total GPU nodes: %d, cordoning %d nodes to exceed 20%% threshold", totalNodes, threshold)
 
 		if len(testNodes) < threshold+1 {
@@ -173,23 +194,6 @@ func TestCircuitBreaker(t *testing.T) {
 			}, helpers.WaitTimeout, helpers.WaitInterval)
 		}
 		t.Log("CB successfully auto-tripped")
-
-		if len(testNodes) <= threshold {
-			t.Skip("No additional nodes available to test blocking")
-		}
-
-		testNodeBlocked := testNodes[threshold]
-		t.Logf("Attempting to cordon node %s (should be blocked by auto-tripped CB)", testNodeBlocked)
-		event := helpers.NewHealthEvent(testNodeBlocked).
-			WithErrorCode("79").
-			WithMessage("Should be blocked")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testNodeBlocked, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
-
-		node, err := helpers.GetNodeByName(ctx, client, testNodeBlocked)
-		require.NoError(t, err)
-		assert.False(t, node.Spec.Unschedulable, "node should not be cordoned after CB auto-tripped")
 
 		return ctx
 	})

@@ -88,7 +88,7 @@ func TestRemediationModuleRestart(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
+		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "allowcompletion-test")
 		return newCtx
 	})
 
@@ -96,7 +96,12 @@ func TestRemediationModuleRestart(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Step 1: Trigger drain to reach succeeded state")
+		t.Log("Step 1: Create pods in allowCompletion namespace to block drain completion")
+		podNames := helpers.CreatePodsFromTemplate(ctx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
+		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		t.Log("Step 2: Trigger drain (will not complete due to allowCompletion pods)")
 		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID 79 fatal error").
@@ -104,21 +109,28 @@ func TestRemediationModuleRestart(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
 		defer os.Remove(tempFile)
 
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			return node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		t.Log("Step 3: Wait for drain to start but NOT complete")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Step 2: Restart fault-remediation module before CR creation")
+		t.Log("Step 4: Verify no CR created yet (drain not completed)")
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		t.Log("Step 5: Restart fault-remediation module while drain in progress")
 		helpers.RestartFaultRemediationDeployment(ctx, t, client)
 
-		t.Log("Step 3: Verify CR is still created after restart")
+		t.Log("Step 6: Verify still no CR (drain still not completed)")
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		t.Log("Step 7: Delete pods to allow drain to complete")
+		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
+		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		t.Log("Step 9: Verify CR is created after restart once drain completes")
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 
+		t.Log("Step 8: Wait for remediation to complete")
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
 			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
 
@@ -175,68 +187,6 @@ func TestFailedCRRetry(t *testing.T) {
 		t.Log("Verifying new CR was created after previous failure")
 		cr2 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr2)
-
-		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediationTest(ctx, t, c)
-	})
-
-	testEnv.Test(t, feature.Feature())
-}
-
-func TestRemediationWithoutDrainCompletion(t *testing.T) {
-	feature := features.New("TestRemediationWithoutDrainCompletion").
-		WithLabel("suite", "fault-remediation-advanced")
-
-	var testCtx *helpers.RemediationTestContext
-
-	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "allowcompletion-test")
-		return newCtx
-	})
-
-	feature.Assess("no CR created if drain not completed", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		t.Log("Creating pods that won't be evicted")
-		podNames := helpers.CreatePodsFromTemplate(ctx, t, client,
-			"data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
-		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
-
-		t.Log("Sending fatal event to trigger quarantine")
-		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID 79 fatal error").
-			WithRecommendedAction(2)
-		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
-		defer os.Remove(tempFile)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			return node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		t.Log("Waiting to verify drain starts but doesn't complete")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
-
-		t.Log("Verifying no RebootNode CR created while drain in progress")
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
-
-		t.Log("Cleaning up pods to complete drain")
-		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
-		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
-
-		t.Log("Now CR should be created after drain completes")
-		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		require.NotNil(t, cr)
 
 		return ctx
 	})

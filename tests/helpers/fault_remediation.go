@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 )
@@ -104,27 +105,35 @@ func TeardownFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.
 	t.Logf("Cleaning up node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
 
-	node, err := GetNodeByName(ctx, client, nodeName)
-	if err == nil {
-		if node.Spec.Unschedulable {
-			t.Log("Manually uncordoning node")
-			node.Spec.Unschedulable = false
-			err = client.Resources().Update(ctx, node)
-			require.NoError(t, err)
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		node, getErr := GetNodeByName(ctx, client, nodeName)
+		if getErr != nil {
+			return getErr
 		}
 
+		modified := false
+
 		if node.Labels != nil {
-			delete(node.Labels, NVSentinelStateLabelKey)
-			err = client.Resources().Update(ctx, node)
-			require.NoError(t, err)
+			if _, exists := node.Labels[NVSentinelStateLabelKey]; exists {
+				delete(node.Labels, NVSentinelStateLabelKey)
+				modified = true
+			}
 		}
 
 		if node.Annotations != nil {
-			delete(node.Annotations, "latestFaultRemediationState")
-			err = client.Resources().Update(ctx, node)
-			require.NoError(t, err)
+			if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
+				delete(node.Annotations, "latestFaultRemediationState")
+				modified = true
+			}
 		}
-	}
+
+		if modified {
+			return client.Resources().Update(ctx, node)
+		}
+
+		return nil
+	})
+	require.NoError(t, err)
 
 	if testNamespace != "" {
 		t.Logf("Cleaning up test namespace: %s", testNamespace)
@@ -310,8 +319,8 @@ func SendDrainCompletedEvent(ctx context.Context, t *testing.T, nodeName string,
 }
 
 func RestartFaultRemediationDeployment(ctx context.Context, t *testing.T, client klient.Client) {
-	t.Log("Restarting fault-remediation pod")
-	err := RestartPodByDeletion(ctx, t, client, NVSentinelNamespace, "app.kubernetes.io/name=fault-remediation")
+	t.Log("Restarting fault-remediation deployment")
+	err := RestartDeployment(ctx, t, client, "nvsentinel-fault-remediation", NVSentinelNamespace)
 	require.NoError(t, err)
 }
 

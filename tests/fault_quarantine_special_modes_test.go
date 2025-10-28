@@ -19,6 +19,7 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,13 +37,14 @@ func TestDryRunMode(t *testing.T) {
 	var originalDeployment *appsv1.Deployment
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		originalDeployment = helpers.EnableDryRunMode(ctx, t, client)
-
+		dryRunEnabled := true
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+		newCtx, testCtx, originalDeployment = helpers.SetupQuarantineTestWithOptions(ctx, t, c,
+			"data/basic-matching-configmap.yaml",
+			&helpers.QuarantineSetupOptions{
+				DryRun: &dryRunEnabled,
+			})
+
 		return newCtx
 	})
 
@@ -94,10 +96,18 @@ func TestDryRunMode(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-
-		assert.False(t, node.Spec.Unschedulable, "node should not be cordoned in dry-run mode")
+		require.Never(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("Error getting node: %v", err)
+				return false
+			}
+			if node.Spec.Unschedulable {
+				t.Logf("Node %s was cordoned in dry-run mode!", testCtx.NodeName)
+				return true
+			}
+			return false
+		}, 30*time.Second, 2*time.Second, "node should not be cordoned in dry-run mode")
 
 		return ctx
 	})
@@ -106,10 +116,12 @@ func TestDryRunMode(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		helpers.TeardownQuarantineTest(ctx, t, c)
-		helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
+		if originalDeployment != nil {
+			t.Log("Restoring original deployment (disabling dry-run mode)")
+			helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
+		}
 
-		return ctx
+		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())
@@ -310,15 +322,24 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		require.NoError(t, err)
 		defer os.Remove(tempFile)
 
-		node, err := helpers.GetNodeByName(ctx, client, testNodeIgnored)
-		require.NoError(t, err)
-
-		assert.False(t, node.Spec.Unschedulable, "node with label=false should be ignored")
-
-		if node.Annotations != nil {
-			_, exists := node.Annotations["quarantineHealthEvent"]
-			assert.False(t, exists, "node with label=false should not have FQ annotations")
-		}
+		require.Never(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testNodeIgnored)
+			if err != nil {
+				t.Logf("Error getting node: %v", err)
+				return false
+			}
+			if node.Spec.Unschedulable {
+				t.Logf("Node %s with label=false was cordoned (should be ignored)!", testNodeIgnored)
+				return true
+			}
+			if node.Annotations != nil {
+				if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+					t.Logf("Node %s with label=false has FQ annotation (should be ignored)!", testNodeIgnored)
+					return true
+				}
+			}
+			return false
+		}, 30*time.Second, 2*time.Second, "node with label=false should be ignored by FQ")
 
 		return ctx
 	})
