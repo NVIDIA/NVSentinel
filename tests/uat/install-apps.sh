@@ -22,6 +22,10 @@ source "${SCRIPT_DIR}/common.sh"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
 
+# Detect platform architecture
+ARCH=$(uname -m)
+log "Detected architecture: $ARCH"
+
 # Load versions from .versions.yaml
 KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
 KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")
@@ -44,6 +48,9 @@ GPU_OPERATOR_VALUES="${VALUES_DIR}/gpu-operator-values.yaml"
 CERT_MANAGER_VALUES="${VALUES_DIR}/cert-manager-values.yaml"
 NVSENTINEL_VALUES="${VALUES_DIR}/nvsentinel-values.yaml"
 NVSENTINEL_CHART="${REPO_ROOT}/distros/kubernetes/nvsentinel"
+
+# ARM64-specific values file (if needed)
+NVSENTINEL_ARM64_VALUES="${REPO_ROOT}/distros/kubernetes/nvsentinel/values-tilt-arm64.yaml"
 
 install_prometheus_operator() {
     log "Installing Prometheus Operator (version $PROMETHEUS_OPERATOR_VERSION)..."
@@ -74,8 +81,18 @@ install_cert_manager() {
         --create-namespace \
         --values "$CERT_MANAGER_VALUES" \
         --version "$CERT_MANAGER_VERSION" \
-        --wait; then
+        --wait \
+        --timeout 10m; then
         error "Failed to install cert-manager"
+    fi
+    
+    log "Waiting for cert-manager webhook to be ready..."
+    if ! kubectl wait --for=condition=available --timeout=5m \
+        -n cert-manager deployment/cert-manager-webhook; then
+        log "WARNING: cert-manager webhook did not become ready in time"
+        log "Checking webhook pod status:"
+        kubectl get pods -n cert-manager -l app.kubernetes.io/component=webhook
+        kubectl describe pods -n cert-manager -l app.kubernetes.io/component=webhook | tail -30
     fi
     
     log "cert-manager installed successfully ✓"
@@ -196,6 +213,35 @@ wait_for_fake_gpu_stack() {
 install_nvsentinel() {
     log "Installing NVSentinel (version: $NVSENTINEL_VERSION)..."
     
+    # Validate required variables
+    if [[ -z "$NVSENTINEL_CHART" ]]; then
+        error "NVSENTINEL_CHART is not set"
+    fi
+    
+    if [[ ! -d "$NVSENTINEL_CHART" ]]; then
+        error "NVSentinel chart directory not found: $NVSENTINEL_CHART"
+    fi
+    
+    if [[ -z "$NVSENTINEL_VALUES" ]]; then
+        error "NVSENTINEL_VALUES is not set"
+    fi
+    
+    if [[ ! -f "$NVSENTINEL_VALUES" ]]; then
+        error "NVSentinel values file not found: $NVSENTINEL_VALUES"
+    fi
+    
+    log "Using chart: $NVSENTINEL_CHART"
+    log "Using values: $NVSENTINEL_VALUES"
+    
+    # Check if running on ARM64 and add architecture-specific values
+    if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
+        if [[ -f "$NVSENTINEL_ARM64_VALUES" ]]; then
+            log "Detected ARM64 architecture, using ARM64-specific values"
+        else
+            log "WARNING: ARM64 architecture detected but ARM64 values file not found: $NVSENTINEL_ARM64_VALUES"
+        fi
+    fi
+    
     local extra_set_args=()
     if [[ "$CSP" == "aws" ]]; then
         local aws_account_id
@@ -210,14 +256,29 @@ install_nvsentinel() {
         )
     fi
     
-    if ! helm upgrade --install nvsentinel "$NVSENTINEL_CHART" \
-        --namespace nvsentinel \
-        --create-namespace \
-        --values "$NVSENTINEL_VALUES" \
-        --set global.image.tag="$NVSENTINEL_VERSION" \
-        "${extra_set_args[@]:-}" \
-        --timeout 20m \
-        --wait; then
+    # Build helm command with proper array handling
+    local helm_args=(
+        "upgrade" "--install" "nvsentinel" "$NVSENTINEL_CHART"
+        "--namespace" "nvsentinel"
+        "--create-namespace"
+        "--values" "$NVSENTINEL_VALUES"
+    )
+    
+    # Add ARM64-specific values if on ARM architecture
+    if [[ ("$ARCH" == "arm64" || "$ARCH" == "aarch64") && -f "$NVSENTINEL_ARM64_VALUES" ]]; then
+        helm_args+=("--values" "$NVSENTINEL_ARM64_VALUES")
+    fi
+    
+    helm_args+=("--set" "global.image.tag=$NVSENTINEL_VERSION")
+    
+    # Add CSP-specific args if any
+    if [[ ${#extra_set_args[@]} -gt 0 ]]; then
+        helm_args+=("${extra_set_args[@]}")
+    fi
+    
+    helm_args+=("--timeout" "20m" "--wait")
+    
+    if ! helm "${helm_args[@]}"; then
         error "Failed to install NVSentinel"
     fi
     
@@ -226,12 +287,17 @@ install_nvsentinel() {
 
 main() {
     log "Starting application installation for NVSentinel UAT testing..."
+    log "Architecture: $ARCH"
     log "Target CSP: $CSP (override with CSP=<aws|azure|gcp|kind|oci>)"
     log "Versions from .versions.yaml:"
     log "  - KWOK: $KWOK_VERSION (chart: $KWOK_CHART_VERSION)"
     log "  - Prometheus Operator: $PROMETHEUS_OPERATOR_VERSION"
     log "  - GPU Operator: $GPU_OPERATOR_VERSION"
     log "  - cert-manager: $CERT_MANAGER_VERSION"
+    
+    if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
+        log "ARM64 architecture detected - using compatible image overrides for MongoDB"
+    fi
     
     install_prometheus_operator
     install_cert_manager

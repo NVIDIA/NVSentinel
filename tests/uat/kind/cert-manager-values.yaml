@@ -13,3 +13,42 @@
 # limitations under the License.
 
 installCRDs: true
+
+# Optimize for faster startup in Kind/test environments
+global:
+  leaderElection:
+    # Reduce leader election timeout for faster startup
+    leaseDuration: 30s
+    renewDeadline: 20s
+    retryPeriod: 5s
+
+# Reduce resource requests for Kind (local testing)
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+webhook:
+  # Reduce webhook resource requirements
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+  # Faster readiness checks
+  readinessProbe:
+    initialDelaySeconds: 3
+    periodSeconds: 3
+
+cainjector:
+  # Reduce cainjector resource requirements
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+startupapicheck:
+  # Reduce startup check resource requirements
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
