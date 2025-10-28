@@ -158,8 +158,8 @@ get_cluster_script() {
     
     case "$CSP" in
         kind)
-            # Kind clusters are managed externally
-            return 0
+            # Kind clusters are managed externally - this function should not be called for Kind
+            error "get_cluster_script() should not be called for CSP=kind (clusters are managed externally)"
             ;;
         aws)
             if [[ "$operation" == "create" ]]; then
