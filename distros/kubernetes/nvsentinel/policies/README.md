@@ -1,44 +1,56 @@
 # NVSentinel Image Admission Policies
 
-This directory contains Kubernetes admission policies for enforcing supply chain security of NVSentinel container images.
-
-## Overview
-
-The policies in this directory ensure that only verified NVSentinel images with valid SLSA Build Provenance attestations can be deployed to your Kubernetes cluster.
+This directory contains Kubernetes admission policies for enforcing supply chain security of NVSentinel container images in your cluster. These policies ensure that only verified NVSentinel images with valid SLSA Build Provenance attestations can be deployed to your Kubernetes cluster.
 
 ## Prerequisites
 
-These policies require [Kyverno](https://kyverno.io/) to be installed in your cluster:
+These policies require [Sigstore Policy Controller](https://docs.sigstore.dev/policy-controller/overview/) to be installed in your cluster:
 
 ```bash
-kubectl create -f https://github.com/kyverno/kyverno/releases/download/v1.11.0/install.yaml
+# Install Policy Controller using the latest release
+kubectl apply -f https://github.com/sigstore/policy-controller/releases/latest/download/policy-controller.yaml
+
+# Verify installation
+kubectl -n cosign-system get pods
 ```
 
-## Policies
+Alternatively, you can install using Helm:
 
-### image-admission-policy.yaml
+```bash
+helm repo add sigstore https://sigstore.github.io/helm-charts
+helm repo update
+helm install policy-controller sigstore/policy-controller -n cosign-system --create-namespace
+```
 
-This file contains two cluster policies:
+## Namespace Configuration
 
-#### 1. verify-nvsentinel-image-attestation
+By default, Policy Controller operates in **opt-in** mode. Label namespaces where you want to enforce policies:
 
-Verifies that NVSentinel container images have valid SLSA Build Provenance attestations:
+```bash
+# Enable policy enforcement for a namespace
+kubectl label namespace nvsentinel-system policy.sigstore.dev/include=true
+kubectl label namespace production policy.sigstore.dev/include=true
+```
 
-- **Scope**: All pods using `ghcr.io/nvidia/nvsentinel/*` images
+## Policy
+
+The provide [image-admission-policy.yaml](image-admission-policy.yaml) file contains a `ClusterImagePolicy` that enforces image verification for all NVSentinel images. It verifies that NVSentinel container images have valid SLSA Build Provenance attestations:
+
+- **Scope**: All pods using `ghcr.io/nvidia/nvsentinel/**` images
 - **Verification**: 
-  - Checks for SLSA provenance attestations
+  - Checks for SLSA v1 provenance attestations
   - Validates builder identity matches official GitHub Actions workflow
   - Ensures images are built from the official NVIDIA/NVSentinel repository
-  - Uses keyless signing with Sigstore (GitHub OIDC tokens)
+  - Uses keyless signing with Sigstore (GitHub OIDC tokens via Fulcio)
+  - Verifies signatures in Rekor transparency log
+- **Policy Language**: Uses CUE for attestation validation
 - **Action**: Blocks deployment if attestations are invalid or missing
 
-#### 2. require-nvsentinel-image-verification
-
-Additional validation layer that provides helpful error messages:
-
-- **Scope**: All pods using NVSentinel images
-- **Purpose**: Ensures images come from official sources
-- **Provides**: Clear instructions for manual verification using `gh attestation verify`
+**Key Features:**
+- **Keyless Verification**: Uses GitHub Actions OIDC identity without managing keys
+- **Transparency**: All signatures recorded in Rekor public transparency log
+- **SLSA Provenance**: Validates build metadata including repository, workflow, and build parameters
+- **Regex Matching**: Supports both branch refs (`refs/heads/*`) and tag refs (`refs/tags/*`)
 
 ## Installation
 
@@ -48,17 +60,23 @@ Apply the policies to your cluster:
 kubectl apply -f image-admission-policy.yaml
 ```
 
-## Manual Image Verification
-
-To manually verify an NVSentinel image before deployment:
+Verify the policy is active:
 
 ```bash
-# Set image details
+kubectl get clusterimagepolicy
+kubectl describe clusterimagepolicy verify-nvsentinel-image-attestation
+```
+
+## Manual Image Verification
+
+To verify any NVSentinel image manually, you can use either the GitHub (`gh`) or the Cosign (`cosign`) CLI: 
+
+### GitHub CLI
+
+```shell
 export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine-module"
 export DIGEST="sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
-export IMAGE_DIGEST="$IMAGE@$DIGEST"
 
-# Verify attestation
 gh attestation verify "oci://$IMAGE_DIGEST" \
   -R NVIDIA/NVSentinel \
   --bundle-from-oci \
@@ -67,6 +85,29 @@ gh attestation verify "oci://$IMAGE_DIGEST" \
   --cert-oidc-issuer https://token.actions.githubusercontent.com \
   --format json --jq '.[].verificationResult.summary'
 ```
+
+### Cosign CLI
+
+```shell
+export IMAGE="ghcr.io/nvidia/nvsentinel/fault-quarantine-module"
+export DIGEST="sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6"
+
+cosign verify-attestation "${IMAGE}@${DIGEST}" \
+  --type slsaprovenance1 \
+  --new-bundle-format \
+  --certificate-identity-regexp '^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  | jq -r '.payload' | base64 -d | jq .
+```
+
+### What's being verified
+
+GitHub's SLSA attestations are stored with the image in the OCI registry. Either of the above command will verify:
+
+* ✅ **Issuer**: https://token.actions.githubusercontent.com
+* ✅ **Subject**: Uses regex to match the specific workflow path
+* ✅ **Transparency log**: Uses Rekor for verification
+* ✅ **SLSA predicate**: Validates the attestation content matches GitHub's SLSA v1 format
 
 ## Testing the Policy
 
@@ -77,100 +118,104 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: test-nvsentinel-valid
+  namespace: nvsentinel-system  # Must be labeled with policy.sigstore.dev/include=true
 spec:
   containers:
   - name: fault-quarantine
     image: ghcr.io/nvidia/nvsentinel/fault-quarantine-module@sha256:850e8fd35bc6b9436fc9441c055ba0f7e656fb438320e933b086a34d35d09fd6
 ```
 
-This should be **allowed** if the image has valid attestations.
+This should be **allowed** if the image has valid attestations signed by the official workflow.
 
-### Test with an invalid or unverified image:
+### Test with an unsigned or unverified image:
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
   name: test-nvsentinel-invalid
+  namespace: nvsentinel-system
 spec:
   containers:
   - name: fault-quarantine
     image: ghcr.io/nvidia/nvsentinel/fault-quarantine-module:latest
 ```
 
-This should be **blocked** with a clear error message explaining the verification requirements.
+This should be **blocked** with an error message about missing or invalid attestations.
 
-## Enforcement Modes
+## Policy Modes
 
-The policies are set to `Enforce` mode by default. You can change the enforcement behavior:
+### Enforce Mode (Default)
 
-- **Enforce**: Block resources that violate the policy
-- **Audit**: Allow resources but log violations
-
-To switch to audit mode, edit the policy and change:
+The policy runs in enforce mode by default, blocking any images that fail verification:
 
 ```yaml
 spec:
-  validationFailureAction: Audit
+  images:
+    - glob: "ghcr.io/nvidia/nvsentinel/**"
+  # No mode specified = enforce mode
 ```
+
+### Warn Mode
+
+To switch to warn mode (allows images but logs warnings):
+
+```yaml
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: verify-nvsentinel-image-attestation
+spec:
+  mode: warn  # Add this line
+  images:
+    - glob: "ghcr.io/nvidia/nvsentinel/**"
+  # ... rest of the policy
+```
+
+In warn mode:
+- Images that fail verification are still deployed
+- Warning events are logged and visible in pod events
+- Useful for testing before enforcing
+
+## Configuring No-Match Behavior
+
+Configure what happens when an image doesn't match any policy using the `config-policy-controller` ConfigMap:
+
+```bash
+kubectl create configmap config-policy-controller -n cosign-system \
+  --from-literal=no-match-policy=deny
+```
+
+Options:
+- `deny` (recommended): Block images that don't match any policy
+- `warn`: Allow but log warnings for unmatched images  
+- `allow`: Allow all unmatched images (not recommended for production)
 
 ## Additional Resources
 
 - [NVSentinel Security Documentation](../../../SECURITY.md)
 - [NVSentinel Attestations](https://github.com/NVIDIA/NVSentinel/attestations)
-- [Kyverno Documentation](https://kyverno.io/docs/)
+- [Sigstore Policy Controller Documentation](https://docs.sigstore.dev/policy-controller/overview/)
+- [ClusterImagePolicy API Reference](https://github.com/sigstore/policy-controller/blob/main/docs/api-types/index-v1beta1.md)
 - [SLSA Build Provenance](https://slsa.dev/provenance/)
 - [Sigstore](https://www.sigstore.dev/)
+- [Cosign](https://docs.sigstore.dev/cosign/overview/)
 
-## Customization
+### Debug mode
 
-### Allow specific image tags
+Enable verbose logging in Policy Controller:
 
-To allow specific tags or patterns, modify the `imageReferences` in the policy:
-
-```yaml
-imageReferences:
-  - "ghcr.io/nvidia/nvsentinel/*:v*"  # Only versioned tags
-  - "ghcr.io/nvidia/nvsentinel/*@sha256:*"  # Only digest references
+```bash
+kubectl set env deployment/policy-controller -n cosign-system POLICY_CONTROLLER_LOG_LEVEL=debug
 ```
 
-### Add namespace exclusions
-
-To exclude specific namespaces from policy enforcement:
-
-```yaml
-spec:
-  rules:
-    - name: verify-nvsentinel-attestation
-      exclude:
-        any:
-          - resources:
-              namespaces:
-                - kube-system
-                - nvsentinel-dev
+View detailed logs:
+```bash
+kubectl logs -n cosign-system deployment/policy-controller -f
 ```
 
-## Troubleshooting
+### Testing without enforcement
 
-### Policy not enforcing
-
-1. Check Kyverno is running:
-   ```bash
-   kubectl get pods -n kyverno
-   ```
-
-2. Check policy status:
-   ```bash
-   kubectl get clusterpolicy
-   kubectl describe clusterpolicy verify-nvsentinel-image-attestation
-   ```
-
-### Image verification fails
-
-1. Ensure the image digest is correct
-2. Verify attestations exist:
-   ```bash
-   gh attestation list -R NVIDIA/NVSentinel --artifact-url "oci://$IMAGE_DIGEST"
-   ```
-
-3. Check Rekor transparency log access (policies use Sigstore's public instance)
+1. Switch policy to warn mode temporarily
+2. Remove namespace label to disable enforcement
+3. Or use a separate test namespace

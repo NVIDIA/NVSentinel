@@ -134,9 +134,23 @@ jobs:
           container_name: ${{ matrix.container_name }}
           tag_suffix: ${{ matrix.tag_suffix }}
 
+      - name: Get published image digest
+        id: get-digest
+        run: |
+          IMAGE_TAG="${{ matrix.container_name }}:${{ steps.ref-name.outputs.value }}${{ matrix.tag_suffix }}"
+          DIGEST=$(crane digest "ghcr.io/${{ github.repository }}/${IMAGE_TAG}")
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0
+        with:
+          subject-name: ${{ matrix.container_name }}
+          subject-digest: ${{ steps.get-digest.outputs.digest }}
+          push-to-registry: true
+
 
   # Build images using ko and attest provenance
-  # Once validated, this will replace the container-publish job above
   build-images:
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60

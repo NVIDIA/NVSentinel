@@ -1,46 +1,68 @@
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+---
+# ClusterImagePolicy for verifying NVSentinel container images
+# This policy uses Sigstore Policy Controller to verify that NVSentinel images
+# have valid SLSA Build Provenance attestations signed by the official 
+# GitHub Actions workflow using keyless signing with Fulcio/Rekor.
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
 metadata:
   name: verify-nvsentinel-image-attestation
   annotations:
-    policies.kyverno.io/title: Verify NVSentinel Image Attestations
-    policies.kyverno.io/category: Supply Chain Security
-    policies.kyverno.io/severity: high
-    policies.kyverno.io/subject: Pod
-    policies.kyverno.io/description: >-
-      This policy verifies that NVSentinel container images have valid SLSA Build 
+    description: >-
+      Verifies that NVSentinel container images have valid SLSA Build 
       Provenance attestations signed by the official GitHub Actions workflow. 
-      It ensures images were built from the official NVIDIA/NVSentinel repository 
+      Ensures images were built from the official NVIDIA/NVSentinel repository 
       with proper attestations before allowing them to run in the cluster.
+    category: Supply Chain Security
+    severity: high
 spec:
-  validationFailureAction: Enforce
-  background: false
-  webhookTimeoutSeconds: 30
-  failurePolicy: Fail
-  rules:
-    - name: verify-nvsentinel-attestation
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-      verifyImages:
-        - imageReferences:
-            - "ghcr.io/nvidia/nvsentinel/*"
-          attestations:
-            - type: https://slsa.dev/provenance/v1
-              conditions:
-                all:
-                  - key: "{{ builder.id }}"
-                    operator: Equals
-                    value: "https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main"
-                  - key: "{{ invocation.configSource.uri }}"
-                    operator: Equals
-                    value: "git+https://github.com/NVIDIA/NVSentinel@refs/heads/main"
-              attestors:
-                - entries:
-                    - keyless:
-                        subject: "https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main"
-                        issuer: "https://token.actions.githubusercontent.com"
-                        rekor:
-                          url: "https://rekor.sigstore.dev"
+  # Match all NVSentinel images from the official GHCR registry
+  images:
+    - glob: "ghcr.io/nvidia/nvsentinel/**"
+  
+  # Define the authorities that can sign the images
+  authorities:
+    - name: github-actions-keyless
+      keyless:
+        # Use public Sigstore Fulcio instance
+        url: https://fulcio.sigstore.dev
+        # Match the GitHub Actions OIDC identity
+        # This matches: https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main
+        identities:
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: ^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/heads/main$
+      # Use public Sigstore Rekor instance for transparency log
+      ctlog:
+        url: https://rekor.sigstore.dev
+      # Validate SLSA Build Provenance attestations
+      attestations:
+        - name: slsa-provenance
+          predicateType: https://slsa.dev/provenance/v1
+          policy:
+            type: cue
+            data: |
+              import "strings"
+              
+              // Validate the builder is the official GitHub Actions workflow
+              predicateType: "https://slsa.dev/provenance/v1"
+              predicate: buildDefinition: {
+                buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+                externalParameters: {
+                  workflow: {
+                    ref: strings.HasPrefix("refs/heads/") || strings.HasPrefix("refs/tags/")
+                    repository: "https://github.com/NVIDIA/NVSentinel"
+                  }
+                }
+                internalParameters: {
+                  github: {
+                    event_name: "push" | "workflow_dispatch" | "release"
+                  }
+                }
+              }
+              
+              // Validate the source repository
+              predicate: runDetails: {
+                builder: {
+                  id: =~"^https://github.com/NVIDIA/NVSentinel/"
+                }
+              }

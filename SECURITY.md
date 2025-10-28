@@ -106,14 +106,11 @@ The SBOM is pretty long, here is an abbreviated version:
 
 > All NVSentinel attestations can be viewed at https://github.com/NVIDIA/NVSentinel/attestations
 
-To verify any single image:
+NVSentinel images include SLSA Build Provenance attestations that can be verified both manually (using CLI tools) and automatically (using Kubernetes admission policies). 
 
-```shell
-gh attestation verify "oci://$IMAGE_DIGEST" \
-  -R NVIDIA/NVSentinel \
-  --bundle-from-oci \
-  --signer-workflow 'NVIDIA/NVSentinel/.github/workflows/publish\.yml@refs/heads/main' \
-  --source-ref refs/heads/main \
-  --cert-oidc-issuer https://token.actions.githubusercontent.com \
-  --format json --jq '.[].verificationResult.summary'
-```
+See [distros/kubernetes/nvsentinel/policies/README.md](distros/kubernetes/nvsentinel/policies/README.md) for:
+
+- Manual verification commands using `cosign` or `gh` CLI
+- Automated in-cluster verification using Sigstore Policy Controller
+- Installation and configuration instructions
+
