@@ -135,9 +135,9 @@ NVSentinel is open source and easy to deploy:
 ## Learn More
 
 - **GitHub Repository**: [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel)
-- **Quick Start Guide**: [README.md](README.md)
-- **Architecture Details**: [DEVELOPMENT.md](DEVELOPMENT.md)
-- **Security & Supply Chain**: [SECURITY.md](SECURITY.md)
+- **Quick Start Guide**: [../README.md](../README.md)
+- **Architecture Details**: [../DEVELOPMENT.md](../DEVELOPMENT.md)
+- **Security & Supply Chain**: [../SECURITY.md](../SECURITY.md)
 
 
 > **In One Sentence**: NVSentinel is like having an expert GPU operations team working 24/7 to detect and automatically fix hardware problems in your Kubernetes cluster, so your expensive GPUs stay productive instead of sitting broken.
