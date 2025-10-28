@@ -141,7 +141,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: test-nvsentinel-valid
-  namespace: nvsentinel-system  # Must be labeled with policy.sigstore.dev/include=true
+  namespace: nvsentinel # Must be labeled with policy.sigstore.dev/include=true
 spec:
   containers:
   - name: fault-quarantine

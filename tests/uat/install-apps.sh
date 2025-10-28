@@ -22,11 +22,6 @@ source "${SCRIPT_DIR}/common.sh"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
 
-# Verify yq is available for parsing versions
-if ! command -v yq &> /dev/null; then
-    error "yq is required but not installed. Please install yq: https://github.com/mikefarah/yq"
-fi
-
 # Load versions from .versions.yaml
 KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
 KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")

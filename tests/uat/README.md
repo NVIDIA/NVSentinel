@@ -102,7 +102,8 @@ All versions are automatically loaded from `.versions.yaml`:
 | Prometheus Operator | `.versions.yaml` → `cluster.prometheus_operator` | Prometheus helm chart version |
 | GPU Operator | `.versions.yaml` → `cluster.gpu_operator` | GPU Operator helm chart version |
 | cert-manager | `.versions.yaml` → `cluster.cert_manager` | cert-manager helm chart version |
-| KWOK | `.versions.yaml` → `testing_tools.kwok` | Kubernetes WithOut Kubelet (fake nodes for Kind) |
+| KWOK (app) | `.versions.yaml` → `testing_tools.kwok` | Kubernetes WithOut Kubelet app version |
+| KWOK (chart) | `.versions.yaml` → `testing_tools.kwok_chart` | KWOK Helm chart version |
 
 For NVSentinel:
 
