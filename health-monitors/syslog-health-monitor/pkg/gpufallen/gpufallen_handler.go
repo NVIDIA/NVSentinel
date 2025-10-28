@@ -15,12 +15,10 @@
 package gpufallen
 
 import (
-	"fmt"
-	"log/slog"
-	"strings"
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -33,22 +31,11 @@ func NewGPUFallenHandler(nodeName, defaultAgentName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
-		pciToGPUUUID:          make(map[string]string),
 	}, nil
 }
 
 // ProcessLine processes a single syslog line and returns any generated health events.
 func (h *GPUFallenHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
-	// First, check if this is a GPU UUID mapping line
-	if pciID, gpuUUID := h.parseNVRMGPUMapLine(message); pciID != "" && gpuUUID != "" {
-		normPCI := h.normalizePCI(pciID)
-		h.pciToGPUUUID[normPCI] = gpuUUID
-
-		slog.Info("Updated PCI->GPU UUID mapping", "pci", normPCI, "uuid", gpuUUID)
-
-		return nil, nil
-	}
-
 	// Check if this is a GPU falling off error
 	event := h.parseGPUFallenError(message)
 	if event == nil {
@@ -58,27 +45,10 @@ func (h *GPUFallenHandler) ProcessLine(message string) (*pb.HealthEvents, error)
 	return h.createHealthEventFromError(event), nil
 }
 
-func (h *GPUFallenHandler) parseNVRMGPUMapLine(message string) (string, string) {
-	m := reNvrmMap.FindStringSubmatch(message)
-	if len(m) >= 3 {
-		return m[1], m[2]
-	}
-
-	return "", ""
-}
-
-func (h *GPUFallenHandler) normalizePCI(pci string) string {
-	if idx := strings.Index(pci, "."); idx != -1 {
-		return pci[:idx]
-	}
-
-	return pci
-}
-
 func (h *GPUFallenHandler) parseGPUFallenError(message string) *gpuFallenErrorEvent {
 	// First check if this message contains "Xid"
-	// If has DIX error it should be handled by XID handler
-	if reXIDPattern.MatchString(message) {
+	// If it has XID error it should be handled by XID handler
+	if common.XIDPattern.MatchString(message) {
 		return nil
 	}
 
@@ -116,14 +86,6 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		})
 	}
 
-	// Look up GPU UUID from PCI address
-	normPCI := h.normalizePCI(event.pciAddr)
-	if uuid, ok := h.pciToGPUUUID[normPCI]; ok && uuid != "" {
-		entitiesImpacted = append(entitiesImpacted, &pb.Entity{
-			EntityType: "GPU", EntityValue: uuid,
-		})
-	}
-
 	// Increment metrics
 	gpuFallenCounterMetric.WithLabelValues(h.nodeName, event.pciAddr).Inc()
 
@@ -134,15 +96,12 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		ComponentClass:     h.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
 		EntitiesImpacted:   entitiesImpacted,
-		Message: fmt.Sprintf(
-			"GPU has fallen off the bus and is not responding to commands. PCI: %s",
-			event.pciAddr,
-		),
-		IsFatal:           true, // GPU falling off the bus is always fatal
-		IsHealthy:         false,
-		NodeName:          h.nodeName,
-		RecommendedAction: pb.RecommendedAction_RESTART_BM,
-		ErrorCode:         []string{"GPU_FALLEN_OFF_BUS"},
+		Message:            event.message,
+		IsFatal:            true, // GPU falling off the bus is always fatal
+		IsHealthy:          false,
+		NodeName:           h.nodeName,
+		RecommendedAction:  pb.RecommendedAction_RESTART_BM,
+		ErrorCode:          []string{"GPU_FALLEN_OFF_BUS"},
 		Metadata: map[string]string{
 			"JOURNAL_MESSAGE": event.message,
 			"PCI_ADDRESS":     event.pciAddr,

@@ -28,14 +28,8 @@ var (
 	reGPUFallenPattern = regexp.MustCompile(
 		`(?s)NVRM: The NVIDIA GPU ([0-9a-fA-F:.]+).*?fallen off the bus and is not responding to commands`)
 
-	// Pattern to detect XID errors in the message (to exclude messages that have XIDs)
-	reXIDPattern = regexp.MustCompile(`\bXid\b`)
-
 	// Pattern to extract PCI ID from the full error message
 	rePCIIDPattern = regexp.MustCompile(`PCI ID: ([0-9a-fA-F:]+)`)
-
-	// Pattern to match NVRM GPU mapping lines
-	reNvrmMap = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:.]+): (GPU-[0-9a-fA-F-]+)`)
 )
 
 // GPUFallenHandler processes syslog lines related to GPU fallen off bus errors.
@@ -44,7 +38,6 @@ type GPUFallenHandler struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
-	pciToGPUUUID          map[string]string
 }
 
 // gpuFallenErrorEvent represents a parsed GPU fallen off bus error event

@@ -18,6 +18,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,13 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 
 	"github.com/thedatashed/xlsxreader"
+)
+
+var (
+	// XIDPattern is a simple pattern to detect the presence of "Xid" in log messages.
+	// This is useful for filtering out XID-related messages that should be handled
+	// by the XID handler instead of other error handlers.
+	XIDPattern = regexp.MustCompile(`\bXid\b`)
 )
 
 // NVIDIA XID Error Catalog - Embedded Excel File
