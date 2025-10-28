@@ -47,7 +47,7 @@ import (
 
 const (
 	WaitTimeout  = 10 * time.Minute
-	WaitInterval = 30 * time.Second
+	WaitInterval = 5 * time.Second
 
 	// NVSentinelNamespace is the default namespace where NVSentinel components are deployed
 	NVSentinelNamespace = "nvsentinel"
@@ -1014,4 +1014,72 @@ func ExecInPod(ctx context.Context, restConfig *rest.Config, namespace, podName,
 	})
 
 	return stdout.String(), stderr.String(), err
+}
+
+func IsPodReady(pod v1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func RestartPodByDeletion(ctx context.Context, t *testing.T, client klient.Client, namespace string, labelSelector string) error {
+	t.Logf("Deleting pod with selector '%s' to force restart", labelSelector)
+
+	pods := &v1.PodList{}
+	err := client.Resources(namespace).List(ctx, pods, resources.WithLabelSelector(labelSelector))
+	if err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no pods found with selector %s", labelSelector)
+	}
+
+	oldPodName := pods.Items[0].Name
+	t.Logf("Existing pod to delete: %s", oldPodName)
+
+	err = DeletePod(ctx, client, namespace, oldPodName)
+	if err != nil {
+		return fmt.Errorf("failed to delete pod: %w", err)
+	}
+
+	t.Logf("Pod deleted, waiting for new pod to appear")
+
+	var newPodName string
+	require.Eventually(t, func() bool {
+		pods := &v1.PodList{}
+		err := client.Resources(namespace).List(ctx, pods,
+			resources.WithLabelSelector(labelSelector))
+		if err != nil {
+			t.Logf("Error listing pods: %v", err)
+			return false
+		}
+
+		if len(pods.Items) > 0 && pods.Items[0].Name != oldPodName {
+			newPodName = pods.Items[0].Name
+			t.Logf("New pod %s found", newPodName)
+			return true
+		}
+		return false
+	}, WaitTimeout, WaitInterval, "new pod with selector %s should appear", labelSelector)
+
+	t.Logf("Waiting for new pod %s to be ready", newPodName)
+	require.Eventually(t, func() bool {
+		var pod v1.Pod
+		err := client.Resources().Get(ctx, newPodName, namespace, &pod)
+		if err != nil {
+			return false
+		}
+		ready := IsPodReady(pod)
+		if !ready {
+			t.Logf("Pod %s not ready yet", newPodName)
+		}
+		return ready
+	}, WaitTimeout, WaitInterval, "pod %s should be ready", newPodName)
+
+	t.Logf("New pod %s is ready", newPodName)
+	return nil
 }
