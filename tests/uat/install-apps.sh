@@ -215,7 +215,7 @@ install_nvsentinel() {
         --create-namespace \
         --values "$NVSENTINEL_VALUES" \
         --set global.image.tag="$NVSENTINEL_VERSION" \
-        "${extra_set_args[@]+"${extra_set_args[@]}"}" \
+        "${extra_set_args[@]:-}" \
         --timeout 20m \
         --wait; then
         error "Failed to install NVSentinel"

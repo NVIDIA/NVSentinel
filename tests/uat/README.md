@@ -68,7 +68,11 @@ The script will:
 ### Version Configuration
 
 Tool versions are automatically loaded from `.versions.yaml` in the repository root. This includes:
-- `KWOK_VERSION` - Kubernetes WithOut Kubelet (for fake nodes in Kind)
+- `KWOK_VERSION` - Kubernetes WithOut Kubelet app version
+- `KWOK_CHART_VERSION` - KWOK Helm chart version
+- `PROMETHEUS_OPERATOR_VERSION` - Prometheus Operator Helm chart version
+- `GPU_OPERATOR_VERSION` - NVIDIA GPU Operator version
+- `CERT_MANAGER_VERSION` - cert-manager Helm chart version
 - Other versions can be overridden via environment variables if needed
 
 ### Required (for Cloud CSPs)

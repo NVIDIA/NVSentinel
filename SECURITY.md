@@ -94,7 +94,7 @@ SLSA (Supply chain Levels for Software Artifacts) provides verifiable informatio
 
 NVSentinel images include SLSA Build Provenance attestations that can be verified both manually (using CLI tools) and automatically (using Kubernetes admission policies). 
 
-See [distros/kubernetes/nvsentinel/policies/README.md](distros/kubernetes/nvsentinel/policies/README.md) for:
+Refer to [distros/kubernetes/nvsentinel/policies/README.md](distros/kubernetes/nvsentinel/policies/README.md) for:
 
 - Manual verification commands using `cosign` or `gh` CLI
 - Automated in-cluster verification using Sigstore Policy Controller

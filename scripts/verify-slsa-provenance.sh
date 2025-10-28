@@ -38,11 +38,20 @@ readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
-# Configuration
-readonly POLICY_CONTROLLER_VERSION="${POLICY_CONTROLLER_VERSION:-0.10.5}"
+# Paths
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly VERSIONS_FILE="${VERSIONS_FILE:-$REPO_ROOT/.versions.yaml}"
+
+# Configuration - load versions from .versions.yaml if available
+if [ -f "$VERSIONS_FILE" ] && command -v yq &> /dev/null; then
+    readonly POLICY_CONTROLLER_VERSION="$(yq eval '.cluster.policy_controller' "$VERSIONS_FILE")"
+else
+    readonly POLICY_CONTROLLER_VERSION="${POLICY_CONTROLLER_VERSION:-0.10.5}"
+fi
 readonly POLICY_CONTROLLER_NS="cosign-system"
 readonly NVSENTINEL_NS="${NVSENTINEL_NS:-nvsentinel}"
-readonly POLICY_DIR="${POLICY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../distros/kubernetes/nvsentinel/policies" && pwd)}"
+readonly POLICY_DIR="${POLICY_DIR:-$(cd "$REPO_ROOT/distros/kubernetes/nvsentinel/policies" && pwd)}"
 
 # Helper functions
 log_info() {
@@ -78,6 +87,12 @@ check_prerequisites() {
         missing_tools+=("helm")
     fi
     
+    # yq is optional but recommended for loading versions from .versions.yaml
+    if ! command -v yq &> /dev/null; then
+        log_warn "yq not found - using default Policy Controller version"
+        log_warn "Install yq for automatic version management: https://github.com/mikefarah/yq"
+    fi
+    
     if [ ${#missing_tools[@]} -ne 0 ]; then
         log_error "Missing required tools: ${missing_tools[*]}"
         log_error "Please install missing tools and try again"
@@ -94,6 +109,13 @@ check_prerequisites() {
     local current_context
     current_context=$(kubectl config current-context)
     log_success "Connected to cluster: ${current_context}"
+    
+    # Log version source
+    if [ -f "$VERSIONS_FILE" ] && command -v yq &> /dev/null; then
+        log_info "Using Policy Controller version ${POLICY_CONTROLLER_VERSION} from ${VERSIONS_FILE}"
+    else
+        log_info "Using default Policy Controller version ${POLICY_CONTROLLER_VERSION}"
+    fi
 }
 
 check_nvsentinel_deployment() {
@@ -109,7 +131,7 @@ check_nvsentinel_deployment() {
     # Get all NVSentinel deployments (official GHCR images only)
     local deployments
     deployments=$(kubectl get deployments -n "${NVSENTINEL_NS}" -o json | \
-        jq -r '.items[] | select(.spec.template.spec.containers[].image | startswith("ghcr.io/nvidia/nvsentinel/")) | .metadata.name')
+        jq -r '.items[] | select(any(.spec.template.spec.containers[]; .image | startswith("ghcr.io/nvidia/nvsentinel/"))) | .metadata.name')
     
     if [ -z "$deployments" ]; then
         log_warn "No official NVSentinel deployments found in namespace ${NVSENTINEL_NS}"
@@ -145,7 +167,8 @@ install_policy_controller() {
     if helm list -n "${POLICY_CONTROLLER_NS}" 2>/dev/null | grep -q "policy-controller"; then
         log_info "Policy Controller already installed, checking version..."
         local installed_version
-        installed_version=$(helm list -n "${POLICY_CONTROLLER_NS}" -o json | jq -r '.[] | select(.name=="policy-controller") | .chart' | cut -d'-' -f3)
+        # Extract chart version from the chart field (format: "policy-controller-0.10.5")
+        installed_version=$(helm list -n "${POLICY_CONTROLLER_NS}" -o json | jq -r '.[] | select(.name=="policy-controller") | .chart | sub("^policy-controller-"; "")')
         log_info "Installed version: ${installed_version}"
         
         # Prepare version string for comparison
@@ -282,7 +305,9 @@ test_policy_enforcement() {
     
     log_info "Creating test pod with image: ${test_image}"
     
-    cat <<EOF | kubectl apply -f - &> /dev/null
+    local apply_output
+    local apply_exit_code
+    apply_output=$(cat <<EOF | kubectl apply -f - 2>&1
 apiVersion: v1
 kind: Pod
 metadata:
@@ -297,6 +322,21 @@ spec:
     command: ["/bin/sh", "-c", "sleep 10"]
   restartPolicy: Never
 EOF
+)
+    apply_exit_code=$?
+    
+    # Check if kubectl apply succeeded
+    if [ $apply_exit_code -ne 0 ]; then
+        # Check if it's a policy-related error
+        if echo "$apply_output" | grep -q "admission webhook.*denied\|no matching signatures"; then
+            log_error "✗ Valid image was blocked by policy (unexpected)"
+            log_error "Policy error: $apply_output"
+        else
+            log_error "✗ Failed to create test pod (non-policy error)"
+            log_error "Error: $apply_output"
+        fi
+        return 1
+    fi
     
     # Check if pod was created (policy allowed it)
     sleep 2

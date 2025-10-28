@@ -45,6 +45,7 @@ spec:
         # This matches: https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main
         identities:
           - issuer: https://token.actions.githubusercontent.com
+            # TODO: Migrate this to tags when released images have SLSA attestation
             subjectRegExp: ^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/heads/main$
       # Use public Sigstore Rekor instance for transparency log
       ctlog:

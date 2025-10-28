@@ -27,12 +27,17 @@ if ! command -v yq &> /dev/null; then
     error "yq is required but not installed. Please install yq: https://github.com/mikefarah/yq"
 fi
 
-# Load versions from .versions.yaml
-KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
-KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")
+# Load versions from .versions.yaml that are exported to install-apps.sh
 PROMETHEUS_OPERATOR_VERSION=$(yq eval '.cluster.prometheus_operator' "$VERSIONS_FILE")
 GPU_OPERATOR_VERSION=$(yq eval '.cluster.gpu_operator' "$VERSIONS_FILE")
 CERT_MANAGER_VERSION=$(yq eval '.cluster.cert_manager' "$VERSIONS_FILE")
+
+# Validate required versions were loaded
+if [[ -z "$PROMETHEUS_OPERATOR_VERSION" ]] || [[ -z "$GPU_OPERATOR_VERSION" ]] || [[ -z "$CERT_MANAGER_VERSION" ]]; then
+    error "Failed to load required versions from $VERSIONS_FILE. Please verify the file exists and contains required keys."
+fi
+
+# Note: KWOK versions are loaded directly by install-apps.sh from .versions.yaml
 
 # Configuration
 CSP="${CSP:-kind}"  # Default to kind for local development
@@ -140,6 +145,21 @@ create_cluster() {
     log "Creating ${CSP^^} cluster..."
     log "========================================="
     
+    # Kind clusters are assumed to be created externally
+    if [[ "$CSP" == "kind" ]]; then
+        log "Using existing Kind cluster: $CLUSTER_NAME"
+        log "Verify Kind cluster exists with: kubectl cluster-info --context kind-$CLUSTER_NAME"
+        
+        # Verify cluster exists
+        if ! kubectl cluster-info --context "kind-$CLUSTER_NAME" &> /dev/null; then
+            error "Kind cluster '$CLUSTER_NAME' not found. Create it first with: kind create cluster --name $CLUSTER_NAME"
+        fi
+        
+        log "Kind cluster verified ✓"
+        return 0
+    fi
+    
+    # For cloud CSPs, run the cluster creation script
     export CLUSTER_NAME
     export AWS_REGION
     export K8S_VERSION
@@ -150,8 +170,21 @@ create_cluster() {
     export GPU_NODE_COUNT
     export CAPACITY_RESERVATION_ID
     
+    local cluster_script
+    case "$CSP" in
+        aws)
+            cluster_script="create-eks-cluster.sh"
+            ;;
+        azure|gcp|oci)
+            error "CSP '$CSP' cluster creation not yet implemented in this script. Please create cluster manually or use CSP=aws or CSP=kind"
+            ;;
+        *)
+            error "Unknown CSP: $CSP. Supported values: kind, aws, azure, gcp, oci"
+            ;;
+    esac
+    
     cd "${SCRIPT_DIR}/${CSP}"
-    ./create-eks-cluster.sh
+    "./${cluster_script}"
     cd "${SCRIPT_DIR}"
     
     log "Cluster created successfully ✓"

@@ -15,7 +15,7 @@ This ensures the policy doesn't interfere with other workloads in the namespace 
 
 ## Prerequisites
 
-These policies require [Sigstore Policy Controller](https://docs.sigstore.dev/policy-controller/overview/) to be installed in your cluster:
+These policies require [Sigstore Policy Controller](https://docs.sigstore.dev/policy-controller/overview/) to be installed in your cluster. The Policy Controller version is managed centrally in `.versions.yaml` at the repository root.
 
 ```bash
 # Install Policy Controller using the latest release
@@ -25,12 +25,20 @@ kubectl apply -f https://github.com/sigstore/policy-controller/releases/latest/d
 kubectl -n cosign-system get pods
 ```
 
-Alternatively, you can install using Helm:
+Alternatively, you can install using Helm (recommended for production):
 
 ```bash
 helm repo add sigstore https://sigstore.github.io/helm-charts
 helm repo update
-helm install policy-controller sigstore/policy-controller -n cosign-system --create-namespace
+
+# Get the version from .versions.yaml
+POLICY_CONTROLLER_VERSION=$(yq eval '.cluster.policy_controller' .versions.yaml)
+
+# Install specific version
+helm install policy-controller sigstore/policy-controller \
+  -n cosign-system \
+  --create-namespace \
+  --version "${POLICY_CONTROLLER_VERSION}"
 ```
 
 ## Namespace Configuration
@@ -214,17 +222,9 @@ Options:
 - `warn`: Allow but log warnings for unmatched images  
 - `allow`: Allow all unmatched images (not recommended for production)
 
-## Additional Resources
+## Advanced Configuration
 
-- [NVSentinel Security Documentation](../../../SECURITY.md)
-- [NVSentinel Attestations](https://github.com/NVIDIA/NVSentinel/attestations)
-- [Sigstore Policy Controller Documentation](https://docs.sigstore.dev/policy-controller/overview/)
-- [ClusterImagePolicy API Reference](https://github.com/sigstore/policy-controller/blob/main/docs/api-types/index-v1beta1.md)
-- [SLSA Build Provenance](https://slsa.dev/provenance/)
-- [Sigstore](https://www.sigstore.dev/)
-- [Cosign](https://docs.sigstore.dev/cosign/overview/)
-
-### Debug mode
+### Debug Mode
 
 Enable verbose logging in Policy Controller:
 
@@ -237,8 +237,20 @@ View detailed logs:
 kubectl logs -n cosign-system deployment/policy-controller -f
 ```
 
-### Testing without enforcement
+### Testing Without Enforcement
 
-1. Switch policy to warn mode temporarily
-2. Remove namespace label to disable enforcement
-3. Or use a separate test namespace
+When you need to test without blocking images:
+
+1. **Switch policy to warn mode temporarily** - Edit the ClusterImagePolicy and add `mode: warn`
+2. **Remove namespace label to disable enforcement** - `kubectl label namespace nvsentinel policy.sigstore.dev/include-`
+3. **Use a separate test namespace** - Create a namespace without the enforcement label
+
+## Additional Resources
+
+- [NVSentinel Security Documentation](../../../SECURITY.md)
+- [NVSentinel Attestations](https://github.com/NVIDIA/NVSentinel/attestations)
+- [Sigstore Policy Controller Documentation](https://docs.sigstore.dev/policy-controller/overview/)
+- [ClusterImagePolicy API Reference](https://github.com/sigstore/policy-controller/blob/main/docs/api-types/index-v1beta1.md)
+- [SLSA Build Provenance](https://slsa.dev/provenance/)
+- [Sigstore](https://www.sigstore.dev/)
+- [Cosign](https://docs.sigstore.dev/cosign/overview/)
