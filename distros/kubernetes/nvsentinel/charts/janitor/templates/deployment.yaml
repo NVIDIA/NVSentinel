@@ -30,6 +30,12 @@ spec:
       {{- end }}
       labels:
         {{- include "janitor.selectorLabels" . | nindent 8 }}
+        {{- if eq (.Values.csp.provider | default "kind") "azure" }}
+        {{- if .Values.csp.azure.clientId }}
+        # Azure Workload Identity label (required for pod identity)
+        azure.workload.identity/use: "true"
+        {{- end }}
+        {{- end }}
     spec:
       {{- with ((.Values.global).imagePullSecrets | default .Values.imagePullSecrets) }}
       imagePullSecrets:
@@ -44,10 +50,15 @@ spec:
             - "--metrics-bind-address=:{{ ((.Values.global).metricsPort) | default 2112 }}"
             - "--health-probe-bind-address=:8081"
             - "--config=/etc/nvsentinel/janitor/config.yaml"
-            - "--webhook-port={{ .Values.webhook.port }}"
             - "--webhook-cert-path={{ .Values.webhook.certDir }}"
             - "--webhook-cert-name=tls.crt"
             - "--webhook-cert-key=tls.key"
+            {{- if .Values.metrics.tls.enabled }}
+            - "--metrics-secure=true"
+            - "--metrics-cert-path={{ .Values.metrics.tls.certDir }}"
+            - "--metrics-cert-name=tls.crt"
+            - "--metrics-cert-key=tls.key"
+            {{- end }}
           env:
             # Cloud Service Provider configuration
             - name: CSP
@@ -120,6 +131,11 @@ spec:
             - name: webhook-certs
               mountPath: {{ .Values.webhook.certDir }}
               readOnly: true
+            {{- if .Values.metrics.tls.enabled }}
+            - name: metrics-certs
+              mountPath: {{ .Values.metrics.tls.certDir }}
+              readOnly: true
+            {{- end }}
       restartPolicy: Always
       volumes:
         - name: config
@@ -129,6 +145,19 @@ spec:
           secret:
             secretName: {{ include "janitor.fullname" . }}-webhook-cert
             defaultMode: 420
+        {{- if .Values.metrics.tls.enabled }}
+        - name: metrics-certs
+          secret:
+            secretName: {{ include "janitor.fullname" . }}-metrics-cert
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+            defaultMode: 420
+        {{- end }}
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

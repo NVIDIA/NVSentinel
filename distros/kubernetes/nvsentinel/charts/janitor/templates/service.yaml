@@ -29,4 +29,8 @@ spec:
       port: {{ .Values.webhook.port }}
       targetPort: webhook
       protocol: TCP
+    - name: config
+      port: {{ .Values.config.httpPort | default 8082 }}
+      targetPort: config
+      protocol: TCP
 

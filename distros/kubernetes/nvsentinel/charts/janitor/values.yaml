@@ -91,6 +91,8 @@ config:
   timeout: "25m"
   # Manual mode - if true, controllers won't send actual reboot/terminate signals
   manualMode: false
+  # HTTP endpoint port for exposing runtime configuration
+  httpPort: 8082
   # Node exclusions - nodes matching these label selectors will be excluded from janitor operations
   nodes:
     exclusions: []
@@ -107,11 +109,21 @@ config:
   controllers:
     # Reboot node controller configuration
     rebootNode:
+      # Enable/disable the reboot node controller (default: true)
+      enabled: true
       # Timeout for reboot operations (includes CSP API call + node recovery time)
       # If not set or set to empty, defaults to config.timeout (25m)
       # AWS/Azure/OCI: Typically 25m (includes 5min cooldown period)
       # GCP: Can be shorter as operation status is tracked directly
       # kind/kwok: Can be much shorter for testing (5m)
+      timeout: "25m"
+    
+    # Terminate node controller configuration
+    terminateNode:
+      # Enable/disable the terminate node controller (default: true)
+      enabled: true
+      # Timeout for terminate operations
+      # If not set or set to empty, defaults to config.timeout (25m)
       timeout: "25m"
 
 # Cloud Service Provider (CSP) Configuration
@@ -215,3 +227,24 @@ webhook:
   # Cert-manager issuer to use for webhook certificate
   # This issuer must exist in the same namespace
   certIssuer: "selfsigned-ca-issuer"
+
+# Metrics Configuration
+metrics:
+  # TLS configuration for metrics server
+  tls:
+    # Enable TLS for metrics endpoint
+    enabled: false
+    # Directory containing metrics server TLS certs
+    certDir: "/tmp/k8s-metrics-server/metrics-certs"
+    # Cert-manager issuer name (defaults to webhook.certIssuer if not set)
+    issuerName: ""
+    # Cert-manager issuer kind (Issuer or ClusterIssuer)
+    issuerKind: "Issuer"
+    # Cert-manager issuer group (optional)
+    issuerGroup: ""
+    # Certificate duration (default: 90 days)
+    duration: "2160h"
+    # Certificate renewal time before expiry (default: 30 days)
+    renewBefore: "720h"
+    # Organization name for certificate subject
+    organization: "NVIDIA"

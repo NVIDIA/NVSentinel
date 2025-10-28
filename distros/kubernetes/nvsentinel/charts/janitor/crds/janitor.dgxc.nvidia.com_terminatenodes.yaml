@@ -17,21 +17,26 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.1
-  name: gpuresets.janitor.dgxc.nvidia.com
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: terminatenodes.janitor.dgxc.nvidia.com
 spec:
   group: janitor.dgxc.nvidia.com
   names:
-    kind: GPUReset
-    listKind: GPUResetList
-    plural: gpuresets
-    singular: gpureset
+    kind: TerminateNode
+    listKind: TerminateNodeList
+    plural: terminatenodes
+    singular: terminatenode
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - description: The target node for the GPU reset
-      jsonPath: .spec.nodeName
+    - jsonPath: .spec.nodeName
       name: Node
+      type: string
+    - jsonPath: .spec.force
+      name: Force
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=='NodeTerminated')].status
+      name: NodeTerminated
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -39,7 +44,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GPUReset is the Schema for the gpuresets API.
+        description: TerminateNode is the Schema for the terminatenodes API
         properties:
           apiVersion:
             description: |-
@@ -59,43 +64,24 @@ spec:
           metadata:
             type: object
           spec:
-            description: GPUResetSpec defines the desired state of GPUReset.
+            description: TerminateNodeSpec defines the desired state of TerminateNode
             properties:
+              force:
+                default: false
+                description: Force indicates whether to force terminate the node
+                type: boolean
               nodeName:
-                description: NodeName identifies the node which contains the GPUs
-                  to reset.
-                minLength: 1
+                description: NodeName is the name of the node to terminate
                 type: string
-              selector:
-                description: |-
-                  Selector is used to target one or more specific devices to reset.
-                  If this field is omitted or empty, all GPUs on the node will be reset.
-                properties:
-                  pciBusIDs:
-                    description: |-
-                      PCIBusIDs is a list of GPU PCI bus IDs.
-                      Format: "domain:bus:device.function" (e.g., "0000:01:00.0").
-                    items:
-                      pattern: ^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]{1}$
-                      type: string
-                    type: array
-                  uuids:
-                    description: UUIDs is a list of GPU UUIDs.
-                    items:
-                      pattern: ^GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                      type: string
-                    type: array
-                type: object
             required:
+            - force
             - nodeName
             type: object
           status:
-            description: GPUResetStatus defines the observed state of GPUReset.
+            description: TerminateNodeStatus defines the observed state of TerminateNode
             properties:
               completionTime:
-                description: |-
-                  CompletionTime is the time at which the reset operation finished,
-                  regardless of the outcome (success or failure).
+                description: CompletionTime is the time when the termination was completed
                 format: date-time
                 type: string
               conditions:
@@ -157,8 +143,7 @@ spec:
                   type: object
                 type: array
               startTime:
-                description: StartTime is the time at which the reset operation began
-                  processing.
+                description: StartTime is the time when the termination was initiated
                 format: date-time
                 type: string
             type: object
