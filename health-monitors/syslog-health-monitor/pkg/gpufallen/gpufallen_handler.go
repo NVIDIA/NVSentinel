@@ -80,6 +80,7 @@ func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
 			"pci_address", pciAddr,
 			"xid_string", matches[2],
 			"error", err)
+
 		return
 	}
 
@@ -130,6 +131,7 @@ func (h *GPUFallenHandler) cleanupExpiredXIDs() {
 		h.mu.Lock()
 		now := time.Now()
 		window := h.xidWindow // Read current window value
+
 		for pciAddr, record := range h.recentXIDs {
 			if now.Sub(record.timestamp) >= window {
 				delete(h.recentXIDs, pciAddr)
