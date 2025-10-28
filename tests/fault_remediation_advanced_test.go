@@ -60,7 +60,7 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 			}
 
 			if len(crList) == 1 && crList[0] == cr1Name {
-				return true // Exactly 1 CR with the original name
+				return true
 			}
 			if len(crList) > 1 {
 				t.Logf("ERROR: Found %d CRs, duplicate created!", len(crList))
@@ -89,6 +89,8 @@ func TestRemediationModuleRestart(t *testing.T) {
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
 		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "allowcompletion-test")
+		newCtx = helpers.ApplyNodeDrainerConfig(newCtx, t, c, "data/nd-all-modes.yaml")
+
 		return newCtx
 	})
 
@@ -138,6 +140,8 @@ func TestRemediationModuleRestart(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+
 		return helpers.TeardownFaultRemediationTest(ctx, t, c)
 	})
 
@@ -178,7 +182,7 @@ func TestFailedCRRetry(t *testing.T) {
 			if err != nil {
 				return false
 			}
-			// Node should be uncordoned after healthy event
+
 			return !node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 

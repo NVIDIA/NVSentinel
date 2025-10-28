@@ -277,22 +277,35 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 	var testNodeProcessed string
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		newCtx, _ := helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+		newCtx, testCtx := helpers.SetupQuarantineTest(ctx, t, c, "data/managed-by-nvsentinel-configmap.yaml")
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
+
+		testNodeProcessed = testCtx.NodeName
 
 		nodes, err := helpers.GetAllNodesNames(ctx, client)
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, len(nodes), 2, "need at least 2 nodes for this test")
 
 		startIdx := int(float64(len(nodes)) * 0.50)
-		if startIdx >= len(nodes)-1 {
-			startIdx = len(nodes) - 2
+		if startIdx >= len(nodes) {
+			startIdx = len(nodes) - 1
 		}
 
-		testNodeIgnored = nodes[startIdx]
-		testNodeProcessed = nodes[startIdx+1]
+		for i := startIdx; i < len(nodes); i++ {
+			if nodes[i] != testNodeProcessed {
+				node, err := helpers.GetNodeByName(ctx, client, nodes[i])
+				if err != nil {
+					continue
+				}
+				if !node.Spec.Unschedulable {
+					testNodeIgnored = nodes[i]
+					break
+				}
+			}
+		}
+		require.NotEmpty(t, testNodeIgnored, "failed to find a second uncordoned node different from processed node")
 
 		t.Logf("Using two test nodes: ignored=%s, processed=%s", testNodeIgnored, testNodeProcessed)
 		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeIgnored)

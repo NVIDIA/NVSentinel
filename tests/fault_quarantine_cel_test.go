@@ -587,7 +587,7 @@ func TestMultipleEntityTracking(t *testing.T) {
 				return false
 			}
 
-			var events []map[string]interface{}
+			var events []map[string]any
 			if err := json.Unmarshal([]byte(annotation), &events); err != nil {
 				t.Logf("Failed to unmarshal annotation: %v", err)
 				return false

@@ -41,7 +41,7 @@ func TestCircuitBreaker(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		// Get original CB state before setup
+
 		originalCBState = helpers.GetCircuitBreakerState(ctx, t, c)
 
 		var newCtx context.Context
