@@ -213,7 +213,6 @@ func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client
 			}
 		}
 
-		// Also wait for nvsentinel-state label to be cleared
 		if node.Labels != nil {
 			if _, exists := node.Labels[NVSentinelStateLabelKey]; exists {
 				t.Logf("Node %s still has nvsentinel-state label", nodeName)
@@ -351,10 +350,8 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	// Use helper to update CB state configmap
 	updateCircuitBreakerStateConfigMap(ctx, t, client, state)
 
-	// Restart deployment to pick up the new CB state
 	t.Log("Restarting fault-quarantine deployment to pick up CB state")
 	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
@@ -410,12 +407,10 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 			return err
 		}
 
-		// Capture original deployment on first iteration
 		if originalDeployment == nil {
 			originalDeployment = deployment.DeepCopy()
 		}
 
-		// Find fault-quarantine container and update args
 		for i := range deployment.Spec.Template.Spec.Containers {
 			container := &deployment.Spec.Template.Spec.Containers[i]
 			if container.Name == "fault-quarantine" {
@@ -459,7 +454,6 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, clien
 		},
 	}
 
-	// Delete existing CM (ignore errors)
 	existingCM := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "fault-quarantine-circuit-breaker",

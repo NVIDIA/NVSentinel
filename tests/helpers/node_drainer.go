@@ -48,6 +48,19 @@ const (
 	DrainSucceededLabelValue = "drain-succeeded"
 )
 
+// applyNodeDrainerConfigAndRestart applies a node-drainer configmap and restarts the deployment.
+func applyNodeDrainerConfigAndRestart(ctx context.Context, t *testing.T, client klient.Client, configMapPath string) error {
+	t.Logf("Applying node-drainer configmap: %s", configMapPath)
+	err := createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
+	if err != nil {
+		return err
+	}
+
+	t.Log("Restarting node-drainer deployment")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
+	return err
+}
+
 func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath, testNamespace string) (context.Context, *NodeDrainerTestContext) {
 	client, err := c.NewClient()
 	require.NoError(t, err)
@@ -62,12 +75,7 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	t.Logf("Backup created at: %s", backupPath)
 	testCtx.ConfigMapBackupPath = backupPath
 
-	t.Logf("Applying test configmap: %s", configMapPath)
-	err = createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
-	require.NoError(t, err)
-
-	t.Log("Restarting node-drainer deployment")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
+	err = applyNodeDrainerConfigAndRestart(ctx, t, client, configMapPath)
 	require.NoError(t, err)
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
@@ -117,16 +125,13 @@ func TeardownNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Confi
 	backupPathVal := ctx.Value(NDKeyConfigMapBackupPath)
 	if backupPathVal != nil {
 		backupPath := backupPathVal.(string)
-		t.Logf("Restoring configmap from: %s", backupPath)
-		err = createConfigMapFromFilePath(ctx, client, backupPath, "node-drainer-config", NVSentinelNamespace)
+		t.Logf("Restoring node-drainer configmap from: %s", backupPath)
+
+		err = applyNodeDrainerConfigAndRestart(ctx, t, client, backupPath)
 		assert.NoError(t, err)
 
 		os.Remove(backupPath)
 	}
-
-	t.Log("Restarting node-drainer deployment")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
-	assert.NoError(t, err)
 
 	return ctx
 }

@@ -175,23 +175,6 @@ func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (s
 	return tempFile, nil
 }
 
-// SendHealthEventWithAutoCleanup sends a health event and automatically cleans up the temp file.
-// Use this when you don't need to control the temp file lifetime.
-func SendHealthEventWithAutoCleanup(nodeName string, event *HealthEventTemplate) error {
-	tempFile, err := event.WriteToTempFile()
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tempFile)
-
-	err = SendHealthEventsToNodes([]string{nodeName}, tempFile)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // SendHealthEventsToNodes sends health events from the specified `eventFilePath` to all nodes listed in `nodeNames` concurrently.
 func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
 	eventData, err := os.ReadFile(eventFilePath)

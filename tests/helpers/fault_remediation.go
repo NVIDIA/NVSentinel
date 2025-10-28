@@ -34,6 +34,7 @@ type RemediationTestContextKey int
 const (
 	FRKeyNodeName RemediationTestContextKey = iota
 	FRKeyNamespace
+	FRKeyNodeDrainerConfigMapBackup
 )
 
 const (
@@ -420,4 +421,41 @@ func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.C
 	err = client.Resources().Update(ctx, &cr)
 	require.NoError(t, err)
 	t.Logf("Updated RebootNode CR %s status to: %s", crName, status)
+}
+
+// ApplyNodeDrainerConfig backs up the current node-drainer config, applies the test config,
+// and restarts the node-drainer deployment. Returns context with backup path stored.
+func ApplyNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) context.Context {
+	client, err := c.NewClient()
+	require.NoError(t, err)
+
+	t.Log("Backing up current node-drainer configmap")
+	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
+	require.NoError(t, err)
+	t.Logf("Backup created at: %s", backupPath)
+
+	err = applyNodeDrainerConfigAndRestart(ctx, t, client, configMapPath)
+	require.NoError(t, err)
+
+	return context.WithValue(ctx, FRKeyNodeDrainerConfigMapBackup, backupPath)
+}
+
+// RestoreNodeDrainerConfig restores the node-drainer config from backup and restarts the deployment.
+func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config) {
+	client, err := c.NewClient()
+	require.NoError(t, err)
+
+	backupPathVal := ctx.Value(FRKeyNodeDrainerConfigMapBackup)
+	if backupPathVal == nil {
+		t.Log("No node-drainer configmap backup to restore")
+		return
+	}
+
+	backupPath := backupPathVal.(string)
+	t.Logf("Restoring node-drainer configmap from: %s", backupPath)
+
+	err = applyNodeDrainerConfigAndRestart(ctx, t, client, backupPath)
+	require.NoError(t, err)
+
+	os.Remove(backupPath)
 }
