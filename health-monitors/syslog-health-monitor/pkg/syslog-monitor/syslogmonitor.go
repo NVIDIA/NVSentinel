@@ -26,6 +26,7 @@ import (
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid"
@@ -102,6 +103,16 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 			}
 
 			sm.checkToHandlerMap[check.Name] = sxidHandler
+
+		case GPUFallenOffCheck:
+			gpuFallenHandler, err := gpufallen.NewGPUFallenHandler(
+				nodeName, defaultAgentName, defaultComponentClass, check.Name)
+			if err != nil {
+				slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
+				return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
+			}
+
+			sm.checkToHandlerMap[check.Name] = gpuFallenHandler
 
 		default:
 			slog.Error("Unsupported check", "check", check.Name)

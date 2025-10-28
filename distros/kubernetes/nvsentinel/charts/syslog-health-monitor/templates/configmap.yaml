@@ -35,3 +35,10 @@ data:
       - name: "SysLogsSXIDError"
         journalPath: "/nvsentinel/var/log/journal/"
       {{- end }}
+
+      - name: "SysLogsGPUFallenOff"
+      {{- if .Values.global.kata.enabled }}
+        tags:
+          - "-u containerd.service"
+        {{- end }}
+        journalPath: "/nvsentinel/var/log/journal/"
