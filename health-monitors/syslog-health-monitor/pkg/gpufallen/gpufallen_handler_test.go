@@ -167,6 +167,7 @@ func TestProcessLine(t *testing.T) {
 				"test-check",
 			)
 			require.NoError(t, err)
+			defer handler.Close()
 
 			events, err := handler.ProcessLine(tc.message)
 			require.NoError(t, err)
@@ -193,6 +194,8 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler.Close()
+		defer handler.Close() // Cleanup goroutine to prevent leaks
 
 		// Process XID message first
 		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process"
@@ -218,6 +221,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler2.Close()
 
 		// Process GPU fallen off without any prior XID
 		fallenMsg := "[ 1843.308145] NVRM: The NVIDIA GPU 0000:b3:00.0\n" +
@@ -238,6 +242,8 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler3.Close()
+
 		handler3.SetXIDWindow(100 * time.Millisecond) // Very short window for testing
 
 		// Process XID
@@ -263,6 +269,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler4.Close()
 
 		// Process XID for GPU 1
 		xidMsg1 := "NVRM: Xid (PCI:0000:b3:00.0): 79"
@@ -290,6 +297,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler5.Close()
 
 		// Message contains both XID and "fallen off the bus"
 		combinedMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, GPU has fallen off the bus and is not responding to commands."
@@ -306,6 +314,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler6.Close()
 
 		// Process message with malformed XID code (not a number)
 		// This should log a warning but not panic or corrupt state
@@ -330,6 +339,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler7.Close()
 
 		// Set a very short duration for testing
 		handler7.SetXIDWindow(10 * time.Millisecond)
@@ -368,6 +378,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-check",
 		)
 		require.NoError(t, err)
+		defer handler8.Close()
 
 		// Set very short window for testing
 		handler8.SetXIDWindow(50 * time.Millisecond)

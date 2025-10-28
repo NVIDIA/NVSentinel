@@ -15,6 +15,7 @@
 package gpufallen
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -28,6 +29,8 @@ import (
 // NewGPUFallenHandler creates a new GPUFallenHandler instance.
 func NewGPUFallenHandler(nodeName, defaultAgentName,
 	defaultComponentClass, checkName string) (*GPUFallenHandler, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	h := &GPUFallenHandler{
 		nodeName:              nodeName,
 		defaultAgentName:      defaultAgentName,
@@ -35,12 +38,21 @@ func NewGPUFallenHandler(nodeName, defaultAgentName,
 		checkName:             checkName,
 		recentXIDs:            make(map[string]xidRecord),
 		xidWindow:             5 * time.Minute, // Remember XIDs for 5 minutes
+		cancelCleanup:         cancel,
 	}
 
 	// Start background cleanup goroutine to prevent unbounded memory growth
-	go h.cleanupExpiredXIDs()
+	go h.cleanupExpiredXIDs(ctx)
 
 	return h, nil
+}
+
+// Close stops the background cleanup goroutine and releases resources.
+// Should be called when the handler is no longer needed (e.g., in tests or shutdown).
+func (h *GPUFallenHandler) Close() {
+	if h.cancelCleanup != nil {
+		h.cancelCleanup()
+	}
 }
 
 // SetXIDWindow sets the time window for tracking XID errors.
@@ -120,24 +132,36 @@ func (h *GPUFallenHandler) hasRecentXID(pciAddr string) bool {
 	return isRecent
 }
 
-// cleanupExpiredXIDs runs periodically to remove expired XID entries
-// This prevents unbounded memory growth from XIDs on GPUs that never experience fallen-off errors
-func (h *GPUFallenHandler) cleanupExpiredXIDs() {
-	// Start with initial cleanup interval, but check dynamically for changes
-	ticker := time.NewTicker(1 * time.Minute) // Check every minute for production use
+// cleanupExpiredXIDs runs periodically to remove expired XID entries.
+// This prevents unbounded memory growth from XIDs on GPUs that never experience fallen-off errors.
+// The goroutine stops when the context is cancelled (via Close method).
+func (h *GPUFallenHandler) cleanupExpiredXIDs(ctx context.Context) {
+	// Calculate cleanup interval proportional to xidWindow (xidWindow / 5)
+	// This ensures tests with short windows don't wait too long for cleanup
+	h.mu.RLock()
+	cleanupInterval := h.xidWindow / 5
+	h.mu.RUnlock()
+
+	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		h.mu.Lock()
-		now := time.Now()
-		window := h.xidWindow // Read current window value
+	for {
+		select {
+		case <-ctx.Done():
+			// Context cancelled, stop cleanup goroutine
+			return
+		case <-ticker.C:
+			h.mu.Lock()
+			now := time.Now()
+			window := h.xidWindow // Read current window value
 
-		for pciAddr, record := range h.recentXIDs {
-			if now.Sub(record.timestamp) >= window {
-				delete(h.recentXIDs, pciAddr)
+			for pciAddr, record := range h.recentXIDs {
+				if now.Sub(record.timestamp) >= window {
+					delete(h.recentXIDs, pciAddr)
+				}
 			}
+			h.mu.Unlock()
 		}
-		h.mu.Unlock()
 	}
 }
 

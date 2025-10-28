@@ -29,9 +29,6 @@ import (
 )
 
 var (
-	// reXidPattern uses the canonical XID pattern from the patterns package
-	reXidPattern = patterns.XIDPattern
-
 	// reXidNVL5Pattern matches NVIDIA NVL5 XID messages with subcode and intrinfo
 	reXidNVL5Pattern = regexp.MustCompile(
 		`NVRM: Xid \(PCI:([^)]+)\): (\d+)(?:, pid=[^,]*)?(?:, name=[^,]*)?, ` +
@@ -136,7 +133,8 @@ func (p *CSVParser) parseNVL5XID(message string) (*Response, error) {
 
 // parseStandardXID parses standard XID messages
 func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
-	m := reXidPattern.FindStringSubmatch(message)
+	// Use the canonical XID pattern from the patterns package directly
+	m := patterns.XIDPattern.FindStringSubmatch(message)
 	if len(m) < 3 {
 		return &Response{Success: false}, nil
 	}

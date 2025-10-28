@@ -15,6 +15,7 @@
 package gpufallen
 
 import (
+	"context"
 	"regexp"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ type GPUFallenHandler struct {
 	mu                    sync.RWMutex
 	recentXIDs            map[string]xidRecord // pciAddr -> XID record
 	xidWindow             time.Duration        // how long to remember XID errors
+	cancelCleanup         context.CancelFunc   // stops the cleanup goroutine
 }
 
 // gpuFallenErrorEvent represents a parsed GPU fallen off bus error event
