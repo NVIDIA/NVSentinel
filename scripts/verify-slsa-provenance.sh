@@ -45,7 +45,12 @@ readonly VERSIONS_FILE="${VERSIONS_FILE:-$REPO_ROOT/.versions.yaml}"
 
 # Configuration - load versions from .versions.yaml if available
 if [ -f "$VERSIONS_FILE" ] && command -v yq &> /dev/null; then
-    readonly POLICY_CONTROLLER_VERSION="$(yq eval '.cluster.policy_controller' "$VERSIONS_FILE")"
+    _version="$(yq eval '.cluster.policy_controller' "$VERSIONS_FILE")"
+    if [ -n "$_version" ] && [ "$_version" != "null" ]; then
+        readonly POLICY_CONTROLLER_VERSION="$_version"
+    else
+        readonly POLICY_CONTROLLER_VERSION="${POLICY_CONTROLLER_VERSION:-0.10.5}"
+    fi
 else
     readonly POLICY_CONTROLLER_VERSION="${POLICY_CONTROLLER_VERSION:-0.10.5}"
 fi
@@ -174,12 +179,18 @@ install_policy_controller() {
         # Prepare version string for comparison
         local chart_version="${POLICY_CONTROLLER_VERSION}"
         chart_version="${chart_version#v}"
+        log_info "Target version: ${chart_version}"
         
         if [ "${chart_version}" != "latest" ] && [ "${installed_version}" = "${chart_version}" ]; then
             log_success "Policy Controller ${chart_version} is already installed"
             return 0
         else
-            log_info "Will upgrade to version ${chart_version}"
+            if [ "${chart_version}" = "latest" ]; then
+                log_info "Will upgrade to latest version"
+            else
+                # Note: helm upgrade --install handles both upgrades and downgrades
+                log_info "Will change from version ${installed_version} to ${chart_version}"
+            fi
         fi
     fi
     

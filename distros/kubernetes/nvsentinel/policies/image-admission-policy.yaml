@@ -42,11 +42,10 @@ spec:
         # Use public Sigstore Fulcio instance
         url: https://fulcio.sigstore.dev
         # Match the GitHub Actions OIDC identity
-        # This matches: https://github.com/NVIDIA/NVSentinel/.github/workflows/publish.yml@refs/heads/main
+        # Matches both branch refs (refs/heads/*) and tag refs (refs/tags/*)
         identities:
           - issuer: https://token.actions.githubusercontent.com
-            # TODO: Migrate this to tags when released images have SLSA attestation
-            subjectRegExp: ^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/heads/main$
+            subjectRegExp: ^https://github\.com/NVIDIA/NVSentinel/\.github/workflows/publish\.yml@refs/(heads|tags)/
       # Use public Sigstore Rekor instance for transparency log
       ctlog:
         url: https://rekor.sigstore.dev

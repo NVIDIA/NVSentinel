@@ -63,13 +63,23 @@ cleanup() {
         log "Cleaning up cluster..."
         log "========================================="
         
+        # Skip cleanup for Kind clusters (managed externally)
+        if [[ "$CSP" == "kind" ]]; then
+            log "Kind cluster cleanup skipped (managed externally)"
+            return 0
+        fi
+        
         local original_dir="$PWD"
         
         export CLUSTER_NAME
         export AWS_REGION
         
+        # Get the cluster deletion script for this CSP
+        local delete_script
+        delete_script=$(get_cluster_script "delete")
+        
         cd "${SCRIPT_DIR}/${CSP}"
-        ./delete-eks-cluster.sh || log "WARNING: Cluster deletion failed"
+        "./${delete_script}" || log "WARNING: Cluster deletion failed"
         cd "$original_dir"
         
         log "Cluster cleanup completed"
@@ -140,6 +150,33 @@ check_prerequisites() {
     log "Prerequisites check passed ✓"
 }
 
+# Get the cluster management script name for the specified CSP
+# Args: $1 - operation type ("create" or "delete")
+# Returns: script name via stdout, or calls error() for unsupported CSPs
+get_cluster_script() {
+    local operation="$1"
+    
+    case "$CSP" in
+        kind)
+            # Kind clusters are managed externally
+            return 0
+            ;;
+        aws)
+            if [[ "$operation" == "create" ]]; then
+                echo "create-eks-cluster.sh"
+            else
+                echo "delete-eks-cluster.sh"
+            fi
+            ;;
+        azure|gcp|oci)
+            error "CSP '$CSP' cluster $operation not yet implemented. Please manage cluster manually or use CSP=aws or CSP=kind"
+            ;;
+        *)
+            error "Unknown CSP: $CSP. Supported values: kind, aws, azure, gcp, oci"
+            ;;
+    esac
+}
+
 create_cluster() {
     log "========================================="
     log "Creating ${CSP^^} cluster..."
@@ -148,14 +185,19 @@ create_cluster() {
     # Kind clusters are assumed to be created externally
     if [[ "$CSP" == "kind" ]]; then
         log "Using existing Kind cluster: $CLUSTER_NAME"
-        log "Verify Kind cluster exists with: kubectl cluster-info --context kind-$CLUSTER_NAME"
         
         # Verify cluster exists
         if ! kubectl cluster-info --context "kind-$CLUSTER_NAME" &> /dev/null; then
             error "Kind cluster '$CLUSTER_NAME' not found. Create it first with: kind create cluster --name $CLUSTER_NAME"
         fi
         
-        log "Kind cluster verified ✓"
+        # Switch to the Kind cluster context
+        log "Switching to Kind cluster context..."
+        if ! kubectl config use-context "kind-$CLUSTER_NAME" &> /dev/null; then
+            error "Failed to switch to Kind cluster context: kind-$CLUSTER_NAME"
+        fi
+        
+        log "Kind cluster verified and context set ✓"
         return 0
     fi
     
@@ -170,18 +212,9 @@ create_cluster() {
     export GPU_NODE_COUNT
     export CAPACITY_RESERVATION_ID
     
+    # Get the cluster creation script for this CSP
     local cluster_script
-    case "$CSP" in
-        aws)
-            cluster_script="create-eks-cluster.sh"
-            ;;
-        azure|gcp|oci)
-            error "CSP '$CSP' cluster creation not yet implemented in this script. Please create cluster manually or use CSP=aws or CSP=kind"
-            ;;
-        *)
-            error "Unknown CSP: $CSP. Supported values: kind, aws, azure, gcp, oci"
-            ;;
-    esac
+    cluster_script=$(get_cluster_script "create")
     
     cd "${SCRIPT_DIR}/${CSP}"
     "./${cluster_script}"
