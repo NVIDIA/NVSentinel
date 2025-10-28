@@ -16,6 +16,8 @@ package gpufallen
 
 import (
 	"regexp"
+	"sync"
+	"time"
 )
 
 var (
@@ -32,12 +34,21 @@ var (
 	rePCIIDPattern = regexp.MustCompile(`PCI ID: ([0-9a-fA-F:]+)`)
 )
 
+// xidRecord tracks when an XID error was seen for a PCI address
+type xidRecord struct {
+	timestamp time.Time
+	xidCode   int
+}
+
 // GPUFallenHandler processes syslog lines related to GPU fallen off bus errors.
 type GPUFallenHandler struct {
 	nodeName              string
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
+	mu                    sync.RWMutex
+	recentXIDs            map[string]xidRecord // pciAddr -> XID record
+	xidWindow             time.Duration        // how long to remember XID errors
 }
 
 // gpuFallenErrorEvent represents a parsed GPU fallen off bus error event

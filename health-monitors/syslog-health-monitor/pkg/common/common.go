@@ -30,10 +30,13 @@ import (
 )
 
 var (
-	// XIDPattern is a simple pattern to detect the presence of "Xid" in log messages.
-	// This is useful for filtering out XID-related messages that should be handled
-	// by the XID handler instead of other error handlers.
-	XIDPattern = regexp.MustCompile(`\bXid\b`)
+	// XIDPattern matches NVIDIA XID error messages in the format:
+	// "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process, Ch 00000001"
+	// This pattern is used for detecting and filtering XID-related messages.
+	// Reuses the same pattern as the XID parser to ensure consistency.
+	XIDPattern = regexp.MustCompile(
+		`NVRM: Xid \(PCI:([0-9a-fA-F:.]+)\): (\d+)(?:, pid=(\d+))?(?:, name=([^,]+))?(?:, Ch ([0-9a-fA-F]+))?`,
+	)
 )
 
 // NVIDIA XID Error Catalog - Embedded Excel File

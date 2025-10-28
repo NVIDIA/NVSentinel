@@ -16,6 +16,7 @@ package gpufallen
 
 import (
 	"testing"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
@@ -180,4 +181,119 @@ func TestProcessLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestXIDTracking(t *testing.T) {
+	handler, err := NewGPUFallenHandler(
+		"test-node",
+		"test-agent",
+		"GPU",
+		"test-check",
+	)
+	require.NoError(t, err)
+
+	t.Run("XID then GPU fallen off - should suppress event", func(t *testing.T) {
+		// Process XID message first
+		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234, name=process"
+		events, err := handler.ProcessLine(xidMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "XID handler should process XID, not gpufallen handler")
+
+		// Now process GPU fallen off message - should be suppressed
+		fallenMsg := "[ 1843.308145] NVRM: The NVIDIA GPU 0000:b3:00.0\n" +
+			"               NVRM: (PCI ID: 10de:26b5) installed in this system has\n" +
+			"               NVRM: fallen off the bus and is not responding to commands."
+		events, err = handler.ProcessLine(fallenMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "Should suppress GPU fallen off when recent XID exists")
+	})
+
+	t.Run("GPU fallen off without prior XID - should generate event", func(t *testing.T) {
+		// Create fresh handler
+		handler2, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Process GPU fallen off without any prior XID
+		fallenMsg := "[ 1843.308145] NVRM: The NVIDIA GPU 0000:b3:00.0\n" +
+			"               NVRM: (PCI ID: 10de:26b5) installed in this system has\n" +
+			"               NVRM: fallen off the bus and is not responding to commands."
+		events, err := handler2.ProcessLine(fallenMsg)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should generate event when no recent XID")
+		require.Len(t, events.Events, 1)
+	})
+
+	t.Run("XID expires after time window", func(t *testing.T) {
+		// Create handler with short window for testing
+		handler3, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+		handler3.xidWindow = 100 * time.Millisecond // Very short window for testing
+
+		// Process XID
+		xidMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, pid=1234"
+		_, err = handler3.ProcessLine(xidMsg)
+		require.NoError(t, err)
+
+		// Wait for XID to expire
+		time.Sleep(150 * time.Millisecond)
+
+		// Now GPU fallen off should generate event
+		fallenMsg := "NVRM: The NVIDIA GPU 0000:b3:00.0 fallen off the bus and is not responding to commands."
+		events, err := handler3.ProcessLine(fallenMsg)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should generate event after XID expires")
+	})
+
+	t.Run("Different PCI addresses tracked independently", func(t *testing.T) {
+		handler4, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Process XID for GPU 1
+		xidMsg1 := "NVRM: Xid (PCI:0000:b3:00.0): 79"
+		_, err = handler4.ProcessLine(xidMsg1)
+		require.NoError(t, err)
+
+		// GPU fallen off for GPU 2 (different PCI) should still generate event
+		fallenMsg2 := "NVRM: The NVIDIA GPU 0000:b4:00.0 fallen off the bus and is not responding to commands."
+		events, err := handler4.ProcessLine(fallenMsg2)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should generate event for different PCI address")
+
+		// But GPU fallen off for GPU 1 should be suppressed
+		fallenMsg1 := "NVRM: The NVIDIA GPU 0000:b3:00.0 fallen off the bus and is not responding to commands."
+		events, err = handler4.ProcessLine(fallenMsg1)
+		require.NoError(t, err)
+		assert.Nil(t, events, "Should suppress for PCI with recent XID")
+	})
+
+	t.Run("Single message with both XID and GPU fallen off - should not generate event", func(t *testing.T) {
+		handler5, err := NewGPUFallenHandler(
+			"test-node",
+			"test-agent",
+			"GPU",
+			"test-check",
+		)
+		require.NoError(t, err)
+
+		// Message contains both XID and "fallen off the bus"
+		combinedMsg := "NVRM: Xid (PCI:0000:b3:00.0): 79, GPU has fallen off the bus and is not responding to commands."
+		events, err := handler5.ProcessLine(combinedMsg)
+		require.NoError(t, err)
+		assert.Nil(t, events, "Should not generate event when XID is in same message - let XID handler process it")
+	})
 }

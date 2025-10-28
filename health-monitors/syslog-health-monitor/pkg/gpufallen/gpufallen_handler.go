@@ -15,6 +15,7 @@
 package gpufallen
 
 import (
+	"fmt"
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -31,11 +32,16 @@ func NewGPUFallenHandler(nodeName, defaultAgentName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
+		recentXIDs:            make(map[string]xidRecord),
+		xidWindow:             5 * time.Minute, // Remember XIDs for 5 minutes
 	}, nil
 }
 
 // ProcessLine processes a single syslog line and returns any generated health events.
 func (h *GPUFallenHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
+	// First check if this is an XID message and track it
+	h.trackXIDIfPresent(message)
+
 	// Check if this is a GPU falling off error
 	event := h.parseGPUFallenError(message)
 	if event == nil {
@@ -45,8 +51,45 @@ func (h *GPUFallenHandler) ProcessLine(message string) (*pb.HealthEvents, error)
 	return h.createHealthEventFromError(event), nil
 }
 
+// trackXIDIfPresent checks if the message contains an XID error and records it
+func (h *GPUFallenHandler) trackXIDIfPresent(message string) {
+	matches := common.XIDPattern.FindStringSubmatch(message)
+	if len(matches) < 3 {
+		return // Not an XID message
+	}
+
+	pciAddr := matches[1]
+	xidCode := 0
+	// Parse XID code (matches[2])
+	if _, err := fmt.Sscanf(matches[2], "%d", &xidCode); err != nil {
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.recentXIDs[pciAddr] = xidRecord{
+		timestamp: time.Now(),
+		xidCode:   xidCode,
+	}
+}
+
+// hasRecentXID checks if a PCI address has had an XID error within the time window
+func (h *GPUFallenHandler) hasRecentXID(pciAddr string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	record, exists := h.recentXIDs[pciAddr]
+	if !exists {
+		return false
+	}
+
+	// Check if the XID is still within the time window
+	return time.Since(record.timestamp) < h.xidWindow
+}
+
 func (h *GPUFallenHandler) parseGPUFallenError(message string) *gpuFallenErrorEvent {
-	// First check if this message contains "Xid"
+	// First check if this message itself contains "Xid" in same message
 	// If it has XID error it should be handled by XID handler
 	if common.XIDPattern.MatchString(message) {
 		return nil
@@ -58,6 +101,12 @@ func (h *GPUFallenHandler) parseGPUFallenError(message string) *gpuFallenErrorEv
 	}
 
 	pciAddr := m[1]
+
+	// Check if this PCI address has had a recent XID error
+	// If so, skip generating an event to avoid duplicates with XID handler
+	if h.hasRecentXID(pciAddr) {
+		return nil
+	}
 
 	// Try to extract PCI ID if present in the message
 	pciID := ""
