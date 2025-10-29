@@ -562,11 +562,17 @@ HealthEvents {
   "operationType": "insert",
   "fullDocument": {
     "_id": ObjectId("6720abc123def456789"),
-    "version": 1,
-    "agent": "gpu-health-monitor",
-    "isFatal": true,
-    "nodeName": "gpu-node-42"
-    // ... full HealthEvent
+    "healthevent": {
+      "version": 1,
+      "agent": "gpu-health-monitor",
+      "isFatal": true,
+      "nodeName": "gpu-node-42"
+      // ... full HealthEvent
+    },
+    "healtheventstatus": {
+      // ... status fields as in MongoDB document
+    },
+    "createdAt": ISODate("2025-10-28T10:15:30.123Z")
   }
 }
 ```
