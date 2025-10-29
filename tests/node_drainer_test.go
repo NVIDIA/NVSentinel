@@ -21,6 +21,7 @@ import (
 	"tests/helpers"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -62,7 +63,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		t.Log("Verifying immediate-test pod evicted immediately")
 		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediatePods)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
 		return ctx
 	})
@@ -91,7 +92,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Verifying allowCompletion pod NOT evicted")
 		// Wait a reasonable time and verify pods are still present
@@ -111,7 +112,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", allowCompletionPods)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
 		return ctx
 	})
@@ -140,7 +141,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Verifying pod NOT immediately deleted")
 		// Wait for initial grace period and verify pods are still present
@@ -163,7 +164,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		t.Log("Verifying pod force deleted after timeout")
 		helpers.WaitForPodsDeleted(ctx, t, client, "delete-timeout-test", deleteTimeoutPods)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
 		return ctx
 	})
@@ -195,7 +196,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Verifying immediate-test pod evicted")
 		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediatePods)

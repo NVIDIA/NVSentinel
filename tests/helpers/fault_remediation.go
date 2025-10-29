@@ -19,6 +19,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -36,18 +37,13 @@ const (
 )
 
 const (
-	RemediatingLabelValue          = "remediating"
-	RemediationSucceededLabelValue = "remediation-succeeded"
-	RemediationFailedLabelValue    = "remediation-failed"
-	JanitorNamespace               = "dgxc-janitor"
-	RebootNodeCRDGroup             = "janitor.dgxc.nvidia.com"
-	RebootNodeCRDVersion           = "v1alpha1"
-	RebootNodeCRDPlural            = "rebootnodes"
+	RebootNodeCRDGroup   = "janitor.dgxc.nvidia.com"
+	RebootNodeCRDVersion = "v1alpha1"
+	RebootNodeCRDPlural  = "rebootnodes"
 )
 
 type RemediationTestContext struct {
 	NodeName      string
-	JanitorNS     string
 	TestNamespace string
 }
 
@@ -57,9 +53,12 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 	require.NoError(t, err)
 
 	testCtx := &RemediationTestContext{
-		JanitorNS:     JanitorNamespace,
 		TestNamespace: testNamespace,
 	}
+
+	t.Log("Scaling down janitor to prevent interference with test")
+	err = ScaleDeployment(ctx, t, client, "nvsentinel-janitor", NVSentinelNamespace, 0)
+	require.NoError(t, err)
 
 	t.Log("Cleaning up existing rebootnode CRs")
 	err = DeleteAllRebootNodeCRs(ctx, t, client)
@@ -109,8 +108,8 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 		modified := false
 
 		if node.Labels != nil {
-			if _, exists := node.Labels[NVSentinelStateLabelKey]; exists {
-				delete(node.Labels, NVSentinelStateLabelKey)
+			if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
+				delete(node.Labels, statemanager.NVSentinelStateLabelKey)
 				modified = true
 			}
 		}
@@ -139,6 +138,12 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 	err = DeleteAllRebootNodeCRs(ctx, t, client)
 	if err != nil {
 		t.Logf("Warning: Failed to cleanup rebootnode CRs: %v", err)
+	}
+
+	t.Log("Scaling janitor back up to 1 replica")
+	err = ScaleDeployment(ctx, t, client, "nvsentinel-janitor", NVSentinelNamespace, 1)
+	if err != nil {
+		t.Logf("Warning: Failed to scale up janitor: %v", err)
 	}
 
 	return ctx
@@ -171,36 +176,6 @@ func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName
 	}
 
 	return crList, nil
-}
-
-func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemplate {
-	h.RecommendedAction = action
-	return h
-}
-
-func WaitForNodeAnnotation(ctx context.Context, t *testing.T, client klient.Client, nodeName, annotationKey string) string {
-	t.Helper()
-	var annotationValue string
-
-	t.Logf("Waiting for node %s to have annotation: %s", nodeName, annotationKey)
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			return false
-		}
-		if node.Annotations == nil {
-			return false
-		}
-		value, exists := node.Annotations[annotationKey]
-		if exists {
-			annotationValue = value
-			return true
-		}
-		return false
-	}, WaitTimeout, WaitInterval)
-
-	t.Logf("Node %s has annotation %s: %s", nodeName, annotationKey, annotationValue)
-	return annotationValue
 }
 
 func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient.Client, nodeName string, recommendedAction int) {

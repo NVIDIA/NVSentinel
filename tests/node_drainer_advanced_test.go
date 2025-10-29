@@ -21,6 +21,7 @@ import (
 	"tests/helpers"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -52,7 +53,7 @@ func TestNodeDrainerRestart(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Draining started (allowCompletion mode - pods won't evict yet)")
 		t.Log("Immediately restarting node-drainer deployment")
@@ -74,7 +75,7 @@ func TestNodeDrainerRestart(t *testing.T) {
 		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
 		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
 		return ctx
 	})
@@ -113,7 +114,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Node is draining, pods still running (allowCompletion mode)")
 
@@ -149,7 +150,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 		t.Log("Verifying label cleared or shows recovery")
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 		require.NoError(t, err)
-		labelValue, exists := node.Labels[helpers.NVSentinelStateLabelKey]
+		labelValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
 		t.Logf("Node label after recovery: exists=%v, value=%s", exists, labelValue)
 
 		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
@@ -208,7 +209,7 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		defer os.Remove(tempFile)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+			statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		t.Log("Verifying all pods in matching namespaces are waiting")
 		// Wait a reasonable time and verify pods in all namespaces are still present
@@ -241,7 +242,7 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 			if err != nil {
 				return false
 			}
-			labelValue, exists := node.Labels[helpers.NVSentinelStateLabelKey]
+			labelValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
 			// Return true if drain completed (which should NOT happen)
 			return exists && labelValue == helpers.DrainSucceededLabelValue
 		}, 15*time.Second, 3*time.Second, "drain should NOT complete while other namespaces have pods")
@@ -254,7 +255,7 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 
 		t.Log("Verifying drain succeeds after all pods complete")
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+			statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
 
 		return ctx
 	})

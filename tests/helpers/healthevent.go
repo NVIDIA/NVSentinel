@@ -133,6 +133,11 @@ func (h *HealthEventTemplate) WithMetadata(key, value string) *HealthEventTempla
 	return h
 }
 
+func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemplate {
+	h.RecommendedAction = action
+	return h
+}
+
 func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 	tempFile, err := os.CreateTemp("", "health-event-*.json")
 	if err != nil {
@@ -158,8 +163,6 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 
 // SendHealthEventWithTemplate sends a health event and returns the temp file path.
 // The caller is responsible for cleaning up the temp file with defer os.Remove(tempFile).
-//
-// For automatic cleanup, use SendHealthEventWithAutoCleanup instead.
 func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (string, error) {
 	tempFile, err := event.WriteToTempFile()
 	if err != nil {

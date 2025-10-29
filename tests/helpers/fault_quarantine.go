@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -211,7 +212,7 @@ func WaitForQuarantineCleanup(ctx context.Context, t *testing.T, client klient.C
 		}
 
 		if node.Labels != nil {
-			if _, exists := node.Labels[NVSentinelStateLabelKey]; exists {
+			if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
 				t.Logf("Node %s still has nvsentinel-state label", nodeName)
 				return false
 			}

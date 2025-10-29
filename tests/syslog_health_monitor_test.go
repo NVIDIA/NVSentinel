@@ -212,7 +212,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
 				require.Eventually(t, func() bool {
 					condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
-						"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+						"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
 					if err != nil {
 						return false
 					}

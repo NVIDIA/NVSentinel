@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -290,37 +291,28 @@ func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeNa
 	}, WaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
 }
 
-// SelectTestNodeFromUnusedPool selects a test node from the second half of the cluster's node list.
-// This helps avoid collisions with other tests that use the first half.
-// Prefers uncordoned nodes but will fall back to the first node in the pool if none are available.
+// SelectTestNodeFromUnusedPool selects an available test node from the cluster.
+// Prefers uncordoned nodes but will fall back to the first node if none are available.
 func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klient.Client) string {
-	t.Log("Selecting test node from unused node pool")
+	t.Log("Selecting an available uncordoned test node")
 	nodes, err := GetAllNodesNames(ctx, client)
 	require.NoError(t, err)
 	require.NotEmpty(t, nodes, "no nodes found in cluster")
 
-	// Use the second half of nodes (50%+) to avoid conflicts with other tests
-	startIdx := int(float64(len(nodes)) * 0.50)
-	if startIdx >= len(nodes) {
-		startIdx = len(nodes) - 1
-	}
-	unusedNodes := nodes[startIdx:]
-
 	// Try to find an uncordoned node
-	for _, name := range unusedNodes {
+	for _, name := range nodes {
 		node, err := GetNodeByName(ctx, client, name)
 		if err != nil {
 			continue
 		}
 		if !node.Spec.Unschedulable {
-			t.Logf("Selected uncordoned node: %s (from index %d)", name, startIdx)
+			t.Logf("Selected uncordoned node: %s", name)
 			return name
 		}
 	}
 
-	// Fall back to first node in unused pool
-	nodeName := unusedNodes[0]
-	t.Logf("No uncordoned node found, using: %s", nodeName)
+	nodeName := nodes[0]
+	t.Logf("No uncordoned node found, using first node: %s", nodeName)
 	return nodeName
 }
 
@@ -891,6 +883,33 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
 }
 
+func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string, replicas int32) error {
+	t.Helper()
+	t.Logf("Scaling deployment %s/%s to %d replicas", namespace, name, replicas)
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
+			return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
+		}
+
+		deployment.Spec.Replicas = &replicas
+
+		if err := c.Resources().Update(ctx, deployment); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to scale deployment: %w", err)
+	}
+
+	t.Logf("Deployment %s/%s scaled to %d replicas", namespace, name, replicas)
+	return nil
+}
+
 // RestartDeployment triggers a rolling restart of the specified deployment by updating
 // the restartedAt annotation on the pod template, then waits for the rollout to complete.
 // Uses retry.RetryOnConflict for automatic retry handling with exponential backoff.
@@ -994,6 +1013,40 @@ func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string,
 		return true, &event
 	}
 	return false, nil
+}
+
+func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceName string, targetPort int) error {
+	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: namespace,
+		},
+	}
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Resources().Get(ctx, serviceName, namespace, svc); err != nil {
+			return fmt.Errorf("failed to get service %s/%s: %w", namespace, serviceName, err)
+		}
+
+		if len(svc.Spec.Ports) == 0 {
+			return fmt.Errorf("service %s/%s has no ports", namespace, serviceName)
+		}
+
+		svc.Spec.Ports[0].Port = int32(targetPort)
+		svc.Spec.Ports[0].TargetPort = intstr.FromInt(targetPort)
+
+		if err := c.Resources().Update(ctx, svc); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to patch service port: %w", err)
+	}
+
+	return nil
 }
 
 // RemoveNodeCondition removes a specific condition from a node

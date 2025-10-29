@@ -19,7 +19,9 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
+	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -68,7 +70,7 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 				t.Logf("Waiting for stable CR count, currently: %d", len(crList))
 			}
 			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
+		}, 30*time.Second, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
 
 		return ctx
 	})
@@ -118,7 +120,7 @@ func TestRemediationModuleRestart(t *testing.T) {
 		require.NoError(t, err)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+			statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
 		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
 
@@ -148,7 +150,7 @@ func TestRemediationModuleRestart(t *testing.T) {
 		require.NotNil(t, cr)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
+			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationSucceededLabelValue))
 
 		return ctx
 	})

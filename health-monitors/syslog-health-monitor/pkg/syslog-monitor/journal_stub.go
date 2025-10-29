@@ -61,7 +61,7 @@ func (j *StubJournal) Close() error {
 }
 
 // GetBootID retrieves the current boot ID
-// Returns the boot ID that was generated when this StubJournal instance was created
+// Returns the boot ID that was generated when the StubJournalFactory was created
 func (j *StubJournal) GetBootID() (string, error) {
 	if j.closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
@@ -113,17 +113,29 @@ func (j *StubJournal) Previous() (uint64, error) {
 		return 0, errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 
+	// Special case: at position 0, stay there
 	if j.currentPosition == 0 && len(journal) > 0 {
 		return 1, nil
 	}
 
+	// At position -1 (before start)
+	if j.currentPosition == -1 {
+		// If journal has entries, indicate there's something at position 0
+		// Don't move position, just signal that an entry exists
+		if len(journal) > 0 {
+			return 1, nil
+		}
+		// Empty journal
+		return 0, io.EOF
+	}
+
+	// Normal case: move backwards
 	if j.currentPosition-1 < 0 {
 		j.currentPosition = -1
 		return 0, io.EOF
 	}
 
 	j.currentPosition--
-
 	return 1, nil
 }
 
@@ -138,39 +150,38 @@ func (j *StubJournal) SeekCursor(cursor string) error {
 		return fmt.Errorf("invalid cursor format: %s", cursor)
 	}
 
-	if index < 0 || index >= len(journal) {
-		return fmt.Errorf("invalid current position: %d", index)
-	}
-
 	j.currentPosition = index
 
 	return nil
 }
 
 // SeekTail seeks to the end of the journal
+// For stub journal, we always set position to -1 (before start) so that
+// Previous() returns EOF and the cursor is saved as "-1", ensuring ALL messages
+// are processed on the next run (starting from index 0).
+// This is appropriate for testing where you want predictable, complete processing.
 func (j *StubJournal) SeekTail() error {
 	if j.closed {
 		return errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 
-	if len(journal) > 0 {
-		j.currentPosition = len(journal) - 1
-	} else {
-		j.currentPosition = -1
-	}
+	// Always position before start, regardless of journal contents
+	j.currentPosition = -1
 
 	return nil
 }
 
 // StubJournalFactory creates stub journal instances
-type StubJournalFactory struct{}
+type StubJournalFactory struct {
+	bootID string
+}
 
 // NewJournal creates a new system journal instance
 func (f *StubJournalFactory) NewJournal() (Journal, error) {
 	return &StubJournal{
 		closed:          false,
 		currentPosition: -1,
-		bootID:          fmt.Sprintf("stub-boot-%d", time.Now().UnixMicro()),
+		bootID:          f.bootID,
 	}, nil
 }
 
@@ -179,7 +190,7 @@ func (f *StubJournalFactory) NewJournalFromDir(path string) (Journal, error) {
 	return &StubJournal{
 		closed:          false,
 		currentPosition: -1,
-		bootID:          fmt.Sprintf("stub-boot-%d", time.Now().UnixMicro()),
+		bootID:          f.bootID,
 	}, nil
 }
 
@@ -190,11 +201,26 @@ func (f *StubJournalFactory) RequiresFileSystemCheck() bool {
 
 // NewStubJournalFactory creates a factory for stub journal instances
 func NewStubJournalFactory() JournalFactory {
-	return &StubJournalFactory{}
+	return &StubJournalFactory{
+		bootID: fmt.Sprintf("stub-boot-%d", time.Now().Unix()),
+	}
 }
 
 // GetDefaultJournalFactory returns a stub factory in non-systemd builds
 func GetDefaultJournalFactory() JournalFactory {
+	// Clear journal on factory creation (simulates fresh start on pod restart)
+	journal = make([]string, 0)
+	slog.Info("Stub journal cleared for new factory initialization")
+
+	// Clear state file in stub mode to ensure clean slate for testing
+	// This is necessary because boot ID change detection doesn't work in stub mode
+	stateFilePath := "/var/run/syslog_monitor/state.json"
+	if err := os.Remove(stateFilePath); err != nil && !os.IsNotExist(err) {
+		slog.Warn("Failed to clear state file in stub mode", "path", stateFilePath, "error", err)
+	} else if err == nil {
+		slog.Info("State file cleared for testing (stub mode)", "path", stateFilePath)
+	}
+
 	go func() {
 		http.HandleFunc("/add", func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
@@ -203,7 +229,9 @@ func GetDefaultJournalFactory() JournalFactory {
 				return
 			}
 
+			slog.Info("Adding message to journal", "message", string(body))
 			journal = append(journal, string(body))
+			slog.Info("Adding message to journal", "message", string(body), "index", len(journal)-1, "totalEntries", len(journal))
 
 			w.WriteHeader(http.StatusOK)
 		})

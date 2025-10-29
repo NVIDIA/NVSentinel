@@ -28,8 +28,12 @@ import (
 )
 
 const (
-	dcgmServiceHost = "nvidia-dcgm.gpu-operator.svc"
-	dcgmServicePort = "5555"
+	dcgmServiceHost      = "nvidia-dcgm.gpu-operator.svc"
+	dcgmServicePort      = "5555"
+	gpuOperatorNamespace = "gpu-operator"
+	dcgmServiceName      = "nvidia-dcgm"
+	dcgmOriginalPort     = 5555
+	dcgmBrokenPort       = 1555
 )
 
 // TestGPUHealthMonitorMultipleErrors verifies GPU health monitor handles multiple concurrent errors
@@ -157,13 +161,171 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			_, _, _ = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
 		}
 
-		t.Logf("Removing node conditions from %s", nodeName)
+		t.Logf("Waiting for node conditions to be cleared automatically on %s", nodeName)
 		for _, clearCmd := range clearCommands {
-			err := helpers.RemoveNodeCondition(ctx, client, nodeName, clearCmd.condition)
-			if err != nil {
-				t.Logf("Warning: failed to remove %s condition: %v", clearCmd.condition, err)
-			}
+			t.Logf("  Waiting for %s condition to clear", clearCmd.condition)
+			require.Eventually(t, func() bool {
+				condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+					clearCmd.condition, "")
+				if err != nil {
+					return false
+				}
+				// Condition should either be removed or become healthy (Status=False)
+				if condition == nil {
+					t.Logf("  %s condition removed", clearCmd.condition)
+					return true
+				}
+				if condition.Status == v1.ConditionFalse {
+					t.Logf("  %s condition became healthy", clearCmd.condition)
+					return true
+				}
+				t.Logf("  %s condition still unhealthy: %s", clearCmd.condition, condition.Message)
+				return false
+			}, helpers.WaitTimeout, helpers.WaitInterval, "%s condition should be cleared", clearCmd.condition)
 		}
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestGPUHealthMonitorDCGMConnectionError verifies GPU health monitor detects DCGM connectivity failures
+func TestGPUHealthMonitorDCGMConnectionError(t *testing.T) {
+	feature := features.New("GPU Health Monitor - DCGM Connection Error").
+		WithLabel("suite", "gpu-health-monitor").
+		WithLabel("component", "dcgm-connectivity")
+
+	var testNodeName string
+	var gpuHealthMonitorPodName string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		gpuHealthMonitorPod, err := helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
+		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
+		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
+
+		testNodeName = gpuHealthMonitorPod.Spec.NodeName
+		gpuHealthMonitorPodName = gpuHealthMonitorPod.Name
+		t.Logf("Using GPU health monitor pod: %s on node: %s", gpuHealthMonitorPodName, testNodeName)
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		return ctx
+	})
+
+	feature.Assess("break DCGM connection and verify condition", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		t.Log("Breaking DCGM communication by changing service port")
+		err = helpers.PatchServicePort(ctx, client, gpuOperatorNamespace, dcgmServiceName, dcgmBrokenPort)
+		require.NoError(t, err, "failed to patch DCGM service port")
+
+		t.Logf("Restarting GPU health monitor pod %s to trigger reconnection", gpuHealthMonitorPodName)
+		err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, gpuHealthMonitorPodName)
+		require.NoError(t, err, "failed to restart GPU health monitor pod")
+
+		t.Logf("Waiting for GpuDcgmConnectivityFailure condition on node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"GpuDcgmConnectivityFailure", "GpuDcgmConnectivityFailureIsNotHealthy")
+			if err != nil {
+				t.Logf("Error checking condition: %v", err)
+				return false
+			}
+			if condition == nil {
+				t.Log("Condition not found yet")
+				return false
+			}
+
+			t.Logf("Found condition - Status: %s, Reason: %s, Message: %s",
+				condition.Status, condition.Reason, condition.Message)
+			return condition.Status == v1.ConditionTrue
+		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure condition should appear")
+
+		return ctx
+	})
+
+	feature.Assess("restore DCGM connection and verify recovery", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		t.Log("Restoring DCGM communication by restoring service port")
+		err = helpers.PatchServicePort(ctx, client, gpuOperatorNamespace, dcgmServiceName, dcgmOriginalPort)
+		require.NoError(t, err, "failed to restore DCGM service port")
+
+		t.Logf("Waiting for GpuDcgmConnectivityFailure condition to become healthy on node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"GpuDcgmConnectivityFailure", "GpuDcgmConnectivityFailureIsHealthy")
+			if err != nil {
+				t.Logf("Error checking condition: %v", err)
+				return false
+			}
+			if condition == nil {
+				t.Log("Condition not found")
+				return false
+			}
+
+			t.Logf("Found condition - Status: %s, Reason: %s, Message: %s",
+				condition.Status, condition.Reason, condition.Message)
+
+			// Condition should have Status=False when healthy
+			return condition.Status == v1.ConditionFalse
+		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should become healthy")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		t.Log("Ensuring DCGM service port is restored")
+		err = helpers.PatchServicePort(ctx, client, gpuOperatorNamespace, dcgmServiceName, dcgmOriginalPort)
+		if err != nil {
+			t.Logf("Warning: failed to restore DCGM service port: %v", err)
+		}
+
+		t.Logf("Waiting for GpuDcgmConnectivityFailure condition to clear on node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"GpuDcgmConnectivityFailure", "")
+			if err != nil {
+				return false
+			}
+			if condition == nil || condition.Status == v1.ConditionFalse {
+				return true
+			}
+			t.Logf("Condition still present: Status=%s", condition.Status)
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should clear")
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)

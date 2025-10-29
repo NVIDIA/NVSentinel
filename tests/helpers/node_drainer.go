@@ -43,7 +43,6 @@ type NodeDrainerTestContext struct {
 }
 
 const (
-	NVSentinelStateLabelKey  = "dgxc.nvidia.com/nvsentinel-state"
 	DrainingLabelValue       = "draining"
 	DrainSucceededLabelValue = "drain-succeeded"
 )
