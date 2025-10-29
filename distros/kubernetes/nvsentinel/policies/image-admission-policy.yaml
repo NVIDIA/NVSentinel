@@ -29,6 +29,11 @@ metadata:
     category: Supply Chain Security
     severity: high
 spec:
+  # WARN MODE: Currently in warn mode due to bundle format v0.3 incompatibility
+  # Policy Controller 0.10.5 cannot read Sigstore bundle format v0.3
+  # Will be changed to enforce mode when Policy Controller adds v0.3 support
+  mode: warn
+  
   # Match ONLY official NVSentinel images from GHCR
   # This glob pattern ensures only NVSentinel images are verified
   # All other images (third-party, development, etc.) are not affected

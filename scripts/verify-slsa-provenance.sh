@@ -17,14 +17,21 @@
 # SLSA Provenance Verification Script
 # 
 # This script sets up and configures Sigstore Policy Controller in a Kubernetes
-# cluster to automatically verify SLSA Build Provenance attestations for NVSentinel
-# container images before allowing them to run.
+# cluster to verify SLSA Build Provenance attestations for NVSentinel container
+# images.
+#
+# CURRENT STATUS: Policy runs in WARN mode due to bundle format v0.3 incompatibility
+# - Attestations are created by GitHub Actions in Sigstore bundle format v0.3
+# - Policy Controller 0.10.5 cannot read bundle format v0.3 yet (only v0.1/v0.2)
+#   Issue: https://github.com/sigstore/policy-controller/issues/1895
+# - All images are allowed to deploy, but validation warnings are logged
+# - Policy will be switched to enforce mode when v0.3 support is added
 #
 # The script:
 # - Installs Sigstore Policy Controller via Helm
-# - Applies ClusterImagePolicy for NVSentinel images
+# - Applies ClusterImagePolicy for NVSentinel images (in warn mode)
 # - Configures namespace for policy enforcement
-# - Tests policy enforcement with actual deployments
+# - Tests policy configuration with actual deployments
 #
 # For manual verification of images outside the cluster, see:
 # distros/kubernetes/nvsentinel/policies/README.md
@@ -295,7 +302,7 @@ configure_namespace() {
 }
 
 test_policy_enforcement() {
-    log_info "Testing policy enforcement..."
+    log_info "Testing policy configuration..."
     
     # Clean up any existing test pods from previous runs
     kubectl delete pod -n "${NVSENTINEL_NS}" -l test=policy-verification --grace-period=0 --force &> /dev/null || true
@@ -306,7 +313,7 @@ test_policy_enforcement() {
     
     if [ -z "$test_image" ]; then
         log_warn "No official NVSentinel images found in cluster for testing"
-        log_info "Policy enforcement can only be tested with official ghcr.io/nvidia/nvsentinel/** images"
+        log_info "Policy validation can only be tested with official ghcr.io/nvidia/nvsentinel/** images"
         log_info "Development images (localhost:*) are not subject to policy verification"
         return 0
     fi
@@ -315,6 +322,7 @@ test_policy_enforcement() {
     local test_pod_name="policy-test-valid-$$"
     
     log_info "Creating test pod with image: ${test_image}"
+    log_warn "Note: Policy is in WARN mode - all images are allowed but validation warnings are logged"
     
     local apply_output
     local apply_exit_code
@@ -336,58 +344,39 @@ EOF
 )
     apply_exit_code=$?
     
-    # Check if kubectl apply succeeded
+    # In warn mode, images should always be allowed
     if [ $apply_exit_code -ne 0 ]; then
-        # Check if it's a policy-related error
-        if echo "$apply_output" | grep -q "admission webhook.*denied\|no matching signatures"; then
-            log_error "✗ Valid image was blocked by policy (unexpected)"
-            log_error "Policy error: $apply_output"
-        else
-            log_error "✗ Failed to create test pod (non-policy error)"
-            log_error "Error: $apply_output"
-        fi
+        log_error "✗ Failed to create test pod"
+        log_error "Error: $apply_output"
         return 1
     fi
     
-    # Check if pod was created (policy allowed it)
+    # Check if pod was created
     sleep 2
     if kubectl get pod "${test_pod_name}" -n "${NVSENTINEL_NS}" &> /dev/null; then
-        log_success "✓ Valid image was allowed by policy"
+        log_success "✓ Image deployment succeeded (warn mode)"
+        
+        # Check for policy warnings in pod events
+        log_info "Checking for policy validation warnings..."
+        local events
+        events=$(kubectl get events -n "${NVSENTINEL_NS}" --field-selector involvedObject.name="${test_pod_name}" -o json 2>/dev/null | \
+            jq -r '.items[] | select(.reason | contains("Policy") or contains("policy")) | .message' 2>/dev/null || echo "")
+        
+        if [ -n "$events" ]; then
+            log_info "Policy warnings detected:"
+            echo "$events" | sed 's/^/  /'
+        else
+            log_info "No policy warnings found in pod events (check Policy Controller logs for details)"
+        fi
+        
         kubectl delete pod "${test_pod_name}" -n "${NVSENTINEL_NS}" --grace-period=0 --force &> /dev/null || true
     else
-        log_error "✗ Valid image was blocked by policy (unexpected)"
+        log_error "✗ Test pod was not created (unexpected)"
     fi
     
-    # Test with an invalid/unsigned image that matches the policy pattern
-    # Use a NVSentinel-like image name but from Docker Hub (no attestation)
-    local test_pod_invalid="policy-test-invalid-$$"
-    log_info "Testing with unsigned NVSentinel image (should be blocked)..."
-    
-    # Try to create a pod with a fake NVSentinel image that won't have valid attestations
-    # This will be blocked because it matches ghcr.io/nvidia/nvsentinel/** pattern
-    if cat <<EOF | kubectl apply -f - 2>&1 | grep -q "admission webhook.*denied\|no matching signatures"; then
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${test_pod_invalid}
-  namespace: ${NVSENTINEL_NS}
-  labels:
-    test: policy-verification
-spec:
-  containers:
-  - name: test
-    image: ghcr.io/nvidia/nvsentinel/fake-unsigned-image:latest
-    command: ["/bin/sh", "-c", "sleep 10"]
-  restartPolicy: Never
-EOF
-        log_success "✓ Invalid NVSentinel image was correctly blocked by policy"
-    else
-        log_warn "Could not verify that invalid images are blocked (expected for non-existent images)"
-    fi
-    
-    # Test that non-NVSentinel images are NOT blocked
+    # Test that non-NVSentinel images are also allowed (and not subject to policy)
     local test_pod_other="policy-test-other-$$"
-    log_info "Testing with non-NVSentinel image (should be allowed)..."
+    log_info "Testing with non-NVSentinel image (should be allowed and not validated)..."
     
     cat <<EOF | kubectl apply -f - &> /dev/null
 apiVersion: v1
@@ -410,11 +399,15 @@ EOF
         log_success "✓ Non-NVSentinel image was allowed (policy only applies to ghcr.io/nvidia/nvsentinel/**)"
         kubectl delete pod "${test_pod_other}" -n "${NVSENTINEL_NS}" --grace-period=0 --force &> /dev/null || true
     else
-        log_error "✗ Non-NVSentinel image was blocked (unexpected - policy should only apply to NVSentinel images)"
+        log_error "✗ Non-NVSentinel image was not created (unexpected)"
     fi
     
     # Clean up
-    kubectl delete pod "${test_pod_invalid}" -n "${NVSENTINEL_NS}" --grace-period=0 --force &> /dev/null || true
+    kubectl delete pod -n "${NVSENTINEL_NS}" -l test=policy-verification --grace-period=0 --force &> /dev/null || true
+    
+    log_info ""
+    log_info "To view policy validation warnings, check Policy Controller logs:"
+    log_info "  kubectl logs -n ${POLICY_CONTROLLER_NS} -l app.kubernetes.io/name=policy-controller --tail=50"
 }
 
 show_summary() {
@@ -424,38 +417,49 @@ show_summary() {
     echo ""
     log_success "✓ Sigstore Policy Controller installed and running"
     log_success "✓ ClusterImagePolicy applied for NVSentinel images"
-    log_success "✓ Namespace ${NVSENTINEL_NS} configured for enforcement"
+    log_success "✓ Namespace ${NVSENTINEL_NS} configured for policy enforcement"
     
     # Check if we tested with actual images
     local images
     images=$(get_nvsentinel_images)
     if [ -n "$images" ]; then
-        log_success "✓ Policy enforcement tested successfully"
+        log_success "✓ Policy configuration tested successfully"
     else
         log_info "ℹ Policy ready (verification requires official images)"
     fi
     
     echo ""
+    log_warn "⚠  Policy is in WARN mode (bundle format v0.3 incompatibility)"
+    echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    log_info "All NVSentinel images in namespace '${NVSENTINEL_NS}' will now be"
-    log_info "verified against SLSA Build Provenance attestations before deployment."
+    log_info "The policy is currently running in WARN mode. All NVSentinel images"
+    log_info "will be allowed to deploy, but validation warnings will be logged."
     echo ""
-    log_info "Policy applies to: ghcr.io/nvidia/nvsentinel/**"
+    log_info "Why warn mode?"
+    log_info "• Attestations are created by GitHub Actions in Sigstore bundle format v0.3"
+    log_info "• Policy Controller 0.10.5 cannot read bundle format v0.3 yet"
+    log_info "• Attestations exist and are valid (verified manually with cosign)"
+    log_info "• Policy will be switched to enforce mode when v0.3 support is added"
+    echo ""
+    log_info "Policy scope: ghcr.io/nvidia/nvsentinel/**"
     log_info "Development images (localhost:*) are excluded from verification"
     echo ""
     log_info "Next steps:"
     echo ""
-    log_info "View policy status:"
+    log_info "View policy configuration:"
     echo "  kubectl describe clusterimagepolicy verify-nvsentinel-image-attestation"
     echo ""
-    log_info "View Policy Controller logs:"
-    echo "  kubectl logs -n ${POLICY_CONTROLLER_NS} -l app=policy-controller -f"
+    log_info "View Policy Controller logs for validation warnings:"
+    echo "  kubectl logs -n ${POLICY_CONTROLLER_NS} -l app.kubernetes.io/name=policy-controller -f"
     echo ""
     log_info "Manual verification outside the cluster:"
     echo "  See distros/kubernetes/nvsentinel/policies/README.md"
     echo ""
-    log_info "Disable enforcement on this namespace:"
+    log_info "Track Policy Controller v0.3 support:"
+    echo "  https://github.com/sigstore/policy-controller/issues"
+    echo ""
+    log_info "Disable policy enforcement on this namespace:"
     echo "  kubectl label namespace ${NVSENTINEL_NS} policy.sigstore.dev/include-"
     echo ""
 }
