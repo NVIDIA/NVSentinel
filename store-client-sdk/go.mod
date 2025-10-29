@@ -6,7 +6,7 @@ toolchain go1.25.3
 
 require (
 	github.com/stretchr/testify v1.11.1
-	go.mongodb.org/mongo-driver v1.17.4
+	go.mongodb.org/mongo-driver v1.17.6
 )
 
 require (
