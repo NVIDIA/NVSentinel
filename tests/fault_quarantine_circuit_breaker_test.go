@@ -19,7 +19,6 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -41,7 +40,6 @@ func TestCircuitBreaker(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-
 		originalCBState = helpers.GetCircuitBreakerState(ctx, t, c)
 
 		var newCtx context.Context
@@ -61,12 +59,12 @@ func TestCircuitBreaker(t *testing.T) {
 			startIdx = len(nodes) - 1
 		}
 		testNodes = nodes[startIdx:]
-		t.Logf("Using %d test nodes for CB tests", len(testNodes))
+		t.Logf("Using %d test nodes for circuit breaker tests", len(testNodes))
 
 		return newCtx
 	})
 
-	feature.Assess("manually TRIPPED CB blocks normal cordoning", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("manually TRIPPED circuit breaker blocks normal cordoning", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
@@ -79,31 +77,17 @@ func TestCircuitBreaker(t *testing.T) {
 		require.NoError(t, err)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying node NOT cordoned when CB is manually TRIPPED")
+		t.Log("Verifying node NOT cordoned when circuit breaker is manually TRIPPED")
 
-		require.Never(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				t.Logf("Error getting node: %v", err)
-				return false
-			}
-			if node.Spec.Unschedulable {
-				t.Logf("Node %s was cordoned despite CB being TRIPPED!", testCtx.NodeName)
-				return true
-			}
-			return false
-		}, 30*time.Second, 2*time.Second, "node should not be cordoned when CB is TRIPPED")
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, false)
 
 		return ctx
 	})
 
-	feature.Assess("force override also blocked when CB is TRIPPED", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("force override also blocked when circuit breaker is TRIPPED", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		if len(testNodes) < 2 {
-			t.Skip("Need at least 2 nodes for this test")
-		}
 		testNode2 := testNodes[1]
 
 		event := helpers.NewHealthEvent(testNode2).
@@ -114,24 +98,13 @@ func TestCircuitBreaker(t *testing.T) {
 		require.NoError(t, err)
 		defer os.Remove(tempFile)
 
-		t.Log("Verifying force override does NOT bypass CB TRIPPED state")
-		require.Never(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testNode2)
-			if err != nil {
-				t.Logf("Error getting node: %v", err)
-				return false
-			}
-			if node.Spec.Unschedulable {
-				t.Logf("Node %s was cordoned despite CB being TRIPPED (force override bypassed CB)!", testNode2)
-				return true
-			}
-			return false
-		}, 30*time.Second, 2*time.Second, "force override should not bypass CB TRIPPED state")
+		t.Log("Verifying force override does NOT bypass circuit breaker TRIPPED state")
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testNode2, false)
 
 		return ctx
 	})
 
-	feature.Assess("CB auto-trips when threshold exceeded and blocks further cordoning", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("circuit breaker auto-trips when threshold exceeded and blocks further cordoning", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
@@ -143,11 +116,7 @@ func TestCircuitBreaker(t *testing.T) {
 		threshold = int(float64(totalNodes)*0.20) + 2
 		t.Logf("Total GPU nodes: %d, cordoning %d nodes to exceed 20%% threshold", totalNodes, threshold)
 
-		if len(testNodes) < threshold+1 {
-			t.Skipf("Need at least %d nodes for auto-trip test, have %d", threshold+1, len(testNodes))
-		}
-
-		t.Logf("Rapidly sending events to %d nodes to trigger CB", threshold)
+		t.Logf("Rapidly sending events to %d nodes to trigger circuit breaker", threshold)
 		cordonedNodes := []string{}
 		tempFiles := []string{}
 
@@ -156,7 +125,7 @@ func TestCircuitBreaker(t *testing.T) {
 
 			event := helpers.NewHealthEvent(nodeName).
 				WithErrorCode("79").
-				WithMessage("XID error for CB test")
+				WithMessage("XID error for circuit breaker test")
 			tempFile, err := helpers.SendHealthEventWithTemplate(nodeName, event)
 			require.NoError(t, err)
 			tempFiles = append(tempFiles, tempFile)
@@ -183,17 +152,17 @@ func TestCircuitBreaker(t *testing.T) {
 		}
 		t.Logf("All %d nodes successfully cordoned", len(cordonedNodes))
 
-		t.Log("Checking if CB auto-tripped")
+		t.Log("Checking if circuit breaker auto-tripped")
 		cbState := helpers.GetCircuitBreakerState(ctx, t, c)
 		if cbState != "TRIPPED" {
-			t.Logf("CB state is %s, waiting for auto-trip...", cbState)
+			t.Logf("Circuit breaker state is %s, waiting for auto-trip...", cbState)
 			require.Eventually(t, func() bool {
 				state := helpers.GetCircuitBreakerState(ctx, t, c)
-				t.Logf("Current CB state: %s", state)
+				t.Logf("Current circuit breaker state: %s", state)
 				return state == "TRIPPED"
 			}, helpers.WaitTimeout, helpers.WaitInterval)
 		}
-		t.Log("CB successfully auto-tripped")
+		t.Log("Circuit breaker successfully auto-tripped")
 
 		return ctx
 	})
@@ -202,7 +171,7 @@ func TestCircuitBreaker(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Resetting CB to CLOSED before cleanup")
+		t.Log("Resetting circuit breaker to CLOSED before cleanup")
 		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED")
 
 		t.Log("Cleaning up all test nodes asynchronously")
@@ -210,10 +179,10 @@ func TestCircuitBreaker(t *testing.T) {
 
 		helpers.TeardownQuarantineTest(ctx, t, c)
 
-		t.Log("Restoring original deployment (CB threshold/duration)")
+		t.Log("Restoring original deployment (circuit breaker threshold/duration)")
 		helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
 
-		t.Log("Restoring original CB state")
+		t.Log("Restoring original circuit breaker state")
 		if originalCBState != "" {
 			helpers.SetCircuitBreakerState(ctx, t, c, originalCBState)
 		} else {

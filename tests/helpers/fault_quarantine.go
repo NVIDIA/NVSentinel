@@ -17,9 +17,9 @@ package helpers
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,12 +35,12 @@ type QuarantineCELTestContextKey int
 
 const (
 	CELKeyNodeName QuarantineCELTestContextKey = iota
-	CELKeyConfigMapBackupPath
+	CELKeyConfigMapBackup
 )
 
 type QuarantineTestContext struct {
-	NodeName            string
-	ConfigMapBackupPath string
+	NodeName        string
+	ConfigMapBackup []byte
 }
 
 type QuarantineAssertion struct {
@@ -81,10 +81,10 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 	var originalDeployment *appsv1.Deployment
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
 	require.NoError(t, err)
-	t.Logf("Backup created at: %s", backupPath)
-	testCtx.ConfigMapBackupPath = backupPath
+	t.Log("Backup created in memory")
+	testCtx.ConfigMapBackup = backupData
 
 	t.Logf("Applying test configmap: %s", configMapPath)
 	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
@@ -121,7 +121,7 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
 	ctx = context.WithValue(ctx, CELKeyNodeName, nodeName)
-	ctx = context.WithValue(ctx, CELKeyConfigMapBackupPath, testCtx.ConfigMapBackupPath)
+	ctx = context.WithValue(ctx, CELKeyConfigMapBackup, testCtx.ConfigMapBackup)
 
 	return ctx, testCtx, originalDeployment
 }
@@ -167,14 +167,12 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	}, WaitTimeout, WaitInterval)
 	t.Logf("Node %s cleaned successfully", nodeName)
 
-	backupPathVal := ctx.Value(CELKeyConfigMapBackupPath)
-	if backupPathVal != nil {
-		backupPath := backupPathVal.(string)
-		t.Logf("Restoring configmap from: %s", backupPath)
-		err = createConfigMapFromFilePath(ctx, client, backupPath, "fault-quarantine-config", NVSentinelNamespace)
+	backupDataVal := ctx.Value(CELKeyConfigMapBackup)
+	if backupDataVal != nil {
+		backupData := backupDataVal.([]byte)
+		t.Log("Restoring fault-quarantine configmap from memory")
+		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine-config", NVSentinelNamespace)
 		assert.NoError(t, err)
-
-		os.Remove(backupPath)
 	}
 
 	t.Log("Restarting fault-quarantine deployment to load restored configuration")
@@ -184,12 +182,11 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	return ctx
 }
 
-// SendHealthyEventAndWaitForCleanup sends a healthy event and waits for quarantine-specific cleanup
+// WaitForQuarantineCleanup waits for quarantine-specific cleanup to complete
 // (uncordoned, taints removed, quarantine annotations cleared, nvsentinel-state label cleared).
-func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	t.Logf("Sending healthy event and waiting for cleanup on node %s", nodeName)
-	SendHealthyEvent(ctx, t, nodeName)
-
+func WaitForQuarantineCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
+	t.Helper()
+	t.Logf("Waiting for quarantine cleanup on node %s", nodeName)
 	require.Eventually(t, func() bool {
 		node, err := GetNodeByName(ctx, client, nodeName)
 		if err != nil {
@@ -225,8 +222,46 @@ func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client
 	t.Logf("Node %s cleaned up successfully", nodeName)
 }
 
+// SendHealthyEventAndWaitForCleanup sends a healthy event and waits for quarantine-specific cleanup
+// (uncordoned, taints removed, quarantine annotations cleared, nvsentinel-state label cleared).
+func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
+	t.Helper()
+	t.Logf("Sending healthy event and waiting for cleanup on node %s", nodeName)
+	SendHealthyEvent(ctx, t, nodeName)
+	WaitForQuarantineCleanup(ctx, t, client, nodeName)
+}
+
+// AssertNodeNeverQuarantined asserts that a node is never quarantined within the default timeout period.
+// Checks that node is not cordoned and optionally not annotated with quarantine annotation.
+func AssertNodeNeverQuarantined(ctx context.Context, t *testing.T, client klient.Client, nodeName string, checkAnnotation bool) {
+	t.Helper()
+	t.Logf("Asserting node %s is never quarantined", nodeName)
+	require.Never(t, func() bool {
+		node, err := GetNodeByName(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Error getting node: %v", err)
+			return false
+		}
+
+		if node.Spec.Unschedulable {
+			t.Logf("Node %s was cordoned (should not be quarantined)!", nodeName)
+			return true
+		}
+
+		if checkAnnotation && node.Annotations != nil {
+			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+				t.Logf("Node %s has quarantine annotation (should not be quarantined)!", nodeName)
+				return true
+			}
+		}
+
+		return false
+	}, 30*time.Second, 2*time.Second, "node %s should not be quarantined", nodeName)
+}
+
 // SendHealthyEventsAsync sends healthy events to multiple nodes and waits for quarantine cleanup on all of them.
 func SendHealthyEventsAsync(ctx context.Context, t *testing.T, client klient.Client, nodeNames []string) {
+	t.Helper()
 	t.Logf("Sending healthy events to %d nodes asynchronously", len(nodeNames))
 
 	for _, nodeName := range nodeNames {
@@ -262,6 +297,7 @@ func SendHealthyEventsAsync(ctx context.Context, t *testing.T, client klient.Cli
 }
 
 func AssertQuarantineState(ctx context.Context, t *testing.T, client klient.Client, nodeName string, expected QuarantineAssertion) {
+	t.Helper()
 	t.Logf("Asserting quarantine state on node %s: expectCordoned=%v, expectTaint=%v, expectAnnotation=%v",
 		nodeName, expected.ExpectCordoned, expected.ExpectTaint != nil, expected.ExpectAnnotation)
 
@@ -325,14 +361,8 @@ func AssertQuarantineState(ctx context.Context, t *testing.T, client klient.Clie
 	t.Logf("Assertion passed for node %s", nodeName)
 }
 
-func AssertNoQuarantine(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	AssertQuarantineState(ctx, t, client, nodeName, QuarantineAssertion{
-		ExpectCordoned:   false,
-		ExpectAnnotation: false,
-	})
-}
-
 func AssertAnnotationContains(ctx context.Context, t *testing.T, client klient.Client, nodeName string, substrs ...string) {
+	t.Helper()
 	node, err := GetNodeByName(ctx, client, nodeName)
 	require.NoError(t, err)
 	require.NotNil(t, node.Annotations)
@@ -346,6 +376,7 @@ func AssertAnnotationContains(ctx context.Context, t *testing.T, client klient.C
 }
 
 func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config, state string) {
+	t.Helper()
 	t.Logf("Setting circuit breaker state to: %s", state)
 	client, err := c.NewClient()
 	require.NoError(t, err)
@@ -358,24 +389,30 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 }
 
 func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config) string {
+	t.Helper()
+	t.Logf("Getting circuit breaker state from configmap")
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
 	cm := &v1.ConfigMap{}
 	err = client.Resources().Get(ctx, "fault-quarantine-circuit-breaker", NVSentinelNamespace, cm)
 	if err != nil {
+		t.Logf("failed to get circuit breaker state from configmap: %v", err)
 		return ""
 	}
 
 	if cm.Data == nil {
+		t.Logf("circuit breaker state configmap is empty")
 		return ""
 	}
 
+	t.Logf("circuit breaker state: %s", cm.Data["status"])
 	return cm.Data["status"]
 }
 
 // RestoreFQDeployment restores the fault-quarantine deployment to its original configuration.
 func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client, original *appsv1.Deployment) {
+	t.Helper()
 	t.Log("Restoring original fault-quarantine deployment")
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -399,6 +436,7 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, client klient.Client,
 	argUpdates map[string]string) *appsv1.Deployment {
 
+	t.Helper()
 	var originalDeployment *appsv1.Deployment
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -442,6 +480,7 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 
 // updateCircuitBreakerStateConfigMap updates the CB state configmap (without restarting deployment).
 func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, client klient.Client, state string) {
+	t.Helper()
 	t.Logf("Updating circuit breaker state configmap to: %s", state)
 
 	cm := &v1.ConfigMap{

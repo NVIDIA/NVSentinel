@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 )
 
 const (
@@ -41,6 +42,7 @@ func init() {
 type StubJournal struct {
 	closed          bool
 	currentPosition int
+	bootID          string
 }
 
 // AddMatch adds a match filter for journal entries
@@ -59,12 +61,13 @@ func (j *StubJournal) Close() error {
 }
 
 // GetBootID retrieves the current boot ID
+// Returns the boot ID that was generated when this StubJournal instance was created
 func (j *StubJournal) GetBootID() (string, error) {
 	if j.closed {
 		return "", errors.New(JOURNAL_CLOSED_ERROR_MESSAGE)
 	}
 
-	return "stub-boot-id", nil
+	return j.bootID, nil
 }
 
 // GetCursor returns a cursor that can be used to seek to the current location
@@ -167,6 +170,7 @@ func (f *StubJournalFactory) NewJournal() (Journal, error) {
 	return &StubJournal{
 		closed:          false,
 		currentPosition: -1,
+		bootID:          fmt.Sprintf("stub-boot-%d", time.Now().UnixMicro()),
 	}, nil
 }
 
@@ -175,6 +179,7 @@ func (f *StubJournalFactory) NewJournalFromDir(path string) (Journal, error) {
 	return &StubJournal{
 		closed:          false,
 		currentPosition: -1,
+		bootID:          fmt.Sprintf("stub-boot-%d", time.Now().UnixMicro()),
 	}, nil
 }
 

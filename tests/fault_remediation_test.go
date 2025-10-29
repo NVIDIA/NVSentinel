@@ -25,12 +25,9 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-// TestFullRemediationFlow tests the complete remediation lifecycle including
-// label transitions, CR creation, annotation tracking, and recovery
-// (annotation cleanup after healthy event)
-func TestFullRemediationFlow(t *testing.T) {
-	feature := features.New("TestFullRemediationFlow").
-		WithLabel("suite", "fault-remediation")
+func TestExistingCRPreventsNewCreation(t *testing.T) {
+	feature := features.New("TestExistingCRPreventsNewCreation").
+		WithLabel("suite", "fault-remediation-advanced")
 
 	var testCtx *helpers.RemediationTestContext
 
@@ -40,11 +37,72 @@ func TestFullRemediationFlow(t *testing.T) {
 		return newCtx
 	})
 
-	feature.Assess("complete remediation flow with all validations", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("existing CR prevents duplicate creation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Step 1: Send fatal event to trigger quarantine and drain")
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
+
+		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		cr1Name := cr1.GetName()
+		t.Logf("First CR created: %s", cr1Name)
+
+		t.Log("Triggering remediation flow again without cleanup")
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
+
+		t.Log("Verifying no duplicate CR was created - should have exactly the original CR")
+		require.Eventually(t, func() bool {
+			crList, err := helpers.GetRebootNodeCRsForNode(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+
+			if len(crList) == 1 && crList[0] == cr1Name {
+				return true
+			}
+			if len(crList) > 1 {
+				t.Logf("ERROR: Found %d CRs, duplicate created!", len(crList))
+			} else {
+				t.Logf("Waiting for stable CR count, currently: %d", len(crList))
+			}
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownFaultRemediation(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestRemediationModuleRestart(t *testing.T) {
+	feature := features.New("TestRemediationModuleRestart").
+		WithLabel("suite", "fault-remediation-advanced")
+
+	var testCtx *helpers.RemediationTestContext
+	var podNames []string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "allowcompletion-test")
+		newCtx = helpers.ApplyNodeDrainerConfig(newCtx, t, c, "data/nd-all-modes.yaml")
+
+		return newCtx
+	})
+
+	feature.Assess("create blocking pods and trigger drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		podNames = helpers.CreatePodsFromTemplate(ctx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
+		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
+
 		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID 79 fatal error").
@@ -52,56 +110,61 @@ func TestFullRemediationFlow(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
 		defer os.Remove(tempFile)
 
-		t.Log("Step 2: Wait for quarantine")
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-			return node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		return ctx
+	})
 
-		t.Log("Step 3: Wait for remediation-succeeded label")
+	feature.Assess("drain starts but does not complete", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
+			helpers.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
-		t.Log("Step 4: Verify RebootNode CR was created")
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		return ctx
+	})
+
+	feature.Assess("restart module during in-progress drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		err = helpers.RestartDeployment(ctx, t, client, "nvsentinel-fault-remediation", helpers.NVSentinelNamespace)
+		require.NoError(t, err)
+
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		return ctx
+	})
+
+	feature.Assess("complete drain and verify CR creation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
+		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
+
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
-		crName := cr.GetName()
 
-		t.Log("Step 5: Verify remediation state annotation contains CR name")
-		annotation := helpers.WaitForNodeAnnotation(ctx, t, client, testCtx.NodeName,
-			"latestFaultRemediationState")
-		require.Contains(t, annotation, crName,
-			"Annotation should contain CR name")
-
-		t.Log("Step 6: Send healthy event to trigger recovery/unquarantine")
-		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("Node healthy - cleared error")
-		tempFile2 := helpers.SendHealthEvent(ctx, t, healthyEvent)
-		defer os.Remove(tempFile2)
-
-		t.Log("Step 7: Verify remediation state annotation cleared after recovery")
-		helpers.WaitForNoNodeAnnotation(ctx, t, client, testCtx.NodeName,
-			"latestFaultRemediationState")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			helpers.NVSentinelStateLabelKey, helpers.RemediationSucceededLabelValue)
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediationTest(ctx, t, c)
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+
+		return helpers.TeardownFaultRemediation(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())
 }
 
-// TestSkipRemediationCR verifies scenarios where no remediation CR should be created
-func TestSkipRemediationCR(t *testing.T) {
-	feature := features.New("TestSkipRemediationCR").
-		WithLabel("suite", "fault-remediation")
+func TestFailedCRRetry(t *testing.T) {
+	feature := features.New("TestFailedCRRetry").
+		WithLabel("suite", "fault-remediation-advanced")
 
 	var testCtx *helpers.RemediationTestContext
 
@@ -111,24 +174,20 @@ func TestSkipRemediationCR(t *testing.T) {
 		return newCtx
 	})
 
-	feature.Assess("NONE action (0) skips CR creation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("failed CR allows retry on new event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Log("Triggering remediation flow with NONE action")
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 0)
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying no RebootNode CR was created")
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		cr1Name := cr1.GetName()
+		t.Logf("First CR created: %s", cr1Name)
 
-		return ctx
-	})
+		t.Log("Simulating CR failure by updating status")
+		helpers.UpdateRebootNodeCRStatus(ctx, t, client, cr1Name, "Failed")
 
-	feature.Assess("unsupported action (5) skips CR and sets failed label", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		t.Log("Cleaning up from previous assess")
+		t.Log("Cleaning up and triggering new remediation")
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
 
 		t.Log("Waiting for healthy event to be processed")
@@ -137,24 +196,21 @@ func TestSkipRemediationCR(t *testing.T) {
 			if err != nil {
 				return false
 			}
+
 			return !node.Spec.Unschedulable
 		}, helpers.WaitTimeout, helpers.WaitInterval)
 
-		t.Log("Triggering remediation flow with CONTACT_SUPPORT action")
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 5)
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying no RebootNode CR created for CONTACT_SUPPORT action")
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
-
-		t.Log("Verifying remediation-failed label is set")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			helpers.NVSentinelStateLabelKey, helpers.RemediationFailedLabelValue)
+		t.Log("Verifying new CR was created after previous failure")
+		cr2 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		require.NotNil(t, cr2)
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediationTest(ctx, t, c)
+		return helpers.TeardownFaultRemediation(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())

@@ -18,10 +18,8 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
@@ -54,6 +52,7 @@ type RemediationTestContext struct {
 }
 
 func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Config, testNamespace string) (context.Context, *RemediationTestContext) {
+	t.Helper()
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -62,15 +61,9 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 		TestNamespace: testNamespace,
 	}
 
-	t.Log("Ensuring janitor namespace exists")
-	err = CreateNamespace(ctx, client, JanitorNamespace)
-	require.NoError(t, err)
-
-	t.Log("Ensuring rebootnode CRD exists")
-	EnsureRebootNodeCRD(ctx, t, client)
-
 	t.Log("Cleaning up existing rebootnode CRs")
-	CleanupRebootNodeCRs(ctx, t, client)
+	err = DeleteAllRebootNodeCRs(ctx, t, client)
+	require.NoError(t, err)
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
 	testCtx.NodeName = nodeName
@@ -86,7 +79,8 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 	return ctx, testCtx
 }
 
-func TeardownFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	t.Helper()
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -142,121 +136,12 @@ func TeardownFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.
 	}
 
 	t.Log("Cleaning up rebootnode CRs")
-	CleanupRebootNodeCRs(ctx, t, client)
+	err = DeleteAllRebootNodeCRs(ctx, t, client)
+	if err != nil {
+		t.Logf("Warning: Failed to cleanup rebootnode CRs: %v", err)
+	}
 
 	return ctx
-}
-
-func EnsureRebootNodeCRD(ctx context.Context, t *testing.T, client klient.Client) {
-	crdName := "rebootnodes.janitor.dgxc.nvidia.com"
-	var crd unstructured.Unstructured
-	crd.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "apiextensions.k8s.io",
-		Version: "v1",
-		Kind:    "CustomResourceDefinition",
-	})
-
-	err := client.Resources().Get(ctx, crdName, "", &crd)
-	if err == nil {
-		t.Log("RebootNode CRD already exists")
-		return
-	}
-
-	if !apierrors.IsNotFound(err) {
-		t.Logf("Error checking CRD: %v", err)
-		return
-	}
-
-	t.Log("RebootNode CRD not found, attempting to create")
-	crdDef := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "apiextensions.k8s.io/v1",
-			"kind":       "CustomResourceDefinition",
-			"metadata": map[string]any{
-				"name": crdName,
-			},
-			"spec": map[string]any{
-				"group": RebootNodeCRDGroup,
-				"versions": []any{
-					map[string]any{
-						"name":    RebootNodeCRDVersion,
-						"served":  true,
-						"storage": true,
-						"schema": map[string]any{
-							"openAPIV3Schema": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"spec": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"nodeName": map[string]any{
-												"type": "string",
-											},
-										},
-									},
-									"status": map[string]any{
-										"type":                                 "object",
-										"x-kubernetes-preserve-unknown-fields": true,
-									},
-								},
-							},
-						},
-					},
-				},
-				"scope": "Cluster",
-				"names": map[string]any{
-					"plural":   RebootNodeCRDPlural,
-					"singular": "rebootnode",
-					"kind":     "RebootNode",
-					"shortNames": []any{
-						"rn",
-					},
-				},
-			},
-		},
-	}
-
-	err = client.Resources().Create(ctx, crdDef)
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Logf("Warning: Failed to create RebootNode CRD: %v", err)
-		return
-	}
-
-	time.Sleep(2 * time.Second)
-	t.Log("Successfully ensured RebootNode CRD exists")
-}
-
-func CleanupRebootNodeCRs(ctx context.Context, t *testing.T, client klient.Client) {
-	var crList unstructured.UnstructuredList
-	crList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   RebootNodeCRDGroup,
-		Version: RebootNodeCRDVersion,
-		Kind:    "RebootNodeList",
-	})
-
-	err := client.Resources().List(ctx, &crList)
-	if err != nil {
-		t.Logf("Warning: Failed to list RebootNode CRs: %v", err)
-		return
-	}
-
-	if len(crList.Items) == 0 {
-		t.Log("No existing RebootNode CRs to clean up")
-		return
-	}
-
-	t.Logf("Found %d RebootNode CRs, deleting...", len(crList.Items))
-	for _, cr := range crList.Items {
-		crName := cr.GetName()
-		err := client.Resources().Delete(ctx, &cr)
-		if err != nil && !apierrors.IsNotFound(err) {
-			t.Logf("Warning: Failed to delete RebootNode CR %s: %v", crName, err)
-		} else {
-			t.Logf("Deleted RebootNode CR: %s", crName)
-		}
-	}
-
-	time.Sleep(2 * time.Second)
 }
 
 // GetRebootNodeCRsForNode returns all RebootNode CR names for a specific node
@@ -288,56 +173,13 @@ func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName
 	return crList, nil
 }
 
-func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	t.Logf("Waiting to verify no RebootNode CR exists for node %s", nodeName)
-	time.Sleep(30 * time.Second)
-
-	crList, err := GetRebootNodeCRsForNode(ctx, client, nodeName)
-	if err != nil {
-		t.Logf("Failed to list RebootNode CRs: %v", err)
-		return
-	}
-
-	require.Empty(t, crList, "RebootNode CR should not exist for node %s", nodeName)
-	t.Logf("Verified no RebootNode CR exists for node %s", nodeName)
-}
-
 func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemplate {
 	h.RecommendedAction = action
 	return h
 }
 
-func SendDrainCompletedEvent(ctx context.Context, t *testing.T, nodeName string, recommendedAction int) string {
-	t.Logf("Sending drain completed event to node %s with recommended action %d", nodeName, recommendedAction)
-	event := NewHealthEvent(nodeName).
-		WithErrorCode("79").
-		WithMessage("GPU Fallen off the bus - drain completed").
-		WithRecommendedAction(recommendedAction)
-
-	tempFile := SendHealthEvent(ctx, t, event)
-	t.Log("Drain completed event sent successfully")
-	return tempFile
-}
-
-func RestartFaultRemediationDeployment(ctx context.Context, t *testing.T, client klient.Client) {
-	t.Log("Restarting fault-remediation deployment")
-	err := RestartDeployment(ctx, t, client, "nvsentinel-fault-remediation", NVSentinelNamespace)
-	require.NoError(t, err)
-}
-
-func GetNodeAnnotation(ctx context.Context, t *testing.T, client klient.Client, nodeName, annotationKey string) (string, bool) {
-	node, err := GetNodeByName(ctx, client, nodeName)
-	require.NoError(t, err)
-
-	if node.Annotations == nil {
-		return "", false
-	}
-
-	value, exists := node.Annotations[annotationKey]
-	return value, exists
-}
-
 func WaitForNodeAnnotation(ctx context.Context, t *testing.T, client klient.Client, nodeName, annotationKey string) string {
+	t.Helper()
 	var annotationValue string
 
 	t.Logf("Waiting for node %s to have annotation: %s", nodeName, annotationKey)
@@ -361,23 +203,8 @@ func WaitForNodeAnnotation(ctx context.Context, t *testing.T, client klient.Clie
 	return annotationValue
 }
 
-func WaitForNoNodeAnnotation(ctx context.Context, t *testing.T, client klient.Client, nodeName, annotationKey string) {
-	t.Logf("Waiting for node %s to NOT have annotation: %s", nodeName, annotationKey)
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			return true
-		}
-		if node.Annotations == nil {
-			return true
-		}
-		_, exists := node.Annotations[annotationKey]
-		return !exists
-	}, WaitTimeout, WaitInterval)
-	t.Logf("Node %s does not have annotation %s", nodeName, annotationKey)
-}
-
 func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient.Client, nodeName string, recommendedAction int) {
+	t.Helper()
 	t.Logf("Triggering full remediation flow for node %s", nodeName)
 
 	t.Log("Step 1: Send fatal health event to trigger quarantine")
@@ -402,6 +229,7 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 }
 
 func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.Client, crName, status string) {
+	t.Helper()
 	var cr unstructured.Unstructured
 	cr.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   RebootNodeCRDGroup,
@@ -421,41 +249,4 @@ func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.C
 	err = client.Resources().Update(ctx, &cr)
 	require.NoError(t, err)
 	t.Logf("Updated RebootNode CR %s status to: %s", crName, status)
-}
-
-// ApplyNodeDrainerConfig backs up the current node-drainer config, applies the test config,
-// and restarts the node-drainer deployment. Returns context with backup path stored.
-func ApplyNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) context.Context {
-	client, err := c.NewClient()
-	require.NoError(t, err)
-
-	t.Log("Backing up current node-drainer configmap")
-	backupPath, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
-	require.NoError(t, err)
-	t.Logf("Backup created at: %s", backupPath)
-
-	err = applyNodeDrainerConfigAndRestart(ctx, t, client, configMapPath)
-	require.NoError(t, err)
-
-	return context.WithValue(ctx, FRKeyNodeDrainerConfigMapBackup, backupPath)
-}
-
-// RestoreNodeDrainerConfig restores the node-drainer config from backup and restarts the deployment.
-func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config) {
-	client, err := c.NewClient()
-	require.NoError(t, err)
-
-	backupPathVal := ctx.Value(FRKeyNodeDrainerConfigMapBackup)
-	if backupPathVal == nil {
-		t.Log("No node-drainer configmap backup to restore")
-		return
-	}
-
-	backupPath := backupPathVal.(string)
-	t.Logf("Restoring node-drainer configmap from: %s", backupPath)
-
-	err = applyNodeDrainerConfigAndRestart(ctx, t, client, backupPath)
-	require.NoError(t, err)
-
-	os.Remove(backupPath)
 }

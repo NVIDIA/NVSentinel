@@ -19,7 +19,6 @@ import (
 	"os"
 	"testing"
 	"tests/helpers"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,18 +95,7 @@ func TestDryRunMode(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		require.Never(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				t.Logf("Error getting node: %v", err)
-				return false
-			}
-			if node.Spec.Unschedulable {
-				t.Logf("Node %s was cordoned in dry-run mode!", testCtx.NodeName)
-				return true
-			}
-			return false
-		}, 30*time.Second, 2*time.Second, "node should not be cordoned in dry-run mode")
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, false)
 
 		return ctx
 	})
@@ -286,7 +274,6 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 
 		nodes, err := helpers.GetAllNodesNames(ctx, client)
 		require.NoError(t, err)
-		require.GreaterOrEqual(t, len(nodes), 2, "need at least 2 nodes for this test")
 
 		startIdx := int(float64(len(nodes)) * 0.50)
 		if startIdx >= len(nodes) {
@@ -335,24 +322,7 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		require.NoError(t, err)
 		defer os.Remove(tempFile)
 
-		require.Never(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testNodeIgnored)
-			if err != nil {
-				t.Logf("Error getting node: %v", err)
-				return false
-			}
-			if node.Spec.Unschedulable {
-				t.Logf("Node %s with label=false was cordoned (should be ignored)!", testNodeIgnored)
-				return true
-			}
-			if node.Annotations != nil {
-				if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
-					t.Logf("Node %s with label=false has FQ annotation (should be ignored)!", testNodeIgnored)
-					return true
-				}
-			}
-			return false
-		}, 30*time.Second, 2*time.Second, "node with label=false should be ignored by FQ")
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testNodeIgnored, true)
 
 		return ctx
 	})

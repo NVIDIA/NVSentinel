@@ -80,7 +80,7 @@ func TestNodeDrainerRestart(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownNodeDrainerTest(ctx, t, c)
+		return helpers.TeardownNodeDrainer(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())
@@ -158,7 +158,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownNodeDrainerTest(ctx, t, c)
+		return helpers.TeardownNodeDrainer(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())
@@ -266,7 +266,7 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 		helpers.DeleteNamespace(ctx, t, client, "dev-non-prod")
 		helpers.DeleteNamespace(ctx, t, client, "staging-non-prod")
 
-		return helpers.TeardownNodeDrainerTest(ctx, t, c)
+		return helpers.TeardownNodeDrainer(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())

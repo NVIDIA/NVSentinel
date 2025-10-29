@@ -226,7 +226,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.DeleteNamespace(ctx, t, client, "allowcompletion-test")
 		helpers.DeleteNamespace(ctx, t, client, "delete-timeout-test")
 
-		return helpers.TeardownNodeDrainerTest(ctx, t, c)
+		return helpers.TeardownNodeDrainer(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())

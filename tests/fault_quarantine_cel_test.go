@@ -44,13 +44,6 @@ func TestBasicCELMatching(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-				WithErrorCode("79").
-				WithHealthy(true).
-				WithFatal(false).
-				WithMessage("XID 79 cleared")
-			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
-			defer os.Remove(tempFile)
 			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 		})
 
@@ -83,7 +76,10 @@ func TestBasicCELMatching(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.AssertNoQuarantine(ctx, t, client, testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})
@@ -112,14 +108,6 @@ func TestRulesetPriority(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Cleanup(func() {
-			healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
-				WithComponentClass("GPU").
-				WithErrorCode("79").
-				WithHealthy(true).
-				WithFatal(false).
-				WithMessage("XID 79 cleared")
-			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
-			defer os.Remove(tempFile)
 			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
 		})
 
@@ -241,7 +229,7 @@ func TestMultipleRulesMatching(t *testing.T) {
 				WithMessage("GPU InfoROM watch cleared")
 			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
 			defer os.Remove(tempFile)
-			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+			helpers.WaitForQuarantineCleanup(ctx, t, client, testCtx.NodeName)
 		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
@@ -271,7 +259,10 @@ func TestMultipleRulesMatching(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.AssertNoQuarantine(ctx, t, client, testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})
@@ -284,7 +275,10 @@ func TestMultipleRulesMatching(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.AssertNoQuarantine(ctx, t, client, testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})
@@ -385,7 +379,7 @@ func TestCordonBehavior(t *testing.T) {
 				WithMessage("GpuInforomWatch cleared")
 			tempFile := helpers.SendHealthEvent(ctx, t, healthyEvent)
 			defer os.Remove(tempFile)
-			helpers.SendHealthyEventAndWaitForCleanup(ctx, t, client, testCtx.NodeName)
+			helpers.WaitForQuarantineCleanup(ctx, t, client, testCtx.NodeName)
 		})
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
@@ -475,7 +469,10 @@ func TestManualUncordonWithAnnotationRetention(t *testing.T) {
 
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
 
-		helpers.AssertNoQuarantine(ctx, t, client, testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})
@@ -618,7 +615,10 @@ func TestMultipleEntityTracking(t *testing.T) {
 		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		helpers.AssertNoQuarantine(ctx, t, client, testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})

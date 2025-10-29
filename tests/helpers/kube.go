@@ -19,6 +19,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -40,7 +42,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/client-go/transport/spdy"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
@@ -362,6 +366,33 @@ func listAllRebootNodes(ctx context.Context, c klient.Client) (*unstructured.Uns
 	return rebootNodeList, nil
 }
 
+// WaitForNoRebootNodeCR asserts that no RebootNode CR is created for a node within a timeout period.
+// Uses require.Never to continuously check that CR never appears.
+func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
+	t.Helper()
+	t.Logf("Asserting no RebootNode CR is created for node %s", nodeName)
+	require.Never(t, func() bool {
+		rebootNodeList, err := listAllRebootNodes(ctx, c)
+		if err != nil {
+			t.Logf("Error listing RebootNode CRs: %v", err)
+			return false
+		}
+
+		for _, item := range rebootNodeList.Items {
+			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
+			if err != nil || !found {
+				continue
+			}
+
+			if nodeNameInCR == nodeName {
+				t.Logf("RebootNode CR created for node %s (should not exist)!", nodeName)
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 2*time.Second, "RebootNode CR should not be created for node %s", nodeName)
+}
+
 // WaitForRebootNodeCR waits for a RebootNode custom resource to be created and completed for the node with the specified `nodeName` and returns the CR object.
 func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
@@ -655,16 +686,11 @@ func CreateRebootNodeCR(
 	return rebootNode, nil
 }
 
-func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath, name, namespace string) error {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
+func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []byte, name, namespace string) error {
 	cm := &v1.ConfigMap{}
-	err = yaml.Unmarshal(content, cm)
+	err := yaml.Unmarshal(yamlData, cm)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal config map from file: %w", err)
+		return fmt.Errorf("failed to unmarshal config map: %w", err)
 	}
 
 	if name != "" {
@@ -691,33 +717,35 @@ func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath,
 	}
 	_ = c.Resources().Delete(ctx, existingCM)
 
-	time.Sleep(100 * time.Millisecond)
-
-	maxRetries := 5
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+	// Retry creation with backoff
+	backoff := retry.DefaultBackoff
+	backoff.Steps = 3
+	err = retry.OnError(backoff, apierrors.IsAlreadyExists, func() error {
+		createErr := c.Resources().Create(ctx, cm)
+		if apierrors.IsAlreadyExists(createErr) {
+			_ = c.Resources().Delete(ctx, existingCM)
 		}
+		return createErr
+	})
 
-		err = c.Resources().Create(ctx, cm)
-		if err != nil {
-			if apierrors.IsAlreadyExists(err) && attempt < maxRetries-1 {
-				_ = c.Resources().Delete(ctx, existingCM)
-				time.Sleep(200 * time.Millisecond)
-				lastErr = err
-				continue
-			}
-			return fmt.Errorf("failed to create config map: %w", err)
-		}
-		return nil
+	if err != nil {
+		return fmt.Errorf("failed to create config map: %w", err)
 	}
 
-	return fmt.Errorf("failed to create config map after %d retries: %w", maxRetries, lastErr)
+	return nil
 }
 
-// BackupConfigMap backs up a configmap to a temporary file and returns the file path.
-func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) (string, error) {
+func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath, name, namespace string) error {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return createConfigMapFromBytes(ctx, c, content, name, namespace)
+}
+
+// BackupConfigMap backs up a configmap to memory and returns the YAML bytes.
+func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) ([]byte, error) {
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -725,18 +753,15 @@ func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace strin
 	}
 	err := c.Resources().Get(ctx, name, namespace, cm)
 	if err != nil {
-		return "", fmt.Errorf("failed to get config map: %w", err)
+		return nil, fmt.Errorf("failed to get config map: %w", err)
 	}
-	filepath := fmt.Sprintf("/tmp/%s-%s.yaml", name, time.Now().Format("20060102150405"))
+
 	yamlData, err := yaml.Marshal(cm)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal config map to yaml: %w", err)
+		return nil, fmt.Errorf("failed to marshal config map to yaml: %w", err)
 	}
-	err = os.WriteFile(filepath, yamlData, 0644)
-	if err != nil {
-		return "", fmt.Errorf("failed to write config map to file: %w", err)
-	}
-	return filepath, nil
+
+	return yamlData, nil
 }
 
 // WaitForDeploymentRollout waits for a deployment rollout to complete.
@@ -914,10 +939,30 @@ func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName, co
 	targetConditionType := v1.NodeConditionType(conditionType)
 	for _, condition := range node.Status.Conditions {
 		if condition.Type == targetConditionType && condition.Reason == reason {
+			slog.Info("Found condition", "node", nodeName, "condition", condition)
 			return &condition, nil
 		}
 	}
 	return nil, nil
+}
+
+// GetNodeEvents retrieves all events for a node in the default namespace
+// - eventType: if empty, all event types are returned
+func GetNodeEvents(ctx context.Context, c klient.Client, nodeName string, eventType string) (*v1.EventList, error) {
+	eventList := &v1.EventList{}
+
+	fieldSelector := fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)
+	if eventType != "" {
+		fieldSelector = fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node,type=%s", nodeName, eventType)
+	}
+
+	err := c.Resources().WithNamespace("default").List(ctx, eventList,
+		resources.WithFieldSelector(fieldSelector))
+	if err != nil {
+		return nil, err
+	}
+
+	return eventList, nil
 }
 
 // CheckNodeEventExists checks if an event exists for a node with specific type and optional reason/time filters.
@@ -925,10 +970,7 @@ func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName, co
 // - eventReason: if empty, reason is not checked
 // - afterTime: if zero, time is not checked
 func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string, afterTime ...time.Time) (bool, *v1.Event) {
-	eventList := &v1.EventList{}
-
-	err := c.Resources().WithNamespace("default").List(ctx, eventList,
-		resources.WithFieldSelector(fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node,type=%s", nodeName, eventType)))
+	eventList, err := GetNodeEvents(ctx, c, nodeName, eventType)
 	if err != nil {
 		return false, nil
 	}
@@ -1053,6 +1095,7 @@ func GetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client,
 
 // WaitForNodeLabel waits for a node to have a specific label value
 func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, nodeName, labelKey, expectedValue string) {
+	t.Helper()
 	t.Logf("Waiting for node %s to have label %s=%s", nodeName, labelKey, expectedValue)
 	require.Eventually(t, func() bool {
 		node, err := GetNodeByName(ctx, client, nodeName)
@@ -1073,6 +1116,7 @@ func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, n
 
 // WaitForPodsDeleted waits for all specified pods to be deleted from a namespace
 func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
+	t.Helper()
 	t.Logf("Waiting for %d pods to be deleted from namespace %s", len(podNames), namespace)
 	require.Eventually(t, func() bool {
 		for _, podName := range podNames {
@@ -1090,6 +1134,7 @@ func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client,
 
 // WaitForPodsRunning waits for all specified pods to reach running state
 func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
+	t.Helper()
 	t.Logf("Waiting for %d pods to be running in namespace %s", len(podNames), namespace)
 	for _, podName := range podNames {
 		require.Eventually(t, func() bool {
@@ -1106,6 +1151,7 @@ func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client,
 
 // DeletePodsByNames deletes multiple pods by their names from a namespace
 func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
+	t.Helper()
 	t.Logf("Deleting %d pods from namespace %s", len(podNames), namespace)
 	for _, podName := range podNames {
 		pod := &v1.Pod{
@@ -1161,4 +1207,52 @@ func IsPodReady(pod v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// PortForwardPod sets up port forwarding to a pod and returns channels to control it.
+// Returns (stopChan, readyChan) where:
+// - stopChan: close this to stop port forwarding
+// - readyChan: will be closed when port-forward is ready
+func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, podName string, localPort, podPort int) (chan struct{}, chan struct{}) {
+	stopChan := make(chan struct{}, 1)
+	readyChan := make(chan struct{})
+
+	go func() {
+		clientset, err := kubernetes.NewForConfig(restConfig)
+		if err != nil {
+			close(readyChan)
+			return
+		}
+
+		req := clientset.CoreV1().RESTClient().Post().
+			Resource("pods").
+			Namespace(namespace).
+			Name(podName).
+			SubResource("portforward")
+
+		transport, upgrader, err := spdy.RoundTripperFor(restConfig)
+		if err != nil {
+			close(readyChan)
+			return
+		}
+
+		dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", req.URL())
+
+		ports := []string{fmt.Sprintf("%d:%d", localPort, podPort)}
+
+		devNull := &bytes.Buffer{}
+
+		fw, err := portforward.New(dialer, ports, stopChan, readyChan, devNull, devNull)
+		if err != nil {
+			close(readyChan)
+			return
+		}
+
+		if err := fw.ForwardPorts(); err != nil {
+			slog.Error("Error forwarding ports", "error", err)
+			return
+		}
+	}()
+
+	return stopChan, readyChan
 }
