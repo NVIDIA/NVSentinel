@@ -16,7 +16,7 @@ require (
 	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	go.mongodb.org/mongo-driver v1.17.4
+	go.mongodb.org/mongo-driver v1.17.6
 	golang.org/x/sync v0.17.0
 	google.golang.org/api v0.254.0
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822
