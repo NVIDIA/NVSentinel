@@ -277,19 +277,18 @@ func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 
 		slog.Info("Cleared all cursors due to system reboot")
 
-		// Publish healthy events for all checks after a reboot
-		if sm.pcClient != nil {
-			for _, check := range sm.checks {
-				message := "No Health Failures"
-				errRes := types.ErrorResolution{
-					RecommendedAction: pb.RecommendedAction_NONE,
-				}
-				healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
-				sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
-				slog.Info("Published healthy event after system reboot", "check", check.Name)
+		for _, check := range sm.checks {
+			message := "No Health Failures"
+			errRes := types.ErrorResolution{
+				RecommendedAction: pb.RecommendedAction_NONE,
 			}
-		} else {
-			slog.Warn("Platform connector client is nil, cannot send healthy events after reboot")
+
+			healthEvents := sm.prepareHealthEventWithAction(check, message, true, errRes)
+			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
+				return fmt.Errorf("failed to send health event: %w", err)
+			}
+
+			slog.Info("Published healthy event after system reboot", "check", check.Name)
 		}
 	}
 
@@ -782,12 +781,7 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 
 // sendHealthEventWithRetry sends health events to platform connector with retry logic
 func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
-	maxRetries int, retryDelay time.Duration) {
-	if sm.pcClient == nil {
-		slog.Error("PlatformConnectorClient is nil, cannot send health event")
-		return
-	}
-
+	maxRetries int, retryDelay time.Duration) error {
 	slog.Info("Attempting to send health event", "events", healthEvents)
 
 	backoff := wait.Backoff{
@@ -816,15 +810,14 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 
 	if err != nil {
 		slog.Error("All retry attempts to send health event failed", "error", err)
+		return fmt.Errorf("failed all attempts to send health events: %w", err)
 	}
+
+	return nil
 }
 
 // isRetryableError determines if an error is retryable
 func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
 	if s, ok := status.FromError(err); ok {
 		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
 			return true
@@ -851,7 +844,9 @@ func (sm *SyslogMonitor) handleSingleLine(check CheckDefinition, lineToEvaluate 
 		}
 
 		if healthEvents != nil {
-			sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second)
+			if err := sm.sendHealthEventWithRetry(healthEvents, 5, 2*time.Second); err != nil {
+				return fmt.Errorf("failed to send health event: %w", err)
+			}
 		}
 	}
 

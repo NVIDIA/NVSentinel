@@ -118,6 +118,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 self.send_health_event_with_retries(health_events)
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
+                raise
 
     def health_event_occurred(
         self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list, serials: dict[int, str]
@@ -248,8 +249,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 try:
                     self.send_health_event_with_retries(health_events)
                 except Exception as e:
-                    log.error(f"Exception while sending health events: {e}. Events will be retried in next cycle.")
-                    # Don't crash - continue monitoring
+                    log.error(f"Exception while sending health events: {e}")
+                    self.entity_cache = {}
 
     def get_recommended_action_from_dcgm_error_map(self, error_code):
         if error_code in self.dcgm_errors_info_dict:
@@ -322,4 +323,4 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     self.send_health_event_with_retries(health_events)
                 except Exception as e:
                     log.error(f"Exception while sending DCGM connectivity failure events: {e}")
-                    # Don't crash - continue monitoring
+                    raise

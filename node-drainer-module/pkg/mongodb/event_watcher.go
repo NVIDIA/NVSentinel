@@ -55,9 +55,9 @@ func NewEventWatcher(
 func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.Info("Starting MongoDB event watcher")
 
-	// Cold start failure shouldn't prevent normal operation
 	if err := w.handleColdStart(ctx); err != nil {
 		slog.Error("Failed to handle cold start", "error", err)
+		return fmt.Errorf("failed to cold start: %w", err)
 	}
 
 	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, w.mongoConfig, w.tokenConfig, w.mongoPipeline)
@@ -77,11 +77,12 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		case event := <-watcher.Events():
 			if err := w.preprocessAndEnqueueEvent(ctx, event); err != nil {
 				slog.Error("Failed to preprocess and enqueue event", "error", err)
-				continue
+				return fmt.Errorf("failed to preprocess and enqueue event: %w", err)
 			}
 
 			if err := watcher.MarkProcessed(ctx); err != nil {
 				slog.Error("Error updating resume token", "error", err)
+				return fmt.Errorf("failed to update resume token: %w", err)
 			}
 		}
 	}
