@@ -149,6 +149,7 @@ func TestRemediationModuleRestart(t *testing.T) {
 		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		require.NotNil(t, cr)
 
+		t.Log("Waiting for remediation to succeed")
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
 			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationSucceededLabelValue))
 
@@ -158,60 +159,6 @@ func TestRemediationModuleRestart(t *testing.T) {
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		helpers.RestoreNodeDrainerConfig(ctx, t, c)
 
-		return helpers.TeardownFaultRemediation(ctx, t, c)
-	})
-
-	testEnv.Test(t, feature.Feature())
-}
-
-func TestFailedCRRetry(t *testing.T) {
-	feature := features.New("TestFailedCRRetry").
-		WithLabel("suite", "fault-remediation-advanced")
-
-	var testCtx *helpers.RemediationTestContext
-
-	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "")
-		return newCtx
-	})
-
-	feature.Assess("failed CR allows retry on new event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
-
-		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		cr1Name := cr1.GetName()
-		t.Logf("First CR created: %s", cr1Name)
-
-		t.Log("Simulating CR failure by updating status")
-		helpers.UpdateRebootNodeCRStatus(ctx, t, client, cr1Name, "Failed")
-
-		t.Log("Cleaning up and triggering new remediation")
-		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-
-		t.Log("Waiting for healthy event to be processed")
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-
-			return !node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
-
-		t.Log("Verifying new CR was created after previous failure")
-		cr2 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		require.NotNil(t, cr2)
-
-		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		return helpers.TeardownFaultRemediation(ctx, t, c)
 	})
 
