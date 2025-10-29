@@ -31,6 +31,7 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	"golang.org/x/sync/errgroup"
@@ -123,7 +124,30 @@ func initializeMongoDBConnector(
 	return storeConnector, nil
 }
 
-func startGRPCServer(socket string) (net.Listener, error) {
+func initializeNodeMetadataProcessor(
+	ctx context.Context,
+	config map[string]interface{},
+) (nodemetadata.Processor, error) {
+	cfg, err := nodemetadata.NewConfigFromMap(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node metadata config: %w", err)
+	}
+
+	if !cfg.Enabled {
+		slog.Info("Node metadata augmentation is disabled")
+		return nil, nil
+	}
+
+	processor, err := nodemetadata.NewProcessor(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
+	}
+
+	slog.Info("Node metadata processor initialized successfully")
+	return processor, nil
+}
+
+func startGRPCServer(socket string, processor nodemetadata.Processor) (net.Listener, error) {
 	err := os.Remove(socket)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
@@ -136,7 +160,9 @@ func startGRPCServer(socket string) (net.Listener, error) {
 
 	var opts []grpc.ServerOption
 	grpcServer := grpc.NewServer(opts...)
-	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{})
+	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
+		Processor: processor,
+	})
 
 	go func() {
 		err = grpcServer.Serve(lis)
@@ -183,7 +209,12 @@ func cleanupResources(
 	lis net.Listener,
 	k8sRingBuffer *ringbuffer.RingBuffer,
 	storeConnector *store.MongoDbStoreConnector,
+	processor nodemetadata.Processor,
 ) error {
+	if processor != nil {
+		processor.Stop()
+	}
+
 	if lis != nil {
 		if k8sRingBuffer != nil {
 			k8sRingBuffer.ShutDownHealthMetricQueue()
@@ -237,12 +268,17 @@ func run() error {
 		return err
 	}
 
+	processor, err := initializeNodeMetadataProcessor(ctx, config)
+	if err != nil {
+		return err
+	}
+
 	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
 	if err != nil {
 		return err
 	}
 
-	lis, err := startGRPCServer(*socket)
+	lis, err := startGRPCServer(*socket, processor)
 	if err != nil {
 		return err
 	}
@@ -275,6 +311,14 @@ func run() error {
 		return nil
 	})
 
+	// Start node metadata processor background tasks
+	if processor != nil {
+		g.Go(func() error {
+			processor.Start(gCtx)
+			return nil
+		})
+	}
+
 	g.Go(func() error {
 		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -295,7 +339,7 @@ func run() error {
 		close(stopCh)
 
 		// Cleanup all resources
-		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
+		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector, processor); err != nil {
 			return err
 		}
 
