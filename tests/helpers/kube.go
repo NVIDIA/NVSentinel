@@ -17,6 +17,7 @@ package helpers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -49,6 +50,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
+	k8syaml "sigs.k8s.io/yaml"
 )
 
 const (
@@ -389,6 +391,7 @@ func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, n
 func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
 
+	t.Logf("Waiting for RebootNode CR to be created for node %s", nodeName)
 	require.Eventually(t, func() bool {
 		rebootNodeList, err := listAllRebootNodes(ctx, c)
 		if err != nil {
@@ -416,9 +419,11 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 				return true
 			}
 		}
+		t.Logf("No RebootNode CR found for node %s", nodeName)
 		return false
 	}, WaitTimeout, WaitInterval, "RebootNode CR should complete for node %s", nodeName)
 
+	t.Logf("RebootNode CR created for node %s", nodeName)
 	return resultCR
 }
 
@@ -883,33 +888,6 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
 }
 
-func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string, replicas int32) error {
-	t.Helper()
-	t.Logf("Scaling deployment %s/%s to %d replicas", namespace, name, replicas)
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		deployment := &appsv1.Deployment{}
-		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
-			return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
-		}
-
-		deployment.Spec.Replicas = &replicas
-
-		if err := c.Resources().Update(ctx, deployment); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("failed to scale deployment: %w", err)
-	}
-
-	t.Logf("Deployment %s/%s scaled to %d replicas", namespace, name, replicas)
-	return nil
-}
-
 // RestartDeployment triggers a rolling restart of the specified deployment by updating
 // the restartedAt annotation on the pod template, then waits for the rollout to complete.
 // Uses retry.RetryOnConflict for automatic retry handling with exponential backoff.
@@ -1308,4 +1286,52 @@ func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, pod
 	}()
 
 	return stopChan, readyChan
+}
+
+// ApplyKWOKStage applies a KWOK Stage resource from a YAML file.
+// KWOK Stages are used to customize the behavior of fake nodes and pods.
+// Reference: https://github.com/kubernetes-sigs/kwok/discussions/926
+func ApplyKWOKStage(ctx context.Context, t *testing.T, client klient.Client, filePath string) error {
+	t.Helper()
+
+	yamlContent, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read KWOK Stage file: %w", err)
+	}
+
+	// Use Kubernetes YAML library to convert YAML to JSON (avoids map[interface{}]interface{} issue)
+	jsonContent, err := k8syaml.YAMLToJSON(yamlContent)
+	if err != nil {
+		return fmt.Errorf("failed to convert YAML to JSON: %w", err)
+	}
+
+	// Unmarshal JSON into unstructured object
+	var stage unstructured.Unstructured
+	err = json.Unmarshal(jsonContent, &stage.Object)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal KWOK Stage JSON: %w", err)
+	}
+
+	// Clean up metadata that shouldn't be set during creation
+	stage.SetResourceVersion("")
+	stage.SetUID("")
+	stage.SetGeneration(0)
+	stage.SetCreationTimestamp(metav1.Time{})
+	stage.SetManagedFields(nil)
+
+	// Delete if it exists (for updates)
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(stage.GroupVersionKind())
+	existing.SetName(stage.GetName())
+	existing.SetNamespace(stage.GetNamespace())
+	_ = client.Resources().Delete(ctx, existing)
+
+	// Create the Stage
+	err = client.Resources().Create(ctx, &stage)
+	if err != nil {
+		return fmt.Errorf("failed to create KWOK Stage: %w", err)
+	}
+
+	t.Logf("Applied KWOK Stage: %s", stage.GetName())
+	return nil
 }

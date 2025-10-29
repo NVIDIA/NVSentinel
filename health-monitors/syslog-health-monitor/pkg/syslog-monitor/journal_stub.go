@@ -136,6 +136,7 @@ func (j *StubJournal) Previous() (uint64, error) {
 	}
 
 	j.currentPosition--
+
 	return 1, nil
 }
 
@@ -210,6 +211,7 @@ func NewStubJournalFactory() JournalFactory {
 func GetDefaultJournalFactory() JournalFactory {
 	// Clear journal on factory creation (simulates fresh start on pod restart)
 	journal = make([]string, 0)
+
 	slog.Info("Stub journal cleared for new factory initialization")
 
 	// Clear state file in stub mode to ensure clean slate for testing
@@ -230,8 +232,11 @@ func GetDefaultJournalFactory() JournalFactory {
 			}
 
 			slog.Info("Adding message to journal", "message", string(body))
+
 			journal = append(journal, string(body))
-			slog.Info("Adding message to journal", "message", string(body), "index", len(journal)-1, "totalEntries", len(journal))
+
+			slog.Info("Adding message to journal", "message",
+				string(body), "index", len(journal)-1, "totalEntries", len(journal))
 
 			w.WriteHeader(http.StatusOK)
 		})

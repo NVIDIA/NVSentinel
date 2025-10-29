@@ -56,10 +56,6 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 		TestNamespace: testNamespace,
 	}
 
-	t.Log("Scaling down janitor to prevent interference with test")
-	err = ScaleDeployment(ctx, t, client, "nvsentinel-janitor", NVSentinelNamespace, 0)
-	require.NoError(t, err)
-
 	t.Log("Cleaning up existing rebootnode CRs")
 	err = DeleteAllRebootNodeCRs(ctx, t, client)
 	require.NoError(t, err)
@@ -138,12 +134,6 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 	err = DeleteAllRebootNodeCRs(ctx, t, client)
 	if err != nil {
 		t.Logf("Warning: Failed to cleanup rebootnode CRs: %v", err)
-	}
-
-	t.Log("Scaling janitor back up to 1 replica")
-	err = ScaleDeployment(ctx, t, client, "nvsentinel-janitor", NVSentinelNamespace, 1)
-	if err != nil {
-		t.Logf("Warning: Failed to scale up janitor: %v", err)
 	}
 
 	return ctx

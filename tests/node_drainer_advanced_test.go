@@ -272,3 +272,99 @@ func TestMultipleNamespacesMatchWildcardPattern(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
+
+func TestTerminatingPodStuck(t *testing.T) {
+	feature := features.New("TestTerminatingPodStuck").
+		WithLabel("suite", "node-drainer-advanced")
+
+	var testCtx *helpers.NodeDrainerTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Applying KWOK Stage to make pod deletion respect finalizers")
+		err = helpers.ApplyKWOKStage(ctx, t, client, "data/kwok-pod-delete-respect-finalizers.yaml")
+		require.NoError(t, err, "failed to apply KWOK Stage for finalizer support")
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "immediate-test")
+		return newCtx
+	})
+
+	feature.Assess("node drainer ignores stuck terminating pods", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Creating pod with finalizer that will get stuck in Terminating state")
+		podNames := helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pod-with-finalizer.yaml", testCtx.NodeName, testCtx.TestNamespace)
+		require.Len(t, podNames, 1, "should create exactly one pod")
+		podName := podNames[0]
+
+		// Ensure cleanup even if test fails
+		defer func() {
+			t.Log("Cleanup: removing finalizer and deleting pod")
+			var p v1.Pod
+			if err := client.Resources().Get(ctx, podName, testCtx.TestNamespace, &p); err == nil {
+				p.Finalizers = []string{}
+				_ = client.Resources().Update(ctx, &p)
+			}
+			_ = client.Resources().Delete(ctx, &p)
+		}()
+
+		t.Log("Waiting for pod to be running")
+		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		t.Log("Triggering drain with health event")
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("GPU Fallen off the bus")
+		tempFile := helpers.SendHealthEvent(ctx, t, event)
+		defer os.Remove(tempFile)
+
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+
+		t.Log("Deleting pod - it will get stuck in Terminating due to finalizer")
+		err = helpers.DeletePod(ctx, client, testCtx.TestNamespace, podName)
+		require.NoError(t, err)
+
+		t.Log("Waiting for pod to enter Terminating state")
+		require.Eventually(t, func() bool {
+			var p v1.Pod
+			err := client.Resources().Get(ctx, podName, testCtx.TestNamespace, &p)
+			if err != nil {
+				return false
+			}
+			if p.DeletionTimestamp != nil {
+				t.Logf("Pod is in Terminating state (DeletionTimestamp: %v)", p.DeletionTimestamp)
+				return true
+			}
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval, "pod should be in Terminating state")
+
+		t.Log("Verifying pod stays in Terminating state (blocked by finalizer)")
+		require.Never(t, func() bool {
+			var p v1.Pod
+			err := client.Resources().Get(ctx, podName, testCtx.TestNamespace, &p)
+			// If pod is deleted (not found), that means finalizer was removed - shouldn't happen
+			if err != nil {
+				t.Logf("Pod was deleted (finalizer removed unexpectedly)")
+				return true
+			}
+			// Pod should stay terminating
+			return false
+		}, 30*time.Second, 5*time.Second, "pod should remain stuck in Terminating state (finalizer blocks it)")
+
+		t.Log("Verifying drain completes despite stuck terminating pod")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownNodeDrainer(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
