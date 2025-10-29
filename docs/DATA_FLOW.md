@@ -39,7 +39,6 @@ graph TB
         ND[Node Drainer]
         FR[Fault Remediation]
         HEA[Health Analyzer]
-        LBL[Labeler]
     end
     
     subgraph "Actuator"
@@ -61,7 +60,6 @@ graph TB
     FQ -->|Cordon Node| K8S
     ND -->|Drain Pods| K8S
     FR -->|Create CRD| K8S
-    LBL -->|Update Labels| K8S
     
     style DB fill:#f9f,stroke:#333,stroke-width:2px
     style PC fill:#bbf,stroke:#333,stroke-width:2px
@@ -81,7 +79,7 @@ message HealthEvent {
   
   // Source identification
   string agent = 2;                            // Monitor name (e.g., "gpu-health-monitor")
-  string componentClass = 3;                   // Component type (e.g., "GPU", "SYSLOG")
+  string componentClass = 3;                   // Component type (e.g., "GPU", "NIC")
   string nodeName = 13;                        // Kubernetes node name
   
   // Health status
@@ -159,9 +157,8 @@ message Entity {
 ### 1. GPU Health Monitor
 
 **What it captures:**
-- GPU temperature, power, utilization (via DCGM)
+- GPU temperature and power
 - ECC errors (single-bit, double-bit)
-- XID errors (hardware faults)
 - GPU throttling events
 
 **What it emits:**
@@ -170,15 +167,15 @@ message Entity {
 
 **Example flow:**
 ```
-DCGM reports XID 48 on GPU 0
+DCGM reports ECC error on GPU 0
   ↓
 Monitor creates HealthEvent:
   - agent: "gpu-health-monitor"
   - componentClass: "GPU"
-  - checkName: "XID_ERROR_48"
-  - isFatal: true
-  - recommendedAction: REPLACE_VM
-  - errorCode: ["XID-48"]
+  - checkName: "ECC_ERROR"
+  - isFatal: false
+  - recommendedAction: MONITOR
+  - errorCode: ["ECC-DBE"]
   ↓
 Sends via gRPC: HealthEventOccurredV1(HealthEvents)
 ```
@@ -186,25 +183,24 @@ Sends via gRPC: HealthEventOccurredV1(HealthEvents)
 ### 2. Syslog Health Monitor
 
 **What it captures:**
-- Kernel panics from journalctl
-- Hardware errors (MCE, PCIe)
-- Driver crashes
-- Out-of-memory (OOM) events
+- XID errors (GPU hardware faults)
+- SXID errors (GPU software errors)
+- GPU fell off the bus events
 
 **What it emits:**
 - `HealthEvent` via gRPC to Platform Connectors
 
 **Example flow:**
 ```
-journalctl shows kernel panic
+journalctl shows XID 48 error
   ↓
 Monitor creates HealthEvent:
   - agent: "syslog-health-monitor"
-  - componentClass: "KERNEL"
-  - checkName: "KERNEL_PANIC"
+  - componentClass: "GPU"
+  - checkName: "XID_ERROR_48"
   - isFatal: true
-  - recommendedAction: RESTART_VM
-  - message: "Kernel panic detected: ....."
+  - recommendedAction: REPLACE_VM
+  - errorCode: ["XID-48"]
   ↓
 Sends via gRPC
 ```
@@ -244,10 +240,12 @@ Sends via gRPC
 1. Validates the event (schema, required fields)
 2. Inserts event into MongoDB `health_events` collection
 3. Updates Kubernetes node condition (if applicable)
+4. Updates Kubernetes node events (if applicable)
 
 **What it emits:**
 - MongoDB document (HealthEvent serialized)
-- Kubernetes Node condition update
+- Kubernetes Node condition update (for fatal failures)
+- Kubernetes Node events (for non-fatal issues)
 - Metrics to Prometheus
 
 **Data transformation:**
@@ -258,29 +256,59 @@ Validate each HealthEvent
   ↓
 MongoDB Insert: {
   "_id": ObjectId("..."),
-  "version": 1,
-  "agent": "gpu-health-monitor",
-  // ... all HealthEvent fields
-  "created_at": ISODate("2025-10-28T10:15:30Z"),
-  "status": "NEW"
+  "createdAt": ISODate("2025-10-28T10:15:30Z"),
+  "healthevent": {
+    "version": 1,
+    "agent": "gpu-health-monitor",
+    "nodeName": "gpu-node-42",
+    // ... all other HealthEvent fields
+  },
+  "healtheventstatus": {
+    "nodequarantined": null,                    // null, "Quarantined", "UnQuarantined", or "AlreadyQuarantined"
+    "userpodsevictionstatus": {
+      "status": "NotStarted",                   // "NotStarted", "InProgress", "Failed", "Succeeded", or "AlreadyDrained"
+      "message": ""                             // Optional error/status message
+    },
+    "faultremediated": null,                    // null or boolean
+    "lastremediationtimestamp": null            // null or ISODate
+  }
 }
   ↓
-Kubernetes Node Condition: {
-  "type": "GPUHealthy",
-  "status": "False",
-  "reason": "XID_ERROR_48",
-  "message": "GPU 0 reported XID 48"
-}
+If isFatal == true:
+  Kubernetes Node Condition: {
+    "type": "GPUHealthy",
+    "status": "False",
+    "reason": "XID_ERROR_48",
+    "message": "GPU 0 reported XID 48"
+  }
+Else:
+  Kubernetes Node Event: {
+    "type": "Warning",
+    "reason": "GPUHealthIssue",
+    "message": "GPU 0 reported ECC error",
+    "involvedObject": {Node}
+  }
 ```
 
 ### 5. Fault Quarantine Module
 
+**What it receives:**
 **What it receives:**
 - MongoDB change stream events
 - Watches for: new HealthEvents with `isFatal: true` or specific error codes
 
 **Decision logic:**
 ```go
+// Evaluate CEL-based policy first
+policy := getCELPolicy(event.NodeName)
+if policy.Evaluate(event) {
+  // CEL policy determines if quarantine is needed
+  if !event.QuarantineOverrides.Skip {
+    cordon node
+  }
+}
+
+// Fallback to built-in logic
 if event.IsFatal || event.RecommendedAction == REPLACE_VM {
   if !event.QuarantineOverrides.Skip {
     cordon node
@@ -288,9 +316,16 @@ if event.IsFatal || event.RecommendedAction == REPLACE_VM {
 }
 ```
 
+**CEL Policy Evaluation:**
+- Uses Common Expression Language (CEL) for flexible policy definitions
+- Policies can be defined per-node via annotations or cluster-wide via ConfigMap
+- CEL expressions can evaluate any HealthEvent field (errorCode, componentClass, metadata, etc.)
+- Example policy: `event.errorCode.contains("XID-48") || (event.componentClass == "GPU" && event.isFatal)`
+
 **What it emits:**
 - Kubernetes API call: `PATCH /api/v1/nodes/{nodeName}`
-  - Sets `spec.unschedulable = true`
+  - Sets `spec.unschedulable = true` (cordon)
+  - Optionally sets taints based on configuration
 - MongoDB update: Sets event `status = "QUARANTINED"`
 - Node annotation with quarantine reason
 
@@ -299,7 +334,14 @@ if event.IsFatal || event.RecommendedAction == REPLACE_VM {
 PATCH /api/v1/nodes/gpu-node-42
 {
   "spec": {
-    "unschedulable": true
+    "unschedulable": true,
+    "taints": [
+      {
+        "key": "nvsentinel.nvidia.com/unhealthy",
+        "value": "XID_ERROR_48",
+        "effect": "NoSchedule"
+      }
+    ]
   },
   "metadata": {
     "annotations": {
@@ -362,21 +404,15 @@ if event.RecommendedAction == REPLACE_VM {
 **What it emits:**
 - Kubernetes Custom Resource (CRD):
 ```yaml
-apiVersion: remediation.nvsentinel.nvidia.com/v1
-kind: BreakFixRequest
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
 metadata:
-  name: gpu-node-42-xid-48
-  namespace: nvsentinel
+  name: maintenance-gpu-node-42-6720abc123def456789
 spec:
   nodeName: gpu-node-42
-  reason: XID_ERROR_48
-  recommendedAction: REPLACE_VM
-  healthEventId: "6720abc123def456789"
-  priority: CRITICAL
-status:
-  phase: Pending
-  createdAt: "2025-10-28T10:15:40Z"
 ```
+
+**Note:** The CRD is consumed by an external operator (e.g., Janitor) that handles the actual maintenance workflow.
 
 ### 8. Health Events Analyzer
 
@@ -389,6 +425,7 @@ status:
 - Correlation (multiple failures on same rack)
 
 **What it emits:**
+- New HealthEvents (for correlated/aggregated issues)
 - Aggregated metrics to Prometheus
 - Alert annotations to HealthEvents
 - Dashboard data
@@ -465,10 +502,10 @@ sequenceDiagram
     ND->>DB: Update status=DRAINED
     
     DB->>FR: Change stream (drained, REPLACE_VM)
-    FR->>K8S: Create BreakFixRequest CRD
+    FR->>K8S: Create RebootNode CRD
     K8S-->>FR: CRD created
     
-    Note over FR,K8S: External break-fix system<br/>watches CRD and handles repair
+    Note over FR,K8S: External operator (Janitor)<br/>watches CRD and handles maintenance
 ```
 
 ---
@@ -496,14 +533,23 @@ HealthEvents {
 ```json
 {
   "_id": ObjectId("6720abc123def456789"),
-  "version": 1,
-  "agent": "gpu-health-monitor",
-  "nodeName": "gpu-node-42",
-  "isFatal": true,
-  // ... all HealthEvent fields preserved
-  "created_at": ISODate("2025-10-28T10:15:30.123Z"),
-  "updated_at": ISODate("2025-10-28T10:15:30.123Z"),
-  "status": "NEW"
+  "createdAt": ISODate("2025-10-28T10:15:30.123Z"),
+  "healthevent": {
+    "version": 1,
+    "agent": "gpu-health-monitor",
+    "nodeName": "gpu-node-42",
+    "isFatal": true
+    // ... all HealthEvent fields preserved
+  },
+  "healtheventstatus": {
+    "nodequarantined": null,                    // null, "Quarantined", "UnQuarantined", or "AlreadyQuarantined"
+    "userpodsevictionstatus": {
+      "status": "NotStarted",                   // "NotStarted", "InProgress", "Failed", "Succeeded", or "AlreadyDrained"
+      "message": ""                             // Optional error/status message
+    },
+    "faultremediated": null,                    // null or boolean
+    "lastremediationtimestamp": null            // null or ISODate
+  }
 }
 ```
 
@@ -558,22 +604,18 @@ conditions:
 {
   "nodeName": "gpu-node-42",
   "checkName": "XID_ERROR_48",
-  "recommendedAction": "REPLACE_VM"
+  "recommendedAction": "RESTART_BM"
 }
 ```
 
-**BreakFixRequest CRD:**
+**RebootNode CRD:**
 ```yaml
-apiVersion: remediation.nvsentinel.nvidia.com/v1
-kind: BreakFixRequest
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
 metadata:
-  name: gpu-node-42-xid-error-48
-  namespace: nvsentinel
+  name: maintenance-gpu-node-42-6720abc123def456789
 spec:
   nodeName: gpu-node-42
-  faultType: XID_ERROR_48
-  recommendedAction: REPLACE_VM
-  severity: CRITICAL
 ```
 
 ---
