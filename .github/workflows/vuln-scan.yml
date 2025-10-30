@@ -44,14 +44,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
-      - name: Cache Trivy DB
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
-        with:
-          path: ${{ env.TRIVY_CACHE_DIR }}
-          key: trivy-db-${{ github.run_id }}
-          restore-keys: |
-            trivy-db-
-
       - name: Scan Repo
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8  # v0.33.1
         with:
@@ -60,14 +52,12 @@ jobs:
           vuln-type: 'os,library'
           scanners: 'vuln,secret,misconfig'
           ignore-unfixed: true
-          hide-progress: true
           format: 'sarif'
           output: ${{ env.SARIF_OUTPUT }}
           severity: ${{ env.SEVERITY_LEVELS }}
           skip-dirs: 'vendor,node_modules'
+          limit-severities-for-sarif: true
           exit-code: '1' # fail job but still upload SARIF
-        env:
-          TRIVY_CACHE_DIR: ${{ env.TRIVY_CACHE_DIR }}
 
       - name: Upload Report
         if: always()  # upload even if scan fails
