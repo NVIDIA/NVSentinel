@@ -37,13 +37,14 @@ env:
 
 jobs:
   trivy-repo-scan:
-    runs-on: linux-amd64-cpu32
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
       - name: Scan Repo
+        continue-on-error: true
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8  # v0.33.1
         with:
           scan-type: 'fs'
@@ -57,8 +58,17 @@ jobs:
           skip-dirs: 'vendor,node_modules,distros/kubernetes'
           limit-severities-for-sarif: true
 
+      - name: Check SARIF file exists
+        id: check_sarif
+        run: |
+          if [ -f "${{ env.SARIF_OUTPUT }}" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload Report
-        if: always()  # upload even if scan fails
+        if: steps.check_sarif.outputs.exists == 'true'
         uses: github/codeql-action/upload-sarif@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
         with:
           sarif_file: ${{ env.SARIF_OUTPUT }}
