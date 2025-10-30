@@ -16,12 +16,10 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"tests/helpers"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -76,89 +74,6 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownFaultRemediation(ctx, t, c)
-	})
-
-	testEnv.Test(t, feature.Feature())
-}
-
-func TestRemediationModuleRestart(t *testing.T) {
-	feature := features.New("TestRemediationModuleRestart").
-		WithLabel("suite", "fault-remediation-advanced")
-
-	var testCtx *helpers.RemediationTestContext
-	var podNames []string
-
-	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, "allowcompletion-test")
-		newCtx = helpers.ApplyNodeDrainerConfig(newCtx, t, c, "data/nd-all-modes.yaml")
-
-		return newCtx
-	})
-
-	feature.Assess("create blocking pods and trigger drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		podNames = helpers.CreatePodsFromTemplate(ctx, t, client,
-			"data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
-		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
-
-		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID 79 fatal error").
-			WithRecommendedAction(2)
-		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
-		defer os.Remove(tempFile)
-
-		return ctx
-	})
-
-	feature.Assess("drain starts but does not complete", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
-
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
-
-		return ctx
-	})
-
-	feature.Assess("restart module during in-progress drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		err = helpers.RestartDeployment(ctx, t, client, "nvsentinel-fault-remediation", helpers.NVSentinelNamespace)
-		require.NoError(t, err)
-
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
-
-		return ctx
-	})
-
-	feature.Assess("complete drain and verify CR creation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
-		helpers.WaitForPodsDeleted(ctx, t, client, testCtx.TestNamespace, podNames)
-
-		cr := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		require.NotNil(t, cr)
-
-		t.Log("Waiting for remediation to succeed")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
-			statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationSucceededLabelValue))
-
-		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		helpers.RestoreNodeDrainerConfig(ctx, t, c)
-
 		return helpers.TeardownFaultRemediation(ctx, t, c)
 	})
 

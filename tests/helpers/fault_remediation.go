@@ -192,26 +192,3 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 
 	t.Log("Full remediation flow trigger completed")
 }
-
-func UpdateRebootNodeCRStatus(ctx context.Context, t *testing.T, client klient.Client, crName, status string) {
-	t.Helper()
-	var cr unstructured.Unstructured
-	cr.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   RebootNodeCRDGroup,
-		Version: RebootNodeCRDVersion,
-		Kind:    "RebootNode",
-	})
-
-	err := client.Resources().Get(ctx, crName, "", &cr)
-	require.NoError(t, err)
-
-	statusMap := map[string]any{
-		"state": status,
-	}
-	err = unstructured.SetNestedMap(cr.Object, statusMap, "status")
-	require.NoError(t, err)
-
-	err = client.Resources().Update(ctx, &cr)
-	require.NoError(t, err)
-	t.Logf("Updated RebootNode CR %s status to: %s", crName, status)
-}

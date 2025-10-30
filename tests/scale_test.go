@@ -16,11 +16,13 @@ package tests
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -33,10 +35,10 @@ type scaleTestContextKey int
 const (
 	keyNodes scaleTestContextKey = iota
 	keyHealthCheckNodes
+	keyOriginalCBState
+	keyOriginalDeployment
+	keyCircuitBreakerNodes
 )
-
-// 45% of nodes will be tested
-const nodeSubsetPercentage = 45
 
 func TestScaleHealthEvents(t *testing.T) {
 	feature := features.New("TestScaleHealthEvents").
@@ -48,19 +50,42 @@ func TestScaleHealthEvents(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
+		originalCBState := helpers.GetCircuitBreakerState(ctx, t, c)
+
+		var originalDeployment *appsv1.Deployment
+		ctx, _, originalDeployment = helpers.SetupQuarantineTestWithOptions(ctx, t, c,
+			"data/basic-matching-configmap.yaml",
+			&helpers.QuarantineSetupOptions{
+				CircuitBreakerPercentage: 40,
+				CircuitBreakerDuration:   "10m",
+				CircuitBreakerState:      "CLOSED",
+			})
+
 		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		assert.NoError(t, err, "failed to create workloads namespace")
 
-		nodes, err := helpers.GetAllNodesNames(ctx, client)
-		assert.NoError(t, err, "failed to get cluster nodes")
-		t.Logf("Found %d nodes in cluster", len(nodes))
+		kwokNodes, err := helpers.GetAllNodesNames(ctx, client)
+		assert.NoError(t, err, "failed to get KWOK nodes")
 
-		healthCheckNodes := selectNodeSubset(nodes, float64(nodeSubsetPercentage)/100)
-		t.Logf("Selected %d nodes (%d%%) for health check operations", len(healthCheckNodes), nodeSubsetPercentage)
+		var allNodesList v1.NodeList
+		err = client.Resources().List(ctx, &allNodesList)
+		assert.NoError(t, err, "failed to get all nodes")
+		totalNodesInCluster := len(allNodesList.Items)
+
+		t.Logf("Found %d KWOK nodes, %d total nodes in cluster", len(kwokNodes), totalNodesInCluster)
+
+		cbThresholdPercentage := 40
+		nodesToCordon := min(int(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0), len(kwokNodes))
+
+		healthCheckNodes := kwokNodes[:nodesToCordon]
+		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d total cluster nodes, exceeds 40%% CB threshold)",
+			len(healthCheckNodes), totalNodesInCluster)
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
-		ctx = context.WithValue(ctx, keyNodes, nodes)
+		ctx = context.WithValue(ctx, keyNodes, kwokNodes)
 		ctx = context.WithValue(ctx, keyHealthCheckNodes, healthCheckNodes)
+		ctx = context.WithValue(ctx, keyOriginalCBState, originalCBState)
+		ctx = context.WithValue(ctx, keyOriginalDeployment, originalDeployment)
 
 		return ctx
 	})
@@ -85,7 +110,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess(fmt.Sprintf("Send unhealthy events to %d%% of nodes", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Send unhealthy events to trigger circuit breaker", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/fatal-health-event.json")
@@ -94,13 +119,101 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess(fmt.Sprintf("Validate %d%% of nodes are cordoned and have drain label", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Circuit breaker trips after 40% of total nodes cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		client, err := c.NewClient()
-		assert.NoError(t, err, "failed to create kubernetes client")
+		require.NoError(t, err)
 
-		helpers.WaitForNodesCordonedAndDrained(ctx, t, client, healthCheckNodes)
+		var allNodesList v1.NodeList
+		err = client.Resources().List(ctx, &allNodesList)
+		require.NoError(t, err)
+		totalNodesInCluster := len(allNodesList.Items)
+
+		cbThreshold := int(float64(totalNodesInCluster) * 0.40)
+
+		t.Logf("Waiting for ~%d nodes (40%% of %d total cluster nodes) to be cordoned before CB trips", cbThreshold, totalNodesInCluster)
+		require.Eventually(t, func() bool {
+			cordonedCount := 0
+			for _, nodeName := range healthCheckNodes {
+				node, err := helpers.GetNodeByName(ctx, client, nodeName)
+				if err == nil && node.Spec.Unschedulable {
+					cordonedCount++
+				}
+			}
+			percentageOfTotal := float64(cordonedCount) / float64(totalNodesInCluster) * 100
+			if cordonedCount >= cbThreshold {
+				t.Logf("Circuit breaker should trip: %d cordoned = %.1f%% of %d total nodes",
+					cordonedCount, percentageOfTotal, totalNodesInCluster)
+				return true
+			}
+			if cordonedCount%5 == 0 && cordonedCount > 0 {
+				t.Logf("Progress: %d cordoned = %.1f%% of %d total nodes",
+					cordonedCount, percentageOfTotal, totalNodesInCluster)
+			}
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval)
+
+		cbState := helpers.GetCircuitBreakerState(ctx, t, c)
+		if cbState != "TRIPPED" {
+			require.Eventually(t, func() bool {
+				state := helpers.GetCircuitBreakerState(ctx, t, c)
+				t.Logf("Circuit breaker state: %s", state)
+				return state == "TRIPPED"
+			}, helpers.WaitTimeout, helpers.WaitInterval)
+		}
+		t.Log("Circuit breaker auto-tripped after threshold exceeded")
+
+		return ctx
+	})
+
+	feature.Assess("Remaining nodes blocked from cordoning by circuit breaker", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		cordonedCount := 0
+		blockedNodes := []string{}
+		for _, nodeName := range healthCheckNodes {
+			node, err := helpers.GetNodeByName(ctx, client, nodeName)
+			if err == nil && node.Spec.Unschedulable {
+				cordonedCount++
+			} else if err == nil {
+				blockedNodes = append(blockedNodes, nodeName)
+			}
+		}
+
+		t.Logf("Cordoned: %d/%d nodes, Blocked by CB: %d nodes", cordonedCount, len(healthCheckNodes), len(blockedNodes))
+		require.True(t, len(blockedNodes) > 0, "Some nodes should be blocked by circuit breaker")
+
+		ctx = context.WithValue(ctx, keyCircuitBreakerNodes, blockedNodes)
+
+		return ctx
+	})
+
+	feature.Assess("Force override also blocked when circuit breaker TRIPPED", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		blockedNodes := ctx.Value(keyCircuitBreakerNodes).([]string)
+		require.True(t, len(blockedNodes) > 0, "Need at least one blocked node for force override test")
+
+		testNode := blockedNodes[0]
+
+		t.Cleanup(func() {
+			helpers.SendHealthyEvent(ctx, t, testNode)
+		})
+
+		event := helpers.NewHealthEvent(testNode).
+			WithErrorCode("79").
+			WithMessage("XID error with force override").
+			WithForceOverride()
+		tempFile, err := helpers.SendHealthEventWithTemplate(testNode, event)
+		require.NoError(t, err)
+		defer os.Remove(tempFile)
+
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testNode, false)
 
 		return ctx
 	})
@@ -116,8 +229,10 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess(fmt.Sprintf("Send healthy events to %d%% of nodes", nodeSubsetPercentage), func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Reset circuit breaker and send healthy events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
+
+		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED")
 
 		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/healthy-event.json")
 		assert.NoError(t, err, "failed to send healthy events")
@@ -125,7 +240,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Validate health check nodes are uncordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Validate cordoned nodes are uncordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
 		client, err := c.NewClient()
@@ -141,39 +256,34 @@ func TestScaleHealthEvents(t *testing.T) {
 		assert.NoError(t, err, "failed to create kubernetes client")
 
 		namespaceName := ctx.Value(keyNamespace).(string)
+		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
+
+		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED")
+
+		helpers.SendHealthyEventsAsync(ctx, t, client, healthCheckNodes)
+
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
 		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
 		assert.NoError(t, err, "failed to delete RebootNode CRs")
 
+		originalDeployment := ctx.Value(keyOriginalDeployment).(*appsv1.Deployment)
+		if originalDeployment != nil {
+			helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
+		}
+
+		originalCBState := ctx.Value(keyOriginalCBState).(string)
+		if originalCBState != "" {
+			helpers.SetCircuitBreakerState(ctx, t, c, originalCBState)
+		} else {
+			helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED")
+		}
+
 		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())
-}
-
-func selectNodeSubset(nodeNames []string, percentage float64) []string {
-	if percentage >= 1.0 {
-		return nodeNames
-	}
-	if percentage <= 0.0 {
-		return []string{}
-	}
-
-	targetCount := int(float64(len(nodeNames)) * percentage)
-	if targetCount == 0 && len(nodeNames) > 0 {
-		targetCount = 1
-	}
-
-	if targetCount >= len(nodeNames) {
-		return nodeNames
-	}
-
-	selected := make([]string, targetCount)
-	copy(selected, nodeNames[:targetCount])
-
-	return selected
 }
 
 func generateRandomString(length int) string {

@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -183,55 +182,6 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	return ctx
 }
 
-// WaitForQuarantineCleanup waits for quarantine-specific cleanup to complete
-// (uncordoned, taints removed, quarantine annotations cleared, nvsentinel-state label cleared).
-func WaitForQuarantineCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	t.Helper()
-	t.Logf("Waiting for quarantine cleanup on node %s", nodeName)
-	require.Eventually(t, func() bool {
-		node, err := GetNodeByName(ctx, client, nodeName)
-		if err != nil {
-			t.Logf("Failed to get node %s: %v", nodeName, err)
-			return false
-		}
-		if node.Spec.Unschedulable {
-			t.Logf("Node %s still cordoned", nodeName)
-			return false
-		}
-
-		hasTaints := len(node.Spec.Taints) > 1
-		if hasTaints {
-			t.Logf("Node %s still has taints: %+v", nodeName, node.Spec.Taints)
-		}
-
-		if node.Annotations != nil {
-			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
-				t.Logf("Node %s still has quarantine annotation", nodeName)
-				return false
-			}
-		}
-
-		if node.Labels != nil {
-			if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
-				t.Logf("Node %s still has nvsentinel-state label", nodeName)
-				return false
-			}
-		}
-
-		return true
-	}, WaitTimeout, WaitInterval)
-	t.Logf("Node %s cleaned up successfully", nodeName)
-}
-
-// SendHealthyEventAndWaitForCleanup sends a healthy event and waits for quarantine-specific cleanup
-// (uncordoned, taints removed, quarantine annotations cleared, nvsentinel-state label cleared).
-func SendHealthyEventAndWaitForCleanup(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
-	t.Helper()
-	t.Logf("Sending healthy event and waiting for cleanup on node %s", nodeName)
-	SendHealthyEvent(ctx, t, nodeName)
-	WaitForQuarantineCleanup(ctx, t, client, nodeName)
-}
-
 // AssertNodeNeverQuarantined asserts that a node is never quarantined within the default timeout period.
 // Checks that node is not cordoned and optionally not annotated with quarantine annotation.
 func AssertNodeNeverQuarantined(ctx context.Context, t *testing.T, client klient.Client, nodeName string, checkAnnotation bool) {
@@ -360,20 +310,6 @@ func AssertQuarantineState(ctx context.Context, t *testing.T, client klient.Clie
 	}, WaitTimeout, WaitInterval)
 
 	t.Logf("Assertion passed for node %s", nodeName)
-}
-
-func AssertAnnotationContains(ctx context.Context, t *testing.T, client klient.Client, nodeName string, substrs ...string) {
-	t.Helper()
-	node, err := GetNodeByName(ctx, client, nodeName)
-	require.NoError(t, err)
-	require.NotNil(t, node.Annotations)
-
-	annotation, exists := node.Annotations["quarantineHealthEvent"]
-	require.True(t, exists)
-
-	for _, substr := range substrs {
-		assert.Contains(t, annotation, substr)
-	}
 }
 
 func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config, state string) {

@@ -1,0 +1,355 @@
+package tests
+
+import (
+	"context"
+	"os"
+	"testing"
+	"tests/helpers"
+	"time"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/e2e-framework/pkg/envconf"
+	"sigs.k8s.io/e2e-framework/pkg/features"
+)
+
+func TestDryRunMode(t *testing.T) {
+	feature := features.New("TestDryRunMode").
+		WithLabel("suite", "fault-quarantine-special-modes")
+
+	var testCtx *helpers.QuarantineTestContext
+	var originalDeployment *appsv1.Deployment
+	var podNames []string
+	testNamespace := "immediate-test"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		dryRunEnabled := true
+		var newCtx context.Context
+		newCtx, testCtx, originalDeployment = helpers.SetupQuarantineTestWithOptions(ctx, t, c,
+			"data/basic-matching-configmap.yaml",
+			&helpers.QuarantineSetupOptions{
+				DryRun: &dryRunEnabled,
+			})
+
+		// Create test namespace and pods to verify full pipeline is blocked
+		t.Logf("Creating test namespace: %s", testNamespace)
+		err = helpers.CreateNamespace(newCtx, client, testNamespace)
+		require.NoError(t, err)
+
+		// Create pods in immediate mode namespace (would be evicted immediately in normal mode)
+		podNames = helpers.CreatePodsFromTemplate(newCtx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testNamespace)
+		helpers.WaitForPodsRunning(newCtx, t, client, testNamespace, podNames)
+
+		return newCtx
+	})
+
+	feature.Assess("taints applied in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred")
+		tempFile, err := helpers.SendHealthEventWithTemplate(testCtx.NodeName, event)
+		require.NoError(t, err)
+		defer os.Remove(tempFile)
+
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				return false
+			}
+
+			for _, taint := range node.Spec.Taints {
+				if taint.Key == "AggregatedNodeHealth" &&
+					taint.Value == "False" &&
+					taint.Effect == v1.TaintEffectNoSchedule {
+					return true
+				}
+			}
+			return false
+		}, helpers.WaitTimeout, helpers.WaitInterval)
+
+		return ctx
+	})
+
+	feature.Assess("annotations set in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		require.NotNil(t, node.Annotations)
+
+		_, exists := node.Annotations["quarantineHealthEvent"]
+		assert.True(t, exists)
+
+		return ctx
+	})
+
+	feature.Assess("node NOT cordoned in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, false)
+
+		return ctx
+	})
+
+	feature.Assess("immediate mode pods NOT drained in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Verifying immediate mode pods never get drained in dry-run mode")
+		helpers.AssertPodsNeverDeleted(ctx, t, client, testNamespace, podNames)
+
+		return ctx
+	})
+
+	feature.Assess("RebootNode CR NOT created in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Verifying no RebootNode CR is created in dry-run mode")
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		if testNamespace != "" {
+			t.Logf("Cleaning up test namespace: %s", testNamespace)
+			helpers.DeleteNamespace(ctx, t, client, testNamespace)
+		}
+
+		if originalDeployment != nil {
+			t.Log("Restoring original deployment (disabling dry-run mode)")
+			helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
+		}
+
+		return helpers.TeardownQuarantineTest(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+
+}
+
+func TestNodeDeletedDuringDrain(t *testing.T) {
+	feature := features.New("TestNodeDeletedDuringDrain").
+		WithLabel("suite", "fault-remediation-advanced")
+
+	var testCtx *helpers.RemediationTestContext
+	var podNames []string
+	var nodeBackup *v1.Node
+	testNamespace := "delete-timeout-test"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupFaultRemediationTest(ctx, t, c, testNamespace)
+		newCtx = helpers.ApplyNodeDrainerConfig(newCtx, t, c, "data/nd-all-modes.yaml")
+
+		return newCtx
+	})
+
+	feature.Assess("create pod in deleteAfterTimeout namespace", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		podNames = helpers.CreatePodsFromTemplate(ctx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testNamespace)
+		helpers.WaitForPodsRunning(ctx, t, client, testNamespace, podNames)
+
+		return ctx
+	})
+
+	feature.Assess("trigger drain with fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID 79 fatal error").
+			WithRecommendedAction(2)
+		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
+		defer os.Remove(tempFile)
+
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, true)
+
+		return ctx
+	})
+
+	feature.Assess("wait for draining state", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName,
+			statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+
+		return ctx
+	})
+
+	feature.Assess("delete node from cluster", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+
+		nodeBackup = node.DeepCopy()
+		nodeBackup.ResourceVersion = ""
+		nodeBackup.UID = ""
+
+		err = client.Resources().Delete(ctx, node)
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			_, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			return err != nil
+		}, helpers.WaitTimeout, helpers.WaitInterval, "node should be deleted")
+
+		return ctx
+	})
+
+	feature.Assess("verify no RebootNode CR created after timeout", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Waiting beyond deleteAfterTimeout duration (1min + buffer)")
+		time.Sleep(1*time.Minute + 20*time.Second)
+
+		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		if nodeBackup != nil {
+			err = client.Resources().Create(ctx, nodeBackup)
+			if err != nil {
+				t.Logf("Warning: Failed to recreate node from backup: %v", err)
+			} else {
+				require.Eventually(t, func() bool {
+					_, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+					return err == nil
+				}, helpers.WaitTimeout, helpers.WaitInterval, "recreated node should exist")
+			}
+		}
+
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+
+		return helpers.TeardownFaultRemediation(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestNodeRecoveryDuringDrain(t *testing.T) {
+	feature := features.New("TestNodeRecoveryDuringDrain").
+		WithLabel("suite", "node-drainer-advanced")
+
+	var testCtx *helpers.NodeDrainerTestContext
+	var podNames []string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "delete-timeout-test")
+		return newCtx
+	})
+
+	feature.Assess("create pods and trigger drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		podNames = helpers.CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, testCtx.TestNamespace)
+		helpers.WaitForPodsRunning(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("GPU Fallen off the bus")
+		tempFile := helpers.SendHealthEvent(ctx, t, event)
+		defer os.Remove(tempFile)
+
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+
+		return ctx
+	})
+
+	feature.Assess("wait for deleteAfterTimeout timer to start", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		require.Eventually(t, func() bool {
+			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "WaitingBeforeForceDelete", time.Time{})
+			return found
+		}, helpers.WaitTimeout, helpers.WaitInterval, "WaitingBeforeForceDelete event should be created")
+
+		return ctx
+	})
+
+	feature.Assess("send healthy event before deleteAfterTimeout expires", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		healthyEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithHealthy(true).
+			WithFatal(false).
+			WithMessage("XID 79 cleared during drain")
+		tempHealthy := helpers.SendHealthEvent(ctx, t, healthyEvent)
+		defer os.Remove(tempHealthy)
+
+		return ctx
+	})
+
+	feature.Assess("node gets uncordoned after healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, false)
+
+		return ctx
+	})
+
+	feature.Assess("pods remain after drain abort", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		for _, podName := range podNames {
+			pod := &v1.Pod{}
+			err := client.Resources().Get(ctx, podName, testCtx.TestNamespace, pod)
+			require.NoError(t, err, "pod %s should still exist after drain abort", podName)
+		}
+
+		return ctx
+	})
+
+	feature.Assess("drain label cleared after recovery", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		labelValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
+		t.Logf("Node label after recovery: exists=%v, value=%s", exists, labelValue)
+
+		helpers.DeletePodsByNames(ctx, t, client, testCtx.TestNamespace, podNames)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownNodeDrainer(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}

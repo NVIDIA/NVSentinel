@@ -22,93 +22,134 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-func TestDryRunMode(t *testing.T) {
-	feature := features.New("TestDryRunMode").
-		WithLabel("suite", "fault-quarantine-special-modes")
+func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
+	feature := features.New("TestBasicCELMatching").
+		WithLabel("suite", "fault-quarantine-cel")
 
 	var testCtx *helpers.QuarantineTestContext
-	var originalDeployment *appsv1.Deployment
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		dryRunEnabled := true
 		var newCtx context.Context
-		newCtx, testCtx, originalDeployment = helpers.SetupQuarantineTestWithOptions(ctx, t, c,
-			"data/basic-matching-configmap.yaml",
-			&helpers.QuarantineSetupOptions{
-				DryRun: &dryRunEnabled,
-			})
-
+		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
 		return newCtx
 	})
 
-	feature.Assess("taints applied in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("event doesn't match CEL expression", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID error occurred")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testCtx.NodeName, event)
-		require.NoError(t, err)
+			WithCheckName("UnknownCheck").
+			WithErrorCode("999")
+		tempFile := helpers.SendHealthEvent(ctx, t, event)
 		defer os.Remove(tempFile)
 
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
-			}
-
-			for _, taint := range node.Spec.Taints {
-				if taint.Key == "AggregatedNodeHealth" &&
-					taint.Value == "False" &&
-					taint.Effect == v1.TaintEffectNoSchedule {
-					return true
-				}
-			}
-			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval)
-
-		return ctx
-	})
-
-	feature.Assess("annotations set in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		require.NotNil(t, node.Annotations)
-
-		_, exists := node.Annotations["quarantineHealthEvent"]
-		assert.True(t, exists)
-
-		return ctx
-	})
-
-	feature.Assess("node NOT cordoned in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, false)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownQuarantineTest(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestManualUncordonBehavior(t *testing.T) {
+	feature := features.New("TestManualUncordonBehavior").
+		WithLabel("suite", "fault-quarantine-cel")
+
+	var testCtx *helpers.QuarantineTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred")
+		tempFile := helpers.SendHealthEvent(newCtx, t, event)
+		defer os.Remove(tempFile)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		helpers.AssertQuarantineState(newCtx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectTaint: &v1.Taint{
+				Key:    "AggregatedNodeHealth",
+				Value:  "False",
+				Effect: v1.TaintEffectNoSchedule,
+			},
+			ExpectCordoned:   true,
+			ExpectAnnotation: true,
+		})
+
+		return newCtx
+	})
+
+	feature.Assess("manual uncordon clears quarantine state", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		if originalDeployment != nil {
-			t.Log("Restoring original deployment (disabling dry-run mode)")
-			helpers.RestoreFQDeployment(ctx, t, client, originalDeployment)
-		}
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
 
+		node.Spec.Unschedulable = false
+		err = client.Resources().Update(ctx, node)
+		require.NoError(t, err)
+
+		t.Log("Waiting for state to be updated")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("failed to get node %s: %v", testCtx.NodeName, err)
+				return false
+			}
+
+			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+				return false
+			}
+
+			manualUncordon, exists := node.Annotations["quarantinedNodeUncordonedManually"]
+			if !exists || manualUncordon != "True" {
+				return false
+			}
+
+			for _, taint := range node.Spec.Taints {
+				if taint.Key == "AggregatedNodeHealth" {
+					return false
+				}
+			}
+
+			return true
+		}, helpers.WaitTimeout, helpers.WaitInterval)
+
+		return ctx
+	})
+
+	feature.Assess("healthy event clears all annotations", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})
 

@@ -507,42 +507,6 @@ func CreatePodsAndWaitTillRunning(ctx context.Context, t *testing.T, c klient.Cl
 	t.Logf("Created and verified %d pods total", totalPods)
 }
 
-// WaitForNodesCordonedAndDrained waits for nodes specified in `nodeNames` to be both cordoned and have the drain label applied.
-func WaitForNodesCordonedAndDrained(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string) {
-	expectedCount := len(nodeNames)
-
-	require.Eventually(t, func() bool {
-		var cordonedCount, drainedCount int
-
-		for _, nodeName := range nodeNames {
-			node, err := GetNodeByName(ctx, c, nodeName)
-			if err != nil {
-				t.Logf("failed to get node %s: %v", nodeName, err)
-				continue
-			}
-
-			if node.Spec.Unschedulable {
-				cordonedCount++
-
-				if drainStatus, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
-					// Accept nodes in draining state or already drain-succeeded state
-					// (nodes that were already drained won't transition through draining again)
-					if drainStatus == string(statemanager.DrainingLabelValue) ||
-						drainStatus == string(statemanager.DrainSucceededLabelValue) {
-						drainedCount++
-					}
-				}
-			}
-		}
-
-		t.Logf("Cordoned nodes: %d/%d, Drained nodes: %d/%d", cordonedCount, expectedCount, drainedCount, expectedCount)
-		if drainedCount > cordonedCount {
-			t.Errorf("drained count is larger then cordoned count: %d/%d", drainedCount, cordonedCount)
-		}
-		return cordonedCount >= expectedCount && drainedCount >= expectedCount
-	}, WaitTimeout, WaitInterval, "nodes should be cordoned and drained")
-}
-
 // DrainRunningPodsInNamespace finds all running pods in the specified `namespace` and deletes them to simulate node draining.
 func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Client, namespace string) {
 	var podList v1.PodList
@@ -1027,30 +991,6 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 	return nil
 }
 
-// RemoveNodeCondition removes a specific condition from a node
-func RemoveNodeCondition(ctx context.Context, c klient.Client, nodeName, conditionType string) error {
-	node, err := GetNodeByName(ctx, c, nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to get node: %w", err)
-	}
-
-	targetConditionType := v1.NodeConditionType(conditionType)
-	newConditions := []v1.NodeCondition{}
-	for _, condition := range node.Status.Conditions {
-		if condition.Type != targetConditionType {
-			newConditions = append(newConditions, condition)
-		}
-	}
-
-	node.Status.Conditions = newConditions
-	err = c.Resources().UpdateStatus(ctx, node)
-	if err != nil {
-		return fmt.Errorf("failed to update node status: %w", err)
-	}
-
-	return nil
-}
-
 // SetNodeManagedByNVSentinel sets the ManagedByNVSentinel label on a node
 func SetNodeManagedByNVSentinel(ctx context.Context, c klient.Client, nodeName string, managed bool) error {
 	node, err := GetNodeByName(ctx, c, nodeName)
@@ -1143,6 +1083,24 @@ func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, n
 		return value == expectedValue
 	}, WaitTimeout, WaitInterval)
 	t.Logf("Node %s has label %s=%s", nodeName, labelKey, expectedValue)
+}
+
+// AssertPodsNeverDeleted asserts that specified pods are never deleted within a timeout period
+func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
+	t.Helper()
+	t.Logf("Asserting %d pods in namespace %s are never deleted", len(podNames), namespace)
+	require.Never(t, func() bool {
+		for _, podName := range podNames {
+			pod := &v1.Pod{}
+			err := client.Resources().Get(ctx, podName, namespace, pod)
+			if err != nil {
+				t.Logf("Pod %s was deleted unexpectedly", podName)
+				return true
+			}
+		}
+		return false
+	}, 30*WaitInterval, WaitInterval, "pods should not be deleted")
+	t.Logf("All %d pods remain running in namespace %s", len(podNames), namespace)
 }
 
 // WaitForPodsDeleted waits for all specified pods to be deleted from a namespace

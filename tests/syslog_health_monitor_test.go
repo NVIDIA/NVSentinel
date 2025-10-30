@@ -85,14 +85,30 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		xidMessages := []string{
-			"NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
-			"NVRM: Xid (PCI:0001:00:00): 79, pid=123456, name=test, GPU has fallen off the bus.",
-			"NVRM: Xid (PCI:0003:00:00): 94, pid=789012, name=process, Contained ECC error.",
-			"[103859.498995] NVRM: Xid (PCI:0000:97:00): 13, pid=2519562, name=python3, Graphics Exception: ChID 000c, Class 0000cbc0, Offset 00000000, Data 00000000",
-			"NVRM: Xid (PCI:0000:02:00): 31, Graphics SM Warp Exception on (GPC 1, TPC 0, SM 0): Misaligned Address",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 79, pid=123456, name=test, GPU has fallen off the bus.",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0003:00:00): 94, pid=789012, name=process, Contained ECC error.",
+			"kernel: [103859.498995] NVRM: Xid (PCI:0000:97:00): 13, pid=2519562, name=python3, Graphics Exception: ChID 000c, Class 0000cbc0, Offset 00000000, Data 00000000",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:02:00): 31, Graphics SM Warp Exception on (GPC 1, TPC 0, SM 0): Misaligned Address",
+			"kernel: [16450076.435584] NVRM: Xid (PCI:0000:19:00): 62, 32260b5e 000154b0 00000000 2026da96 202b5626 202b5832 202b5872 202b58be",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000b",
+			"kernel: [16450076.436857] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000c",
+			"kernel: [16450076.449750] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000d",
+			"kernel: [16450076.463693] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000e",
 		}
 
-		expectedInCondition := []string{"119", "79"}
+		expectedSequence := []struct {
+			xid string
+			pci string
+		}{
+			{"119", "0002:00:00"},
+			{"79", "0001:00:00"},
+			{"62", "0000:19:00"},
+			{"45", "0000:19:00"},
+			{"45", "0000:19:00"},
+			{"45", "0000:19:00"},
+			{"45", "0000:19:00"},
+		}
 		expectedInEvents := []string{"94", "13", "31"}
 
 		httpClient := &http.Client{Timeout: 10 * time.Second}
@@ -112,7 +128,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		}
 		t.Logf("All %d XID messages injected successfully", len(xidMessages))
 
-		t.Logf("Verifying node condition on %s contains all %d XID codes", nodeName, len(expectedInCondition))
+		t.Log("Verifying node condition message contains exact sequence with repeats")
 		require.Eventually(t, func() bool {
 			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
 				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
@@ -125,18 +141,23 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				return false
 			}
 
-			t.Logf("Found condition message: %s", condition.Message)
+			message := condition.Message
+			t.Logf("Found condition message: %s", message)
 
-			for _, expected := range expectedInCondition {
-				if !strings.Contains(condition.Message, expected) {
-					t.Logf("Missing XID %s in condition message", expected)
+			lastIndex := 0
+			for i, expected := range expectedSequence {
+				searchStr := fmt.Sprintf("ErrorCode:%s PCI:%s", expected.xid, expected.pci)
+				index := strings.Index(message[lastIndex:], searchStr)
+				if index == -1 {
+					t.Logf("Missing or out of sequence at position %d: %s", i+1, searchStr)
 					return false
 				}
+				lastIndex += index + len(searchStr)
 			}
 
-			t.Logf("All %d expected XID codes found in condition message", len(expectedInCondition))
+			t.Logf("Verified exact sequence of %d XID errors (including %d repeats of XID 45)", len(expectedSequence), 4)
 			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval, "Node condition should contain all %d XID codes", len(expectedInCondition))
+		}, helpers.WaitTimeout, helpers.WaitInterval, "Node condition should contain exact sequence with repeats")
 
 		t.Logf("Verifying %d non-fatal XID codes created events on %s", len(expectedInEvents), nodeName)
 		require.Eventually(t, func() bool {
