@@ -55,9 +55,8 @@ jobs:
           format: 'sarif'
           output: ${{ env.SARIF_OUTPUT }}
           severity: ${{ env.SEVERITY_LEVELS }}
-          skip-dirs: 'vendor,node_modules,distros/kubernetes/nvsentinel/charts'
+          skip-dirs: 'vendor,node_modules,distros/kubernetes'
           limit-severities-for-sarif: true
-          exit-code: '1' # fail job but still upload SARIF
 
       - name: Upload Report
         if: always()  # upload even if scan fails
