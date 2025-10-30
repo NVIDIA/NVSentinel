@@ -18,6 +18,9 @@ on:
   schedule:
     - cron: '30 7 * * *'
   workflow_dispatch: {}  # allow manual runs for testing
+  pull_request:  # add itself for testing changes to this workflow
+    paths:
+      - '.github/workflows/vuln-scan.yml'
 
 permissions:
   contents: read
