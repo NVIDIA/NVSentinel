@@ -68,6 +68,10 @@ func TestCircuitBreaker(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		t.Cleanup(func() {
+			helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+		})
+
 		helpers.SetCircuitBreakerState(ctx, t, c, "TRIPPED")
 
 		event := helpers.NewHealthEvent(testCtx.NodeName).
@@ -89,6 +93,10 @@ func TestCircuitBreaker(t *testing.T) {
 		require.NoError(t, err)
 
 		testNode2 := testNodes[1]
+
+		t.Cleanup(func() {
+			helpers.SendHealthyEvent(ctx, t, testNode2)
+		})
 
 		event := helpers.NewHealthEvent(testNode2).
 			WithErrorCode("79").
@@ -113,7 +121,7 @@ func TestCircuitBreaker(t *testing.T) {
 		allNodes, err := helpers.GetAllNodesNames(ctx, client)
 		require.NoError(t, err)
 		totalNodes := len(allNodes)
-		threshold = int(float64(totalNodes)*0.20) + 2
+		threshold = int(float64(totalNodes)*0.20) + 1
 		t.Logf("Total GPU nodes: %d, cordoning %d nodes to exceed 20%% threshold", totalNodes, threshold)
 
 		t.Logf("Rapidly sending events to %d nodes to trigger circuit breaker", threshold)
