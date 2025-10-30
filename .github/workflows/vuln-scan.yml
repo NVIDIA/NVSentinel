@@ -34,11 +34,10 @@ concurrency:
 env:
   SARIF_OUTPUT: 'vulnerability-scan-results.sarif'
   SEVERITY_LEVELS: 'HIGH,CRITICAL'
-  TRIVY_CACHE_DIR: '.trivy'
 
 jobs:
   trivy-repo-scan:
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -60,6 +59,6 @@ jobs:
 
       - name: Upload Report
         if: always()  # upload even if scan fails
-        uses: github/codeql-action/upload-sarif@16df4fbc19aea13d921737861d6c622bf3cefe23  # v2.23.0
+        uses: github/codeql-action/upload-sarif@17783bfb99b07f70fae080b654aed0c514057477  # v2.23.3
         with:
           sarif_file: ${{ env.SARIF_OUTPUT }}
