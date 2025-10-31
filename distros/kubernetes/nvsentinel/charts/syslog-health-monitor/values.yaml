@@ -75,3 +75,8 @@ driverWatcher:
     requests:
       cpu: 50m
       memory: 64Mi
+
+enabledChecks: 
+  - SysLogsXIDError
+  - SysLogsSXIDError
+  - SysLogsGPUFallenOff

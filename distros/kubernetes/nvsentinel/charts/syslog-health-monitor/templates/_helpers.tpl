@@ -110,8 +110,6 @@ spec:
           image: "{{ $root.Values.global.syslogHealthMonitor.image.repository }}:{{ $root.Values.global.image.tag | default $root.Chart.AppVersion }}"
           imagePullPolicy: {{ $root.Values.global.image.pullPolicy }}
           args:
-            - "--config-file"
-            - "/etc/syslog-monitor/log_check_definitions.yaml"
             - "--polling-interval"
             - "{{ $root.Values.pollingInterval }}"
             - "--metrics-port"
@@ -122,6 +120,8 @@ spec:
             - "--xid-analyser-endpoint"
             - "http://localhost:8080"
             {{- end }}
+            - "--checks"
+            - "{{ join "," $root.Values.enabledChecks }}"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
@@ -150,9 +150,6 @@ spec:
                   apiVersion: v1
                   fieldPath: spec.nodeName
           volumeMounts:
-            - name: config-volume
-              mountPath: /etc/syslog-monitor
-              readOnly: true
             - name: var-run-vol
               mountPath: /var/run/
             - name: syslog-state-vol
@@ -200,9 +197,6 @@ spec:
               value: "8080"
         {{- end }}
       volumes:
-        - name: config-volume
-          configMap:
-            name: {{ include "syslog-health-monitor.fullname" $root }}
         - name: var-run-vol
           hostPath:
             path: /var/run/nvsentinel
