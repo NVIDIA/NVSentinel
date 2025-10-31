@@ -152,7 +152,7 @@ func TestScaleHealthEvents(t *testing.T) {
 					cordonedCount, percentageOfTotal, totalNodesInCluster)
 			}
 			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		cbState := helpers.GetCircuitBreakerState(ctx, t, c)
 		if cbState != "TRIPPED" {
@@ -160,7 +160,7 @@ func TestScaleHealthEvents(t *testing.T) {
 				state := helpers.GetCircuitBreakerState(ctx, t, c)
 				t.Logf("Circuit breaker state: %s", state)
 				return state == "TRIPPED"
-			}, helpers.WaitTimeout, helpers.WaitInterval)
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 		}
 		t.Log("Circuit breaker auto-tripped after threshold exceeded")
 

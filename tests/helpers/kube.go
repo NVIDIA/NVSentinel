@@ -54,8 +54,9 @@ import (
 )
 
 const (
-	WaitTimeout  = 10 * time.Minute
-	WaitInterval = 5 * time.Second
+	EventuallyWaitTimeout = 10 * time.Minute
+	NeverWaitTimeout      = 30 * time.Second
+	WaitInterval          = 5 * time.Second
 
 	// NVSentinelNamespace is the default namespace where NVSentinel components are deployed
 	NVSentinelNamespace = "nvsentinel"
@@ -83,7 +84,7 @@ func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client,
 
 		t.Logf("Nodes with cordon state %v: %d/%d", shouldCordon, actualCount, targetCount)
 		return actualCount == targetCount
-	}, WaitTimeout, WaitInterval, "nodes should have cordon state %v", shouldCordon)
+	}, EventuallyWaitTimeout, WaitInterval, "nodes should have cordon state %v", shouldCordon)
 }
 
 // CreateNamespace creates a new Kubernetes namespace with the specified `name`.
@@ -123,7 +124,7 @@ func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name st
 		var ns v1.Namespace
 		err := c.Resources().Get(ctx, name, "", &ns)
 		return err != nil && apierrors.IsNotFound(err)
-	}, WaitTimeout, WaitInterval, "namespace %s should be deleted", name)
+	}, EventuallyWaitTimeout, WaitInterval, "namespace %s should be deleted", name)
 
 	return nil
 }
@@ -270,7 +271,7 @@ func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, n
 
 		t.Logf("Nodes with label %s=%s: %d/%d", labelKey, expectedValue, actualCount, targetCount)
 		return actualCount == targetCount
-	}, WaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
+	}, EventuallyWaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
 }
 
 func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string, expectedEvent v1.Event) {
@@ -290,7 +291,7 @@ func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeNa
 		}
 		t.Logf("Did not find any events for node %s matching event %v", nodeName, expectedEvent)
 		return false
-	}, WaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
+	}, EventuallyWaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
 }
 
 // SelectTestNodeFromUnusedPool selects an available test node from the cluster.
@@ -421,7 +422,7 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 		}
 		t.Logf("No RebootNode CR found for node %s", nodeName)
 		return false
-	}, WaitTimeout, WaitInterval, "RebootNode CR should complete for node %s", nodeName)
+	}, EventuallyWaitTimeout, WaitInterval, "RebootNode CR should complete for node %s", nodeName)
 
 	t.Logf("RebootNode CR created for node %s", nodeName)
 	return resultCR
@@ -591,7 +592,7 @@ func waitForPodRunning(ctx context.Context, t *testing.T, c klient.Client, podNa
 			return false
 		}
 		return isRunning
-	}, WaitTimeout, WaitInterval, "pod %s should be running", podName)
+	}, EventuallyWaitTimeout, WaitInterval, "pod %s should be running", podName)
 
 }
 
@@ -846,7 +847,7 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 
 		t.Logf("Rollout complete: all %d replicas are updated, ready, and available", expectedReplicas)
 		return true
-	}, WaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
+	}, EventuallyWaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
 
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
 }
@@ -1080,7 +1081,7 @@ func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, n
 			return false
 		}
 		return value == expectedValue
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("Node %s has label %s=%s", nodeName, labelKey, expectedValue)
 }
 
@@ -1098,7 +1099,7 @@ func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Cli
 			}
 		}
 		return false
-	}, 15*time.Second, 5*time.Second, "pods should not be deleted")
+	}, NeverWaitTimeout, WaitInterval, "pods should not be deleted")
 	t.Logf("All %d pods remain running in namespace %s", len(podNames), namespace)
 }
 
@@ -1116,7 +1117,7 @@ func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client,
 			}
 		}
 		return true
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("All pods deleted from namespace %s", namespace)
 }
 
@@ -1132,7 +1133,7 @@ func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client,
 				return false
 			}
 			return pod.Status.Phase == v1.PodRunning
-		}, WaitTimeout, WaitInterval)
+		}, EventuallyWaitTimeout, WaitInterval)
 	}
 	t.Logf("All %d pods running", len(podNames))
 }

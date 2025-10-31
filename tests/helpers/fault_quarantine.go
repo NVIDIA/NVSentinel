@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -203,7 +202,7 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 		}
 
 		return true
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("Node %s cleaned successfully", nodeName)
 
 	backupDataVal := ctx.Value(CELKeyConfigMapBackup)
@@ -246,7 +245,7 @@ func AssertNodeNeverQuarantined(ctx context.Context, t *testing.T, client klient
 		}
 
 		return false
-	}, 30*time.Second, 2*time.Second, "node %s should not be quarantined", nodeName)
+	}, NeverWaitTimeout, WaitInterval, "node %s should not be quarantined", nodeName)
 }
 
 // SendHealthyEventsAsync sends healthy events to multiple nodes and waits for quarantine cleanup on all of them.
@@ -282,7 +281,7 @@ func SendHealthyEventsAsync(ctx context.Context, t *testing.T, client klient.Cli
 		}
 
 		return cleanedCount == len(nodeNames)
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("All %d nodes cleaned up successfully", len(nodeNames))
 }
 
@@ -346,7 +345,7 @@ func AssertQuarantineState(ctx context.Context, t *testing.T, client klient.Clie
 		}
 
 		return true
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 
 	t.Logf("Assertion passed for node %s", nodeName)
 }

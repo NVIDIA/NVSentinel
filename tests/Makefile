@@ -21,7 +21,7 @@ test-ci:
 # Run end-to-end tests
 .PHONY: test
 test:
-	gotestsum --format standard-verbose -- -timeout 60m -count 1 ./...
+	gotestsum --format standard-verbose -- -timeout 40m -count 1 -failfast ./...
 
 # Help target
 .PHONY: help

@@ -104,13 +104,13 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 				return false
 			}
 			return p.DeletionTimestamp != nil
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		require.Never(t, func() bool {
 			var p v1.Pod
 			err := client.Resources().Get(ctx, finalizerPod, "immediate-test", &p)
 			return err != nil
-		}, 15*time.Second, 5*time.Second)
+		}, helpers.NeverWaitTimeout, helpers.WaitInterval)
 
 		t.Log("Phase 2: Both allowCompletion and deleteAfterTimeout waiting (verify for 15s)")
 		require.Never(t, func() bool {
@@ -127,7 +127,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 				}
 			}
 			return false
-		}, 15*time.Second, 5*time.Second, "both mode pods should wait, not be deleted immediately")
+		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "both mode pods should wait, not be deleted immediately")
 
 		t.Log("Phase 2: Manually completing allowCompletion pods to unblock drain")
 		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", allowCompletionPods)
@@ -163,7 +163,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 				t.Logf("Found event after restart: %s", event.Reason)
 			}
 			return found
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", podNames)
 		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", podNames)

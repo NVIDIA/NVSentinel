@@ -157,7 +157,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 			t.Logf("Verified exact sequence of %d XID errors (including %d repeats of XID 45)", len(expectedSequence), 4)
 			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval, "Node condition should contain exact sequence with repeats")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain exact sequence with repeats")
 
 		t.Logf("Verifying %d non-fatal XID codes created events on %s", len(expectedInEvents), nodeName)
 		require.Eventually(t, func() bool {
@@ -198,7 +198,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			}
 
 			return len(foundXids) == len(expectedInEvents)
-		}, helpers.WaitTimeout, helpers.WaitInterval, "All non-fatal XIDs should appear in events")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "All non-fatal XIDs should appear in events")
 
 		return ctx
 	})
@@ -238,7 +238,7 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 						return false
 					}
 					return condition != nil && condition.Status == v1.ConditionFalse
-				}, helpers.WaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
 			}
 		}
 

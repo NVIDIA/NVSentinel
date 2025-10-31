@@ -89,7 +89,7 @@ func TestDryRunMode(t *testing.T) {
 				}
 			}
 			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		return ctx
 	})
@@ -229,7 +229,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 		require.Eventually(t, func() bool {
 			_, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 			return err != nil
-		}, helpers.WaitTimeout, helpers.WaitInterval, "node should be deleted")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "node should be deleted")
 
 		return ctx
 	})
@@ -258,7 +258,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 				require.Eventually(t, func() bool {
 					_, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 					return err == nil
-				}, helpers.WaitTimeout, helpers.WaitInterval, "recreated node should exist")
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "recreated node should exist")
 			}
 		}
 
@@ -308,7 +308,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 		require.Eventually(t, func() bool {
 			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "WaitingBeforeForceDelete", time.Time{})
 			return found
-		}, helpers.WaitTimeout, helpers.WaitInterval, "WaitingBeforeForceDelete event should be created")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "WaitingBeforeForceDelete event should be created")
 
 		return ctx
 	})

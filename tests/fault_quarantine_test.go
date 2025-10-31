@@ -130,7 +130,7 @@ func TestManualUncordonBehavior(t *testing.T) {
 			}
 
 			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		return ctx
 	})
@@ -227,7 +227,7 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 			}
 
 			return hasFQTaint && hasManualTaint && node.Spec.Unschedulable
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 		t.Log("FQ taint successfully added to pre-cordoned node")
 
 		return ctx
@@ -270,7 +270,7 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 			_, hasAnnotation := node.Annotations["quarantineHealthEvent"]
 
 			return !hasFQTaint && !hasAnnotation
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		return ctx
 	})
@@ -396,23 +396,19 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		event1 := helpers.NewHealthEvent(testNodeIgnored).
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("No Health Failures")
-		tempFile1, _ := helpers.SendHealthEventWithTemplate(testNodeIgnored, event1)
-		if tempFile1 != "" {
-			defer os.Remove(tempFile1)
-		}
+		tempFile1 := helpers.SendHealthEvent(ctx, t,
+			helpers.NewHealthEvent(testNodeIgnored).
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("No Health Failures"))
+		defer os.Remove(tempFile1)
 
-		event2 := helpers.NewHealthEvent(testNodeProcessed).
-			WithHealthy(true).
-			WithFatal(false).
-			WithMessage("No Health Failures")
-		tempFile2, _ := helpers.SendHealthEventWithTemplate(testNodeProcessed, event2)
-		if tempFile2 != "" {
-			defer os.Remove(tempFile2)
-		}
+		tempFile2 := helpers.SendHealthEvent(ctx, t,
+			helpers.NewHealthEvent(testNodeProcessed).
+				WithHealthy(true).
+				WithFatal(false).
+				WithMessage("No Health Failures"))
+		defer os.Remove(tempFile2)
 
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testNodeProcessed)
@@ -428,7 +424,7 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 				}
 			}
 			return true
-		}, helpers.WaitTimeout, helpers.WaitInterval)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
 
 		nodeIgnored, err := helpers.GetNodeByName(ctx, client, testNodeIgnored)
 		if err == nil {

@@ -187,7 +187,7 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 			return false
 		}
 		return node.Spec.Unschedulable
-	}, WaitTimeout, WaitInterval)
+	}, EventuallyWaitTimeout, WaitInterval)
 	t.Log("Node cordoned successfully")
 
 	t.Log("Full remediation flow trigger completed")

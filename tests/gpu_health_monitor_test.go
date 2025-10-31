@@ -123,7 +123,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			}
 
 			return allFound
-		}, helpers.WaitTimeout, helpers.WaitInterval, "all injected error conditions should appear")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "all injected error conditions should appear")
 
 		return ctx
 	})
@@ -181,7 +181,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 				}
 				t.Logf("  %s condition still unhealthy: %s", clearCmd.condition, condition.Message)
 				return false
-			}, helpers.WaitTimeout, helpers.WaitInterval, "%s condition should be cleared", clearCmd.condition)
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "%s condition should be cleared", clearCmd.condition)
 		}
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
@@ -255,7 +255,7 @@ func TestGPUHealthMonitorDCGMConnectionError(t *testing.T) {
 			t.Logf("Found condition - Status: %s, Reason: %s, Message: %s",
 				condition.Status, condition.Reason, condition.Message)
 			return condition.Status == v1.ConditionTrue
-		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure condition should appear")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure condition should appear")
 
 		return ctx
 	})
@@ -288,7 +288,7 @@ func TestGPUHealthMonitorDCGMConnectionError(t *testing.T) {
 
 			// Condition should have Status=False when healthy
 			return condition.Status == v1.ConditionFalse
-		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should become healthy")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should become healthy")
 
 		return ctx
 	})
@@ -325,7 +325,7 @@ func TestGPUHealthMonitorDCGMConnectionError(t *testing.T) {
 			}
 			t.Logf("Condition still present: Status=%s", condition.Status)
 			return false
-		}, helpers.WaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should clear")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "GpuDcgmConnectivityFailure should clear")
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)

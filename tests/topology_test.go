@@ -67,7 +67,7 @@ func TestTopologyLabels(t *testing.T) {
 				assert.True(t, hasGPUHealthMonitorPods(pods), "Node %s with DCGM deploy label missing GPU health monitor pods", nodeName)
 
 				return true
-			}, helpers.WaitTimeout, helpers.WaitInterval, "DCGM topology validation failed for node %s", nodeName)
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "DCGM topology validation failed for node %s", nodeName)
 		}
 
 		return ctx
@@ -101,7 +101,7 @@ func TestTopologyLabels(t *testing.T) {
 				assert.True(t, hasSyslogHealthMonitorPods(pods), "Node %s with driver deploy label missing syslog health monitor pods", nodeName)
 
 				return true
-			}, helpers.WaitTimeout, helpers.WaitInterval, "driver topology validation failed for node %s", nodeName)
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "driver topology validation failed for node %s", nodeName)
 		}
 
 		return ctx
@@ -179,7 +179,7 @@ func TestKataTopology(t *testing.T) {
 				}
 
 				return true
-			}, helpers.WaitTimeout, helpers.WaitInterval, "Kata topology validation failed for node %s", nodeName)
+			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Kata topology validation failed for node %s", nodeName)
 		}
 
 		kataNodeCount := len(kataNodes)
