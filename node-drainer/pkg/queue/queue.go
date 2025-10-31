@@ -29,7 +29,7 @@ import (
 func NewEventQueueManager() EventQueueManager {
 	mgr := &eventQueueManager{
 		queue: workqueue.NewTypedRateLimitingQueue(
-			workqueue.NewTypedItemExponentialFailureRateLimiter[NodeEvent](10*time.Second, 5*time.Minute),
+			workqueue.NewTypedItemExponentialFailureRateLimiter[NodeEvent](10*time.Second, 2*time.Minute),
 		),
 		shutdown: make(chan struct{}),
 	}
