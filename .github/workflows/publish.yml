@@ -82,8 +82,8 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
         run: |
-          chmod +x ./scripts/build_image_list.sh
-          ./scripts/build_image_list.sh
+          chmod +x ./scripts/build-image-list.sh
+          ./scripts/build-image-list.sh
           cat versions.txt
 
       - name: Upload versions.txt
