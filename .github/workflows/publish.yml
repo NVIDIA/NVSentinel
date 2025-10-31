@@ -66,13 +66,16 @@ jobs:
         id: ref-name
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.event.inputs.tag }}"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}"
           else
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
       - name: Build image list
         id: build-list
@@ -130,13 +133,16 @@ jobs:
         id: ref-name
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.event.inputs.tag }}"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}"
           else
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
       - name: Publish container for ${{ matrix.component }}
         uses: ./.github/actions/publish-container
@@ -176,13 +182,16 @@ jobs:
         id: ref-name
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.event.inputs.tag }}"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}"
           else
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
       # ko is already installed in the setup-ci-env action
       - name: Authenticate to GHCR
@@ -260,13 +269,16 @@ jobs:
         id: ref-name
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.event.inputs.tag }}"
           elif [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}"
           else
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-            echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
       - name: Prep system for multi-node Kind cluster
         run: |

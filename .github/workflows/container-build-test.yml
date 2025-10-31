@@ -77,7 +77,10 @@ jobs:
         id: ref-name
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "value=${{ github.ref_name }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
       - name: Execute build
         uses: ./.github/actions/build-container
