@@ -103,36 +103,43 @@ runs:
           while [ $attempt -le $MAX_RETRIES ]; do
             echo "Attesting ${target_ref} (${platform_info}) - attempt ${attempt}/${MAX_RETRIES}"
             
-            if cosign attest \
+            # Run cosign attest and capture both stdout and stderr, plus exit code
+            set +e  # Temporarily disable exit on error to capture output
+            cosign attest \
               --yes \
               --predicate "$SBOM_FILE" \
               --type cyclonedx \
-              "$target_ref" 2>&1 | tee /tmp/cosign_output.log; then
+              "$target_ref" > /tmp/cosign_output.log 2>&1
+            local exit_code=$?
+            set -e  # Re-enable exit on error
+            
+            # Show the output
+            cat /tmp/cosign_output.log
+            
+            # Check if attestation succeeded
+            if [ $exit_code -eq 0 ]; then
+              echo "✓ Attestation successful for ${target_ref} (exit code: 0)"
               
-              # Verify attestation was created by checking for success indicators
-              if grep -q "tlog entry created\|Attestation written\|successfully" /tmp/cosign_output.log || \
-                 [ ${PIPESTATUS[0]} -eq 0 ]; then
-                echo "✓ Attestation successful for ${target_ref}"
-                
-                # Additional verification: check if attestation exists in registry
-                sleep 2  # Brief delay for registry propagation
-                if cosign verify-attestation \
-                  --type cyclonedx \
-                  --certificate-identity-regexp=".*" \
-                  --certificate-oidc-issuer-regexp=".*" \
-                  "$target_ref" &>/dev/null; then
-                  echo "✓ Attestation verified in registry for ${target_ref}"
-                  return 0
-                else
-                  echo "⚠ Attestation created but not yet visible in registry, continuing anyway"
-                  return 0
-                fi
+              # Additional verification: check if attestation exists in registry
+              sleep 2  # Brief delay for registry propagation
+              if cosign verify-attestation \
+                --type cyclonedx \
+                --certificate-identity-regexp=".*" \
+                --certificate-oidc-issuer-regexp=".*" \
+                "$target_ref" &>/dev/null; then
+                echo "✓ Attestation verified in registry for ${target_ref}"
+                return 0
+              else
+                echo "⚠ Attestation created but not yet visible in registry, continuing anyway"
+                return 0
               fi
             fi
             
             # If we get here, attestation failed
-            echo "✗ Attestation attempt ${attempt} failed for ${target_ref}"
+            echo "✗ Attestation attempt ${attempt} failed for ${target_ref} (exit code: ${exit_code})"
+            echo "=== Cosign output ==="
             cat /tmp/cosign_output.log || true
+            echo "=== End of cosign output ==="
             
             if [ $attempt -lt $MAX_RETRIES ]; then
               echo "Retrying in ${RETRY_DELAY} seconds..."
@@ -140,6 +147,9 @@ runs:
               attempt=$((attempt + 1))
             else
               echo "::error::Failed to attest ${target_ref} after ${MAX_RETRIES} attempts"
+              echo "::error::Last exit code: ${exit_code}"
+              echo "::error::Last output:"
+              cat /tmp/cosign_output.log || true
               return 1
             fi
           done
