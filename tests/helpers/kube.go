@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -48,6 +49,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	k8syaml "sigs.k8s.io/yaml"
@@ -846,6 +848,16 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 					cs := pod.Status.ContainerStatuses[0]
 					if cs.State.Waiting != nil {
 						t.Logf("  Container waiting: %s - %s", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+
+						if cs.State.Waiting.Reason == "CrashLoopBackOff" || cs.State.Waiting.Reason == "Error" {
+							t.Logf("  === CRASH DETECTED - Fetching logs from previous container ===")
+							logs, err := GetPodLogs(ctx, c, pod.Name, namespace, true)
+							if err != nil {
+								t.Logf("  Failed to get logs: %v", err)
+							} else {
+								t.Logf("  Previous container logs:\n%s", logs)
+							}
+						}
 					} else if cs.State.Terminated != nil {
 						t.Logf("  Container terminated: %s - %s", cs.State.Terminated.Reason, cs.State.Terminated.Message)
 					}
@@ -867,6 +879,36 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 	}, WaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
 
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
+}
+
+// GetPodLogs retrieves logs from a pod, optionally from the previous container instance.
+// Note: klient.Client doesn't expose GetLogs, so we use the underlying kubernetes.Clientset.
+func GetPodLogs(ctx context.Context, c klient.Client, podName, namespace string, previous bool) (string, error) {
+	clientset, err := kubernetes.NewForConfig(c.RESTConfig())
+	if err != nil {
+		return "", fmt.Errorf("failed to create clientset: %w", err)
+	}
+
+	logOptions := &v1.PodLogOptions{
+		Previous:   previous,
+		TailLines:  ptr.To(int64(100)),
+		Timestamps: true,
+	}
+
+	logReq := clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+	logs, err := logReq.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to stream logs: %w", err)
+	}
+	defer logs.Close()
+
+	buf := new(strings.Builder)
+	_, err = io.Copy(buf, logs)
+	if err != nil {
+		return "", fmt.Errorf("failed to read logs: %w", err)
+	}
+
+	return buf.String(), nil
 }
 
 // RestartDeployment triggers a rolling restart of the specified deployment by updating
