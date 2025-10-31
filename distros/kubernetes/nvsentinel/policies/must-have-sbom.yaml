@@ -7,10 +7,11 @@
 #        - Third-party images (databases, sidecars, etc.) are NOT affected
 #
 # This policy uses Sigstore Policy Controller to verify that NVSentinel images
-# have BOTH:
-# 1. Valid SLSA Build Provenance attestations
-# 2. Valid SBOM (CycloneDX) attestations
-# Both signed by the official GitHub Actions workflow using keyless signing.
+# have valid SBOM (CycloneDX) attestations signed by the official GitHub Actions
+# workflow using keyless signing.
+#
+# Note: SLSA Build Provenance verification is handled separately by
+# must-have-slsa.yaml policy.
 #
 # Multi-platform support:
 # - Images are built for linux/amd64 and linux/arm64
@@ -26,19 +27,19 @@
 apiVersion: policy.sigstore.dev/v1beta1
 kind: ClusterImagePolicy
 metadata:
-  name: verify-nvsentinel-image-attestation
+  name: verify-nvsentinel-sbom
   annotations:
     description: >-
-      Verifies that NVSentinel container images have valid SLSA Build 
-      Provenance and SBOM attestations signed by the official GitHub Actions 
-      workflow. Ensures images were built from the official NVIDIA/NVSentinel 
-      repository with proper attestations before allowing them to run in the cluster.
-      Only applies to ghcr.io/nvidia/nvsentinel/** images.
+      Verifies that NVSentinel container images have valid SBOM attestations 
+      signed by the official GitHub Actions workflow. Ensures images have proper 
+      Software Bill of Materials documentation before allowing them to run in the 
+      cluster. Only applies to ghcr.io/nvidia/nvsentinel/** images.
     category: Supply Chain Security
     severity: high
 spec:
   # WARN MODE: Currently in warn mode due to bundle format v0.3 incompatibility
   # Policy Controller 0.10.5 cannot read Sigstore bundle format v0.3
+  # Both SLSA and SBOM attestations have the same issue
   # Will be changed to enforce mode when Policy Controller adds v0.3 support
   mode: warn
   
@@ -62,39 +63,9 @@ spec:
       # Use public Sigstore Rekor instance for transparency log
       ctlog:
         url: https://rekor.sigstore.dev
-      # Validate attestations - both SLSA provenance and SBOM
+      # Validate SBOM attestation only
       attestations:
-        # 1. SLSA Build Provenance - verifies the build process
-        - name: slsa-provenance
-          predicateType: https://slsa.dev/provenance/v1
-          policy:
-            type: cue
-            data: |
-              // Validate the builder is the official GitHub Actions workflow
-              predicateType: "https://slsa.dev/provenance/v1"
-              predicate: buildDefinition: {
-                buildType: "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
-                externalParameters: {
-                  workflow: {
-                    ref: =~"^refs/(heads|tags)/"
-                    repository: "https://github.com/NVIDIA/NVSentinel"
-                  }
-                }
-                internalParameters: {
-                  github: {
-                    event_name: "push" | "workflow_dispatch" | "release"
-                  }
-                }
-              }
-              
-              // Validate the source repository
-              predicate: runDetails: {
-                builder: {
-                  id: =~"^https://github.com/NVIDIA/NVSentinel/"
-                }
-              }
-        
-        # 2. SBOM (Software Bill of Materials) - verifies components are documented
+        # SBOM (Software Bill of Materials) - verifies components are documented
         - name: sbom-cyclonedx
           # Cosign uses this predicate type for CycloneDX SBOMs
           predicateType: https://cyclonedx.org/bom

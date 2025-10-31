@@ -91,6 +91,59 @@ runs:
         
         SBOM_FILE="${{ steps.find-sbom.outputs.sbom_file }}"
         IMAGE_REF="${{ inputs.image_name }}@${{ inputs.image_digest }}"
+        MAX_RETRIES=3
+        RETRY_DELAY=5
+        
+        # Function to attest with retry logic
+        attest_with_retry() {
+          local target_ref="$1"
+          local platform_info="${2:-unknown}"
+          local attempt=1
+          
+          while [ $attempt -le $MAX_RETRIES ]; do
+            echo "Attesting ${target_ref} (${platform_info}) - attempt ${attempt}/${MAX_RETRIES}"
+            
+            if cosign attest \
+              --yes \
+              --predicate "$SBOM_FILE" \
+              --type cyclonedx \
+              "$target_ref" 2>&1 | tee /tmp/cosign_output.log; then
+              
+              # Verify attestation was created by checking for success indicators
+              if grep -q "tlog entry created\|Attestation written\|successfully" /tmp/cosign_output.log || \
+                 [ ${PIPESTATUS[0]} -eq 0 ]; then
+                echo "✓ Attestation successful for ${target_ref}"
+                
+                # Additional verification: check if attestation exists in registry
+                sleep 2  # Brief delay for registry propagation
+                if cosign verify-attestation \
+                  --type cyclonedx \
+                  --certificate-identity-regexp=".*" \
+                  --certificate-oidc-issuer-regexp=".*" \
+                  "$target_ref" &>/dev/null; then
+                  echo "✓ Attestation verified in registry for ${target_ref}"
+                  return 0
+                else
+                  echo "⚠ Attestation created but not yet visible in registry, continuing anyway"
+                  return 0
+                fi
+              fi
+            fi
+            
+            # If we get here, attestation failed
+            echo "✗ Attestation attempt ${attempt} failed for ${target_ref}"
+            cat /tmp/cosign_output.log || true
+            
+            if [ $attempt -lt $MAX_RETRIES ]; then
+              echo "Retrying in ${RETRY_DELAY} seconds..."
+              sleep $RETRY_DELAY
+              attempt=$((attempt + 1))
+            else
+              echo "::error::Failed to attest ${target_ref} after ${MAX_RETRIES} attempts"
+              return 1
+            fi
+          done
+        }
         
         # Check if this is a multi-platform image (OCI index)
         MANIFEST_TYPE=$(crane manifest "$IMAGE_REF" | jq -r '.mediaType // "unknown"')
@@ -98,26 +151,37 @@ runs:
         if [[ "$MANIFEST_TYPE" == "application/vnd.oci.image.index.v1+json" ]] || \
            [[ "$MANIFEST_TYPE" == "application/vnd.docker.distribution.manifest.list.v2+json" ]]; then
           # Multi-platform: attest each platform digest separately
-          PLATFORM_DIGESTS=$(crane manifest "$IMAGE_REF" | \
-            jq -r '.manifests[] | select((.annotations."vnd.docker.reference.type" // "") != "attestation-manifest") | .digest')
+          echo "Detected multi-platform image, will attest each platform separately"
           
-          while IFS= read -r DIGEST; do
-            echo "Attesting ${{ inputs.image_name }}@${DIGEST}"
-            cosign attest \
-              --yes \
-              --predicate "$SBOM_FILE" \
-              --type cyclonedx \
-              "${{ inputs.image_name }}@${DIGEST}"
-          done <<< "$PLATFORM_DIGESTS"
+          # Get platform digests with architecture info
+          PLATFORM_INFO=$(crane manifest "$IMAGE_REF" | \
+            jq -r '.manifests[] | select((.annotations."vnd.docker.reference.type" // "") != "attestation-manifest") | "\(.digest) \(.platform.architecture)/\(.platform.os)"')
+          
+          FAILED_PLATFORMS=()
+          while IFS= read -r line; do
+            DIGEST=$(echo "$line" | awk '{print $1}')
+            PLATFORM=$(echo "$line" | awk '{print $2}')
+            
+            if ! attest_with_retry "${{ inputs.image_name }}@${DIGEST}" "$PLATFORM"; then
+              FAILED_PLATFORMS+=("$PLATFORM ($DIGEST)")
+            fi
+          done <<< "$PLATFORM_INFO"
+          
+          # Check if any platforms failed
+          if [ ${#FAILED_PLATFORMS[@]} -gt 0 ]; then
+            echo "::error::Failed to attest the following platforms:"
+            printf '::error::  - %s\n' "${FAILED_PLATFORMS[@]}"
+            exit 1
+          fi
+          
+          echo "✓ All platform attestations completed successfully"
         else
           # Single-platform: attest directly
-          echo "Attesting $IMAGE_REF"
-          cosign attest \
-            --yes \
-            --predicate "$SBOM_FILE" \
-            --type cyclonedx \
-            "$IMAGE_REF"
+          echo "Detected single-platform image"
+          attest_with_retry "$IMAGE_REF" "single-platform"
         fi
+        
+        echo "✓ SBOM attestation process completed"
 
     - name: Attest build provenance
       uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0

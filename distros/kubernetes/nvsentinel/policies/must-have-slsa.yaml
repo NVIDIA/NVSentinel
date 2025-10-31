@@ -18,7 +18,7 @@
 apiVersion: policy.sigstore.dev/v1beta1
 kind: ClusterImagePolicy
 metadata:
-  name: verify-nvsentinel-image-attestation
+  name: verify-nvsentinel-slsa
   annotations:
     description: >-
       Verifies that NVSentinel container images have valid SLSA Build 
