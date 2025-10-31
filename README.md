@@ -257,7 +257,7 @@ platformConnector:
 
 **Metadata Added to Events** (when enabled):
 - Raw cloud provider ID (e.g., `aws:///us-west-2a/i-1234567890abcdef0`)
-- Node labels for topology, instance types, GPU information, rack placement
+- Node labels for topology (zone/region), instance types, NVIDIA CUDA/driver versions
 - Works with AWS (EKS), GCP (GKE), Azure (AKS), and OCI (OKE)
 
 #### Fault Quarantine Module
