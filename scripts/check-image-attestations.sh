@@ -237,41 +237,16 @@ verify_cosign_attestation() {
     return 1
 }
 
-# Verify attestations for a single image digest
+# Verify attestations for a single image digest (platform-specific)
 verify_image_digest() {
     local image_name="$1"
     local digest="$2"
     local arch="$3"
     local os="$4"
-    local image_ref="${REGISTRY}/${ORG}/${image_name}@${digest}"
     
     echo -e "${BLUE}  ${os}/${arch} - ${digest}${NC}"
     
-    local cosign_ok=false
-    
-    # Verify Cosign SBOM attestation (OCI 1.1 referrers format)
-    # This is the primary attestation we're checking
-    if verify_cosign_attestation "$image_ref" "$digest"; then
-        echo -e "${GREEN}    ✓ Cosign SBOM attestation (OCI 1.1 referrers)${NC}"
-        cosign_ok=true
-    else
-        echo -e "${RED}    ✗ Cosign SBOM attestation not found${NC}"
-    fi
-    
-    # Optionally verify GitHub build provenance attestation
-    # Note: This requires 'gh' CLI authentication and may not be present for all images
-    if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-        if verify_github_attestation "$image_ref"; then
-            echo -e "${GREEN}    ✓ GitHub build provenance attestation${NC}"
-        fi
-    fi
-    
-    # Consider image verified if Cosign SBOM attestation exists
-    if $cosign_ok; then
-        return 0
-    else
-        return 1
-    fi
+    return 0
 }
 
 # Verify attestations for a single image
@@ -290,6 +265,18 @@ verify_image() {
         return
     fi
     
+    # Get the manifest list digest (for multi-platform images) or image digest (for single-platform)
+    local manifest_digest
+    manifest_digest=$(crane digest "$image_ref" 2>/dev/null || echo "")
+    
+    if [ -z "$manifest_digest" ]; then
+        echo -e "${RED}  ✗ Failed to get manifest digest${NC}"
+        FAILED_IMAGES=$((FAILED_IMAGES + 1))
+        return
+    fi
+    
+    echo -e "${BLUE}  Manifest digest: ${manifest_digest}${NC}"
+    
     # Get platform information
     local platform_info
     platform_info=$(get_platform_info "$image_ref")
@@ -300,19 +287,38 @@ verify_image() {
         return
     fi
     
-    # Verify each platform
-    local all_passed=true
+    # Display platform information
     while IFS='|' read -r digest arch os; do
-        if ! verify_image_digest "$image_name" "$digest" "$arch" "$os"; then
-            all_passed=false
-        fi
+        verify_image_digest "$image_name" "$digest" "$arch" "$os"
     done <<< "$platform_info"
     
-    if $all_passed; then
+    # Verify attestations on the manifest list digest (correct for multi-platform images)
+    local manifest_ref="${REGISTRY}/${ORG}/${image_name}@${manifest_digest}"
+    local cosign_ok=false
+    
+    echo -e "${BLUE}  Checking attestations on manifest list...${NC}"
+    
+    # Verify Cosign SBOM attestation (OCI 1.1 referrers format)
+    if verify_cosign_attestation "$manifest_ref" "$manifest_digest"; then
+        echo -e "${GREEN}  ✓ Cosign SBOM attestation (OCI 1.1 referrers)${NC}"
+        cosign_ok=true
+    else
+        echo -e "${RED}  ✗ Cosign SBOM attestation not found${NC}"
+    fi
+    
+    # Optionally verify GitHub build provenance attestation
+    if command -v gh &>/dev/null && gh auth status &>/dev/null; then
+        if verify_github_attestation "$manifest_ref"; then
+            echo -e "${GREEN}  ✓ GitHub build provenance attestation${NC}"
+        fi
+    fi
+    
+    # Consider image verified if Cosign SBOM attestation exists
+    if $cosign_ok; then
         echo -e "${GREEN}  ✓ All attestations verified${NC}"
         PASSED_IMAGES=$((PASSED_IMAGES + 1))
     else
-        echo -e "${RED}  ✗ Some attestations missing${NC}"
+        echo -e "${RED}  ✗ Attestations missing${NC}"
         FAILED_IMAGES=$((FAILED_IMAGES + 1))
     fi
 }
