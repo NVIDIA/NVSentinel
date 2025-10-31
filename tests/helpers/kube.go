@@ -822,6 +822,7 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 		}
 
 		readyPodFound := false
+		newPodFound := false
 		for _, pod := range pods.Items {
 			if pod.DeletionTimestamp != nil {
 				continue
@@ -833,15 +834,31 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 				continue
 			}
 
+			newPodFound = true
 			if pod.Status.Phase == v1.PodRunning && IsPodReady(pod) {
 				t.Logf("Found ready pod from current ReplicaSet: %s", pod.Name)
 				readyPodFound = true
 				break
+			} else {
+				t.Logf("Pod %s from new ReplicaSet: Phase=%s, Ready=%v, Reason=%s, Message=%s",
+					pod.Name, pod.Status.Phase, IsPodReady(pod), pod.Status.Reason, pod.Status.Message)
+				if len(pod.Status.ContainerStatuses) > 0 {
+					cs := pod.Status.ContainerStatuses[0]
+					if cs.State.Waiting != nil {
+						t.Logf("  Container waiting: %s - %s", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+					} else if cs.State.Terminated != nil {
+						t.Logf("  Container terminated: %s - %s", cs.State.Terminated.Reason, cs.State.Terminated.Message)
+					}
+				}
 			}
 		}
 
+		if !newPodFound {
+			t.Logf("No pod from current ReplicaSet found yet (pod may not be created)")
+			return false
+		}
+
 		if !readyPodFound {
-			t.Logf("No ready pod from current ReplicaSet found yet")
 			return false
 		}
 
