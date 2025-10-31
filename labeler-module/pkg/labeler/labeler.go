@@ -454,6 +454,12 @@ func (l *Labeler) handleNodeEvent(obj any) error {
 
 	expectedKataLabel := l.getKataLabelForNode(node)
 
+	currentKataLabel := node.Labels[KataEnabledLabel]
+	if currentKataLabel == expectedKataLabel {
+		slog.Debug("Node already has correct kata label", "node", node.Name, "kata", expectedKataLabel)
+		return nil
+	}
+
 	// Only update kata label, leave DCGM/driver labels alone
 	return l.updateKataLabel(node.Name, expectedKataLabel)
 }

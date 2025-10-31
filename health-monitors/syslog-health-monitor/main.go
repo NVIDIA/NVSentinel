@@ -35,7 +35,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -52,8 +51,8 @@ var (
 	date    = "unknown"
 
 	// Command-line flags
-	configFile = flag.String("config-file", "/etc/config/config.yaml",
-		"Path to the YAML configuration file for log checks.")
+	checksList = flag.String("checks", "SysLogsXIDError,SysLogsSXIDError,SysLogsGPUFallenOff",
+		"Comma separated listed of checks to enable")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket.")
 	nodeNameEnv         = flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
@@ -68,10 +67,7 @@ var (
 		"Indicates if this monitor is running in Kata Containers mode (set by DaemonSet variant).")
 )
 
-// ConfigFile matches the top-level structure of the YAML config file
-type ConfigFile struct {
-	Checks []fd.CheckDefinition `yaml:"checks"`
-}
+var checks []fd.CheckDefinition
 
 func main() {
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
@@ -121,14 +117,15 @@ func run() error {
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	slog.Info("Loading checks from config file", "file", *configFile)
-
-	config, err := loadConfigWithRetry(ctx, *configFile)
-	if err != nil {
-		return err
+	checks = make([]fd.CheckDefinition, 0)
+	for c := range strings.SplitSeq((*checksList), ",") {
+		checks = append(checks, fd.CheckDefinition{
+			Name:        c,
+			JournalPath: "/nvsentinel/var/log/journal/",
+		})
 	}
 
-	if len(config.Checks) == 0 {
+	if len(checks) == 0 {
 		return fmt.Errorf("no checks defined in the config file")
 	}
 
@@ -137,31 +134,31 @@ func run() error {
 		slog.Info("Kata mode enabled, adding containerd service filter and removing SysLogsSXIDError check")
 
 		// Add containerd service filter to all checks for kata nodes
-		for i := range config.Checks {
-			if config.Checks[i].Tags == nil {
-				config.Checks[i].Tags = []string{"-u", "containerd.service"}
+		for i := range checks {
+			if checks[i].Tags == nil {
+				checks[i].Tags = []string{"-u", "containerd.service"}
 			} else {
-				config.Checks[i].Tags = append(config.Checks[i].Tags, "-u", "containerd.service")
+				checks[i].Tags = append(checks[i].Tags, "-u", "containerd.service")
 			}
 		}
 
 		// Remove SysLogsSXIDError check for kata nodes (not supported in kata environment)
-		filteredChecks := make([]fd.CheckDefinition, 0, len(config.Checks))
+		filteredChecks := make([]fd.CheckDefinition, 0, len(checks))
 
-		for _, check := range config.Checks {
+		for _, check := range checks {
 			if check.Name != "SysLogsSXIDError" {
 				filteredChecks = append(filteredChecks, check)
 			}
 		}
 
-		config.Checks = filteredChecks
+		checks = filteredChecks
 	}
 
-	slog.Info("Creating syslog monitor", "checksCount", len(config.Checks))
+	slog.Info("Creating syslog monitor", "checksCount", len(checks))
 
 	fdHealthMonitor, err := fd.NewSyslogMonitor(
 		nodeName,
-		config.Checks,
+		checks,
 		client,
 		defaultAgentName,
 		defaultComponentClass,
@@ -211,7 +208,7 @@ func run() error {
 		ticker := time.NewTicker(pollingInterval)
 		defer ticker.Stop()
 
-		slog.Info("Configured checks", "checks", config.Checks)
+		slog.Info("Configured checks", "checks", checks)
 
 		slog.Info(
 			"Syslog health monitor initialization complete, starting polling loop...",
@@ -361,55 +358,4 @@ func waitUntilReady(parent context.Context, conn *grpc.ClientConn, timeout time.
 			return ctx.Err()
 		}
 	}
-}
-
-// loadConfigWithRetry reads and unmarshals the YAML config with bounded retries.
-func loadConfigWithRetry(ctx context.Context, path string) (*ConfigFile, error) {
-	const (
-		maxConfigRetries = 5
-	)
-
-	var (
-		yamlFile []byte
-		err      error
-	)
-
-	for attempt := 1; attempt <= maxConfigRetries; attempt++ {
-		slog.Info("Reading config file", "attempt", attempt, "maxRetries", maxConfigRetries, "file", path)
-
-		if _, statErr := os.Stat(path); statErr != nil {
-			slog.Warn("Config file does not exist", "attempt", attempt, "maxRetries", maxConfigRetries, "error", statErr)
-
-			if attempt < maxConfigRetries {
-				time.Sleep(time.Duration(attempt) * time.Second)
-				continue
-			}
-
-			return nil, fmt.Errorf("config file not found after retries: %w", statErr)
-		}
-
-		yamlFile, err = os.ReadFile(path)
-		if err != nil {
-			slog.Warn("Error reading config file", "attempt", attempt, "maxRetries", maxConfigRetries, "error", err)
-
-			if attempt < maxConfigRetries {
-				time.Sleep(time.Duration(attempt) * time.Second)
-				continue
-			}
-
-			return nil, fmt.Errorf("failed to read config file after retries: %w", err)
-		}
-
-		slog.Info("Successfully read config file", "attempt", attempt)
-
-		break
-	}
-
-	var config ConfigFile
-
-	if err := yaml.Unmarshal(yamlFile, &config); err != nil {
-		return nil, fmt.Errorf("error unmarshalling config file: %w", err)
-	}
-
-	return &config, nil
 }
