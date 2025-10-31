@@ -25,10 +25,6 @@ inputs:
   registry_password:
     description: 'Registry password for authentication'
     required: true
-  crane_version:
-    description: 'Version of crane to install (default: v0.20.2)'
-    required: false
-    default: 'v0.20.2'
 
 runs:
   using: 'composite'
@@ -68,17 +64,6 @@ runs:
         fi
         echo "sbom_file=$SBOM_FILE" >> "$GITHUB_OUTPUT"
 
-    - name: Install Crane
-      shell: bash
-      run: |
-        if ! command -v crane &> /dev/null; then
-          echo "Installing crane ${{ inputs.crane_version }}..."
-          curl -sL "https://github.com/google/go-containerregistry/releases/download/${{ inputs.crane_version }}/go-containerregistry_Linux_x86_64.tar.gz" | tar -xz crane
-          sudo mv crane /usr/local/bin/crane
-          sudo chmod +x /usr/local/bin/crane
-        fi
-        crane version
-
     - name: Install Cosign
       uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4.0.0
 
@@ -86,13 +71,12 @@ runs:
       shell: bash
       env:
         COSIGN_EXPERIMENTAL: "1"
-        MAX_RETRIES: "3"
-        RETRY_DELAY: "5"
       run: |
-        "${GITHUB_WORKSPACE}/scripts/attest-sbom.sh" \
-          "${{ steps.find-sbom.outputs.sbom_file }}" \
-          "${{ inputs.image_name }}" \
-          "${{ inputs.image_digest }}"
+        cosign attest \
+          --yes \
+          --predicate "${{ steps.find-sbom.outputs.sbom_file }}" \
+          --type cyclonedx \
+          "${{ inputs.image_name }}@${{ inputs.image_digest }}"
 
     - name: Attest build provenance
       uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3.0.0

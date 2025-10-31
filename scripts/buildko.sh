@@ -30,7 +30,7 @@ echo "  GIT_COMMIT=${GIT_COMMIT}"
 echo "  BUILD_DATE=${BUILD_DATE}"
 
 # Build flags - use PLATFORMS env var if set, otherwise use .ko.yaml defaults
-KO_FLAGS=(-B --image-refs=digests.txt --sbom=cyclonedx --tags="${VERSION}")
+KO_FLAGS=(-B --image-refs=digests.txt --sbom=none --tags="${VERSION}")
 if [ -n "${PLATFORMS:-}" ]; then
   echo "Building for platforms: ${PLATFORMS}"
   KO_FLAGS+=(--platform="${PLATFORMS}")
