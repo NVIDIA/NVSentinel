@@ -39,10 +39,13 @@ func TestFatalHealthEvent(t *testing.T) {
 		WithLabel("suite", "smoke")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		workloadNamespace := "workloads"
+		workloadNamespace := "allowcompletion-test"
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
+
+		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
+		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
 
 		nodes, err := helpers.GetAllNodesNames(ctx, client)
 		assert.NoError(t, err, "failed to get cluster nodes")
@@ -128,8 +131,8 @@ func TestFatalHealthEvent(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/cordon-by"])
-		assert.Equal(t, "GPU-fatal-error-ruleset", node.Labels["k8saas.nvidia.com/cordon-reason"])
+		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
+		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
 
 		var nodeCondition *v1.NodeCondition
 		for i := range node.Status.Conditions {
@@ -203,7 +206,7 @@ func TestFatalHealthEvent(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/uncordon-by"])
+		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
 
 		var nodeCondition *v1.NodeCondition
 		for i := range node.Status.Conditions {
@@ -240,6 +243,9 @@ func TestFatalHealthEvent(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
+		helpers.RestoreQuarantineConfig(ctx, t, c)
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+
 		return ctx
 	})
 
@@ -251,10 +257,13 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		WithLabel("suite", "smoke")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		workloadNamespace := "workloads"
+		workloadNamespace := "allowcompletion-test"
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
+
+		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
+		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
 
 		nodes, err := helpers.GetAllNodesNames(ctx, client)
 		assert.NoError(t, err, "failed to get cluster nodes")
@@ -319,8 +328,8 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/cordon-by"])
-		assert.Equal(t, "GPU-fatal-error-ruleset", node.Labels["k8saas.nvidia.com/cordon-reason"])
+		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
+		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
 
 		var nodeCondition *v1.NodeCondition
 		for i := range node.Status.Conditions {
@@ -391,7 +400,7 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["k8saas.nvidia.com/uncordon-by"])
+		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
 
 		var nodeCondition *v1.NodeCondition
 		for i := range node.Status.Conditions {
@@ -417,6 +426,9 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		namespaceName := ctx.Value(keyNamespace).(string)
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
+
+		helpers.RestoreQuarantineConfig(ctx, t, c)
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
 
 		return ctx
 	})

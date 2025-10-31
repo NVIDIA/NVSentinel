@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -91,6 +92,25 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	require.NoError(t, err)
 
 	return ctx, testCtx
+}
+
+func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.Client, nodeName, namespace string) ([]string, string) {
+	t.Helper()
+
+	SendHealthyEvent(ctx, t, nodeName)
+	WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
+
+	podNames := CreatePodsFromTemplate(ctx, t, client, "data/busybox-pods.yaml", nodeName, namespace)
+	WaitForPodsRunning(ctx, t, client, namespace, podNames)
+
+	event := NewHealthEvent(nodeName).
+		WithErrorCode("79").
+		WithMessage("GPU Fallen off the bus")
+	tempFile := SendHealthEvent(ctx, t, event)
+
+	WaitForNodeLabel(ctx, t, client, nodeName, statemanager.NVSentinelStateLabelKey, DrainingLabelValue)
+
+	return podNames, tempFile
 }
 
 func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {

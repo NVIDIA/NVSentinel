@@ -49,6 +49,45 @@ type QuarantineAssertion struct {
 	ExpectAnnotation bool
 }
 
+func ApplyQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) context.Context {
+	t.Helper()
+	client, err := c.NewClient()
+	require.NoError(t, err)
+
+	t.Log("Backing up current fault-quarantine configmap")
+	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	require.NoError(t, err)
+	ctx = context.WithValue(ctx, CELKeyConfigMapBackup, backupData)
+
+	t.Logf("Applying test configmap: %s", configMapPath)
+	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
+	require.NoError(t, err)
+
+	t.Log("Restarting fault-quarantine deployment to load configuration")
+	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	require.NoError(t, err)
+
+	return ctx
+}
+
+func RestoreQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Config) {
+	t.Helper()
+	client, err := c.NewClient()
+	require.NoError(t, err)
+
+	backupDataVal := ctx.Value(CELKeyConfigMapBackup)
+	if backupDataVal != nil {
+		backupData := backupDataVal.([]byte)
+		t.Log("Restoring fault-quarantine configmap from memory")
+		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine-config", NVSentinelNamespace)
+		require.NoError(t, err)
+
+		t.Log("Restarting fault-quarantine deployment to load restored configuration")
+		err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
+}
+
 func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) (context.Context, *QuarantineTestContext) {
 	ctx, testCtx, _ := SetupQuarantineTestWithOptions(ctx, t, c, configMapPath, nil)
 	return ctx, testCtx

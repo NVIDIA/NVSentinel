@@ -1099,7 +1099,7 @@ func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Cli
 			}
 		}
 		return false
-	}, 30*WaitInterval, WaitInterval, "pods should not be deleted")
+	}, 15*time.Second, 5*time.Second, "pods should not be deleted")
 	t.Logf("All %d pods remain running in namespace %s", len(podNames), namespace)
 }
 
