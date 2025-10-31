@@ -75,32 +75,6 @@ func TestNewConfigFromMap(t *testing.T) {
 			},
 		},
 		{
-			name: "custom QPS and burst",
-			cfgMap: map[string]interface{}{
-				"nodeMetadataQPS":   float64(10.0),
-				"nodeMetadataBurst": float64(20),
-			},
-			validate: func(t *testing.T, cfg *Config) {
-				if cfg.QPS != 10.0 {
-					t.Errorf("expected QPS 10.0, got %f", cfg.QPS)
-				}
-				if cfg.Burst != 20 {
-					t.Errorf("expected Burst 20, got %d", cfg.Burst)
-				}
-			},
-		},
-		{
-			name: "decode provider ID disabled",
-			cfgMap: map[string]interface{}{
-				"nodeMetadataDecodeProviderID": "false",
-			},
-			validate: func(t *testing.T, cfg *Config) {
-				if cfg.DecodeProviderID {
-					t.Error("expected DecodeProviderID to be false")
-				}
-			},
-		},
-		{
 			name: "allowed labels",
 			cfgMap: map[string]interface{}{
 				"nodeMetadataAllowedLabels": []interface{}{
@@ -123,11 +97,6 @@ func TestNewConfigFromMap(t *testing.T) {
 				"nodeMetadataAugmentationEnabled": "true",
 				"nodeMetadataCacheSize":           float64(2000),
 				"nodeMetadataCacheTTLSeconds":     float64(7200),
-				"nodeMetadataAPITimeoutSeconds":   float64(5),
-				"nodeMetadataQPS":                 float64(15.0),
-				"nodeMetadataBurst":               float64(30),
-				"nodeMetadataMaxRetries":          float64(5),
-				"nodeMetadataDecodeProviderID":    "true",
 				"nodeMetadataAllowedLabels": []interface{}{
 					"label1",
 					"label2",
@@ -142,21 +111,6 @@ func TestNewConfigFromMap(t *testing.T) {
 				}
 				if cfg.CacheTTL != 7200*time.Second {
 					t.Errorf("expected CacheTTL 7200s, got %v", cfg.CacheTTL)
-				}
-				if cfg.APITimeout != 5*time.Second {
-					t.Errorf("expected APITimeout 5s, got %v", cfg.APITimeout)
-				}
-				if cfg.QPS != 15.0 {
-					t.Errorf("expected QPS 15.0, got %f", cfg.QPS)
-				}
-				if cfg.Burst != 30 {
-					t.Errorf("expected Burst 30, got %d", cfg.Burst)
-				}
-				if cfg.MaxRetries != 5 {
-					t.Errorf("expected MaxRetries 5, got %d", cfg.MaxRetries)
-				}
-				if !cfg.DecodeProviderID {
-					t.Error("expected DecodeProviderID to be true")
 				}
 				if len(cfg.AllowedLabels) != 2 {
 					t.Errorf("expected 2 allowed labels, got %d", len(cfg.AllowedLabels))
@@ -186,84 +140,24 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid config",
 			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 2 * time.Second,
-				QPS:        5.0,
-				Burst:      10,
-				MaxRetries: 3,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
 			},
 			expectErr: false,
 		},
 		{
 			name: "invalid cache size",
 			config: &Config{
-				CacheSize:  0,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 2 * time.Second,
-				QPS:        5.0,
-				Burst:      10,
-				MaxRetries: 3,
+				CacheSize: 0,
+				CacheTTL:  1 * time.Hour,
 			},
 			expectErr: true,
 		},
 		{
 			name: "invalid cache TTL",
 			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   0,
-				APITimeout: 2 * time.Second,
-				QPS:        5.0,
-				Burst:      10,
-				MaxRetries: 3,
-			},
-			expectErr: true,
-		},
-		{
-			name: "invalid API timeout",
-			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 0,
-				QPS:        5.0,
-				Burst:      10,
-				MaxRetries: 3,
-			},
-			expectErr: true,
-		},
-		{
-			name: "invalid QPS",
-			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 2 * time.Second,
-				QPS:        0,
-				Burst:      10,
-				MaxRetries: 3,
-			},
-			expectErr: true,
-		},
-		{
-			name: "invalid burst",
-			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 2 * time.Second,
-				QPS:        5.0,
-				Burst:      0,
-				MaxRetries: 3,
-			},
-			expectErr: true,
-		},
-		{
-			name: "negative max retries",
-			config: &Config{
-				CacheSize:  100,
-				CacheTTL:   1 * time.Hour,
-				APITimeout: 2 * time.Second,
-				QPS:        5.0,
-				Burst:      10,
-				MaxRetries: -1,
+				CacheSize: 100,
+				CacheTTL:  0,
 			},
 			expectErr: true,
 		},

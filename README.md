@@ -42,6 +42,7 @@ helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.2.0
 - **⚡ Real-time Processing**: Event-driven architecture with immediate fault response
 - **📊 Persistent Storage**: MongoDB-based event store with change streams for real-time updates
 - **🛡️ Graceful Handling**: Coordinated workload eviction with configurable timeouts
+- **🏷️ Metadata Enrichment**: Automatic augmentation of health events with cloud provider and node topology information
 
 ## 🧪 Complete Setup Guide
 
@@ -93,7 +94,7 @@ kubectl get nodes  # Verify GPU nodes are visible
 ./scripts/validate-nvsentinel.sh --version v0.2.0 --verbose
 ```
 
-> **Testing**: The example above uses default settings. For production, customize values for your environment.
+> **Testing**: The example above uses default settings. For testing with simulated GPU nodes, use [`tilt/release/values-release.yaml`](tilt/release/values-release.yaml). For production, customize values for your environment.
 
 > **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
 
@@ -156,13 +157,13 @@ graph TB
 
 ## ⚙️ Configuration
 
-NVSentinel is highly configurable with options for each module. For complete configuration documentation, see the **[Helm Chart README](distros/kubernetes/README.md)**.
+### Global Settings
 
-### Quick Configuration Overview
+Control module enablement and behavior:
 
 ```yaml
 global:
-  dryRun: false  # Test mode - log actions without executing
+  dryRun: false  # Test mode - no actual actions
   
   # Health Monitors (enabled by default)
   gpuHealthMonitor:
@@ -170,44 +171,170 @@ global:
   syslogHealthMonitor:
     enabled: true
 
+  cspHealthMonitor:
+    enabled: false  # Cloud provider integration
+  
   # Core Modules (disabled by default - enable for production)
-  faultQuarantine:
+  faultQuarantineModule:
     enabled: false
-  nodeDrainer:
+  nodeDrainerModule:
     enabled: false
-  faultRemediation:
+  faultRemediationModule:
     enabled: false
-  janitor:
+  healthEventsAnalyzer:
     enabled: false
-  mongodbStore:
-    enabled: false 
 ```
 
-**Configuration Resources**:
-- **[Helm Chart Configuration Guide](distros/kubernetes/README.md#configuration)**: Complete configuration reference
-- **[values-full.yaml](distros/kubernetes/nvsentinel/values-full.yaml)**: Detailed reference with all options
-- **[values.yaml](distros/kubernetes/nvsentinel/values.yaml)**: Default values
+For detailed per-module configuration, see [Module Details](#-module-details).
 
 ## 📦 Module Details
 
-For detailed module configuration, see the **[Helm Chart Configuration Guide](distros/kubernetes/README.md#module-specific-configuration)**.
-
 ### 🔍 Health Monitors
 
-- **GPU Health Monitor**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
-- **Syslog Health Monitor**: Analyzes system logs for hardware and software fault patterns via journalctl
-- **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
+#### GPU Health Monitor
+Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events.
+
+**Key Configuration**:
+```yaml
+global:
+  gpuHealthMonitor:
+    enabled: true
+    useHostNetworking: false  # Enable for direct DCGM access
+  dcgm:
+    service:
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      port: 5555
+```
+
+#### Syslog Health Monitor
+Analyzes system logs for hardware and software fault patterns via journalctl.
+
+**Key Configuration**:
+```yaml
+global:
+  syslogHealthMonitor:
+    enabled: true
+pollingInterval: "30m"
+stateFile: "/var/run/syslog_health_monitor/state.json"
+```
+
+#### CSP Health Monitor
+Integrates with cloud provider APIs (GCP/AWS) for maintenance events.
+
+**Key Configuration**:
+```yaml
+global:
+  cspHealthMonitor:
+    enabled: false
+cspName: "gcp"  # or "aws"
+configToml:
+  maintenanceEventPollIntervalSeconds: 60
+```
 
 ### 🏗️ Core Modules
 
-- **Platform Connectors**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
-- **Fault Quarantine**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
-- **Node Drainer**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
-- **Fault Remediation**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
-- **Janitor**: Executes node reboots and terminations via cloud provider APIs
-- **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
-- **MongoDB Store**: Persistent storage for health events with real-time change streams
-- **Labeler**: Automatically labels nodes with DCGM and driver versions
+#### Platform Connectors
+Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status. Optionally enriches events with node metadata (cloud provider information and topology labels) for better correlation across clusters.
+
+**Key Configuration**:
+```yaml
+platformConnector:
+  mongodbStore:
+    enabled: true
+    connectionString: "mongodb://nvsentinel-mongodb:27017"
+  
+  # Node Metadata Enrichment (optional)
+  nodeMetadata:
+    enabled: true  # Enable metadata augmentation
+    cacheSize: 50  # LRU cache size
+    cacheTTLSeconds: 3600  # Cache TTL (1 hour)
+    # Customize which node labels to include (see values.yaml for defaults)
+    allowedLabels:
+      - "topology.kubernetes.io/zone"
+      - "topology.kubernetes.io/region"
+      # ... add more labels as needed
+```
+
+**Metadata Added to Events** (when enabled):
+- Raw cloud provider ID (e.g., `aws:///us-west-2a/i-1234567890abcdef0`)
+- Node labels for topology, instance types, GPU information, rack placement
+- Works with AWS (EKS), GCP (GKE), Azure (AKS), and OCI (OKE)
+
+#### Fault Quarantine Module
+Watches MongoDB for health events and cordons nodes based on configurable rules.
+
+**Key Configuration**:
+```yaml
+global:
+  faultQuarantineModule:
+    enabled: false
+config: |
+  [[rule-sets]]
+    name = "GPU fatal error ruleset"
+    [[rule-sets.match.all]]
+      expression = "event.isFatal == true"
+    [rule-sets.cordon]
+      shouldCordon = true
+```
+
+#### Node Drainer Module
+Gracefully evicts workloads from cordoned nodes with configurable policies.
+
+**Key Configuration**:
+```yaml
+global:
+  nodeDrainerModule:
+    enabled: false
+config: |
+  evictionTimeoutInSeconds = "60"
+  [[userNamespaces]]
+  name = "runai-*"
+  mode = "AllowCompletion"
+```
+
+#### Fault Remediation Module
+Triggers external break-fix systems after drain completion.
+
+**Key Configuration**:
+```yaml
+global:
+  faultRemediationModule:
+    enabled: false
+maintenanceResource:
+  apiGroup: "janitor.dgxc.nvidia.com"
+  namespace: "dgxc-janitor"
+```
+
+#### Health Events Analyzer
+Analyzes event patterns and generates recommended actions.
+
+**Key Configuration**:
+```yaml
+global:
+  healthEventsAnalyzer:
+    enabled: false
+config: |
+  [[rules]]
+  name = "XID Pattern Detection"
+  time_window = "30m"
+  recommended_action = "COMPONENT_RESET"
+```
+
+#### MongoDB Store
+Persistent storage for health events with real-time change streams.
+
+**Key Configuration**:
+```yaml
+mongodb:
+  architecture: replicaset
+  replicaCount: 3
+  auth:
+    enabled: true
+  tls:
+    enabled: true
+    mTLS:
+      enabled: true
+```
 
 ## 📋 Requirements
 
@@ -223,7 +350,6 @@ We welcome contributions! Here's how to get started:
 
 **Ways to Contribute**:
 - 🐛 Report bugs and request features via [issues](https://github.com/NVIDIA/NVSentinel/issues)
-- 🧭 See what we're working on in the [roadmap](ROADMAP.md)
 - 📝 Improve documentation
 - 🧪 Add tests and increase coverage
 - 🔧 Submit pull requests to fix issues

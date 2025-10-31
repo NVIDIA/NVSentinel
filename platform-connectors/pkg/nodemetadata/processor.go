@@ -18,66 +18,59 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
-// processor implements the Processor interface using LRU cache with coordinated fetching.
 type processor struct {
 	config    *Config
 	clientset kubernetes.Interface
-	cache     *Cache
+	cache     *expirable.LRU[string, *NodeMetadata]
+	fetchMu   sync.Mutex
 	stopCh    chan struct{}
 }
 
-// NewProcessor creates a new node metadata processor.
-func NewProcessor(ctx context.Context, config *Config) (Processor, error) {
+// NewProcessor creates a new node metadata processor using an existing Kubernetes client.
+func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	restConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get in-cluster config: %w", err)
+	if clientset == nil {
+		return nil, fmt.Errorf("clientset cannot be nil")
 	}
 
-	restConfig.QPS = config.QPS
-	restConfig.Burst = config.Burst
-	restConfig.Timeout = config.APITimeout
-
-	clientset, err := kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Kubernetes clientset: %w", err)
-	}
+	cache := expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	p := &processor{
 		config:    config,
 		clientset: clientset,
+		cache:     cache,
 		stopCh:    make(chan struct{}),
 	}
-
-	// Create cache with fetch function
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
 
 	slog.Info("Node metadata processor initialized",
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
-		"apiTimeout", config.APITimeout,
 		"allowedLabels", config.AllowedLabels)
 
 	return p, nil
 }
 
-// AugmentHealthEvent enriches a health event with node metadata.
 func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error {
 	if event.NodeName == "" {
 		return fmt.Errorf("event has empty node name")
 	}
 
-	metadata, err := p.cache.GetOrFetch(ctx, event.NodeName)
+	metadata, err := p.getOrFetchMetadata(ctx, event.NodeName)
 	if err != nil {
 		return fmt.Errorf("failed to get metadata for node %s: %w", event.NodeName, err)
 	}
@@ -87,31 +80,44 @@ func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEven
 	}
 
 	if metadata.ProviderID != "" {
-		if p.config.DecodeProviderID {
-			decoded := DecodeProviderID(metadata.ProviderID)
-			for k, v := range decoded {
-				event.Metadata[k] = v
-			}
-		} else {
-			event.Metadata["node.providerID"] = metadata.ProviderID
-		}
+		event.Metadata["node.providerID"] = metadata.ProviderID
 	}
 
 	for _, labelKey := range p.config.AllowedLabels {
 		if labelValue, exists := metadata.Labels[labelKey]; exists {
-			event.Metadata[fmt.Sprintf("node.label.%s", labelKey)] = labelValue
+			event.Metadata[labelKey] = labelValue
 		}
 	}
 
 	return nil
 }
 
-// fetchNodeMetadata retrieves node metadata from Kubernetes API.
-func (p *processor) fetchNodeMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, p.config.APITimeout)
-	defer cancel()
+// getOrFetchMetadata retrieves metadata from cache or fetches it if not present.
+// Uses double-check pattern to prevent duplicate fetches.
+func (p *processor) getOrFetchMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
+	if metadata, found := p.cache.Get(nodeName); found {
+		return metadata, nil
+	}
 
-	node, err := p.clientset.CoreV1().Nodes().Get(ctxWithTimeout, nodeName, metav1.GetOptions{})
+	p.fetchMu.Lock()
+	defer p.fetchMu.Unlock()
+
+	// Double-check: another goroutine might have fetched while we waited
+	if metadata, found := p.cache.Get(nodeName); found {
+		return metadata, nil
+	}
+
+	metadata, err := p.fetchNodeMetadata(ctx, nodeName)
+	if err != nil {
+		return nil, err
+	}
+
+	p.cache.Add(nodeName, metadata)
+	return metadata, nil
+}
+
+func (p *processor) fetchNodeMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
+	node, err := p.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node from API: %w", err)
 	}
@@ -132,8 +138,7 @@ func (p *processor) fetchNodeMetadata(ctx context.Context, nodeName string) (*No
 	return metadata, nil
 }
 
-// Start initializes background tasks.
-// The LRU library handles TTL expiration automatically.
+// LRU library handles TTL expiration automatically.
 func (p *processor) Start(ctx context.Context) {
 	slog.Info("Node metadata processor started (cache handles TTL automatically)")
 
@@ -147,7 +152,6 @@ func (p *processor) Start(ctx context.Context) {
 	}
 }
 
-// Stop gracefully shuts down the processor.
 func (p *processor) Stop() {
 	close(p.stopCh)
 }

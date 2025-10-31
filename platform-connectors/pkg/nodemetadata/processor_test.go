@@ -16,16 +16,72 @@ package nodemetadata
 
 import (
 	"context"
-	"strings"
+	"log"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+var (
+	testClient *kubernetes.Clientset
+	testEnv    *envtest.Environment
+)
+
+// TestMain sets up envtest environment for all tests
+// To run tests, use: make test
+// Or manually: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+//              source <(setup-envtest use -p env 1.30.0)
+func TestMain(m *testing.M) {
+	var err error
+
+	testEnv = &envtest.Environment{}
+
+	testRestConfig, err := testEnv.Start()
+	if err != nil {
+		log.Fatalf("Failed to start test environment: %v", err)
+	}
+
+	testClient, err = kubernetes.NewForConfig(testRestConfig)
+	if err != nil {
+		log.Fatalf("Failed to create kubernetes client: %v", err)
+	}
+
+	exitCode := m.Run()
+
+	if err := testEnv.Stop(); err != nil {
+		log.Fatalf("Failed to stop test environment: %v", err)
+	}
+	os.Exit(exitCode)
+}
+
+// createTestNode creates a node in the test API server and returns it
+func createTestNode(t *testing.T, node *corev1.Node) *corev1.Node {
+	t.Helper()
+	ctx := context.Background()
+	created, err := testClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create test node: %v", err)
+	}
+	return created
+}
+
+// cleanupTestNode deletes a node from the test API server
+func cleanupTestNode(t *testing.T, nodeName string) {
+	t.Helper()
+	ctx := context.Background()
+	err := testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	if err != nil {
+		t.Logf("Failed to cleanup test node %s: %v", nodeName, err)
+	}
+}
 
 func TestProcessorAugmentHealthEvent(t *testing.T) {
 	node := &corev1.Node{
@@ -42,17 +98,13 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels: []string{
 			"topology.kubernetes.io/zone",
 			"topology.kubernetes.io/region",
@@ -61,10 +113,14 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -78,110 +134,40 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 	}
 
 	if event.Metadata["node.providerID"] != "aws:///us-west-2a/i-1234567890abcdef0" {
-		t.Errorf("expected provider ID to be set")
+		t.Errorf("expected raw provider ID to be set")
 	}
 
-	if event.Metadata["node.provider"] != "aws" {
-		t.Errorf("expected provider to be aws, got %s", event.Metadata["node.provider"])
-	}
-
-	if event.Metadata["node.zone"] != "us-west-2a" {
-		t.Errorf("expected zone to be us-west-2a, got %s", event.Metadata["node.zone"])
-	}
-
-	if event.Metadata["node.region"] != "us-west-2" {
-		t.Errorf("expected region to be us-west-2, got %s", event.Metadata["node.region"])
-	}
-
-	if event.Metadata["node.label.topology.kubernetes.io/zone"] != "us-west-2a" {
+	if event.Metadata["topology.kubernetes.io/zone"] != "us-west-2a" {
 		t.Errorf("expected zone label to be set")
 	}
 
-	if event.Metadata["node.label.topology.kubernetes.io/region"] != "us-west-2" {
+	if event.Metadata["topology.kubernetes.io/region"] != "us-west-2" {
 		t.Errorf("expected region label to be set")
 	}
 
-	if _, exists := event.Metadata["node.label.node.kubernetes.io/instance-type"]; exists {
+	if _, exists := event.Metadata["node.kubernetes.io/instance-type"]; exists {
 		t.Error("expected instance-type label to not be set (not in allowed list)")
 	}
 }
 
-func TestProcessorAugmentHealthEventWithoutDecoding(t *testing.T) {
-	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-node",
-		},
-		Spec: corev1.NodeSpec{
-			ProviderID: "aws:///us-west-2a/i-1234567890abcdef0",
-		},
-	}
-
-	clientset := fake.NewSimpleClientset(node)
-
-	config := &Config{
-		Enabled:          true,
-		CacheSize:        100,
-		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
-		AllowedLabels:    []string{},
-	}
-
-	p := &processor{
-		config:    config,
-		clientset: clientset,
-		stopCh:    make(chan struct{}),
-	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
-
-	ctx := context.Background()
-	event := &pb.HealthEvent{
-		NodeName: "test-node",
-		Metadata: make(map[string]string),
-	}
-
-	err := p.AugmentHealthEvent(ctx, event)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if event.Metadata["node.providerID"] != "aws:///us-west-2a/i-1234567890abcdef0" {
-		t.Errorf("expected provider ID to be set")
-	}
-
-	if _, exists := event.Metadata["node.provider"]; exists {
-		t.Error("expected provider to not be decoded")
-	}
-
-	if _, exists := event.Metadata["node.zone"]; exists {
-		t.Error("expected zone to not be decoded")
-	}
-}
-
 func TestProcessorAugmentHealthEventEmptyNodeName(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
-
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -196,26 +182,23 @@ func TestProcessorAugmentHealthEventEmptyNodeName(t *testing.T) {
 }
 
 func TestProcessorAugmentHealthEventNodeNotFound(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
-
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -239,26 +222,26 @@ func TestProcessorStartStop(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         100 * time.Millisecond,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -286,26 +269,26 @@ func TestProcessorCachingBehavior(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 
@@ -344,26 +327,26 @@ func TestProcessorAugmentHealthEventNilMetadata(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -395,26 +378,26 @@ func TestProcessorAugmentHealthEventExistingMetadata(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -451,26 +434,26 @@ func TestProcessorAugmentHealthEventNoProviderID(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels:    []string{"test-label"},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -487,7 +470,7 @@ func TestProcessorAugmentHealthEventNoProviderID(t *testing.T) {
 		t.Error("expected no provider ID metadata when provider ID is empty")
 	}
 
-	if event.Metadata["node.label.test-label"] != "test-value" {
+	if event.Metadata["test-label"] != "test-value" {
 		t.Error("expected label to be set even without provider ID")
 	}
 }
@@ -503,26 +486,26 @@ func TestProcessorAugmentHealthEventEmptyLabels(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
 		AllowedLabels:    []string{"non-existent-label"},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	event := &pb.HealthEvent{
@@ -535,10 +518,8 @@ func TestProcessorAugmentHealthEventEmptyLabels(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for key := range event.Metadata {
-		if strings.HasPrefix(key, "node.label.") {
-			t.Error("expected no label metadata when node has no matching labels")
-		}
+	if _, exists := event.Metadata["non-existent-label"]; exists {
+		t.Error("expected no label metadata when node has no matching labels")
 	}
 }
 
@@ -552,26 +533,26 @@ func TestProcessorContextCancellation(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(node)
+	createTestNode(t, node)
+	defer cleanupTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         100 * time.Millisecond,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: true,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -600,26 +581,29 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 		},
 	}
 
-	clientset := fake.NewSimpleClientset(nodes[0], nodes[1], nodes[2])
+	// Create all test nodes
+	for _, node := range nodes {
+		createTestNode(t, node)
+		defer cleanupTestNode(t, node.Name)
+	}
 
 	config := &Config{
 		Enabled:          true,
 		CacheSize:        100,
 		CacheTTL:         1 * time.Hour,
-		APITimeout:       2 * time.Second,
-		QPS:              5.0,
-		Burst:            10,
-		MaxRetries:       3,
-		DecodeProviderID: false,
 		AllowedLabels:    []string{},
 	}
 
 	p := &processor{
 		config:    config,
-		clientset: clientset,
+		clientset: testClient,
 		stopCh:    make(chan struct{}),
 	}
-	p.cache = NewCache(config.CacheSize, config.CacheTTL, p.fetchNodeMetadata)
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
 
 	ctx := context.Background()
 	var wg sync.WaitGroup
@@ -654,11 +638,6 @@ func TestNewProcessorValidation(t *testing.T) {
 				Enabled:          true,
 				CacheSize:        0,
 				CacheTTL:         1 * time.Hour,
-				APITimeout:       2 * time.Second,
-				QPS:              5.0,
-				Burst:            10,
-				MaxRetries:       3,
-				DecodeProviderID: true,
 				AllowedLabels:    []string{},
 			},
 			expectErr: true,
@@ -669,11 +648,6 @@ func TestNewProcessorValidation(t *testing.T) {
 				Enabled:          true,
 				CacheSize:        100,
 				CacheTTL:         0,
-				APITimeout:       2 * time.Second,
-				QPS:              5.0,
-				Burst:            10,
-				MaxRetries:       3,
-				DecodeProviderID: true,
 				AllowedLabels:    []string{},
 			},
 			expectErr: true,
@@ -683,7 +657,7 @@ func TestNewProcessorValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			_, err := NewProcessor(ctx, tt.config)
+			_, err := NewProcessor(ctx, tt.config, testClient)
 
 			if tt.expectErr && err == nil {
 				t.Error("expected error but got none")

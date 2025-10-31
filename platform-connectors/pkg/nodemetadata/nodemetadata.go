@@ -24,17 +24,11 @@ import (
 
 // Processor augments health events with node metadata.
 type Processor interface {
-	// AugmentHealthEvent enriches a health event with node metadata.
 	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
-
-	// Start initializes background tasks.
 	Start(ctx context.Context)
-
-	// Stop gracefully shuts down the processor.
 	Stop()
 }
 
-// NodeMetadata contains enriched node information.
 type NodeMetadata struct {
 	ProviderID string
 	Labels     map[string]string

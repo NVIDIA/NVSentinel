@@ -55,11 +55,11 @@ func NewK8sConnector(
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{},
-) (*K8sConnector, error) {
+) (*K8sConnector, kubernetes.Interface, error) {
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("error creating in-cluster config: %w", err)
+		return nil, nil, fmt.Errorf("error creating in-cluster config: %w", err)
 	}
 
 	config.Burst = burst
@@ -67,12 +67,12 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("error creating kubernetes clientset: %w", err)
+		return nil, nil, fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
 	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx)
 
-	return kubernetesConnector, nil
+	return kubernetesConnector, clientSet, nil
 }
 
 func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {

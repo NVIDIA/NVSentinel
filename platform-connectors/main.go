@@ -38,6 +38,7 @@ import (
 
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
+	k8s "k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -81,30 +82,30 @@ func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
-) (*ringbuffer.RingBuffer, error) {
+) (*ringbuffer.RingBuffer, k8s.Interface, error) {
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
 	qpsTemp, ok := config["K8sConnectorQps"].(float64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
+		return nil, nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
 	}
 
 	qps := float32(qpsTemp)
 
 	burst, ok := config["K8sConnectorBurst"].(int64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
+		return nil, nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnector, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	k8sConnector, clientset, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 
-	return k8sRingBuffer, nil
+	return k8sRingBuffer, clientset, nil
 }
 
 func initializeMongoDBConnector(
@@ -127,6 +128,7 @@ func initializeMongoDBConnector(
 func initializeNodeMetadataProcessor(
 	ctx context.Context,
 	config map[string]interface{},
+	clientset k8s.Interface,
 ) (nodemetadata.Processor, error) {
 	cfg, err := nodemetadata.NewConfigFromMap(config)
 	if err != nil {
@@ -138,7 +140,11 @@ func initializeNodeMetadataProcessor(
 		return nil, nil
 	}
 
-	processor, err := nodemetadata.NewProcessor(ctx, cfg)
+	if clientset == nil {
+		return nil, fmt.Errorf("node metadata augmentation requires K8s connector to be enabled")
+	}
+
+	processor, err := nodemetadata.NewProcessor(ctx, cfg, clientset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
 	}
@@ -180,28 +186,29 @@ func initializeConnectors(
 	config map[string]interface{},
 	stopCh chan struct{},
 	mongoClientCertMountPath string,
-) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, error) {
+) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, k8s.Interface, error) {
 	var (
 		k8sRingBuffer  *ringbuffer.RingBuffer
 		storeConnector *store.MongoDbStoreConnector
+		clientset      k8s.Interface
 		err            error
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
+		k8sRingBuffer, clientset, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
 	if config["enableMongoDBStorePlatformConnector"] == True {
 		storeConnector, err = initializeMongoDBConnector(ctx, mongoClientCertMountPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
 		}
 	}
 
-	return k8sRingBuffer, storeConnector, nil
+	return k8sRingBuffer, storeConnector, clientset, nil
 }
 
 func cleanupResources(
@@ -268,12 +275,12 @@ func run() error {
 		return err
 	}
 
-	processor, err := initializeNodeMetadataProcessor(ctx, config)
+	k8sRingBuffer, storeConnector, clientset, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
 	if err != nil {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
+	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
 	if err != nil {
 		return err
 	}
@@ -311,7 +318,6 @@ func run() error {
 		return nil
 	})
 
-	// Start node metadata processor background tasks
 	if processor != nil {
 		g.Go(func() error {
 			processor.Start(gCtx)
@@ -338,7 +344,6 @@ func run() error {
 
 		close(stopCh)
 
-		// Cleanup all resources
 		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector, processor); err != nil {
 			return err
 		}
@@ -349,6 +354,5 @@ func run() error {
 		return nil
 	})
 
-	// Wait for both goroutines to finish
 	return g.Wait()
 }
