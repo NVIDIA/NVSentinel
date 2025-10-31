@@ -1,0 +1,42 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package nodemetadata augments health events with node metadata from Kubernetes.
+// It fetches provider IDs, labels, and topology information and caches them for performance.
+package nodemetadata
+
+import (
+	"context"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+)
+
+// Processor augments health events with node metadata.
+type Processor interface {
+	// AugmentHealthEvent enriches a health event with node metadata.
+	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
+
+	// Start initializes background tasks.
+	Start(ctx context.Context)
+
+	// Stop gracefully shuts down the processor.
+	Stop()
+}
+
+// NodeMetadata contains enriched node information.
+type NodeMetadata struct {
+	ProviderID string
+	Labels     map[string]string
+}
+
