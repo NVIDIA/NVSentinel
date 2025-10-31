@@ -20,6 +20,7 @@ on:
       - 'v*'
     branches:
       - main
+      - pull-request/228 # debug only
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
