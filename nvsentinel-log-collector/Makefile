@@ -165,6 +165,7 @@ docker-publish-log-collector: setup-buildx
 		--network=host \
 		$(CACHE_FROM_ARG_LOG) \
 		$(CACHE_TO_ARG_LOG) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-f $(MODULE_PATH)/Dockerfile \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/log-collector:$(SAFE_REF_NAME) \
@@ -180,6 +181,7 @@ docker-publish-file-server-cleanup: setup-buildx
 		--network=host \
 		$(CACHE_FROM_ARG_CLEANUP) \
 		$(CACHE_TO_ARG_CLEANUP) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-f $(MODULE_PATH)/Dockerfile.cleanup \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/file-server-cleanup:$(SAFE_REF_NAME) \

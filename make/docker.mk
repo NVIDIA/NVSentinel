@@ -71,6 +71,7 @@ docker-publish: setup-buildx ## Build and publish Docker image to registry
 		$(CACHE_FROM_ARG) \
 		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--annotation "index:org.opencontainers.image.source=https://github.com/nvidia/nvsentinel" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--annotation "index:org.opencontainers.image.title=NVSentinel $(MODULE_NAME)" \

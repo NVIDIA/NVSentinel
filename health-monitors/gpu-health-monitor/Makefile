@@ -158,6 +158,7 @@ docker-publish-dcgm3: setup-buildx
 		$(CACHE_FROM_ARG_DCGM3) \
 		$(CACHE_TO_ARG_DCGM3) \
 		$(DOCKER_EXTRA_ARGS) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-3.x \
 		--build-arg DCGM_VERSION=3.3.7-1-ubuntu22.04 \
@@ -174,6 +175,7 @@ docker-publish-dcgm4: setup-buildx
 		$(CACHE_FROM_ARG_DCGM4) \
 		$(CACHE_TO_ARG_DCGM4) \
 		$(DOCKER_EXTRA_ARGS) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--push \
 		-t $(CONTAINER_REGISTRY)/$(CONTAINER_ORG)/nvsentinel/gpu-health-monitor:$(SAFE_REF_NAME)-dcgm-4.x \
 		-f $(MODULE_PATH)/Dockerfile \

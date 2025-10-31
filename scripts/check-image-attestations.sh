@@ -25,9 +25,13 @@
 #   Verification uses `crane` to check for sha256-prefixed attestation tags in the registry.
 #
 # Usage:
-#   ./scripts/check-image-attestations.sh <tag>
-#   ./scripts/check-image-attestations.sh v1.2.3
-#   ./scripts/check-image-attestations.sh 3b37e68
+#   ./scripts/check-image-attestations.sh <tag> [image-name]
+#   ./scripts/check-image-attestations.sh v1.2.3                              # Check all images
+#   ./scripts/check-image-attestations.sh v1.2.3 gpu-health-monitor           # Check specific image
+#   ./scripts/check-image-attestations.sh v1.2.3 nvsentinel/platform-connectors  # Check with namespace
+#
+# Image names can be specified with or without the 'nvsentinel/' prefix.
+# For images with tag suffixes (dcgm-3.x, dcgm-4.x), use the base name without suffix.
 #
 # Requirements:
 #   - crane (for manifest inspection and OCI 1.1 attestation detection)
@@ -315,11 +319,17 @@ verify_image() {
 
 # Main function
 main() {
-    if [ $# -ne 1 ]; then
+    if [ $# -lt 1 ] || [ $# -gt 2 ]; then
         usage
     fi
     
     local tag="$1"
+    local filter_image="${2:-}"
+    
+    # Normalize filter_image to remove nvsentinel/ prefix if present
+    if [ -n "$filter_image" ]; then
+        filter_image="${filter_image#nvsentinel/}"
+    fi
     
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  NVSentinel Image Attestation Verification${NC}"
@@ -327,31 +337,93 @@ main() {
     echo -e "Registry: ${REGISTRY}"
     echo -e "Organization: ${ORG}"
     echo -e "Tag: ${tag}"
+    if [ -n "$filter_image" ]; then
+        echo -e "Filter: ${filter_image}"
+    fi
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     
     # Check requirements
     check_requirements
     
     # Verify Ko-built images
-    echo -e "\n${BLUE}═══ Ko-built Images ═══${NC}"
-    for image in "${KO_IMAGES[@]}"; do
-        verify_image "$image" "$tag"
-    done
+    if [ -z "$filter_image" ]; then
+        echo -e "\n${BLUE}═══ Ko-built Images ═══${NC}"
+        for image in "${KO_IMAGES[@]}"; do
+            verify_image "$image" "$tag"
+        done
+    else
+        # Check if filter matches any Ko-built image
+        local found=false
+        for image in "${KO_IMAGES[@]}"; do
+            image_base="${image#nvsentinel/}"
+            if [ "$image_base" == "$filter_image" ]; then
+                echo -e "\n${BLUE}═══ Ko-built Images ═══${NC}"
+                verify_image "$image" "$tag"
+                found=true
+                break
+            fi
+        done
+        if ! $found; then
+            # Not a Ko image, will check Docker images below
+            :
+        fi
+    fi
     
     # Verify Docker-built images
-    echo -e "\n${BLUE}═══ Docker-built Images ═══${NC}"
-    for image_spec in "${DOCKER_IMAGES[@]}"; do
-        # Handle images with tag suffixes (e.g., gpu-health-monitor:dcgm-3.x)
-        if [[ "$image_spec" == *":"* ]]; then
-            image_base="${image_spec%:*}"
-            suffix="${image_spec#*:}"
-            full_tag="${tag}-${suffix}"
-        else
-            image_base="$image_spec"
-            full_tag="$tag"
+    if [ -z "$filter_image" ]; then
+        echo -e "\n${BLUE}═══ Docker-built Images ═══${NC}"
+        for image_spec in "${DOCKER_IMAGES[@]}"; do
+            # Handle images with tag suffixes (e.g., gpu-health-monitor:dcgm-3.x)
+            if [[ "$image_spec" == *":"* ]]; then
+                image_base="${image_spec%:*}"
+                suffix="${image_spec#*:}"
+                full_tag="${tag}-${suffix}"
+            else
+                image_base="$image_spec"
+                full_tag="$tag"
+            fi
+            verify_image "$image_base" "$full_tag"
+        done
+    else
+        # Check if filter matches any Docker-built image
+        local docker_header_printed=false
+        for image_spec in "${DOCKER_IMAGES[@]}"; do
+            # Extract base name (remove nvsentinel/ prefix)
+            local image_base
+            if [[ "$image_spec" == *":"* ]]; then
+                image_base="${image_spec%:*}"
+                image_base="${image_base#nvsentinel/}"
+                suffix="${image_spec#*:}"
+            else
+                image_base="${image_spec#nvsentinel/}"
+                suffix=""
+            fi
+            
+            # Check if this image matches the filter
+            if [ "$image_base" == "$filter_image" ]; then
+                if ! $docker_header_printed; then
+                    echo -e "\n${BLUE}═══ Docker-built Images ═══${NC}"
+                    docker_header_printed=true
+                fi
+                
+                # Build full image reference
+                if [ -n "$suffix" ]; then
+                    full_image="nvsentinel/${image_base}"
+                    full_tag="${tag}-${suffix}"
+                else
+                    full_image="nvsentinel/${image_base}"
+                    full_tag="$tag"
+                fi
+                verify_image "$full_image" "$full_tag"
+            fi
+        done
+        
+        # If we filtered and found nothing, report it
+        if [ "$TOTAL_IMAGES" -eq 0 ]; then
+            echo -e "\n${YELLOW}No images found matching '${filter_image}'${NC}"
+            exit 1
         fi
-        verify_image "$image_base" "$full_tag"
-    done
+    fi
     
     # Print summary
     echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"

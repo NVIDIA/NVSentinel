@@ -59,12 +59,25 @@ runs:
         DOCKER_BUILDKIT: 1
         BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max
+        DOCKER_METADATA_FILE: /tmp/docker-metadata.json
       run: |
         ${{ inputs.make_command }}
 
         # Compute SAFE_REF_NAME the same way the Makefile does
         SAFE_REF_NAME=$(echo "${CI_COMMIT_REF_NAME:-${GITHUB_REF_NAME}}" | sed 's/\//-/g')
-        DIGEST="$(crane digest ghcr.io/nvidia/${{ inputs.container_name }}:${SAFE_REF_NAME}${{ inputs.tag_suffix }})"
+        
+        # Extract digest from Docker metadata file if it exists
+        # This is more reliable than querying the registry immediately after push
+        if [ -f "$DOCKER_METADATA_FILE" ]; then
+          DIGEST=$(jq -r '."containerimage.digest"' "$DOCKER_METADATA_FILE")
+          echo "Using digest from Docker build metadata: $DIGEST"
+        else
+          # Fallback to crane (legacy behavior for modules that don't output metadata)
+          echo "No Docker metadata file found, querying registry with crane..."
+          DIGEST="$(crane digest ghcr.io/nvidia/${{ inputs.container_name }}:${SAFE_REF_NAME}${{ inputs.tag_suffix }})"
+          echo "Got digest from crane: $DIGEST"
+        fi
+        
         echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
         echo "name=ghcr.io/nvidia/${{ inputs.container_name }}" >> "$GITHUB_OUTPUT"
 
