@@ -154,7 +154,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		defer os.Remove(tempFile)
 
 		restartTime := time.Now()
-		err = helpers.RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", helpers.NVSentinelNamespace)
+		err = helpers.RestartDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
 		require.NoError(t, err)
 
 		require.Eventually(t, func() bool {

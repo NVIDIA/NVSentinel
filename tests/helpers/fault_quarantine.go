@@ -63,7 +63,7 @@ func ApplyQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Config,
 	require.NoError(t, err)
 
 	t.Log("Restarting fault-quarantine deployment to load configuration")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	return ctx
@@ -82,7 +82,7 @@ func RestoreQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Confi
 		require.NoError(t, err)
 
 		t.Log("Restarting fault-quarantine deployment to load restored configuration")
-		err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+		err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 		require.NoError(t, err)
 	}
 }
@@ -152,7 +152,7 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 
 	if opts == nil || !opts.SkipRestart {
 		t.Log("Restarting fault-quarantine deployment to load all configuration changes")
-		err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+		err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 		require.NoError(t, err)
 	}
 
@@ -214,7 +214,7 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	}
 
 	t.Log("Restarting fault-quarantine deployment to load restored configuration")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 	assert.NoError(t, err)
 
 	return ctx
@@ -359,7 +359,7 @@ func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	updateCircuitBreakerStateConfigMap(ctx, t, client, state)
 
 	t.Log("Restarting fault-quarantine deployment to pick up CB state")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 }
 
@@ -402,7 +402,7 @@ func RestoreFQDeployment(ctx context.Context, t *testing.T, client klient.Client
 	assert.NoError(t, err, "failed to restore deployment")
 
 	t.Log("Waiting for rollout to complete with restored config")
-	WaitForDeploymentRollout(ctx, t, client, "nvsentinel-fault-quarantine", NVSentinelNamespace)
+	WaitForDeploymentRollout(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
 }
 
 // modifyFaultQuarantineDeploymentArgs is a generic helper to modify fault-quarantine deployment args.
@@ -416,7 +416,7 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment := &appsv1.Deployment{}
-		if err := client.Resources().Get(ctx, "nvsentinel-fault-quarantine", NVSentinelNamespace, deployment); err != nil {
+		if err := client.Resources().Get(ctx, "fault-quarantine", NVSentinelNamespace, deployment); err != nil {
 			return err
 		}
 

@@ -58,7 +58,7 @@ func applyNodeDrainerConfigAndRestart(ctx context.Context, t *testing.T, client 
 	}
 
 	t.Log("Restarting node-drainer deployment")
-	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
+	err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
 	return err
 }
 
@@ -151,7 +151,7 @@ func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) c
 
 		err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)
 		if err == nil {
-			err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
+			err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
 		}
 		assert.NoError(t, err)
 	}
@@ -217,6 +217,6 @@ func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Conf
 	err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
+	err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 }
