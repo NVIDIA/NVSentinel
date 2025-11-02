@@ -22,4 +22,4 @@ appVersion: "1.16.0"
 dependencies:
   - name: mongodb
     version: "16.2.2"
-    condition: global.installMongoDB
+    condition: global.mongodbStore.enabled

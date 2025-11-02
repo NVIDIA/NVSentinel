@@ -24,16 +24,16 @@ dependencies:
     condition: global.gpuHealthMonitor.enabled
   - name: mongodb-store
     version: "0.1.0"
-    condition: platformConnector.mongodbStore.enabled
+    condition: global.mongodbStore.enabled
   - name: fault-quarantine
     version: "0.1.0"
-    condition: global.faultQuarantineModule.enabled
+    condition: global.faultQuarantine.enabled
   - name: node-drainer
     version: "0.1.0"
-    condition: global.nodeDrainerModule.enabled
+    condition: global.nodeDrainer.enabled
   - name: fault-remediation
     version: "0.1.0"
-    condition: global.faultRemediationModule.enabled
+    condition: global.faultRemediation.enabled
   - name: health-events-analyzer
     version: "0.1.0"
     condition: global.healthEventsAnalyzer.enabled
