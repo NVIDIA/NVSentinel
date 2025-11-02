@@ -37,6 +37,17 @@ const (
 	CELKeyConfigMapBackup
 )
 
+type faultQuarantineConfig struct {
+	LabelPrefix    string               `toml:"label-prefix"`
+	CircuitBreaker circuitBreakerConfig `toml:"circuitBreaker"`
+	RuleSets       []map[string]any     `toml:"rule-sets"`
+}
+
+type circuitBreakerConfig struct {
+	Percentage int    `toml:"percentage"`
+	Duration   string `toml:"duration"`
+}
+
 type QuarantineTestContext struct {
 	NodeName        string
 	ConfigMapBackup []byte
@@ -94,16 +105,11 @@ func SetupQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config, c
 
 // QuarantineSetupOptions provides options for setting up quarantine tests.
 type QuarantineSetupOptions struct {
-	// CircuitBreakerPercentage sets the CB percentage threshold (0 to skip)
 	CircuitBreakerPercentage int
-	// CircuitBreakerDuration sets the CB duration (empty to skip)
-	CircuitBreakerDuration string
-	// CircuitBreakerState sets the initial CB state (empty to skip)
-	CircuitBreakerState string
-	// DryRun sets dry-run mode (nil to skip, otherwise pointer to bool value)
-	DryRun *bool
-	// SkipRestart skips the deployment restart (useful when chaining operations)
-	SkipRestart bool
+	CircuitBreakerDuration   string
+	CircuitBreakerState      string
+	DryRun                   *bool
+	SkipRestart              bool
 }
 
 // SetupQuarantineTestWithOptions sets up a quarantine test with additional configuration options.
@@ -118,36 +124,31 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 	testCtx := &QuarantineTestContext{}
 	var originalDeployment *appsv1.Deployment
 
-	t.Log("Backing up current fault-quarantine configmap")
 	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
-	t.Log("Backup created in memory")
 	testCtx.ConfigMapBackup = backupData
 
 	t.Logf("Applying test configmap: %s", configMapPath)
 	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
-	argUpdates := make(map[string]string)
 	if opts != nil {
 		if opts.CircuitBreakerPercentage > 0 {
-			t.Logf("Will set circuit breaker threshold: %d%%, duration: %s",
+			t.Logf("Updating circuit breaker in ConfigMap: %d%%, duration: %s",
 				opts.CircuitBreakerPercentage, opts.CircuitBreakerDuration)
-			argUpdates["--circuit-breaker-percentage="] = fmt.Sprintf("--circuit-breaker-percentage=%d", opts.CircuitBreakerPercentage)
-			argUpdates["--circuit-breaker-duration="] = fmt.Sprintf("--circuit-breaker-duration=%s", opts.CircuitBreakerDuration)
+			err = updateCircuitBreakerConfigInConfigMap(ctx, t, client, opts.CircuitBreakerPercentage, opts.CircuitBreakerDuration)
+			require.NoError(t, err)
 		}
 		if opts.DryRun != nil {
 			t.Logf("Will set dry-run mode to: %v", *opts.DryRun)
-			argUpdates["--dry-run="] = fmt.Sprintf("--dry-run=%v", *opts.DryRun)
+			argUpdates := map[string]string{
+				"--dry-run=": fmt.Sprintf("--dry-run=%v", *opts.DryRun),
+			}
+			originalDeployment = modifyFaultQuarantineDeploymentArgs(ctx, t, client, argUpdates)
 		}
-	}
-
-	if len(argUpdates) > 0 {
-		originalDeployment = modifyFaultQuarantineDeploymentArgs(ctx, t, client, argUpdates)
-	}
-
-	if opts != nil && opts.CircuitBreakerState != "" {
-		updateCircuitBreakerStateConfigMap(ctx, t, client, opts.CircuitBreakerState)
+		if opts.CircuitBreakerState != "" {
+			updateCircuitBreakerStateConfigMap(ctx, t, client, opts.CircuitBreakerState)
+		}
 	}
 
 	if opts == nil || !opts.SkipRestart {
@@ -478,4 +479,23 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, clien
 
 	err := client.Resources().Create(ctx, cm)
 	require.NoError(t, err, "failed to create CB state configmap")
+}
+
+// updateCircuitBreakerConfigInConfigMap updates the circuit breaker percentage and duration in the fault-quarantine ConfigMap.
+func updateCircuitBreakerConfigInConfigMap(ctx context.Context, t *testing.T, client klient.Client, percentage int, duration string) error {
+	t.Helper()
+
+	err := UpdateConfigMapTOMLField(ctx, client, "fault-quarantine", NVSentinelNamespace, "config.toml",
+		func(cfg *faultQuarantineConfig) error {
+			cfg.CircuitBreaker.Percentage = percentage
+			cfg.CircuitBreaker.Duration = duration
+			return nil
+		})
+
+	if err != nil {
+		return fmt.Errorf("failed to update circuit breaker config: %w", err)
+	}
+
+	t.Logf("Updated circuit breaker config in ConfigMap: percentage=%d, duration=%s", percentage, duration)
+	return nil
 }

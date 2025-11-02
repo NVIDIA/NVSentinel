@@ -19,6 +19,10 @@ metadata:
   namespace: nvsentinel
 data:
   config.toml: |
+    [circuitBreaker]
+      percentage = 50
+      duration = "5m"
+    
     [[rule-sets]]
       name = "Basic-Match-Rule"
       [[rule-sets.match.all]]

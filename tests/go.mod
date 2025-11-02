@@ -5,6 +5,7 @@ go 1.25
 toolchain go1.25.3
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/go-logr/logr v1.4.3
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/prometheus/client_golang v1.23.2

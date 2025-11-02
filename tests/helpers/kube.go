@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v2"
@@ -724,6 +725,60 @@ func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace strin
 	}
 
 	return yamlData, nil
+}
+
+// UpdateConfigMapTOMLField updates a TOML ConfigMap using proper TOML parsing.
+// The modifier function receives the parsed config and can modify it before it's written back.
+//
+// Example usage:
+//
+//	err := UpdateConfigMapTOMLField(ctx, client, "fault-quarantine", "nvsentinel", "config.toml",
+//	    func(cfg *map[string]interface{}) error {
+//	        if cb, ok := (*cfg)["circuitBreaker"].(map[string]interface{}); ok {
+//	            cb["percentage"] = 40
+//	            cb["duration"] = "10m"
+//	        }
+//	        return nil
+//	    })
+func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name, namespace, tomlKey string,
+	modifier func(*T) error) error {
+
+	cm := &v1.ConfigMap{}
+	err := c.Resources().Get(ctx, name, namespace, cm)
+	if err != nil {
+		return fmt.Errorf("failed to get configmap %s/%s: %w", namespace, name, err)
+	}
+
+	if cm.Data == nil {
+		return fmt.Errorf("configmap %s/%s has no data", namespace, name)
+	}
+
+	tomlData, exists := cm.Data[tomlKey]
+	if !exists {
+		return fmt.Errorf("configmap %s/%s missing key %s", namespace, name, tomlKey)
+	}
+
+	var cfg T
+	if err := toml.Unmarshal([]byte(tomlData), &cfg); err != nil {
+		return fmt.Errorf("failed to unmarshal TOML: %w", err)
+	}
+
+	if err := modifier(&cfg); err != nil {
+		return fmt.Errorf("modifier failed: %w", err)
+	}
+
+	var buf strings.Builder
+	encoder := toml.NewEncoder(&buf)
+	if err := encoder.Encode(&cfg); err != nil {
+		return fmt.Errorf("failed to marshal TOML: %w", err)
+	}
+
+	cm.Data[tomlKey] = buf.String()
+	if err := c.Resources().Update(ctx, cm); err != nil {
+		return fmt.Errorf("failed to update configmap %s/%s: %w", namespace, name, err)
+	}
+
+	return nil
 }
 
 // WaitForDeploymentRollout waits for a deployment rollout to complete.
