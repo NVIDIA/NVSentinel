@@ -52,7 +52,7 @@ const (
 func applyNodeDrainerConfigAndRestart(ctx context.Context, t *testing.T, client klient.Client, configMapPath string) error {
 	t.Helper()
 	t.Logf("Applying node-drainer configmap: %s", configMapPath)
-	err := createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer-config", NVSentinelNamespace)
+	err := createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer", NVSentinelNamespace)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	}
 
 	t.Log("Backing up current node-drainer configmap")
-	backupData, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
+	backupData, err := BackupConfigMap(ctx, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Log("Backup created in memory")
 	testCtx.ConfigMapBackup = backupData
@@ -149,7 +149,7 @@ func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) c
 		backupData := backupDataVal.([]byte)
 		t.Log("Restoring node-drainer configmap from memory")
 
-		err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer-config", NVSentinelNamespace)
+		err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)
 		if err == nil {
 			err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)
 		}
@@ -189,7 +189,7 @@ func ApplyNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config
 	require.NoError(t, err)
 
 	t.Log("Backing up current node-drainer configmap")
-	backupData, err := BackupConfigMap(ctx, client, "node-drainer-config", NVSentinelNamespace)
+	backupData, err := BackupConfigMap(ctx, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Log("Backup created in memory")
 
@@ -214,7 +214,7 @@ func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Conf
 	backupData := backupDataVal.([]byte)
 	t.Log("Restoring node-drainer configmap from memory")
 
-	err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer-config", NVSentinelNamespace)
+	err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	err = RestartDeployment(ctx, t, client, "nvsentinel-node-drainer", NVSentinelNamespace)

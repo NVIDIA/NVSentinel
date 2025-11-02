@@ -54,12 +54,12 @@ func ApplyQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Config,
 	require.NoError(t, err)
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 	ctx = context.WithValue(ctx, CELKeyConfigMapBackup, backupData)
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
+	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	t.Log("Restarting fault-quarantine deployment to load configuration")
@@ -78,7 +78,7 @@ func RestoreQuarantineConfig(ctx context.Context, t *testing.T, c *envconf.Confi
 	if backupDataVal != nil {
 		backupData := backupDataVal.([]byte)
 		t.Log("Restoring fault-quarantine configmap from memory")
-		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine-config", NVSentinelNamespace)
+		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine", NVSentinelNamespace)
 		require.NoError(t, err)
 
 		t.Log("Restarting fault-quarantine deployment to load restored configuration")
@@ -119,13 +119,13 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 	var originalDeployment *appsv1.Deployment
 
 	t.Log("Backing up current fault-quarantine configmap")
-	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine-config", NVSentinelNamespace)
+	backupData, err := BackupConfigMap(ctx, client, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Log("Backup created in memory")
 	testCtx.ConfigMapBackup = backupData
 
 	t.Logf("Applying test configmap: %s", configMapPath)
-	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine-config", NVSentinelNamespace)
+	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine", NVSentinelNamespace)
 	require.NoError(t, err)
 
 	argUpdates := make(map[string]string)
@@ -209,7 +209,7 @@ func TeardownQuarantineTest(ctx context.Context, t *testing.T, c *envconf.Config
 	if backupDataVal != nil {
 		backupData := backupDataVal.([]byte)
 		t.Log("Restoring fault-quarantine configmap from memory")
-		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine-config", NVSentinelNamespace)
+		err = createConfigMapFromBytes(ctx, client, backupData, "fault-quarantine", NVSentinelNamespace)
 		assert.NoError(t, err)
 	}
 
@@ -370,7 +370,7 @@ func GetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config
 	require.NoError(t, err)
 
 	cm := &v1.ConfigMap{}
-	err = client.Resources().Get(ctx, "fault-quarantine-circuit-breaker", NVSentinelNamespace, cm)
+	err = client.Resources().Get(ctx, "circuit-breaker", NVSentinelNamespace, cm)
 	if err != nil {
 		t.Logf("failed to get circuit breaker state from configmap: %v", err)
 		return ""
@@ -460,7 +460,7 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, clien
 
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "fault-quarantine-circuit-breaker",
+			Name:      "circuit-breaker",
 			Namespace: NVSentinelNamespace,
 		},
 		Data: map[string]string{
@@ -470,7 +470,7 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, clien
 
 	existingCM := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "fault-quarantine-circuit-breaker",
+			Name:      "circuit-breaker",
 			Namespace: NVSentinelNamespace,
 		},
 	}
