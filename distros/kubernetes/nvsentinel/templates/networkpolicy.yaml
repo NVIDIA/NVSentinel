@@ -15,7 +15,7 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "nvsentinel.fullname" . }}-metrics-access
+  name: metrics-access
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
 spec:
