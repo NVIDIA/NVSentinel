@@ -46,6 +46,37 @@ type NodeActionSpec interface {
 	GetNodeName() string
 }
 
+// conditionsChanged compares two slices of conditions and returns true if they differ.
+// It checks for differences in Type, Status, Reason, and Message fields.
+func conditionsChanged(original, updated []metav1.Condition) bool {
+	if len(original) != len(updated) {
+		return true
+	}
+
+	// Build a map of original conditions for quick lookup
+	originalMap := make(map[string]metav1.Condition)
+	for _, cond := range original {
+		originalMap[cond.Type] = cond
+	}
+
+	// Check each updated condition against the original
+	for _, updatedCond := range updated {
+		originalCond, exists := originalMap[updatedCond.Type]
+		if !exists {
+			return true // New condition type added
+		}
+
+		// Compare the fields that matter for status updates
+		if originalCond.Status != updatedCond.Status ||
+			originalCond.Reason != updatedCond.Reason ||
+			originalCond.Message != updatedCond.Message {
+			return true
+		}
+	}
+
+	return false
+}
+
 // updateNodeActionStatus is a generic helper function that handles status updates with proper error handling.
 // It centralizes the status update logic to avoid code duplication and provides consistent handling
 // of status updates across different node action types (RebootNode, TerminateNode, etc.).

@@ -47,37 +47,6 @@ const (
 	MaxRebootRetries = 20 // 10 minutes at 30s base intervals
 )
 
-// conditionsChanged compares two sets of conditions and returns true if they differ.
-// It checks the type, status, reason, and message of each condition.
-func conditionsChanged(original, updated []metav1.Condition) bool {
-	if len(original) != len(updated) {
-		return true
-	}
-
-	// Build a map of original conditions for quick lookup
-	originalMap := make(map[string]metav1.Condition)
-	for _, cond := range original {
-		originalMap[cond.Type] = cond
-	}
-
-	// Check each updated condition against the original
-	for _, updatedCond := range updated {
-		originalCond, exists := originalMap[updatedCond.Type]
-		if !exists {
-			return true // New condition type added
-		}
-
-		// Compare the fields that matter for status updates
-		if originalCond.Status != updatedCond.Status ||
-			originalCond.Reason != updatedCond.Reason ||
-			originalCond.Message != updatedCond.Message {
-			return true
-		}
-	}
-
-	return false
-}
-
 // updateRebootNodeStatus is a helper function that handles status updates with proper error handling.
 // It delegates to the generic updateNodeActionStatus function.
 func (r *RebootNodeReconciler) updateRebootNodeStatus(

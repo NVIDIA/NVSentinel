@@ -31,7 +31,7 @@ func getNextRequeueDelay(consecutiveFailures int32) time.Duration {
 		5 * time.Minute,  // Fourth+ retry (capped)
 	}
 
-	// Safely convert int32 to int for array indexing
+	// Convert int32 to int for array indexing and cap at maximum if needed
 	idx := int(consecutiveFailures)
 	if idx >= len(delays) {
 		return delays[len(delays)-1] // Cap at maximum
