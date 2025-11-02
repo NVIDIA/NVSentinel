@@ -199,46 +199,54 @@ global:
 	assert.Equal(t, metav1.LabelSelectorOpExists, config.RebootNode.NodeExclusions[1].MatchExpressions[0].Operator)
 }
 
-func TestConfig_Structures(t *testing.T) {
-	// Test that all config structures can be instantiated
-	config := &Config{
-		Global: GlobalConfig{
-			Timeout:    10 * time.Minute,
-			ManualMode: true,
-			Nodes: NodeConfig{
-				Exclusions: []metav1.LabelSelector{
-					{
-						MatchLabels: map[string]string{"test": "value"},
-					},
-				},
-			},
-		},
-		RebootNode: RebootNodeControllerConfig{
-			Enabled:    true,
-			ManualMode: false,
-			Timeout:    5 * time.Minute,
-			NodeExclusions: []metav1.LabelSelector{
-				{
-					MatchLabels: map[string]string{"test": "value"},
-				},
-			},
-		},
-		TerminateNode: TerminateNodeControllerConfig{
-			Enabled:    false,
-			ManualMode: true,
-			Timeout:    3 * time.Minute,
-			NodeExclusions: []metav1.LabelSelector{
-				{
-					MatchLabels: map[string]string{"test": "value"},
-				},
-			},
-		},
-	}
+func TestConfig_ZeroValues(t *testing.T) {
+	t.Run("zero value config has expected defaults", func(t *testing.T) {
+		config := &Config{}
 
-	// Verify basic structure
-	assert.NotNil(t, config)
-	assert.Equal(t, 10*time.Minute, config.Global.Timeout)
-	assert.True(t, config.Global.ManualMode)
-	assert.True(t, config.RebootNode.Enabled)
-	assert.False(t, config.TerminateNode.Enabled)
+		// Global config zero values
+		assert.Equal(t, time.Duration(0), config.Global.Timeout)
+		assert.False(t, config.Global.ManualMode)
+		assert.Empty(t, config.Global.Nodes.Exclusions)
+
+		// RebootNode config zero values
+		assert.False(t, config.RebootNode.Enabled)
+		assert.False(t, config.RebootNode.ManualMode)
+		assert.Equal(t, time.Duration(0), config.RebootNode.Timeout)
+		assert.Empty(t, config.RebootNode.NodeExclusions)
+
+		// TerminateNode config zero values
+		assert.False(t, config.TerminateNode.Enabled)
+		assert.False(t, config.TerminateNode.ManualMode)
+		assert.Equal(t, time.Duration(0), config.TerminateNode.Timeout)
+		assert.Empty(t, config.TerminateNode.NodeExclusions)
+	})
+
+	t.Run("controller configs are independent", func(t *testing.T) {
+		config := &Config{
+			RebootNode: RebootNodeControllerConfig{
+				Enabled:    true,
+				ManualMode: false,
+				Timeout:    5 * time.Minute,
+			},
+			TerminateNode: TerminateNodeControllerConfig{
+				Enabled:    false,
+				ManualMode: true,
+				Timeout:    10 * time.Minute,
+			},
+		}
+
+		// Verify each controller can have different settings
+		assert.True(t, config.RebootNode.Enabled)
+		assert.False(t, config.RebootNode.ManualMode)
+		assert.Equal(t, 5*time.Minute, config.RebootNode.Timeout)
+
+		assert.False(t, config.TerminateNode.Enabled)
+		assert.True(t, config.TerminateNode.ManualMode)
+		assert.Equal(t, 10*time.Minute, config.TerminateNode.Timeout)
+
+		// Modifying one doesn't affect the other
+		config.RebootNode.Timeout = 15 * time.Minute
+		assert.Equal(t, 15*time.Minute, config.RebootNode.Timeout)
+		assert.Equal(t, 10*time.Minute, config.TerminateNode.Timeout)
+	})
 }

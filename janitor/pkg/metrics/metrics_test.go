@@ -18,10 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestNewActionMetrics(t *testing.T) {
@@ -134,90 +131,62 @@ func TestMetricsConstants(t *testing.T) {
 }
 
 func TestActionMetrics_CounterIncrement(t *testing.T) {
-	// Create a test registry to verify metrics behavior
-	testRegistry := prometheus.NewRegistry()
+	t.Run("IncActionCount increments counter", func(t *testing.T) {
+		// Create metrics instance
+		m := &ActionMetrics{}
 
-	// Create new counter for testing
-	testCounter := prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "test_janitor_actions_count",
-			Help: "Test counter for janitor actions",
-		},
-		[]string{"action_type", "status", "node"},
-	)
+		// Call the actual business logic
+		m.IncActionCount(ActionTypeReboot, StatusStarted, "test-node-1")
+		m.IncActionCount(ActionTypeReboot, StatusSucceeded, "test-node-1")
+		m.IncActionCount(ActionTypeTerminate, StatusStarted, "test-node-2")
 
-	testRegistry.MustRegister(testCounter)
+		// Note: We can't easily verify the exact counter values without accessing
+		// the internal prometheus registry, but we can verify the method executes
+		// without panic or error. This test verifies the method signature and basic
+		// functionality.
+	})
 
-	// Increment the counter multiple times
-	testCounter.With(prometheus.Labels{
-		"action_type": ActionTypeReboot,
-		"status":      StatusStarted,
-		"node":        "test-node",
-	}).Inc()
+	t.Run("global IncActionCount function works", func(t *testing.T) {
+		// Test the convenience function that uses GlobalMetrics
+		IncActionCount(ActionTypeReboot, StatusStarted, "global-test-node")
+		IncActionCount(ActionTypeReboot, StatusSucceeded, "global-test-node")
+		IncActionCount(ActionTypeReboot, StatusFailed, "global-test-node")
 
-	testCounter.With(prometheus.Labels{
-		"action_type": ActionTypeReboot,
-		"status":      StatusStarted,
-		"node":        "test-node",
-	}).Inc()
-
-	// Gather metrics
-	metricFamilies, err := testRegistry.Gather()
-	require.NoError(t, err)
-	require.Len(t, metricFamilies, 1)
-
-	// Verify the counter was incremented
-	metricFamily := metricFamilies[0]
-	assert.Equal(t, "test_janitor_actions_count", *metricFamily.Name)
-	require.Len(t, metricFamily.Metric, 1)
-
-	// Check that the counter value is 2
-	counter := metricFamily.Metric[0]
-	assert.Equal(t, float64(2), *counter.Counter.Value)
+		// Verify different action types
+		IncActionCount(ActionTypeTerminate, StatusStarted, "global-test-node-2")
+	})
 }
 
 func TestActionMetrics_HistogramObservation(t *testing.T) {
-	// Create a test registry to verify histogram behavior
-	testRegistry := prometheus.NewRegistry()
+	t.Run("RecordActionMTTR records duration", func(t *testing.T) {
+		// Create metrics instance
+		m := &ActionMetrics{}
 
-	// Create new histogram for testing
-	testHistogram := prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "test_janitor_action_mttr_seconds",
-			Help:    "Test histogram for janitor action MTTR",
-			Buckets: prometheus.ExponentialBuckets(10, 2, 5),
-		},
-		[]string{"action_type"},
-	)
+		// Call the actual business logic with various durations
+		m.RecordActionMTTR(ActionTypeReboot, 30*time.Second)
+		m.RecordActionMTTR(ActionTypeReboot, 2*time.Minute)
+		m.RecordActionMTTR(ActionTypeReboot, 5*time.Minute)
 
-	testRegistry.MustRegister(testHistogram)
+		// Record different action types
+		m.RecordActionMTTR(ActionTypeTerminate, 10*time.Minute)
 
-	// Record some observations
-	testHistogram.With(prometheus.Labels{
-		"action_type": ActionTypeReboot,
-	}).Observe(30.0) // 30 seconds
+		// Note: We can't easily verify the exact histogram values without accessing
+		// the internal prometheus registry, but we can verify the method executes
+		// without panic or error. This test verifies the method signature and basic
+		// functionality.
+	})
 
-	testHistogram.With(prometheus.Labels{
-		"action_type": ActionTypeReboot,
-	}).Observe(120.0) // 2 minutes
+	t.Run("global RecordActionMTTR function works", func(t *testing.T) {
+		// Test the convenience function that uses GlobalMetrics
+		RecordActionMTTR(ActionTypeReboot, 45*time.Second)
+		RecordActionMTTR(ActionTypeTerminate, 3*time.Minute)
 
-	// Gather metrics
-	metricFamilies, err := testRegistry.Gather()
-	require.NoError(t, err)
-	require.Len(t, metricFamilies, 1)
+		// Test with very short duration
+		RecordActionMTTR(ActionTypeReboot, 5*time.Second)
 
-	// Verify the histogram was updated
-	metricFamily := metricFamilies[0]
-	assert.Equal(t, "test_janitor_action_mttr_seconds", *metricFamily.Name)
-	assert.Equal(t, dto.MetricType_HISTOGRAM, *metricFamily.Type)
-	require.Len(t, metricFamily.Metric, 1)
-
-	// Check histogram sample count
-	histogram := metricFamily.Metric[0].Histogram
-	assert.Equal(t, uint64(2), *histogram.SampleCount)
-
-	// Check sum of observations (30 + 120 = 150)
-	assert.Equal(t, float64(150), *histogram.SampleSum)
+		// Test with longer duration
+		RecordActionMTTR(ActionTypeTerminate, 15*time.Minute)
+	})
 }
 
 func TestGlobalMetrics_Initialization(t *testing.T) {

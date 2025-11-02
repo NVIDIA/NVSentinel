@@ -32,6 +32,7 @@ type GPUSelector struct {
 	// PCIBusIDs is a list of GPU PCI bus IDs.
 	// Format: "domain:bus:device.function" (e.g., "0000:01:00.0").
 	// +optional
+	//nolint:lll // kubebuilder validation pattern
 	// +kubebuilder:validation:items:Pattern="^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\\.[0-9a-fA-F]{1}$"
 	PCIBusIDs []string `json:"pciBusIDs,omitempty"`
 }
