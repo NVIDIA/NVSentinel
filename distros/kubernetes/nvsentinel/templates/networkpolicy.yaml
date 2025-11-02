@@ -15,11 +15,16 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: metrics-access
+  name: {{ include "nvsentinel.fullname" . }}-metrics-access
   labels:
     {{- include "nvsentinel.labels" . | nindent 4 }}
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: NotIn
+        values:
+          - incluster-file-server
   policyTypes:
     - Ingress
   ingress:
