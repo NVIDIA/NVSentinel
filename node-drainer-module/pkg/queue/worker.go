@@ -20,13 +20,9 @@ import (
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
-
-	"go.mongodb.org/mongo-driver/bson"
 )
 
-type EventProcessor interface {
-	ProcessEvent(ctx context.Context, event bson.M, collection MongoCollectionAPI, nodeName string) error
-}
+// Interfaces are defined in types.go
 
 func (m *eventQueueManager) Start(ctx context.Context) {
 	slog.Info("Starting workqueue processor")
@@ -49,7 +45,14 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 
 	defer m.queue.Done(nodeEvent)
 
-	err := m.processEvent(ctx, *nodeEvent.Event, nodeEvent.Collection, nodeEvent.NodeName)
+	var err error
+	// Use database-agnostic interface
+	if nodeEvent.Event != nil && nodeEvent.Database != nil {
+		err = m.processEventGeneric(ctx, *nodeEvent.Event, nodeEvent.Database, nodeEvent.NodeName)
+	} else {
+		err = fmt.Errorf("event data or database interface not available")
+	}
+
 	if err != nil {
 		slog.Warn("Error processing event for node (will retry)",
 			"node", nodeEvent.NodeName,
@@ -65,11 +68,13 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 	return true
 }
 
-func (m *eventQueueManager) processEvent(ctx context.Context,
-	event bson.M, collection MongoCollectionAPI, nodeName string) error {
-	if m.eventProcessor == nil {
-		return fmt.Errorf("no event processor configured")
+func (m *eventQueueManager) processEventGeneric(ctx context.Context,
+	event map[string]interface{}, database DatabaseAPI, nodeName string) error {
+	if m.databaseEventProcessor == nil {
+		return fmt.Errorf("no database event processor configured")
 	}
 
-	return m.eventProcessor.ProcessEvent(ctx, event, collection, nodeName)
+	return m.databaseEventProcessor.ProcessEventGeneric(ctx, event, database, nodeName)
 }
+
+// processEvent method has been removed - only processEventGeneric is used now

@@ -16,17 +16,13 @@ package config
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/config"
 )
 
 type EvictMode string
@@ -113,18 +109,17 @@ func validateAndSetDefaults(config *TomlConfig) (*TomlConfig, error) {
 }
 
 type ReconcilerConfig struct {
-	TomlConfig    TomlConfig
-	MongoConfig   storewatcher.MongoDBConfig
-	TokenConfig   storewatcher.TokenConfig
-	MongoPipeline mongo.Pipeline
-	StateManager  statemanager.StateManager
+	TomlConfig     TomlConfig
+	DatabaseConfig config.DatabaseConfig
+	TokenConfig    client.TokenConfig
+	StateManager   statemanager.StateManager
 }
 
 // EnvConfig holds configuration loaded from environment variables
 type EnvConfig struct {
-	MongoURI                  string
-	MongoDatabase             string
-	MongoCollection           string
+	DatabaseURI               string
+	DatabaseName              string
+	DatabaseCollection        string
 	TokenDatabase             string
 	TokenCollection           string
 	TotalTimeoutSeconds       int
@@ -133,127 +128,56 @@ type EnvConfig struct {
 	IntervalCACertSeconds     int
 }
 
-// LoadEnvConfig loads and validates environment variable configuration
+// LoadEnvConfig loads and validates environment variable configuration using centralized store-client-sdk
 func LoadEnvConfig() (*EnvConfig, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI is not provided")
-	}
-
-	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if mongoDatabase == "" {
-		return nil, fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
-	}
-
-	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
-	if mongoCollection == "" {
-		return nil, fmt.Errorf("MONGODB_COLLECTION_NAME is not provided")
-	}
-
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if tokenDatabase == "" {
-		return nil, fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
-	}
-
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
-	if tokenCollection == "" {
-		return nil, fmt.Errorf("MONGODB_TOKEN_COLLECTION_NAME is not provided")
-	}
-
-	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
+	// Use centralized configuration from store-client-sdk
+	databaseConfig, err := config.NewDatabaseConfigFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
+		return nil, fmt.Errorf("failed to load database configuration: %w", err)
 	}
 
-	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
+	// Load token configuration using centralized function
+	tokenConfig, err := config.TokenConfigFromEnv("node-drainer-module")
 	if err != nil {
-		return nil, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
+		return nil, fmt.Errorf("failed to load token configuration: %w", err)
 	}
 
-	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
-	if err != nil {
-		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
-	}
-
-	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
-	if err != nil {
-		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
-	}
+	// Get timeout configuration
+	timeoutConfig := databaseConfig.GetTimeoutConfig()
 
 	return &EnvConfig{
-		MongoURI:                  mongoURI,
-		MongoDatabase:             mongoDatabase,
-		MongoCollection:           mongoCollection,
-		TokenDatabase:             tokenDatabase,
-		TokenCollection:           tokenCollection,
-		TotalTimeoutSeconds:       totalTimeoutSeconds,
-		IntervalSeconds:           intervalSeconds,
-		TotalCACertTimeoutSeconds: totalCACertTimeoutSeconds,
-		IntervalCACertSeconds:     intervalCACertSeconds,
+		DatabaseURI:               databaseConfig.GetConnectionURI(),
+		DatabaseName:              databaseConfig.GetDatabaseName(),
+		DatabaseCollection:        databaseConfig.GetCollectionName(),
+		TokenDatabase:             tokenConfig.TokenDatabase,
+		TokenCollection:           tokenConfig.TokenCollection,
+		TotalTimeoutSeconds:       timeoutConfig.GetPingTimeoutSeconds(),
+		IntervalSeconds:           timeoutConfig.GetPingIntervalSeconds(),
+		TotalCACertTimeoutSeconds: timeoutConfig.GetCACertTimeoutSeconds(),
+		IntervalCACertSeconds:     timeoutConfig.GetCACertIntervalSeconds(),
 	}, nil
 }
 
-// getEnvAsInt retrieves an environment variable as an integer with a default value
-func getEnvAsInt(name string, defaultValue int) (int, error) {
-	valueStr, exists := os.LookupEnv(name)
-	if !exists {
-		return defaultValue, nil
+// NewDatabaseConfig creates a database configuration from environment config and certificate paths
+func NewDatabaseConfig(databaseClientCertMountPath string) (config.DatabaseConfig, error) {
+	if databaseClientCertMountPath != "" {
+		return config.NewDatabaseConfigFromEnvWithDefaults(databaseClientCertMountPath)
 	}
 
-	value, err := strconv.Atoi(valueStr)
-	if err != nil {
-		return 0, fmt.Errorf("error converting %s to integer: %w", name, err)
-	}
-
-	if value <= 0 {
-		return 0, fmt.Errorf("value of %s must be a positive integer", name)
-	}
-
-	return value, nil
-}
-
-// NewMongoConfig creates a MongoDB configuration from environment config and certificate paths
-func NewMongoConfig(envConfig *EnvConfig, mongoClientCertMountPath string) storewatcher.MongoDBConfig {
-	return storewatcher.MongoDBConfig{
-		URI:        envConfig.MongoURI,
-		Database:   envConfig.MongoDatabase,
-		Collection: envConfig.MongoCollection,
-		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
-		},
-		TotalPingTimeoutSeconds:    envConfig.TotalTimeoutSeconds,
-		TotalPingIntervalSeconds:   envConfig.IntervalSeconds,
-		TotalCACertTimeoutSeconds:  envConfig.TotalCACertTimeoutSeconds,
-		TotalCACertIntervalSeconds: envConfig.IntervalCACertSeconds,
-	}
+	return config.NewDatabaseConfigFromEnv()
 }
 
 // NewTokenConfig creates a token configuration from environment config
-func NewTokenConfig(envConfig *EnvConfig) storewatcher.TokenConfig {
-	return storewatcher.TokenConfig{
+func NewTokenConfig(envConfig *EnvConfig) client.TokenConfig {
+	return client.TokenConfig{
 		ClientName:      "node-draining-module",
 		TokenDatabase:   envConfig.TokenDatabase,
 		TokenCollection: envConfig.TokenCollection,
 	}
 }
 
-// NewMongoPipeline creates the MongoDB change stream pipeline for watching quarantine events
-func NewMongoPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			bson.E{Key: "$match", Value: bson.D{
-				bson.E{Key: "operationType", Value: "update"},
-				bson.E{Key: "$or", Value: bson.A{
-					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.Quarantined}}}},
-					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.AlreadyQuarantined}}}},
-					bson.D{bson.E{Key: "updateDescription.updatedFields",
-						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.UnQuarantined}}}},
-				}},
-			}},
-		},
-	}
+// NewQuarantinePipeline creates the database change stream pipeline for watching quarantine events
+// This consolidates pipeline creation using the centralized store-client-sdk
+func NewQuarantinePipeline() interface{} {
+	return client.BuildQuarantineUpdatePipelineAgnostic()
 }

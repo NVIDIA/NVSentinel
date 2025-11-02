@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storewatcher
+package watcher
 
 import (
 	"fmt"
@@ -23,10 +23,21 @@ import (
 )
 
 // UnmarshalEvent takes in an event and a pointer to a variable of any type, and unmarshals the event into the variable
-func UnmarshalFullDocumentFromEvent[T any](event map[string]interface{}, result *T) error {
-	document, ok := event["fullDocument"].(bson.M)
+func UnmarshalFullDocumentFromEvent[T any](event Event, result *T) error {
+	fullDocument, ok := event["fullDocument"]
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
+	}
+
+	// Convert to bson.M for internal processing, handling both bson.M and map[string]interface{}
+	var document bson.M
+	switch v := fullDocument.(type) {
+	case bson.M:
+		document = v
+	case map[string]interface{}:
+		document = bson.M(v)
+	default:
+		return fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)
 	}
 
 	bsonBytes, err := bson.Marshal(document)
@@ -111,11 +122,22 @@ func CopyStructFields(dst, src reflect.Value) {
 
 // Unmarshalls from the mongodb fullDocument to Json tagged struct by internally converting
 // json tags for fields to bson tags
-func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event map[string]interface{},
+func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
 	bsonTaggedType reflect.Type, result *T) error {
-	document, ok := event["fullDocument"].(bson.M)
+	fullDocument, ok := event["fullDocument"]
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
+	}
+
+	// Convert to bson.M for internal processing, handling both bson.M and map[string]interface{}
+	var document bson.M
+	switch v := fullDocument.(type) {
+	case bson.M:
+		document = v
+	case map[string]interface{}:
+		document = bson.M(v)
+	default:
+		return fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)
 	}
 
 	bsonBytes, err := bson.Marshal(document)

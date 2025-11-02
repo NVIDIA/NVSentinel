@@ -24,11 +24,9 @@ import (
 	platform_connectors "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -43,25 +41,64 @@ func (m *mockPublisher) HealthEventOccurredV1(ctx context.Context, events *platf
 	return args.Get(0).(*emptypb.Empty), args.Error(1)
 }
 
-// Mock CollectionClient
-type mockCollectionClient struct {
+// Mock DatabaseClient
+type mockDatabaseClient struct {
 	mock.Mock
 }
 
-func (m *mockCollectionClient) Aggregate(ctx context.Context, pipeline interface{}, opts ...*options.AggregateOptions) (*mongo.Cursor, error) {
-	args := m.Called(ctx, pipeline, opts)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*mongo.Cursor), args.Error(1)
+func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+	args := m.Called(ctx, documentID, statusPath, status)
+	return args.Error(0)
 }
 
-func createMockCursor(docs []bson.M) (*mongo.Cursor, error) {
-	var docsInterface []interface{}
-	for _, doc := range docs {
-		docsInterface = append(docsInterface, doc)
-	}
-	return mongo.NewCursorFromDocuments(docsInterface, nil, nil)
+func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+	args := m.Called(ctx, filter, update)
+	return args.Get(0).(*client.UpdateResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+	args := m.Called(ctx, filter, document)
+	return args.Get(0).(*client.UpdateResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(client.SingleResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(client.Cursor), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+	args := m.Called(ctx, pipeline)
+	return args.Get(0).(client.Cursor), args.Error(1)
+}
+
+func (m *mockDatabaseClient) WithTransaction(ctx context.Context, fn func(client.SessionContext) error) error {
+	args := m.Called(ctx, fn)
+	return args.Error(0)
+}
+
+func (m *mockDatabaseClient) Ping(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{}) (client.ChangeStreamWatcher, error) {
+	args := m.Called(ctx, tokenConfig, pipeline)
+	return args.Get(0).(client.ChangeStreamWatcher), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Close(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
 }
 
 var (
@@ -122,34 +159,32 @@ var (
 )
 
 func TestCheckRule(t *testing.T) {
-	ctx := context.TODO()
+	ctx := context.Background()
 
-	mockClient := new(mockCollectionClient)
+	mockClient := new(mockDatabaseClient)
 
 	reconciler := &Reconciler{
-		config: HealthEventsAnalyzerReconcilerConfig{
-			CollectionClient: mockClient,
-		},
+		databaseClient: mockClient,
 	}
 
 	t.Run("rule1 matches", func(t *testing.T) {
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": true}})
-		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil).Once()
+		// Rule1 requires 3 occurrences, so return 3
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(3), nil).Once()
 		result := reconciler.evaluateRule(ctx, rules[0], healthEvent)
 		assert.True(t, result)
 		mockClient.AssertExpectations(t)
 	})
 
 	t.Run("rule2 does not match", func(t *testing.T) {
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": false}})
-		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil).Once()
+		// Rule2 requires 1 occurrence for each sequence, return 0 for first sequence
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(0), nil).Once()
 		result := reconciler.evaluateRule(ctx, rules[1], healthEvent)
 		assert.False(t, result)
 		mockClient.AssertExpectations(t)
 	})
 
-	t.Run("aggregation fails", func(t *testing.T) {
-		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(nil, errors.New("aggregation failed")).Once()
+	t.Run("count documents fails", func(t *testing.T) {
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(0), errors.New("count failed")).Once()
 		result := reconciler.evaluateRule(ctx, rules[0], healthEvent)
 		assert.False(t, result)
 		mockClient.AssertExpectations(t)
@@ -168,7 +203,7 @@ func TestHandleEvent(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("rule matches and event is published", func(t *testing.T) {
-		mockClient := new(mockCollectionClient)
+		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}
 		expectedHealthEvents := &platform_connectors.HealthEvents{
 			Version: 1,
@@ -179,13 +214,13 @@ func TestHandleEvent(t *testing.T) {
 		reconciler := Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: rules},
-				CollectionClient:          mockClient,
 				Publisher:                 publisher.NewPublisher(mockPublisher),
 			},
+			databaseClient: mockClient,
 		}
 
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": true}})
-		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
+		// Rule1 requires 3 occurrences, so return 3
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(3), nil)
 
 		published, err := reconciler.handleEvent(ctx, &healthEvent)
 		assert.NoError(t, err)
@@ -208,21 +243,21 @@ func TestHandleEvent(t *testing.T) {
 			},
 		}
 
-		mockClient := new(mockCollectionClient)
+		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}
 
 		reconciler := Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: rules},
-				CollectionClient:          mockClient,
 				Publisher:                 publisher.NewPublisher(mockPublisher),
 			},
+			databaseClient: mockClient,
 		}
 
 		published, err := reconciler.handleEvent(ctx, &healthEvent)
 		assert.NoError(t, err)
 		assert.False(t, published)
-		mockClient.AssertNotCalled(t, "Aggregate")
+		mockClient.AssertNotCalled(t, "CountDocuments")
 		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
 
@@ -240,19 +275,20 @@ func TestHandleEvent(t *testing.T) {
 			},
 		}
 
-		mockClient := new(mockCollectionClient)
+		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}
 
 		reconciler := Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: rules},
-				CollectionClient:          mockClient,
 				Publisher:                 publisher.NewPublisher(mockPublisher),
 			},
+			databaseClient: mockClient,
 		}
 
-		mockCursor, _ := createMockCursor([]bson.M{{"ruleMatched": false}})
-		mockClient.On("Aggregate", ctx, mock.Anything, mock.Anything).Return(mockCursor, nil)
+		// Rule2 has two sequences, return enough for first but not second
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(1), nil).Once() // First sequence passes
+		mockClient.On("CountDocuments", ctx, mock.Anything, mock.Anything).Return(int64(0), nil).Once() // Second sequence fails
 
 		published, err := reconciler.handleEvent(ctx, &healthEvent)
 		assert.NoError(t, err)
@@ -262,21 +298,21 @@ func TestHandleEvent(t *testing.T) {
 	})
 
 	t.Run("empty rules list", func(t *testing.T) {
-		mockClient := new(mockCollectionClient)
+		mockClient := new(mockDatabaseClient)
 		mockPublisher := &mockPublisher{}
 
 		reconciler := Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{}},
-				CollectionClient:          mockClient,
 				Publisher:                 publisher.NewPublisher(mockPublisher),
 			},
+			databaseClient: mockClient,
 		}
 
 		published, err := reconciler.handleEvent(ctx, &healthEvent)
 		assert.NoError(t, err)
 		assert.False(t, published)
-		mockClient.AssertNotCalled(t, "Aggregate")
+		mockClient.AssertNotCalled(t, "CountDocuments")
 		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
 }

@@ -194,9 +194,9 @@ type EnvVarSpec struct {
 // Example usage:
 //
 //	specs := []configmanager.EnvVarSpec{
-//	    {Name: "MONGODB_URI"},                                     // Required
-//	    {Name: "MONGODB_DATABASE_NAME"},                           // Required
-//	    {Name: "MONGODB_PORT", Optional: true, DefaultValue: "27017"}, // Included with default
+//	    {Name: "DATABASE_URI"},                                    // Required
+//	    {Name: "DATABASE_NAME"},                                   // Required
+//	    {Name: "DATABASE_PORT", Optional: true, DefaultValue: "5432"}, // Included with default
 //	    {Name: "DEBUG_MODE", Optional: true, DefaultValue: ""},    // NOT included (empty default)
 //	}
 //	envVars, errors := configmanager.ReadEnvVars(specs)
@@ -204,9 +204,9 @@ type EnvVarSpec struct {
 //	    log.Fatalf("Missing required environment variables: %v", errors)
 //	}
 //	// Use the values
-//	dbURI := envVars["MONGODB_URI"]
-//	dbName := envVars["MONGODB_DATABASE_NAME"]
-//	dbPort := envVars["MONGODB_PORT"]  // Will be "27017" if not set
+//	dbURI := envVars["DATABASE_URI"]
+//	dbName := envVars["DATABASE_NAME"]
+//	dbPort := envVars["DATABASE_PORT"]  // Will be "5432" if not set
 func ReadEnvVars(specs []EnvVarSpec) (map[string]string, []error) {
 	results := make(map[string]string)
 

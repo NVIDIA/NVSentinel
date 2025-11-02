@@ -23,27 +23,30 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
-	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/adapter"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	sdkconfig "github.com/nvidia/nvsentinel/store-client-sdk/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client-sdk/pkg/datastore/providers"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/factory"
 
-	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 type InitializationParams struct {
-	MongoClientCertMountPath string
-	KubeconfigPath           string
-	TomlConfigPath           string
-	MetricsPort              string
-	DryRun                   bool
+	DatabaseClientCertMountPath string
+	KubeconfigPath              string
+	TomlConfigPath              string
+	MetricsPort                 string
+	DryRun                      bool
 }
 
 type Components struct {
 	Informers    *informers.Informers
-	EventWatcher *mongodb.EventWatcher
+	EventWatcher client.ChangeStreamWatcher
 	QueueManager queue.EventQueueManager
 }
 
@@ -55,9 +58,17 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to load environment configuration: %w", err)
 	}
 
-	mongoConfig := config.NewMongoConfig(envConfig, params.MongoClientCertMountPath)
+	// Load datastore configuration using the new unified system
+	dsConfig, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load datastore config: %w", err)
+	}
+
+	// Convert to legacy DatabaseConfig interface for compatibility with existing factory
+	// Pass the certificate mount path to the adapter to handle path resolution at runtime
+	databaseConfig := adapter.ConvertDataStoreConfigToLegacyWithCertPath(dsConfig, params.DatabaseClientCertMountPath)
 	tokenConfig := config.NewTokenConfig(envConfig)
-	pipeline := config.NewMongoPipeline()
+	pipeline := config.NewQuarantinePipeline()
 
 	tomlCfg, err := config.LoadTomlConfig(params.TomlConfigPath)
 	if err != nil {
@@ -81,24 +92,24 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	stateManager := initializeStateManager(clientSet)
-	reconcilerCfg := createReconcilerConfig(*tomlCfg, mongoConfig, tokenConfig, pipeline, stateManager)
+	reconcilerCfg := createReconcilerConfig(*tomlCfg, databaseConfig, tokenConfig, pipeline, stateManager)
 
 	// Reconciler creates its own queue manager
 	reconciler := initializeReconciler(reconcilerCfg, params.DryRun, clientSet, informersInstance)
 	queueManager := reconciler.GetQueueManager()
 
-	collection, err := initializeMongoCollection(ctx, mongoConfig)
+	// Create client factory and database client from databaseConfig
+	clientFactory := factory.NewClientFactory(databaseConfig)
+
+	// Database client removed as functionality moved to store-client-sdk
+
+	changeStreamWatcher, err := clientFactory.CreateChangeStreamWatcher(ctx, "node-drainer-module", pipeline)
 	if err != nil {
-		return nil, fmt.Errorf("error while initializing mongo collection: %w", err)
+		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
-	eventWatcher := mongodb.NewEventWatcher(
-		mongoConfig,
-		tokenConfig,
-		pipeline,
-		queueManager,
-		collection,
-	)
+	// Use the change stream watcher directly
+	eventWatcher := changeStreamWatcher
 
 	slog.Info("Initialization completed successfully")
 
@@ -134,17 +145,16 @@ func initializeStateManager(clientSet kubernetes.Interface) statemanager.StateMa
 
 func createReconcilerConfig(
 	tomlCfg config.TomlConfig,
-	mongoConfig storewatcher.MongoDBConfig,
-	tokenConfig storewatcher.TokenConfig,
-	pipeline mongo.Pipeline,
+	databaseConfig sdkconfig.DatabaseConfig,
+	tokenConfig client.TokenConfig,
+	pipeline interface{}, // Still passed for potential future use, but not stored in config
 	stateManager statemanager.StateManager,
 ) config.ReconcilerConfig {
 	return config.ReconcilerConfig{
-		TomlConfig:    tomlCfg,
-		MongoConfig:   mongoConfig,
-		TokenConfig:   tokenConfig,
-		MongoPipeline: pipeline,
-		StateManager:  stateManager,
+		TomlConfig:     tomlCfg,
+		DatabaseConfig: databaseConfig,
+		TokenConfig:    tokenConfig,
+		StateManager:   stateManager,
 	}
 }
 
@@ -155,16 +165,4 @@ func initializeReconciler(
 	informersInstance *informers.Informers,
 ) *reconciler.Reconciler {
 	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance)
-}
-
-func initializeMongoCollection(
-	ctx context.Context,
-	mongoConfig storewatcher.MongoDBConfig,
-) (queue.MongoCollectionAPI, error) {
-	collection, err := storewatcher.GetCollectionClient(ctx, mongoConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get MongoDB collection: %w", err)
-	}
-
-	return collection, nil
 }

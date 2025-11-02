@@ -16,6 +16,8 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -29,14 +31,12 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/crstatus"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 
+	"github.com/google/uuid"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -178,7 +178,7 @@ func createTestRemediationClient(t *testing.T, dryRun bool) *FaultRemediationCli
 func TestCRBasedDeduplication_Integration(t *testing.T) {
 	ctx := testContext
 
-	nodeName := "test-node-dedup-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := "test-node-dedup-" + uuid.New().String()[:8]
 	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -198,8 +198,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		r := NewReconciler(cfg, false)
 
 		// Process Event 1
-		healthEventDoc := &HealthEventDoc{
-			ID: primitive.NewObjectID(),
+		healthEventDoc := &HealthEventData{
+			ID: uuid.New().String(),
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
@@ -252,8 +252,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		r := NewReconciler(cfg, false)
 
 		// Event 1: Create first CR
-		event1 := &HealthEventDoc{
-			ID: primitive.NewObjectID(),
+		event1 := &HealthEventData{
+			ID: uuid.New().String(),
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
@@ -300,8 +300,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		r := NewReconciler(cfg, false)
 
 		// Event 1: Create first CR
-		event1 := &HealthEventDoc{
-			ID: primitive.NewObjectID(),
+		event1 := &HealthEventData{
+			ID: uuid.New().String(),
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
@@ -325,8 +325,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should be removed from annotation")
 
 		// Event 2: Create retry CR
-		event2 := &HealthEventDoc{
-			ID: primitive.NewObjectID(),
+		event2 := &HealthEventData{
+			ID: uuid.New().String(),
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
@@ -368,8 +368,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		r := NewReconciler(cfg, false)
 
 		// Event 1: COMPONENT_RESET
-		event1 := &HealthEventDoc{
-			ID: primitive.NewObjectID(),
+		event1 := &HealthEventData{
+			ID: uuid.New().String(),
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
@@ -412,7 +412,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	ctx := testContext
 
-	nodeName := "test-node-sequence-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := "test-node-sequence-" + uuid.New().String()[:8]
 	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -437,8 +437,8 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	}
 
 	// Event 1: RESTART_VM creates CR-1
-	event1 := &HealthEventDoc{
-		ID: primitive.NewObjectID(),
+	event1 := &HealthEventData{
+		ID: uuid.New().String(),
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			HealthEvent: &protos.HealthEvent{
 				NodeName:          nodeName,
@@ -499,8 +499,8 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should clean annotation")
 
 	// Event 5: Create retry CR
-	event5 := &HealthEventDoc{
-		ID: primitive.NewObjectID(),
+	event5 := &HealthEventData{
+		ID: uuid.New().String(),
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			HealthEvent: &protos.HealthEvent{
 				NodeName:          nodeName,
@@ -526,7 +526,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "test-node-full-e2e-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := "test-node-full-e2e-" + uuid.New().String()[:8]
 	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -545,15 +545,15 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 
 		// Create mock MongoDB collection
 		updateCalled := 0
-		mockColl := &MockCollection{
-			updateOneFn: func(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
+		mockColl := &MockDatabaseClient{
+			updateDocumentFn: func(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
 				updateCalled++
-				return &mongo.UpdateResult{ModifiedCount: 1}, nil
+				return &client.UpdateResult{ModifiedCount: 1}, nil
 			},
 		}
 
 		// Create mock watcher with event channel
-		eventsChan := make(chan bson.M, 10)
+		eventsChan := make(chan client.Event, 10)
 		mockWatcher := &MockChangeStreamWatcher{
 			eventsChan:          eventsChan,
 			markProcessedCalled: 0,
@@ -581,7 +581,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		}()
 
 		// Event 1: Send quarantine event through channel
-		eventID1 := primitive.NewObjectID()
+		eventID1 := uuid.New().String()
 		event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 		eventsChan <- event1
 
@@ -632,7 +632,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Record MongoDB update count before sending duplicate event
 		updateCountBefore := updateCalled
 
-		eventID2 := primitive.NewObjectID()
+		eventID2 := uuid.New().String()
 		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_COMPONENT_RESET)
 		eventsChan <- event2
 
@@ -723,53 +723,100 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 }
 
 // Helper to create quarantine event
-func createQuarantineEvent(eventID primitive.ObjectID, nodeName string, action protos.RecommendedAction) bson.M {
-	return bson.M{
+func createQuarantineEvent(eventID string, nodeName string, action protos.RecommendedAction) *MockEvent {
+	data := map[string]interface{}{
 		"operationType": "update",
-		"fullDocument": bson.M{
+		"fullDocument": map[string]interface{}{
 			"_id": eventID,
-			"healtheventstatus": bson.M{
-				"userpodsevictionstatus": bson.M{
+			"healtheventstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]interface{}{
 					"status": model.StatusSucceeded,
 				},
 				"nodequarantined": model.Quarantined,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
 		},
 	}
+	return &MockEvent{
+		data:       data,
+		documentID: eventID,
+		nodeName:   nodeName,
+	}
 }
 
 // Helper to create unquarantine event
-func createUnquarantineEvent(nodeName string) bson.M {
-	return bson.M{
+func createUnquarantineEvent(nodeName string) *MockEvent {
+	eventID := uuid.New().String()
+	data := map[string]interface{}{
 		"operationType": "update",
-		"fullDocument": bson.M{
-			"_id": primitive.NewObjectID(),
-			"healtheventstatus": bson.M{
+		"fullDocument": map[string]interface{}{
+			"_id": eventID,
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.UnQuarantined,
-				"userpodsevictionstatus": bson.M{
+				"userpodsevictionstatus": map[string]interface{}{
 					"status": model.StatusSucceeded,
 				},
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename": nodeName,
 			},
 		},
 	}
+	return &MockEvent{
+		data:       data,
+		documentID: eventID,
+		nodeName:   nodeName,
+	}
+}
+
+// MockEvent implements client.Event interface for testing
+type MockEvent struct {
+	data       map[string]interface{}
+	documentID string
+	nodeName   string
+}
+
+func (m *MockEvent) GetDocumentID() (string, error) {
+	if m.documentID != "" {
+		return m.documentID, nil
+	}
+	if id, ok := m.data["_id"].(string); ok {
+		return id, nil
+	}
+	return "", fmt.Errorf("document ID not found")
+}
+
+func (m *MockEvent) GetNodeName() (string, error) {
+	if m.nodeName != "" {
+		return m.nodeName, nil
+	}
+	if name, ok := m.data["node_name"].(string); ok {
+		return name, nil
+	}
+	return "", fmt.Errorf("node name not found")
+}
+
+func (m *MockEvent) UnmarshalDocument(v interface{}) error {
+	// Convert map to JSON and then unmarshal to target type
+	jsonData, err := json.Marshal(m.data)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(jsonData, v)
 }
 
 // MockChangeStreamWatcher mocks the change stream watcher for testing
-// Implements WatcherInterface from reconciler package
+// Implements client.ChangeStreamWatcher interface
 type MockChangeStreamWatcher struct {
-	eventsChan          chan bson.M
+	eventsChan          chan client.Event
 	markProcessedCalled int
 	mu                  sync.Mutex
 }
 
-func (m *MockChangeStreamWatcher) Events() <-chan bson.M {
+func (m *MockChangeStreamWatcher) Events() <-chan client.Event {
 	return m.eventsChan
 }
 
@@ -787,6 +834,11 @@ func (m *MockChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
 	defer m.mu.Unlock()
 	m.markProcessedCalled++
 	return nil
+}
+
+// GetUnprocessedEventCount implements optional ChangeStreamMetrics interface
+func (m *MockChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, collection string) (int64, error) {
+	return 0, nil // Simple mock implementation for metrics
 }
 
 // Helper functions

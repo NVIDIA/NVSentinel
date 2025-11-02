@@ -22,7 +22,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -37,12 +36,15 @@ func NewEventQueueManager() EventQueueManager {
 	return mgr
 }
 
-func (m *eventQueueManager) SetEventProcessor(processor EventProcessor) {
-	m.eventProcessor = processor
+// SetEventProcessor method has been removed - use SetDatabaseEventProcessor instead
+
+func (m *eventQueueManager) SetDatabaseEventProcessor(processor DatabaseEventProcessor) {
+	m.databaseEventProcessor = processor
 }
 
-func (m *eventQueueManager) EnqueueEvent(ctx context.Context,
-	nodeName string, event bson.M, collection MongoCollectionAPI) error {
+// EnqueueEventGeneric enqueues an event using the new database-agnostic interface
+func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context,
+	nodeName string, event map[string]interface{}, database DatabaseAPI) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("context cancelled while enqueueing event for node %s: %w", nodeName, ctx.Err())
 	}
@@ -54,9 +56,9 @@ func (m *eventQueueManager) EnqueueEvent(ctx context.Context,
 	}
 
 	nodeEvent := NodeEvent{
-		NodeName:   nodeName,
-		Event:      &event,
-		Collection: collection,
+		NodeName: nodeName,
+		Event:    &event,
+		Database: database,
 	}
 
 	m.queue.Add(nodeEvent)
@@ -64,6 +66,8 @@ func (m *eventQueueManager) EnqueueEvent(ctx context.Context,
 
 	return nil
 }
+
+// EnqueueEvent method has been removed - use EnqueueEventGeneric instead
 
 func (m *eventQueueManager) Shutdown() {
 	slog.Info("Shutting down workqueue")

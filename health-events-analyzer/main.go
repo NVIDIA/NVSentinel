@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
@@ -29,11 +28,10 @@ import (
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client-sdk/pkg/datastore/providers"
 	"golang.org/x/sync/errgroup"
-
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -55,86 +53,44 @@ func main() {
 	}
 }
 
-func loadMongoConfig(mongoClientCertMountPath string) (storewatcher.MongoDBConfig, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_URI is not set")
+// getCertPath checks if the certificate exists at the new path, falls back to legacy path
+func getCertPath(databaseClientCertMountPath string) string {
+	// Check if ca.crt exists at the new path
+	if _, err := os.Stat(databaseClientCertMountPath + "/ca.crt"); err == nil {
+		return databaseClientCertMountPath
 	}
 
-	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if mongoDatabase == "" {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
+	// Fall back to legacy mongo-client path
+	legacyPath := "/etc/ssl/mongo-client"
+	if _, err := os.Stat(legacyPath + "/ca.crt"); err == nil {
+		slog.Info("Using legacy certificate path for backward compatibility", "path", legacyPath)
+		return legacyPath
 	}
 
-	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
-	if mongoCollection == "" {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
-	}
-
-	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
-	if err != nil {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
-	}
-
-	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
-	if err != nil {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
-	}
-
-	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
-	if err != nil {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
-	}
-
-	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
-	if err != nil {
-		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
-	}
-
-	return storewatcher.MongoDBConfig{
-		URI:        mongoURI,
-		Database:   mongoDatabase,
-		Collection: mongoCollection,
-		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
-		},
-		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
-		TotalPingIntervalSeconds:   intervalSeconds,
-		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
-		TotalCACertIntervalSeconds: intervalCACertSeconds,
-	}, nil
+	// If neither exists, return the new path (original behavior)
+	return databaseClientCertMountPath
 }
 
-func loadTokenConfig() (storewatcher.TokenConfig, error) {
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if tokenDatabase == "" {
-		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
+func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStoreConfig, error) {
+	// Load using the new unified datastore configuration
+	config, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load datastore config: %w", err)
 	}
 
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
-	if tokenCollection == "" {
-		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_TOKEN_COLLECTION_NAME is not set")
+	// Override SSL cert path if provided via command line
+	if databaseClientCertMountPath != "" && config.Connection.SSLCert == "" {
+		certPath := getCertPath(databaseClientCertMountPath)
+		config.Connection.SSLCert = certPath + "/tls.crt"
+		config.Connection.SSLKey = certPath + "/tls.key"
+		config.Connection.SSLRootCert = certPath + "/ca.crt"
 	}
 
-	return storewatcher.TokenConfig{
-		ClientName:      "health-events-analyzer",
-		TokenDatabase:   tokenDatabase,
-		TokenCollection: tokenCollection,
-	}, nil
+	return config, nil
 }
 
-func createPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: "insert"},
-				{Key: "fullDocument.healthevent.isfatal", Value: false},
-				{Key: "fullDocument.healthevent.ishealthy", Value: false},
-			}},
-		},
-	}
+func createPipeline() interface{} {
+	return client.BuildNonFatalInsertPipelineAgnostic()
 }
 
 func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {
@@ -157,17 +113,12 @@ func run() error {
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 
-	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
+	databaseClientCertMountPath := flag.String("database-client-cert-mount-path", "/etc/ssl/database-client",
+		"path where the database client cert is mounted")
 
 	flag.Parse()
 
-	mongoConfig, err := loadMongoConfig(*mongoClientCertMountPath)
-	if err != nil {
-		return err
-	}
-
-	tokenConfig, err := loadTokenConfig()
+	databaseConfig, err := loadDatabaseConfig(*databaseClientCertMountPath)
 	if err != nil {
 		return err
 	}
@@ -187,11 +138,10 @@ func run() error {
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{
-		MongoHealthEventCollectionConfig: mongoConfig,
-		TokenConfig:                      tokenConfig,
-		MongoPipeline:                    pipeline,
-		HealthEventsAnalyzerRules:        tomlConfig,
-		Publisher:                        pub,
+		DataStoreConfig:           databaseConfig,
+		Pipeline:                  pipeline,
+		HealthEventsAnalyzerRules: tomlConfig,
+		Publisher:                 pub,
 	}
 
 	rec := reconciler.NewReconciler(reconcilerCfg)
@@ -230,22 +180,4 @@ func run() error {
 
 	// Wait for both goroutines to finish
 	return g.Wait()
-}
-
-func getEnvAsInt(name string, defaultValue int) (int, error) {
-	valueStr, exists := os.LookupEnv(name)
-	if !exists {
-		return defaultValue, nil
-	}
-
-	value, err := strconv.Atoi(valueStr)
-	if err != nil {
-		return 0, fmt.Errorf("error converting %s to integer: %w", name, err)
-	}
-
-	if value <= 0 {
-		return 0, fmt.Errorf("value of %s must be a positive integer", name)
-	}
-
-	return value, nil
 }

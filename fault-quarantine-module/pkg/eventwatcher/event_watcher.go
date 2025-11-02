@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mongodb
+package eventwatcher
 
 import (
 	"context"
@@ -22,18 +22,12 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/metrics"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 )
 
 type EventWatcher struct {
-	mongoConfig          storewatcher.MongoDBConfig
-	tokenConfig          storewatcher.TokenConfig
-	mongoPipeline        mongo.Pipeline
-	collection           *mongo.Collection
-	watcher              *storewatcher.ChangeStreamWatcher
+	changeStreamWatcher  client.ChangeStreamWatcher
+	databaseClient       client.DatabaseClient
 	processEventCallback func(
 		ctx context.Context,
 		event *model.HealthEventWithStatus,
@@ -43,8 +37,8 @@ type EventWatcher struct {
 }
 
 type LastProcessedObjectIDStore interface {
-	StoreLastProcessedObjectID(objID primitive.ObjectID)
-	LoadLastProcessedObjectID() (primitive.ObjectID, bool)
+	StoreLastProcessedObjectID(objID string)
+	LoadLastProcessedObjectID() (string, bool)
 }
 
 type EventWatcherInterface interface {
@@ -58,18 +52,14 @@ type EventWatcherInterface interface {
 }
 
 func NewEventWatcher(
-	mongoConfig storewatcher.MongoDBConfig,
-	tokenConfig storewatcher.TokenConfig,
-	mongoPipeline mongo.Pipeline,
-	collection *mongo.Collection,
+	changeStreamWatcher client.ChangeStreamWatcher,
+	databaseClient client.DatabaseClient,
 	unprocessedEventsMetricUpdateInterval time.Duration,
 	lastProcessedObjectID LastProcessedObjectIDStore,
 ) *EventWatcher {
 	return &EventWatcher{
-		mongoConfig:                           mongoConfig,
-		tokenConfig:                           tokenConfig,
-		mongoPipeline:                         mongoPipeline,
-		collection:                            collection,
+		changeStreamWatcher:                   changeStreamWatcher,
+		databaseClient:                        databaseClient,
 		unprocessedEventsMetricUpdateInterval: unprocessedEventsMetricUpdateInterval,
 		lastProcessedObjectID:                 lastProcessedObjectID,
 	}
@@ -85,29 +75,22 @@ func (w *EventWatcher) SetProcessEventCallback(
 }
 
 func (w *EventWatcher) Start(ctx context.Context) error {
-	slog.Info("Starting MongoDB event watcher")
+	slog.Info("Starting event watcher")
 
-	watcher, err := storewatcher.NewChangeStreamWatcher(ctx, w.mongoConfig, w.tokenConfig, w.mongoPipeline)
-	if err != nil {
-		return fmt.Errorf("failed to create change stream watcher: %w", err)
-	}
+	w.changeStreamWatcher.Start(ctx)
+	slog.Info("Change stream watcher started")
 
-	w.watcher = watcher
-
-	watcher.Start(ctx)
-	slog.Info("MongoDB change stream watcher started successfully")
-
-	go w.updateUnprocessedEventsMetric(ctx, watcher)
+	go w.updateUnprocessedEventsMetric(ctx)
 
 	watchDoneCh := make(chan error, 1)
 
 	go func() {
-		err := w.watchEvents(ctx, watcher)
+		err := w.watchEvents(ctx)
 		if err != nil {
-			slog.Error("MongoDB event watcher goroutine failed", "error", err)
+			slog.Error("Event watcher goroutine failed", "error", err)
 			watchDoneCh <- err
 		} else {
-			slog.Error("MongoDB event watcher goroutine exited unexpectedly, event processing has stopped")
+			slog.Error("Event watcher goroutine exited unexpectedly, event processing has stopped")
 			watchDoneCh <- fmt.Errorf("event watcher channel closed unexpectedly")
 		}
 	}()
@@ -115,26 +98,26 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	var watchErr error
 	select {
 	case <-ctx.Done():
-		slog.Info("Context cancelled, stopping MongoDB event watcher")
+		slog.Info("Context cancelled, stopping event watcher")
 	case err := <-watchDoneCh:
 		slog.Error("Event watcher terminated unexpectedly, initiating shutdown", "error", err)
 		watchErr = fmt.Errorf("event watcher terminated: %w", err)
 	}
 
-	watcher.Close(ctx)
+	w.changeStreamWatcher.Close(ctx)
 
 	return watchErr
 }
 
-func (w *EventWatcher) watchEvents(ctx context.Context, watcher *storewatcher.ChangeStreamWatcher) error {
-	for event := range watcher.Events() {
+func (w *EventWatcher) watchEvents(ctx context.Context) error {
+	for event := range w.changeStreamWatcher.Events() {
 		metrics.TotalEventsReceived.Inc()
 
 		if processErr := w.processEvent(ctx, event); processErr != nil {
 			slog.Error("Event processing failed, but still marking as processed to proceed ahead", "error", processErr)
 		}
 
-		if err := w.watcher.MarkProcessed(ctx); err != nil {
+		if err := w.changeStreamWatcher.MarkProcessed(ctx); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("mark_processed_error").Inc()
 			slog.Error("Error updating resume token", "error", err)
 
@@ -145,12 +128,9 @@ func (w *EventWatcher) watchEvents(ctx context.Context, watcher *storewatcher.Ch
 	return nil
 }
 
-func (w *EventWatcher) processEvent(ctx context.Context, event bson.M) error {
+func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) error {
 	healthEventWithStatus := model.HealthEventWithStatus{}
-	err := storewatcher.UnmarshalFullDocumentFromEvent(
-		event,
-		&healthEventWithStatus,
-	)
+	err := event.UnmarshalDocument(&healthEventWithStatus)
 
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("unmarshal_error").Inc()
@@ -158,13 +138,19 @@ func (w *EventWatcher) processEvent(ctx context.Context, event bson.M) error {
 	}
 
 	slog.Debug("Processing event", "event", healthEventWithStatus)
-	w.storeEventObjectID(event)
+
+	eventID, err := event.GetDocumentID()
+	if err != nil {
+		return fmt.Errorf("error getting document ID: %w", err)
+	}
+
+	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
 	startTime := time.Now()
 	status := w.processEventCallback(ctx, &healthEventWithStatus)
 
 	if status != nil {
-		if err := w.updateNodeQuarantineStatus(ctx, event, status); err != nil {
+		if err := w.updateNodeQuarantineStatus(ctx, eventID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()
 			return fmt.Errorf("failed to update node quarantine status: %w", err)
 		}
@@ -176,16 +162,7 @@ func (w *EventWatcher) processEvent(ctx context.Context, event bson.M) error {
 	return nil
 }
 
-func (w *EventWatcher) storeEventObjectID(eventBson bson.M) {
-	if fullDoc, ok := eventBson["fullDocument"].(bson.M); ok {
-		if objID, ok := fullDoc["_id"].(primitive.ObjectID); ok {
-			w.lastProcessedObjectID.StoreLastProcessedObjectID(objID)
-		}
-	}
-}
-
-func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context,
-	watcher *storewatcher.ChangeStreamWatcher) {
+func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context) {
 	ticker := time.NewTicker(w.unprocessedEventsMetricUpdateInterval)
 	defer ticker.Stop()
 
@@ -199,41 +176,36 @@ func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context,
 				continue
 			}
 
-			unprocessedCount, err := watcher.GetUnprocessedEventCount(ctx, objID)
-			if err != nil {
-				slog.Debug("Failed to get unprocessed event count", "error", err)
-				continue
-			}
+			// Try to get metrics if the watcher supports it
+			if metricsWatcher, ok := w.changeStreamWatcher.(client.ChangeStreamMetrics); ok {
+				unprocessedCount, err := metricsWatcher.GetUnprocessedEventCount(ctx, objID)
+				if err != nil {
+					slog.Debug("Failed to get unprocessed event count", "error", err)
+					continue
+				}
 
-			metrics.EventBacklogSize.Set(float64(unprocessedCount))
-			slog.Debug("Updated unprocessed events metric", "count", unprocessedCount, "afterObjectID", objID.Hex())
+				metrics.EventBacklogSize.Set(float64(unprocessedCount))
+				slog.Debug("Updated unprocessed events metric", "count", unprocessedCount, "afterObjectID", objID)
+			} else {
+				// If metrics are not supported, set metric to 0 or skip
+				slog.Debug("Change stream watcher does not support metrics")
+				metrics.EventBacklogSize.Set(0)
+			}
 		}
 	}
 }
 
 func (w *EventWatcher) updateNodeQuarantineStatus(
 	ctx context.Context,
-	event bson.M,
+	eventID string,
 	nodeQuarantinedStatus *model.Status,
 ) error {
-	document, ok := event["fullDocument"].(bson.M)
-	if !ok {
-		return fmt.Errorf("error extracting fullDocument from event")
+	err := client.UpdateHealthEventNodeQuarantineStatus(ctx, w.databaseClient, eventID, string(*nodeQuarantinedStatus))
+	if err != nil {
+		return fmt.Errorf("error updating node quarantine status: %w", err)
 	}
 
-	filter := bson.M{"_id": document["_id"]}
-
-	update := bson.M{
-		"$set": bson.M{
-			"healtheventstatus.nodequarantined": *nodeQuarantinedStatus,
-		},
-	}
-
-	if _, err := w.collection.UpdateOne(ctx, filter, update); err != nil {
-		return fmt.Errorf("error updating document with _id: %v, error: %w", document["_id"], err)
-	}
-
-	slog.Info("Document updated with status", "id", document["_id"], "status", *nodeQuarantinedStatus)
+	slog.Info("Document updated with status", "id", eventID, "status", *nodeQuarantinedStatus)
 
 	return nil
 }

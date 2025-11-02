@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storewatcher
+package watcher
 
 import (
 	"context"
@@ -34,6 +34,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 )
+
+// Event represents a database-agnostic event that abstracts away provider-specific types
+type Event map[string]interface{}
 
 type MongoDBClientTLSCertConfig struct {
 	TlsCertPath string
@@ -70,7 +73,7 @@ type TokenDoc struct {
 type ChangeStreamWatcher struct {
 	client                    *mongo.Client
 	changeStream              *mongo.ChangeStream
-	eventChannel              chan bson.M
+	eventChannel              chan Event
 	resumeTokenCol            *mongo.Collection
 	clientName                string
 	mu                        sync.Mutex
@@ -174,7 +177,7 @@ func NewChangeStreamWatcher(
 	watcher := &ChangeStreamWatcher{
 		client:                    client,
 		changeStream:              cs,
-		eventChannel:              make(chan bson.M),
+		eventChannel:              make(chan Event),
 		resumeTokenCol:            tokenColl,
 		clientName:                tokenConfig.ClientName,
 		resumeTokenUpdateTimeout:  totalTimeout,
@@ -311,7 +314,10 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 						slog.Info("Failed to decode change stream event", "error", err)
 						continue
 					}
-					w.eventChannel <- event
+
+					// Convert MongoDB-specific bson.M to database-agnostic Event type
+					genericEvent := Event(event)
+					w.eventChannel <- genericEvent
 				} else if csErr != nil {
 					slog.Error("Failed to watch change stream", "error", csErr)
 				}
@@ -350,7 +356,7 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context) error {
 	}
 }
 
-func (w *ChangeStreamWatcher) Events() <-chan bson.M {
+func (w *ChangeStreamWatcher) Events() <-chan Event {
 	return w.eventChannel
 }
 

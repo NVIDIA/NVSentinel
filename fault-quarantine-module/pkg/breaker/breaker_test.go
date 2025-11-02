@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/testutils"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -183,7 +183,7 @@ func newTestBreaker(t *testing.T, ctx context.Context, totalNodes int, tripPerce
 	// Create the specified number of nodes
 	nodeNames := make([]string, totalNodes)
 	for i := 0; i < totalNodes; i++ {
-		nodeName := fmt.Sprintf("test-node-%d-%s", i, primitive.NewObjectID().Hex()[:6])
+		nodeName := fmt.Sprintf("test-node-%d-%s", i, testutils.GenerateTestNodeName("")[:6])
 		nodeNames[i] = nodeName
 		createTestNode(ctx, t, nodeName)
 	}
@@ -200,7 +200,7 @@ func newTestBreaker(t *testing.T, ctx context.Context, totalNodes int, tripPerce
 		return err == nil && actualNodes == totalNodes
 	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see all %d nodes", totalNodes)
 
-	configMapName := "test-breaker-" + primitive.NewObjectID().Hex()[:8]
+	configMapName := testutils.GenerateTestNodeName("test-breaker")
 
 	// If initialState is provided, create ConfigMap with that state
 	if initialState != "" {

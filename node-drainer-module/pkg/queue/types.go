@@ -17,34 +17,51 @@ package queue
 import (
 	"context"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 	"k8s.io/client-go/util/workqueue"
 )
 
 type NodeEvent struct {
-	NodeName   string
-	Event      *bson.M
-	Collection MongoCollectionAPI
+	NodeName string
+	Event    *map[string]interface{} // Database-agnostic event data
+	Database DatabaseAPI             // New database-agnostic interface
+
+	// Deprecated fields for backward compatibility
+	EventBSON *map[string]interface{} // DEPRECATED: Use Event instead
+	// Collection field has been removed - use Database instead
 }
 
-type MongoCollectionAPI interface {
-	UpdateOne(ctx context.Context, filter interface{}, update interface{},
-		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
-	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult
-	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
+// DatabaseAPI provides database-agnostic operations using store-client-sdk
+type DatabaseAPI interface {
+	UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error)
+	FindDocument(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error)
+	FindDocuments(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error)
 }
+
+// DatabaseEventProcessor provides database-agnostic event processing
+type DatabaseEventProcessor interface {
+	ProcessEventGeneric(ctx context.Context, event map[string]interface{}, database DatabaseAPI, nodeName string) error
+}
+
+// EventProcessor interface has been removed - use DatabaseEventProcessor instead
 
 type EventQueueManager interface {
-	EnqueueEvent(ctx context.Context, nodeName string, event bson.M, collection MongoCollectionAPI) error
+	// New database-agnostic method
+	EnqueueEventGeneric(ctx context.Context, nodeName string, event map[string]interface{}, database DatabaseAPI) error
+
+	// Deprecated EnqueueEvent method has been removed - use EnqueueEventGeneric instead
+
 	Start(ctx context.Context)
 	Shutdown()
-	SetEventProcessor(processor EventProcessor)
+
+	// New database-agnostic method
+	SetDatabaseEventProcessor(processor DatabaseEventProcessor)
+
+	// Deprecated SetEventProcessor method has been removed - use SetDatabaseEventProcessor instead
 }
 
 type eventQueueManager struct {
-	queue          workqueue.TypedRateLimitingInterface[NodeEvent]
-	eventProcessor EventProcessor
-	shutdown       chan struct{}
+	queue                  workqueue.TypedRateLimitingInterface[NodeEvent]
+	databaseEventProcessor DatabaseEventProcessor // New database-agnostic processor
+	shutdown               chan struct{}
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storewatcher
+package watcher
 
 import (
 	"context"
@@ -26,7 +26,7 @@ import (
 // for testing purposes. It allows customization of behavior through function fields.
 type FakeChangeStreamWatcher struct {
 	// EventsChan is the buffered channel (buffer size 10) that Events() returns
-	EventsChan chan bson.M
+	EventsChan chan Event
 
 	// Function fields allow customization of mock behavior
 	StartFn                    func(ctx context.Context)
@@ -55,7 +55,7 @@ type FakeChangeStreamWatcher struct {
 // The default behavior is safe and suitable for most tests.
 func NewFakeChangeStreamWatcher() *FakeChangeStreamWatcher {
 	return &FakeChangeStreamWatcher{
-		EventsChan: make(chan bson.M, 10),
+		EventsChan: make(chan Event, 10),
 		StartFn: func(ctx context.Context) {
 			// Default: no-op
 		},
@@ -76,7 +76,7 @@ func NewFakeChangeStreamWatcher() *FakeChangeStreamWatcher {
 }
 
 // Events returns the read-only events channel.
-func (m *FakeChangeStreamWatcher) Events() <-chan bson.M {
+func (m *FakeChangeStreamWatcher) Events() <-chan Event {
 	return m.EventsChan
 }
 

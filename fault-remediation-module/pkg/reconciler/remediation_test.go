@@ -19,10 +19,10 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/google/uuid"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -324,9 +324,9 @@ spec:
 				client.dryRunMode = []string{metav1.DryRunAll}
 			}
 
-			// Create a HealthEventDoc object
-			healthEventDoc := &HealthEventDoc{
-				ID: primitive.NewObjectID(),
+			// Create a HealthEventData object
+			healthEventDoc := &HealthEventData{
+				ID: uuid.New().String(),
 				HealthEventWithStatus: model.HealthEventWithStatus{
 					HealthEvent: &protos.HealthEvent{
 						NodeName:          tt.nodeName,

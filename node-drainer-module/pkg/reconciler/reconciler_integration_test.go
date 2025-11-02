@@ -28,7 +28,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	sdkclient "github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	sdkconfig "github.com/nvidia/nvsentinel/store-client-sdk/pkg/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,75 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+// mockDatabaseConfig is a simple mock implementation for testing
+type mockDatabaseConfig struct {
+	connectionURI  string
+	databaseName   string
+	collectionName string
+}
+
+func (m *mockDatabaseConfig) GetConnectionURI() string {
+	return m.connectionURI
+}
+
+func (m *mockDatabaseConfig) GetDatabaseName() string {
+	return m.databaseName
+}
+
+func (m *mockDatabaseConfig) GetCollectionName() string {
+	return m.collectionName
+}
+
+func (m *mockDatabaseConfig) GetCertConfig() sdkconfig.CertificateConfig {
+	return &mockCertConfig{}
+}
+
+func (m *mockDatabaseConfig) GetTimeoutConfig() sdkconfig.TimeoutConfig {
+	return &mockTimeoutConfig{}
+}
+
+// mockCertConfig is a simple mock implementation for testing
+type mockCertConfig struct{}
+
+func (m *mockCertConfig) GetCertPath() string {
+	return "/tmp/test.crt"
+}
+
+func (m *mockCertConfig) GetKeyPath() string {
+	return "/tmp/test.key"
+}
+
+func (m *mockCertConfig) GetCACertPath() string {
+	return "/tmp/ca.crt"
+}
+
+// mockTimeoutConfig is a simple mock implementation for testing
+type mockTimeoutConfig struct{}
+
+func (m *mockTimeoutConfig) GetPingTimeoutSeconds() int {
+	return 300
+}
+
+func (m *mockTimeoutConfig) GetPingIntervalSeconds() int {
+	return 5
+}
+
+func (m *mockTimeoutConfig) GetCACertTimeoutSeconds() int {
+	return 360
+}
+
+func (m *mockTimeoutConfig) GetCACertIntervalSeconds() int {
+	return 5
+}
+
+func (m *mockTimeoutConfig) GetChangeStreamRetryDeadlineSeconds() int {
+	return 60
+}
+
+func (m *mockTimeoutConfig) GetChangeStreamRetryIntervalSeconds() int {
+	return 3
+}
 
 // go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 // source <(setup-envtest use -p env)
@@ -484,6 +554,11 @@ type MockMongoCollection struct {
 	UpdateOneFunc func(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
 	FindOneFunc   func(ctx context.Context, filter any, opts ...*options.FindOneOptions) *mongo.SingleResult
 	FindFunc      func(ctx context.Context, filter any, opts ...*options.FindOptions) (*mongo.Cursor, error)
+
+	// Database-agnostic functions
+	UpdateDocumentFunc func(ctx context.Context, filter interface{}, update interface{}) (*sdkclient.UpdateResult, error)
+	FindDocumentFunc   func(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error)
+	FindDocumentsFunc  func(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error)
 }
 
 func (m *MockMongoCollection) UpdateOne(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
@@ -505,6 +580,92 @@ func (m *MockMongoCollection) Find(ctx context.Context, filter any, opts ...*opt
 		return m.FindFunc(ctx, filter, opts...)
 	}
 	return nil, nil
+}
+
+// DatabaseAPI interface methods
+func (m *MockMongoCollection) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*sdkclient.UpdateResult, error) {
+	if m.UpdateDocumentFunc != nil {
+		return m.UpdateDocumentFunc(ctx, filter, update)
+	}
+	return &sdkclient.UpdateResult{ModifiedCount: 1}, nil
+}
+
+func (m *MockMongoCollection) FindDocument(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
+	if m.FindDocumentFunc != nil {
+		return m.FindDocumentFunc(ctx, filter, options)
+	}
+	// Return a mock result for tests
+	return &MockSingleResult{}, nil
+}
+
+func (m *MockMongoCollection) FindDocuments(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
+	if m.FindDocumentsFunc != nil {
+		return m.FindDocumentsFunc(ctx, filter, options)
+	}
+	return &MockCursor{}, nil
+}
+
+// Mock implementations for client interfaces
+type MockSingleResult struct {
+	DecodeFunc func(v interface{}) error
+	ErrFunc    func() error
+}
+
+func (m *MockSingleResult) Decode(v interface{}) error {
+	if m.DecodeFunc != nil {
+		return m.DecodeFunc(v)
+	}
+	return nil
+}
+
+func (m *MockSingleResult) Err() error {
+	if m.ErrFunc != nil {
+		return m.ErrFunc()
+	}
+	return nil
+}
+
+type MockCursor struct {
+	AllFunc    func(ctx context.Context, results interface{}) error
+	NextFunc   func(ctx context.Context) bool
+	CloseFunc  func(ctx context.Context) error
+	DecodeFunc func(val interface{}) error
+	ErrFunc    func() error
+}
+
+func (m *MockCursor) All(ctx context.Context, results interface{}) error {
+	if m.AllFunc != nil {
+		return m.AllFunc(ctx, results)
+	}
+	return nil
+}
+
+func (m *MockCursor) Next(ctx context.Context) bool {
+	if m.NextFunc != nil {
+		return m.NextFunc(ctx)
+	}
+	return false
+}
+
+func (m *MockCursor) Close(ctx context.Context) error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc(ctx)
+	}
+	return nil
+}
+
+func (m *MockCursor) Decode(val interface{}) error {
+	if m.DecodeFunc != nil {
+		return m.DecodeFunc(val)
+	}
+	return nil
+}
+
+func (m *MockCursor) Err() error {
+	if m.ErrFunc != nil {
+		return m.ErrFunc()
+	}
+	return nil
 }
 
 type requeueTestSetup struct {
@@ -540,12 +701,22 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		UserNamespaces:            userNamespaces,
 	}
 
+	// Create mock database config for testing
+	mockDatabaseConfig := &mockDatabaseConfig{
+		connectionURI:  "mongodb://localhost:27017",
+		databaseName:   "test_db",
+		collectionName: "test_collection",
+	}
+
 	reconcilerConfig := config.ReconcilerConfig{
-		TomlConfig:    tomlConfig,
-		MongoConfig:   storewatcher.MongoDBConfig{},
-		TokenConfig:   storewatcher.TokenConfig{},
-		MongoPipeline: mongo.Pipeline{},
-		StateManager:  statemanager.NewStateManager(client),
+		TomlConfig:     tomlConfig,
+		DatabaseConfig: mockDatabaseConfig,
+		TokenConfig: sdkclient.TokenConfig{
+			ClientName:      "test-client",
+			TokenDatabase:   "test_db",
+			TokenCollection: "tokens",
+		},
+		StateManager: statemanager.NewStateManager(client),
 	}
 
 	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), dryRun)
@@ -650,13 +821,23 @@ func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQ
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
 	})
-	require.NoError(t, queueMgr.EnqueueEvent(ctx, nodeName, event, collection))
+	// Convert bson.M to map[string]interface{} for the database-agnostic interface
+	eventMap := make(map[string]interface{})
+	for k, v := range event {
+		eventMap[k] = v
+	}
+	require.NoError(t, queueMgr.EnqueueEventGeneric(ctx, nodeName, eventMap, collection))
 }
 
 func processHealthEvent(ctx context.Context, t *testing.T, r *reconciler.Reconciler, collection *MockMongoCollection, opts healthEventOptions) error {
 	t.Helper()
 	event := createHealthEvent(opts)
-	return r.ProcessEvent(ctx, event, collection, opts.nodeName)
+	// Convert bson.M to map[string]interface{} for the database-agnostic interface
+	eventMap := make(map[string]interface{})
+	for k, v := range event {
+		eventMap[k] = v
+	}
+	return r.ProcessEventGeneric(ctx, eventMap, collection, opts.nodeName)
 }
 
 func assertNodeLabel(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, expectedLabel statemanager.NVSentinelStateLabelValue) {

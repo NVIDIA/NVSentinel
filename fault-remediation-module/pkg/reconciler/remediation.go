@@ -170,10 +170,10 @@ func (c *FaultRemediationClient) GetStatusCheckerForAction(
 
 func (c *FaultRemediationClient) CreateMaintenanceResource(
 	ctx context.Context,
-	healthEventDoc *HealthEventDoc,
+	healthEventData *HealthEventData,
 ) (bool, string) {
-	healthEvent := healthEventDoc.HealthEventWithStatus.HealthEvent
-	healthEventID := healthEventDoc.ID.Hex()
+	healthEvent := healthEventData.HealthEvent
+	healthEventID := healthEventData.ID
 
 	// Generate CR name
 	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)

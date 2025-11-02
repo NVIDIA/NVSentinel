@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
@@ -53,8 +54,8 @@ func run() error {
 
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
+	// Register database certificate flags using common package
+	certConfig := flags.RegisterDatabaseCertFlags()
 
 	kubeconfigPath := flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
@@ -65,14 +66,17 @@ func run() error {
 
 	flag.Parse()
 
-	slog.Info("Mongo client cert", "path", *mongoClientCertMountPath)
+	// Resolve the certificate path using common logic
+	databaseClientCertMountPath := certConfig.ResolveCertPath()
+
+	slog.Info("Database client cert", "path", databaseClientCertMountPath)
 
 	params := initializer.InitializationParams{
-		MongoClientCertMountPath: *mongoClientCertMountPath,
-		KubeconfigPath:           *kubeconfigPath,
-		TomlConfigPath:           *tomlConfigPath,
-		MetricsPort:              *metricsPort,
-		DryRun:                   *dryRun,
+		DatabaseClientCertMountPath: databaseClientCertMountPath,
+		KubeconfigPath:              *kubeconfigPath,
+		TomlConfigPath:              *tomlConfigPath,
+		MetricsPort:                 *metricsPort,
+		DryRun:                      *dryRun,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)
@@ -92,15 +96,13 @@ func run() error {
 	slog.Info("Starting queue worker")
 	components.QueueManager.Start(ctx)
 
-	slog.Info("Starting MongoDB event watcher")
+	slog.Info("Starting database event watcher")
 
 	criticalError := make(chan error)
 
 	go func() {
-		if err := components.EventWatcher.Start(ctx); err != nil {
-			slog.Error("Event watcher failed", "error", err)
-			criticalError <- err
-		}
+		components.EventWatcher.Start(ctx)
+		slog.Info("Event watcher started successfully")
 	}()
 
 	slog.Info("All components started successfully")
@@ -146,8 +148,8 @@ func run() error {
 
 			slog.Info("Shutting down node drainer")
 
-			if errStop := components.EventWatcher.Stop(); errStop != nil {
-				return fmt.Errorf("failed to stop event watcher: %w", errStop)
+			if errStop := components.EventWatcher.Close(ctx); errStop != nil {
+				return fmt.Errorf("failed to close event watcher: %w", errStop)
 			}
 
 			components.QueueManager.Shutdown()
@@ -159,8 +161,8 @@ func run() error {
 		// Normal shutdown path (context cancelled without critical error)
 		slog.Info("Shutting down node drainer")
 
-		if errStop := components.EventWatcher.Stop(); errStop != nil {
-			return fmt.Errorf("failed to stop event watcher: %w", errStop)
+		if errStop := components.EventWatcher.Close(ctx); errStop != nil {
+			return fmt.Errorf("failed to close event watcher: %w", errStop)
 		}
 
 		components.QueueManager.Shutdown()

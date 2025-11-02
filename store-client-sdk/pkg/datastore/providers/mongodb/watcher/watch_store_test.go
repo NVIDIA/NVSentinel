@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package storewatcher
+package watcher
 
 import (
 	"context"
@@ -156,7 +156,7 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		watcher := &ChangeStreamWatcher{
 			client:         mt.Client,
 			changeStream:   changeStream,
-			eventChannel:   make(chan bson.M, 2),
+			eventChannel:   make(chan Event, 2),
 			resumeTokenCol: resumeTokenCol,
 			clientName:     "testclient",
 		}
@@ -172,7 +172,7 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		for len(receivedEvents) < 2 {
 			select {
 			case event := <-watcher.Events():
-				receivedEvents = append(receivedEvents, event)
+				receivedEvents = append(receivedEvents, bson.M(event))
 			case <-timeout:
 				t.Fatal("timeout waiting for events")
 			}
@@ -230,7 +230,7 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		watcher := &ChangeStreamWatcher{
 			client:                    mt.Client,
 			changeStream:              changeStream,
-			eventChannel:              make(chan bson.M, 1),
+			eventChannel:              make(chan Event, 1),
 			resumeTokenCol:            resumeTokenCol,
 			clientName:                "testclient-success-first",
 			resumeTokenUpdateTimeout:  5 * time.Second,
@@ -315,7 +315,7 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		watcher := &ChangeStreamWatcher{
 			client:                    mt.Client,
 			changeStream:              changeStream,
-			eventChannel:              make(chan bson.M, 1),
+			eventChannel:              make(chan Event, 1),
 			resumeTokenCol:            resumeTokenCol,
 			clientName:                "testclient-retry-success",
 			resumeTokenUpdateTimeout:  5 * time.Second,
@@ -383,7 +383,7 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 		watcher := &ChangeStreamWatcher{
 			client:                    mt.Client,
 			changeStream:              changeStream,
-			eventChannel:              make(chan bson.M, 1),
+			eventChannel:              make(chan Event, 1),
 			resumeTokenCol:            resumeTokenCol,
 			clientName:                "testclient-timeout",
 			resumeTokenUpdateTimeout:  5 * time.Second,
@@ -1060,7 +1060,7 @@ func TestUnmarshalFullDocumentFromEvent(t *testing.T) {
 		var result TestStruct
 		err := UnmarshalFullDocumentFromEvent(event, &result)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "error extracting fullDocument from event")
+		require.Contains(t, err.Error(), "unsupported fullDocument type")
 	})
 }
 

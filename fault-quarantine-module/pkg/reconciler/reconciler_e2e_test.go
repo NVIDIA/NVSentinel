@@ -33,16 +33,61 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
-	storeclientsdk "github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
+
+// MockEvent implements the client.Event interface for testing
+type MockEvent struct {
+	data map[string]interface{}
+}
+
+// NewMockEvent creates a new MockEvent with the given data
+func NewMockEvent(data map[string]interface{}) *MockEvent {
+	return &MockEvent{data: data}
+}
+
+// GetDocumentID extracts the document ID from the event
+func (m *MockEvent) GetDocumentID() (string, error) {
+	if fullDoc, ok := m.data["fullDocument"].(map[string]interface{}); ok {
+		if id, ok := fullDoc["_id"].(string); ok {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("document ID not found or not a string")
+}
+
+// GetNodeName extracts the node name from the event
+func (m *MockEvent) GetNodeName() (string, error) {
+	if fullDoc, ok := m.data["fullDocument"].(map[string]interface{}); ok {
+		if healthEvent, ok := fullDoc["healthevent"].(map[string]interface{}); ok {
+			if nodeName, ok := healthEvent["nodename"].(string); ok {
+				return nodeName, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("node name not found")
+}
+
+// UnmarshalDocument unmarshals the full document into the provided interface
+func (m *MockEvent) UnmarshalDocument(v interface{}) error {
+	if fullDoc, ok := m.data["fullDocument"]; ok {
+		// Convert to JSON and back to handle the unmarshaling
+		jsonData, err := json.Marshal(fullDoc)
+		if err != nil {
+			return fmt.Errorf("failed to marshal document to JSON: %w", err)
+		}
+
+		return json.Unmarshal(jsonData, v)
+	}
+	return fmt.Errorf("fullDocument not found in event")
+}
 
 var (
 	e2eTestClient     *kubernetes.Clientset
@@ -121,37 +166,18 @@ func createE2ETestNode(ctx context.Context, t *testing.T, name string, annotatio
 	require.NoError(t, err, "Failed to create test node %s", name)
 }
 
-func createHealthEventBSON(eventID primitive.ObjectID, nodeName, checkName string, isHealthy, isFatal bool, entities []*protos.Entity, quarantineStatus model.Status) bson.M {
-	entitiesBSON := []interface{}{}
-	for _, entity := range entities {
-		entitiesBSON = append(entitiesBSON, bson.M{
-			"entitytype":  entity.EntityType,
-			"entityvalue": entity.EntityValue,
-		})
-	}
-
-	return bson.M{
-		"operationType": "insert",
-		"fullDocument": bson.M{
-			"_id": eventID,
-			"healtheventstatus": bson.M{
-				"nodequarantined": quarantineStatus,
-			},
-			"healthevent": bson.M{
-				"nodename":         nodeName,
-				"agent":            "gpu-health-monitor",
-				"componentclass":   "GPU",
-				"checkname":        checkName,
-				"version":          uint32(1),
-				"ishealthy":        isHealthy,
-				"isfatal":          isFatal,
-				"entitiesimpacted": entitiesBSON,
-			},
-		},
-	}
+func createHealthEvent(eventID string, nodeName, checkName string, isHealthy, isFatal bool, entities []*protos.Entity, quarantineStatus model.Status) client.Event {
+	return testutils.NewTestEventBuilder().
+		WithEventID(eventID).
+		WithNode(nodeName).
+		WithCheck(checkName).
+		WithHealthStatus(isHealthy, isFatal).
+		WithEntities(entities).
+		WithQuarantineStatus(quarantineStatus).
+		BuildEvent()
 }
 
-type StatusGetter func(eventID primitive.ObjectID) *model.Status
+type StatusGetter func(eventID string) *model.Status
 
 // E2EReconcilerConfig holds configuration options for test reconciler setup
 type E2EReconcilerConfig struct {
@@ -163,7 +189,7 @@ type E2EReconcilerConfig struct {
 // setupE2EReconciler creates a test reconciler with mock watcher
 // Returns: (reconciler, mockWatcher, statusGetter, circuitBreaker)
 // Note: circuitBreaker will be nil when cbConfig is nil (circuit breaker disabled)
-func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.TomlConfig, cbConfig *breaker.CircuitBreakerConfig) (*Reconciler, *storeclientsdk.FakeChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
+func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.TomlConfig, cbConfig *breaker.CircuitBreakerConfig) (*Reconciler, *testutils.MockChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
 	t.Helper()
 	return setupE2EReconcilerWithOptions(t, ctx, E2EReconcilerConfig{
 		TomlConfig:           tomlConfig,
@@ -175,7 +201,7 @@ func setupE2EReconciler(t *testing.T, ctx context.Context, tomlConfig config.Tom
 // setupE2EReconcilerWithOptions creates a test reconciler with full configuration control
 // Returns: (reconciler, mockWatcher, statusGetter, circuitBreaker)
 // Note: circuitBreaker will be nil when cbConfig is nil (circuit breaker disabled)
-func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2EReconcilerConfig) (*Reconciler, *storeclientsdk.FakeChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
+func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2EReconcilerConfig) (*Reconciler, *testutils.MockChangeStreamWatcher, StatusGetter, breaker.CircuitBreaker) {
 	t.Helper()
 
 	nodeInformer, err := informer.NewNodeInformer(e2eTestClient, 0)
@@ -215,7 +241,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 		}
 		name := cbConfig.Name
 		if name == "" {
-			name = "test-cb-" + primitive.NewObjectID().Hex()[:8]
+			name = testutils.GenerateTestNodeName("test-cb")[:16]
 		}
 
 		cb, err = breaker.NewSlidingWindowBreaker(ctx, breaker.Config{
@@ -266,16 +292,16 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
 
 	// Create mock watcher
-	mockWatcher := storeclientsdk.NewFakeChangeStreamWatcher()
+	mockWatcher := testutils.NewMockChangeStreamWatcher()
 
 	// Ensure the event channel is closed when test completes to terminate the processing goroutine
 	t.Cleanup(func() {
-		close(mockWatcher.EventsChan)
+		mockWatcher.Close(ctx)
 	})
 
 	// Store event statuses for verification (mimics MongoDB status updates)
 	var statusMu sync.Mutex
-	eventStatuses := make(map[primitive.ObjectID]*model.Status)
+	eventStatuses := make(map[string]*model.Status)
 
 	// Setup the reconciler with the callback (mimics Start())
 	processEventFunc := func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {
@@ -286,16 +312,14 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	go func() {
 		for event := range mockWatcher.Events() {
 			healthEventWithStatus := model.HealthEventWithStatus{}
-			if err := storeclientsdk.UnmarshalFullDocumentFromEvent(event, &healthEventWithStatus); err != nil {
+			if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
 				continue
 			}
 
-			// Get event ID (mimics MongoDB _id)
-			var eventID primitive.ObjectID
-			if fullDoc, ok := event["fullDocument"].(bson.M); ok {
-				if id, ok := fullDoc["_id"].(primitive.ObjectID); ok {
-					eventID = id
-				}
+			// Get event ID using the database-agnostic interface
+			eventID, err := event.GetDocumentID()
+			if err != nil {
+				continue
 			}
 
 			// Process event and store status (mimics updateNodeQuarantineStatus in production)
@@ -308,7 +332,7 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 	}()
 
 	// Return status getter for tests
-	getStatus := func(eventID primitive.ObjectID) *model.Status {
+	getStatus := func(eventID string) *model.Status {
 		statusMu.Lock()
 		defer statusMu.Unlock()
 		return eventStatuses[eventID]
@@ -413,7 +437,7 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-basic-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-basic")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -440,8 +464,8 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Sending unhealthy event for initial quarantine")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -476,8 +500,8 @@ func TestE2E_BasicQuarantineAndUnquarantine(t *testing.T) {
 	verifyQuarantineLabels(t, node, "gpu-xid-critical-errors")
 
 	t.Log("Sending healthy event for unquarantine")
-	eventID2 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID2 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID2,
 		nodeName,
 		"GpuXidError",
@@ -522,7 +546,7 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-entity-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-entity")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -549,8 +573,8 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("GPU 0 fails - initial quarantine")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -572,8 +596,8 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
 
 	t.Log("GPU 1 fails - testing entity-level tracking")
-	eventID2 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID2 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID2,
 		nodeName,
 		"GpuXidError",
@@ -605,8 +629,8 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 	verifyHealthEventInAnnotation(t, node, "GpuXidError", "gpu-health-monitor", "GPU", "GPU", "1")
 
 	t.Log("GPU 0 recovers - node should stay quarantined (GPU 1 still failing)")
-	eventID3 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID3 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID3,
 		nodeName,
 		"GpuXidError",
@@ -652,8 +676,8 @@ func TestE2E_EntityLevelTracking(t *testing.T) {
 	assert.False(t, found, "GPU 0 should NOT be in annotation after recovery")
 
 	t.Log("GPU 1 recovers - node should be fully unquarantined")
-	eventID4 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID4 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID4,
 		nodeName,
 		"GpuXidError",
@@ -679,7 +703,7 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-multicheck-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-multicheck-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -718,8 +742,8 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("XID Error on GPU 0")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -734,8 +758,8 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval)
 
 	t.Log("NVLink Error on GPU 1")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuNvLinkWatch",
 		false,
@@ -760,8 +784,8 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 	verifyHealthEventInAnnotation(t, node, "GpuNvLinkWatch", "gpu-health-monitor", "GPU", "GPU", "1")
 
 	t.Log("XID recovers - node stays quarantined (NVLink still failing)")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -780,8 +804,8 @@ func TestE2E_MultipleChecksOnSameNode(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "XID entity removed, NVLink remains, still quarantined")
 
 	t.Log("NVLink recovers")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuNvLinkWatch",
 		true,
@@ -800,7 +824,7 @@ func TestE2E_CheckLevelHealthyEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-checklevel-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-checklevel-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -827,8 +851,8 @@ func TestE2E_CheckLevelHealthyEvent(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Quarantine with multiple entities")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -850,8 +874,8 @@ func TestE2E_CheckLevelHealthyEvent(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "Should track 2 entities")
 
 	t.Log("Check-level healthy event (empty entities) - should clear ALL entities for this check")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -870,7 +894,7 @@ func TestE2E_DuplicateEntityEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-duplicate-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-duplicate-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -897,8 +921,8 @@ func TestE2E_DuplicateEntityEvents(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("First failure on GPU 0")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -918,8 +942,8 @@ func TestE2E_DuplicateEntityEvents(t *testing.T) {
 	initialAnnotation := initialNode.Annotations[common.QuarantineHealthEventAnnotationKey]
 
 	t.Log("Duplicate failure on same GPU 0 - should not duplicate entity")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -952,7 +976,7 @@ func TestE2E_HealthyEventWithoutQuarantine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-healthy-noq-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-healthy-noq-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -979,8 +1003,8 @@ func TestE2E_HealthyEventWithoutQuarantine(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send healthy event without any prior quarantine")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -1015,7 +1039,7 @@ func TestE2E_PartialEntityRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-partial-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-partial-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1043,8 +1067,8 @@ func TestE2E_PartialEntityRecovery(t *testing.T) {
 
 	t.Log("Fail GPUs 0, 1, 2 (send sequentially to avoid race conditions)")
 	for i := 0; i < 3; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			false,
@@ -1066,8 +1090,8 @@ func TestE2E_PartialEntityRecovery(t *testing.T) {
 	}
 
 	t.Log("Recover GPU 1 only")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -1090,7 +1114,7 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 40*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-allgpu-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-allgpu-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1120,8 +1144,8 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 
 	t.Log("All GPUs fail (send sequentially to avoid race conditions)")
 	for i := 0; i < numGPUs; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			false,
@@ -1144,8 +1168,8 @@ func TestE2E_AllGPUsFailThenRecover(t *testing.T) {
 
 	t.Log("All GPUs recover")
 	for i := 0; i < numGPUs; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			true,
@@ -1165,7 +1189,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-syslog-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-syslog-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1192,14 +1216,14 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Syslog pattern: single event with multiple entity types (PCI + GPUID)")
-	mockWatcher.EventsChan <- bson.M{
+	mockWatcher.EventsChan <- NewMockEvent(map[string]interface{}{
 		"operationType": "insert",
-		"fullDocument": bson.M{
-			"_id": primitive.NewObjectID(),
-			"healtheventstatus": bson.M{
+		"fullDocument": map[string]interface{}{
+			"_id": testutils.GenerateTestNodeName(""),
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.StatusInProgress,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":       nodeName,
 				"agent":          "syslog-health-monitor",
 				"componentclass": "GPU",
@@ -1209,12 +1233,12 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 				"isfatal":        true,
 				"errorcode":      []string{"79"},
 				"entitiesimpacted": []interface{}{
-					bson.M{"entitytype": "PCI", "entityvalue": "0000:b4:00"},
-					bson.M{"entitytype": "GPUID", "entityvalue": "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc"},
+					map[string]interface{}{"entitytype": "PCI", "entityvalue": "0000:b4:00"},
+					map[string]interface{}{"entitytype": "GPUID", "entityvalue": "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc"},
 				},
 			},
 		},
-	}
+	})
 
 	require.Eventually(t, func() bool {
 		node, _ := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1232,14 +1256,14 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 	verifyHealthEventInAnnotation(t, node, "SysLogsXIDError", "syslog-health-monitor", "GPU", "GPUID", "GPU-0b32a29e-0c94-cd1a-d44a-4e3ea8b2e3fc")
 
 	t.Log("Check-level healthy event (empty entities) should clear BOTH PCI and GPUID")
-	mockWatcher.EventsChan <- bson.M{
+	mockWatcher.EventsChan <- NewMockEvent(map[string]interface{}{
 		"operationType": "insert",
-		"fullDocument": bson.M{
-			"_id": primitive.NewObjectID(),
-			"healtheventstatus": bson.M{
+		"fullDocument": map[string]interface{}{
+			"_id": testutils.GenerateTestNodeName(""),
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.StatusInProgress,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":         nodeName,
 				"agent":            "syslog-health-monitor",
 				"componentclass":   "GPU",
@@ -1250,7 +1274,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 				"entitiesimpacted": []interface{}{}, // Empty
 			},
 		},
-	}
+	})
 
 	require.Eventually(t, func() bool {
 		node, _ := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1262,7 +1286,7 @@ func TestE2E_ManualUncordon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-manual-uncordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-uncordon-")
 
 	annotations := map[string]string{
 		common.QuarantineHealthEventAnnotationKey:              `[{"nodeName":"` + nodeName + `","agent":"test","checkName":"test","isHealthy":false,"entitiesImpacted":[{"entityType":"GPU","entityValue":"0"}]}]`,
@@ -1328,7 +1352,7 @@ func TestE2E_BackwardCompatibilityOldFormat(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-backward-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-backward-")
 
 	// Old format: single HealthEvent object (not array)
 	existingOldEvent := &protos.HealthEvent{
@@ -1383,8 +1407,8 @@ func TestE2E_BackwardCompatibilityOldFormat(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Add new event for different check/entity")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuNvLinkWatch",
 		false,
@@ -1404,8 +1428,8 @@ func TestE2E_BackwardCompatibilityOldFormat(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "Should convert old format and add new event")
 
 	t.Log("Recover the old event")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -1424,8 +1448,8 @@ func TestE2E_BackwardCompatibilityOldFormat(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval, "Old event removed, new event remains")
 
 	t.Log("Recover the new event")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuNvLinkWatch",
 		true,
@@ -1444,7 +1468,7 @@ func TestE2E_MixedHealthyUnhealthyFlapping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-flapping-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-flapping-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1473,8 +1497,8 @@ func TestE2E_MixedHealthyUnhealthyFlapping(t *testing.T) {
 	t.Log("Flapping GPU scenario: alternating unhealthy and healthy events")
 	for cycle := 0; cycle < 3; cycle++ {
 		// Unhealthy
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			false,
@@ -1489,8 +1513,8 @@ func TestE2E_MixedHealthyUnhealthyFlapping(t *testing.T) {
 		}, statusCheckTimeout, statusCheckPollInterval, "Should be quarantined")
 
 		// Healthy
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			true,
@@ -1517,9 +1541,9 @@ func TestE2E_MultipleNodesSimultaneous(t *testing.T) {
 	defer cancel()
 
 	nodeNames := []string{
-		"e2e-multi-1-" + primitive.NewObjectID().Hex()[:6],
-		"e2e-multi-2-" + primitive.NewObjectID().Hex()[:6],
-		"e2e-multi-3-" + primitive.NewObjectID().Hex()[:6],
+		testutils.GenerateTestNodeName("e2e-multi-1-")[:20],
+		testutils.GenerateTestNodeName("e2e-multi-2-")[:20],
+		testutils.GenerateTestNodeName("e2e-multi-3-")[:20],
 	}
 
 	for _, nodeName := range nodeNames {
@@ -1551,8 +1575,8 @@ func TestE2E_MultipleNodesSimultaneous(t *testing.T) {
 
 	t.Log("Send failure events for all nodes")
 	for _, nodeName := range nodeNames {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			false,
@@ -1590,7 +1614,7 @@ func TestE2E_HealthyEventForNonMatchingCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-nomatch-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-nomatch-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1617,8 +1641,8 @@ func TestE2E_HealthyEventForNonMatchingCheck(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Quarantine with XID error")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -1633,8 +1657,8 @@ func TestE2E_HealthyEventForNonMatchingCheck(t *testing.T) {
 	}, eventuallyTimeout, eventuallyPollInterval)
 
 	t.Log("Send healthy event for DIFFERENT check that was never failing")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuNvLinkWatch",
 		true,
@@ -1666,7 +1690,7 @@ func TestE2E_MultipleRulesetsWithPriorities(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-priorities-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-priorities-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1704,8 +1728,8 @@ func TestE2E_MultipleRulesetsWithPriorities(t *testing.T) {
 
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"TestCheck",
 		false,
@@ -1735,7 +1759,7 @@ func TestE2E_NonFatalEventDoesNotQuarantine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-nonfatal-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-nonfatal-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1762,8 +1786,8 @@ func TestE2E_NonFatalEventDoesNotQuarantine(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send non-fatal XID error (isFatal=false) - rule requires isFatal=true")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -1791,7 +1815,7 @@ func TestE2E_OutOfOrderEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-outoforder-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-outoforder-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1818,8 +1842,8 @@ func TestE2E_OutOfOrderEvents(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send healthy event BEFORE unhealthy event (out of order)")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -1838,8 +1862,8 @@ func TestE2E_OutOfOrderEvents(t *testing.T) {
 	}, neverTimeout, neverPollInterval, "Healthy event before unhealthy should not quarantine")
 
 	t.Log("Now send unhealthy event")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -1858,7 +1882,7 @@ func TestE2E_SkipRedundantCordoning(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-redundant-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-redundant-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -1885,8 +1909,8 @@ func TestE2E_SkipRedundantCordoning(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("First check quarantines node")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -1902,8 +1926,8 @@ func TestE2E_SkipRedundantCordoning(t *testing.T) {
 
 	t.Log("Different check on already cordoned node - should skip redundant cordoning")
 	initialCordonState := true
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuMemWatch",
 		false,
@@ -1926,7 +1950,7 @@ func TestE2E_NodeAlreadyCordonedManually(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-manual-cordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-cordon-")
 
 	// Create node that's already manually cordoned (no FQ annotations)
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, true)
@@ -1955,8 +1979,8 @@ func TestE2E_NodeAlreadyCordonedManually(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send unhealthy event - FQM should apply taints/annotations to manually cordoned node")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -2000,7 +2024,7 @@ func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-already-q-unhealthy-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-already-q-unhealthy-")
 
 	// Create node already quarantined by FQM
 	existingEvent := &protos.HealthEvent{
@@ -2037,14 +2061,14 @@ func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send another unhealthy event for same entity - should remain quarantined")
-	mockWatcher.EventsChan <- bson.M{
+	mockWatcher.EventsChan <- NewMockEvent(map[string]interface{}{
 		"operationType": "insert",
-		"fullDocument": bson.M{
-			"_id": primitive.NewObjectID(),
-			"healtheventstatus": bson.M{
+		"fullDocument": map[string]interface{}{
+			"_id": testutils.GenerateTestNodeName(""),
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.StatusInProgress,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":       nodeName,
 				"agent":          "agent1",
 				"componentclass": "GPU",
@@ -2052,11 +2076,11 @@ func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 				"version":        uint32(1),
 				"ishealthy":      false,
 				"entitiesimpacted": []interface{}{
-					bson.M{"entitytype": "GPU", "entityvalue": "0"},
+					map[string]interface{}{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
 		},
-	}
+	})
 
 	// Verify node never unquarantines (remains quarantined with same entity)
 	assert.Never(t, func() bool {
@@ -2076,7 +2100,7 @@ func TestE2E_NodeAlreadyQuarantinedBecomesHealthy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-already-q-healthy-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-already-q-healthy-")
 
 	// Create node already quarantined by FQM
 	existingEvent := &protos.HealthEvent{
@@ -2118,14 +2142,14 @@ func TestE2E_NodeAlreadyQuarantinedBecomesHealthy(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send healthy event - should unquarantine")
-	mockWatcher.EventsChan <- bson.M{
+	mockWatcher.EventsChan <- NewMockEvent(map[string]interface{}{
 		"operationType": "insert",
-		"fullDocument": bson.M{
-			"_id": primitive.NewObjectID(),
-			"healtheventstatus": bson.M{
+		"fullDocument": map[string]interface{}{
+			"_id": testutils.GenerateTestNodeName(""),
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.StatusInProgress,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":       nodeName,
 				"agent":          "agent1",
 				"componentclass": "GPU",
@@ -2133,11 +2157,11 @@ func TestE2E_NodeAlreadyQuarantinedBecomesHealthy(t *testing.T) {
 				"version":        uint32(1),
 				"ishealthy":      true,
 				"entitiesimpacted": []interface{}{
-					bson.M{"entitytype": "GPU", "entityvalue": "0"},
+					map[string]interface{}{"entitytype": "GPU", "entityvalue": "0"},
 				},
 			},
 		},
-	}
+	})
 
 	require.Eventually(t, func() bool {
 		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -2169,7 +2193,7 @@ func TestE2E_RulesetNotMatching(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-nomatch-rule-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-nomatch-rule-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -2196,8 +2220,8 @@ func TestE2E_RulesetNotMatching(t *testing.T) {
 	_, mockWatcher, _, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send event that doesn't match (wrong checkName)")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuMemWatch",
 		false,
@@ -2216,8 +2240,8 @@ func TestE2E_RulesetNotMatching(t *testing.T) {
 	}, neverTimeout, neverPollInterval, "Node should not be quarantined when rule doesn't match")
 
 	t.Log("Send event that partially matches (correct checkName but not fatal)")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		false,
@@ -2240,7 +2264,7 @@ func TestE2E_PartialAnnotationUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-partial-ann-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-partial-ann-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -2268,8 +2292,8 @@ func TestE2E_PartialAnnotationUpdate(t *testing.T) {
 
 	t.Log("Quarantine with GPU 0, 1, 2 (send sequentially to avoid race conditions)")
 	for i := 0; i < 3; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			nodeName,
 			"GpuXidError",
 			false,
@@ -2296,8 +2320,8 @@ func TestE2E_PartialAnnotationUpdate(t *testing.T) {
 	initialAnnotation = node.Annotations[common.QuarantineHealthEventAnnotationKey]
 
 	t.Log("Partial recovery of GPU 1 - annotation should be updated")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		nodeName,
 		"GpuXidError",
 		true,
@@ -2343,7 +2367,7 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	defer cancel()
 
 	// Create 10 test nodes
-	baseNodeName := "e2e-cb-basic-" + primitive.NewObjectID().Hex()[:6]
+	baseNodeName := testutils.GenerateTestNodeName("e2e-cb-basic-")[:20]
 	for i := 0; i < 10; i++ {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
@@ -2391,8 +2415,8 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 
 	t.Log("Cordoning 4 nodes (40%) - should not trip circuit breaker")
 	for i := 0; i < 4; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			fmt.Sprintf("%s-%d", baseNodeName, i),
 			"TestCheck",
 			false,
@@ -2419,8 +2443,8 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	assert.False(t, isTripped, "Circuit breaker should not trip at 40%")
 
 	t.Log("Cordoning 5th node (50%) - should trip circuit breaker")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		fmt.Sprintf("%s-4", baseNodeName),
 		"TestCheck",
 		false,
@@ -2440,8 +2464,8 @@ func TestE2E_CircuitBreakerBasic(t *testing.T) {
 	assert.True(t, isTripped, "Circuit breaker should trip at 50%")
 
 	t.Log("Trying 6th node - should be blocked by circuit breaker")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		fmt.Sprintf("%s-5", baseNodeName),
 		"TestCheck",
 		false,
@@ -2465,7 +2489,7 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 	defer cancel()
 
 	// Create 10 test nodes
-	baseNodeName := "e2e-cb-window-" + primitive.NewObjectID().Hex()[:6]
+	baseNodeName := testutils.GenerateTestNodeName("e2e-cb-window-")[:20]
 	for i := 0; i < 10; i++ {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
@@ -2512,8 +2536,8 @@ func TestE2E_CircuitBreakerSlidingWindow(t *testing.T) {
 
 	t.Log("Cordoning 5 nodes to trip the circuit breaker")
 	for i := 0; i < 5; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			fmt.Sprintf("%s-%d", baseNodeName, i),
 			"TestCheck",
 			false,
@@ -2557,7 +2581,7 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 	defer cancel()
 
 	// Create 10 test nodes
-	baseNodeName := "e2e-cb-unique-" + primitive.NewObjectID().Hex()[:6]
+	baseNodeName := testutils.GenerateTestNodeName("e2e-cb-unique-")[:20]
 	for i := 0; i < 10; i++ {
 		nodeName := fmt.Sprintf("%s-%d", baseNodeName, i)
 		createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
@@ -2601,8 +2625,8 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 	}, statusCheckTimeout, statusCheckPollInterval, "NodeInformer should see all 10 nodes")
 
 	t.Log("Sending first event for node 0 to test unique node tracking")
-	mockWatcher.EventsChan <- createHealthEventBSON(
-		primitive.NewObjectID(),
+	mockWatcher.EventsChan <- createHealthEvent(
+		testutils.GenerateTestNodeName(""),
 		fmt.Sprintf("%s-0", baseNodeName),
 		"TestCheck",
 		false,
@@ -2619,8 +2643,8 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 
 	t.Log("Sending 9 duplicate events for same node (testing deduplication)")
 	for i := 1; i < 10; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			fmt.Sprintf("%s-0", baseNodeName),
 			"TestCheck",
 			false,
@@ -2636,8 +2660,8 @@ func TestE2E_CircuitBreakerUniqueNodeTracking(t *testing.T) {
 
 	t.Log("Adding 4 more unique nodes to reach 5 total (50% threshold)")
 	for i := 1; i <= 4; i++ {
-		mockWatcher.EventsChan <- createHealthEventBSON(
-			primitive.NewObjectID(),
+		mockWatcher.EventsChan <- createHealthEvent(
+			testutils.GenerateTestNodeName(""),
 			fmt.Sprintf("%s-%d", baseNodeName, i),
 			"TestCheck",
 			false,
@@ -2668,7 +2692,7 @@ func TestE2E_QuarantineOverridesForce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-force-quarantine-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-force-quarantine-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -2695,15 +2719,15 @@ func TestE2E_QuarantineOverridesForce(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send event with QuarantineOverrides.Force=true (bypasses rule evaluation)")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- bson.M{
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- NewMockEvent(map[string]interface{}{
 		"operationType": "insert",
-		"fullDocument": bson.M{
+		"fullDocument": map[string]interface{}{
 			"_id": eventID1,
-			"healtheventstatus": bson.M{
+			"healtheventstatus": map[string]interface{}{
 				"nodequarantined": model.StatusInProgress,
 			},
-			"healthevent": bson.M{
+			"healthevent": map[string]interface{}{
 				"nodename":       nodeName,
 				"agent":          "test-agent",
 				"componentclass": "GPU",
@@ -2711,15 +2735,15 @@ func TestE2E_QuarantineOverridesForce(t *testing.T) {
 				"version":        uint32(1),
 				"ishealthy":      false,
 				"message":        "Force quarantine for maintenance",
-				"metadata": bson.M{
+				"metadata": map[string]interface{}{
 					"creator_id": "user123",
 				},
-				"quarantineoverrides": bson.M{
+				"quarantineoverrides": map[string]interface{}{
 					"force": true,
 				},
 			},
 		},
-	}
+	})
 
 	// Verify status is Quarantined (even though rule doesn't match)
 	require.Eventually(t, func() bool {
@@ -2743,7 +2767,7 @@ func TestE2E_NodeRuleEvaluator(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-node-rule-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-node-rule-")
 
 	// Create node with specific label
 	labels := map[string]string{
@@ -2777,8 +2801,8 @@ func TestE2E_NodeRuleEvaluator(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send event - should match both HealthEvent and Node rules")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -2804,7 +2828,7 @@ func TestE2E_NodeRuleDoesNotMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-node-nomatch-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-node-nomatch-")
 
 	// Create node WITHOUT the required label
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
@@ -2834,8 +2858,8 @@ func TestE2E_NodeRuleDoesNotMatch(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send event - Node rule should NOT match (label missing)")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -2865,7 +2889,7 @@ func TestE2E_TaintWithoutCordon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-taint-no-cordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-taint-no-cordon-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -2892,8 +2916,8 @@ func TestE2E_TaintWithoutCordon(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Sending taint-only event (no cordon)")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -2938,7 +2962,7 @@ func TestE2E_CordonWithoutTaint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-cordon-no-taint-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-cordon-no-taint-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -2965,8 +2989,8 @@ func TestE2E_CordonWithoutTaint(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Sending cordon-only event (no taint)")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -3011,7 +3035,7 @@ func TestE2E_ManualUncordonAnnotationCleanup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-manual-cleanup-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-manual-cleanup-")
 
 	// Create node with manual uncordon annotation (from previous manual uncordon)
 	annotations := map[string]string{
@@ -3044,8 +3068,8 @@ func TestE2E_ManualUncordonAnnotationCleanup(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send unhealthy event - should remove manual uncordon annotation and quarantine")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -3078,7 +3102,7 @@ func TestE2E_UnhealthyEventOnQuarantinedNodeNoRuleMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-q-node-nomatch-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-q-node-nomatch-")
 
 	// Create node already quarantined
 	existingEvent := &protos.HealthEvent{
@@ -3131,8 +3155,8 @@ func TestE2E_UnhealthyEventOnQuarantinedNodeNoRuleMatch(t *testing.T) {
 	initialAnnotation := string(existingBytes)
 
 	t.Log("Send unhealthy event for different check that doesn't match any rules")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuMemWatch", // Different check - doesn't match rule
@@ -3158,7 +3182,7 @@ func TestE2E_DryRunMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-dryrun-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-dryrun-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -3190,8 +3214,8 @@ func TestE2E_DryRunMode(t *testing.T) {
 	})
 
 	t.Log("Sending event in dry-run mode")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",
@@ -3220,7 +3244,7 @@ func TestE2E_TaintOnlyThenCordonRule(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
 
-	nodeName := "e2e-taint-then-cordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("e2e-taint-then-cordon-")
 	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
 		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
@@ -3259,8 +3283,8 @@ func TestE2E_TaintOnlyThenCordonRule(t *testing.T) {
 	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
 
 	t.Log("Send fatal XID error - both rules match (taint + cordon)")
-	eventID1 := primitive.NewObjectID()
-	mockWatcher.EventsChan <- createHealthEventBSON(
+	eventID1 := testutils.GenerateTestNodeName("")
+	mockWatcher.EventsChan <- createHealthEvent(
 		eventID1,
 		nodeName,
 		"GpuXidError",

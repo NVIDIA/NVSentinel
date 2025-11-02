@@ -16,6 +16,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -27,9 +28,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -58,7 +58,7 @@ func NewReconciler(cfg config.ReconcilerConfig,
 		kubernetesClient:    kubeClient,
 	}
 
-	queueManager.SetEventProcessor(reconciler)
+	queueManager.SetDatabaseEventProcessor(reconciler)
 
 	return reconciler
 }
@@ -71,10 +71,11 @@ func (r *Reconciler) Shutdown() {
 	r.queueManager.Shutdown()
 }
 
-func (r *Reconciler) ProcessEvent(ctx context.Context,
-	event bson.M, collection queue.MongoCollectionAPI, nodeName string) error {
+// ProcessEventGeneric implements DatabaseEventProcessor interface for database-agnostic event processing
+func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
+	event map[string]interface{}, database queue.DatabaseAPI, nodeName string) error {
 	healthEventWithStatus := model.HealthEventWithStatus{}
-	if err := storewatcher.UnmarshalFullDocumentFromEvent(event, &healthEventWithStatus); err != nil {
+	if err := r.unmarshalGenericEvent(event, &healthEventWithStatus); err != nil {
 		return fmt.Errorf("failed to unmarshal health event: %w", err)
 	}
 
@@ -82,7 +83,9 @@ func (r *Reconciler) ProcessEvent(ctx context.Context,
 
 	metrics.TotalEventsReceived.Inc()
 
-	actionResult, err := r.evaluator.EvaluateEvent(ctx, healthEventWithStatus, collection)
+	// Use the new database-agnostic method
+	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database)
+
 	if err != nil {
 		return fmt.Errorf("failed to evaluate event: %w", err)
 	}
@@ -91,16 +94,51 @@ func (r *Reconciler) ProcessEvent(ctx context.Context,
 		"node", nodeName,
 		"action", actionResult.Action.String())
 
-	return r.executeAction(ctx, actionResult, healthEventWithStatus, event, collection)
+	return r.executeActionGeneric(ctx, actionResult, healthEventWithStatus, event, database)
 }
 
-func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
-	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
+// ProcessEvent method has been removed - use ProcessEventGeneric instead
+
+// unmarshalGenericEvent unmarshals a generic event map into a HealthEventWithStatus
+func (r *Reconciler) unmarshalGenericEvent(event map[string]interface{}, target *model.HealthEventWithStatus) error {
+	// Convert the generic event to the expected structure
+	if fullDocument, ok := event["fullDocument"]; ok {
+		// Marshal to JSON first, then unmarshal to the target struct
+		jsonData, err := json.Marshal(fullDocument)
+		if err != nil {
+			return fmt.Errorf("failed to marshal event to JSON: %w", err)
+		}
+
+		if err := json.Unmarshal(jsonData, target); err != nil {
+			return fmt.Errorf("failed to unmarshal JSON to HealthEventWithStatus: %w", err)
+		}
+
+		return nil
+	}
+
+	// If no fullDocument, try to unmarshal the event directly
+	jsonData, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event to JSON: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonData, target); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON to HealthEventWithStatus: %w", err)
+	}
+
+	return nil
+}
+
+// legacyCollectionWrapper has been removed - use DatabaseAPI directly
+
+// executeActionGeneric executes actions using database-agnostic interfaces
+func (r *Reconciler) executeActionGeneric(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, event map[string]interface{}, database queue.DatabaseAPI) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	switch action.Action {
 	case evaluator.ActionSkip:
-		return r.executeSkip(ctx, nodeName, healthEvent, event, collection)
+		return r.executeSkipGeneric(ctx, nodeName, healthEvent, event, database)
 
 	case evaluator.ActionWait:
 		slog.Info("Waiting for node",
@@ -122,47 +160,19 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return r.executeCheckCompletion(ctx, action, healthEvent)
 
 	case evaluator.ActionMarkAlreadyDrained:
-		return r.executeMarkAlreadyDrained(ctx, healthEvent, event, collection)
+		return r.executeMarkAlreadyDrainedGeneric(ctx, healthEvent, event, database)
 
 	case evaluator.ActionUpdateStatus:
-		return r.executeUpdateStatus(ctx, healthEvent, event, collection)
+		return r.executeUpdateStatusGeneric(ctx, healthEvent, event, database)
 
 	default:
 		return fmt.Errorf("unknown action: %s", action.Action.String())
 	}
 }
 
-func (r *Reconciler) executeSkip(ctx context.Context,
-	nodeName string, healthEvent model.HealthEventWithStatus,
-	event bson.M, collection queue.MongoCollectionAPI) error {
-	slog.Info("Skipping event for node", "node", nodeName)
+// executeAction method has been removed - use executeActionGeneric instead
 
-	// Track if this is a healthy event that canceled draining
-	if healthEvent.HealthEventStatus.NodeQuarantined != nil &&
-		*healthEvent.HealthEventStatus.NodeQuarantined == model.UnQuarantined {
-		metrics.HealthyEventWithContextCancellation.Inc()
-
-		// Update MongoDB status to StatusSucceeded for healthy events that cancel draining
-		podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-		podsEvictionStatus.Status = model.StatusSucceeded
-
-		if err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus); err != nil {
-			slog.Error("Failed to update MongoDB status for node",
-				"node", nodeName,
-				"error", err)
-
-			return fmt.Errorf("failed to update MongoDB status for node %s: %w", nodeName, err)
-		}
-
-		slog.Info("Updated MongoDB status for node",
-			"node", nodeName,
-			"status", "succeeded")
-	}
-
-	r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, false)
-
-	return nil
-}
+// executeSkip method has been removed - use executeSkipGeneric instead
 
 func (r *Reconciler) executeImmediateEviction(ctx context.Context,
 	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
@@ -234,37 +244,7 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context,
 	return fmt.Errorf("pod completion verified, requeuing for status update")
 }
 
-func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
-	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
-	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = model.AlreadyDrained
-
-	return r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
-}
-
-func (r *Reconciler) executeUpdateStatus(ctx context.Context,
-	healthEvent model.HealthEventWithStatus, event bson.M, collection queue.MongoCollectionAPI) error {
-	nodeName := healthEvent.HealthEvent.NodeName
-	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = model.StatusSucceeded
-
-	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
-		slog.Error("Failed to update node label to drain-succeeded",
-			"node", nodeName,
-			"error", err)
-		metrics.TotalEventProcessingError.WithLabelValues("label_update_error").Inc()
-	}
-
-	err := r.updateNodeUserPodsEvictedStatus(ctx, collection, event, podsEvictionStatus)
-	if err != nil {
-		return fmt.Errorf("failed to update user pod eviction status: %w", err)
-	}
-
-	metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(0)
-
-	return nil
-}
+// executeMarkAlreadyDrained and executeUpdateStatus methods have been removed - use Generic versions instead
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 	nodeName string, healthEvent *model.HealthEventWithStatus, isDraining bool) {
@@ -329,28 +309,101 @@ func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *model.Health
 	}
 }
 
-func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, collection queue.MongoCollectionAPI,
-	event bson.M, userPodsEvictionStatus *model.OperationStatus) error {
-	document, ok := event["fullDocument"].(bson.M)
-	if !ok {
-		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
+// updateNodeUserPodsEvictedStatus method has been removed - use updateNodeUserPodsEvictedStatusGeneric instead
+
+// Generic versions of action execution methods for database-agnostic processing
+
+func (r *Reconciler) executeSkipGeneric(ctx context.Context,
+	nodeName string, healthEvent model.HealthEventWithStatus,
+	event map[string]interface{}, database queue.DatabaseAPI) error {
+	slog.Info("Skipping event for node", "node", nodeName)
+
+	// Track if this is a healthy event that canceled draining
+	if healthEvent.HealthEventStatus.NodeQuarantined != nil &&
+		*healthEvent.HealthEventStatus.NodeQuarantined == model.UnQuarantined {
+		metrics.HealthyEventWithContextCancellation.Inc()
+
+		// Update database status to StatusSucceeded for healthy events that cancel draining
+		podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
+		podsEvictionStatus.Status = model.StatusSucceeded
+
+		if err := r.updateNodeUserPodsEvictedStatusGeneric(ctx, database, event, podsEvictionStatus); err != nil {
+			slog.Error("Failed to update database status for node",
+				"node", nodeName,
+				"error", err)
+
+			return fmt.Errorf("failed to update database status for node %s: %w", nodeName, err)
+		}
+
+		slog.Info("Updated database status for node",
+			"node", nodeName,
+			"status", "succeeded")
 	}
 
-	filter := bson.M{"_id": document["_id"]}
-	update := bson.M{
-		"$set": bson.M{
-			"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
-		},
+	r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, false)
+
+	return nil
+}
+
+func (r *Reconciler) executeMarkAlreadyDrainedGeneric(ctx context.Context,
+	healthEvent model.HealthEventWithStatus, event map[string]interface{}, database queue.DatabaseAPI) error {
+	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = model.AlreadyDrained
+
+	return r.updateNodeUserPodsEvictedStatusGeneric(ctx, database, event, podsEvictionStatus)
+}
+
+func (r *Reconciler) executeUpdateStatusGeneric(ctx context.Context,
+	healthEvent model.HealthEventWithStatus, event map[string]interface{}, database queue.DatabaseAPI) error {
+	nodeName := healthEvent.HealthEvent.NodeName
+	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = model.StatusSucceeded
+
+	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
+		slog.Error("Failed to update node label to drain-succeeded",
+			"node", nodeName,
+			"error", err)
+		metrics.TotalEventProcessingError.WithLabelValues("label_update_error").Inc()
 	}
 
-	_, err := collection.UpdateOne(ctx, filter, update)
+	err := r.updateNodeUserPodsEvictedStatusGeneric(ctx, database, event, podsEvictionStatus)
+	if err != nil {
+		return fmt.Errorf("failed to update user pod eviction status: %w", err)
+	}
+
+	metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(0)
+
+	return nil
+}
+
+func (r *Reconciler) updateNodeUserPodsEvictedStatusGeneric(ctx context.Context, database queue.DatabaseAPI,
+	event map[string]interface{}, userPodsEvictionStatus *model.OperationStatus) error {
+	var documentID interface{}
+
+	// Extract document ID from the event
+	if fullDocument, ok := event["fullDocument"].(map[string]interface{}); ok {
+		documentID = fullDocument["_id"]
+	} else if id, ok := event["_id"]; ok {
+		documentID = id
+	} else {
+		return fmt.Errorf("error extracting document ID from event: %+v", event)
+	}
+
+	filter := map[string]interface{}{"_id": documentID}
+	// Use database-agnostic update building
+	update := client.BuildSetUpdate(map[string]interface{}{
+		"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
+	})
+
+	_, err := database.UpdateDocument(ctx, filter, update)
 	if err != nil {
 		metrics.TotalEventProcessingError.WithLabelValues("update_status_error").Inc()
-		return fmt.Errorf("error updating document with ID: %v, error: %w", document["_id"], err)
+		return fmt.Errorf("error updating document with ID: %v, error: %w", documentID, err)
 	}
 
 	slog.Info("Health event status has been updated",
-		"documentID", document["_id"],
+		"documentID", documentID,
 		"evictionStatus", userPodsEvictionStatus.Status)
 	metrics.TotalEventsSuccessfullyProcessed.Inc()
 

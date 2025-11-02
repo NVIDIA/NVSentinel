@@ -18,48 +18,38 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/eventwatcher"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
-	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
+	_ "github.com/nvidia/nvsentinel/store-client-sdk/pkg/datastore/providers"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/helper"
 )
 
 type InitializationParams struct {
-	MongoClientCertMountPath string
-	KubeconfigPath           string
-	TomlConfigPath           string
-	DryRun                   bool
-	CircuitBreakerPercentage int
-	CircuitBreakerDuration   time.Duration
-	CircuitBreakerEnabled    bool
+	DatabaseClientCertMountPath string
+	KubeconfigPath              string
+	TomlConfigPath              string
+	DryRun                      bool
+	CircuitBreakerPercentage    int
+	CircuitBreakerDuration      time.Duration
+	CircuitBreakerEnabled       bool
 }
 
 type Components struct {
 	Reconciler     *reconciler.Reconciler
-	EventWatcher   *mongodb.EventWatcher
+	EventWatcher   *eventwatcher.EventWatcher
 	K8sClient      *informer.FaultQuarantineClient
 	CircuitBreaker breaker.CircuitBreaker
 }
 
 type EnvConfig struct {
 	Namespace                                    string
-	MongoURI                                     string
-	MongoDatabase                                string
-	MongoCollection                              string
-	TokenDatabase                                string
-	TokenCollection                              string
-	TotalTimeoutSeconds                          int
-	IntervalSeconds                              int
-	TotalCACertTimeoutSeconds                    int
-	IntervalCACertSeconds                        int
 	UnprocessedEventsMetricUpdateIntervalSeconds int
 }
 
@@ -71,9 +61,15 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to load environment configuration: %w", err)
 	}
 
-	mongoConfig := createMongoConfig(envConfig, params.MongoClientCertMountPath)
-	tokenConfig := createTokenConfig(envConfig)
-	pipeline := createMongoPipeline()
+	// Use standardized datastore client initialization
+	pipeline := client.BuildInsertOnlyPipelineAgnostic()
+
+	// Create datastore client bundle using helper with custom cert path
+	bundle, err := helper.NewDatastoreClientWithCertPath(ctx, "fault-quarantine-module", params.DatabaseClientCertMountPath, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create datastore client bundle: %w", err)
+	}
+	defer bundle.Close(ctx)
 
 	var tomlCfg config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlCfg); err != nil {
@@ -124,16 +120,9 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		circuitBreaker,
 	)
 
-	healthEventCollection, err := initializeMongoCollection(ctx, mongoConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error while initializing mongo collection: %w", err)
-	}
-
-	eventWatcher := mongodb.NewEventWatcher(
-		mongoConfig,
-		tokenConfig,
-		pipeline,
-		healthEventCollection,
+	eventWatcher := eventwatcher.NewEventWatcher(
+		bundle.ChangeStreamWatcher,
+		bundle.DatabaseClient,
 		time.Duration(envConfig.UnprocessedEventsMetricUpdateIntervalSeconds)*time.Second,
 		reconcilerInstance,
 	)
@@ -150,13 +139,10 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}, nil
 }
 
+
 func loadEnvConfig() (*EnvConfig, error) {
 	envSpecs := []configmanager.EnvVarSpec{
 		{Name: "POD_NAMESPACE"},
-		{Name: "MONGODB_URI"},
-		{Name: "MONGODB_DATABASE_NAME"},
-		{Name: "MONGODB_COLLECTION_NAME"},
-		{Name: "MONGODB_TOKEN_COLLECTION_NAME"},
 	}
 
 	envVars, envErrors := configmanager.ReadEnvVars(envSpecs)
@@ -168,26 +154,6 @@ func loadEnvConfig() (*EnvConfig, error) {
 		return nil, fmt.Errorf("required environment variables are missing")
 	}
 
-	totalTimeoutSeconds, err := getPositiveIntEnvVar("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
-	if err != nil {
-		return nil, err
-	}
-
-	intervalSeconds, err := getPositiveIntEnvVar("MONGODB_PING_INTERVAL_SECONDS", 5)
-	if err != nil {
-		return nil, err
-	}
-
-	totalCACertTimeoutSeconds, err := getPositiveIntEnvVar("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
-	if err != nil {
-		return nil, err
-	}
-
-	intervalCACertSeconds, err := getPositiveIntEnvVar("CA_CERT_READ_INTERVAL_SECONDS", 5)
-	if err != nil {
-		return nil, err
-	}
-
 	unprocessedEventsMetricUpdateIntervalSeconds, err :=
 		getPositiveIntEnvVar("UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS", 25)
 	if err != nil {
@@ -195,16 +161,7 @@ func loadEnvConfig() (*EnvConfig, error) {
 	}
 
 	return &EnvConfig{
-		Namespace:                 envVars["POD_NAMESPACE"],
-		MongoURI:                  envVars["MONGODB_URI"],
-		MongoDatabase:             envVars["MONGODB_DATABASE_NAME"],
-		MongoCollection:           envVars["MONGODB_COLLECTION_NAME"],
-		TokenDatabase:             envVars["MONGODB_DATABASE_NAME"],
-		TokenCollection:           envVars["MONGODB_TOKEN_COLLECTION_NAME"],
-		TotalTimeoutSeconds:       totalTimeoutSeconds,
-		IntervalSeconds:           intervalSeconds,
-		TotalCACertTimeoutSeconds: totalCACertTimeoutSeconds,
-		IntervalCACertSeconds:     intervalCACertSeconds,
+		Namespace: envVars["POD_NAMESPACE"],
 		UnprocessedEventsMetricUpdateIntervalSeconds: unprocessedEventsMetricUpdateIntervalSeconds,
 	}, nil
 }
@@ -225,43 +182,6 @@ func getPositiveIntEnvVar(name string, defaultValue int) (int, error) {
 	return value, nil
 }
 
-func createMongoConfig(envConfig *EnvConfig, mongoClientCertMountPath string) storewatcher.MongoDBConfig {
-	return storewatcher.MongoDBConfig{
-		URI:        envConfig.MongoURI,
-		Database:   envConfig.MongoDatabase,
-		Collection: envConfig.MongoCollection,
-		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
-		},
-		TotalPingTimeoutSeconds:    envConfig.TotalTimeoutSeconds,
-		TotalPingIntervalSeconds:   envConfig.IntervalSeconds,
-		TotalCACertTimeoutSeconds:  envConfig.TotalCACertTimeoutSeconds,
-		TotalCACertIntervalSeconds: envConfig.IntervalCACertSeconds,
-	}
-}
-
-func createTokenConfig(envConfig *EnvConfig) storewatcher.TokenConfig {
-	return storewatcher.TokenConfig{
-		ClientName:      "fault-quarantine-module",
-		TokenDatabase:   envConfig.TokenDatabase,
-		TokenCollection: envConfig.TokenCollection,
-	}
-}
-
-func createMongoPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			bson.E{Key: "$match", Value: bson.D{
-				bson.E{Key: "operationType", Value: bson.D{
-					bson.E{Key: "$in", Value: bson.A{"insert"}},
-				}},
-			}},
-		},
-	}
-}
-
 func createReconcilerConfig(
 	tomlCfg config.TomlConfig,
 	dryRun bool,
@@ -272,18 +192,6 @@ func createReconcilerConfig(
 		DryRun:                dryRun,
 		CircuitBreakerEnabled: circuitBreakerEnabled,
 	}
-}
-
-func initializeMongoCollection(
-	ctx context.Context,
-	mongoConfig storewatcher.MongoDBConfig,
-) (*mongo.Collection, error) {
-	collection, err := storewatcher.GetCollectionClient(ctx, mongoConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get MongoDB collection: %w", err)
-	}
-
-	return collection, nil
 }
 
 func initializeCircuitBreaker(

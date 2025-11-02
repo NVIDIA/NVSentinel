@@ -33,11 +33,10 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/evaluator"
+	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/eventwatcher"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/metrics"
-	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/mongodb"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -64,7 +63,7 @@ type Reconciler struct {
 	k8sClient             *informer.FaultQuarantineClient
 	lastProcessedObjectID atomic.Value
 	cb                    breaker.CircuitBreaker
-	eventWatcher          mongodb.EventWatcherInterface
+	eventWatcher          eventwatcher.EventWatcherInterface
 	taintInitKeys         []keyValTaint // Pre-computed taint keys for map initialization
 	taintUpdateMu         sync.Mutex    // Protects taint priority updates
 
@@ -110,22 +109,22 @@ func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
 	r.uncordonedTimestampLabelKey = labelKeyPrefix + "uncordon-timestamp"
 }
 
-func (r *Reconciler) StoreLastProcessedObjectID(objID primitive.ObjectID) {
+func (r *Reconciler) StoreLastProcessedObjectID(objID string) {
 	r.lastProcessedObjectID.Store(objID)
 }
 
-func (r *Reconciler) LoadLastProcessedObjectID() (primitive.ObjectID, bool) {
+func (r *Reconciler) LoadLastProcessedObjectID() (string, bool) {
 	lastObjID := r.lastProcessedObjectID.Load()
 	if lastObjID == nil {
-		return primitive.ObjectID{}, false
+		return "", false
 	}
 
-	objID, ok := lastObjID.(primitive.ObjectID)
+	objID, ok := lastObjID.(string)
 
 	return objID, ok
 }
 
-func (r *Reconciler) SetEventWatcher(eventWatcher mongodb.EventWatcherInterface) {
+func (r *Reconciler) SetEventWatcher(eventWatcher eventwatcher.EventWatcherInterface) {
 	r.eventWatcher = eventWatcher
 }
 

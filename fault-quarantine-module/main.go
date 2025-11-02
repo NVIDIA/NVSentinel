@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/initializer"
@@ -49,7 +50,7 @@ func main() {
 }
 
 func run() error {
-	metricsPort, mongoClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
+	metricsPort, databaseClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
 		circuitBreakerPercentage, circuitBreakerDuration, tomlConfigPath := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -67,13 +68,13 @@ func run() error {
 	)
 
 	params := initializer.InitializationParams{
-		MongoClientCertMountPath: *mongoClientCertMountPath,
-		KubeconfigPath:           *kubeconfigPath,
-		TomlConfigPath:           *tomlConfigPath,
-		DryRun:                   *dryRun,
-		CircuitBreakerPercentage: *circuitBreakerPercentage,
-		CircuitBreakerDuration:   *circuitBreakerDuration,
-		CircuitBreakerEnabled:    *circuitBreakerEnabled,
+		DatabaseClientCertMountPath: databaseClientCertMountPath,
+		KubeconfigPath:              *kubeconfigPath,
+		TomlConfigPath:              *tomlConfigPath,
+		DryRun:                      *dryRun,
+		CircuitBreakerPercentage:    *circuitBreakerPercentage,
+		CircuitBreakerDuration:      *circuitBreakerDuration,
+		CircuitBreakerEnabled:       *circuitBreakerEnabled,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)
@@ -108,12 +109,19 @@ func run() error {
 	return g.Wait()
 }
 
-func parseFlags() (metricsPort, mongoClientCertMountPath, kubeconfigPath *string, dryRun, circuitBreakerEnabled *bool,
-	circuitBreakerPercentage *int, circuitBreakerDuration *time.Duration, tomlConfigPath *string) {
+func parseFlags() (
+	metricsPort *string,
+	databaseClientCertMountPath string,
+	kubeconfigPath *string,
+	dryRun, circuitBreakerEnabled *bool,
+	circuitBreakerPercentage *int,
+	circuitBreakerDuration *time.Duration,
+	tomlConfigPath *string,
+) {
 	metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
+	// Register database certificate flags using common package
+	certConfig := flags.RegisterDatabaseCertFlags()
 
 	kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
@@ -132,6 +140,9 @@ func parseFlags() (metricsPort, mongoClientCertMountPath, kubeconfigPath *string
 		"enable or disable fault quarantine circuit breaker")
 
 	flag.Parse()
+
+	// Resolve the certificate path using common logic
+	databaseClientCertMountPath = certConfig.ResolveCertPath()
 
 	return
 }

@@ -16,13 +16,14 @@ package evaluator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
-	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/queue"
+	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/client"
 )
 
 func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface) DrainEvaluator {
@@ -32,8 +33,11 @@ func NewNodeDrainEvaluator(cfg config.TomlConfig, informers InformersInterface) 
 	}
 }
 
-func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent model.HealthEventWithStatus,
-	collection queue.MongoCollectionAPI) (*DrainActionResult, error) {
+// EvaluateEvent method has been removed - use EvaluateEventWithDatabase instead
+
+// EvaluateEventWithDatabase evaluates using the new database-agnostic interface
+func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, healthEvent model.HealthEventWithStatus,
+	database queue.DatabaseAPI) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	// Handle UnQuarantined events - cancel any ongoing drain
@@ -55,7 +59,7 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent mode
 	}
 
 	if statusPtr != nil && *statusPtr == model.AlreadyQuarantined {
-		isDrained, err := mongodb.IsNodeAlreadyDrained(ctx, collection, nodeName)
+		isDrained, err := isNodeAlreadyDrained(ctx, database, nodeName)
 		if err != nil {
 			slog.Error("Failed to check if node %s is already drained: %v", nodeName, err)
 
@@ -234,4 +238,60 @@ func isTerminalStatus(status model.Status) bool {
 	return status == model.StatusSucceeded ||
 		status == model.StatusFailed ||
 		status == model.AlreadyDrained
+}
+
+// isNodeAlreadyDrained checks if a node has already been drained using the database-agnostic interface
+func isNodeAlreadyDrained(ctx context.Context, database queue.DatabaseAPI, nodeName string) (bool, error) {
+	// Use database-agnostic filter building
+	filter := client.NewFilterBuilder().
+		Eq("healthevent.nodename", nodeName).
+		In("healtheventstatus.nodequarantined", []string{string(model.Quarantined), string(model.UnQuarantined)}).
+		Build()
+
+	// ObjectID contains timestamp, sort descending to get latest
+	opts := &client.FindOneOptions{
+		Sort: map[string]interface{}{"_id": -1},
+	}
+
+	// Use database-agnostic method and semantic error handling
+	result, err := database.FindDocument(ctx, filter, opts)
+	if err != nil {
+		return false, fmt.Errorf("failed to query latest event for node %s: %w", nodeName, err)
+	}
+
+	var document map[string]interface{}
+	if err := result.Decode(&document); err != nil {
+		// Use centralized error checking to eliminate string comparisons
+		if client.IsNoDocumentsError(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("failed to decode result for node %s: %w", nodeName, err)
+	}
+
+	healthEventStatus, ok := document["healtheventstatus"].(map[string]interface{})
+	if !ok {
+		return false, fmt.Errorf("invalid healtheventstatus format for node %s", nodeName)
+	}
+
+	nodeQuarantined, ok := healthEventStatus["nodequarantined"].(string)
+	if !ok {
+		return false, fmt.Errorf("invalid nodequarantined format for node %s", nodeName)
+	}
+
+	if nodeQuarantined == string(model.UnQuarantined) {
+		return false, nil
+	}
+
+	userPodsEvictionStatus, ok := healthEventStatus["userpodsevictionstatus"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+
+	drainStatus, ok := userPodsEvictionStatus["status"].(string)
+	if !ok {
+		return false, nil
+	}
+
+	return drainStatus == string(model.StatusSucceeded), nil
 }

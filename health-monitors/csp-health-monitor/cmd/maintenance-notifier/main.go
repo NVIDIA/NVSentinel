@@ -41,7 +41,7 @@ import (
 
 const (
 	defaultConfigPathSidecar    = "/etc/config/config.toml"
-	defaultMongoCertPathSidecar = "/etc/ssl/mongo-client"
+	defaultDatabaseCertPathSidecar = "/etc/ssl/database-client"
 	defaultUdsPathSidecar       = "/run/nvsentinel/nvsentinel.sock"
 	defaultMetricsPortSidecar   = "2113"
 )
@@ -56,7 +56,7 @@ var (
 type appConfig struct {
 	configPath               string
 	udsPath                  string
-	mongoClientCertMountPath string
+	databaseClientCertMountPath string
 	metricsPort              string
 }
 
@@ -65,10 +65,10 @@ func parseFlags() *appConfig {
 	// Command-line flags
 	flag.StringVar(&cfg.configPath, "config", defaultConfigPathSidecar, "Path to the TOML configuration file.")
 	flag.StringVar(&cfg.udsPath, "uds-path", defaultUdsPathSidecar, "Path to the Platform Connector UDS socket.")
-	flag.StringVar(&cfg.mongoClientCertMountPath,
-		"mongo-client-cert-mount-path",
-		defaultMongoCertPathSidecar,
-		"Directory where MongoDB client tls.crt, tls.key, and ca.crt are mounted.",
+	flag.StringVar(&cfg.databaseClientCertMountPath,
+		"database-client-cert-mount-path",
+		defaultDatabaseCertPathSidecar,
+		"Directory where database client tls.crt, tls.key, and ca.crt are mounted.",
 	)
 	flag.StringVar(&cfg.metricsPort, "metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
 
@@ -92,7 +92,7 @@ func logStartupInfo(cfg *appConfig) {
 	slog.Info("Using",
 		"configuration file", cfg.configPath,
 		"platform connector UDS path", cfg.udsPath,
-		"mongoDB client cert mount path", cfg.mongoClientCertMountPath,
+		"database client cert mount path", cfg.databaseClientCertMountPath,
 		"exposing sidecar metrics on port", cfg.metricsPort,
 	)
 	slog.Debug("log verbosity level is set based on the -v flag for sidecar.")
@@ -155,7 +155,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
+	store, err := datastore.NewStore(ctx, &appCfg.databaseClientCertMountPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}
