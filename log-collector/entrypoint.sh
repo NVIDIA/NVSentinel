@@ -47,13 +47,18 @@ is_running_on_gcp() {
 # Function to detect if running on AWS using IMDSv2 only
 is_running_on_aws() {
   local timeout=5
-  local response=$(curl -s -w "\n%{http_code}" -m "${timeout}" -X PUT \
+  local response
+  local http_code
+  local token
+  
+  response=$(curl -s -w "\n%{http_code}" -m "${timeout}" -X PUT \
     "http://169.254.169.254/latest/api/token" \
     -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
   
-  local http_code=$(echo "$response" | tail -n1)
+  http_code=$(echo "$response" | tail -n1)
   [ "$http_code" != "200" ] && return 1
-  local token=$(echo "$response" | head -n-1)
+  
+  token=$(echo "$response" | head -n-1)
   curl -s -m "${timeout}" -H "X-aws-ec2-metadata-token: ${token}" \
     "http://169.254.169.254/latest/meta-data/" >/dev/null 2>&1
 }
