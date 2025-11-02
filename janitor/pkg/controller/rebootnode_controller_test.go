@@ -663,3 +663,112 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 	}
 	return nil
 }
+
+// Test conditionsChanged helper function
+func TestConditionsChanged(t *testing.T) {
+	tests := []struct {
+		name     string
+		original []metav1.Condition
+		updated  []metav1.Condition
+		want     bool
+	}{
+		{
+			name:     "both empty",
+			original: []metav1.Condition{},
+			updated:  []metav1.Condition{},
+			want:     false,
+		},
+		{
+			name:     "different lengths",
+			original: []metav1.Condition{},
+			updated: []metav1.Condition{
+				{Type: "Test", Status: metav1.ConditionTrue},
+			},
+			want: true,
+		},
+		{
+			name: "same conditions",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			want: false,
+		},
+		{
+			name: "status changed",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionFalse, Reason: "Pending", Message: "Waiting"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			want: true,
+		},
+		{
+			name: "reason changed",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Retry", Message: "Signal sent"},
+			},
+			want: true,
+		},
+		{
+			name: "message changed",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent successfully"},
+			},
+			want: true,
+		},
+		{
+			name: "new condition type added",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+				{Type: "NodeReady", Status: metav1.ConditionTrue, Reason: "Ready", Message: "Node is ready"},
+			},
+			want: true,
+		},
+		{
+			name: "multiple conditions unchanged",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
+			},
+			want: false,
+		},
+		{
+			name: "one of multiple conditions changed",
+			original: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
+			},
+			updated: []metav1.Condition{
+				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
+				{Type: "NodeReady", Status: metav1.ConditionTrue, Reason: "Ready", Message: "Node is ready"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := conditionsChanged(tt.original, tt.updated)
+			if got != tt.want {
+				t.Errorf("conditionsChanged() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

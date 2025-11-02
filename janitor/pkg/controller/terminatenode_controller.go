@@ -75,7 +75,7 @@ func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
 		original.Status.ConsecutiveFailures != updated.Status.ConsecutiveFailures ||
 		(original.Status.StartTime == nil) != (updated.Status.StartTime == nil) ||
 		(original.Status.CompletionTime == nil) != (updated.Status.CompletionTime == nil) ||
-		len(original.Status.Conditions) != len(updated.Status.Conditions)
+		conditionsChanged(original.Status.Conditions, updated.Status.Conditions)
 
 	if statusChanged {
 		if err := r.Status().Update(ctx, updated); err != nil {
