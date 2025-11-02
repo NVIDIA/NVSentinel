@@ -10,7 +10,7 @@ click = "^8.1.7"
 prometheus-client = "^0.23.1"
 
 [tool.poetry.group.dev.dependencies]
-black = "^24.4.2"
+black = "^25.9.0"
 coverage = "^7.5.4"
 pytest = "^8.2.2"
 
