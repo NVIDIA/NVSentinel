@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -85,34 +84,23 @@ func (r *RebootNodeReconciler) updateRebootNodeStatus(
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Compare status to see if anything changed, and push updates if needed
-	// Note: This status update pattern is safe for single-replica deployments because only
-	// a single controller instance (single writer) modifies the RebootNode status, so there
-	// are no concurrent modifications and no risk of update conflicts.
-	// If janitor is deployed with multiple replicas (multi-replica), concurrent status updates
-	// may occur, leading to update conflicts and possible lost updates. In that case, you must:
-	//   - Use retry.RetryOnConflict to handle update conflicts from the API server.
-	//   - Consider merging status changes or using a conflict-aware update strategy to avoid
-	//     overwriting concurrent updates.
-	// See: https://book.kubebuilder.io/reference/using-finalizers.html#handling-conflicts
-	// and controller-runtime docs for best practices.
-	if !reflect.DeepEqual(original.Status, updated.Status) {
-		// Refresh the object before updating to avoid precondition failures
-		var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
-		if err := r.Get(ctx, req.NamespacedName, &freshRebootNode); err != nil {
+	// Check if status changed by comparing individual fields.
+	// This status update is safe because controller-runtime uses leader election
+	// to ensure only one controller instance is active at a time, even with multiple replicas.
+	// The active controller has exclusive write access to RebootNode status.
+	statusChanged := original.Status.RetryCount != updated.Status.RetryCount ||
+		original.Status.ConsecutiveFailures != updated.Status.ConsecutiveFailures ||
+		(original.Status.StartTime == nil) != (updated.Status.StartTime == nil) ||
+		(original.Status.CompletionTime == nil) != (updated.Status.CompletionTime == nil) ||
+		len(original.Status.Conditions) != len(updated.Status.Conditions)
+
+	if statusChanged {
+		if err := r.Status().Update(ctx, updated); err != nil {
 			if apierrors.IsNotFound(err) {
 				logger.V(0).Info("post-reconciliation status update: object not found, assumed deleted",
 					"name", updated.Name)
 				return ctrl.Result{}, nil
 			}
-			logger.Error(err, "failed to refresh RebootNode before status update")
-			return ctrl.Result{}, err
-		}
-
-		// Apply status changes to the fresh object
-		freshRebootNode.Status = updated.Status
-
-		if err := r.Status().Update(ctx, &freshRebootNode); err != nil {
 			logger.Error(err, "failed to update rebootnode status",
 				"node", updated.Spec.NodeName)
 			return ctrl.Result{}, err
@@ -215,22 +203,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		result = ctrl.Result{} // Don't requeue
 
 		// Update status and return
-		if !reflect.DeepEqual(originalRebootNode.Status, rebootNode.Status) {
-			var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
-			if err := r.Get(ctx, req.NamespacedName, &freshRebootNode); err != nil {
-				if apierrors.IsNotFound(err) {
-					return ctrl.Result{}, nil
-				}
-				return ctrl.Result{}, err
-			}
-
-			freshRebootNode.Status = rebootNode.Status
-			if err := r.Status().Update(ctx, &freshRebootNode); err != nil {
-				logger.Error(err, "failed to update status after max retries")
-				return ctrl.Result{}, err
-			}
-		}
-		return result, nil
+		return r.updateRebootNodeStatus(ctx, req, originalRebootNode, &rebootNode, result)
 	}
 
 	// Get the node to reboot
