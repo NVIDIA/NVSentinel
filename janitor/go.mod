@@ -17,7 +17,6 @@ require (
 	github.com/onsi/gomega v1.38.2
 	github.com/oracle/oci-go-sdk/v65 v65.102.1
 	github.com/prometheus/client_golang v1.23.2
-	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	k8s.io/api v0.34.1
@@ -98,6 +97,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.1 // indirect
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
