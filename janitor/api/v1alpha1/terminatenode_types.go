@@ -182,6 +182,33 @@ func (t *TerminateNode) SetCompletionTime() {
 	}
 }
 
+// Interface implementation for generic status update handling
+
+// GetRetryCount returns the retry count
+func (s *TerminateNodeStatus) GetRetryCount() int32 {
+	return s.RetryCount
+}
+
+// GetConsecutiveFailures returns the consecutive failures count
+func (s *TerminateNodeStatus) GetConsecutiveFailures() int32 {
+	return s.ConsecutiveFailures
+}
+
+// GetStartTime returns the start time
+func (s *TerminateNodeStatus) GetStartTime() *metav1.Time {
+	return s.StartTime
+}
+
+// GetCompletionTime returns the completion time
+func (s *TerminateNodeStatus) GetCompletionTime() *metav1.Time {
+	return s.CompletionTime
+}
+
+// GetConditions returns the conditions
+func (s *TerminateNodeStatus) GetConditions() []metav1.Condition {
+	return s.Conditions
+}
+
 func init() {
 	SchemeBuilder.Register(&TerminateNode{}, &TerminateNodeList{})
 }

@@ -54,10 +54,7 @@ type TerminateNodeReconciler struct {
 }
 
 // updateTerminateNodeStatus is a helper function that handles status updates with proper error handling.
-// It centralizes the status update logic to avoid code duplication and provides consistent handling
-// of status updates across different code paths in the reconciliation loop.
-//
-//nolint:dupl // Similar to updateRebootNodeStatus but operates on TerminateNode type
+// It delegates to the generic updateNodeActionStatus function.
 func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
 	ctx context.Context,
 	req ctrl.Request,
@@ -65,36 +62,17 @@ func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
 	updated *janitordgxcnvidiacomv1alpha1.TerminateNode,
 	result ctrl.Result,
 ) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	// Check if status changed by comparing individual fields.
-	// This status update is safe because controller-runtime uses leader election
-	// to ensure only one controller instance is active at a time, even with multiple replicas.
-	// The active controller has exclusive write access to TerminateNode status.
-	statusChanged := original.Status.RetryCount != updated.Status.RetryCount ||
-		original.Status.ConsecutiveFailures != updated.Status.ConsecutiveFailures ||
-		(original.Status.StartTime == nil) != (updated.Status.StartTime == nil) ||
-		(original.Status.CompletionTime == nil) != (updated.Status.CompletionTime == nil) ||
-		conditionsChanged(original.Status.Conditions, updated.Status.Conditions)
-
-	if statusChanged {
-		if err := r.Status().Update(ctx, updated); err != nil {
-			if apierrors.IsNotFound(err) {
-				logger.V(0).Info("post-reconciliation status update: object not found, assumed deleted",
-					"name", updated.Name)
-				return ctrl.Result{}, nil
-			}
-			logger.Error(err, "failed to update terminatenode status",
-				"node", updated.Spec.NodeName)
-			return ctrl.Result{}, err
-		}
-		logger.Info("terminatenode status updated",
-			"node", updated.Spec.NodeName,
-			"retryCount", int(updated.Status.RetryCount),
-			"consecutiveFailures", int(updated.Status.ConsecutiveFailures))
-	}
-
-	return result, nil
+	return updateNodeActionStatus(
+		ctx,
+		r.Status(),
+		original,
+		updated,
+		&original.Status,
+		&updated.Status,
+		updated.Spec.NodeName,
+		"terminatenode",
+		result,
+	)
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete

@@ -192,6 +192,33 @@ func (r *RebootNode) SetCompletionTime() {
 	}
 }
 
+// Interface implementation for generic status update handling
+
+// GetRetryCount returns the retry count
+func (s *RebootNodeStatus) GetRetryCount() int32 {
+	return s.RetryCount
+}
+
+// GetConsecutiveFailures returns the consecutive failures count
+func (s *RebootNodeStatus) GetConsecutiveFailures() int32 {
+	return s.ConsecutiveFailures
+}
+
+// GetStartTime returns the start time
+func (s *RebootNodeStatus) GetStartTime() *metav1.Time {
+	return s.StartTime
+}
+
+// GetCompletionTime returns the completion time
+func (s *RebootNodeStatus) GetCompletionTime() *metav1.Time {
+	return s.CompletionTime
+}
+
+// GetConditions returns the conditions
+func (s *RebootNodeStatus) GetConditions() []metav1.Condition {
+	return s.Conditions
+}
+
 func init() {
 	SchemeBuilder.Register(&RebootNode{}, &RebootNodeList{})
 }

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -47,28 +46,6 @@ const (
 	// MaxRebootRetries is the maximum number of retry attempts before giving up
 	MaxRebootRetries = 20 // 10 minutes at 30s base intervals
 )
-
-// getNextRequeueDelay calculates per-resource exponential backoff delay based on consecutive failures.
-// This is used with ctrl.Result{RequeueAfter: delay} rather than the controller's built-in rate limiter
-// because we need independent backoff per node based on each node's failure history, not global controller
-// rate limiting. Each RebootNode tracks its own ConsecutiveFailures counter and gets its own backoff schedule.
-// Returns: 30s, 1m, 2m, 5m (capped at max after 3+ failures)
-func getNextRequeueDelay(consecutiveFailures int32) time.Duration {
-	delays := []time.Duration{
-		30 * time.Second, // First retry after initial failure
-		1 * time.Minute,  // Second retry
-		2 * time.Minute,  // Third retry
-		5 * time.Minute,  // Fourth+ retry (capped)
-	}
-
-	// Safely convert int32 to int for array indexing
-	idx := int(consecutiveFailures)
-	if idx >= len(delays) {
-		return delays[len(delays)-1] // Cap at maximum
-	}
-
-	return delays[idx]
-}
 
 // conditionsChanged compares two sets of conditions and returns true if they differ.
 // It checks the type, status, reason, and message of each condition.
@@ -102,10 +79,7 @@ func conditionsChanged(original, updated []metav1.Condition) bool {
 }
 
 // updateRebootNodeStatus is a helper function that handles status updates with proper error handling.
-// It centralizes the status update logic to avoid code duplication and provides consistent handling
-// of status updates across different code paths in the reconciliation loop.
-//
-//nolint:dupl // Similar to updateTerminateNodeStatus but operates on RebootNode type
+// It delegates to the generic updateNodeActionStatus function.
 func (r *RebootNodeReconciler) updateRebootNodeStatus(
 	ctx context.Context,
 	req ctrl.Request,
@@ -113,36 +87,17 @@ func (r *RebootNodeReconciler) updateRebootNodeStatus(
 	updated *janitordgxcnvidiacomv1alpha1.RebootNode,
 	result ctrl.Result,
 ) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	// Check if status changed by comparing individual fields.
-	// This status update is safe because controller-runtime uses leader election
-	// to ensure only one controller instance is active at a time, even with multiple replicas.
-	// The active controller has exclusive write access to RebootNode status.
-	statusChanged := original.Status.RetryCount != updated.Status.RetryCount ||
-		original.Status.ConsecutiveFailures != updated.Status.ConsecutiveFailures ||
-		(original.Status.StartTime == nil) != (updated.Status.StartTime == nil) ||
-		(original.Status.CompletionTime == nil) != (updated.Status.CompletionTime == nil) ||
-		conditionsChanged(original.Status.Conditions, updated.Status.Conditions)
-
-	if statusChanged {
-		if err := r.Status().Update(ctx, updated); err != nil {
-			if apierrors.IsNotFound(err) {
-				logger.V(0).Info("post-reconciliation status update: object not found, assumed deleted",
-					"name", updated.Name)
-				return ctrl.Result{}, nil
-			}
-			logger.Error(err, "failed to update rebootnode status",
-				"node", updated.Spec.NodeName)
-			return ctrl.Result{}, err
-		}
-		logger.Info("rebootnode status updated",
-			"node", updated.Spec.NodeName,
-			"retryCount", int(updated.Status.RetryCount),
-			"consecutiveFailures", int(updated.Status.ConsecutiveFailures))
-	}
-
-	return result, nil
+	return updateNodeActionStatus(
+		ctx,
+		r.Status(),
+		original,
+		updated,
+		&original.Status,
+		&updated.Status,
+		updated.Spec.NodeName,
+		"rebootnode",
+		result,
+	)
 }
 
 // RebootNodeReconciler reconciles a RebootNode object

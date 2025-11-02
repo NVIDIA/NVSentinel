@@ -60,6 +60,8 @@ generate: ## Generate CRDs and move them to Helm chart directory
 	@# Install controller-gen if not present
 	@which controller-gen > /dev/null || (echo "Installing controller-gen..." && go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest)
 	@# Generate CRDs into api/v1alpha1 directory
+	@# Note: Generated CRD YAML files do not include license headers (this is expected)
+	@# YAML files are excluded from license header checks via main Makefile: -ignore '**/*.yaml'
 	@controller-gen crd paths=./$(API_DIR) output:crd:dir=./$(API_DIR)
 	@# Move generated CRDs to Helm chart crds directory
 	@echo "Moving generated CRDs to $(CRD_OUTPUT_DIR)..."

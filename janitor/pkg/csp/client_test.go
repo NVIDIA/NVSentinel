@@ -283,13 +283,16 @@ func TestGetProviderFromString(t *testing.T) {
 		expected Provider
 		wantErr  bool
 	}{
-		{"kind", "kind", ProviderKind, false},
-		{"aws", "aws", ProviderAWS, false},
-		{"gcp", "gcp", ProviderGCP, false},
-		{"azure", "azure", ProviderAzure, false},
-		{"oci", "oci", ProviderOCI, false},
+		{"kind lowercase", "kind", ProviderKind, false},
+		{"aws lowercase", "aws", ProviderAWS, false},
+		{"gcp lowercase", "gcp", ProviderGCP, false},
+		{"azure lowercase", "azure", ProviderAzure, false},
+		{"oci lowercase", "oci", ProviderOCI, false},
+		{"kind uppercase", "KIND", ProviderKind, false}, // case insensitive
+		{"aws uppercase", "AWS", ProviderAWS, false},
+		{"gcp mixed case", "GcP", ProviderGCP, false},
+		{"azure mixed case", "Azure", ProviderAzure, false},
 		{"invalid", "invalid", "", true},
-		{"uppercase kind", "KIND", "", true}, // case sensitive
 		{"empty", "", "", true},
 	}
 

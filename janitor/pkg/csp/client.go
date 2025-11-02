@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/aws"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/azure"
@@ -95,9 +96,10 @@ func GetProviderFromEnv() (Provider, error) {
 	return GetProviderFromString(cspType)
 }
 
-// GetProviderFromString converts a string to a Provider type
+// GetProviderFromString converts a string to a Provider type.
+// The input is case-insensitive (e.g., "AWS", "aws", "Aws" all work).
 func GetProviderFromString(providerStr string) (Provider, error) {
-	switch providerStr {
+	switch strings.ToLower(providerStr) {
 	case "kind":
 		return ProviderKind, nil
 	case "aws":
