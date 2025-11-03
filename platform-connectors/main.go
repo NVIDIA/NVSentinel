@@ -146,6 +146,12 @@ func initializeNodeMetadataProcessor(
 		return nil, nil
 	}
 
+	if clientset == nil {
+		slog.Warn("Node metadata enrichment is enabled but Kubernetes connector is unavailable; continuing without node metadata enrichment")
+
+		return nil, nil
+	}
+
 	processor, err := nodemetadata.NewProcessor(ctx, cfg, clientset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
