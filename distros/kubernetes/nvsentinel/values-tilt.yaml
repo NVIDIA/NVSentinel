@@ -120,6 +120,16 @@ fault-remediation:
 node-drainer:
   logLevel: debug
 
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaces:
+        - kube-system
+        topologyKey: kubernetes.io/hostname
+
 labeler:
   logLevel: debug
   # Test kata label override with the annotation present on kata test nodes
