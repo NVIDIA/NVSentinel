@@ -175,7 +175,7 @@ export GOPATH=$(go env GOPATH)
 export GO_CACHE_DIR=$(go env GOCACHE)
 
 # Install development dependencies
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 go install gotest.tools/gotestsum@latest
 go install github.com/boumenot/gocover-cobertura@latest
 
