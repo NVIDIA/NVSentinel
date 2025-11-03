@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM public.ecr.aws/docker/library/python:3.12-alpine AS build
+FROM public.ecr.aws/docker/library/python:3.10-alpine AS build
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install poetry==1.8.2
@@ -31,7 +31,7 @@ RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry build --format wheel 
 RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
 
-FROM public.ecr.aws/docker/library/python:3.12-alpine AS runtime
+FROM public.ecr.aws/docker/library/python:3.10-alpine AS runtime
 
 ENV PYTHONUNBUFFERED=1
 

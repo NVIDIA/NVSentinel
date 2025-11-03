@@ -31,15 +31,35 @@ resources:
     cpu: "200m"
     memory: "300Mi"
 
-config: |
-  evictionTimeoutInSeconds = "60"
-  systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|prometheus|observability|gmp-system|nv-storage|runai|dgxc-admission-controller|dgxc-system|osmo|default|dgxc-logging|network-operator|skyhook|dgxc-alloy)$"
-  deleteAfterTimeoutMinutes = 60 # Time (in minutes)after which pods in DeleteAfterTimeout mode will start deleting the pod 
+# Eviction timeout in seconds for pod eviction operations
+# Maximum time to wait for a pod to gracefully terminate before force deletion
+# Must be a positive integer, converted to time.Duration in the code
+evictionTimeoutInSeconds: "60"
 
-  # Time after which a pod in NotReady state is considered stuck (in minutes)
-  notReadyTimeoutMinutes = 5
+# Regular expression pattern matching system namespaces
+# Pods in these namespaces are skipped during the drain process
+systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
 
-  # User namespace configuration with eviction modes
-  [[userNamespaces]]
-  name = "*"
-  mode = "AllowCompletion"
+# Time in minutes after which pods in DeleteAfterTimeout mode will be force deleted
+# This timeout is calculated from the health event's createdAt timestamp
+# When the timeout is reached, remaining pods are force deleted regardless of their state
+# Default: 60 minutes if not specified (validated in config.go)
+deleteAfterTimeoutMinutes: 60
+
+# Time in minutes after which a pod in NotReady state is considered stuck
+# Used to detect pods that are unhealthy and unlikely to complete gracefully
+# Stuck pods may be force deleted to unblock the node drain process
+# Default: 5 minutes if not specified (validated in config.go)
+notReadyTimeoutMinutes: 5
+
+# User namespace configuration with eviction modes
+# Defines how pods in different namespaces should be evicted during node drain
+# Each entry specifies a namespace pattern and its corresponding eviction mode
+userNamespaces:
+  # Namespace name or pattern (* matches all user namespaces)
+  - name: "*"
+    # Eviction mode determines how pods are evicted:
+    # - "Immediate": Pod is evicted immediately without waiting for graceful termination
+    # - "AllowCompletion": Wait for pod to complete gracefully (respects terminationGracePeriodSeconds)
+    # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
+    mode: "AllowCompletion"

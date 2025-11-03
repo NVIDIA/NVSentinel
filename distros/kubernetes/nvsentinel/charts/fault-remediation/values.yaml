@@ -40,37 +40,60 @@ podAnnotations: {}
 tolerations:
   - operator: "Exists"
 
-config: |
-  [maintenanceResource]
-  namespace = "nvsentinel"
-  version = "v1alpha1"
-  apiGroup = "janitor.dgxc.nvidia.com"
+# Maintenance resource configuration
+# Used by fault-remediation to create maintenance CRDs (like RebootNode, TerminateNode)
+# These values configure the Kubernetes custom resource that triggers the actual remediation action
+maintenance:
+  # API group of the maintenance CRD (configured in the janitor controller)
+  apiGroup: "janitor.dgxc.nvidia.com"
+  # API version of the maintenance CRD
+  version: "v1alpha1"
+  # Kubernetes namespace where maintenance resources will be created
+  namespace: "nvsentinel"
+  # Names of maintenance resource types used by the janitor controller
+  # Multiple resource types can be specified for different remediation actions
+  # These are used in the ClusterRole to grant permissions to create these resource types
+  resourceNames:
+    - "rebootnodes"
+    - "terminatenodes"
   
-  [template]
-  mountPath = "/etc/config"
-  fileName = "maintenance-template.yaml"
-  
-  [updateRetry]
-  maxRetries = 5
-  retryDelaySeconds = 10
+  # Template for generating maintenance resources
+  # This Go template is executed with the following variables:
+  # - .ApiGroup: API group from maintenance.apiGroup above
+  # - .Version: API version from maintenance.version above
+  # - .RecommendedAction: Numeric action code from health event (2 = reboot)
+  # - .NodeName: Name of the node requiring maintenance
+  # - .HealthEventID: Unique ID of the triggering health event
+  # The generated YAML is then created as a Kubernetes resource
+  template: |
+    apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+    kind: RebootNode
+    metadata:
+      name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
+    spec:
+      nodeName: {{ .NodeName }}
 
-maintenanceResource:
-  rebootResource:
-    name: rebootnodes
-  apiGroup: janitor.dgxc.nvidia.com
-  namespace: nvsentinel
-  version: v1alpha1
-  template:
-    mountPath: /etc/fault-remediation/templates
-    fileName: maintenance-template.yaml
+# Retry configuration for maintenance resource updates
+# Used when updating annotations on nodes after creating maintenance resources
+updateRetry:
+  # Maximum number of retry attempts if the update fails (due to conflicts, network issues, etc.)
+  maxRetries: 5
+  # Delay in seconds between retry attempts (uses exponential backoff)
+  retryDelaySeconds: 10
 
+# Log collector configuration
+# When enabled, creates a Kubernetes Job to collect diagnostic logs from failing nodes
 logCollector:
+  # Enable log collection jobs on node failures
   enabled: false
-  manifestFileName: log-collector-job.yaml
   image:
     repository: ghcr.io/nvidia/nvsentinel/log-collector
     pullPolicy: IfNotPresent
+  # HTTP endpoint where collected logs will be uploaded
   uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
+  # Comma-separated list of namespaces where GPU operator components run (for collecting GPU operator logs)
   gpuOperatorNamespaces: "gpu-operator"
+  # Enable GCP-specific SOS report collection
   enableGcpSosCollection: false
+  # Enable AWS-specific SOS report collection
   enableAwsSosCollection: false

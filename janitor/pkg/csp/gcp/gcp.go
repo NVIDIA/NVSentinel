@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// nolint:wsl // CSP client code migrated from old code
-package csp
+package gcp
 
 import (
 	"context"
@@ -23,16 +22,29 @@ import (
 
 	compute "cloud.google.com/go/compute/apiv1"
 	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type gcpClient struct{}
+var (
+	_ model.CSPClient = (*Client)(nil)
+)
+
+// Client is the GCP implementation of the CSP Client interface.
+type Client struct{}
 
 type gcpNodeFields struct {
 	project  string
 	zone     string
 	instance string
+}
+
+// NewClient creates a new GCP client.
+func NewClient(ctx context.Context) (*Client, error) {
+	// GCP client initialization is deferred until first API call
+	// This allows validation to happen at construction time in the future
+	return &Client{}, nil
 }
 
 func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
@@ -54,6 +66,7 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 			if i == 0 {
 				continue
 			}
+
 			if name != "" {
 				result[name] = match[i]
 			} else {
@@ -63,18 +76,24 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 	} else {
 		return nil, errors.New("failed to extract required fields from node.Spec.ProviderID")
 	}
+
 	reqInfo.project = result["project"]
 	reqInfo.zone = result["zone"]
 	reqInfo.instance = result["instance"]
+
 	return reqInfo, nil
 }
 
-func (c *gcpClient) SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error) {
+// SendRebootSignal resets a GCE node by stopping and starting the instance.
+// nolint:dupl // Similar code pattern as SendTerminateSignal is expected for CSP operations
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	logger := log.FromContext(ctx)
+
 	instancesClient, err := compute.NewInstancesRESTClient(ctx)
 	if err != nil {
 		return "", err
 	}
+
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
 			logger.Error(cerr, "failed to close instances client")
@@ -99,15 +118,18 @@ func (c *gcpClient) SendRebootSignal(ctx context.Context, node corev1.Node) (Res
 		return "", err
 	}
 
-	return ResetSignalRequestRef(op.Name()), nil
+	return model.ResetSignalRequestRef(op.Proto().GetName()), nil
 }
 
-func (c *gcpClient) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+// IsNodeReady checks if the node is ready after a reboot operation.
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	logger := log.FromContext(ctx)
+
 	zoneOperationsClient, err := compute.NewZoneOperationsRESTClient(ctx)
 	if err != nil {
 		return false, err
 	}
+
 	defer func() {
 		if cerr := zoneOperationsClient.Close(); cerr != nil {
 			logger.Error(cerr, "failed to close zone operations client")
@@ -137,12 +159,16 @@ func (c *gcpClient) IsNodeReady(ctx context.Context, node corev1.Node, message s
 	return false, nil
 }
 
-func (c *gcpClient) SendTerminateSignal(ctx context.Context, node corev1.Node) (TerminateNodeRequestRef, error) {
+// SendTerminateSignal deletes a GCE node.
+// nolint:dupl // Similar code pattern as SendRebootSignal is expected for CSP operations
+func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
 	logger := log.FromContext(ctx)
+
 	instancesClient, err := compute.NewInstancesRESTClient(ctx)
 	if err != nil {
 		return "", err
 	}
+
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
 			logger.Error(cerr, "failed to close instances client")
@@ -167,5 +193,5 @@ func (c *gcpClient) SendTerminateSignal(ctx context.Context, node corev1.Node) (
 		return "", err
 	}
 
-	return TerminateNodeRequestRef(op.Name()), nil
+	return model.TerminateNodeRequestRef(op.Proto().GetName()), nil
 }

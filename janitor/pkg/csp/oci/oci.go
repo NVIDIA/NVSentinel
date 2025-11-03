@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// nolint:wsl // CSP client code migrated from old code
-package csp
+package oci
 
 import (
 	"context"
@@ -21,11 +20,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
 	corev1 "k8s.io/api/core/v1"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+var (
+	_ model.CSPClient = (*Client)(nil)
 )
 
 // Compute provides a wrapper around a subset of the OCI Compute client interface,
@@ -37,20 +41,25 @@ type Compute interface {
 	) (response core.InstanceActionResponse, err error)
 }
 
-type OCIClient struct {
+// Client is the OCI implementation of the CSP Client interface.
+type Client struct {
 	compute Compute
 }
 
-type OCIClientOptionFunc func(*OCIClient) error
+// ClientOptionFunc is a function that configures a Client.
+type ClientOptionFunc func(*Client) error
 
-func WithComputeClient() OCIClientOptionFunc {
-	return func(c *OCIClient) error {
+// WithComputeClient returns an option function that configures the OCI Compute client.
+func WithComputeClient() ClientOptionFunc {
+	return func(c *Client) error {
 		if c.compute != nil {
 			return nil
 		}
 
-		var cfgProvider common.ConfigurationProvider
-		var err error
+		var (
+			cfgProvider common.ConfigurationProvider
+			err         error
+		)
 
 		if os.Getenv("OCI_CREDENTIALS_FILE") != "" {
 			cfgProvider = common.CustomProfileConfigProvider(os.Getenv("OCI_CREDENTIALS_FILE"), os.Getenv("OCI_PROFILE"))
@@ -67,25 +76,32 @@ func WithComputeClient() OCIClientOptionFunc {
 		}
 
 		c.compute = computeClient
+
 		return nil
 	}
 }
 
-func NewOCIClient(opts ...OCIClientOptionFunc) (*OCIClient, error) {
-	c := &OCIClient{}
+// NewClient creates a new OCI client with the provided options.
+func NewClient(opts ...ClientOptionFunc) (*Client, error) {
+	c := &Client{}
 	for _, opt := range opts {
 		if err := opt(c); err != nil {
 			return nil, err
 		}
 	}
+
 	return c, nil
 }
 
-func NewOCIClientFromEnv() (*OCIClient, error) {
-	return NewOCIClient(WithComputeClient())
+// NewClientFromEnv creates a new OCI client based on environment variables.
+func NewClientFromEnv(ctx context.Context) (*Client, error) {
+	// Context is accepted for consistency but OCI SDK doesn't use it during client creation
+	// Configuration loading happens synchronously without I/O
+	return NewClient(WithComputeClient())
 }
 
-func (c *OCIClient) SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error) {
+// SendRebootSignal sends a reboot signal to OCI for the given node.
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	_, err := c.compute.InstanceAction(ctx, core.InstanceActionRequest{
 		InstanceId: &node.Spec.ProviderID,
 		Action:     core.InstanceActionActionSoftreset,
@@ -94,10 +110,11 @@ func (c *OCIClient) SendRebootSignal(ctx context.Context, node corev1.Node) (Res
 		return "", err
 	}
 
-	return ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
+	return model.ResetSignalRequestRef(time.Now().UTC().Format(time.RFC3339)), nil
 }
 
-func (c *OCIClient) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+// IsNodeReady checks if the node is ready after a reboot operation.
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	logger := ctrllog.FromContext(ctx)
 
 	// Sending a reboot request to OCI doesn't update statuses immediately,
@@ -116,9 +133,10 @@ func (c *OCIClient) IsNodeReady(ctx context.Context, node corev1.Node, message s
 	return true, nil
 }
 
-func (c *OCIClient) SendTerminateSignal(
+// SendTerminateSignal is not implemented for OCI.
+func (c *Client) SendTerminateSignal(
 	ctx context.Context,
 	node corev1.Node,
-) (TerminateNodeRequestRef, error) {
-	return "", fmt.Errorf("SendTerminateSignal not implemented for OCI")
+) (model.TerminateNodeRequestRef, error) {
+	return model.TerminateNodeRequestRef(""), fmt.Errorf("SendTerminateSignal not implemented for OCI")
 }

@@ -491,6 +491,17 @@ if [[ "${SKIP_TOOLS}" == "false" ]] && command_exists go; then
         log_success "Go development tools installed"
     fi
     
+    # Install protoc-gen-go and protoc-gen-go-grpc
+    log_info "Installing Go protobuf/gRPC tools..."
+    log_info "  protoc-gen-go:      ${PROTOC_GEN_GO_VERSION}"
+    log_info "  protoc-gen-go-grpc: ${PROTOC_GEN_GO_GRPC_VERSION}"
+    
+    if prompt_continue; then
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
+        log_success "Go protobuf/gRPC tools installed"
+    fi
+    
     echo ""
 fi
 
@@ -541,6 +552,8 @@ TOOLS=(
     "helm:helm version --short"
     "kubectl:kubectl version --client --short 2>/dev/null || kubectl version --client"
     "protoc:protoc --version"
+    "protoc-gen-go:protoc-gen-go --version"
+    "protoc-gen-go-grpc:protoc-gen-go-grpc --version"
     "shellcheck:shellcheck --version | head -2 | tail -1"
     "tilt:tilt version"
     "kind:kind version"

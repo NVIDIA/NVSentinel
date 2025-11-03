@@ -20,10 +20,22 @@ metadata:
     {{- include "fault-remediation.labels" . | nindent 4 }}
 data:
   config.toml: |
-    {{ .Values.config | nindent 6 }}
-  {{ .Values.maintenanceResource.template.fileName }}: |
-    {{- .Files.Get "files/maintenance.yaml" | nindent 4 }}
+    [maintenanceResource]
+    namespace = {{ .Values.maintenance.namespace | quote }}
+    version = {{ .Values.maintenance.version | quote }}
+    apiGroup = {{ .Values.maintenance.apiGroup | quote }}
+    
+    [template]
+    mountPath = "/etc/config"
+    fileName = "maintenance-template.yaml"
+    
+    [updateRetry]
+    maxRetries = {{ .Values.updateRetry.maxRetries }}
+    retryDelaySeconds = {{ .Values.updateRetry.retryDelaySeconds }}
+    
+  maintenance-template.yaml: |
+{{- .Values.maintenance.template | nindent 4 }}
   {{ if .Values.logCollector.enabled }}
-  {{ .Values.logCollector.manifestFileName }}: |
+  log-collector-job.yaml: |
     {{- tpl (.Files.Get "files/log-collector-job.yaml") . | nindent 4 }}
   {{ end }}

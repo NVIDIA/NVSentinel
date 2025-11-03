@@ -12,80 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Global configuration settings applied across all NVSentinel components
 global:
-  # Docker image configuration
-  image:
-    # Image tag to use for all NVSentinel components (e.g., "main", "v1.0.0")
-    tag: "main"
-
-  # Default port for Prometheus metrics endpoint across all components
-  metricsPort: 2112
-  
-  # Node selector for global components - used to constrain pods to nodes with specific labels
-  # Example: kubernetes.io/hostname: specific-node
-  nodeSelector: {}
-  
-  # Tolerations for global workloads - allows pods to schedule on nodes with matching taints
-  # Example: - key: "nvidia.com/gpu", operator: "Exists", effect: "NoSchedule"
-  tolerations: []
-  
-  # Affinity rules for global workloads - defines pod scheduling preferences and requirements
-  # Example: podAntiAffinity to spread pods across nodes
-  affinity: {}
-  
-  # Node selector for control plane components (platform-connectors, monitoring services)
-  # Used to schedule critical infrastructure components on specific nodes
-  systemNodeSelector: {}
-  
-  # Tolerations for system-level components
-  # Allows system pods to run on tainted nodes where regular workloads cannot
-  systemNodeTolerations: []
-
-  # Enable dry-run mode across all components - operations are logged but not executed
   dryRun: false
+  image:
+    tag: "main"
+  metricsPort: 2112
 
-  # Image pull secrets for accessing private container registries
-  # Must be created in the namespace before deploying NVSentinel
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  systemNodeSelector: {}
+  systemNodeTolerations: []
   imagePullSecrets: []
 
-  # Module enable/disable flags
   gpuHealthMonitor:
     enabled: true
-
   healthEventsAnalyzer:
     enabled: false
-
-  faultQuarantineModule:
+  faultQuarantine:
     enabled: false
-
-  nodeDrainerModule:
+  nodeDrainer:
     enabled: false
-
-  faultRemediationModule:
+  faultRemediation:
     enabled: false
-
   janitor:
     enabled: false
-
   cspHealthMonitor:
     enabled: false
-
   syslogHealthMonitor:
     enabled: true
-
   labeler:
     enabled: true
-
   inclusterFileServer:
     enabled: false
     metricsPort: 9001
     cleanupMetricsPort: 9002
-
   mongodbStore:
     enabled: false
 
-# Platform Connector configuration - central communication hub for all health monitors
 platformConnector:
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
@@ -102,11 +66,9 @@ platformConnector:
 
   podAnnotations: {}
 
-  # Kubernetes connector configuration
   k8sConnector:
     enabled: true
     qps: 5.0
     burst: 10
 
-# Unix socket path for inter-component communication
 socketPath: "/var/run/nvsentinel.sock"

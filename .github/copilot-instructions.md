@@ -9,7 +9,7 @@ NVSentinel is a GPU Node Resilience System for Kubernetes that automatically det
 ## Architecture & Technologies
 
 ### Core Technologies
-- **Language**: Go 1.25+ (primary), Python 3.12+ (monitoring tools)
+- **Language**: Go 1.25+ (primary), Python 3.10+ (monitoring tools)
 - **Container Platform**: Kubernetes 1.25+
 - **Deployment**: Helm 3.0+, Tilt (development)
 - **Storage**: MongoDB (event store with change streams)

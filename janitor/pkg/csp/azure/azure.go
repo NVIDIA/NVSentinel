@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// nolint:wsl // CSP client code migrated from old code
-package csp
+package azure
 
 import (
 	"context"
@@ -27,8 +26,13 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+var (
+	_ model.CSPClient = (*Client)(nil)
 )
 
 // VMSSClientInterface defines the interface for VMSS operations we need
@@ -49,12 +53,21 @@ type VMSSClientInterface interface {
 	) (*runtime.Poller[armcompute.VirtualMachineScaleSetVMsClientRestartResponse], error)
 }
 
-type azureClient struct {
+// Client is the Azure implementation of the CSP Client interface.
+type Client struct {
 	// Optional client for testing - if nil, uses default Azure client
 	vmssClient VMSSClientInterface
 }
 
-func (c *azureClient) SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error) {
+// NewClient creates a new Azure client.
+func NewClient(ctx context.Context) (*Client, error) {
+	// Azure client initialization is deferred until first API call
+	// This allows validation to happen at construction time in the future
+	return &Client{}, nil
+}
+
+// SendRebootSignal sends a reboot signal to Azure for the node.
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	logger := log.FromContext(ctx)
 
 	// Get the Azure client
@@ -69,6 +82,7 @@ func (c *azureClient) SendRebootSignal(ctx context.Context, node corev1.Node) (R
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
 		logger.Error(err, "Failed to reboot node")
+
 		return "", err
 	}
 
@@ -87,10 +101,11 @@ func (c *azureClient) SendRebootSignal(ctx context.Context, node corev1.Node) (R
 		return "", err
 	}
 
-	return ResetSignalRequestRef(time.Now().Format(time.RFC3339)), nil
+	return model.ResetSignalRequestRef(time.Now().Format(time.RFC3339)), nil
 }
 
-func (c *azureClient) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+// IsNodeReady checks if the node is ready after a reboot operation.
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// don't check too early, wait like 5 minutes before checking, return not ready if too early
@@ -109,6 +124,7 @@ func (c *azureClient) IsNodeReady(ctx context.Context, node corev1.Node, message
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
 		logger.Error(err, "Failed to reboot node")
+
 		return false, err
 	}
 
@@ -145,8 +161,9 @@ func (c *azureClient) IsNodeReady(ctx context.Context, node corev1.Node, message
 	return false, nil
 }
 
-func (c *azureClient) SendTerminateSignal(ctx context.Context, node corev1.Node) (TerminateNodeRequestRef, error) {
-	return "", fmt.Errorf("SendTerminateSignal not implemented for Azure")
+// SendTerminateSignal is not implemented for Azure.
+func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
+	return model.TerminateNodeRequestRef(""), fmt.Errorf("SendTerminateSignal not implemented for Azure")
 }
 
 // parseProviderID parses the provider ID to extract the resource group and VM name
@@ -158,14 +175,16 @@ func parseAzureProviderID(providerID string) (string, string, string, error) {
 	if len(parts) < 13 {
 		return "", "", "", fmt.Errorf("invalid provider ID: %s", providerID)
 	}
+
 	resourceGroup := parts[6]
 	vmName := parts[10]
 	instanceID := parts[12]
+
 	return resourceGroup, vmName, instanceID, nil
 }
 
 // getVMSSClient returns a VMSS client, either from the interface (for testing) or default Azure client
-func (c *azureClient) getVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
+func (c *Client) getVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 	if c.vmssClient != nil {
 		return c.vmssClient, nil
 	}
@@ -201,13 +220,16 @@ func createDefaultVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 
 func getSubscriptionID(ctx context.Context) (string, error) {
 	logger := log.FromContext(ctx)
+
 	if os.Getenv("LOCAL") == "true" {
 		subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
 		if subscriptionID == "" {
 			return "", fmt.Errorf("AZURE_SUBSCRIPTION_ID environment variable is not set")
 		}
+
 		return subscriptionID, nil
 	}
+
 	// pulled from https://github.com/Microsoft/azureimds/blob/master/imdssample.go
 	client := http.Client{Transport: &http.Transport{Proxy: nil}}
 
@@ -220,6 +242,7 @@ func getSubscriptionID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create metadata request: %w", err)
 	}
+
 	req.Header.Add("Metadata", "True")
 
 	q := req.URL.Query()
@@ -231,6 +254,7 @@ func getSubscriptionID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
 			logger.Error(cerr, "failed to close http client")
@@ -243,8 +267,10 @@ func getSubscriptionID(ctx context.Context) (string, error) {
 			SubscriptionID string `json:"subscriptionId"`
 		} `json:"compute"`
 	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("failed to decode IMDS response: %w", err)
 	}
+
 	return result.Compute.SubscriptionID, nil
 }

@@ -47,6 +47,14 @@ type TerminateNodeStatus struct {
 	// CompletionTime is the time when the termination was completed
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
+	// RetryCount tracks the number of reconciliation attempts for this terminate operation
+	// Used to implement maximum retry limits to prevent indefinite reconciliation
+	RetryCount int32 `json:"retryCount,omitempty"`
+
+	// ConsecutiveFailures tracks consecutive CSP operation failures for exponential backoff
+	// Reset to 0 on successful operations
+	ConsecutiveFailures int32 `json:"consecutiveFailures,omitempty"`
+
 	// Conditions represent the latest available observations of an object's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -56,7 +64,7 @@ type TerminateNodeStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Force",type="boolean",JSONPath=".spec.force"
-// nolint:lll
+//nolint:lll // kubebuilder printcolumn marker
 // +kubebuilder:printcolumn:name="NodeTerminated",type="string",JSONPath=".status.conditions[?(@.type=='NodeTerminated')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
@@ -172,6 +180,33 @@ func (t *TerminateNode) SetCompletionTime() {
 		now := metav1.Now()
 		t.Status.CompletionTime = &now
 	}
+}
+
+// Interface implementation for generic status update handling
+
+// GetRetryCount returns the retry count
+func (s *TerminateNodeStatus) GetRetryCount() int32 {
+	return s.RetryCount
+}
+
+// GetConsecutiveFailures returns the consecutive failures count
+func (s *TerminateNodeStatus) GetConsecutiveFailures() int32 {
+	return s.ConsecutiveFailures
+}
+
+// GetStartTime returns the start time
+func (s *TerminateNodeStatus) GetStartTime() *metav1.Time {
+	return s.StartTime
+}
+
+// GetCompletionTime returns the completion time
+func (s *TerminateNodeStatus) GetCompletionTime() *metav1.Time {
+	return s.CompletionTime
+}
+
+// GetConditions returns the conditions
+func (s *TerminateNodeStatus) GetConditions() []metav1.Condition {
+	return s.Conditions
 }
 
 func init() {

@@ -93,7 +93,7 @@ kubectl get nodes  # Verify GPU nodes are visible
 ./scripts/validate-nvsentinel.sh --version v0.2.0 --verbose
 ```
 
-> **Testing**: The example above uses default settings. For testing with simulated GPU nodes, use [`tilt/release/values-release.yaml`](tilt/release/values-release.yaml). For production, customize values for your environment.
+> **Testing**: The example above uses default settings. For production, customize values for your environment.
 
 > **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
 
@@ -156,13 +156,13 @@ graph TB
 
 ## ⚙️ Configuration
 
-### Global Settings
+NVSentinel is highly configurable with options for each module. For complete configuration documentation, see the **[Helm Chart README](distros/kubernetes/README.md)**.
 
-Control module enablement and behavior:
+### Quick Configuration Overview
 
 ```yaml
 global:
-  dryRun: false  # Test mode - no actual actions
+  dryRun: false  # Test mode - log actions without executing
   
   # Health Monitors (enabled by default)
   gpuHealthMonitor:
@@ -170,154 +170,44 @@ global:
   syslogHealthMonitor:
     enabled: true
 
-  cspHealthMonitor:
-    enabled: false  # Cloud provider integration
-  
   # Core Modules (disabled by default - enable for production)
-  faultQuarantineModule:
+  faultQuarantine:
     enabled: false
-  nodeDrainerModule:
+  nodeDrainer:
     enabled: false
-  faultRemediationModule:
+  faultRemediation:
     enabled: false
-  healthEventsAnalyzer:
+  janitor:
     enabled: false
+  mongodbStore:
+    enabled: false 
 ```
 
-For detailed per-module configuration, see [Module Details](#-module-details).
+**Configuration Resources**:
+- **[Helm Chart Configuration Guide](distros/kubernetes/README.md#configuration)**: Complete configuration reference
+- **[values-full.yaml](distros/kubernetes/nvsentinel/values-full.yaml)**: Detailed reference with all options
+- **[values.yaml](distros/kubernetes/nvsentinel/values.yaml)**: Default values
 
 ## 📦 Module Details
 
+For detailed module configuration, see the **[Helm Chart Configuration Guide](distros/kubernetes/README.md#module-specific-configuration)**.
+
 ### 🔍 Health Monitors
 
-#### GPU Health Monitor
-Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events.
-
-**Key Configuration**:
-```yaml
-global:
-  gpuHealthMonitor:
-    enabled: true
-    useHostNetworking: false  # Enable for direct DCGM access
-  dcgm:
-    service:
-      endpoint: "nvidia-dcgm.gpu-operator.svc"
-      port: 5555
-```
-
-#### Syslog Health Monitor
-Analyzes system logs for hardware and software fault patterns via journalctl.
-
-**Key Configuration**:
-```yaml
-global:
-  syslogHealthMonitor:
-    enabled: true
-pollingInterval: "30m"
-stateFile: "/var/run/syslog_health_monitor/state.json"
-```
-
-#### CSP Health Monitor
-Integrates with cloud provider APIs (GCP/AWS) for maintenance events.
-
-**Key Configuration**:
-```yaml
-global:
-  cspHealthMonitor:
-    enabled: false
-cspName: "gcp"  # or "aws"
-configToml:
-  maintenanceEventPollIntervalSeconds: 60
-```
+- **GPU Health Monitor**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
+- **Syslog Health Monitor**: Analyzes system logs for hardware and software fault patterns via journalctl
+- **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
 
 ### 🏗️ Core Modules
 
-#### Platform Connectors
-Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status.
-
-**Key Configuration**:
-```yaml
-platformConnector:
-  mongodbStore:
-    enabled: true
-    connectionString: "mongodb://nvsentinel-mongodb:27017"
-```
-
-#### Fault Quarantine Module
-Watches MongoDB for health events and cordons nodes based on configurable rules.
-
-**Key Configuration**:
-```yaml
-global:
-  faultQuarantineModule:
-    enabled: false
-config: |
-  [[rule-sets]]
-    name = "GPU fatal error ruleset"
-    [[rule-sets.match.all]]
-      expression = "event.isFatal == true"
-    [rule-sets.cordon]
-      shouldCordon = true
-```
-
-#### Node Drainer Module
-Gracefully evicts workloads from cordoned nodes with configurable policies.
-
-**Key Configuration**:
-```yaml
-global:
-  nodeDrainerModule:
-    enabled: false
-config: |
-  evictionTimeoutInSeconds = "60"
-  [[userNamespaces]]
-  name = "runai-*"
-  mode = "AllowCompletion"
-```
-
-#### Fault Remediation Module
-Triggers external break-fix systems after drain completion.
-
-**Key Configuration**:
-```yaml
-global:
-  faultRemediationModule:
-    enabled: false
-maintenanceResource:
-  apiGroup: "janitor.dgxc.nvidia.com"
-  namespace: "dgxc-janitor"
-```
-
-#### Health Events Analyzer
-Analyzes event patterns and generates recommended actions.
-
-**Key Configuration**:
-```yaml
-global:
-  healthEventsAnalyzer:
-    enabled: false
-config: |
-  [[rules]]
-  name = "XID Pattern Detection"
-  time_window = "30m"
-  recommended_action = "COMPONENT_RESET"
-```
-
-#### MongoDB Store
-Persistent storage for health events with real-time change streams.
-
-**Key Configuration**:
-```yaml
-mongodb:
-  architecture: replicaset
-  replicaCount: 3
-  auth:
-    enabled: true
-  tls:
-    enabled: true
-    mTLS:
-      enabled: true
-```
+- **Platform Connectors**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
+- **Fault Quarantine**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
+- **Node Drainer**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
+- **Fault Remediation**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
+- **Janitor**: Executes node reboots and terminations via cloud provider APIs
+- **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
+- **MongoDB Store**: Persistent storage for health events with real-time change streams
+- **Labeler**: Automatically labels nodes with DCGM and driver versions
 
 ## 📋 Requirements
 

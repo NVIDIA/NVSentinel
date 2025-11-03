@@ -665,7 +665,7 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 		echo "Error: tilt is not installed. Please install from https://tilt.dev/"; \
 		exit 1; \
 	fi
-	tilt ci -f tilt/Tiltfile
+	tilt ci -f tilt/Tiltfile --timeout=10m
 	@echo "Waiting for all deployments to be ready..."
 	@kubectl get deployments --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
 		echo "Waiting for deployment $$name in namespace $$ns..."; \

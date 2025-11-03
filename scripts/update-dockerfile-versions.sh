@@ -110,8 +110,9 @@ while IFS= read -r dockerfile; do
             CHANGED=true
             
             if [[ "${DRY_RUN}" == "false" ]]; then
-                # Update Python version in Dockerfile
-                # Match patterns like: python:3.11-alpine, python:3.12-trixie, etc.
+                # Update Python version in Dockerfile while preserving the base image variant
+                # Examples: python:3.11-alpine → python:3.13-alpine, python:3.10-trixie → python:3.13-trixie
+                # The pattern captures and preserves the variant suffix (e.g., -alpine, -trixie) via \3
                 sed -i.bak -E "s/(FROM.*python:)[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?/\1${PYTHON_VERSION}\3/g" "${dockerfile}"
                 rm "${dockerfile}.bak"
             fi

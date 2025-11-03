@@ -49,6 +49,14 @@ type RebootNodeStatus struct {
 	// CompletionTime is the time when the reboot was completed
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
+	// RetryCount tracks the number of reconciliation attempts for this reboot operation
+	// Used to implement maximum retry limits to prevent indefinite reconciliation
+	RetryCount int32 `json:"retryCount,omitempty"`
+
+	// ConsecutiveFailures tracks consecutive CSP operation failures for exponential backoff
+	// Reset to 0 on successful operations
+	ConsecutiveFailures int32 `json:"consecutiveFailures,omitempty"`
+
 	// Conditions represent the latest available observations of an object's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
@@ -182,6 +190,33 @@ func (r *RebootNode) SetCompletionTime() {
 		now := metav1.Now()
 		r.Status.CompletionTime = &now
 	}
+}
+
+// Interface implementation for generic status update handling
+
+// GetRetryCount returns the retry count
+func (s *RebootNodeStatus) GetRetryCount() int32 {
+	return s.RetryCount
+}
+
+// GetConsecutiveFailures returns the consecutive failures count
+func (s *RebootNodeStatus) GetConsecutiveFailures() int32 {
+	return s.ConsecutiveFailures
+}
+
+// GetStartTime returns the start time
+func (s *RebootNodeStatus) GetStartTime() *metav1.Time {
+	return s.StartTime
+}
+
+// GetCompletionTime returns the completion time
+func (s *RebootNodeStatus) GetCompletionTime() *metav1.Time {
+	return s.CompletionTime
+}
+
+// GetConditions returns the conditions
+func (s *RebootNodeStatus) GetConditions() []metav1.Condition {
+	return s.Conditions
 }
 
 func init() {

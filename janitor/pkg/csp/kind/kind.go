@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package csp
+package kind
 
 import (
 	"context"
@@ -22,23 +22,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type kindClient struct{}
+var (
+	_ model.CSPClient = (*Client)(nil)
+)
+
+// Client is the Kind implementation of the CSP Client interface.
+type Client struct{}
+
+// NewClient creates a new Kind client.
+func NewClient(ctx context.Context) (*Client, error) {
+	// Kind client is a simulation client with no actual CSP connection
+	return &Client{}, nil
+}
 
 // SendRebootSignal simulates sending a reboot signal for a kind node
-func (c *kindClient) SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// wait some random time to simulate a real csp (very short for fast tests)
 	time.Sleep(time.Duration(3+rand.IntN(3)) * time.Second)
 
-	return "", nil
+	return model.ResetSignalRequestRef(""), nil
 }
 
 // IsNodeReady checks if the node is ready (simulated with randomness for kind)
-func (c *kindClient) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// simulate some randomness if the node is ready or not (very high success rate for fast tests)
 	return rand.IntN(100) > 5, nil
@@ -46,10 +58,10 @@ func (c *kindClient) IsNodeReady(ctx context.Context, node corev1.Node, message 
 
 // SendTerminateSignal simulates terminating a kind node by removing the docker container
 // nolint:funlen,gocyclo,cyclop // Complex docker interaction logic
-func (c *kindClient) SendTerminateSignal(
+func (c *Client) SendTerminateSignal(
 	ctx context.Context,
 	node corev1.Node,
-) (TerminateNodeRequestRef, error) {
+) (model.TerminateNodeRequestRef, error) {
 	logger := log.FromContext(ctx)
 
 	// Check if provider ID has the correct prefix
@@ -133,7 +145,8 @@ func (c *kindClient) SendTerminateSignal(
 		}
 
 		if strings.Contains(string(output), containerName) {
-			return "", fmt.Errorf("container %s still exists after deletion attempt", containerName)
+			return model.TerminateNodeRequestRef(""),
+				fmt.Errorf("container %s still exists after deletion attempt", containerName)
 		}
 
 		logger.Info("Successfully deleted container", "container", containerName)
@@ -141,5 +154,5 @@ func (c *kindClient) SendTerminateSignal(
 		logger.Info("Container not found, assuming already deleted", "container", containerName)
 	}
 
-	return "", nil
+	return model.TerminateNodeRequestRef(""), nil
 }

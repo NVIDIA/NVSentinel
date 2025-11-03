@@ -17,42 +17,100 @@ package csp
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
-	corev1 "k8s.io/api/core/v1"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/aws"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/azure"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/gcp"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/oci"
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// ResetSignalRequestRef represents a reference to a reboot/reset signal request
-type ResetSignalRequestRef string
+const (
+	ProviderKind  Provider = "kind"
+	ProviderAWS   Provider = "aws"
+	ProviderGCP   Provider = "gcp"
+	ProviderAzure Provider = "azure"
+	ProviderOCI   Provider = "oci"
+)
 
-// TerminateNodeRequestRef represents a reference to a terminate node request
-type TerminateNodeRequestRef string
+// Provider defines the supported cloud service providers.
+type Provider string
 
-// Client defines the interface for cloud service provider operations
-type Client interface {
-	// SendRebootSignal sends a reboot signal to the node via the CSP
-	SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error)
+// New creates a new CSP client based on the provider type from environment variables
+func New(ctx context.Context) (model.CSPClient, error) {
+	logger := log.FromContext(ctx)
 
-	// IsNodeReady checks if the node is ready after a reboot operation
-	IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error)
+	provider, err := GetProviderFromEnv()
+	if err != nil {
+		logger.Error(err, "failed to determine CSP provider from environment")
 
-	// SendTerminateSignal sends a termination signal to the node via the CSP
-	SendTerminateSignal(ctx context.Context, node corev1.Node) (TerminateNodeRequestRef, error)
+		return nil, err
+	}
+
+	logger.Info("initializing CSP client",
+		"provider", string(provider))
+
+	client, err := NewWithProvider(ctx, provider)
+	if err != nil {
+		logger.Error(err, "failed to create CSP client",
+			"provider", string(provider))
+
+		return nil, fmt.Errorf("creating %s client: %w", provider, err)
+	}
+
+	logger.Info("CSP client initialized successfully",
+		"provider", string(provider))
+
+	return client, nil
 }
 
-// NewClient creates a new CSP client based on the provider type
-func NewClient(provider string) (Client, error) {
+// NewWithProvider creates a new CSP client based on the specified provider type
+func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, error) {
 	switch provider {
-	case "kind":
-		return &kindClient{}, nil
-	case "aws":
-		return NewAWSClientFromEnv()
-	case "gcp":
-		return &gcpClient{}, nil
-	case "azure":
-		return &azureClient{}, nil
-	case "oci":
-		return NewOCIClientFromEnv()
+	case ProviderKind:
+		return kind.NewClient(ctx)
+	case ProviderAWS:
+		return aws.NewClientFromEnv(ctx)
+	case ProviderGCP:
+		return gcp.NewClient(ctx)
+	case ProviderAzure:
+		return azure.NewClient(ctx)
+	case ProviderOCI:
+		return oci.NewClientFromEnv(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported CSP provider: %s", provider)
+	}
+}
+
+// GetProviderFromEnv retrieves the CSP provider from environment variables
+func GetProviderFromEnv() (Provider, error) {
+	cspType := os.Getenv("CSP")
+	if cspType == "" {
+		cspType = string(ProviderKind)
+	}
+
+	return GetProviderFromString(cspType)
+}
+
+// GetProviderFromString converts a string to a Provider type.
+// The input is case-insensitive (e.g., "AWS", "aws", "Aws" all work).
+func GetProviderFromString(providerStr string) (Provider, error) {
+	switch strings.ToLower(providerStr) {
+	case "kind":
+		return ProviderKind, nil
+	case "aws":
+		return ProviderAWS, nil
+	case "gcp":
+		return ProviderGCP, nil
+	case "azure":
+		return ProviderAzure, nil
+	case "oci":
+		return ProviderOCI, nil
+	default:
+		return "", fmt.Errorf("unsupported CSP provider: %s", providerStr)
 	}
 }

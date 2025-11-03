@@ -5,13 +5,13 @@ description = "File Server Log Cleanup and Metrics Service"
 authors = ["NVIDIA Corporation <nvsentinel@nvidia.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.10"
 click = "^8.1.7"
-prometheus-client = "^0.20.0"
+prometheus-client = "^0.23.1"
 
 [tool.poetry.group.dev.dependencies]
-black = "^24.4.2"
-coverage = "^7.5.4"
+black = "^25.9.0"
+coverage = "^7.11.0"
 pytest = "^8.2.2"
 
 [build-system]

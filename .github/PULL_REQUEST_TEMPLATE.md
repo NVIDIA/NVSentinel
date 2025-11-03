@@ -11,10 +11,11 @@
 - [ ] 🔨 Build/CI
 
 ## Component(s) Affected
-- [ ] Health Monitors
 - [ ] Core Services
-- [ ] Fault Management
 - [ ] Documentation/CI
+- [ ] Fault Management
+- [ ] Health Monitors
+- [ ] Janitor
 - [ ] Other: ____________
 
 ## Testing

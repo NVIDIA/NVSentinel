@@ -35,13 +35,13 @@ global:
   healthEventsAnalyzer:
     enabled: false
 
-  faultQuarantineModule:
+  faultQuarantine:
     enabled: true
 
-  nodeDrainerModule:
+  nodeDrainer:
     enabled: true
 
-  faultRemediationModule:
+  faultRemediation:
     enabled: true
 
   dcaHealthMonitor:

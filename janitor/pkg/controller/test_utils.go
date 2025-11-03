@@ -18,11 +18,10 @@ import (
 	"context"
 	"regexp"
 
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/nvidia/nvsentinel/janitor/pkg/csp"
 )
 
 // Test utilities for controller testing
@@ -37,10 +36,10 @@ type MockCSPClient struct {
 func (m *MockCSPClient) SendTerminateSignal(
 	ctx context.Context,
 	node corev1.Node,
-) (csp.TerminateNodeRequestRef, error) {
+) (model.TerminateNodeRequestRef, error) {
 	m.terminateSignalSent = true
 
-	return "", m.terminateError
+	return model.TerminateNodeRequestRef(""), m.terminateError
 }
 
 func (m *MockCSPClient) IsNodeReady(
@@ -54,8 +53,8 @@ func (m *MockCSPClient) IsNodeReady(
 func (m *MockCSPClient) SendRebootSignal(
 	ctx context.Context,
 	node corev1.Node,
-) (csp.ResetSignalRequestRef, error) {
-	return "", nil
+) (model.ResetSignalRequestRef, error) {
+	return model.ResetSignalRequestRef(""), nil
 }
 
 // nolint:gochecknoglobals,lll,unused // test pattern

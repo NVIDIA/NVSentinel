@@ -37,65 +37,90 @@ podAnnotations: {}
 # Log level for the fault quarantine module (e.g. "debug", "info", "warn", "error")
 logLevel: info
 
+# Label prefix for node labels and annotations
+# Used to generate label keys like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason, <labelPrefix>cordon-timestamp
+# Also used for uncordon labels: <labelPrefix>uncordon-by, <labelPrefix>uncordon-reason, <labelPrefix>uncordon-timestamp
+# These labels track the quarantine/uncordon lifecycle and help with debugging and auditing
+labelPrefix: "k8saas.nvidia.com/"
+
+# Circuit breaker configuration to prevent cascading failures
+# The circuit breaker prevents quarantining too many nodes in the cluster at once
+# If the percentage threshold is exceeded, the circuit breaker trips and new quarantine actions are blocked
+# The circuit breaker state is stored in a ConfigMap and persists across restarts
 circuitBreaker:
+  # Enable/disable circuit breaker protection (passed as command-line arg to the deployment)
   enabled: true
+  # Maximum percentage of cluster nodes that can be quarantined before circuit breaker trips
+  # Example: 50 means if 50% or more nodes are cordoned, no new quarantines will be allowed
   percentage: 50
-  duration: 5m
+  # Duration to wait before attempting to close the circuit breaker after it trips
+  # During this cooldown period, the circuit breaker remains open even if node count drops below threshold
+  duration: "5m"
 
-config: |
-  label-prefix = "k8saas.nvidia.com/"
-  
-  [circuitBreaker]
-  percentage = 50
-  duration = "5m"
-  
-  [[rule-sets]]
-    version = "1"
-    name = "GPU fatal error ruleset"              
+# Rule sets for node quarantine actions
+# Each ruleset defines conditions (match) and actions (taint, cordon) to apply when conditions are met
+# Rules are evaluated using CEL (Common Expression Language) expressions
+# Multiple rulesets can be defined and are evaluated in order
+ruleSets:
+  - # Ruleset version (for future compatibility and migration)
+    version: "1"
+    # Human-readable name for the ruleset (used in logs and metrics)
+    name: "GPU fatal error ruleset"
+    # Match conditions - defines when this ruleset should trigger
+    match:
+      # All conditions must be true (AND logic)
+      # Use 'any' for OR logic - at least one condition must be true
+      all:
+        # Match health events from gpu-health-monitor with fatal GPU errors
+        - kind: "HealthEvent"
+          # CEL expression with access to 'event' object containing HealthEvent fields
+          # Available fields: agent, componentClass, isFatal, nodeName, etc.
+          expression: "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+        # Ensure the node is not explicitly excluded from NVSentinel management
+        - kind: "Node"
+          # CEL expression with access to 'node' object containing Node spec and metadata
+          # This checks if the node has a label preventing automated management
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    # Cordon action - marks node as unschedulable when ruleset triggers
+    cordon:
+      # Set to true to cordon (mark unschedulable) the node
+      # When true, node.spec.unschedulable is set, preventing new pod scheduling
+      shouldCordon: true
+    # Optional: Taint configuration for this ruleset
+    # Taints are applied to nodes to repel pods without matching tolerations
+    # Uncomment to enable tainting for this ruleset
+    # taint:
+    #   # Taint key (used to identify the taint)
+    #   key: "nvidia.com/gpu-error"
+    #   # Taint value (additional information about the taint)
+    #   value: "fatal"
+    #   # Taint effect determines how it affects pod scheduling
+    #   # NoSchedule: New pods without toleration won't be scheduled
+    #   # PreferNoSchedule: Soft version of NoSchedule (scheduler tries to avoid)
+    #   # NoExecute: Existing pods without toleration are evicted
+    #   effect: "NoSchedule"
 
-    [[rule-sets.match.all]]
-      kind = "HealthEvent"                 
-      expression = "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+  - version: "1"
+    name: "CSP health monitor fatal error ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    cordon:
+      shouldCordon: true
 
-    [[rule-sets.match.all]]
-      kind = "Node"
-      expression = '''
-          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
-      '''
-
-    [rule-sets.cordon]
-      shouldCordon = true
-
-  [[rule-sets]]
-    version = "1"
-    name = "CSP health monitor fatal error ruleset"    
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent" 
-      expression = "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
-
-    [[rule-sets.match.all]]
-      kind = "Node"
-      expression = '''
-          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
-      '''
-
-    [rule-sets.cordon]
-      shouldCordon = true
-
-  [[rule-sets]]
-    version = "1"
-    name = "Syslog fatal error ruleset"
-
-    [[rule-sets.match.all]]
-      kind = "HealthEvent"
-      expression = "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
-
-    [[rule-sets.match.all]]
-      kind = "Node"
-      expression = '''
-          !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
-      '''
-
-    [rule-sets.cordon]
-      shouldCordon = true
+  - version: "1"
+    name: "Syslog fatal error ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    cordon:
+      shouldCordon: true
