@@ -110,6 +110,8 @@ fault-quarantine:
       - labelSelector:
           matchLabels:
             app.kubernetes.io/name: kwok
+        namespaces:
+        - kube-system
         topologyKey: kubernetes.io/hostname
 
 fault-remediation:
