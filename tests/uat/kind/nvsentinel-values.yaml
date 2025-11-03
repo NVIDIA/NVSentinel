@@ -17,11 +17,11 @@ global:
     enabled: true
   syslogHealthMonitor:
     enabled: true
-  faultQuarantine:
+  faultQuarantineModule:
     enabled: true
-  nodeDrainer:
+  nodeDrainerModule:
     enabled: true
-  faultRemediation:
+  faultRemediationModule:
     enabled: true
   healthEventsAnalyzer:
     enabled: false
@@ -31,8 +31,8 @@ global:
     enabled: true
   janitor:
     enabled: true
-  mongodbStore:
-    enabled: true
+
+  installMongoDB: true
   
   tolerations:
   - key: nvidia.com/gpu
@@ -47,6 +47,10 @@ global:
           - key: type
             operator: NotIn
             values: ["kwok"]
+
+platformConnector:
+  mongodbStore:
+    enabled: true
 
 fault-quarantine:
   circuitBreaker:
