@@ -110,8 +110,9 @@ fault-quarantine:
       - labelSelector:
           matchLabels:
             app.kubernetes.io/name: kwok
-        namespaces:
-        - kube-system
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
 
 fault-remediation:
@@ -126,8 +127,9 @@ node-drainer:
       - labelSelector:
           matchLabels:
             app.kubernetes.io/name: kwok
-        namespaces:
-        - kube-system
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
 
 labeler:
