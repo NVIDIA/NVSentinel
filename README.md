@@ -197,10 +197,9 @@ Platform Connectors can automatically augment health events with node metadata f
 ```yaml
 platformConnector:
   nodeMetadata:
-    enabled: true  # Enable metadata augmentation
-    cacheSize: 50  # LRU cache size for node metadata
-    cacheTTLSeconds: 3600  # Cache TTL (1 hour)
-    # Customize which node labels to include
+    enabled: true 
+    cacheSize: 50 
+    cacheTTLSeconds: 3600 
     allowedLabels:
       - "topology.kubernetes.io/zone"
       - "topology.kubernetes.io/region"
