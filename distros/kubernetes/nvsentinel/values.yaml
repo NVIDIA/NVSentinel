@@ -24,6 +24,7 @@ global:
   systemNodeSelector: {}
   systemNodeTolerations: []
   imagePullSecrets: []
+  
   gpuHealthMonitor:
     enabled: true
   healthEventsAnalyzer:
@@ -64,7 +65,7 @@ platformConnector:
       memory: 512Mi
 
   podAnnotations: {}
-  
+
   k8sConnector:
     enabled: true
     qps: 5.0
