@@ -33,7 +33,7 @@ type processor struct {
 	fetchMu   sync.Mutex
 }
 
-func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
+func newKubernetesProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}

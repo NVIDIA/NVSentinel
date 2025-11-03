@@ -12,21 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package nodemetadata enriches health events with node metadata from Kubernetes.
-// It fetches provider IDs, labels, and topology information and caches them for performance.
 package nodemetadata
 
 import (
 	"context"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"k8s.io/client-go/kubernetes"
 )
 
-type Processor interface {
-	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
-}
-
-type NodeMetadata struct {
-	ProviderID string
-	Labels     map[string]string
+// NewProcessor creates a node metadata processor.
+// Currently supports Kubernetes; can be extended for other platforms (e.g., Slurm) in the future.
+func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
+	return newKubernetesProcessor(ctx, config, clientset)
 }

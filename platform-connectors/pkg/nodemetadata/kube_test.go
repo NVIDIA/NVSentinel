@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -196,18 +196,18 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 			},
 		},
 		{
-		name: "no allowed labels configured",
-		node: &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
-			Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
-		},
-		config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
-		eventNodeName: "test-node-5",
-		expectError:   false,
-		validateResult: func(t *testing.T, event *pb.HealthEvent) {
-			assert.Equal(t, "aws:///us-west-2a/i-ghi789", event.Metadata["providerID"])
-			assert.Len(t, event.Metadata, 1)
-		},
+			name: "no allowed labels configured",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
+				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
+			},
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
+			eventNodeName: "test-node-5",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "aws:///us-west-2a/i-ghi789", event.Metadata["providerID"])
+				assert.Len(t, event.Metadata, 1)
+			},
 		},
 	}
 
