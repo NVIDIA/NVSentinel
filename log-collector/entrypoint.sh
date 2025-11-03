@@ -56,11 +56,18 @@ is_running_on_aws() {
     -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
   
   http_code=$(echo "$response" | tail -n1)
-  [ "$http_code" != "200" ] && return 1
+  echo "[DEBUG] AWS IMDSv2 token endpoint - HTTP $http_code, Response: ${response}" >&2
+  if [ "$http_code" != "200" ]; then
+    return 1
+  fi
   
   token=$(echo "$response" | head -n-1)
-  curl -s -m "${timeout}" -H "X-aws-ec2-metadata-token: ${token}" \
-    "http://169.254.169.254/latest/meta-data/" >/dev/null 2>&1
+  if curl -s -m "${timeout}" -H "X-aws-ec2-metadata-token: ${token}" \
+    "http://169.254.169.254/latest/meta-data/" >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 # Auto-detect nvidia-bug-report approach and collect SOS reports if needed
@@ -124,13 +131,15 @@ if is_running_on_gcp && [ "${ENABLE_GCP_SOS_COLLECTION}" = "true" ]; then
   if chroot /host bash -c "command -v sos" >/dev/null 2>&1; then
     echo "[INFO] Running sos report (COS 105 and later)..."
     # Run sos report on the host filesystem
-    if chroot /host bash -c "sos report --all-logs --batch --tmp-dir=/var/tmp"; then
+    SOS_OUTPUT=$(chroot /host bash -c "sos report --all-logs --batch --tmp-dir=/var/tmp" 2>&1)
+    if [ $? -eq 0 ]; then
       SOS_SUCCESS=true
     fi
   elif chroot /host bash -c "command -v sosreport" >/dev/null 2>&1; then
     echo "[INFO] Running sosreport (COS 85 and earlier)..."
     # Run sosreport on the host filesystem
-    if chroot /host bash -c "sosreport --all-logs --batch --tmp-dir=/var/tmp" >/dev/null 2>&1; then
+    SOS_OUTPUT=$(chroot /host bash -c "sosreport --all-logs --batch --tmp-dir=/var/tmp" 2>&1)
+    if [ $? -eq 0 ]; then
       SOS_SUCCESS=true
     fi
   else
@@ -153,7 +162,8 @@ if is_running_on_gcp && [ "${ENABLE_GCP_SOS_COLLECTION}" = "true" ]; then
       cp "${SOS_REPORT_PATH}" "${GCP_SOS_REPORT}"
       echo "[INFO] GCP SOS report saved to ${GCP_SOS_REPORT}"
     else
-      echo "[WARN] SOS report generated but file not found in /host/var/tmp"
+      echo "[WARN] SOS report generated but file not found in /host/var/tmp" >&2
+      echo "[DEBUG] SOS command output: ${SOS_OUTPUT}" >&2
     fi
   fi
 elif [ "${ENABLE_GCP_SOS_COLLECTION}" = "true" ]; then
