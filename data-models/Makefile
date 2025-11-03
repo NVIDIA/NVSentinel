@@ -20,7 +20,7 @@
 # =============================================================================
 
 # Data-models specific settings
-LINT_EXTRA_FLAGS := --out-format code-climate:code-quality-report.json,colored-line-number
+# LINT_EXTRA_FLAGS now configured in .golangci.yml (v2 format)
 CLEAN_EXTRA_FILES :=
 
 # Exclude protobuf files from test coverage

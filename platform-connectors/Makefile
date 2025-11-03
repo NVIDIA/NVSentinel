@@ -23,7 +23,7 @@ IS_GO_MODULE := 1
 IS_KO_MODULE := 1
 
 # Platform-connectors specific settings
-LINT_EXTRA_FLAGS := --out-format code-climate:code-quality-report.json,colored-line-number
+# LINT_EXTRA_FLAGS now configured in .golangci.yml (v2 format)
 CLEAN_EXTRA_FILES := platform-connectors
 
 # Exclude protobuf files from test coverage
