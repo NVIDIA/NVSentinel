@@ -24,7 +24,6 @@ import (
 )
 
 func TestHealthEventWithStatus_MarshalBSON(t *testing.T) {
-	// Create a test HealthEvent with metadata
 	healthEvent := &protos.HealthEvent{
 		Version:       1,
 		Message:       "Test event",
@@ -41,7 +40,6 @@ func TestHealthEventWithStatus_MarshalBSON(t *testing.T) {
 		HealthEvent: healthEvent,
 	}
 
-	// Marshal to BSON
 	data, err := bson.Marshal(wrapper)
 	if err != nil {
 		t.Fatalf("MarshalBSON failed: %v", err)
@@ -51,7 +49,6 @@ func TestHealthEventWithStatus_MarshalBSON(t *testing.T) {
 		t.Fatal("Marshaled data is empty")
 	}
 
-	// Unmarshal back
 	var result bson.M
 	err = bson.Unmarshal(data, &result)
 	if err != nil {
@@ -60,7 +57,6 @@ func TestHealthEventWithStatus_MarshalBSON(t *testing.T) {
 
 	t.Logf("Marshaled document keys: %v", getKeys(result))
 
-	// Verify fields exist
 	if _, ok := result["healthevent"]; !ok {
 		t.Error("Missing 'healthevent' field")
 	}
@@ -69,7 +65,6 @@ func TestHealthEventWithStatus_MarshalBSON(t *testing.T) {
 		t.Error("Missing 'createdAt' field")
 	}
 
-	// Check nested structure
 	if heDoc, ok := result["healthevent"].(bson.M); ok {
 		t.Logf("healthevent keys: %v", getKeys(heDoc))
 		

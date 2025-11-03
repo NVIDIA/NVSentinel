@@ -36,7 +36,6 @@ PlatformConnectorServer. it will get really complex.Hence, ignoring this file as
 
 var ringBufferQueue []*ringbuffer.RingBuffer
 
-// prometheus metrics
 var (
 	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "platform_connector_health_events_received_total",
@@ -55,7 +54,6 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 
-	// Augment events with node metadata (best-effort)
 	if p.Processor != nil {
 		for i := range he.Events {
 			if err := p.Processor.AugmentHealthEvent(ctx, he.Events[i]); err != nil {

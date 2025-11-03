@@ -229,7 +229,6 @@ func cleanupResources(
 			slog.Error("Failed to close listener", "error", err)
 		}
 
-		// Remove the socket file
 		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
 			slog.Error("Failed to remove socket file", "error", err)
 		}
@@ -283,24 +282,20 @@ func run() error {
 		return err
 	}
 
-	// Parse the metrics port
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	// Create server
 	srv := srv.NewServer(
 		srv.WithPort(portInt),
 		srv.WithPrometheusMetrics(),
 		srv.WithSimpleHealth(),
 	)
 
-	// Start server in errgroup alongside the store and k8s connectors
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Start the metrics/health server.
-	// Metrics server failures are logged but do NOT terminate the service.
+	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
 

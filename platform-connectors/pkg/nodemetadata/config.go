@@ -31,7 +31,6 @@ type Config struct {
 	AllowedLabels []string      `json:"allowedLabels"`
 }
 
-// NewConfigFromMap creates a Config from a map[string]interface{}.
 func NewConfigFromMap(cfgMap map[string]interface{}) (*Config, error) {
 	cfg := &Config{
 		Enabled:       false,
