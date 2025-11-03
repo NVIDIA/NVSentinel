@@ -38,8 +38,6 @@ var (
 )
 
 // TestMain sets up envtest environment for all tests
-// To run tests, use: make test
-// Or manually: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 func TestMain(m *testing.M) {
 	testEnv = &envtest.Environment{}
 
@@ -133,14 +131,14 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 		},
 		{
 			name:          "empty node name",
-			node:          nil, // no node needed
+			node:          nil,
 			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "",
 			expectError:   true,
 		},
 		{
 			name:          "node not found",
-			node:          nil, // no node created
+			node:          nil,
 			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "non-existent-node",
 			expectError:   true,
@@ -153,7 +151,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 			},
 			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
 			eventNodeName: "test-node-2",
-			existingMeta:  nil, // explicitly nil
+			existingMeta:  nil,
 			expectError:   false,
 			validateResult: func(t *testing.T, event *pb.HealthEvent) {
 				assert.NotNil(t, event.Metadata)
@@ -182,7 +180,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 					Name:   "test-node-4",
 					Labels: map[string]string{"test-label": "test-value"},
 				},
-				Spec: corev1.NodeSpec{}, // no provider ID
+				Spec: corev1.NodeSpec{},
 			},
 			config: &Config{
 				Enabled:       true,
@@ -198,34 +196,30 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 			},
 		},
 		{
-			name: "empty labels",
-			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
-			},
-			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
-			eventNodeName: "test-node-5",
-			expectError:   false,
-			validateResult: func(t *testing.T, event *pb.HealthEvent) {
-				assert.Equal(t, "aws:///us-west-2a/i-ghi789", event.Metadata["providerID"])
-				// No labels should be added
-				assert.Len(t, event.Metadata, 1) // only providerID
-			},
+		name: "no allowed labels configured",
+		node: &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
+			Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
+		},
+		config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
+		eventNodeName: "test-node-5",
+		expectError:   false,
+		validateResult: func(t *testing.T, event *pb.HealthEvent) {
+			assert.Equal(t, "aws:///us-west-2a/i-ghi789", event.Metadata["providerID"])
+			assert.Len(t, event.Metadata, 1)
+		},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create node if provided
 			if tt.node != nil {
 				createTestNode(t, tt.node)
 				defer deleteTestNode(t, tt.node.Name)
 			}
 
-			// Create processor
 			p := createTestProcessor(tt.config)
 
-			// Create event
 			ctx := context.Background()
 			event := &pb.HealthEvent{
 				NodeName: tt.eventNodeName,
@@ -235,17 +229,14 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				event.Metadata = make(map[string]string)
 			}
 
-			// Execute
 			err := p.AugmentHealthEvent(ctx, event)
 
-			// Assert error expectation
 			if tt.expectError {
 				assert.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 
-			// Validate result if provided
 			if tt.validateResult != nil {
 				tt.validateResult(t, event)
 			}
@@ -271,21 +262,19 @@ func TestProcessorCachingBehavior(t *testing.T) {
 	p := createTestProcessor(config)
 	ctx := context.Background()
 
-	// First call - fetches from Kubernetes API
 	event1 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event1))
 
-	// Second call for same node - should use cached metadata (verified by identical results)
+	// Second call for same node - verify cache returns consistent results
 	event2 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event2))
 
-	// Verify both calls produced identical metadata (proving cache consistency)
 	assert.Equal(t, event1.Metadata["providerID"], event2.Metadata["providerID"])
 }
 
@@ -306,7 +295,6 @@ func TestProcessorContextCancellation(t *testing.T) {
 
 	p := createTestProcessor(config)
 
-	// Create a cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -315,9 +303,7 @@ func TestProcessorContextCancellation(t *testing.T) {
 		Metadata: make(map[string]string),
 	}
 
-	// Should handle cancelled context gracefully
 	err := p.AugmentHealthEvent(ctx, event)
-	// The error might be context cancelled or wrapped
 	if err != nil {
 		assert.Contains(t, err.Error(), "context")
 	}
@@ -349,7 +335,6 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 	p := createTestProcessor(config)
 	ctx := context.Background()
 
-	// Run concurrent augmentations
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
