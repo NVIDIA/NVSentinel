@@ -90,7 +90,7 @@ func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEven
 		}
 	}
 
-	slog.Info("Node metadata augmented successfully",
+	slog.Info("Node metadata enriched successfully",
 		"nodeName", event.NodeName,
 		"providerID", metadata.ProviderID,
 		"labelsAdded", len(metadata.Labels),

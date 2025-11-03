@@ -354,6 +354,66 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 	wg.Wait()
 }
 
+func TestProcessorMultipleNodesEnrichment(t *testing.T) {
+	nodes := []*corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "multi-test-node-1",
+				Labels: map[string]string{
+					"topology.kubernetes.io/zone": "us-west-2a",
+				},
+			},
+			Spec: corev1.NodeSpec{
+				ProviderID: "aws:///us-west-2a/i-test1",
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "multi-test-node-2",
+				Labels: map[string]string{
+					"topology.kubernetes.io/zone": "us-west-2b",
+				},
+			},
+			Spec: corev1.NodeSpec{
+				ProviderID: "aws:///us-west-2b/i-test2",
+			},
+		},
+	}
+
+	for _, node := range nodes {
+		createTestNode(t, node)
+		defer deleteTestNode(t, node.Name)
+	}
+
+	config := &Config{
+		Enabled:       true,
+		CacheSize:     100,
+		CacheTTL:      1 * time.Hour,
+		AllowedLabels: []string{"topology.kubernetes.io/zone"},
+	}
+
+	p := createTestProcessor(config)
+	ctx := context.Background()
+
+	for i, node := range nodes {
+		event := &pb.HealthEvent{
+			NodeName: node.Name,
+			Metadata: make(map[string]string),
+		}
+
+		err := p.AugmentHealthEvent(ctx, event)
+		assert.NoError(t, err)
+		assert.Equal(t, node.Spec.ProviderID, event.Metadata["providerID"])
+		assert.Equal(t, node.Labels["topology.kubernetes.io/zone"], event.Metadata["topology.kubernetes.io/zone"])
+
+		if i == 0 {
+			assert.Equal(t, "us-west-2a", event.Metadata["topology.kubernetes.io/zone"])
+		} else {
+			assert.Equal(t, "us-west-2b", event.Metadata["topology.kubernetes.io/zone"])
+		}
+	}
+}
+
 func TestNewProcessorValidation(t *testing.T) {
 	tests := []struct {
 		name        string

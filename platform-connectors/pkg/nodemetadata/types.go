@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package nodemetadata augments health events with node metadata from Kubernetes.
+// Package nodemetadata enriches health events with node metadata from Kubernetes.
 // It fetches provider IDs, labels, and topology information and caches them for performance.
 package nodemetadata
 

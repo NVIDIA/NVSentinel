@@ -78,6 +78,8 @@ func loadConfig(configFilePath string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// initializeK8sConnector creates the K8s connector and node metadata processor.
+// Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]interface{},
@@ -105,9 +107,11 @@ func initializeK8sConnector(
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 
+	// Node metadata enrichment is optional - failures are logged but don't abort startup
 	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
 	if err != nil {
-		slog.Warn("Failed to initialize node metadata processor, continuing without augmentation", "error", err)
+		slog.Warn("Failed to initialize node metadata processor, continuing without enrichment", "error", err)
+		processor = nil
 	}
 
 	return k8sRingBuffer, processor, nil
@@ -141,13 +145,7 @@ func initializeNodeMetadataProcessor(
 	}
 
 	if !cfg.Enabled {
-		slog.Info("Node metadata augmentation is disabled")
-
-		return nil, nil
-	}
-
-	if clientset == nil {
-		slog.Warn("Node metadata enrichment is enabled but Kubernetes connector is unavailable; continuing without node metadata enrichment")
+		slog.Info("Node metadata enrichment is disabled")
 
 		return nil, nil
 	}
