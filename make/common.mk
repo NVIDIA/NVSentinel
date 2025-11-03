@@ -87,8 +87,8 @@ HAS_DOCKER ?= 0
 # CONFIGURABLE FLAGS (defaults, can be overridden by modules)
 # =============================================================================
 
-# Configurable lint flags (defaults to code-climate output)
-LINT_EXTRA_FLAGS ?= --out-format code-climate:code-quality-report.json,colored-line-number
+# Configurable lint flags (output format now configured in .golangci.yml v2)
+LINT_EXTRA_FLAGS ?=
 
 # Configurable test flags (e.g., TEST_EXTRA_FLAGS := -short)
 TEST_EXTRA_FLAGS ?=
