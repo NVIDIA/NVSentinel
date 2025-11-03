@@ -15,8 +15,6 @@ test-ci:
 	nohup kubectl port-forward -n nvsentinel svc/simple-health-client 8080:8080 > /dev/null 2>&1 &
 	kubectl get po -Ao wide
 	kubectl get no -o wide
-	@echo "Applying KWOK stages for proper pod deletion behavior..."
-	kubectl apply -f data/kwok-pod-delete-respect-finalizers.yaml
 	@echo "Restarting fault-quarantine deployment..."
 	kubectl rollout restart deploy -l app.kubernetes.io/name=fault-quarantine -n nvsentinel
 	@echo "Waiting for deployment rollout to complete..."

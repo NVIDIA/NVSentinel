@@ -161,21 +161,6 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 	return tempFile.Name(), nil
 }
 
-func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (string, error) {
-	tempFile, err := event.WriteToTempFile()
-	if err != nil {
-		return "", err
-	}
-
-	err = SendHealthEventsToNodes([]string{nodeName}, tempFile)
-	if err != nil {
-		os.Remove(tempFile)
-		return "", err
-	}
-
-	return tempFile, nil
-}
-
 func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
 	eventData, err := os.ReadFile(eventFilePath)
 	if err != nil {
@@ -244,10 +229,7 @@ func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
 		WithHealthy(true).
 		WithFatal(false).
 		WithMessage("No health failures").
-		WithComponentClass("GPU").
-		WithErrorCode("")
-
-	event.ErrorCode = nil
+		WithComponentClass("GPU")
 
 	SendHealthEvent(ctx, t, event)
 }

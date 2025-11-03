@@ -44,16 +44,13 @@ wait_for_boot_id_change() {
             break
         fi
 
-
         sleep 5
         elapsed=$((elapsed + 5))
     done
 
-
     if [[ $elapsed -ge $timeout ]]; then
         error "Timeout waiting for node $node to reboot"
     fi
-
 
     log "Waiting for node $node to be uncordoned..."
     while [[ $elapsed -lt $timeout ]]; do
@@ -66,11 +63,9 @@ wait_for_boot_id_change() {
             return 0
         fi
 
-
         sleep 5
         elapsed=$((elapsed + 5))
     done
-
 
     error "Timeout waiting for node $node to be uncordoned"
 }
@@ -80,27 +75,21 @@ test_gpu_monitoring_dcgm() {
     log "Test 1: GPU monitoring via DCGM"
     log "========================================="
 
-
     local gpu_node
     gpu_node=$(kubectl get nodes -l workload-type=gpu -o jsonpath='{.items[0].metadata.name}')
-
 
     if [[ -z "$gpu_node" ]]; then
         error "No GPU nodes found"
     fi
 
-
     log "Selected GPU node: $gpu_node"
-
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
 
-
     local dcgm_pod
     dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
-
 
     if [[ -z "$dcgm_pod" ]]; then
         error "No DCGM pod found on node $gpu_node"
@@ -155,40 +144,31 @@ test_xid_monitoring_syslog() {
     log "Test 2: XID monitoring via syslog"
     log "========================================="
 
-
     local gpu_node
     gpu_node=$(kubectl get nodes -l workload-type=gpu -o jsonpath='{.items[0].metadata.name}')
-
 
     if [[ -z "$gpu_node" ]]; then
         error "No GPU nodes found"
     fi
 
-
     log "Selected GPU node: $gpu_node"
-
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
 
-
     local driver_pod
     driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
-
 
     if [[ -z "$driver_pod" ]]; then
         error "No driver pod found on node $gpu_node"
     fi
 
-
     log "Injecting XID 119 message via logger on pod: $driver_pod"
     kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8)."
 
-
     log "Waiting for node to be quarantined and rebooted..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
-
 
     log "Test 2 PASSED ✓"
 }

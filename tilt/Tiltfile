@@ -156,3 +156,12 @@ k8s_resource(
     workload='gpu-health-monitor-dcgm-3.x',
     pod_readiness='ignore'
 )
+
+# This is a workaround to ensure that pods are deleted with respect to finalizers
+# source: https://github.com/kubernetes-sigs/kwok/discussions/926#discussioncomment-8204558
+k8s_yaml('./kwok-pod-delete-respect-finalizers.yaml')
+k8s_resource(
+    new_name='kwok-pod-delete-stage',
+    objects=['pod-delete:stage'],
+    resource_deps=['kwok']
+)
