@@ -1,0 +1,1149 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+################################################################################
+# NVSentinel Complete Configuration Reference
+#
+# This file documents every possible configuration option for NVSentinel.
+# All options are set to their default values unless otherwise noted.
+#
+# NVSentinel is a Kubernetes-native system for detecting, quarantining,
+# and remediating node failures in GPU clusters. It consists of:
+#
+# - Health Monitors: Detect hardware and software failures
+# - Fault Quarantine: Cordon and taint nodes with detected faults  
+# - Node Drainer: Gracefully evict workloads from failing nodes
+# - Fault Remediation: Create maintenance resources to trigger node recovery
+# - Janitor: Execute node reboots and terminations via cloud provider APIs
+#
+# For production use, enable the core modules and configure them for your
+# specific environment.
+################################################################################
+
+################################################################################
+# GLOBAL CONFIGURATION
+#
+# Settings that apply to all NVSentinel components.
+# These can be overridden per-module in their individual sections.
+################################################################################
+global:
+  # Docker image configuration
+  image:
+    # Image tag to use for all NVSentinel containers
+    # Examples: "main" (latest development), "v1.0.0" (specific release)
+    # Leave empty to use the appVersion from Chart.yaml
+    tag: "main"
+
+  # Metrics port for Prometheus scraping
+  # All components expose health and metrics endpoints on this port
+  # Prometheus should scrape these endpoints to monitor NVSentinel
+  metricsPort: 2112
+  
+  # Dry-run mode - when enabled, all actions are logged but not executed
+  # Useful for:
+  # - Testing configuration changes safely
+  # - Validating rule behavior before production use
+  # - Debugging without affecting the cluster
+  # Components will log what they WOULD do but won't actually:
+  # - Cordon or taint nodes (fault-quarantine)
+  # - Evict or delete pods (node-drainer)
+  # - Create maintenance resources (fault-remediation)
+  # - Reboot or terminate nodes (janitor)
+  dryRun: false
+
+  # Image pull secrets for private container registries
+  # Create these secrets in Kubernetes before installing NVSentinel:
+  # kubectl create secret docker-registry my-registry-secret \
+  #   --docker-server=myregistry.com \
+  #   --docker-username=myuser \
+  #   --docker-password=mypassword
+  # Then reference them here:
+  # imagePullSecrets:
+  #   - name: my-registry-secret
+  imagePullSecrets: []
+  
+  # Node selector for all NVSentinel workloads
+  # Used to constrain pods to nodes with specific labels
+  # Example - run only on nodes with label "nvsentinel=enabled":
+  # nodeSelector:
+  #   nvsentinel: "enabled"
+  # Leave empty to allow scheduling on any node
+  nodeSelector: {}
+  
+  # Tolerations for all NVSentinel workloads
+  # Allows pods to schedule on nodes with matching taints
+  # Example - tolerate GPU nodes:
+  # tolerations:
+  #   - key: "nvidia.com/gpu"
+  #     operator: "Exists"
+  #     effect: "NoSchedule"
+  # Leave empty for no tolerations
+  tolerations: []
+  
+  # Affinity rules for all NVSentinel workloads
+  # Controls pod placement based on node properties or other pods
+  # Example - spread pods across availability zones:
+  # affinity:
+  #   podAntiAffinity:
+  #     preferredDuringSchedulingIgnoredDuringExecution:
+  #       - weight: 100
+  #         podAffinityTerm:
+  #           topologyKey: topology.kubernetes.io/zone
+  # Leave empty for no affinity rules
+  affinity: {}
+  
+  # Node selector for system components
+  # System components include: platform-connectors, fault-quarantine,
+  # node-drainer, fault-remediation (control plane workloads)
+  # Example - run system components on control plane nodes:
+  # systemNodeSelector:
+  #   node-role.kubernetes.io/control-plane: ""
+  # Leave empty to use same as global nodeSelector
+  systemNodeSelector: {}
+  
+  # Tolerations for system components
+  # Allows system pods to run on tainted nodes (like control plane)
+  # Example - tolerate control plane taint:
+  # systemNodeTolerations:
+  #   - key: "node-role.kubernetes.io/control-plane"
+  #     operator: "Exists"
+  #     effect: "NoSchedule"
+  # Leave empty to use same as global tolerations
+  systemNodeTolerations: []
+
+  ################################################################################
+  # MODULE ENABLE/DISABLE FLAGS
+  #
+  # Control which NVSentinel components are deployed.
+  # For production, typically enable all modules except healthEventsAnalyzer.
+  ################################################################################
+  
+  # GPU Health Monitor - monitors GPU hardware health via DCGM
+  # Detects: XID errors, thermal issues, ECC errors, memory errors, NVLink failures
+  # Requires: NVIDIA GPU Operator with DCGM installed
+  gpuHealthMonitor:
+    enabled: true
+
+  # Health Events Analyzer - analyzes patterns in health events
+  # Provides insights and recommendations based on historical data
+  # Requires: MongoDB store enabled
+  healthEventsAnalyzer:
+    enabled: false
+
+  # Fault Quarantine Module - cordons/taints nodes with detected faults
+  # Prevents new workloads from scheduling on failing nodes
+  # Uses rule-based evaluation to determine when to quarantine
+  # Requires: MongoDB store enabled
+  faultQuarantine:
+    enabled: false
+
+  # Node Drainer Module - evicts workloads from quarantined nodes
+  # Gracefully terminates pods before node maintenance
+  # Supports multiple eviction strategies per namespace
+  # Requires: MongoDB store enabled, fault-quarantine enabled
+  nodeDrainer:
+    enabled: false
+
+  # Fault Remediation Module - creates maintenance resources for node recovery
+  # Triggers janitor to reboot or terminate failing nodes
+  # Uses configurable templates for different remediation actions
+  # Requires: MongoDB store enabled, janitor enabled
+  faultRemediation:
+    enabled: false
+
+  # Janitor Module - executes node reboots and terminations
+  # Integrates with cloud provider APIs to perform actual maintenance
+  # Supports: AWS, GCP, Azure, OCI, kind (for testing)
+  # Requires: Cloud provider credentials configured
+  janitor:
+    enabled: false
+
+  # CSP Health Monitor - monitors cloud provider maintenance events
+  # Detects scheduled maintenance windows from cloud provider APIs
+  # Supports: GCP (Compute Engine), AWS (EC2)
+  # Requires: Cloud provider credentials configured
+  cspHealthMonitor:
+    enabled: false
+
+  # Syslog Health Monitor - analyzes system logs for fault patterns
+  # Reads journalctl logs to detect kernel errors, driver issues
+  # Runs as DaemonSet on all nodes
+  # Requires: Access to host journalctl
+  syslogHealthMonitor:
+    enabled: true
+    # XID sidecar - parses NVIDIA XID errors from dmesg
+    # Extracts detailed XID error information
+    xidSideCar:
+      enabled: false
+
+  # Labeler Module - applies labels to nodes based on capabilities
+  # Detects: Kata Containers support, node features
+  # Runs as Deployment to label all nodes in the cluster
+  labeler:
+    enabled: true
+
+  # In-cluster File Server - HTTP server for log uploads
+  # Used by log-collector jobs to upload diagnostic bundles
+  # Only needed if fault-remediation log collection is enabled
+  inclusterFileServer:
+    enabled: false
+    # Metrics port for file server
+    metricsPort: 9001
+    # Metrics port for cleanup job
+    cleanupMetricsPort: 9002
+
+  # MongoDB Store - database for health events
+  # Stores all health events from monitors
+  # Required by: fault-quarantine, node-drainer, fault-remediation
+  # Uses Bitnami MongoDB chart with TLS enabled
+  mongodbStore:
+    enabled: false
+
+################################################################################
+# PLATFORM CONNECTOR CONFIGURATION
+#
+# Central communication hub that receives health events from all monitors.
+# Persists events to MongoDB and updates Kubernetes node status.
+# This is the core component that connects health monitors to the remediation
+# pipeline.
+################################################################################
+platformConnector:
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
+    # Image pull policy - when to pull the image
+    # IfNotPresent: Only pull if not already present (recommended)
+    # Always: Always pull the latest image
+    # Never: Never pull, use local image only
+    pullPolicy: IfNotPresent
+    # Image tag override - leave empty to use global.image.tag
+    tag: ""
+
+  # Resource limits and requests
+  # Limits: Maximum resources the pod can use
+  # Requests: Resources guaranteed to be available
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+  # Additional pod annotations
+  # Example - for Istio service mesh:
+  # podAnnotations:
+  #   sidecar.istio.io/inject: "false"
+  podAnnotations: {}
+
+  # Kubernetes connector configuration
+  # Handles updating Kubernetes node status and conditions
+  k8sConnector:
+    # Enable Kubernetes status updates
+    enabled: true
+    # Rate limiting for Kubernetes API calls
+    # QPS: Maximum queries per second to API server
+    qps: 5.0
+    # Burst: Maximum burst size above QPS
+    burst: 10
+
+# Unix socket path for inter-process communication
+# Health monitors connect to platform-connectors via this socket
+# Must be accessible by both monitors and platform-connectors
+socketPath: "/var/run/nvsentinel.sock"
+
+################################################################################
+# FAULT-QUARANTINE MODULE CONFIGURATION
+#
+# Watches MongoDB for health events and applies quarantine actions to nodes.
+# Quarantine actions include: cordoning (preventing new pods) and tainting
+# (repelling pods without tolerations). Also adds labels and annotations
+# for tracking quarantine state.
+################################################################################
+fault-quarantine:
+  # Number of pod replicas (recommend 1 for consistency)
+  replicaCount: 1
+
+  # Log level - controls verbosity of logging
+  # Options: debug, info, warn, error
+  # debug: Very verbose, includes all details
+  # info: Normal operations and important events
+  # warn: Warning conditions
+  # error: Error conditions only
+  logLevel: info
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/fault-quarantine
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # Pod resource limits and requests
+  resources: 
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+    requests:
+      cpu: "1"
+      memory: "1Gi"
+
+  # Scheduling configuration
+  # These override global values if set
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  podAnnotations: {}
+
+  # Label prefix for node labels and annotations
+  # Used to create labels like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason
+  # These labels track when and why nodes were quarantined
+  # Also used for uncordon tracking
+  labelPrefix: "k8saas.nvidia.com/"
+
+  # Circuit breaker prevents quarantining too many nodes at once
+  # If the threshold is exceeded, new quarantines are blocked
+  # This prevents cascading failures from taking down the entire cluster
+  # State is persisted in a ConfigMap and survives restarts
+  circuitBreaker:
+    # Enable circuit breaker protection
+    enabled: true
+    # Maximum percentage of cluster nodes that can be cordoned
+    # Example: 50 means if 50% or more nodes are already cordoned,
+    # no new quarantines will be allowed
+    # Range: 1-100
+    percentage: 50
+    # Cooldown period after circuit breaker trips
+    # Circuit breaker waits this long before attempting to close again
+    # Even if node count drops below threshold during cooldown, it stays open
+    # Examples: "5m", "10m", "1h"
+    duration: "5m"
+
+  # Quarantine rules define when and how to quarantine nodes
+  # Each rule has:
+  # - Match conditions: When the rule should trigger
+  # - Actions: What to do when conditions match (cordon, taint, label)
+  # Rules are evaluated in order for each health event
+  ruleSets:
+    # Example rule 1: Quarantine nodes with fatal GPU errors
+    - version: "1"
+      name: "GPU fatal error ruleset"
+      
+      # Match conditions - all must be true
+      match:
+        # Use 'all' for AND logic (all conditions must match)
+        # Use 'any' for OR logic (at least one condition must match)
+        all:
+          # Check health event properties
+          - kind: "HealthEvent"
+            # CEL expression with access to 'event' object
+            # Available fields: agent, componentClass, isFatal, nodeName, severity, etc.
+            expression: "event.agent == 'gpu-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+          
+          # Check node properties
+          - kind: "Node"
+            # CEL expression with access to 'node' object
+            # Available fields: node.metadata.labels, node.metadata.annotations, node.spec, etc.
+            # This checks if node is explicitly excluded from management
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      
+      # Actions to take when rule matches
+      # Cordon action - mark node as unschedulable
+      cordon:
+        # When true, sets node.spec.unschedulable=true
+        # Prevents new pods from being scheduled on the node
+        # Existing pods continue running
+        shouldCordon: true
+      
+      # Optional: Taint action - repel pods without matching tolerations
+      # Uncomment to enable tainting
+      # taint:
+      #   # Taint key identifier
+      #   key: "nvidia.com/gpu-error"
+      #   # Taint value (additional context)
+      #   value: "fatal"
+      #   # Effect determines pod behavior:
+      #   # NoSchedule: New pods without toleration won't schedule
+      #   # PreferNoSchedule: Scheduler tries to avoid (soft version)
+      #   # NoExecute: Existing pods without toleration are evicted
+      #   effect: "NoSchedule"
+
+    # Example rule 2: Quarantine nodes with CSP maintenance events
+    - version: "1"
+      name: "CSP health monitor fatal error ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'csp-health-monitor' && event.checkName == 'CSPMaintenance' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      cordon:
+        shouldCordon: true
+
+    # Example rule 3: Quarantine nodes with syslog errors
+    - version: "1"
+      name: "Syslog fatal error ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'syslog-health-monitor' && event.componentClass == 'GPU' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      cordon:
+        shouldCordon: true
+
+################################################################################
+# NODE-DRAINER MODULE CONFIGURATION
+#
+# Evicts workloads from quarantined nodes to prepare for maintenance.
+# Supports different eviction strategies per namespace:
+# - Immediate: Evict right away
+# - AllowCompletion: Wait for graceful termination
+# - DeleteAfterTimeout: Wait for timeout, then force delete
+################################################################################
+node-drainer:
+  # Number of pod replicas (recommend 1 for consistency)
+  replicaCount: 1
+
+  # Log level for debugging and monitoring
+  logLevel: info
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/node-drainer
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # Pod resource limits and requests
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "300Mi"
+    requests:
+      cpu: "200m"
+      memory: "300Mi"
+
+  podAnnotations: {}
+
+  # Eviction timeout in seconds
+  # Maximum time to wait for a pod to terminate gracefully
+  # After this timeout, pod may be force deleted (depends on eviction mode)
+  # Must be a positive integer
+  evictionTimeoutInSeconds: "60"
+
+  # System namespaces regex pattern
+  # Pods in these namespaces are skipped during drain
+  # This protects critical infrastructure pods from eviction
+  # The pattern matches namespace names
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
+
+  # Delete timeout in minutes for DeleteAfterTimeout mode
+  # Calculated from health event creation time
+  # When timeout is reached, remaining pods are force deleted
+  # Used to prevent drains from waiting indefinitely
+  # Default: 60 minutes
+  deleteAfterTimeoutMinutes: 60
+
+  # NotReady timeout in minutes
+  # Time after which a pod in NotReady state is considered stuck
+  # Stuck pods are candidates for force deletion
+  # Helps identify and handle unhealthy pods that won't complete gracefully
+  # Default: 5 minutes
+  notReadyTimeoutMinutes: 5
+
+  # Namespace-specific eviction strategies
+  # Define how pods in different namespaces should be evicted
+  # Multiple rules can be defined with namespace patterns
+  userNamespaces:
+    # Match all user namespaces (not matched by systemNamespaces)
+    - name: "*"
+      # Eviction mode options:
+      # "Immediate": Evict pod immediately, don't wait for graceful termination
+      #              Use for: Stateless apps, batch jobs
+      # "AllowCompletion": Wait for pod to complete gracefully
+      #                   Respects pod's terminationGracePeriodSeconds
+      #                   Use for: Long-running jobs, stateful apps
+      # "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes
+      #                       Then force delete if still running
+      #                       Use for: Jobs that should complete but might hang
+      mode: "AllowCompletion"
+    
+    # Example: Immediate eviction for a specific namespace
+    # - name: "batch-jobs"
+    #   mode: "Immediate"
+    
+    # Example: Delete after timeout for another namespace
+    # - name: "training-jobs"
+    #   mode: "DeleteAfterTimeout"
+
+################################################################################
+# FAULT-REMEDIATION MODULE CONFIGURATION
+#
+# Creates maintenance CRDs (Custom Resource Definitions) to trigger node recovery.
+# The janitor module watches these CRDs and performs actual cloud provider API
+# calls to reboot or terminate nodes.
+################################################################################
+fault-remediation:
+  # Number of pod replicas (recommend 1 for consistency)
+  replicaCount: 1
+
+  # Log level for debugging and monitoring
+  logLevel: info
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/fault-remediation
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # Pod resource limits and requests
+  resources: 
+    limits:
+      cpu: "200m"
+      memory: "300Mi"
+    requests:
+      cpu: "200m"
+      memory: "300Mi"
+
+  # Scheduling configuration
+  nodeSelector: {}
+  affinity: {}
+  # Special tolerations - allow running on all nodes for log collection
+  tolerations:
+    - operator: "Exists"
+  podAnnotations: {}
+
+  # Maintenance resource configuration
+  # Defines the Kubernetes CRDs used to trigger node maintenance
+  maintenance:
+    # API group of maintenance CRDs
+    # Must match the janitor controller configuration
+    apiGroup: "janitor.dgxc.nvidia.com"
+    
+    # API version of maintenance CRDs
+    version: "v1alpha1"
+    
+    # Namespace where maintenance resources are created
+    # Must match where janitor controller is watching
+    namespace: "nvsentinel"
+    
+    # Resource type names that can be created
+    # These must be defined as CRDs in the cluster
+    # Multiple resource types allow different remediation actions
+    # Examples: rebootnodes, terminatenodes
+    # Janitor must have RBAC permissions for these resources
+    resourceNames:
+      - "rebootnodes"
+      - "terminatenodes"
+    
+    # Go template for generating maintenance resources
+    # Template variables available:
+    # - .ApiGroup: API group from above
+    # - .Version: Version from above
+    # - .RecommendedAction: Numeric code from health event (2 = reboot, 3 = terminate)
+    # - .NodeName: Name of the node requiring maintenance
+    # - .HealthEventID: Unique MongoDB ID of the triggering health event
+    #
+    # The generated YAML is created as a Kubernetes resource
+    # Janitor controller watches these resources and performs actions
+    #
+    # Customize this template to:
+    # - Add custom labels or annotations
+    # - Change resource kinds based on RecommendedAction
+    # - Add additional spec fields
+    template: |
+      apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+      kind: RebootNode
+      metadata:
+        name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
+      spec:
+        nodeName: {{ .NodeName }}
+
+  # Retry configuration for node annotation updates
+  # After creating maintenance resource, module updates node annotations
+  # These settings control retry behavior on failures (conflicts, network issues)
+  updateRetry:
+    # Maximum retry attempts
+    # After this many failures, the update is abandoned
+    maxRetries: 5
+    
+    # Delay between retries in seconds
+    # Uses exponential backoff (delay increases each retry)
+    # First retry: retryDelaySeconds
+    # Second retry: retryDelaySeconds * 2
+    # Third retry: retryDelaySeconds * 4, etc.
+    retryDelaySeconds: 10
+
+  # Log collector configuration
+  # When enabled, creates Kubernetes Jobs to collect diagnostic logs
+  # from failing nodes before they are rebooted or terminated
+  logCollector:
+    # Enable log collection feature
+    # When true, a log collector job is created for each node failure
+    # Logs are uploaded to the configured upload URL
+    enabled: false
+    
+    # Container image for log collector
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/log-collector
+      pullPolicy: IfNotPresent
+    
+    # HTTP endpoint where logs will be uploaded
+    # Should be the incluster-file-server or external storage
+    # Logs are uploaded as tar.gz files
+    uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
+    
+    # Namespaces where GPU operator components run
+    # Log collector will gather logs from these namespaces
+    # Can be multiple namespaces separated by commas
+    gpuOperatorNamespaces: "gpu-operator"
+    
+    # Enable GCP-specific SOS report collection
+    # Requires running on GCP and appropriate permissions
+    enableGcpSosCollection: false
+    
+    # Enable AWS-specific SOS report collection  
+    # Requires running on AWS and appropriate permissions
+    enableAwsSosCollection: false
+
+################################################################################
+# GPU-HEALTH-MONITOR CONFIGURATION
+#
+# Monitors GPU hardware health using NVIDIA DCGM (Data Center GPU Manager).
+# Detects: XID errors, thermal throttling, ECC errors, memory errors, NVLink
+# failures, and other GPU hardware faults.
+#
+# Requires: NVIDIA GPU Operator with DCGM deployed in the cluster
+################################################################################
+gpu-health-monitor:
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/gpu-health-monitor
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # DCGM integration configuration
+  # DCGM must be running in the cluster (typically via GPU Operator)
+  dcgm:
+    # Enable DCGM Kubernetes service discovery
+    # When true, monitor connects to DCGM via Kubernetes service
+    # When false, must use host networking to connect to local DCGM
+    dcgmK8sServiceEnabled: true
+    
+    # DCGM service endpoint
+    service:
+      # Service endpoint in format: servicename.namespace.svc
+      # Default GPU Operator deployment uses: nvidia-dcgm.gpu-operator.svc
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      
+      # DCGM service port
+      # Default DCGM port is 5555
+      port: 5555
+
+  # Use host networking for GPU health monitor pods
+  # Required when:
+  # - DCGM is running as hostProcess (not as service)
+  # - Need direct access to host-level GPU metrics
+  # - dcgmK8sServiceEnabled is false
+  # Most deployments should use service-based access (false)
+  useHostNetworking: false
+
+  # Additional volume mounts for GPU health monitor
+  # Use when monitor needs access to host files
+  # Example:
+  # additionalVolumeMounts:
+  #   - name: custom-config
+  #     mountPath: /etc/custom
+  #     readOnly: true
+  additionalVolumeMounts: []
+
+  # Additional host volumes for GPU health monitor
+  # Use with additionalVolumeMounts to mount host paths
+  # Example:
+  # additionalHostVolumes:
+  #   - name: custom-config
+  #     hostPath:
+  #       path: /etc/custom
+  #       type: Directory
+  additionalHostVolumes: []
+
+  # Pod resource limits and requests
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Scheduling configuration
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  podAnnotations: {}
+
+################################################################################
+# LABELER CONFIGURATION
+#
+# Labels nodes based on their capabilities and features.
+# Currently detects: Kata Containers support
+# Runs as Deployment to label all nodes in the cluster.
+################################################################################
+labeler:
+  # Number of replicas for the labeler deployment
+  replicaCount: 1
+
+  # Log level for debugging
+  logLevel: info
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/labeler
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  podAnnotations: {}
+
+  # Kata Containers detection configuration
+  # Labeler checks node labels to determine Kata support
+  # Sets output label: nvsentinel.dgxc.nvidia.com/kata.enabled
+  #
+  # Detection logic:
+  # 1. Check default label: katacontainers.io/kata-runtime
+  # 2. If kataLabelOverride is set, also check that label
+  # 3. Label value must be truthy: "true", "enabled", "1", or "yes" (case-insensitive)
+  # 4. Set output label to "true" if detected, "false" otherwise
+  #
+  # Use kataLabelOverride when:
+  # - Your cluster uses custom labels for Kata detection
+  # - You have additional Kata runtime indicators
+  #
+  # Example: 'io.katacontainers.config.runtime.oci_runtime'
+  # Leave empty to only check default label
+  kataLabelOverride: ""
+
+  # Pod resource limits and requests
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+################################################################################
+# JANITOR CONFIGURATION
+#
+# Executes node reboots and terminations by calling cloud provider APIs.
+# Watches maintenance CRDs created by fault-remediation and performs the
+# actual infrastructure operations.
+#
+# Supports: AWS, GCP, Azure, OCI, kind (for testing), kwok (for testing)
+################################################################################
+janitor:
+  # Number of pod replicas (recommend 1 for consistency)
+  replicaCount: 1
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/janitor
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # Kubernetes service account configuration
+  serviceAccount:
+    # Create service account
+    # Set to false if using an existing service account
+    create: true
+    
+    # Automatically mount service account token
+    automount: true
+    
+    # Annotations for service account
+    # Used for cloud provider identity (IRSA, Workload Identity, etc.)
+    # Examples:
+    # AWS IRSA:
+    #   eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/nvsentinel-janitor
+    # GCP Workload Identity:
+    #   iam.gke.io/gcp-service-account: nvsentinel-janitor@PROJECT_ID.iam.gserviceaccount.com
+    # Azure Workload Identity:
+    #   azure.workload.identity/client-id: "12345678-1234-1234-1234-123456789012"
+    annotations: {}
+    
+    # Service account name
+    # Leave empty to use generated name from chart
+    name: ""
+
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext: {}
+  securityContext: {}
+
+  # Pod resource limits
+  # Default is no limits - set based on cluster size
+  resources: {}
+  #   limits:
+  #     cpu: 100m
+  #     memory: 128Mi
+  #   requests:
+  #     cpu: 100m
+  #     memory: 128Mi
+
+  # Scheduling configuration
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Autoscaling configuration
+  # Not typically needed for janitor (low request rate)
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 80
+
+  # Janitor controller configuration
+  config:
+    # Global timeout for all operations
+    # Used as default for controllers that don't specify their own
+    # Should account for cloud provider API call time + node boot time
+    # Format: duration string like "25m", "1h", "30s"
+    timeout: "25m"
+    
+    # Manual mode - when true, controllers don't send actual reboot/terminate signals
+    # Useful for testing without affecting infrastructure
+    # Controllers will create/update resources but won't call cloud provider APIs
+    manualMode: false
+    
+    # HTTP port for runtime configuration endpoint
+    # Exposes configuration and status information
+    httpPort: 8082
+    
+    # Node exclusions - nodes matching these selectors are never rebooted/terminated
+    # Use to protect critical nodes from automated maintenance
+    # Supports both matchLabels and matchExpressions
+    nodes:
+      exclusions: []
+      # Examples:
+      # Exclude control plane nodes:
+      # - matchLabels:
+      #     node-role.kubernetes.io/control-plane: ""
+      # Exclude nodes with specific labels:
+      # - matchExpressions:
+      #   - key: critical-workload
+      #     operator: In
+      #     values:
+      #       - "true"
+      #   - key: app
+      #     operator: In
+      #     values:
+      #       - database
+      #       - cache
+    
+    # Controller-specific configuration
+    controllers:
+      # Reboot node controller - handles RebootNode CRDs
+      rebootNode:
+        # Enable reboot node controller
+        enabled: true
+        
+        # Timeout for reboot operations
+        # Should account for:
+        # 1. Cloud provider API call time
+        # 2. Node shutdown time
+        # 3. Node boot time
+        # 4. Kubernetes node ready time
+        # Leave empty to use config.timeout
+        # 
+        # Recommended values by platform:
+        # - AWS/Azure/OCI: "25m" (includes 5min API cooldown)
+        # - GCP: "20m" (faster API, tracks operation status)
+        # - kind/kwok: "5m" (for testing)
+        timeout: "25m"
+      
+      # Terminate node controller - handles TerminateNode CRDs
+      terminateNode:
+        # Enable terminate node controller
+        enabled: true
+        
+        # Timeout for terminate operations
+        # Should account for cloud provider API call time
+        # Termination is typically faster than reboot
+        # Leave empty to use config.timeout
+        timeout: "25m"
+
+  # Cloud Service Provider (CSP) configuration
+  # Configure the provider that matches your Kubernetes cluster
+  csp:
+    # Provider type - select one:
+    # - kind: Local development with kind clusters (simulated operations)
+    # - kwok: Testing with kwok (simulated nodes)
+    # - aws: Amazon Web Services EKS clusters
+    # - gcp: Google Cloud Platform GKE clusters
+    # - azure: Microsoft Azure AKS clusters
+    # - oci: Oracle Cloud Infrastructure OKE clusters
+    provider: "kind"
+    
+    # AWS-specific configuration (only needed when provider=aws)
+    aws:
+      # AWS region where EKS cluster is running
+      # Required for EC2 API calls
+      # Examples: us-east-1, us-west-2, eu-west-1, ap-southeast-1
+      region: ""
+      
+      # AWS Account ID (12-digit number)
+      # Required for IRSA (IAM Roles for Service Accounts)
+      # Example: "123456789012"
+      # Find with: aws sts get-caller-identity --query Account --output text
+      accountId: ""
+      
+      # IAM Role name for janitor service account
+      # Role must have ec2:RebootInstances and ec2:TerminateInstances permissions
+      # Example: "nvsentinel-janitor-role"
+      # Create with: aws iam create-role --role-name nvsentinel-janitor-role
+      # Attach policy: AmazonEC2FullAccess (or custom policy with reboot/terminate)
+      iamRoleName: ""
+      
+      # Setup steps for AWS:
+      # 1. Create IAM role with trust relationship to OIDC provider
+      # 2. Attach policy with ec2:RebootInstances permission
+      # 3. Annotate service account with role ARN
+      # 4. Janitor pods will use IRSA to assume the role
+    
+    # GCP-specific configuration (only needed when provider=gcp)
+    gcp:
+      # GCP project ID where GKE cluster is running
+      # Required for Compute Engine API calls
+      # Example: "my-gcp-project"
+      # Find with: gcloud config get-value project
+      project: ""
+      
+      # GCP zone where cluster nodes are located
+      # Required for instance operations
+      # Examples: us-central1-a, us-west1-b, europe-west1-c
+      # Find with: gcloud container clusters describe CLUSTER_NAME --region REGION
+      zone: ""
+      
+      # GCP Service Account email for Workload Identity
+      # Provide just the name (without @project.iam.gserviceaccount.com)
+      # Example: "nvsentinel-janitor"
+      # Full email will be: nvsentinel-janitor@PROJECT_ID.iam.gserviceaccount.com
+      # Service account must have compute.instances.reset permission
+      serviceAccount: ""
+      
+      # Setup steps for GCP:
+      # 1. Create GCP service account: gcloud iam service-accounts create nvsentinel-janitor
+      # 2. Grant role: gcloud projects add-iam-policy-binding PROJECT_ID \
+      #      --member serviceAccount:nvsentinel-janitor@PROJECT_ID.iam.gserviceaccount.com \
+      #      --role roles/compute.instanceAdmin.v1
+      # 3. Bind Kubernetes SA to GCP SA:
+      #    gcloud iam service-accounts add-iam-policy-binding \
+      #      nvsentinel-janitor@PROJECT_ID.iam.gserviceaccount.com \
+      #      --member "serviceAccount:PROJECT_ID.svc.id.goog[NAMESPACE/janitor]" \
+      #      --role roles/iam.workloadIdentityUser
+      # 4. Annotate Kubernetes service account with GCP SA email
+    
+    # Azure-specific configuration (only needed when provider=azure)
+    azure:
+      # Azure subscription ID
+      # Required for Azure Resource Manager API calls
+      # Format: 8-4-4-4-12 UUID
+      # Find with: az account show --query id --output tsv
+      subscriptionId: ""
+      
+      # Azure resource group containing the AKS cluster
+      # Often auto-detected from node provider IDs
+      # If not auto-detected, specify manually
+      # Find with: az aks show --name CLUSTER_NAME --resource-group RG_NAME --query nodeResourceGroup
+      resourceGroup: ""
+      
+      # Azure region where AKS cluster is deployed
+      # Examples: eastus, westus2, westeurope, southeastasia
+      # Find with: az aks show --name CLUSTER_NAME --resource-group RG_NAME --query location
+      location: ""
+      
+      # Managed Identity Client ID for Workload Identity
+      # Format: 8-4-4-4-12 UUID
+      # Managed identity must have Virtual Machine Contributor role
+      # Find with: az identity show --name IDENTITY_NAME --resource-group RG_NAME --query clientId
+      clientId: ""
+      
+      # Setup steps for Azure:
+      # 1. Create managed identity: az identity create --name nvsentinel-janitor
+      # 2. Grant role: az role assignment create \
+      #      --assignee CLIENT_ID \
+      #      --role "Virtual Machine Contributor" \
+      #      --scope /subscriptions/SUBSCRIPTION_ID/resourceGroups/RESOURCE_GROUP
+      # 3. Create federated identity credential:
+      #    az identity federated-credential create \
+      #      --name nvsentinel-janitor-credential \
+      #      --identity-name nvsentinel-janitor \
+      #      --resource-group RG_NAME \
+      #      --issuer "https://oidc.prod-aks.azure.com/TENANT_ID/" \
+      #      --subject "system:serviceaccount:NAMESPACE:janitor"
+      # 4. Annotate service account with client ID
+    
+    # OCI-specific configuration (only needed when provider=oci)
+    oci:
+      # OCI region where OKE cluster is running
+      # Examples: us-ashburn-1, us-phoenix-1, uk-london-1, ap-mumbai-1
+      # Find with: oci iam region list
+      region: ""
+      
+      # OCI compartment OCID containing cluster resources
+      # Format: ocid1.compartment.oc1..aaa...
+      # Find with: oci iam compartment list
+      compartment: ""
+      
+      # Path to OCI credentials file (optional)
+      # Only needed if not using workload identity
+      # Default location: ~/.oci/config
+      # Leave empty to use workload identity
+      credentialsFile: ""
+      
+      # OCI profile name in credentials file
+      # Default profile name in config file
+      profile: "DEFAULT"
+      
+      # OCI Principal OCID for Workload Identity
+      # Format: ocid1.principal.oc1..aaa...
+      # This is the OCID of the dynamic group or service principal
+      # Required for OKE Workload Identity
+      principalId: ""
+      
+      # Setup steps for OCI:
+      # 1. Create dynamic group with matching rule for the pod
+      # 2. Create policy granting dynamic group manage instance-family permission
+      # 3. Configure workload identity for the service account
+      # 4. Janitor pods will use workload identity to call OCI APIs
+
+  # Webhook configuration
+  # Janitor uses admission webhooks to validate CRDs
+  webhook:
+    # Port for webhook server
+    port: 9443
+    
+    # Directory containing webhook TLS certificates
+    # Certificates should be mounted via cert-manager
+    certDir: "/tmp/k8s-webhook-server/serving-certs"
+    
+    # Cert-manager issuer for webhook certificate
+    # This issuer must exist in the same namespace
+    # Create with: kubectl apply -f - <<EOF
+    # apiVersion: cert-manager.io/v1
+    # kind: Issuer
+    # metadata:
+    #   name: selfsigned-ca-issuer
+    # spec:
+    #   selfSigned: {}
+    # EOF
+    certIssuer: "selfsigned-ca-issuer"
+
+  # Metrics configuration
+  # Janitor exposes Prometheus metrics
+  metrics:
+    tls:
+      # Enable TLS for metrics endpoint
+      # Recommended for production
+      enabled: false
+      
+      # Directory containing metrics server TLS certificates
+      certDir: "/tmp/k8s-metrics-server/metrics-certs"
+      
+      # Cert-manager issuer for metrics certificate
+      # Defaults to webhook.certIssuer if not set
+      issuerName: ""
+      
+      # Cert-manager issuer kind
+      # Options: Issuer (namespace-scoped), ClusterIssuer (cluster-scoped)
+      issuerKind: "Issuer"
+      
+      # Cert-manager issuer group (usually cert-manager.io)
+      issuerGroup: ""
+      
+      # Certificate validity duration
+      # Example: "2160h" = 90 days
+      duration: "2160h"
+      
+      # Certificate renewal time before expiry
+      # Example: "720h" = 30 days before expiry
+      renewBefore: "720h"
+      
+      # Organization name in certificate subject
+      organization: "NVIDIA"
+
+################################################################################
+# MONGODB-STORE CONFIGURATION
+#
+# MongoDB database for storing health events.
+# Uses Bitnami MongoDB chart with TLS enabled by default.
+# Required by: fault-quarantine, node-drainer, fault-remediation
+################################################################################
+mongodb-store:
+  # MongoDB replica configuration
+  mongodb:
+    # Number of MongoDB replicas
+    # Recommend 1 for development, 3 for production
+    replicaCount: 1
+    
+    # Node selector for MongoDB pods
+    # Example - run on control plane:
+    # nodeSelector:
+    #   node-role.kubernetes.io/control-plane: ""
+    nodeSelector: {}
+    
+    # Tolerations for MongoDB pods
+    tolerations: []
+    
+    # Tolerations for MongoDB job pods (init jobs, backup jobs)
+    jobTolerations: []
+    
+    # Container image configuration
+    image:
+      registry: "docker.io"
+      repository: "bitnamilegacy/mongodb"
+      tag: "8.0.3-debian-12-r1"
+      pullPolicy: "IfNotPresent"
+    
+    # TLS configuration for MongoDB
+    # Required for secure communication
+    tls:
+      replicaset:
+        # Existing TLS secrets for each replica
+        # Must be created before installing chart
+        # See: distros/kubernetes/mongodb-certs/README.md
+        existingSecrets:
+          - "mongo-server-cert-0"
+      
+      # NGINX image for TLS sidecar
+      image:
+        registry: "docker.io"
+        repository: "bitnamilegacy/nginx"
+        tag: "1.27.2-debian-12-r2"
+        pullPolicy: "IfNotPresent"
+    
+    # MongoDB metrics exporter
+    # Exposes MongoDB metrics for Prometheus
+    metrics:
+      enabled: true
+      image:
+        registry: docker.io
+        repository: bitnamilegacy/mongodb-exporter
+        tag: 0.41.2-debian-12-r1
+
+################################################################################
+# END OF CONFIGURATION
+################################################################################

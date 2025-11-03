@@ -19,4 +19,44 @@ metadata:
     {{- include "fault-quarantine.labels" . | nindent 4 }}
 data:
   config.toml: |
-    {{ .Values.config | nindent 6 }}
+    label-prefix = {{ .Values.labelPrefix | quote }}
+    
+    [circuitBreaker]
+    percentage = {{ .Values.circuitBreaker.percentage }}
+    duration = {{ .Values.circuitBreaker.duration | quote }}
+    
+    {{- range .Values.ruleSets }}
+    [[rule-sets]]
+      version = {{ .version | quote }}
+      name = {{ .name | quote }}
+      {{- if .match.all }}
+      {{- range .match.all }}
+    
+      [[rule-sets.match.all]]
+        kind = {{ .kind | quote }}
+        expression = {{ if contains "\n" .expression }}'''
+            {{ .expression | trim }}
+        '''{{ else }}{{ .expression | quote }}{{ end }}
+      {{- end }}
+      {{- end }}
+      {{- if .match.any }}
+      {{- range .match.any }}
+    
+      [[rule-sets.match.any]]
+        kind = {{ .kind | quote }}
+        expression = {{ if contains "\n" .expression }}'''
+            {{ .expression | trim }}
+        '''{{ else }}{{ .expression | quote }}{{ end }}
+      {{- end }}
+      {{- end }}
+    
+      {{- if .taint }}
+      [rule-sets.taint]
+        key = {{ .taint.key | quote }}
+        value = {{ .taint.value | quote }}
+        effect = {{ .taint.effect | quote }}
+      {{- end }}
+    
+      [rule-sets.cordon]
+        shouldCordon = {{ .cordon.shouldCordon }}
+    {{- end }}

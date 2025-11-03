@@ -19,9 +19,11 @@ metadata:
     {{- include "fault-remediation.labels" . | nindent 4 }}
 rules:
 - apiGroups:
-  - {{ .Values.maintenanceResource.apiGroup }}
+  - {{ .Values.maintenance.apiGroup }}
   resources:
-  - {{ .Values.maintenanceResource.rebootResource.name }}
+  {{- range .Values.maintenance.resourceNames }}
+  - {{ . }}
+  {{- end }}
   verbs:
   - get
   - list

@@ -19,4 +19,13 @@ metadata:
     {{- include "node-drainer.labels" . | nindent 4 }}
 data:
   config.toml: |
-    {{ .Values.config | nindent 6 }}
+    evictionTimeoutInSeconds = {{ .Values.evictionTimeoutInSeconds | quote }}
+    systemNamespaces = {{ .Values.systemNamespaces | quote }}
+    deleteAfterTimeoutMinutes = {{ .Values.deleteAfterTimeoutMinutes }}
+    notReadyTimeoutMinutes = {{ .Values.notReadyTimeoutMinutes }}
+    
+    {{- range .Values.userNamespaces }}
+    [[userNamespaces]]
+    name = {{ .name | quote }}
+    mode = {{ .mode | quote }}
+    {{- end }}

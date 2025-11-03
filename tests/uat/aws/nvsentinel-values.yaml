@@ -17,11 +17,11 @@ global:
     enabled: true
   syslogHealthMonitor:
     enabled: true
-  faultQuarantineModule:
+  faultQuarantine:
     enabled: true
-  nodeDrainerModule:
+  nodeDrainer:
     enabled: true
-  faultRemediationModule:
+  faultRemediation:
     enabled: true
   healthEventsAnalyzer:
     enabled: false
@@ -31,8 +31,6 @@ global:
     enabled: true
   janitor:
     enabled: true
-
-  installMongoDB: true
   
   tolerations:
   - key: nvidia.com/gpu
@@ -41,10 +39,6 @@ global:
   
   systemNodeSelector:
     workload-type: system
-
-platformConnector:
-  mongodbStore:
-    enabled: true
 
 fault-quarantine:
   circuitBreaker:
