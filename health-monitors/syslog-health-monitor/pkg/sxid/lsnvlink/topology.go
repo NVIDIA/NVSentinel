@@ -15,6 +15,7 @@
 package lsnvlink
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -69,7 +70,7 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 				NVSwitchPCIAddresses: []string{},
 			},
 		}
-		if err := globalTopologyProvider.GatherTopology(); err != nil {
+		if err := globalTopologyProvider.GatherTopology(context.Background()); err != nil {
 			slog.Error("Failed to gather topology on initialization", "error", err)
 		}
 	})
@@ -78,9 +79,9 @@ func GetTopologyProvider() *DynamicTopologyProvider {
 }
 
 // GatherTopology gathers the topology by executing nvidia-smi directly
-func (p *DynamicTopologyProvider) GatherTopology() error {
+func (p *DynamicTopologyProvider) GatherTopology(ctx context.Context) error {
 	// Get NVLink topology to check if NVLinks/NVSwitches exist
-	cmd := exec.Command("nvidia-smi", "nvlink", "-R")
+	cmd := exec.CommandContext(ctx, "nvidia-smi", "nvlink", "-R")
 
 	nvlinkOutput, err := cmd.CombinedOutput()
 	if err != nil {

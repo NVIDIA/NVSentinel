@@ -147,7 +147,7 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	pciAddr := m[1]
 
-	var recommendedAction pb.RecommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
+	var recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
 	if errRes, found := p.errorResolutionMap[xidCode]; found {
 		recommendedAction = errRes.RecommendedAction
 		slog.Info("Found action for XID code",
