@@ -18,7 +18,6 @@ import (
 	"context"
 	"testing"
 	"tests/helpers"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
