@@ -16,7 +16,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"tests/helpers"
 	"time"
@@ -51,12 +50,10 @@ func TestDryRunMode(t *testing.T) {
 				DryRun: &dryRunEnabled,
 			})
 
-		// Create test namespace and pods to verify full pipeline is blocked
 		t.Logf("Creating test namespace: %s", testNamespace)
 		err = helpers.CreateNamespace(newCtx, client, testNamespace)
 		require.NoError(t, err)
 
-		// Create pods in immediate mode namespace (would be evicted immediately in normal mode)
 		podNames = helpers.CreatePodsFromTemplate(newCtx, t, client,
 			"data/busybox-pods.yaml", testCtx.NodeName, testNamespace)
 		helpers.WaitForPodsRunning(newCtx, t, client, testNamespace, podNames)
@@ -64,6 +61,8 @@ func TestDryRunMode(t *testing.T) {
 		return newCtx
 	})
 
+	// Taints should not be applied in dry-run mode
+	// TODO: Verify the same after https://github.com/NVIDIA/NVSentinel/issues/193 is fixed
 	feature.Assess("taints applied in dry-run", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err)
@@ -71,9 +70,7 @@ func TestDryRunMode(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testCtx.NodeName, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
@@ -194,8 +191,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 			WithErrorCode("79").
 			WithMessage("XID 79 fatal error").
 			WithRecommendedAction(2)
-		tempFile := helpers.SendHealthEvent(ctx, t, fatalEvent)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, fatalEvent)
 
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, true)
 
@@ -293,8 +289,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("GPU Fallen off the bus")
-		tempFile := helpers.SendHealthEvent(ctx, t, event)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
@@ -319,8 +314,7 @@ func TestNodeRecoveryDuringDrain(t *testing.T) {
 			WithHealthy(true).
 			WithFatal(false).
 			WithMessage("XID 79 cleared during drain")
-		tempHealthy := helpers.SendHealthEvent(ctx, t, healthyEvent)
-		defer os.Remove(tempHealthy)
+		helpers.SendHealthEvent(ctx, t, healthyEvent)
 
 		return ctx
 	})

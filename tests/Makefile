@@ -15,13 +15,8 @@ test-ci:
 	nohup kubectl port-forward -n nvsentinel svc/simple-health-client 8080:8080 > /dev/null 2>&1 &
 	kubectl get po -Ao wide
 	kubectl get no -o wide
-	@echo "Pre-test: Ensuring MongoDB initialization is complete..."
-	kubectl wait --for=condition=complete job/create-mongodb-database -n nvsentinel --timeout=5m || true
-	@echo "Pre-test: Cleaning up any failed pods..."
-	kubectl delete pods -n nvsentinel --field-selector=status.phase=Failed --ignore-not-found=true || true
-	@echo "Pre-test: Waiting for fault-quarantine deployment to be available..."
-	kubectl wait --for=condition=available deployment/fault-quarantine -n nvsentinel --timeout=5m || true
-	@sleep 10
+	@echo "Applying KWOK stages for proper pod deletion behavior..."
+	kubectl apply -f data/kwok-pod-delete-respect-finalizers.yaml
 	@echo "Restarting fault-quarantine deployment..."
 	kubectl rollout restart deploy -l app.kubernetes.io/name=fault-quarantine -n nvsentinel
 	@echo "Waiting for deployment rollout to complete..."

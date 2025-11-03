@@ -17,7 +17,6 @@ package tests
 import (
 	"context"
 	"math/rand"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -209,9 +208,7 @@ func TestScaleHealthEvents(t *testing.T) {
 			WithErrorCode("79").
 			WithMessage("XID error with force override").
 			WithForceOverride()
-		tempFile, err := helpers.SendHealthEventWithTemplate(testNode, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.AssertNodeNeverQuarantined(ctx, t, client, testNode, false)
 

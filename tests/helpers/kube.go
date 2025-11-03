@@ -17,7 +17,6 @@ package helpers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,20 +50,15 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
-	k8syaml "sigs.k8s.io/yaml"
 )
 
 const (
 	EventuallyWaitTimeout = 10 * time.Minute
 	NeverWaitTimeout      = 30 * time.Second
 	WaitInterval          = 5 * time.Second
-
-	// NVSentinelNamespace is the default namespace where NVSentinel components are deployed
-	NVSentinelNamespace = "nvsentinel"
+	NVSentinelNamespace   = "nvsentinel"
 )
 
-// WaitForNodesCordonState waits for nodes with names specified in `nodeNames` to be either cordoned or uncrodoned based on `shouldCordon`. If `shouldCordon` is
-// true then the function will wait for nodes to be cordoned, else it will wait for nodes to be uncordoned
 func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, shouldCordon bool) {
 	require.Eventually(t, func() bool {
 		targetCount := len(nodeNames)
@@ -88,8 +82,6 @@ func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client,
 	}, EventuallyWaitTimeout, WaitInterval, "nodes should have cordon state %v", shouldCordon)
 }
 
-// CreateNamespace creates a new Kubernetes namespace with the specified `name`.
-// If the namespace already exists, it returns nil (idempotent operation).
 func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -108,7 +100,6 @@ func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 	return nil
 }
 
-// DeleteNamespace deletes the Kubernetes namespace with the specified `name` and waits for the deletion to complete.
 func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,11 +142,9 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 	currentLabelIndex := 0
 	prevLabelValue := ""
 
-	// Check the node's current label value before starting the watch to handle fast transitions
 	node, err := GetNodeByName(ctx, c, nodeName)
 	if err == nil {
 		if currentValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
-			// Find where this value is in the expected sequence
 			for i, expected := range labelValueSequence {
 				if currentValue == expected {
 					t.Logf("[LabelWatcher] Node %s already has label=%s (index %d), adjusting start position",
@@ -320,7 +309,6 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 	return nodeName
 }
 
-// GetNodeByName retrieves a Kubernetes node by its `nodeName` and returns the node object.
 func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.Node, error) {
 	var node v1.Node
 	err := c.Resources().Get(ctx, nodeName, "", &node)
@@ -331,7 +319,6 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 	return &node, nil
 }
 
-// DeletePod deletes a Kubernetes pod with the specified `podName` in the given `namespace`.
 func DeletePod(ctx context.Context, c klient.Client, namespace, podName string) error {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -386,10 +373,9 @@ func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, n
 			}
 		}
 		return false
-	}, 30*time.Second, 2*time.Second, "RebootNode CR should not be created for node %s", nodeName)
+	}, NeverWaitTimeout, WaitInterval, "RebootNode CR should not be created for node %s", nodeName)
 }
 
-// WaitForRebootNodeCR waits for a RebootNode custom resource to be created and completed for the node with the specified `nodeName` and returns the CR object.
 func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
 
@@ -429,7 +415,6 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 	return resultCR
 }
 
-// DeleteAllRebootNodesCRs deletes all RebootNode custom resources in the cluster
 func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) error {
 	rebootNodeList, err := listAllRebootNodes(ctx, c)
 	if err != nil {
@@ -444,7 +429,6 @@ func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) 
 	return nil
 }
 
-// DeleteRebootNodeCR deletes the specified RebootNode custom resource `rebootNode`.
 func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstructured.Unstructured) error {
 	err := c.Resources().Delete(ctx, rebootNode)
 	if err != nil {
@@ -454,7 +438,6 @@ func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstru
 	return nil
 }
 
-// GetAllNodesNames retrieves the names of all Kubernetes nodes in the cluster and returns them as a slice of strings.
 func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	var nodeList v1.NodeList
 	err := c.Resources().List(ctx, &nodeList, resources.WithLabelSelector("type=kwok"))
@@ -470,7 +453,6 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	return nodeNames, nil
 }
 
-// CreatePodsAndWaitTillRunning creates 8 GPU pods per node for each node specified in `nodeNames` using the provided `podTemplate` and waits for all pods to reach running state.
 func CreatePodsAndWaitTillRunning(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, podTemplate *v1.Pod) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -553,7 +535,6 @@ func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Cli
 	}
 }
 
-// NewGPUPodSpec creates a new GPU pod template in the specified `namespace` with the requested `gpuCount` resources.
 func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -584,7 +565,6 @@ func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 	}
 }
 
-// waitForPodRunning waits for the pod with the specified `podName` in the given `namespace` to reach running state.
 func waitForPodRunning(ctx context.Context, t *testing.T, c klient.Client, podName, namespace string) {
 	require.Eventually(t, func() bool {
 		isRunning, err := isPodRunning(ctx, c, namespace, podName)
@@ -597,7 +577,6 @@ func waitForPodRunning(ctx context.Context, t *testing.T, c klient.Client, podNa
 
 }
 
-// isPodRunning checks if the pod with the specified `podName` in the given `namespace` is in running state and returns the result.
 func isPodRunning(ctx context.Context, c klient.Client, namespace, podName string) (bool, error) {
 	var pod v1.Pod
 	err := c.Resources().Get(ctx, podName, namespace, &pod)
@@ -608,7 +587,6 @@ func isPodRunning(ctx context.Context, c klient.Client, namespace, podName strin
 	return pod.Status.Phase == v1.PodRunning, nil
 }
 
-// GetPodsOnNode returns all pods running on the specified node using field selector for efficient filtering
 func GetPodsOnNode(ctx context.Context, client *resources.Resources, nodeName string) ([]v1.Pod, error) {
 	var podList v1.PodList
 	err := client.List(ctx, &podList, resources.WithFieldSelector(fmt.Sprintf("spec.nodeName=%s", nodeName)))
@@ -727,19 +705,6 @@ func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace strin
 	return yamlData, nil
 }
 
-// UpdateConfigMapTOMLField updates a TOML ConfigMap using proper TOML parsing.
-// The modifier function receives the parsed config and can modify it before it's written back.
-//
-// Example usage:
-//
-//	err := UpdateConfigMapTOMLField(ctx, client, "fault-quarantine", "nvsentinel", "config.toml",
-//	    func(cfg *map[string]interface{}) error {
-//	        if cb, ok := (*cfg)["circuitBreaker"].(map[string]interface{}); ok {
-//	            cb["percentage"] = 40
-//	            cb["duration"] = "10m"
-//	        }
-//	        return nil
-//	    })
 func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name, namespace, tomlKey string,
 	modifier func(*T) error) error {
 
@@ -781,8 +746,6 @@ func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name,
 	return nil
 }
 
-// WaitForDeploymentRollout waits for a deployment rollout to complete.
-// This checks the same conditions as `kubectl rollout status` and verifies at least one pod is ready.
 func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client, name, namespace string) {
 	t.Logf("Waiting for rollout to complete for deployment %s/%s", namespace, name)
 
@@ -1140,7 +1103,6 @@ func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, n
 	t.Logf("Node %s has label %s=%s", nodeName, labelKey, expectedValue)
 }
 
-// AssertPodsNeverDeleted asserts that specified pods are never deleted within a timeout period
 func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Asserting %d pods in namespace %s are never deleted", len(podNames), namespace)
@@ -1158,7 +1120,6 @@ func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Cli
 	t.Logf("All %d pods remain running in namespace %s", len(podNames), namespace)
 }
 
-// WaitForPodsDeleted waits for all specified pods to be deleted from a namespace
 func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Waiting for %d pods to be deleted from namespace %s", len(podNames), namespace)
@@ -1176,7 +1137,6 @@ func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client,
 	t.Logf("All pods deleted from namespace %s", namespace)
 }
 
-// WaitForPodsRunning waits for all specified pods to reach running state
 func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Waiting for %d pods to be running in namespace %s", len(podNames), namespace)
@@ -1193,7 +1153,6 @@ func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client,
 	t.Logf("All %d pods running", len(podNames))
 }
 
-// DeletePodsByNames deletes multiple pods by their names from a namespace
 func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Deleting %d pods from namespace %s", len(podNames), namespace)
@@ -1299,52 +1258,4 @@ func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, pod
 	}()
 
 	return stopChan, readyChan
-}
-
-// ApplyKWOKStage applies a KWOK Stage resource from a YAML file.
-// KWOK Stages are used to customize the behavior of fake nodes and pods.
-// Reference: https://github.com/kubernetes-sigs/kwok/discussions/926
-func ApplyKWOKStage(ctx context.Context, t *testing.T, client klient.Client, filePath string) error {
-	t.Helper()
-
-	yamlContent, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read KWOK Stage file: %w", err)
-	}
-
-	// Use Kubernetes YAML library to convert YAML to JSON (avoids map[interface{}]interface{} issue)
-	jsonContent, err := k8syaml.YAMLToJSON(yamlContent)
-	if err != nil {
-		return fmt.Errorf("failed to convert YAML to JSON: %w", err)
-	}
-
-	// Unmarshal JSON into unstructured object
-	var stage unstructured.Unstructured
-	err = json.Unmarshal(jsonContent, &stage.Object)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal KWOK Stage JSON: %w", err)
-	}
-
-	// Clean up metadata that shouldn't be set during creation
-	stage.SetResourceVersion("")
-	stage.SetUID("")
-	stage.SetGeneration(0)
-	stage.SetCreationTimestamp(metav1.Time{})
-	stage.SetManagedFields(nil)
-
-	// Delete if it exists (for updates)
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(stage.GroupVersionKind())
-	existing.SetName(stage.GetName())
-	existing.SetNamespace(stage.GetNamespace())
-	_ = client.Resources().Delete(ctx, existing)
-
-	// Create the Stage
-	err = client.Resources().Create(ctx, &stage)
-	if err != nil {
-		return fmt.Errorf("failed to create KWOK Stage: %w", err)
-	}
-
-	t.Logf("Applied KWOK Stage: %s", stage.GetName())
-	return nil
 }

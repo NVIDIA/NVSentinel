@@ -94,7 +94,7 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	return ctx, testCtx
 }
 
-func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.Client, nodeName, namespace string) ([]string, string) {
+func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.Client, nodeName, namespace string) []string {
 	t.Helper()
 
 	SendHealthyEvent(ctx, t, nodeName)
@@ -106,11 +106,11 @@ func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.C
 	event := NewHealthEvent(nodeName).
 		WithErrorCode("79").
 		WithMessage("GPU Fallen off the bus")
-	tempFile := SendHealthEvent(ctx, t, event)
+	SendHealthEvent(ctx, t, event)
 
 	WaitForNodeLabel(ctx, t, client, nodeName, statemanager.NVSentinelStateLabelKey, DrainingLabelValue)
 
-	return podNames, tempFile
+	return podNames
 }
 
 func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {

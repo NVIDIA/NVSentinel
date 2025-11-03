@@ -161,8 +161,6 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 	return tempFile.Name(), nil
 }
 
-// SendHealthEventWithTemplate sends a health event and returns the temp file path.
-// The caller is responsible for cleaning up the temp file with defer os.Remove(tempFile).
 func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (string, error) {
 	tempFile, err := event.WriteToTempFile()
 	if err != nil {
@@ -178,13 +176,15 @@ func SendHealthEventWithTemplate(nodeName string, event *HealthEventTemplate) (s
 	return tempFile, nil
 }
 
-// SendHealthEventsToNodes sends health events from the specified `eventFilePath` to all nodes listed in `nodeNames` concurrently.
 func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
 	eventData, err := os.ReadFile(eventFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to read health event file %s: %w", eventFilePath, err)
 	}
+	return sendHealthEventData(nodeNames, eventData)
+}
 
+func sendHealthEventData(nodeNames []string, eventData []byte) error {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -223,19 +223,22 @@ func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
 	return errors.Join(errs...)
 }
 
-// SendHealthEvent is a test helper that sends a health event with logging and automatic error handling.
-// Returns the temp file path that the caller should clean up with defer os.Remove(tempFile).
-func SendHealthEvent(ctx context.Context, t *testing.T, event *HealthEventTemplate) string {
+func SendHealthEvent(ctx context.Context, t *testing.T, event *HealthEventTemplate) {
+	t.Helper()
 	t.Logf("Sending health event to node %s: checkName=%s, isFatal=%v",
 		event.NodeName, event.CheckName, event.IsFatal)
-	tempFile, err := SendHealthEventWithTemplate(event.NodeName, event)
+
+	eventData, err := json.MarshalIndent(event, "", "    ")
 	require.NoError(t, err)
+
+	err = sendHealthEventData([]string{event.NodeName}, eventData)
+	require.NoError(t, err)
+
 	t.Logf("Health event sent successfully")
-	return tempFile
 }
 
-// SendHealthyEvent sends a generic healthy event to clear any health issues on a node.
 func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
+	t.Helper()
 	t.Logf("Sending generic healthy event to node %s", nodeName)
 	event := NewHealthEvent(nodeName).
 		WithHealthy(true).
@@ -246,6 +249,5 @@ func SendHealthyEvent(ctx context.Context, t *testing.T, nodeName string) {
 
 	event.ErrorCode = nil
 
-	tempFile := SendHealthEvent(ctx, t, event)
-	defer os.Remove(tempFile)
+	SendHealthEvent(ctx, t, event)
 }

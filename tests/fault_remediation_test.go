@@ -68,7 +68,7 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 				t.Logf("Waiting for stable CR count, currently: %d", len(crList))
 			}
 			return false
-		}, 30*time.Second, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
+		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "should have exactly the original CR, no duplicates")
 
 		return ctx
 	})

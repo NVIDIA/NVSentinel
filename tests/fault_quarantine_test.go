@@ -16,7 +16,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"tests/helpers"
 
@@ -46,8 +45,7 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithCheckName("UnknownCheck").
 			WithErrorCode("999")
-		tempFile := helpers.SendHealthEvent(ctx, t, event)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
 			ExpectCordoned:   false,
@@ -77,8 +75,7 @@ func TestManualUncordonBehavior(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile := helpers.SendHealthEvent(newCtx, t, event)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(newCtx, t, event)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
@@ -194,9 +191,7 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testCtx.NodeName, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		t.Log("Waiting for FQ to add its taint to pre-cordoned node")
 		require.Eventually(t, func() bool {
@@ -359,9 +354,7 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		event := helpers.NewHealthEvent(testNodeIgnored).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testNodeIgnored, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.AssertNodeNeverQuarantined(ctx, t, client, testNodeIgnored, true)
 
@@ -375,9 +368,7 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		event := helpers.NewHealthEvent(testNodeProcessed).
 			WithErrorCode("79").
 			WithMessage("XID error occurred")
-		tempFile, err := helpers.SendHealthEventWithTemplate(testNodeProcessed, event)
-		require.NoError(t, err)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.AssertQuarantineState(ctx, t, client, testNodeProcessed, helpers.QuarantineAssertion{
 			ExpectTaint: &v1.Taint{
@@ -396,19 +387,17 @@ func TestManagedByNVSentinelLabel(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		tempFile1 := helpers.SendHealthEvent(ctx, t,
+		helpers.SendHealthEvent(ctx, t,
 			helpers.NewHealthEvent(testNodeIgnored).
 				WithHealthy(true).
 				WithFatal(false).
 				WithMessage("No Health Failures"))
-		defer os.Remove(tempFile1)
 
-		tempFile2 := helpers.SendHealthEvent(ctx, t,
+		helpers.SendHealthEvent(ctx, t,
 			helpers.NewHealthEvent(testNodeProcessed).
 				WithHealthy(true).
 				WithFatal(false).
 				WithMessage("No Health Failures"))
-		defer os.Remove(tempFile2)
 
 		require.Eventually(t, func() bool {
 			node, err := helpers.GetNodeByName(ctx, client, testNodeProcessed)

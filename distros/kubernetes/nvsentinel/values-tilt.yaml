@@ -104,6 +104,14 @@ mongodb-store:
 fault-quarantine:
   logLevel: debug
 
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        topologyKey: kubernetes.io/hostname
+
 fault-remediation:
   logLevel: debug
 

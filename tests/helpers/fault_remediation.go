@@ -16,7 +16,6 @@ package helpers
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -177,8 +176,7 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 		WithErrorCode("79").
 		WithMessage("XID 79 fatal error").
 		WithRecommendedAction(recommendedAction)
-	tempFile1 := SendHealthEvent(ctx, t, fatalEvent)
-	defer os.Remove(tempFile1)
+	SendHealthEvent(ctx, t, fatalEvent)
 
 	t.Log("Step 2: Wait for node to be cordoned (quarantined)")
 	require.Eventually(t, func() bool {

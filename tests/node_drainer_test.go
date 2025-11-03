@@ -16,7 +16,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"tests/helpers"
 	"time"
@@ -38,9 +37,6 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		err = helpers.ApplyKWOKStage(ctx, t, client, "data/kwok-pod-delete-respect-finalizers.yaml")
 		require.NoError(t, err)
 
 		var newCtx context.Context
@@ -82,8 +78,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		event := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("GPU Fallen off the bus")
-		tempFile := helpers.SendHealthEvent(ctx, t, event)
-		defer os.Remove(tempFile)
+		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
 
@@ -150,8 +145,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		podNames, tempFile := helpers.ResetNodeAndTriggerDrain(ctx, t, client, testCtx.NodeName, "allowcompletion-test")
-		defer os.Remove(tempFile)
+		podNames := helpers.ResetNodeAndTriggerDrain(ctx, t, client, testCtx.NodeName, "allowcompletion-test")
 
 		restartTime := time.Now()
 		err = helpers.RestartDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
