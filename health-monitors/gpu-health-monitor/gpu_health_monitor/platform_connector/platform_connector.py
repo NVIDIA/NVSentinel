@@ -278,10 +278,20 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         metrics.health_events_insertion_to_uds_error.set(1.0)
         # Remove failed health events from entity cache
         for health_event in health_events:
-            for entity in health_event.entitiesImpacted:
-                cache_key = self._build_cache_key(health_event.checkName, entity.entityType, entity.entityValue)
+            if health_event.checkName == "GpuDcgmConnectivityFailure":
+                # Explicitly handle DCGM connectivity events
+                cache_key = self._build_cache_key(health_event.checkName, "DCGM", "ALL")
                 if cache_key in self.entity_cache:
                     del self.entity_cache[cache_key]
+                    log.info(f"Removed DCGM connectivity event from cache after send failure: {cache_key}")
+            elif len(health_event.entitiesImpacted) > 0:
+                for entity in health_event.entitiesImpacted:
+                    cache_key = self._build_cache_key(health_event.checkName, entity.entityType, entity.entityValue)
+                    if cache_key in self.entity_cache:
+                        del self.entity_cache[cache_key]
+            else:
+                # Ideally should not come here, but just in case added a warning.
+                log.warning(f"Unknown system-level event with empty entities detected: {health_event.checkName}")
         return False
 
     def dcgm_connectivity_failed(self):

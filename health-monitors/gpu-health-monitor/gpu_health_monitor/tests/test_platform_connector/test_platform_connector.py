@@ -537,3 +537,169 @@ class TestPlatformConnectors(unittest.TestCase):
         assert restored_event.recommendedAction == platformconnector_pb2.NONE
 
         server.stop(0)
+
+    def test_event_retry_and_cache_cleanup_when_platform_connector_down(self):
+        """Test when platform connector goes down and comes back up."""
+        import tempfile
+        import os
+
+        original_max_retries = platform_connector.MAX_RETRIES
+        original_initial_delay = platform_connector.INITIAL_DELAY
+        platform_connector.MAX_RETRIES = 3
+        platform_connector.INITIAL_DELAY = 1
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+
+        try:
+            watcher = dcgm.DCGMWatcher(
+                addr="localhost:5555",
+                poll_interval_seconds=10,
+                callbacks=[],
+                dcgm_k8s_service_enabled=False,
+            )
+            gpu_serials = {0: "1650924060039"}
+            exit = Event()
+
+            dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
+            dcgm_health_conditions_categorization_mapping_config = {
+                "DCGM_HEALTH_WATCH_INFOROM": "Fatal",
+                "DCGM_HEALTH_WATCH_THERMAL": "NonFatal",
+                "DCGM_HEALTH_WATCH_POWER": "NonFatal",
+                "DCGM_HEALTH_WATCH_NVLINK": "Fatal",
+                "DCGM_HEALTH_WATCH_SM": "Fatal",
+                "DCGM_HEALTH_WATCH_MEM": "Fatal",
+                "DCGM_HEALTH_WATCH_MCU": "Fatal",
+                "DCGM_HEALTH_WATCH_DRIVER": "Fatal",
+                "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": "Fatal",
+                "DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL": "NonFatal",
+                "DCGM_HEALTH_WATCH_PCIE": "Fatal",
+                "DCGM_HEALTH_WATCH_PMU": "Fatal",
+                "DCGM_HEALTH_WATCH_CPUSET": "NonFatal",
+                "DCGM_HEALTH_WATCH_NVSWITCH": "Fatal",
+            }
+
+            platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=socket_path,
+                node_name=node_name,
+                exit=exit,
+                dcgm_errors_info_dict=dcgm_errors_info_dict,
+                state_file_path=state_file_path,
+                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+            )
+
+            # Verify cache is empty initially
+            assert len(platform_connector_processor.entity_cache) == 0
+
+            # Test 1: DCGM Connectivity Failure (system-level event, no entities)
+            # This tests the cache cleanup path: if checkName == "GpuDcgmConnectivityFailure"
+            platform_connector_processor.dcgm_connectivity_failed()
+            dcgm_failure_cache_key = platform_connector_processor._build_cache_key(
+                "GpuDcgmConnectivityFailure", "DCGM", "ALL"
+            )
+            assert (
+                dcgm_failure_cache_key not in platform_connector_processor.entity_cache
+            ), "DCGM failure cache entry should be removed after send failure"
+
+            # Test 2: DCGM Connectivity Restored
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            platform_connector_processor.clear_dcgm_connectivity_failure(timestamp)
+            assert (
+                dcgm_failure_cache_key not in platform_connector_processor.entity_cache
+            ), "DCGM restored cache entry should be removed after send failure"
+
+            # Test 3: GPU Health Event (entity-specific event)
+            # This tests the cache cleanup path: elif len(entitiesImpacted) > 0
+            dcgm_health_events = watcher._get_health_status_dict()
+            dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    0: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CORRUPT_INFOROM",
+                        message="A corrupt InfoROM has been detected in GPU 0.",
+                    )
+                },
+            )
+            gpu_ids = [0]
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            gpu_health_cache_key = platform_connector_processor._build_cache_key("GpuInforomWatch", "GPU", "0")
+            assert (
+                gpu_health_cache_key not in platform_connector_processor.entity_cache
+            ), "GPU health cache entry should be removed after send failure"
+
+            # Platform connector comes UP - Start server
+            healthEventProcessor = PlatformConnectorServicer()
+            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+            platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+            server.add_insecure_port(f"unix://{socket_path}")
+            server.start()
+
+            # Retry DCGM Connectivity Failure
+            platform_connector_processor.dcgm_connectivity_failed()
+            time.sleep(1)
+            assert (
+                dcgm_failure_cache_key in platform_connector_processor.entity_cache
+            ), "DCGM failure cache entry should be present after successful send"
+            assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isFatal == True
+            assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isHealthy == False
+
+            # Verify DCGM failure event was sent
+            health_events = healthEventProcessor.health_events
+            dcgm_failure_event = None
+            for event in health_events:
+                if event.checkName == "GpuDcgmConnectivityFailure" and not event.isHealthy:
+                    dcgm_failure_event = event
+                    break
+            assert dcgm_failure_event is not None, "DCGM failure event should be sent"
+            assert dcgm_failure_event.isFatal == True
+            assert dcgm_failure_event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
+            assert dcgm_failure_event.entitiesImpacted == []
+
+            # Retry DCGM Connectivity Restored
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            platform_connector_processor.clear_dcgm_connectivity_failure(timestamp)
+            time.sleep(1)
+            assert (
+                platform_connector_processor.entity_cache[dcgm_failure_cache_key].isHealthy == True
+            ), "DCGM failure cache entry should be updated to healthy"
+
+            # Verify DCGM restored event was sent
+            health_events = healthEventProcessor.health_events
+            dcgm_restored_event = None
+            for event in health_events:
+                if event.checkName == "GpuDcgmConnectivityFailure" and event.isHealthy:
+                    dcgm_restored_event = event
+                    break
+            assert dcgm_restored_event is not None, "DCGM restored event should be sent"
+            assert dcgm_restored_event.isFatal == False
+            assert dcgm_restored_event.isHealthy == True
+
+            # Retry GPU Health Event
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            time.sleep(1)
+            assert (
+                gpu_health_cache_key in platform_connector_processor.entity_cache
+            ), "GPU health cache entry should be present after successful send"
+            assert platform_connector_processor.entity_cache[gpu_health_cache_key].isFatal == True
+            assert platform_connector_processor.entity_cache[gpu_health_cache_key].isHealthy == False
+
+            # Verify GPU health event was sent
+            health_events = healthEventProcessor.health_events
+            gpu_health_event = None
+            for event in health_events:
+                if event.checkName == "GpuInforomWatch" and not event.isHealthy:
+                    gpu_health_event = event
+                    break
+            assert gpu_health_event is not None, "GPU health event should be sent"
+            assert gpu_health_event.errorCode[0] == "DCGM_FR_CORRUPT_INFOROM"
+            assert gpu_health_event.entitiesImpacted[0].entityValue == "0"
+
+            server.stop(0)
+        finally:
+            platform_connector.MAX_RETRIES = original_max_retries
+            platform_connector.INITIAL_DELAY = original_initial_delay
+            if os.path.exists(state_file_path):
+                os.unlink(state_file_path)
