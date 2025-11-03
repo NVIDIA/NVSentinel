@@ -118,6 +118,18 @@ fault-quarantine:
 fault-remediation:
   logLevel: debug
 
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
+
+
 node-drainer:
   logLevel: debug
 
