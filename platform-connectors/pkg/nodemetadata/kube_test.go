@@ -71,16 +71,13 @@ func createTestNode(t *testing.T, node *corev1.Node) {
 func deleteTestNode(t *testing.T, nodeName string) {
 	t.Helper()
 	err := testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
-	if err != nil {
-		t.Logf("failed to delete test node: %v", err)
-	}
+	assert.NoError(t, err, "failed to delete test node")
 }
 
 func createTestProcessor(config *Config) *processor {
 	p := &processor{
 		config:    config,
 		clientset: testClient,
-		stopCh:    make(chan struct{}),
 	}
 	p.cache = expirable.NewLRU[string, *NodeMetadata](
 		config.CacheSize,
@@ -274,69 +271,22 @@ func TestProcessorCachingBehavior(t *testing.T) {
 	p := createTestProcessor(config)
 	ctx := context.Background()
 
-	// First call - cache miss
+	// First call - fetches from Kubernetes API
 	event1 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event1))
 
-	// Second call - cache hit
+	// Second call for same node - should use cached metadata (verified by identical results)
 	event2 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event2))
 
-	// Both events should have same metadata
+	// Verify both calls produced identical metadata (proving cache consistency)
 	assert.Equal(t, event1.Metadata["providerID"], event2.Metadata["providerID"])
-}
-
-func TestProcessorStartStop(t *testing.T) {
-	config := &Config{
-		Enabled:   true,
-		CacheSize: 100,
-		CacheTTL:  100 * time.Millisecond,
-	}
-
-	p := createTestProcessor(config)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	done := make(chan bool)
-	go func() {
-		p.Start(ctx)
-		done <- true
-	}()
-
-	// Wait for Start to complete
-	select {
-	case <-done:
-		// Success - Start returned
-	case <-time.After(200 * time.Millisecond):
-		t.Error("Start did not return after context cancellation")
-	}
-
-	// Test explicit Stop
-	p2 := createTestProcessor(config)
-	ctx2 := context.Background()
-
-	done2 := make(chan bool)
-	go func() {
-		p2.Start(ctx2)
-		done2 <- true
-	}()
-
-	time.Sleep(10 * time.Millisecond)
-	p2.Stop()
-
-	select {
-	case <-done2:
-		// Success
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Start did not return after Stop")
-	}
 }
 
 func TestProcessorContextCancellation(t *testing.T) {

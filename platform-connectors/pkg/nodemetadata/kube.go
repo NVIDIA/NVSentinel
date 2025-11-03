@@ -31,23 +31,19 @@ type processor struct {
 	clientset kubernetes.Interface
 	cache     *expirable.LRU[string, *NodeMetadata]
 	fetchMu   sync.Mutex
-	stopCh    chan struct{}
 }
 
-// newKubernetesProcessor creates a new Kubernetes-based node metadata processor.
-// This function is package-private and called by the factory.
-func newKubernetesProcessor(ctx context.Context, config *Config, params interface{}) (Processor, error) {
+func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+	if clientset == nil {
+		return nil, fmt.Errorf("clientset cannot be nil")
 	}
 
-	clientset, ok := params.(kubernetes.Interface)
-	if !ok {
-		return nil, fmt.Errorf("params must be kubernetes.Interface for Kubernetes processor")
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	cache := expirable.NewLRU[string, *NodeMetadata](
@@ -60,22 +56,14 @@ func newKubernetesProcessor(ctx context.Context, config *Config, params interfac
 		config:    config,
 		clientset: clientset,
 		cache:     cache,
-		stopCh:    make(chan struct{}),
 	}
 
 	slog.Info("Node metadata processor initialized",
-		"type", "kubernetes",
 		"cacheSize", config.CacheSize,
 		"cacheTTL", config.CacheTTL,
 		"allowedLabels", config.AllowedLabels)
 
 	return p, nil
-}
-
-// NewProcessor creates a new node metadata processor using an existing Kubernetes client.
-// Deprecated: Use ProcessorFactory.CreateProcessor instead.
-func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
-	return newKubernetesProcessor(ctx, config, clientset)
 }
 
 func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error {
@@ -102,8 +90,7 @@ func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEven
 		}
 	}
 
-	// Debug logging to verify metadata augmentation
-	slog.Info("✅ Node metadata augmented successfully",
+	slog.Info("Node metadata augmented successfully",
 		"nodeName", event.NodeName,
 		"providerID", metadata.ProviderID,
 		"labelsAdded", len(metadata.Labels),
@@ -112,7 +99,6 @@ func (p *processor) AugmentHealthEvent(ctx context.Context, event *pb.HealthEven
 	return nil
 }
 
-// Helper function to get metadata keys for logging
 func getMetadataKeys(metadata map[string]string) []string {
 	keys := make([]string, 0, len(metadata))
 	for k := range metadata {
@@ -121,8 +107,7 @@ func getMetadataKeys(metadata map[string]string) []string {
 	return keys
 }
 
-// getOrFetchMetadata retrieves metadata from cache or fetches it if not present.
-// Uses double-check pattern to prevent duplicate fetches.
+// Uses double-check locking pattern to prevent duplicate fetches under concurrent load.
 func (p *processor) getOrFetchMetadata(ctx context.Context, nodeName string) (*NodeMetadata, error) {
 	if metadata, found := p.cache.Get(nodeName); found {
 		return metadata, nil
@@ -131,7 +116,6 @@ func (p *processor) getOrFetchMetadata(ctx context.Context, nodeName string) (*N
 	p.fetchMu.Lock()
 	defer p.fetchMu.Unlock()
 
-	// Double-check: another goroutine might have fetched while we waited
 	if metadata, found := p.cache.Get(nodeName); found {
 		return metadata, nil
 	}
@@ -166,25 +150,3 @@ func (p *processor) fetchNodeMetadata(ctx context.Context, nodeName string) (*No
 
 	return metadata, nil
 }
-
-// Start initializes background tasks.
-// Originally needed for a custom cache that required background cleanup.
-// Now with hashicorp LRU, it's not strictly necessary, but kept to match
-// the lifecycle pattern used by other connectors in main.go.
-func (p *processor) Start(ctx context.Context) {
-	slog.Info("Node metadata processor started (cache handles TTL automatically)")
-
-	select {
-	case <-p.stopCh:
-		slog.Info("Stopping node metadata processor")
-		return
-	case <-ctx.Done():
-		slog.Info("Context cancelled, stopping node metadata processor")
-		return
-	}
-}
-
-func (p *processor) Stop() {
-	close(p.stopCh)
-}
-

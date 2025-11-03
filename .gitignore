@@ -426,6 +426,9 @@ terraform.rc
 digests.txt
 images.json
 
+# Downloaded binaries
+kubelogin*.zip
+
 # Binary files
 fault-quarantine/fault-quarantine
 fault-remediation/fault-remediation

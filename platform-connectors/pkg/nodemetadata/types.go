@@ -22,11 +22,8 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-// Processor augments health events with node metadata.
 type Processor interface {
 	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
-	Start(ctx context.Context)
-	Stop()
 }
 
 type NodeMetadata struct {

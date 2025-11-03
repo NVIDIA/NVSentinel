@@ -105,11 +105,9 @@ func initializeK8sConnector(
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 
-	// Initialize node metadata processor with the clientset
 	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
 	if err != nil {
 		slog.Warn("Failed to initialize node metadata processor, continuing without augmentation", "error", err)
-		// Continue without processor - augmentation is optional
 	}
 
 	return k8sRingBuffer, processor, nil
@@ -148,20 +146,7 @@ func initializeNodeMetadataProcessor(
 		return nil, nil
 	}
 
-	if clientset == nil {
-		slog.Warn("Node metadata augmentation enabled but K8s connector is disabled, skipping")
-
-		return nil, nil
-	}
-
-	// Use factory pattern to create processor
-	factory := nodemetadata.NewProcessorFactory()
-	processor, err := factory.CreateProcessor(
-		ctx,
-		nodemetadata.ProcessorTypeKubernetes,
-		cfg,
-		clientset,
-	)
+	processor, err := nodemetadata.NewProcessor(ctx, cfg, clientset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
 	}
@@ -235,10 +220,6 @@ func cleanupResources(
 	storeConnector *store.MongoDbStoreConnector,
 	processor nodemetadata.Processor,
 ) error {
-	if processor != nil {
-		processor.Stop()
-	}
-
 	if lis != nil {
 		if k8sRingBuffer != nil {
 			k8sRingBuffer.ShutDownHealthMetricQueue()
@@ -330,13 +311,6 @@ func run() error {
 		return nil
 	})
 
-	if processor != nil {
-		g.Go(func() error {
-			processor.Start(gCtx)
-			return nil
-		})
-	}
-
 	g.Go(func() error {
 		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -368,5 +342,3 @@ func run() error {
 
 	return g.Wait()
 }
-
-// Trigger rebuild for MongoDB serialization fix - 1762118253
