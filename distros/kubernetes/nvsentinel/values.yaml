@@ -23,35 +23,25 @@ global:
   affinity: {}
   systemNodeSelector: {}
   systemNodeTolerations: []
-  
   imagePullSecrets: []
-
   gpuHealthMonitor:
     enabled: true
-
   healthEventsAnalyzer:
     enabled: false
-
   faultQuarantine:
     enabled: false
-
   nodeDrainer:
     enabled: false
-
   faultRemediation:
     enabled: false
   janitor:
     enabled: false
-
   cspHealthMonitor:
     enabled: false
-
   syslogHealthMonitor:
     enabled: true
-
   labeler:
     enabled: true
-
   inclusterFileServer:
     enabled: false
     metricsPort: 9001
@@ -73,6 +63,8 @@ platformConnector:
       cpu: 200m
       memory: 512Mi
 
+  podAnnotations: {}
+  
   k8sConnector:
     enabled: true
     qps: 5.0
