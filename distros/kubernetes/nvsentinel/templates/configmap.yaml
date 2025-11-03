@@ -25,4 +25,12 @@ data:
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
       "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}"
+      {{- if .Values.platformConnector.nodeMetadata }}
+      ,"nodeMetadataAugmentationEnabled": "{{ .Values.platformConnector.nodeMetadata.enabled }}"
+      ,"nodeMetadataCacheSize": {{ .Values.platformConnector.nodeMetadata.cacheSize }}
+      ,"nodeMetadataCacheTTLSeconds": {{ .Values.platformConnector.nodeMetadata.cacheTTLSeconds }}
+      {{- with .Values.platformConnector.nodeMetadata.allowedLabels }}
+      ,"nodeMetadataAllowedLabels": {{ . | toJson }}
+      {{- end }}
+      {{- end }}
     }

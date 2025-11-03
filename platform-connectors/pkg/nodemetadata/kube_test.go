@@ -1,0 +1,487 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package nodemetadata
+
+import (
+	"context"
+	"log"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+)
+
+var (
+	testClient *kubernetes.Clientset
+	testEnv    *envtest.Environment
+)
+
+// TestMain sets up envtest environment for all tests
+// To run tests, use: make test
+// Or manually: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+func TestMain(m *testing.M) {
+	testEnv = &envtest.Environment{}
+
+	cfg, err := testEnv.Start()
+	if err != nil {
+		log.Fatalf("Failed to start test environment: %v", err)
+	}
+
+	testClient, err = kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create test client: %v", err)
+	}
+
+	code := m.Run()
+
+	if err := testEnv.Stop(); err != nil {
+		log.Printf("Failed to stop test environment: %v", err)
+	}
+
+	os.Exit(code)
+}
+
+func createTestNode(t *testing.T, node *corev1.Node) {
+	t.Helper()
+	_, err := testClient.CoreV1().Nodes().Create(context.Background(), node, metav1.CreateOptions{})
+	require.NoError(t, err, "failed to create test node")
+}
+
+func deleteTestNode(t *testing.T, nodeName string) {
+	t.Helper()
+	err := testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+	if err != nil {
+		t.Logf("failed to delete test node: %v", err)
+	}
+}
+
+func createTestProcessor(config *Config) *processor {
+	p := &processor{
+		config:    config,
+		clientset: testClient,
+		stopCh:    make(chan struct{}),
+	}
+	p.cache = expirable.NewLRU[string, *NodeMetadata](
+		config.CacheSize,
+		nil,
+		config.CacheTTL,
+	)
+	return p
+}
+
+// TestProcessorAugmentHealthEvent tests various augmentation scenarios
+func TestProcessorAugmentHealthEvent(t *testing.T) {
+	tests := []struct {
+		name           string
+		node           *corev1.Node
+		config         *Config
+		eventNodeName  string
+		existingMeta   map[string]string
+		expectError    bool
+		validateResult func(t *testing.T, event *pb.HealthEvent)
+	}{
+		{
+			name: "successful augmentation with labels",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node-1",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone":      "us-west-2a",
+						"topology.kubernetes.io/region":    "us-west-2",
+						"node.kubernetes.io/instance-type": "p4d.24xlarge",
+					},
+				},
+				Spec: corev1.NodeSpec{
+					ProviderID: "aws:///us-west-2a/i-1234567890abcdef0",
+				},
+			},
+			config: &Config{
+				Enabled:   true,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+				AllowedLabels: []string{
+					"topology.kubernetes.io/zone",
+					"topology.kubernetes.io/region",
+				},
+			},
+			eventNodeName: "test-node-1",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "aws:///us-west-2a/i-1234567890abcdef0", event.Metadata["providerID"])
+				assert.Equal(t, "us-west-2a", event.Metadata["topology.kubernetes.io/zone"])
+				assert.Equal(t, "us-west-2", event.Metadata["topology.kubernetes.io/region"])
+				assert.NotContains(t, event.Metadata, "node.kubernetes.io/instance-type", "should not include non-allowed labels")
+			},
+		},
+		{
+			name:          "empty node name",
+			node:          nil, // no node needed
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
+			eventNodeName: "",
+			expectError:   true,
+		},
+		{
+			name:          "node not found",
+			node:          nil, // no node created
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
+			eventNodeName: "non-existent-node",
+			expectError:   true,
+		},
+		{
+			name: "nil metadata initialization",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
+				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
+			},
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
+			eventNodeName: "test-node-2",
+			existingMeta:  nil, // explicitly nil
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotNil(t, event.Metadata)
+				assert.Equal(t, "aws:///us-west-2a/i-abc123", event.Metadata["providerID"])
+			},
+		},
+		{
+			name: "existing metadata preservation",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-3"},
+				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
+			},
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour},
+			eventNodeName: "test-node-3",
+			existingMeta:  map[string]string{"existing-key": "existing-value"},
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "existing-value", event.Metadata["existing-key"])
+				assert.Equal(t, "aws:///us-west-2a/i-def456", event.Metadata["providerID"])
+			},
+		},
+		{
+			name: "no provider ID",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node-4",
+					Labels: map[string]string{"test-label": "test-value"},
+				},
+				Spec: corev1.NodeSpec{}, // no provider ID
+			},
+			config: &Config{
+				Enabled:       true,
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"test-label"},
+			},
+			eventNodeName: "test-node-4",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotContains(t, event.Metadata, "providerID")
+				assert.Equal(t, "test-value", event.Metadata["test-label"])
+			},
+		},
+		{
+			name: "empty labels",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
+				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
+			},
+			config:        &Config{Enabled: true, CacheSize: 100, CacheTTL: 1 * time.Hour, AllowedLabels: []string{}},
+			eventNodeName: "test-node-5",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "aws:///us-west-2a/i-ghi789", event.Metadata["providerID"])
+				// No labels should be added
+				assert.Len(t, event.Metadata, 1) // only providerID
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create node if provided
+			if tt.node != nil {
+				createTestNode(t, tt.node)
+				defer deleteTestNode(t, tt.node.Name)
+			}
+
+			// Create processor
+			p := createTestProcessor(tt.config)
+
+			// Create event
+			ctx := context.Background()
+			event := &pb.HealthEvent{
+				NodeName: tt.eventNodeName,
+				Metadata: tt.existingMeta,
+			}
+			if event.Metadata == nil && !tt.expectError && tt.name != "nil metadata initialization" {
+				event.Metadata = make(map[string]string)
+			}
+
+			// Execute
+			err := p.AugmentHealthEvent(ctx, event)
+
+			// Assert error expectation
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			// Validate result if provided
+			if tt.validateResult != nil {
+				tt.validateResult(t, event)
+			}
+		})
+	}
+}
+
+func TestProcessorCachingBehavior(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache-test-node"},
+		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cache123"},
+	}
+
+	createTestNode(t, node)
+	defer deleteTestNode(t, node.Name)
+
+	config := &Config{
+		Enabled:   true,
+		CacheSize: 100,
+		CacheTTL:  1 * time.Hour,
+	}
+
+	p := createTestProcessor(config)
+	ctx := context.Background()
+
+	// First call - cache miss
+	event1 := &pb.HealthEvent{
+		NodeName: "cache-test-node",
+		Metadata: make(map[string]string),
+	}
+	require.NoError(t, p.AugmentHealthEvent(ctx, event1))
+
+	// Second call - cache hit
+	event2 := &pb.HealthEvent{
+		NodeName: "cache-test-node",
+		Metadata: make(map[string]string),
+	}
+	require.NoError(t, p.AugmentHealthEvent(ctx, event2))
+
+	// Both events should have same metadata
+	assert.Equal(t, event1.Metadata["providerID"], event2.Metadata["providerID"])
+}
+
+func TestProcessorStartStop(t *testing.T) {
+	config := &Config{
+		Enabled:   true,
+		CacheSize: 100,
+		CacheTTL:  100 * time.Millisecond,
+	}
+
+	p := createTestProcessor(config)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	done := make(chan bool)
+	go func() {
+		p.Start(ctx)
+		done <- true
+	}()
+
+	// Wait for Start to complete
+	select {
+	case <-done:
+		// Success - Start returned
+	case <-time.After(200 * time.Millisecond):
+		t.Error("Start did not return after context cancellation")
+	}
+
+	// Test explicit Stop
+	p2 := createTestProcessor(config)
+	ctx2 := context.Background()
+
+	done2 := make(chan bool)
+	go func() {
+		p2.Start(ctx2)
+		done2 <- true
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	p2.Stop()
+
+	select {
+	case <-done2:
+		// Success
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Start did not return after Stop")
+	}
+}
+
+func TestProcessorContextCancellation(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "context-test-node"},
+		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ctx123"},
+	}
+
+	createTestNode(t, node)
+	defer deleteTestNode(t, node.Name)
+
+	config := &Config{
+		Enabled:   true,
+		CacheSize: 100,
+		CacheTTL:  1 * time.Hour,
+	}
+
+	p := createTestProcessor(config)
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	event := &pb.HealthEvent{
+		NodeName: "context-test-node",
+		Metadata: make(map[string]string),
+	}
+
+	// Should handle cancelled context gracefully
+	err := p.AugmentHealthEvent(ctx, event)
+	// The error might be context cancelled or wrapped
+	if err != nil {
+		assert.Contains(t, err.Error(), "context")
+	}
+}
+
+func TestProcessorConcurrentAugmentations(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "concurrent-test-node",
+			Labels: map[string]string{
+				"test-label": "test-value",
+			},
+		},
+		Spec: corev1.NodeSpec{
+			ProviderID: "aws:///us-west-2a/i-concurrent123",
+		},
+	}
+
+	createTestNode(t, node)
+	defer deleteTestNode(t, node.Name)
+
+	config := &Config{
+		Enabled:       true,
+		CacheSize:     100,
+		CacheTTL:      1 * time.Hour,
+		AllowedLabels: []string{"test-label"},
+	}
+
+	p := createTestProcessor(config)
+	ctx := context.Background()
+
+	// Run concurrent augmentations
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			event := &pb.HealthEvent{
+				NodeName: "concurrent-test-node",
+				Metadata: make(map[string]string),
+			}
+			err := p.AugmentHealthEvent(ctx, event)
+			assert.NoError(t, err)
+			assert.Equal(t, "aws:///us-west-2a/i-concurrent123", event.Metadata["providerID"])
+			assert.Equal(t, "test-value", event.Metadata["test-label"])
+		}()
+	}
+
+	wg.Wait()
+}
+
+func TestNewProcessorValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		clientset   kubernetes.Interface
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "nil config",
+			config:      nil,
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "config cannot be nil",
+		},
+		{
+			name: "invalid config",
+			config: &Config{
+				Enabled:   true,
+				CacheSize: 0, // invalid
+				CacheTTL:  1 * time.Hour,
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "invalid config",
+		},
+		{
+			name: "nil clientset",
+			config: &Config{
+				Enabled:   true,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+			},
+			clientset:   nil,
+			expectError: true,
+			errorMsg:    "clientset cannot be nil",
+		},
+		{
+			name: "valid processor",
+			config: &Config{
+				Enabled:   true,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+			},
+			clientset:   testClient,
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			processor, err := NewProcessor(context.Background(), tt.config, tt.clientset)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+				assert.Nil(t, processor)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, processor)
+			}
+		})
+	}
+}

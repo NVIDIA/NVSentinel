@@ -15,6 +15,7 @@
 global:
   dryRun: false
   kubeVersion: 1.31.0
+  installMongoDB: true
 
   nodeSelector: {}
   
@@ -157,3 +158,10 @@ csp-health-monitor:
   logLevel: debug
   quarantineTriggerEngine:
     logLevel: debug
+
+# Enable node metadata enrichment for testing
+platformConnector:
+  mongodbStore:
+    enabled: true  # Enable mongodb-store subchart deployment
+  nodeMetadata:
+    enabled: true

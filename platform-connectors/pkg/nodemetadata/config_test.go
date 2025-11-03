@@ -17,6 +17,9 @@ package nodemetadata
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewConfigFromMap(t *testing.T) {
@@ -29,15 +32,9 @@ func TestNewConfigFromMap(t *testing.T) {
 			name:   "default config (disabled)",
 			cfgMap: map[string]interface{}{},
 			validate: func(t *testing.T, cfg *Config) {
-				if cfg.Enabled {
-					t.Error("expected Enabled to be false")
-				}
-				if cfg.CacheSize != DefaultCacheSize {
-					t.Errorf("expected CacheSize %d, got %d", DefaultCacheSize, cfg.CacheSize)
-				}
-				if cfg.CacheTTL != DefaultCacheTTL {
-					t.Errorf("expected CacheTTL %v, got %v", DefaultCacheTTL, cfg.CacheTTL)
-				}
+				assert.False(t, cfg.Enabled)
+				assert.Equal(t, DefaultCacheSize, cfg.CacheSize)
+				assert.Equal(t, DefaultCacheTTL, cfg.CacheTTL)
 			},
 		},
 		{
@@ -46,9 +43,7 @@ func TestNewConfigFromMap(t *testing.T) {
 				"nodeMetadataAugmentationEnabled": "true",
 			},
 			validate: func(t *testing.T, cfg *Config) {
-				if !cfg.Enabled {
-					t.Error("expected Enabled to be true")
-				}
+				assert.True(t, cfg.Enabled)
 			},
 		},
 		{
@@ -57,9 +52,7 @@ func TestNewConfigFromMap(t *testing.T) {
 				"nodeMetadataCacheSize": float64(500),
 			},
 			validate: func(t *testing.T, cfg *Config) {
-				if cfg.CacheSize != 500 {
-					t.Errorf("expected CacheSize 500, got %d", cfg.CacheSize)
-				}
+				assert.Equal(t, 500, cfg.CacheSize)
 			},
 		},
 		{
@@ -68,10 +61,7 @@ func TestNewConfigFromMap(t *testing.T) {
 				"nodeMetadataCacheTTLSeconds": float64(3600),
 			},
 			validate: func(t *testing.T, cfg *Config) {
-				expected := 3600 * time.Second
-				if cfg.CacheTTL != expected {
-					t.Errorf("expected CacheTTL %v, got %v", expected, cfg.CacheTTL)
-				}
+				assert.Equal(t, 3600*time.Second, cfg.CacheTTL)
 			},
 		},
 		{
@@ -83,12 +73,8 @@ func TestNewConfigFromMap(t *testing.T) {
 				},
 			},
 			validate: func(t *testing.T, cfg *Config) {
-				if len(cfg.AllowedLabels) != 2 {
-					t.Errorf("expected 2 allowed labels, got %d", len(cfg.AllowedLabels))
-				}
-				if cfg.AllowedLabels[0] != "topology.kubernetes.io/zone" {
-					t.Errorf("unexpected allowed label: %s", cfg.AllowedLabels[0])
-				}
+				assert.Len(t, cfg.AllowedLabels, 2)
+				assert.Equal(t, "topology.kubernetes.io/zone", cfg.AllowedLabels[0])
 			},
 		},
 		{
@@ -103,18 +89,10 @@ func TestNewConfigFromMap(t *testing.T) {
 				},
 			},
 			validate: func(t *testing.T, cfg *Config) {
-				if !cfg.Enabled {
-					t.Error("expected Enabled to be true")
-				}
-				if cfg.CacheSize != 2000 {
-					t.Errorf("expected CacheSize 2000, got %d", cfg.CacheSize)
-				}
-				if cfg.CacheTTL != 7200*time.Second {
-					t.Errorf("expected CacheTTL 7200s, got %v", cfg.CacheTTL)
-				}
-				if len(cfg.AllowedLabels) != 2 {
-					t.Errorf("expected 2 allowed labels, got %d", len(cfg.AllowedLabels))
-				}
+				assert.True(t, cfg.Enabled)
+				assert.Equal(t, 2000, cfg.CacheSize)
+				assert.Equal(t, 7200*time.Second, cfg.CacheTTL)
+				assert.Len(t, cfg.AllowedLabels, 2)
 			},
 		},
 	}
@@ -122,9 +100,7 @@ func TestNewConfigFromMap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, err := NewConfigFromMap(tt.cfgMap)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			require.NoError(t, err)
 
 			tt.validate(t, cfg)
 		})
@@ -166,11 +142,10 @@ func TestConfigValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
-			if tt.expectErr && err == nil {
-				t.Error("expected validation error")
-			}
-			if !tt.expectErr && err != nil {
-				t.Errorf("unexpected validation error: %v", err)
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

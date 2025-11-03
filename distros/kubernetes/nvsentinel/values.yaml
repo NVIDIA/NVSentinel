@@ -21,54 +21,136 @@ global:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  
+  # Node selector for control plane components (platform-connectors, monitoring services)
+  # Used to schedule critical infrastructure components on specific nodes
   systemNodeSelector: {}
   systemNodeTolerations: []
+
+  # Enable dry-run mode across all components - operations are logged but not executed
+  dryRun: false
+
+  # Image pull secrets for accessing private container registries
+  # Must be created in the namespace before deploying NVSentinel
   imagePullSecrets: []
 
+  # Module enable/disable flags
   gpuHealthMonitor:
+    # Enable GPU health monitoring component
     enabled: true
+
   healthEventsAnalyzer:
+    # Enable health events analyzer component
     enabled: false
-  faultQuarantine:
+
+  faultQuarantineModule:
     enabled: false
-  nodeDrainer:
+
+  nodeDrainerModule:
     enabled: false
-  faultRemediation:
+
+  faultRemediationModule:
     enabled: false
+
   janitor:
+    # Enable janitor module
     enabled: false
+
   cspHealthMonitor:
+    # Enable CSP health monitor (for AWS, GCP, Azure maintenance notifications)
     enabled: false
+
   syslogHealthMonitor:
+    # Enable syslog health monitor
     enabled: true
+
   labeler:
+    # Enable labeler module
     enabled: true
+
   inclusterFileServer:
+    # Enable in-cluster file server for log collection
     enabled: false
+    # Prometheus metrics port for file server
     metricsPort: 9001
+    # Prometheus metrics port for cleanup service
     cleanupMetricsPort: 9002
+
   mongodbStore:
     enabled: false
 
 platformConnector:
   image:
+    # Container image repository for platform connector
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
     pullPolicy: IfNotPresent
-    tag: ""
 
+  # Resource limits and requests for platform connector pods
   resources:
     limits:
+      # Maximum CPU allocation
       cpu: 200m
+      # Maximum memory allocation
       memory: 512Mi
     requests:
+      # Requested CPU allocation
       cpu: 200m
+      # Requested memory allocation
       memory: 512Mi
 
-  podAnnotations: {}
+  # Security context for platform connector containers
+  securityContext:
+    # Run as root user (required for system-level operations)
+    runAsUser: 0
+    # Drop all Linux capabilities except those explicitly needed
+    capabilities:
+      drop:
+      - ALL
 
+  # MongoDB store configuration for platform connector
+  mongodbStore:
+    # Enable MongoDB store integration
+    enabled: false
+    # Path where MongoDB client certificates are mounted
+    clientCertMountPath: "/etc/ssl/mongo-client"
+
+  # Pod-level security context
+  podSecurityContext: {}
+
+  # DaemonSet update strategy (RollingUpdate or OnDelete)
+  updateStrategy: RollingUpdate
+  # Maximum percentage of unavailable pods during rolling updates
+  maxUnavailable: 5%
+
+  # Kubernetes connector configuration
   k8sConnector:
+    # Enable Kubernetes API integration
     enabled: true
+    # Query per second limit for Kubernetes API requests
     qps: 5.0
+    # Burst limit for Kubernetes API requests
     burst: 10
+
+  # Node metadata enrichment configuration
+  # Note: Defaults are provided for ease of use - users can enable with one setting change
+  nodeMetadata:
+    # Enable node metadata augmentation for health events
+    enabled: false
+    # LRU cache size for node metadata
+    cacheSize: 50
+    # Cache TTL in seconds (3600 = 1 hour)
+    cacheTTLSeconds: 3600
+    # Node labels to include in health events (defaults cover common use cases)
+    allowedLabels:
+      - "topology.kubernetes.io/zone"
+      - "topology.kubernetes.io/region"
+      - "node.kubernetes.io/instance-type"
+      - "nvidia.com/cuda.driver-version.major"
+      - "nvidia.com/cuda.driver-version.minor"
+      - "nvidia.com/cuda.driver-version.revision"
+      - "nvidia.com/cuda.driver-version.full"
+      - "nvidia.com/cuda.runtime-version.major"
+      - "nvidia.com/cuda.runtime-version.minor"
+      - "nvidia.com/cuda.runtime-version.full"
 
 socketPath: "/var/run/nvsentinel.sock"
