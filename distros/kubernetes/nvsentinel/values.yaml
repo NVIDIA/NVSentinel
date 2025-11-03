@@ -24,7 +24,7 @@ global:
   systemNodeSelector: {}
   systemNodeTolerations: []
   imagePullSecrets: []
-  
+
   gpuHealthMonitor:
     enabled: true
   healthEventsAnalyzer:
