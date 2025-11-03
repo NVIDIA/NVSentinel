@@ -642,14 +642,12 @@ func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []b
 		cm.ObjectMeta.Namespace = namespace
 	}
 
-	// Clean up metadata fields that shouldn't be set during creation
 	cm.ObjectMeta.ResourceVersion = ""
 	cm.ObjectMeta.UID = ""
 	cm.ObjectMeta.Generation = 0
 	cm.ObjectMeta.CreationTimestamp = metav1.Time{}
 	cm.ObjectMeta.ManagedFields = nil
 
-	// Delete the configmap if it exists (for updates)
 	existingCM := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cm.ObjectMeta.Name,
@@ -658,7 +656,6 @@ func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []b
 	}
 	_ = c.Resources().Delete(ctx, existingCM)
 
-	// Retry creation with backoff
 	backoff := retry.DefaultBackoff
 	backoff.Steps = 3
 	err = retry.OnError(backoff, apierrors.IsAlreadyExists, func() error {
@@ -685,7 +682,6 @@ func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath,
 	return createConfigMapFromBytes(ctx, c, content, name, namespace)
 }
 
-// BackupConfigMap backs up a configmap to memory and returns the YAML bytes.
 func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) ([]byte, error) {
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
