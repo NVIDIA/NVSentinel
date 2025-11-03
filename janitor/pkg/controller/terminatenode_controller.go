@@ -102,16 +102,19 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// Future enhancement: Could add CSP cancellation API call here if available
 
 			controllerutil.RemoveFinalizer(&terminateNode, TerminateNodeFinalizer)
+
 			if err := r.Update(ctx, &terminateNode); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
 	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(&terminateNode, TerminateNodeFinalizer) {
 		controllerutil.AddFinalizer(&terminateNode, TerminateNodeFinalizer)
+
 		if err := r.Update(ctx, &terminateNode); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -120,11 +123,13 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if terminateNode.Status.CompletionTime != nil {
 		logger.V(1).Info("terminatenode has completion time set, skipping reconcile",
 			"node", terminateNode.Spec.NodeName)
+
 		return ctrl.Result{}, nil
 	}
 
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
+
 	var result ctrl.Result
 
 	// Initialize conditions if not already set
@@ -160,7 +165,9 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Get the node to terminate
 	var node corev1.Node
+
 	nodeExists := true
+
 	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, &node); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Node is already deleted, which is the desired state
@@ -207,6 +214,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			if err := r.Delete(ctx, &node); err != nil {
 				logger.Error(err, "failed to delete node from kubernetes",
 					"node", node.Name)
+
 				return ctrl.Result{}, err
 			}
 
@@ -246,6 +254,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			})
 
 			metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
+
 			result = ctrl.Result{} // Don't requeue on timeout
 		default:
 			// Still waiting for terminate to complete
@@ -263,6 +272,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		// Check if signal was already sent (but terminate not in progress due to other issues)
 		signalAlreadySent := false
+
 		for _, condition := range terminateNode.Status.Conditions {
 			if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent &&
 				condition.Status == metav1.ConditionTrue {
@@ -283,12 +293,14 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			if r.Config.ManualMode {
 				// Check if manual mode condition is already set
 				isManualModeConditionSet := false
+
 				for _, condition := range terminateNode.Status.Conditions {
 					if condition.Type == janitordgxcnvidiacomv1alpha1.ManualModeConditionType {
 						isManualModeConditionSet = true
 						break
 					}
 				}
+
 				if !isManualModeConditionSet {
 					now := metav1.Now()
 					terminateNode.SetCondition(metav1.Condition{
@@ -300,8 +312,10 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					})
 					metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				}
+
 				logger.Info("manual mode enabled, janitor will not send terminate signal",
 					"node", node.Name)
+
 				result = ctrl.Result{}
 			} else {
 				// Send terminate signal via CSP
@@ -333,6 +347,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 				// Update status based on terminate result
 				var signalSentCondition metav1.Condition
+
 				if terminateErr == nil {
 					// Reset consecutive failures on success
 					terminateNode.Status.ConsecutiveFailures = 0
@@ -356,11 +371,14 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 						Message:            terminateErr.Error(),
 						LastTransitionTime: metav1.Now(),
 					}
+
 					terminateNode.SetCompletionTime()
 					// Don't requeue on failure
 					result = ctrl.Result{}
+
 					metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
 				}
+
 				terminateNode.SetCondition(signalSentCondition)
 			}
 		}
@@ -377,6 +395,7 @@ func isNodeNotReady(node *corev1.Node) bool {
 			return true
 		}
 	}
+
 	return false
 }
 

@@ -61,12 +61,12 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	)
 
 	podInformer := informerFactory.Core().V1().Pods().Informer()
+
 	err := podInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
 			NodeIndex:          NodeIndexFunc,
 			NamespaceNodeIndex: NamespaceNodeIndexFunc,
 		})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to add indexer: %w", err)
 	}
@@ -78,11 +78,11 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	)
 
 	eventInformer := eventInformerFactory.Core().V1().Events().Informer()
+
 	err = eventInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
 			NodeEventReasonIndex: NodeEventReasonIndexFunc,
 		})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to add event indexer: %w", err)
 	}
@@ -196,6 +196,7 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod) []*v1.Pod {
 		if pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed {
 			slog.Info("Ignoring completed pod %s in namespace %s on node %s (status: %s) during eviction check",
 				pod.Name, pod.Namespace, pod.Spec.NodeName, pod.Status.Phase)
+
 			continue
 		}
 
@@ -339,7 +340,9 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 						"node", pod.Spec.NodeName,
 						"error", err)
 					mu.Lock()
+
 					result = multierror.Append(result, fmt.Errorf("pod %s/%s: %w", pod.Namespace, pod.Name, err))
+
 					mu.Unlock()
 				}
 			} else {
@@ -407,8 +410,8 @@ func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason
 			eventCopy := existingEvent.DeepCopy()
 			eventCopy.Count++
 			eventCopy.LastTimestamp = now
-			_, err = eventsClient.Update(ctx, eventCopy, metav1.UpdateOptions{})
 
+			_, err = eventsClient.Update(ctx, eventCopy, metav1.UpdateOptions{})
 			if err != nil {
 				slog.Error("Failed to update event occurrence count", "error", err)
 				return fmt.Errorf("error in updating event occurrence count: %w", err)
@@ -570,7 +573,9 @@ func (i *Informers) forceDeletePods(ctx context.Context, pods []*v1.Pod) error {
 						"namespace", p.Namespace,
 						"error", err)
 					mu.Lock()
+
 					result = multierror.Append(result, fmt.Errorf("pod %s/%s: %w", p.Namespace, p.Name, err))
+
 					mu.Unlock()
 				}
 			} else {
@@ -678,7 +683,6 @@ func (i *Informers) checkIfPodsPresentInNamespaceAndNode(namespaces []string,
 
 	for _, namespace := range namespaces {
 		pods, err := i.FindEvictablePodsInNamespaceAndNode(namespace, nodeName)
-
 		if err != nil {
 			slog.Error("Failed to check namespace on node",
 				"namespace", namespace,

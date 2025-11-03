@@ -58,7 +58,6 @@ func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, 
 		cel.Variable(eventObjKey, cel.AnyType),
 		ext.Strings(),
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
@@ -136,7 +135,6 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 	}
 
 	program, err := env.Program(checkedAst)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile expression: %w", err)
 	}

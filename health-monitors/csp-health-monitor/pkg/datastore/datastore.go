@@ -393,8 +393,8 @@ func (s *MongoStore) GetLastProcessedEventTimestampByCSP(
 		"csp", cspNameForLog)
 
 	var latestEvent model.MaintenanceEvent
-	dbErr := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
 
+	dbErr := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
 	if dbErr != nil {
 		if errors.Is(dbErr, mongo.ErrNoDocuments) {
 			slog.Debug("No previous event timestamp found in datastore",

@@ -95,7 +95,6 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 	// Reboot the VM
 	_, err = vmssClient.BeginRestart(ctx, resourceGroup, vmName, instanceID, nil)
-
 	if err != nil {
 		logger.Error(err, fmt.Sprintf("Failed to send restart signal to node %s: %s", vmName, err))
 		return "", err
@@ -130,7 +129,6 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 
 	// Extract the resource group and VM name from the provider ID
 	resourceGroup, vmName, instanceID, err := parseAzureProviderID(providerID)
-
 	if err != nil {
 		logger.Error(err, "Failed to parse provider ID")
 		return false, err

@@ -93,6 +93,7 @@ func run() error {
 	go func() {
 		if err := components.EventWatcher.Start(ctx); err != nil {
 			slog.Error("Event watcher failed", "error", err)
+
 			criticalError <- err
 		}
 	}()

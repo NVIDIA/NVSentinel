@@ -402,8 +402,8 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 			"healthy", healthEvent.IsHealthy)
 
 		_, attemptErr := e.udsClient.HealthEventOccurredV1(ctx, healthEvents)
-		lastErr = attemptErr // Store the error from this attempt
 
+		lastErr = attemptErr // Store the error from this attempt
 		if attemptErr == nil {
 			slog.Debug("Successfully sent health event via UDS",
 				"node", healthEvent.NodeName,

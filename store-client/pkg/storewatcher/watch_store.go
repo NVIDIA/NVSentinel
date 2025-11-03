@@ -284,6 +284,7 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 						slog.Info("Failed to decode change stream event", "error", err)
 						continue
 					}
+
 					w.eventChannel <- event
 				} else if csErr != nil {
 					slog.Error("Failed to watch change stream", "error", csErr)
@@ -347,7 +348,6 @@ func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, last
 		filter,
 		options.Count().SetLimit(1000000),
 	)
-
 	if err != nil {
 		return 0, fmt.Errorf("failed to count unprocessed events with filter %v: %w", filter, err)
 	}

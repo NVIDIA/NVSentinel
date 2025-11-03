@@ -807,7 +807,6 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 
 		return false, fmt.Errorf("non-retryable error sending health event: %w", err)
 	})
-
 	if err != nil {
 		slog.Error("All retry attempts to send health event failed", "error", err)
 		return fmt.Errorf("failed all attempts to send health events: %w", err)

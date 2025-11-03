@@ -60,6 +60,7 @@ func (h *GPUFallenHandler) Close() {
 func (h *GPUFallenHandler) SetXIDWindow(window time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
 	h.xidWindow = window
 }
 
@@ -126,6 +127,7 @@ func (h *GPUFallenHandler) hasRecentXID(pciAddr string) bool {
 		if record, exists := h.recentXIDs[pciAddr]; exists && time.Since(record.timestamp) >= h.xidWindow {
 			delete(h.recentXIDs, pciAddr)
 		}
+
 		h.mu.Unlock()
 	}
 
@@ -152,6 +154,7 @@ func (h *GPUFallenHandler) cleanupExpiredXIDs(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.mu.Lock()
+
 			now := time.Now()
 			window := h.xidWindow // Read current window value
 
@@ -160,6 +163,7 @@ func (h *GPUFallenHandler) cleanupExpiredXIDs(ctx context.Context) {
 					delete(h.recentXIDs, pciAddr)
 				}
 			}
+
 			h.mu.Unlock()
 		}
 	}

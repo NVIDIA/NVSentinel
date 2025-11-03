@@ -306,6 +306,7 @@ func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *model.Health
 	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == nil {
 		slog.Warn("NodeQuarantined is nil, skipping metrics update",
 			"node", healthEventWithStatus.HealthEvent.NodeName)
+
 		return
 	}
 

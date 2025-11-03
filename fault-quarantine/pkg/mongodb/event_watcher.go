@@ -106,14 +106,17 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		err := w.watchEvents(ctx, watcher)
 		if err != nil {
 			slog.Error("MongoDB event watcher goroutine failed", "error", err)
+
 			watchDoneCh <- err
 		} else {
 			slog.Error("MongoDB event watcher goroutine exited unexpectedly, event processing has stopped")
+
 			watchDoneCh <- fmt.Errorf("event watcher channel closed unexpectedly")
 		}
 	}()
 
 	var watchErr error
+
 	select {
 	case <-ctx.Done():
 		slog.Info("Context cancelled, stopping MongoDB event watcher")
@@ -148,13 +151,14 @@ func (w *EventWatcher) watchEvents(ctx context.Context, watcher *storewatcher.Ch
 
 func (w *EventWatcher) processEvent(ctx context.Context, event bson.M) error {
 	healthEventWithStatus := model.HealthEventWithStatus{}
+
 	err := storewatcher.UnmarshalFullDocumentFromEvent(
 		event,
 		&healthEventWithStatus,
 	)
-
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("unmarshal_error").Inc()
+
 		return fmt.Errorf("failed to unmarshal event: %w", err)
 	}
 

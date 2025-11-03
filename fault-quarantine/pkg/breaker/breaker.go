@@ -184,15 +184,19 @@ func (b *slidingWindowBreaker) sumBuckets() int {
 // The method automatically trips the breaker if the threshold is exceeded.
 func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	b.mu.RLock()
+
 	if b.state == StateTripped {
 		b.mu.RUnlock()
+
 		return true, nil
 	}
+
 	b.mu.RUnlock()
 
 	totalNodes, err := b.getTotalNodesWithRetry(ctx)
 	if err != nil {
 		slog.Error("Failed to get total nodes after retries", "error", err)
+
 		return false, fmt.Errorf("failed to get total nodes after retries: %w", err)
 	}
 
@@ -204,10 +208,12 @@ func (b *slidingWindowBreaker) IsTripped(ctx context.Context) (bool, error) {
 	now := time.Now()
 
 	b.mu.Lock()
+
 	b.slideWindow(now)
 	recentCordonedNodes := b.sumBuckets()
 	threshold := int(math.Ceil(float64(totalNodes) * b.cfg.TripPercentage / 100))
 	shouldTrip := recentCordonedNodes >= threshold
+
 	b.mu.Unlock()
 
 	slog.Debug("Recent cordoned nodes status",
@@ -285,7 +291,6 @@ func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int,
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
-
 		if err != nil {
 			result = resultError
 			errorType = "api_error"
@@ -407,7 +412,6 @@ func (b *slidingWindowBreaker) calculateBackoffDelay(attempt int,
 func (b *slidingWindowBreaker) logRetriesExhausted(ctx context.Context, maxRetries int,
 	initialDelay, maxDelay time.Duration) error {
 	actualNodes, err := b.cfg.K8sClient.GetTotalNodes(ctx)
-
 	if err != nil {
 		slog.Error(
 			"Circuit breaker: All retry attempts exhausted; failed to get node count from Kubernetes API; pod will restart",

@@ -79,6 +79,7 @@ func (p *Processor) inheritState(ctx context.Context, event *model.MaintenanceEv
 	if event.NodeName == "" {
 		slog.Debug("Event missing NodeName; skipping inheritance",
 			"eventID", event.EventID)
+
 		return
 	}
 

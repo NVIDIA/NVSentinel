@@ -87,9 +87,10 @@ func startActiveMonitorAndLog(
 
 	go func() {
 		defer wg.Done()
-		slog.Info("Starting active monitor", "name", activeMonitor.GetName())
-		monitorErr := activeMonitor.StartMonitoring(ctx, eventChan)
 
+		slog.Info("Starting active monitor", "name", activeMonitor.GetName())
+
+		monitorErr := activeMonitor.StartMonitoring(ctx, eventChan)
 		if monitorErr != nil {
 			if !errors.Is(monitorErr, context.Canceled) && !errors.Is(monitorErr, context.DeadlineExceeded) {
 				metrics.CSPMonitorErrors.WithLabelValues(string(activeMonitor.GetName()), "runtime_error").Inc()

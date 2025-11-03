@@ -105,16 +105,19 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// Future enhancement: Could add CSP cancellation API call here if available
 
 			controllerutil.RemoveFinalizer(&rebootNode, RebootNodeFinalizer)
+
 			if err := r.Update(ctx, &rebootNode); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+
 		return ctrl.Result{}, nil
 	}
 
 	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(&rebootNode, RebootNodeFinalizer) {
 		controllerutil.AddFinalizer(&rebootNode, RebootNodeFinalizer)
+
 		if err := r.Update(ctx, &rebootNode); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -123,11 +126,13 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if rebootNode.Status.CompletionTime != nil {
 		logger.V(1).Info("rebootnode has completion time set, skipping reconcile",
 			"node", rebootNode.Spec.NodeName)
+
 		return ctrl.Result{}, nil
 	}
 
 	// Take a deep copy to compare against at the end
 	originalRebootNode := rebootNode.DeepCopy()
+
 	var result ctrl.Result
 
 	// Initialize conditions if not already set
@@ -174,7 +179,9 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// Check if csp reports the node is ready
 		cspReady := false
+
 		var nodeReadyErr error
+
 		if r.Config.ManualMode {
 			cspReady = true
 			nodeReadyErr = nil
@@ -203,6 +210,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// Check if kubernetes reports the node is ready.
 		kubernetesReady := false
+
 		for _, condition := range node.Status.Conditions {
 			if condition.Type == corev1.NodeReady {
 				kubernetesReady = condition.Status == corev1.ConditionTrue
@@ -226,6 +234,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			})
 
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusFailed, node.Name)
+
 			result = ctrl.Result{} // Don't requeue on failure
 		} else if cspReady && kubernetesReady {
 			logger.Info("node reached ready state post-reboot",
@@ -248,6 +257,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// Metrics and final result
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusSucceeded, node.Name)
 			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeReboot, time.Since(rebootNode.Status.StartTime.Time))
+
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(rebootNode.Status.StartTime.Time) > r.getRebootTimeout() {
 			logger.Error(nil, "node reboot timed out",
@@ -266,6 +276,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			})
 
 			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusFailed, node.Name)
+
 			result = ctrl.Result{} // Don't requeue on timeout
 		} else {
 			// Still waiting for reboot to complete
@@ -276,6 +287,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	} else {
 		// Check if signal was already sent (but reboot not in progress due to other issues)
 		signalAlreadySent := false
+
 		for _, condition := range rebootNode.Status.Conditions {
 			if condition.Type == janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent && condition.Status == metav1.ConditionTrue {
 				signalAlreadySent = true
@@ -293,12 +305,14 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		} else {
 			if r.Config.ManualMode {
 				isManualModeConditionSet := false
+
 				for _, condition := range rebootNode.Status.Conditions {
 					if condition.Type == janitordgxcnvidiacomv1alpha1.ManualModeConditionType {
 						isManualModeConditionSet = true
 						break
 					}
 				}
+
 				if !isManualModeConditionSet {
 					now := metav1.Now()
 					rebootNode.SetCondition(metav1.Condition{
@@ -310,8 +324,10 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					})
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusStarted, node.Name)
 				}
+
 				logger.Info("manual mode enabled, janitor will not send reboot signal",
 					"node", node.Name)
+
 				result = ctrl.Result{}
 			} else {
 				// Start the reboot process
@@ -342,6 +358,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 				// Update status based on reboot result
 				var signalSentCondition metav1.Condition
+
 				if rebootErr == nil {
 					// Reset consecutive failures on success
 					rebootNode.Status.ConsecutiveFailures = 0
@@ -365,11 +382,14 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 						Message:            rebootErr.Error(),
 						LastTransitionTime: metav1.Now(),
 					}
+
 					rebootNode.SetCompletionTime()
 					// Don't requeue on failure
 					result = ctrl.Result{}
+
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusFailed, node.Name)
 				}
+
 				rebootNode.SetCondition(signalSentCondition)
 			}
 		}

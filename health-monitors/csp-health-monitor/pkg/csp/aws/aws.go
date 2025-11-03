@@ -128,6 +128,7 @@ func NewClient(
 	)
 	if err != nil {
 		metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "aws_sdk_config_error").Inc()
+
 		return nil, fmt.Errorf("failed to load AWS SDK config for region %s: %w",
 			cfg.Region, err)
 	}
@@ -290,6 +291,7 @@ func (c *AWSClient) pollNewEvents(ctx context.Context,
 	eventChan chan<- model.MaintenanceEvent,
 	pollStartTime time.Time) error {
 	pollStart := time.Now()
+
 	defer func() {
 		metrics.CSPPollingDuration.WithLabelValues(string(model.CSPAWS)).Observe(time.Since(pollStart).Seconds())
 	}()
@@ -386,6 +388,7 @@ func (c *AWSClient) handleMaintenanceEvents(
 
 				wg.Done()
 			}()
+
 			c.processAWSHealthEvent(ctx, eventID, eventData, instanceIDs, eventChan)
 		}(eventID, event)
 	}
@@ -457,6 +460,7 @@ func (c *AWSClient) processSingleEntityForEvent(
 	}
 
 	metrics.MainEventsToNormalize.WithLabelValues(string(model.CSPAWS)).Inc()
+
 	select {
 	case eventChan <- *normalizedEvent:
 		slog.Info("Dispatched maintenance event",
@@ -632,6 +636,7 @@ func (c *AWSClient) pollActiveEvents(ctx context.Context, eventChan chan<- model
 		}
 
 		metrics.MainEventsToNormalize.WithLabelValues(string(model.CSPAWS)).Inc()
+
 		select {
 		case eventChan <- *normalizedEvent:
 			slog.Info("Dispatched maintenance event",
@@ -669,10 +674,10 @@ func (c *AWSClient) pollEventsAPI(ctx context.Context, startTime time.Time) ([]t
 			},
 		},
 	}
+
 	events, err := c.awsClient.DescribeEvents(ctx, &health.DescribeEventsInput{
 		Filter: filter,
 	})
-
 	if err != nil {
 		metrics.CSPAPIErrors.WithLabelValues(string(model.CSPAWS), "DescribeEvents_api_error").Inc()
 
@@ -701,7 +706,6 @@ func (c *AWSClient) checkStatusOfKnownEvents(ctx context.Context, activeEvent mo
 			EventArns: []string{activeEvent.Metadata["eventArn"]},
 		},
 	})
-
 	if err != nil {
 		return types.Event{}, "", fmt.Errorf("error querying AWS for known events: %w", err)
 	}

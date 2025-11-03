@@ -199,6 +199,7 @@ func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj interface{}) {
 	if !okOld || !okNew {
 		slog.Error("Update event: expected Node objects",
 			"oldType", fmt.Sprintf("%T", oldObj), "newType", fmt.Sprintf("%T", newObj))
+
 		return
 	}
 
@@ -208,7 +209,7 @@ func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj interface{}) {
 // detectAndHandleManualUncordon checks if a node was manually uncordoned and handles it
 func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node) bool {
 	// Check if node transitioned from unschedulable to schedulable
-	if !(oldNode.Spec.Unschedulable && !newNode.Spec.Unschedulable) {
+	if !oldNode.Spec.Unschedulable || newNode.Spec.Unschedulable {
 		return false
 	}
 

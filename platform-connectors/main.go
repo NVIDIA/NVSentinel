@@ -130,12 +130,14 @@ func startGRPCServer(ctx context.Context, socket string) (net.Listener, error) {
 	}
 
 	lc := &net.ListenConfig{}
+
 	lis, err := lc.Listen(ctx, "unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on unix socket %s: %w", socket, err)
 	}
 
 	var opts []grpc.ServerOption
+
 	grpcServer := grpc.NewServer(opts...)
 	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{})
 

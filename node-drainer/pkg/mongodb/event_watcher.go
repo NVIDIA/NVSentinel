@@ -149,6 +149,7 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
 		slog.Info("Skipping health event as it's already in terminal state",
 			slog.Any("event", healthEventWithStatus.HealthEvent))
+
 		return nil
 	}
 

@@ -89,14 +89,17 @@ type TerminateNodeList struct {
 func (t *TerminateNode) IsTerminateInProgress() bool {
 	terminateSignalSent := false
 	nodeNotTerminated := false
+
 	for _, condition := range t.Status.Conditions {
 		if condition.Type == TerminateNodeConditionSignalSent && condition.Status == metav1.ConditionTrue {
 			terminateSignalSent = true
 		}
+
 		if condition.Type == TerminateNodeConditionNodeTerminated && condition.Status != metav1.ConditionTrue {
 			nodeNotTerminated = true
 		}
 	}
+
 	return terminateSignalSent && nodeNotTerminated
 }
 
@@ -112,6 +115,7 @@ func (t *TerminateNode) SetInitialConditions() {
 		if condition.Type == TerminateNodeConditionSignalSent {
 			hasSignalSent = true
 		}
+
 		if condition.Type == TerminateNodeConditionNodeTerminated {
 			hasNodeTerminated = true
 		}
@@ -159,6 +163,7 @@ func (t *TerminateNode) SetCondition(newCondition metav1.Condition) {
 			t.Status.Conditions[i].LastTransitionTime = newCondition.LastTransitionTime
 			t.Status.Conditions[i].Reason = newCondition.Reason
 			t.Status.Conditions[i].Message = newCondition.Message
+
 			return
 		}
 	}

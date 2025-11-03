@@ -119,8 +119,8 @@ func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher Wat
 		return
 	}
 
-	nodeName := healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName
-	nodeQuarantined := healthEventWithStatus.HealthEventWithStatus.HealthEventStatus.NodeQuarantined
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined != nil && *nodeQuarantined == model.UnQuarantined {
 		r.handleUnquarantineEvent(ctx, nodeName, watcher)
@@ -138,6 +138,7 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 	if action == protos.RecommendedAction_NONE {
 		slog.Info("Skipping event for node: recommended action is NONE (no remediation needed)",
 			"node", nodeName)
+
 		return true
 	}
 
@@ -185,7 +186,7 @@ func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *protos.He
 func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStatus *HealthEventDoc) (bool, string) {
 	// Update state to "remediating"
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-		healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName,
+		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediatingLabelValue, false)
 	if err != nil {
 		slog.Error("Error updating node label to remediating", "error", err)
@@ -199,7 +200,7 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 	for i := 1; i <= r.Config.UpdateMaxRetries; i++ {
 		slog.Info("Handle event for node",
 			"attempt", i,
-			"node", healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName)
+			"node", healthEventWithStatus.HealthEvent.NodeName)
 
 		success, crName = r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventWithStatus)
 		if success {
@@ -218,7 +219,7 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 	}
 
 	_, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-		healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName,
+		healthEventWithStatus.HealthEvent.NodeName,
 		remediationLabelValue, false)
 	if err != nil {
 		slog.Error("Error updating node label",
@@ -260,7 +261,7 @@ func (r *Reconciler) handleRemediationEvent(
 	watcher WatcherInterface,
 	collection MongoInterface,
 ) {
-	healthEvent := healthEventWithStatus.HealthEventWithStatus.HealthEvent
+	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
 	r.runLogCollector(ctx, healthEvent)
@@ -425,6 +426,7 @@ func (r *Reconciler) checkExistingCRStatus(
 	if state == nil {
 		slog.Warn("Remediation state is nil for node, allowing CR creation",
 			"node", nodeName)
+
 		return true, "", nil
 	}
 

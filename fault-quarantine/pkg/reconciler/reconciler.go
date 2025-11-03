@@ -727,6 +727,7 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	if !r.eventMatchesAnyRule(event, ruleSetEvals) {
 		slog.Info("Unhealthy event on node doesn't match any rules, skipping annotation update",
 			"checkName", event.CheckName, "node", event.NodeName)
+
 		return true
 	}
 
@@ -768,6 +769,7 @@ func (r *Reconciler) handleQuarantinedNode(
 	if !hasExistingCheck {
 		slog.Debug("Received healthy event for untracked check %s on node %s (other checks may still be failing)",
 			event.CheckName, event.NodeName)
+
 		return true
 	}
 
@@ -789,6 +791,7 @@ func (r *Reconciler) handleQuarantinedNode(
 	if healthEventsAnnotationMap.IsEmpty() {
 		slog.Info("All health checks recovered for node, proceeding with uncordon",
 			"node", event.NodeName)
+
 		return r.performUncordon(ctx, event, annotations)
 	}
 
@@ -825,8 +828,8 @@ func (r *Reconciler) getHealthEventsFromAnnotation(
 
 	// Try to unmarshal as HealthEventsAnnotationMap first
 	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
-	err = json.Unmarshal([]byte(quarantineAnnotationStr), &healthEventsMap)
 
+	err = json.Unmarshal([]byte(quarantineAnnotationStr), &healthEventsMap)
 	if err != nil {
 		var singleHealthEvent protos.HealthEvent
 

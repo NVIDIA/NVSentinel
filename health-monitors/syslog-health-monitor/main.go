@@ -99,6 +99,7 @@ func run() error {
 
 	// Build gRPC dial options (mTLS can replace insecure credentials in production).
 	var dialOpts []grpc.DialOption
+
 	dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 	// Create gRPC client to platform connector with retries and per-attempt timeout.

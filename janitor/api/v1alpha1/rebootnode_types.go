@@ -90,14 +90,17 @@ type RebootNodeList struct {
 func (r *RebootNode) IsRebootInProgress() bool {
 	rebootSignalSent := false
 	nodeNotReady := false
+
 	for _, condition := range r.Status.Conditions {
 		if condition.Type == RebootNodeConditionSignalSent && condition.Status == metav1.ConditionTrue {
 			rebootSignalSent = true
 		}
+
 		if condition.Type == RebootNodeConditionNodeReady && condition.Status != metav1.ConditionTrue {
 			nodeNotReady = true
 		}
 	}
+
 	return rebootSignalSent && nodeNotReady
 }
 
@@ -107,6 +110,7 @@ func (r *RebootNode) GetCSPReqRef() string {
 			return condition.Message
 		}
 	}
+
 	return ""
 }
 
@@ -122,6 +126,7 @@ func (r *RebootNode) SetInitialConditions() {
 		if condition.Type == RebootNodeConditionSignalSent {
 			hasSignalSent = true
 		}
+
 		if condition.Type == RebootNodeConditionNodeReady {
 			hasNodeReady = true
 		}
@@ -169,6 +174,7 @@ func (r *RebootNode) SetCondition(newCondition metav1.Condition) {
 			r.Status.Conditions[i].LastTransitionTime = newCondition.LastTransitionTime
 			r.Status.Conditions[i].Reason = newCondition.Reason
 			r.Status.Conditions[i].Message = newCondition.Message
+
 			return
 		}
 	}

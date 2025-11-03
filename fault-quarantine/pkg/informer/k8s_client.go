@@ -126,6 +126,7 @@ func (c *FaultQuarantineClient) SetLabelKeys(cordonedReasonKey, uncordonedReason
 func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string, updateFn func(*v1.Node) error) error {
 	mu, _ := c.operationMutex.LoadOrStore(nodeName, &sync.Mutex{})
 	mu.(*sync.Mutex).Lock()
+
 	defer mu.(*sync.Mutex).Unlock()
 
 	return retry.OnError(retry.DefaultBackoff, errors.IsConflict, func() error {
