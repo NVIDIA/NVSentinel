@@ -126,22 +126,17 @@ if is_running_on_gcp && [ "${ENABLE_GCP_SOS_COLLECTION}" = "true" ]; then
   # Run SOS report on the host node via chroot (based on Google Cloud documentation)
   # https://cloud.google.com/container-optimized-os/docs/how-to/sosreport#cos-85-and-earlier
   SOS_SUCCESS=false
+  SOS_OUTPUT=""
   
   # Check which sos command is available on the host (COS 105+ uses 'sos report', COS 85 and earlier uses 'sosreport')
   if chroot /host bash -c "command -v sos" >/dev/null 2>&1; then
     echo "[INFO] Running sos report (COS 105 and later)..."
-    # Run sos report on the host filesystem
-    SOS_OUTPUT=$(chroot /host bash -c "sos report --all-logs --batch --tmp-dir=/var/tmp" 2>&1)
-    if [ $? -eq 0 ]; then
-      SOS_SUCCESS=true
-    fi
+    # Run sos report on the host filesystem and capture output
+    SOS_OUTPUT=$(chroot /host bash -c "sos report --all-logs --batch --tmp-dir=/var/tmp" 2>&1) && SOS_SUCCESS=true || true
   elif chroot /host bash -c "command -v sosreport" >/dev/null 2>&1; then
     echo "[INFO] Running sosreport (COS 85 and earlier)..."
-    # Run sosreport on the host filesystem
-    SOS_OUTPUT=$(chroot /host bash -c "sosreport --all-logs --batch --tmp-dir=/var/tmp" 2>&1)
-    if [ $? -eq 0 ]; then
-      SOS_SUCCESS=true
-    fi
+    # Run sosreport on the host filesystem and capture output
+    SOS_OUTPUT=$(chroot /host bash -c "sosreport --all-logs --batch --tmp-dir=/var/tmp" 2>&1) && SOS_SUCCESS=true || true
   else
     echo "[WARNING] Neither sos nor sosreport command found on the host node." >&2
     echo "[WARNING] SOS report collection will be skipped." >&2
