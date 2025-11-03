@@ -40,7 +40,7 @@ build_tools:
 
 # Go Development Tools
 go_tools:
-  golangci_lint: 'v1.64.8'
+  golangci_lint: 'v2.5.0'
   gotestsum: 'v1.13.0'
   gocover_cobertura: 'v1.4.0'
   setup_envtest: 'latest'

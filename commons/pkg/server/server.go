@@ -444,14 +444,17 @@ func (s *server) Serve(ctx context.Context) error {
 	}
 
 	// Create listener first so we can set running=true only after socket is bound
+	// Use ListenConfig with context for proper cancellation support
 	var (
 		listener net.Listener
 		err      error
 	)
 
+	lc := &net.ListenConfig{}
+
 	if s.tlsConfig != nil {
 		// For TLS, create a regular listener and wrap it with TLS
-		listener, err = net.Listen("tcp", srv.Addr)
+		listener, err = lc.Listen(ctx, "tcp", srv.Addr)
 		if err != nil {
 			return fmt.Errorf("failed to create listener: %w", err)
 		}
@@ -472,7 +475,7 @@ func (s *server) Serve(ctx context.Context) error {
 
 		slog.Info("starting TLS server", "addr", srv.Addr)
 	} else {
-		listener, err = net.Listen("tcp", srv.Addr)
+		listener, err = lc.Listen(ctx, "tcp", srv.Addr)
 		if err != nil {
 			return fmt.Errorf("failed to create listener: %w", err)
 		}

@@ -123,13 +123,14 @@ func initializeMongoDBConnector(
 	return storeConnector, nil
 }
 
-func startGRPCServer(socket string) (net.Listener, error) {
+func startGRPCServer(ctx context.Context, socket string) (net.Listener, error) {
 	err := os.Remove(socket)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
 	}
 
-	lis, err := net.Listen("unix", socket)
+	lc := &net.ListenConfig{}
+	lis, err := lc.Listen(ctx, "unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on unix socket %s: %w", socket, err)
 	}
@@ -242,7 +243,7 @@ func run() error {
 		return err
 	}
 
-	lis, err := startGRPCServer(*socket)
+	lis, err := startGRPCServer(ctx, *socket)
 	if err != nil {
 		return err
 	}

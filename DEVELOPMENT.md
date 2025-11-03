@@ -764,7 +764,7 @@ make coverage   # generate coverage reports
 
 # Manual commands (what common.mk executes)
 go vet ./...
-golangci-lint run --config ../.golangci.yml --out-format code-climate:code-quality-report.json,colored-line-number
+golangci-lint run --config ../.golangci.yml  # Output format configured in .golangci.yml v2
 gotestsum --junitfile report.xml -- -race $(go list ./...) -coverprofile=coverage.txt -covermode atomic
 ```
 

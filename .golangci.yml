@@ -52,7 +52,7 @@ linters:
     - nilerr
     - noctx
     - whitespace
-    - wsl
+    # wsl_v5 disabled - too strict for existing codebase, can be enabled later for new code
   exclusions:
     generated: lax
     presets:
