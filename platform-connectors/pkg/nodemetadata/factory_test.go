@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/kubernetes"
 )
 
 func TestNewProcessor(t *testing.T) {
@@ -28,13 +29,15 @@ func TestNewProcessor(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		platform    Platform
 		config      *Config
-		clientset   interface{}
+		clientset   kubernetes.Interface
 		expectError bool
 		errorMsg    string
 	}{
 		{
-			name: "successful processor creation",
+			name:     "successful kubernetes processor creation",
+			platform: PlatformKubernetes,
 			config: &Config{
 				Enabled:       true,
 				CacheSize:     100,
@@ -45,25 +48,24 @@ func TestNewProcessor(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "unsupported platform",
+			platform:    Platform("unsupported"),
+			config:      &Config{Enabled: true, CacheSize: 100, CacheTTL: time.Hour},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "unsupported platform",
+		},
+		{
 			name:        "nil config",
+			platform:    PlatformKubernetes,
 			config:      nil,
 			clientset:   testClient,
 			expectError: true,
 			errorMsg:    "config cannot be nil",
 		},
 		{
-			name: "nil clientset",
-			config: &Config{
-				Enabled:   true,
-				CacheSize: 100,
-				CacheTTL:  time.Hour,
-			},
-			clientset:   nil,
-			expectError: true,
-			errorMsg:    "clientset cannot be nil",
-		},
-		{
-			name: "invalid config",
+			name:     "invalid config",
+			platform: PlatformKubernetes,
 			config: &Config{
 				Enabled:   true,
 				CacheSize: 0,
@@ -77,14 +79,7 @@ func TestNewProcessor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var processor Processor
-			var err error
-
-			if tt.clientset == nil {
-				processor, err = NewProcessor(ctx, tt.config, nil)
-			} else {
-				processor, err = NewProcessor(ctx, tt.config, testClient)
-			}
+			processor, err := NewProcessor(ctx, tt.platform, tt.config, tt.clientset)
 
 			if tt.expectError {
 				require.Error(t, err)

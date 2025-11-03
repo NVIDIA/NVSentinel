@@ -16,12 +16,28 @@ package nodemetadata
 
 import (
 	"context"
-
+	"fmt"
 	"k8s.io/client-go/kubernetes"
 )
 
-// NewProcessor creates a node metadata processor.
-// Currently supports Kubernetes; can be extended for other platforms (e.g., Slurm) in the future.
-func NewProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
-	return newKubernetesProcessor(ctx, config, clientset)
+const (
+	PlatformKubernetes Platform = "kubernetes"
+	// Future platforms can be added here:
+	// PlatformSlurm Platform = "slurm"
+)
+
+// Platform defines the supported platforms for node metadata enrichment.
+type Platform string
+
+// NewProcessor creates a node metadata processor based on the platform type.
+func NewProcessor(ctx context.Context, platform Platform, config *Config, clientset kubernetes.Interface) (Processor, error) {
+	switch platform {
+	case PlatformKubernetes:
+		return newKubernetesProcessor(ctx, config, clientset)
+	// Future platforms can be added here:
+	// case PlatformSlurm:
+	//     return newSlurmProcessor(ctx, config, params)
+	default:
+		return nil, fmt.Errorf("unsupported platform: %s", platform)
+	}
 }

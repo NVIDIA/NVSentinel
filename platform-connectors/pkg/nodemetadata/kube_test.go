@@ -441,17 +441,6 @@ func TestNewProcessorValidation(t *testing.T) {
 			errorMsg:    "invalid config",
 		},
 		{
-			name: "nil clientset",
-			config: &Config{
-				Enabled:   true,
-				CacheSize: 100,
-				CacheTTL:  1 * time.Hour,
-			},
-			clientset:   nil,
-			expectError: true,
-			errorMsg:    "clientset cannot be nil",
-		},
-		{
 			name: "valid processor",
 			config: &Config{
 				Enabled:   true,
@@ -465,7 +454,7 @@ func TestNewProcessorValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			processor, err := NewProcessor(context.Background(), tt.config, tt.clientset)
+			processor, err := NewProcessor(context.Background(), PlatformKubernetes, tt.config, tt.clientset)
 
 			if tt.expectError {
 				assert.Error(t, err)

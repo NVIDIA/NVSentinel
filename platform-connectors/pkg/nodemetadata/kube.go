@@ -38,10 +38,6 @@ func newKubernetesProcessor(ctx context.Context, config *Config, clientset kuber
 		return nil, fmt.Errorf("config cannot be nil")
 	}
 
-	if clientset == nil {
-		return nil, fmt.Errorf("clientset cannot be nil")
-	}
-
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

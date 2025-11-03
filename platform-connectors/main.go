@@ -150,7 +150,7 @@ func initializeNodeMetadataProcessor(
 		return nil, nil
 	}
 
-	processor, err := nodemetadata.NewProcessor(ctx, cfg, clientset)
+	processor, err := nodemetadata.NewProcessor(ctx, nodemetadata.PlatformKubernetes, cfg, clientset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
 	}
