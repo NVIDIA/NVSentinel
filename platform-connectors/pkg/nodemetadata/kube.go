@@ -34,10 +34,6 @@ type processor struct {
 }
 
 func newKubernetesProcessor(ctx context.Context, config *Config, clientset kubernetes.Interface) (Processor, error) {
-	if config == nil {
-		return nil, fmt.Errorf("config cannot be nil")
-	}
-
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

@@ -90,6 +90,7 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 	tests := []struct {
 		name           string
 		node           *corev1.Node
+		nodes          []*corev1.Node
 		config         *Config
 		eventNodeName  string
 		existingMeta   map[string]string
@@ -209,10 +210,66 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 				assert.Len(t, event.Metadata, 1)
 			},
 		},
+		{
+			name: "multiple nodes enrichment",
+			nodes: []*corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "multi-test-node-1",
+						Labels: map[string]string{
+							"topology.kubernetes.io/zone": "us-west-2a",
+						},
+					},
+					Spec: corev1.NodeSpec{
+						ProviderID: "aws:///us-west-2a/i-test1",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "multi-test-node-2",
+						Labels: map[string]string{
+							"topology.kubernetes.io/zone": "us-west-2b",
+						},
+					},
+					Spec: corev1.NodeSpec{
+						ProviderID: "aws:///us-west-2b/i-test2",
+					},
+				},
+			},
+			config: &Config{
+				Enabled:       true,
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"topology.kubernetes.io/zone"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Handle multiple nodes test case
+			if tt.nodes != nil {
+				for _, node := range tt.nodes {
+					createTestNode(t, node)
+					defer deleteTestNode(t, node.Name)
+				}
+
+				p := createTestProcessor(tt.config)
+				ctx := context.Background()
+
+				for _, node := range tt.nodes {
+					event := &pb.HealthEvent{
+						NodeName: node.Name,
+						Metadata: make(map[string]string),
+					}
+					err := p.AugmentHealthEvent(ctx, event)
+					require.NoError(t, err)
+					assert.Equal(t, node.Spec.ProviderID, event.Metadata["providerID"])
+					assert.Equal(t, node.Labels["topology.kubernetes.io/zone"], event.Metadata["topology.kubernetes.io/zone"])
+				}
+				return
+			}
+
 			if tt.node != nil {
 				createTestNode(t, tt.node)
 				defer deleteTestNode(t, tt.node.Name)
@@ -251,7 +308,6 @@ func TestProcessorCachingBehavior(t *testing.T) {
 	}
 
 	createTestNode(t, node)
-	defer deleteTestNode(t, node.Name)
 
 	config := &Config{
 		Enabled:   true,
@@ -267,14 +323,18 @@ func TestProcessorCachingBehavior(t *testing.T) {
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event1))
+	assert.NotEmpty(t, event1.Metadata["providerID"])
 
-	// Second call for same node - verify cache returns consistent results
+	// Delete node to prove second call uses cache (not API)
+	deleteTestNode(t, node.Name)
+
 	event2 := &pb.HealthEvent{
 		NodeName: "cache-test-node",
 		Metadata: make(map[string]string),
 	}
 	require.NoError(t, p.AugmentHealthEvent(ctx, event2))
 
+	// If cache wasn't used, this would fail because node is deleted
 	assert.Equal(t, event1.Metadata["providerID"], event2.Metadata["providerID"])
 }
 
@@ -354,66 +414,6 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 	wg.Wait()
 }
 
-func TestProcessorMultipleNodesEnrichment(t *testing.T) {
-	nodes := []*corev1.Node{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "multi-test-node-1",
-				Labels: map[string]string{
-					"topology.kubernetes.io/zone": "us-west-2a",
-				},
-			},
-			Spec: corev1.NodeSpec{
-				ProviderID: "aws:///us-west-2a/i-test1",
-			},
-		},
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "multi-test-node-2",
-				Labels: map[string]string{
-					"topology.kubernetes.io/zone": "us-west-2b",
-				},
-			},
-			Spec: corev1.NodeSpec{
-				ProviderID: "aws:///us-west-2b/i-test2",
-			},
-		},
-	}
-
-	for _, node := range nodes {
-		createTestNode(t, node)
-		defer deleteTestNode(t, node.Name)
-	}
-
-	config := &Config{
-		Enabled:       true,
-		CacheSize:     100,
-		CacheTTL:      1 * time.Hour,
-		AllowedLabels: []string{"topology.kubernetes.io/zone"},
-	}
-
-	p := createTestProcessor(config)
-	ctx := context.Background()
-
-	for i, node := range nodes {
-		event := &pb.HealthEvent{
-			NodeName: node.Name,
-			Metadata: make(map[string]string),
-		}
-
-		err := p.AugmentHealthEvent(ctx, event)
-		assert.NoError(t, err)
-		assert.Equal(t, node.Spec.ProviderID, event.Metadata["providerID"])
-		assert.Equal(t, node.Labels["topology.kubernetes.io/zone"], event.Metadata["topology.kubernetes.io/zone"])
-
-		if i == 0 {
-			assert.Equal(t, "us-west-2a", event.Metadata["topology.kubernetes.io/zone"])
-		} else {
-			assert.Equal(t, "us-west-2b", event.Metadata["topology.kubernetes.io/zone"])
-		}
-	}
-}
-
 func TestNewProcessorValidation(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -422,13 +422,6 @@ func TestNewProcessorValidation(t *testing.T) {
 		expectError bool
 		errorMsg    string
 	}{
-		{
-			name:        "nil config",
-			config:      nil,
-			clientset:   testClient,
-			expectError: true,
-			errorMsg:    "config cannot be nil",
-		},
 		{
 			name: "invalid config",
 			config: &Config{

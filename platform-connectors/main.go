@@ -111,7 +111,6 @@ func initializeK8sConnector(
 	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
 	if err != nil {
 		slog.Warn("Failed to initialize node metadata processor, continuing without enrichment", "error", err)
-		processor = nil
 	}
 
 	return k8sRingBuffer, processor, nil
@@ -222,7 +221,6 @@ func cleanupResources(
 	lis net.Listener,
 	k8sRingBuffer *ringbuffer.RingBuffer,
 	storeConnector *store.MongoDbStoreConnector,
-	processor nodemetadata.Processor,
 ) error {
 	if lis != nil {
 		if k8sRingBuffer != nil {
@@ -329,7 +327,7 @@ func run() error {
 
 		close(stopCh)
 
-		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector, processor); err != nil {
+		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
 			return err
 		}
 

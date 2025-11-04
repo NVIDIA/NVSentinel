@@ -160,7 +160,5 @@ csp-health-monitor:
 
 # Enable node metadata enrichment for testing
 platformConnector:
-  mongodbStore:
-    enabled: true
   nodeMetadata:
     enabled: true

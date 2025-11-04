@@ -56,14 +56,6 @@ func TestNewProcessor(t *testing.T) {
 			errorMsg:    "unsupported platform",
 		},
 		{
-			name:        "nil config",
-			platform:    PlatformKubernetes,
-			config:      nil,
-			clientset:   testClient,
-			expectError: true,
-			errorMsg:    "config cannot be nil",
-		},
-		{
 			name:     "invalid config",
 			platform: PlatformKubernetes,
 			config: &Config{
