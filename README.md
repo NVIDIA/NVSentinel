@@ -211,11 +211,22 @@ platformConnector:
       - "nvidia.com/cuda.runtime-version.major"
       - "nvidia.com/cuda.runtime-version.minor"
       - "nvidia.com/cuda.runtime-version.full"
+      - "topology.k8s.aws/capacity-block-id"
+      - "topology.k8s.aws/network-node-layer-1"
+      - "topology.k8s.aws/network-node-layer-2"
+      - "topology.k8s.aws/network-node-layer-3"
+      - "oci.oraclecloud.com/host.id"
+      - "oci.oraclecloud.com/host.network_block_id"
+      - "oci.oraclecloud.com/host.rack_id"
+      - "oci.oraclecloud.com/host.serial_number"
+      - "cloud.google.com/gce-topology-block"
+      - "cloud.google.com/gce-topology-host"
+      - "cloud.google.com/gce-topology-subblock"
 ```
 
 **Metadata Added to Events**:
 - Cloud provider ID (e.g., `aws:///us-west-2a/i-1234567890abcdef0`)
-- Topology labels (zone, region)
+- Topology labels (zone, region, cloud-specific topology)
 - Instance type information
 - CUDA driver and runtime versions
 - Custom labels as configured

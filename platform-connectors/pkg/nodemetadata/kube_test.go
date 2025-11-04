@@ -211,6 +211,46 @@ func TestProcessorAugmentHealthEvent(t *testing.T) {
 			},
 		},
 		{
+			name: "cloud-specific topology labels",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node-6",
+					Labels: map[string]string{
+						"topology.k8s.aws/capacity-block-id":     "cbr-01234567",
+						"topology.k8s.aws/network-node-layer-1":  "nn-abcd",
+						"oci.oraclecloud.com/host.id":            "971b2",
+						"cloud.google.com/gce-topology-block":    "9b6c",
+						"cloud.google.com/gce-topology-host":     "7007",
+						"node.kubernetes.io/instance-type":       "p4d.24xlarge",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cloud123"},
+			},
+			config: &Config{
+				Enabled:   true,
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+				AllowedLabels: []string{
+					"topology.k8s.aws/capacity-block-id",
+					"topology.k8s.aws/network-node-layer-1",
+					"oci.oraclecloud.com/host.id",
+					"cloud.google.com/gce-topology-block",
+					"cloud.google.com/gce-topology-host",
+				},
+			},
+			eventNodeName: "test-node-6",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, "aws:///us-west-2a/i-cloud123", event.Metadata["providerID"])
+				assert.Equal(t, "cbr-01234567", event.Metadata["topology.k8s.aws/capacity-block-id"])
+				assert.Equal(t, "nn-abcd", event.Metadata["topology.k8s.aws/network-node-layer-1"])
+				assert.Equal(t, "971b2", event.Metadata["oci.oraclecloud.com/host.id"])
+				assert.Equal(t, "9b6c", event.Metadata["cloud.google.com/gce-topology-block"])
+				assert.Equal(t, "7007", event.Metadata["cloud.google.com/gce-topology-host"])
+				assert.NotContains(t, event.Metadata, "node.kubernetes.io/instance-type", "should not include non-allowed labels")
+			},
+		},
+		{
 			name: "multiple nodes enrichment",
 			nodes: []*corev1.Node{
 				{
