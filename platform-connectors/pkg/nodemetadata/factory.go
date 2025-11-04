@@ -17,6 +17,7 @@ package nodemetadata
 import (
 	"context"
 	"fmt"
+
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -30,7 +31,12 @@ const (
 type Platform string
 
 // NewProcessor creates a node metadata processor based on the platform type.
-func NewProcessor(ctx context.Context, platform Platform, config *Config, clientset kubernetes.Interface) (Processor, error) {
+func NewProcessor(
+	ctx context.Context,
+	platform Platform,
+	config *Config,
+	clientset kubernetes.Interface,
+) (Processor, error) {
 	switch platform {
 	case PlatformKubernetes:
 		return newKubernetesProcessor(ctx, config, clientset)

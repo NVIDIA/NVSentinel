@@ -96,6 +96,7 @@ func getMetadataKeys(metadata map[string]string) []string {
 	for k := range metadata {
 		keys = append(keys, k)
 	}
+
 	return keys
 }
 
@@ -118,6 +119,7 @@ func (p *processor) getOrFetchMetadata(ctx context.Context, nodeName string) (*N
 	}
 
 	p.cache.Add(nodeName, metadata)
+
 	return metadata, nil
 }
 

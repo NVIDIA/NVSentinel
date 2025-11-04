@@ -53,6 +53,7 @@ func NewConfigFromMap(cfgMap map[string]interface{}) (*Config, error) {
 
 	if allowedLabels, ok := cfgMap["nodeMetadataAllowedLabels"].([]interface{}); ok {
 		cfg.AllowedLabels = make([]string, 0, len(allowedLabels))
+
 		for _, label := range allowedLabels {
 			if labelStr, ok := label.(string); ok {
 				cfg.AllowedLabels = append(cfg.AllowedLabels, labelStr)

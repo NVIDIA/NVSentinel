@@ -155,6 +155,7 @@ func initializeNodeMetadataProcessor(
 	}
 
 	slog.Info("Node metadata processor initialized successfully")
+
 	return processor, nil
 }
 
