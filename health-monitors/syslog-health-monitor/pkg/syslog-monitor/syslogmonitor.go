@@ -136,7 +136,10 @@ func (sm *SyslogMonitor) Run() error {
 	for _, check := range sm.checks {
 		err := sm.executeCheck(check)
 		if err != nil {
-			slog.Error("Check '%s' failed during execution: %v", check.Name, err)
+			slog.Error("Check failed during execution",
+				"check", check.Name,
+				"error", err)
+
 			jointError = errors.Join(jointError, err)
 		}
 	}
@@ -257,7 +260,9 @@ func fetchCurrentBootID() (string, error) {
 // handleBootIDChange handles system reboot detection and cursor reset
 func (sm *SyslogMonitor) handleBootIDChange(oldBootID, newBootID string) error {
 	if oldBootID != newBootID {
-		slog.Info("Detected bootID change. Old bootID: %s, New bootID: %s", oldBootID, newBootID)
+		slog.Info("Detected bootID change",
+			"oldBootID", oldBootID,
+			"newBootID", newBootID)
 
 		// Clear all cursors on reboot since journal cursors become invalid
 		for checkName := range sm.checkLastCursors {
@@ -317,7 +322,9 @@ func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
 
 	defer func() {
 		if cerr := journal.Close(); cerr != nil {
-			slog.Warn("Check '%s': error closing journal: %v", check.Name, cerr)
+			slog.Warn("Error closing journal",
+				"check", check.Name,
+				"error", cerr)
 		}
 	}()
 
@@ -332,7 +339,9 @@ func (sm *SyslogMonitor) executeCheck(check CheckDefinition) error {
 
 	// Save state after successfully processing journal entries
 	if err := sm.saveCurrentState(); err != nil {
-		slog.Warn("Failed to save state after processing check '%s': %v", check.Name, err)
+		slog.Warn("Failed to save state after processing check",
+			"check", check.Name,
+			"error", err)
 	}
 
 	return nil
@@ -360,7 +369,9 @@ func (sm *SyslogMonitor) validateJournalPath(check CheckDefinition) error {
 func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
 	//nolint:nestif
 	if check.JournalPath != "" {
-		slog.Info("Check '%s': Verifying journal path: %s", check.Name, check.JournalPath)
+		slog.Info("Verifying journal path",
+			"check", check.Name,
+			"path", check.JournalPath)
 
 		// Only validate path on filesystem for real journal factories
 		if sm.journalFactory.RequiresFileSystemCheck() {
@@ -369,7 +380,9 @@ func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
 			}
 		}
 
-		slog.Info("Check '%s': Opening journal at path: %s", check.Name, check.JournalPath)
+		slog.Info("Opening journal at path",
+			"check", check.Name,
+			"path", check.JournalPath)
 
 		journal, err := sm.journalFactory.NewJournalFromDir(check.JournalPath)
 		if err != nil {
@@ -388,7 +401,9 @@ func (sm *SyslogMonitor) configureBootFilter(journal Journal, checkName string) 
 	if bootID != "" {
 		matchExpr := FieldBootID + "=" + bootID
 
-		slog.Info("Check '%s': Applying boot filter: %s", checkName, matchExpr)
+		slog.Info("Applying boot filter",
+			"check", checkName,
+			"filter", matchExpr)
 
 		if err := journal.AddMatch(matchExpr); err != nil {
 			return fmt.Errorf("check '%s': failed to add boot ID match ('%s'): %w", checkName, matchExpr, err)
@@ -459,7 +474,9 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 						"tag", trimmedTag)
 				}
 			} else {
-				slog.Info("Check '%s': Ignoring unrecognized tag in 'configureTagFilters': '%s'", check.Name, trimmedTag)
+				slog.Info("Ignoring unrecognized tag in 'configureTagFilters'",
+					"check", check.Name,
+					"tag", trimmedTag)
 			}
 		}
 	}
@@ -513,8 +530,9 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 			return fmt.Errorf("get cursor: %w", err)
 		}
 
-		slog.Info("Check '%s': Initialized. Journal processing will start from entries"+
-			" after cursor '%s' on the next run.", check.Name, cursor)
+		slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
+			"check", check.Name,
+			"cursor", cursor)
 
 		sm.checkLastCursors[check.Name] = cursor
 

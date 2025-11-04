@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -96,12 +97,14 @@ func TestManualUncordonBehavior(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			require.NoError(t, err)
 
-		node.Spec.Unschedulable = false
-		err = client.Resources().Update(ctx, node)
-		require.NoError(t, err)
+			node.Spec.Unschedulable = false
+			return client.Resources().Update(ctx, node)
+		})
+		assert.NoError(t, err, "failed to uncordon node")
 
 		t.Log("Waiting for state to be updated")
 		require.Eventually(t, func() bool {

@@ -276,7 +276,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, event *model.MaintenanceEv
 	metrics.MainDatastoreUpsertAttempts.WithLabelValues(string(event.CSP)).Inc()
 
 	if err := p.store.UpsertMaintenanceEvent(ctx, event); err != nil {
-		metrics.MainDatastoreUpsertErrors.WithLabelValues(string(event.CSP)).Inc()
+		metrics.MainDatastoreUpsert.WithLabelValues(string(event.CSP), metrics.StatusFailed).Inc()
 		metrics.MainProcessingErrors.WithLabelValues(string(event.CSP), "datastore_upsert").Inc()
 		slog.Error("Failed to upsert event",
 			"eventID", event.EventID,
@@ -285,7 +285,7 @@ func (p *Processor) ProcessEvent(ctx context.Context, event *model.MaintenanceEv
 		return fmt.Errorf("failed to upsert event %s: %w", event.EventID, err)
 	}
 
-	metrics.MainDatastoreUpsertSuccess.WithLabelValues(string(event.CSP)).Inc()
+	metrics.MainDatastoreUpsert.WithLabelValues(string(event.CSP), metrics.StatusSuccess).Inc()
 
 	slog.Debug("Processed event",
 		"eventID", event.EventID,

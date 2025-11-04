@@ -37,6 +37,7 @@ RUN echo "Acquire::https::Verify-Peer \"false\";" > /etc/apt/apt.conf.d/99disabl
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
         apt-transport-https \

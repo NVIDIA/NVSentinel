@@ -161,7 +161,9 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *model.HealthEventWi
 
 			actionVal, ok := platform_connectors.RecommendedAction_value[rule.RecommendedAction]
 			if !ok {
-				slog.Warn("Invalid recommended_action '%s' in rule '%s'; defaulting to NONE", rule.RecommendedAction, rule.Name)
+				slog.Warn("Invalid recommended_action in rule; defaulting to NONE",
+					"recommended_action", rule.RecommendedAction,
+					"rule", rule.Name)
 
 				actionVal = int32(platform_connectors.RecommendedAction_NONE)
 			}

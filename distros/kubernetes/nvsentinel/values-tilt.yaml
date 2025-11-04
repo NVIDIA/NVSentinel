@@ -157,3 +157,8 @@ csp-health-monitor:
   logLevel: debug
   quarantineTriggerEngine:
     logLevel: debug
+
+# Enable node metadata enrichment for testing
+platformConnector:
+  nodeMetadata:
+    enabled: true

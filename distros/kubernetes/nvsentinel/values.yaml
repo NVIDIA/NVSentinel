@@ -71,4 +71,32 @@ platformConnector:
     qps: 5.0
     burst: 10
 
+  # Node metadata enrichment configuration
+  nodeMetadata:
+    enabled: false
+    cacheSize: 50
+    cacheTTLSeconds: 3600
+    allowedLabels:
+      - "topology.kubernetes.io/zone"
+      - "topology.kubernetes.io/region"
+      - "node.kubernetes.io/instance-type"
+      - "nvidia.com/cuda.driver-version.major"
+      - "nvidia.com/cuda.driver-version.minor"
+      - "nvidia.com/cuda.driver-version.revision"
+      - "nvidia.com/cuda.driver-version.full"
+      - "nvidia.com/cuda.runtime-version.major"
+      - "nvidia.com/cuda.runtime-version.minor"
+      - "nvidia.com/cuda.runtime-version.full"
+      - "topology.k8s.aws/capacity-block-id"
+      - "topology.k8s.aws/network-node-layer-1"
+      - "topology.k8s.aws/network-node-layer-2"
+      - "topology.k8s.aws/network-node-layer-3"
+      - "oci.oraclecloud.com/host.id"
+      - "oci.oraclecloud.com/host.network_block_id"
+      - "oci.oraclecloud.com/host.rack_id"
+      - "oci.oraclecloud.com/host.serial_number"
+      - "cloud.google.com/gce-topology-block"
+      - "cloud.google.com/gce-topology-host"
+      - "cloud.google.com/gce-topology-subblock"
+
 socketPath: "/var/run/nvsentinel.sock"

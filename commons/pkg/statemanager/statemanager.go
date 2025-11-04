@@ -241,7 +241,9 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 
 			nodeModified = true
 
-			slog.Info("Label %s removed successfully for node %s", NVSentinelStateLabelKey, nodeName)
+			slog.Info("Label removed successfully for node",
+				"label", NVSentinelStateLabelKey,
+				"node", nodeName)
 
 			return nil
 		}
@@ -274,7 +276,9 @@ func (manager *stateManager) UpdateNVSentinelStateNodeLabel(ctx context.Context,
 
 		nodeModified = true
 
-		slog.Info("Label %s updated successfully for node %s", NVSentinelStateLabelKey, nodeName)
+		slog.Info("Label updated successfully for node",
+			"label", NVSentinelStateLabelKey,
+			"node", nodeName)
 
 		// Return validation error AFTER successful label update
 		// This allows callers to emit error metrics while the label reflects reality

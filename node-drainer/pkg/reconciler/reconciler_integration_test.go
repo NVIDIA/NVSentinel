@@ -17,7 +17,6 @@ package reconciler_test
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -26,10 +25,13 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -87,7 +89,6 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 							activePodsCount++
 						}
 					}
-					t.Logf("Active pods remaining after eviction: %d (total: %d)", activePodsCount, len(pods.Items))
 					return activePodsCount == 0
 				}, 30*time.Second, 1*time.Second, "pods should be evicted")
 			},
@@ -156,7 +157,6 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				require.Eventually(t, func() bool {
 					node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 					require.NoError(t, err)
-					slog.Info("Node %s labels: %v", nodeName, node.Labels)
 					_, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
 					return !exists
 				}, 30*time.Second, 1*time.Second, "draining label should be removed")
@@ -325,11 +325,19 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				}
 			}
 
+			beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
+			beforeDuration := getHistogramCount(t, metrics.EventHandlingDuration)
+
 			err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
 				nodeName:        tt.nodeName,
 				nodeQuarantined: tt.nodeQuarantined,
 				drainForce:      tt.drainForce,
 			})
+
+			afterReceived := getCounterValue(t, metrics.TotalEventsReceived)
+			afterDuration := getHistogramCount(t, metrics.EventHandlingDuration)
+			assert.GreaterOrEqual(t, afterReceived, beforeReceived+1, "TotalEventsReceived should increment for test case: %s", tt.name)
+			assert.GreaterOrEqual(t, afterDuration, beforeDuration+1, "EventHandlingDuration should record observation for test case: %s", tt.name)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -399,10 +407,22 @@ func TestReconciler_RequeueMechanism(t *testing.T) {
 	_, err := setup.client.CoreV1().Namespaces().Create(setup.ctx, ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 
+	initialDepth := getGaugeValue(t, metrics.QueueDepth)
+
 	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning)
 	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
 
+	require.Eventually(t, func() bool {
+		currentDepth := getGaugeValue(t, metrics.QueueDepth)
+		return currentDepth > initialDepth || currentDepth == 0
+	}, 5*time.Second, 50*time.Millisecond, "Queue depth should change")
+
 	assertPodsEvicted(t, setup.client, setup.ctx, "immediate-test")
+
+	require.Eventually(t, func() bool {
+		currentDepth := getGaugeValue(t, metrics.QueueDepth)
+		return currentDepth == 0
+	}, 10*time.Second, 100*time.Millisecond, "Queue should eventually be empty")
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
 }
 
@@ -440,8 +460,8 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 		}
 		if pod.Status.Phase == v1.PodSucceeded {
 			pod.Finalizers = nil
-			_, _ = setup.client.CoreV1().Pods("completion-test").Update(setup.ctx, pod, metav1.UpdateOptions{})
-			_ = setup.client.CoreV1().Pods("completion-test").Delete(setup.ctx, "running-pod", metav1.DeleteOptions{
+			setup.client.CoreV1().Pods("completion-test").Update(setup.ctx, pod, metav1.UpdateOptions{})
+			setup.client.CoreV1().Pods("completion-test").Delete(setup.ctx, "running-pod", metav1.DeleteOptions{
 				GracePeriodSeconds: ptr.To(int64(0)),
 			})
 		}
@@ -468,6 +488,8 @@ func TestReconciler_MultipleNodesRequeue(t *testing.T) {
 	_, err := setup.client.CoreV1().Namespaces().Create(setup.ctx, ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 
+	beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
+
 	for _, nodeName := range nodeNames {
 		createPod(setup.ctx, t, setup.client, "immediate-test", fmt.Sprintf("pod-%s", nodeName), nodeName, v1.PodRunning)
 		enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
@@ -478,6 +500,9 @@ func TestReconciler_MultipleNodesRequeue(t *testing.T) {
 	for _, nodeName := range nodeNames {
 		assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainSucceededLabelValue)
 	}
+
+	afterReceived := getCounterValue(t, metrics.TotalEventsReceived)
+	assert.GreaterOrEqual(t, afterReceived, beforeReceived+float64(len(nodeNames)), "Should receive events for all nodes")
 }
 
 type MockMongoCollection struct {
@@ -683,7 +708,7 @@ func assertPodsEvicted(t *testing.T, client kubernetes.Interface, ctx context.Co
 			} else {
 				pod := p
 				pod.Finalizers = nil
-				_, _ = client.CoreV1().Pods(namespace).Update(ctx, &pod, metav1.UpdateOptions{})
+				client.CoreV1().Pods(namespace).Update(ctx, &pod, metav1.UpdateOptions{})
 			}
 		}
 		return allMarkedForDeletion
@@ -693,11 +718,129 @@ func assertPodsEvicted(t *testing.T, client kubernetes.Interface, ctx context.Co
 		pods, _ := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 		for _, p := range pods.Items {
 			if p.DeletionTimestamp != nil {
-				_ = client.CoreV1().Pods(namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
+				client.CoreV1().Pods(namespace).Delete(ctx, p.Name, metav1.DeleteOptions{
 					GracePeriodSeconds: ptr.To(int64(0)),
 				})
 			}
 		}
 		return len(pods.Items) == 0
 	}, 10*time.Second, 200*time.Millisecond)
+}
+
+// Metrics Tests
+
+// TestMetrics_ProcessingErrors tests unmarshal errors
+func TestMetrics_ProcessingErrors(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := "test-node"
+	beforeError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_error", nodeName)
+
+	invalidEvent := bson.M{
+		"fullDocument": "invalid",
+	}
+	setup.reconciler.ProcessEvent(setup.ctx, invalidEvent, setup.mockCollection, nodeName)
+
+	afterError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_error", nodeName)
+	assert.Greater(t, afterError, beforeError, "ProcessingErrors should increment for unmarshal_error")
+}
+
+// TestMetrics_NodeDrainTimeout tests timeout tracking
+func TestMetrics_NodeDrainTimeout(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "timeout-*", Mode: config.ModeDeleteAfterTimeout},
+	}, false)
+
+	nodeName := "metrics-timeout-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "timeout-test")
+	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning)
+
+	processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
+		nodeName:        nodeName,
+		nodeQuarantined: model.Quarantined,
+	})
+
+	timeoutValue := getGaugeVecValue(t, metrics.NodeDrainTimeout, nodeName)
+	assert.Equal(t, float64(1), timeoutValue, "NodeDrainTimeout should be 1 for node in timeout mode")
+}
+
+// TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess tests that AlreadyDrained doesn't double-count
+func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
+	setup := setupDirectTest(t, []config.UserNamespace{
+		{Name: "test-*", Mode: config.ModeImmediateEvict},
+	}, false)
+
+	nodeName := "metrics-already-drained-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+
+	setup.mockCollection.FindOneFunc = func(ctx context.Context, filter any, opts ...*options.FindOneOptions) *mongo.SingleResult {
+		response := bson.M{
+			"healtheventstatus": bson.M{
+				"nodequarantined": string(model.Quarantined),
+				"userpodsevictionstatus": bson.M{
+					"status": string(model.StatusSucceeded),
+				},
+			},
+		}
+		return mongo.NewSingleResultFromDocument(response, nil, nil)
+	}
+
+	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+
+	processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
+		nodeName:        nodeName,
+		nodeQuarantined: model.AlreadyQuarantined,
+	})
+
+	afterSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
+	assert.GreaterOrEqual(t, afterSkipped, beforeSkipped+1, "EventsProcessed with drain_status=skipped should increment for already drained nodes")
+}
+
+// Helper functions for reading Prometheus metrics
+
+func getCounterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	err := counter.Write(metric)
+	require.NoError(t, err)
+	return metric.Counter.GetValue()
+}
+
+func getCounterVecValue(t *testing.T, counterVec *prometheus.CounterVec, labelValues ...string) float64 {
+	t.Helper()
+	counter, err := counterVec.GetMetricWithLabelValues(labelValues...)
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	err = counter.Write(metric)
+	require.NoError(t, err)
+	return metric.Counter.GetValue()
+}
+
+func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	err := gauge.Write(metric)
+	require.NoError(t, err)
+	return metric.Gauge.GetValue()
+}
+
+func getGaugeVecValue(t *testing.T, gaugeVec *prometheus.GaugeVec, labelValues ...string) float64 {
+	t.Helper()
+	gauge, err := gaugeVec.GetMetricWithLabelValues(labelValues...)
+	require.NoError(t, err)
+	metric := &dto.Metric{}
+	err = gauge.Write(metric)
+	require.NoError(t, err)
+	return metric.Gauge.GetValue()
+}
+
+func getHistogramCount(t *testing.T, histogram prometheus.Histogram) uint64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	err := histogram.Write(metric)
+	require.NoError(t, err)
+	return metric.Histogram.GetSampleCount()
 }

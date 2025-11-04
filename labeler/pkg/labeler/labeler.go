@@ -444,8 +444,6 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 		return fmt.Errorf("failed to reconcile node labeling for %s: %w", nodeName, err)
 	}
 
-	metrics.NodeUpdateDuration.Observe(time.Since(updateStartTime).Seconds())
-
 	return nil
 }
 
@@ -494,6 +492,7 @@ func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
 		return err
 	})
 	if err != nil {
+		metrics.NodeUpdateFailures.Inc()
 		return fmt.Errorf("failed to update kata label for %s: %w", nodeName, err)
 	}
 

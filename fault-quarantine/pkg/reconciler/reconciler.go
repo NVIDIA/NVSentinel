@@ -306,9 +306,7 @@ func (r *Reconciler) ProcessEvent(
 	isNodeQuarantined := r.handleEvent(ctx, event, ruleSetEvals, rulesetsConfig)
 
 	if isNodeQuarantined == nil {
-		// Event was skipped (no quarantine action taken)
 		slog.Debug("Skipped processing event for node, no status update needed", "node", event.HealthEvent.NodeName)
-		metrics.TotalEventsSkipped.Inc()
 	} else if *isNodeQuarantined == model.Quarantined ||
 		*isNodeQuarantined == model.UnQuarantined ||
 		*isNodeQuarantined == model.AlreadyQuarantined {
@@ -457,8 +455,6 @@ func (r *Reconciler) evaluateRulesets(
 
 			slog.Info("Handling event for ruleset", "event", event, "ruleset", eval.GetName())
 
-			metrics.RulesetEvaluations.WithLabelValues(eval.GetName()).Inc()
-
 			ruleEvaluatedResult, err := eval.Evaluate(event.HealthEvent)
 
 			switch {
@@ -468,7 +464,7 @@ func (r *Reconciler) evaluateRulesets(
 			case err != nil:
 				r.handleRuleEvaluationError(event.HealthEvent, eval.GetName(), err)
 			default:
-				metrics.RulesetFailed.WithLabelValues(eval.GetName()).Inc()
+				metrics.RulesetEvaluations.WithLabelValues(eval.GetName(), metrics.StatusFailed).Inc()
 			}
 		}(eval)
 	}
@@ -485,7 +481,7 @@ func (r *Reconciler) handleSuccessfulRuleEvaluation(
 	taintAppliedMap map[keyValTaint]string,
 	taintEffectPriorityMap map[keyValTaint]int,
 ) {
-	metrics.RulesetPassed.WithLabelValues(eval.GetName()).Inc()
+	metrics.RulesetEvaluations.WithLabelValues(eval.GetName(), metrics.StatusPassed).Inc()
 
 	shouldCordon := rulesetsConfig.CordonConfigMap[eval.GetName()]
 	if shouldCordon {
@@ -539,7 +535,7 @@ func (r *Reconciler) handleRuleEvaluationError(
 ) {
 	slog.Error("Rule evaluation failed", "ruleset", evalName, "node", event.NodeName, "error", err)
 	metrics.ProcessingErrors.WithLabelValues("ruleset_evaluation_error").Inc()
-	metrics.RulesetFailed.WithLabelValues(evalName).Inc()
+	metrics.RulesetEvaluations.WithLabelValues(evalName, metrics.StatusFailed).Inc()
 }
 
 // collectTaintsToApply collects all taints that should be applied from the taint map
@@ -767,8 +763,9 @@ func (r *Reconciler) handleQuarantinedNode(
 	}
 
 	if !hasExistingCheck {
-		slog.Debug("Received healthy event for untracked check %s on node %s (other checks may still be failing)",
-			event.CheckName, event.NodeName)
+		slog.Debug("Received healthy event for untracked check (other checks may still be failing)",
+			"check", event.CheckName,
+			"node", event.NodeName)
 
 		return true
 	}
@@ -784,8 +781,9 @@ func (r *Reconciler) handleQuarantinedNode(
 			"node", event.NodeName,
 			"remainingEntities", healthEventsAnnotationMap.Count())
 	} else {
-		slog.Debug("No matching entities to remove for check %s on node %s",
-			event.CheckName, event.NodeName)
+		slog.Debug("No matching entities to remove for check on node",
+			"check", event.CheckName,
+			"node", event.NodeName)
 	}
 
 	if healthEventsAnnotationMap.IsEmpty() {
@@ -942,8 +940,9 @@ func (r *Reconciler) performUncordon(
 	event *protos.HealthEvent,
 	annotations map[string]string,
 ) bool {
-	slog.Info("All entities recovered for check %s on node %s - proceeding with uncordon",
-		event.CheckName, event.NodeName)
+	slog.Info("All entities recovered for check - proceeding with uncordon",
+		"check", event.CheckName,
+		"node", event.NodeName)
 
 	// Prepare uncordon parameters
 	taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, err := r.prepareUncordonParams(

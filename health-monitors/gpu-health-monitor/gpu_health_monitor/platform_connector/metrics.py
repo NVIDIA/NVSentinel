@@ -24,18 +24,12 @@ health_events_insertion_to_uds_succeed = Counter(
     "health_events_insertion_to_uds_succeed", "Total number of successful insertion of health events to UDS"
 )
 
-health_events_insertion_to_uds_error = Gauge(
-    "health_events_insertion_to_uds_error", "Error in insertions of health events to UDS"
+health_events_insertion_to_uds_error = Counter(
+    "health_events_insertion_to_uds_error", "Total number of failed insertions of health events to UDS"
 )
 
-dcgm_health_active_non_fatal_health_events = Gauge(
-    "dcgm_health_active_non_fatal_health_events",
-    "Total number of active non-fatal health events at any given time",
-    labelnames=["event_type", "gpu_id"],
-)
-
-dcgm_health_active_fatal_health_events = Gauge(
-    "dcgm_health_active_fatal_health_events",
-    "Total number of active fatal health events at any given time",
-    labelnames=["event_type", "gpu_id"],
+dcgm_health_active_events = Gauge(
+    "dcgm_health_active_events",
+    "Total number of active health events at any given time by severity",
+    labelnames=["event_type", "gpu_id", "severity"],
 )

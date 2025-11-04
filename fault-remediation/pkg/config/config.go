@@ -16,9 +16,11 @@ package config
 
 // MaintenanceResource holds configuration for the maintenance custom resource
 type MaintenanceResource struct {
-	Namespace string `toml:"namespace"`
-	Version   string `toml:"version"`
-	ApiGroup  string `toml:"apiGroup"`
+	Namespace             string `toml:"namespace"`
+	Version               string `toml:"version"`
+	ApiGroup              string `toml:"apiGroup"`
+	Kind                  string `toml:"kind"`
+	CompleteConditionType string `toml:"completeConditionType"`
 }
 
 // Template holds configuration for template files

@@ -31,12 +31,14 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	"golang.org/x/sync/errgroup"
 
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
+	k8s "k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -76,34 +78,42 @@ func loadConfig(configFilePath string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// initializeK8sConnector creates the K8s connector and node metadata processor.
+// Processor is returned here because it depends on the clientset from K8s initialization.
 func initializeK8sConnector(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
-) (*ringbuffer.RingBuffer, error) {
+) (*ringbuffer.RingBuffer, nodemetadata.Processor, error) {
 	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
 
 	qpsTemp, ok := config["K8sConnectorQps"].(float64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
+		return nil, nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
 	}
 
 	qps := float32(qpsTemp)
 
 	burst, ok := config["K8sConnectorBurst"].(int64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
+		return nil, nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnector, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	k8sConnector, clientset, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}
 
 	go k8sConnector.FetchAndProcessHealthMetric(ctx)
 
-	return k8sRingBuffer, nil
+	// Node metadata enrichment is optional - failures are logged but don't abort startup
+	processor, err := initializeNodeMetadataProcessor(ctx, config, clientset)
+	if err != nil {
+		slog.Warn("Failed to initialize node metadata processor, continuing without enrichment", "error", err)
+	}
+
+	return k8sRingBuffer, processor, nil
 }
 
 func initializeMongoDBConnector(
@@ -139,7 +149,9 @@ func startGRPCServer(ctx context.Context, socket string) (net.Listener, error) {
 	var opts []grpc.ServerOption
 
 	grpcServer := grpc.NewServer(opts...)
-	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{})
+	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{
+		Processor: processor,
+	})
 
 	go func() {
 		err = grpcServer.Serve(lis)
@@ -157,28 +169,29 @@ func initializeConnectors(
 	config map[string]interface{},
 	stopCh chan struct{},
 	mongoClientCertMountPath string,
-) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, error) {
+) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, nodemetadata.Processor, error) {
 	var (
 		k8sRingBuffer  *ringbuffer.RingBuffer
 		storeConnector *store.MongoDbStoreConnector
+		processor      nodemetadata.Processor
 		err            error
 	)
 
 	if config["enableK8sPlatformConnector"] == True {
-		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
+		k8sRingBuffer, processor, err = initializeK8sConnector(ctx, config, stopCh)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
 		}
 	}
 
 	if config["enableMongoDBStorePlatformConnector"] == True {
 		storeConnector, err = initializeMongoDBConnector(ctx, mongoClientCertMountPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
 		}
 	}
 
-	return k8sRingBuffer, storeConnector, nil
+	return k8sRingBuffer, storeConnector, processor, nil
 }
 
 func cleanupResources(
@@ -196,7 +209,6 @@ func cleanupResources(
 			slog.Error("Failed to close listener", "error", err)
 		}
 
-		// Remove the socket file
 		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
 			slog.Error("Failed to remove socket file", "error", err)
 		}
@@ -240,7 +252,7 @@ func run() error {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
+	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
 	if err != nil {
 		return err
 	}
@@ -250,24 +262,20 @@ func run() error {
 		return err
 	}
 
-	// Parse the metrics port
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	// Create server
 	srv := srv.NewServer(
 		srv.WithPort(portInt),
 		srv.WithPrometheusMetrics(),
 		srv.WithSimpleHealth(),
 	)
 
-	// Start server in errgroup alongside the store and k8s connectors
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Start the metrics/health server.
-	// Metrics server failures are logged but do NOT terminate the service.
+	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
 
@@ -297,7 +305,6 @@ func run() error {
 
 		close(stopCh)
 
-		// Cleanup all resources
 		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
 			return err
 		}
@@ -308,6 +315,5 @@ func run() error {
 		return nil
 	})
 
-	// Wait for both goroutines to finish
 	return g.Wait()
 }

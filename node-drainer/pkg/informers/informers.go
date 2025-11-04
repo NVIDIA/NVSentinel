@@ -379,7 +379,7 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 		}
 
 		if errors.IsTooManyRequests(err) {
-			metrics.NodeDrainError.WithLabelValues("PDB_blocking_eviction_error", pod.Spec.NodeName).Inc()
+			metrics.ProcessingErrors.WithLabelValues("PDB_blocking_eviction_error", pod.Spec.NodeName).Inc()
 		}
 
 		return fmt.Errorf("error evicting pod %s from namespace %s: %w", pod.Name, pod.Namespace, err)
@@ -486,6 +486,8 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 	evicted, remainingPods := i.checkIfPodsPresentInNamespaceAndNode(namespaces, nodeName)
 	if evicted {
 		slog.Info("All pods on node have been deleted", "node", nodeName)
+		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
+
 		return nil
 	}
 
@@ -499,6 +501,8 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 			metrics.NodeDrainTimeoutReached.WithLabelValues(nodeName, ns).Inc()
 		}
 
+		metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(0)
+
 		if err := i.forceDeletePods(ctx, remainingPods); err != nil {
 			slog.Error("Failed to force delete pods on node",
 				"node", nodeName,
@@ -510,6 +514,8 @@ func (i *Informers) DeletePodsAfterTimeout(ctx context.Context, nodeName string,
 		// After force deleting, requeue to verify pods are gone
 		return fmt.Errorf("force deleted %d pods, requeueing to verify deletion on node %s", len(remainingPods), nodeName)
 	}
+
+	metrics.NodeDrainTimeout.WithLabelValues(nodeName).Set(1)
 
 	podNames := make([]string, 0, len(remainingPods))
 	for _, pod := range remainingPods {
@@ -639,7 +645,10 @@ func (i *Informers) extractNamespacesFromPods(objs []any,
 
 		shouldIncludeNamespace, err := i.shouldIncludeNamespace(pod.Namespace, includePattern, excludeRegex)
 		if err != nil {
-			slog.Error("Failed to check if namespace %s should be included: %v", pod.Namespace, err)
+			slog.Error("Failed to check if namespace should be included",
+				"namespace", pod.Namespace,
+				"error", err)
+
 			return nil, fmt.Errorf("failed to check if namespace %s should be included: %w", pod.Namespace, err)
 		}
 
@@ -739,7 +748,7 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 
 		err := i.forceDeletePods(ctx, remainingPods)
 		if err != nil {
-			metrics.NodeDrainError.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
+			metrics.ProcessingErrors.WithLabelValues("pods_force_deletion_error", nodeName).Inc()
 			slog.Error("Failed to force delete pods on node",
 				"node", nodeName,
 				"error", err)
@@ -761,7 +770,9 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 		remainingPodNames = append(remainingPodNames, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 	}
 
-	slog.Info("Pods still present on node %s, will retry: %v", nodeName, remainingPodNames)
+	slog.Info("Pods still present on node, will retry",
+		"node", nodeName,
+		"pods", remainingPodNames)
 
 	return false
 }

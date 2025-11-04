@@ -19,21 +19,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// CR Status constants for event processing metrics
+const (
+	CRStatusCreated = "created"
+	CRStatusSkipped = "skipped"
+)
+
 var (
-	// event processing metrics
+	// Event Processing Metrics
 	totalEventsReceived = promauto.NewCounter(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_events_received_total",
 			Help: "Total number of events received from the watcher.",
 		},
 	)
-	totalEventsSuccessfullyProcessed = promauto.NewCounter(
+	eventsProcessed = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "fault_remediation_events_successfully_processed_total",
-			Help: "Total number of events successfully processed.",
+			Name: "fault_remediation_events_processed_total",
+			Help: "Total number of remediation events processed by CR creation status.",
 		},
+		[]string{"cr_status", "node_name"},
 	)
-	totalEventProcessingError = promauto.NewCounterVec(
+	processingErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_processing_errors_total",
 			Help: "Total number of errors encountered during event processing.",
@@ -48,7 +55,16 @@ var (
 		[]string{"action", "node_name"},
 	)
 
-	// log collection job metrics
+	// Performance Metrics
+	eventHandlingDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_remediation_event_handling_duration_seconds",
+			Help:    "Histogram of event handling durations.",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
+	// Log Collection Job Metrics
 	logCollectorJobs = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_log_collector_jobs_total",
@@ -63,5 +79,12 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"node_name", "status"},
+	)
+	logCollectorErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_remediation_log_collector_errors_total",
+			Help: "Total number of errors encountered in log collector operations.",
+		},
+		[]string{"error_type", "node_name"},
 	)
 )

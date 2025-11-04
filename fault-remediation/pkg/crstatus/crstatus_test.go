@@ -17,374 +17,101 @@ package crstatus
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func TestCRStatusConstants(t *testing.T) {
-	assert.Equal(t, CRStatus("Succeeded"), CRStatusSucceeded)
-	assert.Equal(t, CRStatus("InProgress"), CRStatusInProgress)
-	assert.Equal(t, CRStatus("Failed"), CRStatusFailed)
-	assert.Equal(t, CRStatus("NotFound"), CRStatusNotFound)
-}
-
-func TestNewCRStatusCheckerFactory(t *testing.T) {
-	factory := NewCRStatusCheckerFactory(nil, nil, false)
-	assert.NotNil(t, factory)
-	assert.False(t, factory.dryRun)
-
-	factoryDryRun := NewCRStatusCheckerFactory(nil, nil, true)
-	assert.NotNil(t, factoryDryRun)
-	assert.True(t, factoryDryRun.dryRun)
-}
-
-func TestCRStatusCheckerFactory_GetStatusChecker(t *testing.T) {
-	factory := NewCRStatusCheckerFactory(nil, nil, false)
+func TestCheckCondition(t *testing.T) {
+	cfg := &config.MaintenanceResource{
+		CompleteConditionType: "Completed",
+	}
+	checker := NewCRStatusChecker(nil, nil, cfg, false)
 
 	tests := []struct {
-		name        string
-		action      protos.RecommendedAction
-		expectError bool
+		name     string
+		cr       *unstructured.Unstructured
+		expected bool
 	}{
 		{
-			name:        "COMPONENT_RESET returns RebootNode checker",
-			action:      protos.RecommendedAction_COMPONENT_RESET,
-			expectError: false,
-		},
-		{
-			name:        "RESTART_VM returns RebootNode checker",
-			action:      protos.RecommendedAction_RESTART_VM,
-			expectError: false,
-		},
-		{
-			name:        "RESTART_BM returns RebootNode checker",
-			action:      protos.RecommendedAction_RESTART_BM,
-			expectError: false,
-		},
-		{
-			name:        "CONTACT_SUPPORT returns error (no checker available)",
-			action:      protos.RecommendedAction_CONTACT_SUPPORT,
-			expectError: true,
-		},
-		{
-			name:        "NONE returns error (no checker available)",
-			action:      protos.RecommendedAction_NONE,
-			expectError: true,
-		},
-		{
-			name:        "UNKNOWN returns error (no checker available)",
-			action:      protos.RecommendedAction_UNKNOWN,
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checker, err := factory.GetStatusChecker(tt.action)
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Nil(t, checker)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, checker)
-				assert.IsType(t, &RebootNodeCRStatusChecker{}, checker)
-			}
-		})
-	}
-}
-
-func TestNewRebootNodeCRStatusChecker(t *testing.T) {
-	checker := NewRebootNodeCRStatusChecker(nil, nil, false)
-	assert.NotNil(t, checker)
-	assert.False(t, checker.dryRun)
-
-	checkerDryRun := NewRebootNodeCRStatusChecker(nil, nil, true)
-	assert.NotNil(t, checkerDryRun)
-	assert.True(t, checkerDryRun.dryRun)
-}
-
-func TestExtractRebootNodeStatus(t *testing.T) {
-	checker := NewRebootNodeCRStatusChecker(nil, nil, false)
-
-	tests := []struct {
-		name           string
-		cr             *unstructured.Unstructured
-		expectedStatus CRStatus
-		expectError    bool
-	}{
-		{
-			name: "CR with no status returns InProgress",
+			name: "no status returns skip - in progress",
 			cr: &unstructured.Unstructured{
 				Object: map[string]any{
-					"metadata": map[string]any{
-						"name": "test-cr",
-					},
+					"metadata": map[string]any{"name": "test-cr"},
 				},
 			},
-			expectedStatus: CRStatusInProgress,
-			expectError:    false,
+			expected: true,
 		},
 		{
-			name: "CR with succeeded condition and completion time returns Succeeded",
+			name: "condition true returns allow create - success",
 			cr: &unstructured.Unstructured{
 				Object: map[string]any{
-					"metadata": map[string]any{
-						"name": "test-cr",
-					},
 					"status": map[string]any{
-						"completionTime": "2024-01-01T00:00:00Z",
 						"conditions": []any{
 							map[string]any{
-								"type":   "SignalSent",
-								"status": "True",
-							},
-							map[string]any{
-								"type":   "NodeReady",
+								"type":   "Completed",
 								"status": "True",
 							},
 						},
 					},
 				},
 			},
-			expectedStatus: CRStatusSucceeded,
-			expectError:    false,
+			expected: false,
 		},
 		{
-			name: "CR with failed signal send returns Failed",
+			name: "condition false returns allow create - failed",
 			cr: &unstructured.Unstructured{
 				Object: map[string]any{
-					"metadata": map[string]any{
-						"name": "test-cr",
-					},
 					"status": map[string]any{
-						"completionTime": "2024-01-01T00:00:00Z",
 						"conditions": []any{
 							map[string]any{
-								"type":   "SignalSent",
-								"status": "False",
-								"reason": "Failed",
-							},
-						},
-					},
-				},
-			},
-			expectedStatus: CRStatusFailed,
-			expectError:    false,
-		},
-		{
-			name: "CR with node not ready and completion time returns Failed",
-			cr: &unstructured.Unstructured{
-				Object: map[string]any{
-					"metadata": map[string]any{
-						"name": "test-cr",
-					},
-					"status": map[string]any{
-						"completionTime": "2024-01-01T00:00:00Z",
-						"conditions": []any{
-							map[string]any{
-								"type":   "SignalSent",
-								"status": "True",
-							},
-							map[string]any{
-								"type":   "NodeReady",
+								"type":   "Completed",
 								"status": "False",
 							},
 						},
 					},
 				},
 			},
-			expectedStatus: CRStatusFailed,
-			expectError:    false,
+			expected: false,
 		},
 		{
-			name: "CR with signal sent but not complete returns InProgress",
+			name: "condition unknown returns skip - in progress",
 			cr: &unstructured.Unstructured{
 				Object: map[string]any{
-					"metadata": map[string]any{
-						"name": "test-cr",
-					},
 					"status": map[string]any{
 						"conditions": []any{
 							map[string]any{
-								"type":   "SignalSent",
+								"type":   "Completed",
+								"status": "Unknown",
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "condition not found returns skip - in progress",
+			cr: &unstructured.Unstructured{
+				Object: map[string]any{
+					"status": map[string]any{
+						"conditions": []any{
+							map[string]any{
+								"type":   "SomeOtherCondition",
 								"status": "True",
 							},
 						},
 					},
 				},
 			},
-			expectedStatus: CRStatusInProgress,
-			expectError:    false,
+			expected: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, err := checker.extractRebootNodeStatus(tt.cr)
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedStatus, status)
-			}
-		})
-	}
-}
-
-func TestParseRebootConditions(t *testing.T) {
-	tests := []struct {
-		name                 string
-		conditions           []any
-		isComplete           bool
-		expectedSignalStatus string
-		expectedNodeStatus   string
-		expectedEarlyStatus  *CRStatus
-	}{
-		{
-			name: "signal sent and node ready",
-			conditions: []any{
-				map[string]any{
-					"type":   "SignalSent",
-					"status": "True",
-				},
-				map[string]any{
-					"type":   "NodeReady",
-					"status": "True",
-				},
-			},
-			isComplete:           false,
-			expectedSignalStatus: "True",
-			expectedNodeStatus:   "True",
-			expectedEarlyStatus:  nil,
-		},
-		{
-			name: "signal failed to send with completion returns early fail",
-			conditions: []any{
-				map[string]any{
-					"type":   "SignalSent",
-					"status": "False",
-					"reason": "Failed",
-				},
-			},
-			isComplete:           true,
-			expectedSignalStatus: "False",
-			expectedNodeStatus:   "",
-			expectedEarlyStatus:  func() *CRStatus { s := CRStatusFailed; return &s }(),
-		},
-		{
-			name: "node not ready with completion does not return early fail",
-			conditions: []any{
-				map[string]any{
-					"type":   "NodeReady",
-					"status": "False",
-					"reason": "Failed",
-				},
-			},
-			isComplete:           true,
-			expectedSignalStatus: "",
-			expectedNodeStatus:   "False",
-			expectedEarlyStatus:  nil, // NodeReady failures don't cause early exit
-		},
-		{
-			name:                 "empty conditions",
-			conditions:           []any{},
-			isComplete:           false,
-			expectedSignalStatus: "",
-			expectedNodeStatus:   "",
-			expectedEarlyStatus:  nil,
-		},
-		{
-			name: "invalid condition type",
-			conditions: []any{
-				"invalid",
-			},
-			isComplete:           false,
-			expectedSignalStatus: "",
-			expectedNodeStatus:   "",
-			expectedEarlyStatus:  nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			signalStatus, nodeStatus, earlyStatus := parseRebootConditions(tt.conditions, tt.isComplete)
-			assert.Equal(t, tt.expectedSignalStatus, signalStatus)
-			assert.Equal(t, tt.expectedNodeStatus, nodeStatus)
-			if tt.expectedEarlyStatus == nil {
-				assert.Nil(t, earlyStatus)
-			} else {
-				require.NotNil(t, earlyStatus)
-				assert.Equal(t, *tt.expectedEarlyStatus, *earlyStatus)
-			}
-		})
-	}
-}
-
-func TestDetermineRebootStatus(t *testing.T) {
-	tests := []struct {
-		name            string
-		signalStatus    string
-		nodeReadyStatus string
-		isComplete      bool
-		expectedStatus  CRStatus
-	}{
-		{
-			name:            "both conditions true and complete = Succeeded",
-			signalStatus:    "True",
-			nodeReadyStatus: "True",
-			isComplete:      true,
-			expectedStatus:  CRStatusSucceeded,
-		},
-		{
-			name:            "signal true, node false, complete = Failed",
-			signalStatus:    "True",
-			nodeReadyStatus: "False",
-			isComplete:      true,
-			expectedStatus:  CRStatusFailed,
-		},
-		{
-			name:            "signal false, complete = InProgress (signal not true yet)",
-			signalStatus:    "False",
-			nodeReadyStatus: "",
-			isComplete:      true,
-			expectedStatus:  CRStatusInProgress,
-		},
-		{
-			name:            "signal true, no node status, complete = InProgress (waiting for node ready)",
-			signalStatus:    "True",
-			nodeReadyStatus: "",
-			isComplete:      true,
-			expectedStatus:  CRStatusInProgress,
-		},
-		{
-			name:            "signal true, not complete = InProgress",
-			signalStatus:    "True",
-			nodeReadyStatus: "",
-			isComplete:      false,
-			expectedStatus:  CRStatusInProgress,
-		},
-		{
-			name:            "no conditions, not complete = InProgress",
-			signalStatus:    "",
-			nodeReadyStatus: "",
-			isComplete:      false,
-			expectedStatus:  CRStatusInProgress,
-		},
-		{
-			name:            "no conditions, complete = InProgress (no signal status means not ready)",
-			signalStatus:    "",
-			nodeReadyStatus: "",
-			isComplete:      true,
-			expectedStatus:  CRStatusInProgress,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			status := determineRebootStatus(tt.signalStatus, tt.nodeReadyStatus, tt.isComplete)
-			assert.Equal(t, tt.expectedStatus, status)
+			result := checker.checkCondition(tt.cr)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

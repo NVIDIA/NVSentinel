@@ -19,6 +19,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Status constants for metrics
+const (
+	StatusSuccess = "success"
+	StatusFailed  = "failed"
+)
+
 // --- Main Monitor Metrics ---
 
 var (
@@ -127,19 +133,12 @@ var (
 		},
 		[]string{"csp"}, // gcp, aws
 	)
-	MainDatastoreUpsertSuccess = promauto.NewCounterVec(
+	MainDatastoreUpsert = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "csp_health_monitor_main_datastore_upsert_success_total",
-			Help: "Total number of successful maintenance event upserts.",
+			Name: "csp_health_monitor_main_datastore_upsert_total",
+			Help: "Total number of maintenance event upserts by status.",
 		},
-		[]string{"csp"}, // gcp, aws
-	)
-	MainDatastoreUpsertErrors = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "csp_health_monitor_main_datastore_upsert_errors_total",
-			Help: "Total number of errors during maintenance event upserts.",
-		},
-		[]string{"csp"}, // gcp, aws
+		[]string{"csp", "status"}, // gcp/aws, success/failed
 	)
 )
 

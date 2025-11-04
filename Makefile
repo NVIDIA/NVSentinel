@@ -665,7 +665,24 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 		echo "Error: tilt is not installed. Please install from https://tilt.dev/"; \
 		exit 1; \
 	fi
-	tilt ci -f tilt/Tiltfile --timeout=10m
+	@echo "Starting Tilt with SKIP_KWOK_NODES_IN_TILT=1 (with retry logic)..."
+	@for i in 1 2 3; do \
+		echo "Attempt $$i of 3..."; \
+		if SKIP_KWOK_NODES_IN_TILT=1 tilt ci -f tilt/Tiltfile --timeout=10m; then \
+			echo "Tilt CI succeeded on attempt $$i"; \
+			break; \
+		else \
+			if [ $$i -lt 3 ]; then \
+				echo "Tilt CI failed on attempt $$i, retrying in 10 seconds..."; \
+				sleep 10; \
+			else \
+				echo "Tilt CI failed after 3 attempts"; \
+				exit 1; \
+			fi; \
+		fi; \
+	done
+	@echo "Creating KWOK nodes"
+	@bash tilt/create-kwok-nodes.sh
 	@echo "Waiting for all deployments to be ready..."
 	@kubectl get deployments --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
 		echo "Waiting for deployment $$name in namespace $$ns..."; \

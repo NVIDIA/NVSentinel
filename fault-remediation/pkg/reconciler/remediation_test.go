@@ -21,6 +21,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
@@ -219,11 +220,15 @@ func TestNewK8sClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, TemplateData{
-				Namespace:         "dgxc-janitor",
-				Version:           "v1alpha1",
-				ApiGroup:          "janitor.dgxc.nvidia.com",
 				TemplateMountPath: "templates",
 				TemplateFileName:  "rebootnode-template.yaml",
+				MaintenanceResource: config.MaintenanceResource{
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "RebootNode",
+					CompleteConditionType: "NodeReady",
+				},
 			})
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -311,13 +316,15 @@ spec:
 			mockMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 			client := &FaultRemediationClient{
 				clientset:  mockClient,
-				kubeClient: nil, // Not needed for this test since it only tests maintenance resource creation
+				kubeClient: nil,
 				restMapper: mockMapper,
 				dryRunMode: []string{},
 				template:   tmpl,
 				templateData: TemplateData{
-					Version:  "v1alpha1",
-					ApiGroup: "janitor.dgxc.nvidia.com",
+					MaintenanceResource: config.MaintenanceResource{
+						Version:  "v1alpha1",
+						ApiGroup: "janitor.dgxc.nvidia.com",
+					},
 				},
 			}
 			if tt.dryRun {

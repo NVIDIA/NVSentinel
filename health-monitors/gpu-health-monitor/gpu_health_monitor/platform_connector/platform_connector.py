@@ -111,7 +111,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events.append(health_event)
 
             # Clear metric for connectivity failure
-            metrics.dcgm_health_active_fatal_health_events.labels(event_type=check_name, gpu_id="").set(0)
+            metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(0)
 
         if len(health_events):
             try:
@@ -191,14 +191,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     metadata={"SerialNumber": serials[gpu_id]},
                                 )
                             )
-                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
-                                metrics.dcgm_health_active_non_fatal_health_events.labels(
-                                    event_type=check_name, gpu_id=gpu_id
-                                ).set(1)
-                            else:
-                                metrics.dcgm_health_active_fatal_health_events.labels(
-                                    event_type=check_name, gpu_id=gpu_id
-                                ).set(1)
+                            severity = (
+                                "non_fatal"
+                                if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal"
+                                else "fatal"
+                            )
+                            metrics.dcgm_health_active_events.labels(
+                                event_type=check_name, gpu_id=gpu_id, severity=severity
+                            ).set(1)
                     else:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -236,14 +236,14 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                         metadata={"SerialNumber": serials[gpu_id]},
                                     )
                                 )
-                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
-                                metrics.dcgm_health_active_non_fatal_health_events.labels(
-                                    event_type=check_name, gpu_id=gpu_id
-                                ).set(0)
-                            else:
-                                metrics.dcgm_health_active_fatal_health_events.labels(
-                                    event_type=check_name, gpu_id=gpu_id
-                                ).set(0)
+                            severity = (
+                                "non_fatal"
+                                if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal"
+                                else "fatal"
+                            )
+                            metrics.dcgm_health_active_events.labels(
+                                event_type=check_name, gpu_id=gpu_id, severity=severity
+                            ).set(0)
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:
@@ -268,14 +268,13 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 try:
                     stub.HealthEventOccurredV1(platformconnector_pb2.HealthEvents(events=health_events, version=1))
                     metrics.health_events_insertion_to_uds_succeed.inc()
-                    metrics.health_events_insertion_to_uds_error.set(0.0)
                     return True
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event {health_events} to UDS: {e}")
                     sleep(delay)
                     delay *= 1.5
                     continue
-        metrics.health_events_insertion_to_uds_error.set(1.0)
+        metrics.health_events_insertion_to_uds_error.inc()
         # Remove failed health events from entity cache
         for health_event in health_events:
             if health_event.checkName == "GpuDcgmConnectivityFailure":
@@ -326,7 +325,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     metadata={"SerialNumber": ""},
                 )
                 health_events.append(health_event)
-                metrics.dcgm_health_active_fatal_health_events.labels(event_type=check_name, gpu_id="").set(1)
+                metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(1)
 
             if len(health_events):
                 try:

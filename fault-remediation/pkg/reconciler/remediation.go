@@ -27,6 +27,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -52,26 +53,24 @@ const (
 )
 
 type FaultRemediationClient struct {
-	clientset            dynamic.Interface
-	kubeClient           kubernetes.Interface
-	restMapper           *restmapper.DeferredDiscoveryRESTMapper
-	dryRunMode           []string
-	template             *template.Template
-	templateData         TemplateData
-	annotationManager    NodeAnnotationManagerInterface
-	statusCheckerFactory *crstatus.CRStatusCheckerFactory
+	clientset         dynamic.Interface
+	kubeClient        kubernetes.Interface
+	restMapper        *restmapper.DeferredDiscoveryRESTMapper
+	dryRunMode        []string
+	template          *template.Template
+	templateData      TemplateData
+	annotationManager NodeAnnotationManagerInterface
+	statusChecker     *crstatus.CRStatusChecker
 }
 
 // TemplateData holds the data to be inserted into the template
 type TemplateData struct {
 	NodeName          string
-	Namespace         string
-	Version           string
-	ApiGroup          string
-	TemplateMountPath string
-	TemplateFileName  string
 	HealthEventID     string
 	RecommendedAction protos.RecommendedAction
+	TemplateMountPath string
+	TemplateFileName  string
+	config.MaintenanceResource
 }
 
 // nolint: cyclop // todo
@@ -149,23 +148,22 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	// Initialize annotation manager
 	client.annotationManager = NewNodeAnnotationManager(kubeClient)
 
-	// Initialize status checker factory
-	client.statusCheckerFactory = crstatus.NewCRStatusCheckerFactory(
-		clientset, mapper, dryRun)
+	client.statusChecker = crstatus.NewCRStatusChecker(
+		clientset,
+		mapper,
+		&templateData.MaintenanceResource,
+		dryRun,
+	)
 
 	return client, kubeClient, nil
 }
 
-// GetAnnotationManager returns the annotation manager for the client
 func (c *FaultRemediationClient) GetAnnotationManager() NodeAnnotationManagerInterface {
 	return c.annotationManager
 }
 
-// GetStatusCheckerForAction returns the appropriate status checker for the given action
-func (c *FaultRemediationClient) GetStatusCheckerForAction(
-	action protos.RecommendedAction,
-) (crstatus.CRStatusChecker, error) {
-	return c.statusCheckerFactory.GetStatusChecker(action)
+func (c *FaultRemediationClient) GetStatusChecker() *crstatus.CRStatusChecker {
+	return c.statusChecker
 }
 
 func (c *FaultRemediationClient) CreateMaintenanceResource(
@@ -288,12 +286,14 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
+		logCollectorErrors.WithLabelValues("manifest_read_error", nodeName).Inc()
 		return fmt.Errorf("failed to read log collector manifest: %w", err)
 	}
 
 	// Create Job from manifest using strong types
 	job := &batchv1.Job{}
 	if err := yaml.Unmarshal(content, job); err != nil {
+		logCollectorErrors.WithLabelValues("manifest_unmarshal_error", nodeName).Inc()
 		return fmt.Errorf("failed to unmarshal Job manifest: %w", err)
 	}
 
@@ -303,6 +303,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	// Create Job using typed client
 	created, err := c.kubeClient.BatchV1().Jobs(job.Namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
+		logCollectorErrors.WithLabelValues("job_creation_error", nodeName).Inc()
 		return fmt.Errorf("failed to create Job: %w", err)
 	}
 
@@ -384,6 +385,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 		},
 	})
 	if err != nil {
+		logCollectorErrors.WithLabelValues("event_handler_error", nodeName).Inc()
 		return fmt.Errorf("failed to add event handler for job %s: %w", created.Name, err)
 	}
 
@@ -395,6 +397,8 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	// Wait for cache to sync
 	if !cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced) {
 		close(stopCh) // Stop informer on sync failure
+		logCollectorErrors.WithLabelValues("cache_sync_error", nodeName).Inc()
+
 		return fmt.Errorf("failed to sync cache for job informer")
 	}
 
@@ -402,6 +406,9 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	select {
 	case <-watchCtx.Done():
 		close(stopCh)
+		logCollectorJobs.WithLabelValues(nodeName, "timeout").Inc()
+		logCollectorErrors.WithLabelValues("job_timeout", nodeName).Inc()
+
 		return fmt.Errorf("timeout waiting for log collector job %s to complete", created.Name)
 	case result := <-done:
 		close(stopCh)

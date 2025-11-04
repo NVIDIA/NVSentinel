@@ -24,6 +24,8 @@ data:
     namespace = {{ .Values.maintenance.namespace | quote }}
     version = {{ .Values.maintenance.version | quote }}
     apiGroup = {{ .Values.maintenance.apiGroup | quote }}
+    kind = {{ .Values.maintenance.kind | quote }}
+    completeConditionType = {{ .Values.maintenance.completeConditionType | quote }}
     
     [template]
     mountPath = "/etc/config"

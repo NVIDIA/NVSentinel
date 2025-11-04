@@ -20,6 +20,7 @@ import (
 
 	"github.com/golang/protobuf/ptypes/empty"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -35,7 +36,6 @@ PlatformConnectorServer. it will get really complex.Hence, ignoring this file as
 
 var ringBufferQueue []*ringbuffer.RingBuffer
 
-// prometheus metrics
 var (
 	healthEventsReceived = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "platform_connector_health_events_received_total",
@@ -45,6 +45,7 @@ var (
 
 type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
+	Processor nodemetadata.Processor
 }
 
 func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
@@ -52,6 +53,16 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 	slog.Info("Health events received", "events", he)
 
 	healthEventsReceived.Add(float64(len(he.Events)))
+
+	if p.Processor != nil {
+		for i := range he.Events {
+			if err := p.Processor.AugmentHealthEvent(ctx, he.Events[i]); err != nil {
+				slog.Warn("Failed to augment health event",
+					"nodeName", he.Events[i].NodeName,
+					"error", err)
+			}
+		}
+	}
 
 	for _, buffer := range ringBufferQueue {
 		buffer.Enqueue(he)

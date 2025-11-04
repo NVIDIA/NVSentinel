@@ -60,7 +60,7 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 		m.queue.Forget(nodeEvent)
 	}
 
-	metrics.NodeQueueDepth.WithLabelValues(nodeEvent.NodeName).Set(float64(m.queue.Len()))
+	metrics.QueueDepth.Set(float64(m.queue.Len()))
 
 	return true
 }

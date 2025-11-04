@@ -66,19 +66,24 @@ helm_resource(
 namespace_create('gpu-operator')
 namespace_create('nvsentinel')
 
-# Create regular GPU nodes (all NUM_GPU_NODES are regular nodes)
-kwok_node_template = str(read_file('./kwok-node-template.yaml'))
-for i in range(num_gpu_nodes):
-    node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
-    k8s_yaml(blob(node_yaml))
+skip_kwok_nodes = os.getenv('SKIP_KWOK_NODES_IN_TILT', '0') == '1'
 
-# Create separate Kata test nodes (in addition to regular nodes)
-# These are named differently (kwok-kata-test-node-*) to avoid conflicts
-# Set NUM_KATA_TEST_NODES=0 to disable kata testing
-kwok_kata_test_node_template = str(read_file('./kwok-kata-test-node-template.yaml'))
-for i in range(num_kata_test_nodes):
-    node_yaml = kwok_kata_test_node_template.replace('PLACEHOLDER', str(i))
-    k8s_yaml(blob(node_yaml))
+if not skip_kwok_nodes:
+    # Create regular GPU nodes (all NUM_GPU_NODES are regular nodes)
+    kwok_node_template = str(read_file('./kwok-node-template.yaml'))
+    for i in range(num_gpu_nodes):
+        node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
+        k8s_yaml(blob(node_yaml))
+
+    # Create separate Kata test nodes (in addition to regular nodes)
+    # These are named differently (kwok-kata-test-node-*) to avoid conflicts
+    # Set NUM_KATA_TEST_NODES=0 to disable kata testing
+    kwok_kata_test_node_template = str(read_file('./kwok-kata-test-node-template.yaml'))
+    for i in range(num_kata_test_nodes):
+        node_yaml = kwok_kata_test_node_template.replace('PLACEHOLDER', str(i))
+        k8s_yaml(blob(node_yaml))
+else:
+    print("Skipping KWOK node creation in Tilt (SKIP_KWOK_NODES_IN_TILT=1)")
 
 k8s_yaml('./nvidia-driver-daemonset.yaml')
 k8s_yaml('./nvidia-dcgm-daemonset.yaml')
@@ -136,17 +141,54 @@ k8s_resource(
 )
 
 # Group all KWOK nodes (regular GPU nodes + separate kata test nodes) for resource management
-kwok_regular_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
-kwok_kata_test_node_names = ['kwok-kata-test-node-' + str(i) + ':node' for i in range(num_kata_test_nodes)]
-kwok_all_node_names = kwok_regular_node_names + kwok_kata_test_node_names
+if not skip_kwok_nodes:
+    kwok_regular_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
+    kwok_kata_test_node_names = ['kwok-kata-test-node-' + str(i) + ':node' for i in range(num_kata_test_nodes)]
+    kwok_all_node_names = kwok_regular_node_names + kwok_kata_test_node_names
+
+    k8s_resource(
+        new_name='kwok-fake-nodes',
+        objects=kwok_all_node_names,
+        resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation', 
+            'labeler', 'node-drainer', 'mongodb', 'simple-health-client'
+        ], 
+    )
 
 k8s_resource(
-    new_name='kwok-fake-nodes',
-    objects=kwok_all_node_names,
-    resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation', 
-        'labeler', 'node-drainer', 'mongodb', 'simple-health-client'
-    ], 
+    'gpu-health-monitor-dcgm-4.x',
+    resource_deps=['platform-connectors']
 )
+
+k8s_resource(
+    'syslog-health-monitor-regular',
+    resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'simple-health-client',
+    resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'platform-connectors',
+    resource_deps=['mongodb']
+)
+
+k8s_resource(
+    'fault-quarantine',
+    resource_deps=['mongodb']
+)
+
+k8s_resource(
+    'node-drainer',
+    resource_deps=['mongodb']
+)
+
+k8s_resource(
+    'fault-remediation',
+    resource_deps=['mongodb']
+)
+
 k8s_resource(
     'kwok-stage-fast',
     pod_readiness='ignore',
@@ -156,6 +198,10 @@ k8s_resource(
     workload='gpu-health-monitor-dcgm-3.x',
     pod_readiness='ignore'
 )
+k8s_resource(
+    workload='syslog-health-monitor-kata',
+    pod_readiness='ignore'
+)
 
 # This is a workaround to ensure that pods are deleted with respect to finalizers
 # source: https://github.com/kubernetes-sigs/kwok/discussions/926#discussioncomment-8204558
@@ -163,5 +209,5 @@ k8s_yaml('./kwok-pod-delete-respect-finalizers.yaml')
 k8s_resource(
     new_name='kwok-pod-delete-stage',
     objects=['pod-delete:stage'],
-    resource_deps=['kwok']
+    resource_deps=['kwok', 'kwok-stage-fast']
 )

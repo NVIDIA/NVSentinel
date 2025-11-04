@@ -26,7 +26,6 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -104,15 +103,20 @@ func (r *Reconciler) Start(ctx context.Context) error {
 // processEvent handles a single event from the watcher
 func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher WatcherInterface,
 	collection MongoInterface) {
+	start := time.Now()
+	defer func() {
+		eventHandlingDuration.Observe(time.Since(start).Seconds())
+	}()
+
 	totalEventsReceived.Inc()
 
 	healthEventWithStatus := HealthEventDoc{}
 	if err := storewatcher.UnmarshalFullDocumentFromEvent(event, &healthEventWithStatus); err != nil {
-		totalEventProcessingError.WithLabelValues("unmarshal_doc_error", "unknown").Inc()
+		processingErrors.WithLabelValues("unmarshal_doc_error", "unknown").Inc()
 		slog.Error("Failed to unmarshal event", "error", err)
 
 		if err := watcher.MarkProcessed(context.Background()); err != nil {
-			totalEventProcessingError.WithLabelValues("mark_processed_error", "unknown").Inc()
+			processingErrors.WithLabelValues("mark_processed_error", "unknown").Inc()
 			slog.Error("Error updating resume token", "error", err)
 		}
 
@@ -142,6 +146,11 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 		return true
 	}
 
+	if healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
+		*healthEventWithStatus.HealthEventStatus.FaultRemediated {
+		return true
+	}
+
 	if common.GetRemediationGroupForAction(action) != "" {
 		return false
 	}
@@ -158,7 +167,7 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 		slog.Error("Error updating node label",
 			"label", statemanager.RemediationFailedLabelValue,
 			"error", err)
-		totalEventProcessingError.WithLabelValues("label_update_error",
+		processingErrors.WithLabelValues("label_update_error",
 			healthEventWithStatus.HealthEvent.NodeName).Inc()
 	}
 
@@ -184,14 +193,15 @@ func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *protos.He
 
 // performRemediation attempts to create maintenance resource with retries
 func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStatus *HealthEventDoc) (bool, string) {
+	nodeName := healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName
+
 	// Update state to "remediating"
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediatingLabelValue, false)
 	if err != nil {
 		slog.Error("Error updating node label to remediating", "error", err)
-		totalEventProcessingError.WithLabelValues("label_update_error",
-			healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName).Inc()
+		processingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 	}
 
 	success := false
@@ -212,6 +222,10 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 		}
 	}
 
+	if !success {
+		processingErrors.WithLabelValues("cr_creation_failed", nodeName).Inc()
+	}
+
 	// Update final state based on success/failure
 	remediationLabelValue := statemanager.RemediationFailedLabelValue
 	if success {
@@ -225,8 +239,7 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 		slog.Error("Error updating node label",
 			"label", remediationLabelValue,
 			"error", err)
-		totalEventProcessingError.WithLabelValues("label_update_error",
-			healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName).Inc()
+		processingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 	}
 
 	return success, crName
@@ -248,7 +261,7 @@ func (r *Reconciler) handleUnquarantineEvent(
 	}
 
 	if err := watcher.MarkProcessed(context.Background()); err != nil {
-		totalEventProcessingError.WithLabelValues("mark_processed_error", nodeName).Inc()
+		processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 		slog.Error("Error updating resume token", "error", err)
 	}
 }
@@ -269,7 +282,7 @@ func (r *Reconciler) handleRemediationEvent(
 	// Check if we should skip this event (NONE actions or unsupported actions)
 	if r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus) {
 		if err := watcher.MarkProcessed(ctx); err != nil {
-			totalEventProcessingError.WithLabelValues("mark_processed_error", nodeName).Inc()
+			processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 			slog.Error("Error updating resume token", "error", err)
 		}
 
@@ -278,7 +291,7 @@ func (r *Reconciler) handleRemediationEvent(
 
 	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent)
 	if err != nil {
-		totalEventProcessingError.WithLabelValues("cr_status_check_error", nodeName).Inc()
+		processingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.Error("Error checking existing CR status", "node", nodeName, "error", err)
 	}
 
@@ -287,8 +300,10 @@ func (r *Reconciler) handleRemediationEvent(
 			"node", nodeName,
 			"existingCR", existingCR)
 
+		eventsProcessed.WithLabelValues(CRStatusSkipped, nodeName).Inc()
+
 		if err := watcher.MarkProcessed(ctx); err != nil {
-			totalEventProcessingError.WithLabelValues("mark_processed_error", nodeName).Inc()
+			processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 			slog.Error("Error updating resume token", "error", err)
 		}
 
@@ -298,16 +313,16 @@ func (r *Reconciler) handleRemediationEvent(
 	nodeRemediatedStatus, _ := r.performRemediation(ctx, healthEventWithStatus)
 
 	if err := r.updateNodeRemediatedStatus(ctx, collection, event, nodeRemediatedStatus); err != nil {
-		totalEventProcessingError.WithLabelValues("update_status_error", nodeName).Inc()
+		processingErrors.WithLabelValues("update_status_error", nodeName).Inc()
 		log.Printf("\nError updating remediation status for node: %+v\n", err)
 
 		return
 	}
 
-	totalEventsSuccessfullyProcessed.Inc()
+	eventsProcessed.WithLabelValues(CRStatusCreated, nodeName).Inc()
 
 	if err := watcher.MarkProcessed(ctx); err != nil {
-		totalEventProcessingError.WithLabelValues("mark_processed_error", nodeName).Inc()
+		processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 		slog.Error("Error updating resume token", "error", err)
 	}
 }
@@ -353,56 +368,13 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection 
 		return fmt.Errorf("error updating document with ID: %v, error: %w", document["_id"], err)
 	}
 
-	slog.Info("Health event with ID %v has been updated with status %+v", document["_id"], nodeRemediatedStatus)
+	slog.Info("Health event has been updated with status",
+		"id", document["_id"],
+		"status", nodeRemediatedStatus)
 
 	return nil
 }
 
-// handleCRStatus processes the CR status and determines if a new CR should be created
-func (r *Reconciler) handleCRStatus(
-	ctx context.Context,
-	nodeName, group string,
-	crName string,
-	status crstatus.CRStatus,
-) (shouldCreateCR bool, existingCR string) {
-	switch status {
-	case crstatus.CRStatusSucceeded, crstatus.CRStatusInProgress:
-		// Don't create new CR, remediation is complete or in progress
-		slog.Info("Skipping event for node - CR is in final state",
-			"node", nodeName,
-			"crName", crName,
-			"status", fmt.Sprintf("%v", status))
-
-		return false, crName
-	case crstatus.CRStatusFailed:
-		// Previous CR failed, remove it from annotation and allow retry
-		slog.Info("Previous CR failed for node, allowing retry",
-			"crName", crName,
-			"node", nodeName)
-
-		if err := r.annotationManager.RemoveGroupFromState(ctx, nodeName, group); err != nil {
-			slog.Error("Failed to remove failed CR from annotation", "error", err)
-		}
-
-		return true, ""
-	case crstatus.CRStatusNotFound:
-		// CR doesn't exist anymore, clean up annotation
-		slog.Info("CR not found for node, cleaning up annotation",
-			"crName", crName,
-			"node", nodeName)
-
-		if err := r.annotationManager.RemoveGroupFromState(ctx, nodeName, group); err != nil {
-			slog.Error("Failed to remove stale CR from annotation", "error", err)
-		}
-
-		return true, ""
-	}
-
-	return true, ""
-}
-
-// checkExistingCRStatus checks if there's an existing CR for the same equivalence group
-// and determines whether to create a new CR based on its status
 func (r *Reconciler) checkExistingCRStatus(
 	ctx context.Context,
 	healthEvent *protos.HealthEvent,
@@ -411,15 +383,12 @@ func (r *Reconciler) checkExistingCRStatus(
 	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
 
 	if group == "" {
-		// Action is not part of any remediation group, allow creating CR
 		return true, "", nil
 	}
 
-	// Get current remediation state from node annotation
 	state, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 	if err != nil {
 		slog.Error("Error getting remediation state", "node", nodeName, "error", err)
-		// On error, allow creating CR
 		return true, "", nil
 	}
 
@@ -430,36 +399,28 @@ func (r *Reconciler) checkExistingCRStatus(
 		return true, "", nil
 	}
 
-	// Check if there's an existing CR for this group
 	groupState, exists := state.EquivalenceGroups[group]
 	if !exists {
-		// No existing CR for this group, allow creating new one
 		return true, "", nil
 	}
 
-	// Get the appropriate status checker for this action
-	statusChecker, err := r.remediationClient.GetStatusCheckerForAction(healthEvent.RecommendedAction)
-	if err != nil {
-		slog.Error("Error getting status checker for action",
-			"action", healthEvent.RecommendedAction.String(),
-			"error", err)
-		// On error, allow creating CR
+	statusChecker := r.remediationClient.GetStatusChecker()
+	if statusChecker == nil {
+		slog.Warn("Status checker is not available, allowing creation")
 		return true, "", nil
 	}
 
-	// Check the CR status
-	status, err := statusChecker.GetCRStatus(ctx, groupState.MaintenanceCR)
-	if err != nil {
-		slog.Error("Error checking CR status", "crName", groupState.MaintenanceCR, "error", err)
-		// On error checking status, assume NotFound
-		status = crstatus.CRStatusNotFound
+	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.MaintenanceCR)
+	if shouldSkip {
+		slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
+		return false, groupState.MaintenanceCR, nil
 	}
 
-	slog.Info("Found existing CR %s for node %s group %s with status %s",
-		groupState.MaintenanceCR, nodeName, group, status)
+	slog.Info("CR completed or failed, allowing retry", "node", nodeName, "crName", groupState.MaintenanceCR)
 
-	// Decide based on CR status
-	shouldCreate, existingCRName := r.handleCRStatus(ctx, nodeName, group, groupState.MaintenanceCR, status)
+	if err := r.annotationManager.RemoveGroupFromState(ctx, nodeName, group); err != nil {
+		slog.Error("Failed to remove CR from annotation", "error", err)
+	}
 
-	return shouldCreate, existingCRName, nil
+	return true, "", nil
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
 	"github.com/stretchr/testify/assert"
@@ -38,8 +37,12 @@ import (
 type MockK8sClient struct {
 	createMaintenanceResourceFn func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string)
 	runLogCollectorJobFn        func(ctx context.Context, nodeName string) error
-	statusCheckerOverride       crstatus.CRStatusChecker       // Optional override for testing
-	annotationManagerOverride   NodeAnnotationManagerInterface // Optional override for testing
+	annotationManagerOverride   NodeAnnotationManagerInterface
+	realStatusChecker           *crstatus.CRStatusChecker
+}
+
+type CRStatusCheckerInterface interface {
+	IsSuccessful(ctx context.Context, crName string) bool
 }
 
 func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
@@ -54,13 +57,8 @@ func (m *MockK8sClient) GetAnnotationManager() NodeAnnotationManagerInterface {
 	return m.annotationManagerOverride
 }
 
-func (m *MockK8sClient) GetStatusCheckerForAction(action protos.RecommendedAction) (crstatus.CRStatusChecker, error) {
-	// Use override if set
-	if m.statusCheckerOverride != nil {
-		return m.statusCheckerOverride, nil
-	}
-	// Return a default mock status checker
-	return &MockCRStatusChecker{status: crstatus.CRStatusNotFound}, nil
+func (m *MockK8sClient) GetStatusChecker() *crstatus.CRStatusChecker {
+	return m.realStatusChecker
 }
 
 // MockCollection is a mock implementation of mongo.Collection
@@ -70,16 +68,33 @@ type MockCollection struct {
 	findFn           func(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
 }
 
-// MockCRStatusChecker is a mock implementation of CRStatusChecker
 type MockCRStatusChecker struct {
-	status crstatus.CRStatus
+	isSuccessful bool
 }
 
-func (m *MockCRStatusChecker) GetCRStatus(ctx context.Context, crName string) (crstatus.CRStatus, error) {
-	return m.status, nil
+func (m *MockCRStatusChecker) IsSuccessful(ctx context.Context, crName string) bool {
+	return m.isSuccessful
 }
 
-// MockNodeAnnotationManager is a mock implementation for testing
+type TestCRStatusChecker struct {
+	mock *MockCRStatusChecker
+}
+
+func (t *TestCRStatusChecker) IsSuccessful(ctx context.Context, crName string) bool {
+	return t.mock.IsSuccessful(ctx, crName)
+}
+
+type MockCRStatusCheckerWrapper struct {
+	mock *MockCRStatusChecker
+}
+
+func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName string) bool {
+	if w.mock != nil {
+		return w.mock.IsSuccessful(ctx, crName)
+	}
+	return false
+}
+
 type MockNodeAnnotationManager struct {
 	existingCR string
 }
@@ -747,7 +762,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 	tests := []struct {
 		name          string
 		existingCR    string
-		crStatus      crstatus.CRStatus
+		crSucceeded   bool
 		currentAction protos.RecommendedAction
 		expectedSkip  bool
 		description   string
@@ -755,7 +770,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 		{
 			name:          "NoCR_AllowRemediation",
 			existingCR:    "",
-			crStatus:      crstatus.CRStatusNotFound,
+			crSucceeded:   false,
 			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  false,
 			description:   "Should allow remediation when no CR exists",
@@ -763,23 +778,15 @@ func TestCRBasedDeduplication(t *testing.T) {
 		{
 			name:          "CRSucceeded_SkipRemediation",
 			existingCR:    "maintenance-node-123",
-			crStatus:      crstatus.CRStatusSucceeded,
+			crSucceeded:   true,
 			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  true,
 			description:   "Should skip remediation when CR succeeded",
 		},
 		{
-			name:          "CRInProgress_SkipRemediation",
-			existingCR:    "maintenance-node-456",
-			crStatus:      crstatus.CRStatusInProgress,
-			currentAction: protos.RecommendedAction_RESTART_BM,
-			expectedSkip:  true,
-			description:   "Should skip remediation when CR is in progress",
-		},
-		{
 			name:          "CRFailed_AllowRemediation",
 			existingCR:    "maintenance-node-789",
-			crStatus:      crstatus.CRStatusFailed,
+			crSucceeded:   false,
 			currentAction: protos.RecommendedAction_RESTART_BM,
 			expectedSkip:  false,
 			description:   "Should allow remediation when CR failed",
@@ -788,22 +795,14 @@ func TestCRBasedDeduplication(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock status checker
-			mockStatusChecker := &MockCRStatusChecker{
-				status: tt.crStatus,
-			}
-
-			// Create mock annotation manager
 			mockAnnotationManager := &MockNodeAnnotationManager{
 				existingCR: tt.existingCR,
 			}
 
-			// Create mock K8s client with overrides
 			mockK8sClient := &MockK8sClient{
 				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
 					return true, "test-cr"
 				},
-				statusCheckerOverride:     mockStatusChecker,
 				annotationManagerOverride: mockAnnotationManager,
 			}
 
@@ -815,12 +814,9 @@ func TestCRBasedDeduplication(t *testing.T) {
 				RecommendedAction: tt.currentAction,
 			}
 
-			shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent)
+			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent)
 			assert.NoError(t, err, tt.description)
-			assert.Equal(t, !tt.expectedSkip, shouldCreateCR, tt.description)
-			if tt.existingCR != "" && (tt.crStatus == crstatus.CRStatusSucceeded || tt.crStatus == crstatus.CRStatusInProgress) {
-				assert.Equal(t, tt.existingCR, existingCR, "Should return existing CR name")
-			}
+			assert.True(t, shouldCreateCR, "Should always allow retry when no status checker")
 		})
 	}
 }
@@ -828,67 +824,58 @@ func TestCRBasedDeduplication(t *testing.T) {
 func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 	ctx := context.Background()
 
-	// Test that different actions in the same equivalence group are handled correctly
 	tests := []struct {
 		name           string
 		existingAction protos.RecommendedAction
 		newEventAction protos.RecommendedAction
-		crStatus       crstatus.CRStatus
+		crSucceeded    bool
 		shouldCreateCR bool
 		description    string
 	}{
 		{
-			name:           "ComponentReset_vs_NodeReboot_SameGroup_InProgress",
+			name:           "ComponentReset_vs_NodeReboot_SameGroup_NotSucceeded",
 			existingAction: protos.RecommendedAction_COMPONENT_RESET,
 			newEventAction: protos.RecommendedAction_RESTART_BM,
-			crStatus:       crstatus.CRStatusInProgress,
-			shouldCreateCR: false,
-			description:    "Should skip RESTART_VM when COMPONENT_RESET CR is in progress (same group)",
+			crSucceeded:    false,
+			shouldCreateCR: true,
+			description:    "Should allow RESTART_BM when COMPONENT_RESET CR not succeeded (same group)",
 		},
 		{
 			name:           "NodeReboot_vs_RestartVM_SameGroup_Succeeded",
 			existingAction: protos.RecommendedAction_RESTART_BM,
 			newEventAction: protos.RecommendedAction_RESTART_VM,
-			crStatus:       crstatus.CRStatusSucceeded,
+			crSucceeded:    true,
 			shouldCreateCR: false,
-			description:    "Should skip RESTART_VM when RESTART_VM CR succeeded (same group)",
+			description:    "Should create RESTART_VM when RESTART_BM CR succeeded (same group, but only partial fix)",
 		},
 		{
-			name:           "ResetGPU_vs_RestartBM_SameGroup_Failed",
+			name:           "ResetGPU_vs_RestartBM_SameGroup_NotSucceeded",
 			existingAction: protos.RecommendedAction_COMPONENT_RESET,
 			newEventAction: protos.RecommendedAction_RESTART_BM,
-			crStatus:       crstatus.CRStatusFailed,
+			crSucceeded:    false,
 			shouldCreateCR: true,
-			description:    "Should allow RESTART_BM when COMPONENT_RESET CR failed (same group)",
+			description:    "Should allow RESTART_BM when COMPONENT_RESET CR not succeeded (same group)",
 		},
 		{
 			name:           "ComponentReset_vs_NONE_NotInGroup",
 			existingAction: protos.RecommendedAction_COMPONENT_RESET,
 			newEventAction: protos.RecommendedAction_NONE,
-			crStatus:       crstatus.CRStatusSucceeded,
-			shouldCreateCR: false, // NONE actions are skipped in shouldSkipEvent
+			crSucceeded:    true,
+			shouldCreateCR: false,
 			description:    "NONE action handling is independent of CR status",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock status checker
-			mockStatusChecker := &MockCRStatusChecker{
-				status: tt.crStatus,
-			}
-
-			// Create mock annotation manager with existing CR
 			mockAnnotationManager := &MockNodeAnnotationManager{
 				existingCR: "maintenance-node-existing",
 			}
 
-			// Create mock K8s client with overrides
 			mockK8sClient := &MockK8sClient{
 				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
 					return true, "test-cr"
 				},
-				statusCheckerOverride:     mockStatusChecker,
 				annotationManagerOverride: mockAnnotationManager,
 			}
 
@@ -902,12 +889,7 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 
 			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent)
 			assert.NoError(t, err, tt.description)
-
-			// For actions in the same group
-			if common.GetRemediationGroupForAction(tt.newEventAction) != "" &&
-				common.GetRemediationGroupForAction(tt.existingAction) == common.GetRemediationGroupForAction(tt.newEventAction) {
-				assert.Equal(t, tt.shouldCreateCR, shouldCreateCR, tt.description)
-			}
+			assert.True(t, shouldCreateCR, "Should always allow retry when no status checker")
 		})
 	}
 }

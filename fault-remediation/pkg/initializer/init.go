@@ -64,13 +64,15 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Log collector enabled")
 	}
 
-	k8sClient, clientSet, err := reconciler.NewK8sClient(params.KubeconfigPath, params.DryRun, reconciler.TemplateData{
-		Namespace:         tomlConfig.MaintenanceResource.Namespace,
-		Version:           tomlConfig.MaintenanceResource.Version,
-		ApiGroup:          tomlConfig.MaintenanceResource.ApiGroup,
-		TemplateMountPath: tomlConfig.Template.MountPath,
-		TemplateFileName:  tomlConfig.Template.FileName,
-	})
+	k8sClient, clientSet, err := reconciler.NewK8sClient(
+		params.KubeconfigPath,
+		params.DryRun,
+		reconciler.TemplateData{
+			TemplateMountPath:   tomlConfig.Template.MountPath,
+			TemplateFileName:    tomlConfig.Template.FileName,
+			MaintenanceResource: tomlConfig.MaintenanceResource,
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}

@@ -70,7 +70,9 @@ func (m *NodeAnnotationManager) patchNodeWithRetry(ctx context.Context, nodeName
 	return retry.OnError(retry.DefaultRetry, isRetryableError, func() error {
 		_, err := m.kubeClient.CoreV1().Nodes().Patch(ctx, nodeName, types.MergePatchType, patch, metav1.PatchOptions{})
 		if err != nil && isRetryableError(err) {
-			slog.Warn("Retryable error patching node %s annotation: %v. Retrying...", nodeName, err)
+			slog.Warn("Retryable error patching node annotation. Retrying...",
+				"node", nodeName,
+				"error", err)
 		}
 
 		if err != nil {

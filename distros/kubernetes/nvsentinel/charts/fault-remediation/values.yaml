@@ -48,6 +48,14 @@ maintenance:
   apiGroup: "janitor.dgxc.nvidia.com"
   # API version of the maintenance CRD
   version: "v1alpha1"
+  # Kind of the maintenance CRD
+  kind: "RebootNode"
+  # completeConditionType specifies which status condition to check for completion of maintenance. 
+  # If multiple faults occur on the same node in close proximity, the condition is checked to
+  # prevent creation of duplicate maintenance requests for the same operation. 
+  # If the status is True, then it is implied that the maintenance is completed a new CR should be created
+  # If the status is False, then it is implied that the maintenance has failed a new CR can be created
+  completeConditionType: "NodeReady"
   # Kubernetes namespace where maintenance resources will be created
   namespace: "nvsentinel"
   # Names of maintenance resource types used by the janitor controller

@@ -19,6 +19,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Status constants for metrics
+const (
+	StatusPassed = "passed"
+	StatusFailed = "failed"
+)
+
 var (
 	// Event Processing Metrics
 	TotalEventsReceived = promauto.NewCounter(
@@ -31,12 +37,6 @@ var (
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_events_successfully_processed_total",
 			Help: "Total number of events successfully processed.",
-		},
-	)
-	TotalEventsSkipped = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "fault_quarantine_events_skipped_total",
-			Help: "Total number of events received on already cordoned node",
 		},
 	)
 	ProcessingErrors = promauto.NewCounterVec(
@@ -104,21 +104,7 @@ var (
 			Name: "fault_quarantine_ruleset_evaluations_total",
 			Help: "Total number of ruleset evaluations.",
 		},
-		[]string{"ruleset"},
-	)
-	RulesetPassed = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "fault_quarantine_ruleset_passed_total",
-			Help: "Total number of ruleset evaluations that passed.",
-		},
-		[]string{"ruleset"},
-	)
-	RulesetFailed = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "fault_quarantine_ruleset_failed_total",
-			Help: "Total number of ruleset evaluations that failed.",
-		},
-		[]string{"ruleset"},
+		[]string{"ruleset", "status"},
 	)
 
 	// Performance Metrics

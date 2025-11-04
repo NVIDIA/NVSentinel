@@ -74,7 +74,7 @@ spec:
           - name: LOG_LEVEL
             value: "{{ .Values.logLevel }}"
           - name: LOG_COLLECTOR_MANIFEST_PATH
-            value: /etc/fault-remediation/templates/log-collector-job.yaml
+            value: /etc/config/log-collector-job.yaml
           - name: ENABLE_GCP_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableGcpSosCollection }}"
           - name: ENABLE_AWS_SOS_COLLECTION

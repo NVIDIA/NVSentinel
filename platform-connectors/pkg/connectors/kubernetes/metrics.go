@@ -19,36 +19,29 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Status constants for metrics
+const (
+	StatusSuccess = "success"
+	StatusFailed  = "failed"
+)
+
+// Operation constants for metrics
+const (
+	OperationCreate = "create"
+	OperationUpdate = "update"
+)
+
 // prometheus metrics
 var (
-	nodeConditionUpdateSuccessCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_condition_update_success_total",
-		Help: "The total number of successful node condition updates",
-	})
-	nodeConditionUpdateFailureCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_condition_update_failed_total",
-		Help: "The total number of failed node condition updates",
-	})
+	nodeConditionUpdateCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "k8s_platform_connector_node_condition_update_total",
+		Help: "The total number of node condition updates by status",
+	}, []string{"status"})
 
-	nodeEventCreationSuccessCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_event_creation_success_total",
-		Help: "The total number of successful node event creations",
-	}, []string{"node_name"})
-
-	nodeEventCreationFailureCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_event_creation_failed_total",
-		Help: "The total number of failed node event creations",
-	}, []string{"node_name"})
-
-	nodeEventUpdateSuccessCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_event_update_success_total",
-		Help: "The total number of successful node event updates",
-	}, []string{"node_name"})
-
-	nodeEventUpdateFailureCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "k8s_platform_connector_node_event_update_failed_total",
-		Help: "The total number of failed node event updates",
-	}, []string{"node_name"})
+	nodeEventOperationsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "k8s_platform_connector_node_event_operations_total",
+		Help: "The total number of node event operations by type and status",
+	}, []string{"node_name", "operation", "status"})
 
 	nodeConditionUpdateDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "k8s_platform_connector_node_condition_update_duration_milliseconds",

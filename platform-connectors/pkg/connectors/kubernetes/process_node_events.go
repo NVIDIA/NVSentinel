@@ -253,10 +253,10 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 				_, err = r.clientset.CoreV1().Events(DefaultNamespace).Update(ctx, &existingEvent, metav1.UpdateOptions{})
 				if err != nil {
-					nodeEventUpdateFailureCounter.WithLabelValues(nodeName).Inc()
+					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusFailed).Inc()
 					return fmt.Errorf("failed to update event for node %s: %w", nodeName, err)
 				} else {
-					nodeEventUpdateSuccessCounter.WithLabelValues(nodeName).Inc()
+					nodeEventOperationsCounter.WithLabelValues(nodeName, OperationUpdate, StatusSuccess).Inc()
 				}
 
 				return nil
@@ -268,10 +268,10 @@ func (r *K8sConnector) writeNodeEvent(ctx context.Context, event *corev1.Event, 
 
 		_, err = r.clientset.CoreV1().Events(DefaultNamespace).Create(ctx, event, metav1.CreateOptions{})
 		if err != nil {
-			nodeEventCreationFailureCounter.WithLabelValues(nodeName).Inc()
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusFailed).Inc()
 			return fmt.Errorf("failed to create event for node %s: %w", nodeName, err)
 		} else {
-			nodeEventCreationSuccessCounter.WithLabelValues(nodeName).Inc()
+			nodeEventOperationsCounter.WithLabelValues(nodeName, OperationCreate, StatusSuccess).Inc()
 		}
 
 		return nil
@@ -348,11 +348,11 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 		nodeConditionUpdateDuration.Observe(duration)
 
 		if err != nil {
-			nodeConditionUpdateFailureCounter.Inc()
+			nodeConditionUpdateCounter.WithLabelValues(StatusFailed).Inc()
 			return fmt.Errorf("failed to update node conditions: %w", err)
 		}
 
-		nodeConditionUpdateSuccessCounter.Inc()
+		nodeConditionUpdateCounter.WithLabelValues(StatusSuccess).Inc()
 	}
 
 	for _, healthEvent := range healthEvents.Events {

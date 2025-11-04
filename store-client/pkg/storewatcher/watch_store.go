@@ -408,7 +408,9 @@ func confirmConnectivityWithDBAndCollection(ctx context.Context, client *mongo.C
 		return fmt.Errorf("more than one collection with name %s for DB %s was found", mongoDbCollection, mongoDbName)
 	}
 
-	slog.Info("Confirmed that the collection %s exists in the database %s.", mongoDbCollection, mongoDbName)
+	slog.Info("Confirmed that the collection exists in the database",
+		"collection", mongoDbCollection,
+		"database", mongoDbName)
 
 	return nil
 }

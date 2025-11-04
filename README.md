@@ -42,6 +42,7 @@ helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.2.0
 - **⚡ Real-time Processing**: Event-driven architecture with immediate fault response
 - **📊 Persistent Storage**: MongoDB-based event store with change streams for real-time updates
 - **🛡️ Graceful Handling**: Coordinated workload eviction with configurable timeouts
+- **🏷️ Metadata Enrichment**: Automatic augmentation of health events with cloud provider and node metadata information
 
 ## 🧪 Complete Setup Guide
 
@@ -187,6 +188,50 @@ global:
 - **[Helm Chart Configuration Guide](distros/kubernetes/README.md#configuration)**: Complete configuration reference
 - **[values-full.yaml](distros/kubernetes/nvsentinel/values-full.yaml)**: Detailed reference with all options
 - **[values.yaml](distros/kubernetes/nvsentinel/values.yaml)**: Default values
+
+### Node Metadata Enrichment
+
+Platform Connectors can automatically augment health events with node metadata from Kubernetes, providing additional context for troubleshooting and analytics across clusters.
+
+**Configuration**:
+```yaml
+platformConnector:
+  nodeMetadata:
+    enabled: true 
+    cacheSize: 50 
+    cacheTTLSeconds: 3600 
+    allowedLabels:
+      - "topology.kubernetes.io/zone"
+      - "topology.kubernetes.io/region"
+      - "node.kubernetes.io/instance-type"
+      - "nvidia.com/cuda.driver-version.major"
+      - "nvidia.com/cuda.driver-version.minor"
+      - "nvidia.com/cuda.driver-version.revision"
+      - "nvidia.com/cuda.driver-version.full"
+      - "nvidia.com/cuda.runtime-version.major"
+      - "nvidia.com/cuda.runtime-version.minor"
+      - "nvidia.com/cuda.runtime-version.full"
+      - "topology.k8s.aws/capacity-block-id"
+      - "topology.k8s.aws/network-node-layer-1"
+      - "topology.k8s.aws/network-node-layer-2"
+      - "topology.k8s.aws/network-node-layer-3"
+      - "oci.oraclecloud.com/host.id"
+      - "oci.oraclecloud.com/host.network_block_id"
+      - "oci.oraclecloud.com/host.rack_id"
+      - "oci.oraclecloud.com/host.serial_number"
+      - "cloud.google.com/gce-topology-block"
+      - "cloud.google.com/gce-topology-host"
+      - "cloud.google.com/gce-topology-subblock"
+```
+
+**Metadata Added to Events**:
+- Cloud provider ID (e.g., `aws:///us-west-2a/i-1234567890abcdef0`)
+- Topology labels (zone, region, cloud-specific topology)
+- Instance type information
+- CUDA driver and runtime versions
+- Custom labels as configured
+
+This feature works seamlessly with AWS (EKS), GCP (GKE), Azure (AKS), and OCI (OKE).
 
 ## 📦 Module Details
 

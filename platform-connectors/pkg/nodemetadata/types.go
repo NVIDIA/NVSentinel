@@ -12,17 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package reconciler
+// Package nodemetadata enriches health events with node metadata from Kubernetes.
+// It fetches provider IDs, labels, and topology information and caches them for performance.
+package nodemetadata
 
 import (
 	"context"
 
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string)
-	RunLogCollectorJob(ctx context.Context, nodeName string) error
-	GetAnnotationManager() NodeAnnotationManagerInterface
-	GetStatusChecker() *crstatus.CRStatusChecker
+type Processor interface {
+	AugmentHealthEvent(ctx context.Context, event *pb.HealthEvent) error
+}
+
+type NodeMetadata struct {
+	ProviderID string
+	Labels     map[string]string
 }

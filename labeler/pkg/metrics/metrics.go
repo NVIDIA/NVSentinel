@@ -51,13 +51,4 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
-
-	// NodeUpdateDuration tracks the histogram of node update operation durations
-	NodeUpdateDuration = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "labeler_node_update_duration_seconds",
-			Help:    "Histogram of node update operation durations.",
-			Buckets: prometheus.DefBuckets,
-		},
-	)
 )

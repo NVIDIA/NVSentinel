@@ -22,6 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
@@ -234,8 +238,8 @@ func TestDoesNotTripBelowThreshold(t *testing.T) {
 	ctx := context.Background()
 	b := newTestBreaker(t, ctx, 10, 50, 1*time.Second, "")
 
-	t.Log("Adding 4 cordon events (below threshold of 5)")
-	for i := 0; i < 4; i++ {
+	t.Log("Adding 3 cordon events (below threshold of 5)")
+	for i := 0; i < 3; i++ {
 		b.AddCordonEvent(fmt.Sprintf("node%d", i))
 	}
 	tripped, err := b.IsTripped(ctx)
@@ -243,13 +247,21 @@ func TestDoesNotTripBelowThreshold(t *testing.T) {
 		t.Fatalf("error checking if breaker should trip: %v", err)
 	}
 	if tripped {
-		t.Fatalf("breaker should not trip below threshold (4 < 5)")
+		t.Fatalf("breaker should not trip below threshold (3 < 5)")
 	}
+
+	// Verify utilization metric (30% for 3 out of 10 nodes)
+	utilization := getGaugeValue(t, metrics.FaultQuarantineBreakerUtilization)
+	assert.GreaterOrEqual(t, utilization, float64(0.25), "Utilization should be at least 25%")
+	assert.LessOrEqual(t, utilization, float64(0.35), "Utilization should be at most 35%")
 }
 
 func TestTripsWhenAboveThreshold(t *testing.T) {
 	ctx := context.Background()
 	b := newTestBreaker(t, ctx, 10, 50, 1*time.Second, "")
+
+	// Track metrics before
+	beforeDuration := getHistogramVecCount(t, metrics.FaultQuarantineGetTotalNodesDuration, "success")
 
 	t.Log("Adding 5 cordon events (at threshold, should trip)")
 	for i := 0; i < 5; i++ {
@@ -262,11 +274,18 @@ func TestTripsWhenAboveThreshold(t *testing.T) {
 	if !tripped {
 		t.Fatalf("breaker should trip at threshold (5 >= 5)")
 	}
+
+	// Verify getTotalNodes duration metric
+	afterDuration := getHistogramVecCount(t, metrics.FaultQuarantineGetTotalNodesDuration, "success")
+	assert.GreaterOrEqual(t, afterDuration, beforeDuration+1, "GetTotalNodesDuration should record observations")
 }
 
 func TestForceStateOverridesComputation(t *testing.T) {
 	ctx := context.Background()
 	b := newTestBreaker(t, ctx, 10, 50, 1*time.Second, "")
+
+	t.Log("Verify breaker starts in CLOSED state")
+	assert.Equal(t, StateClosed, b.CurrentState(), "Breaker should start in CLOSED state")
 
 	t.Log("Force state to TRIPPED")
 	err := b.ForceState(ctx, StateTripped)
@@ -280,6 +299,7 @@ func TestForceStateOverridesComputation(t *testing.T) {
 	if !tripped {
 		t.Fatalf("breaker should report tripped after ForceState(StateTripped)")
 	}
+	assert.Equal(t, StateTripped, b.CurrentState(), "Breaker state should be TRIPPED")
 
 	t.Log("Force state to CLOSED")
 	err = b.ForceState(ctx, StateClosed)
@@ -293,6 +313,7 @@ func TestForceStateOverridesComputation(t *testing.T) {
 	if tripped {
 		t.Fatalf("breaker should not be tripped after ForceState(StateClosed)")
 	}
+	assert.Equal(t, StateClosed, b.CurrentState(), "Breaker state should be CLOSED after force close")
 }
 
 func TestWindowExpiryResetsCounts(t *testing.T) {
@@ -377,4 +398,44 @@ func TestFlappingNodeDoesNotMultiplyCount(t *testing.T) {
 	if !tripped {
 		t.Fatalf("breaker should trip with 5 unique nodes (5 >= 5 threshold)")
 	}
+}
+
+// Helper functions for reading Prometheus metrics
+
+func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	err := gauge.Write(metric)
+	require.NoError(t, err)
+	return metric.Gauge.GetValue()
+}
+
+func getHistogramVecCount(t *testing.T, histogramVec *prometheus.HistogramVec, labelValues ...string) uint64 {
+	t.Helper()
+
+	metricCh := make(chan prometheus.Metric, 1)
+	histogramVec.Collect(metricCh)
+	close(metricCh)
+
+	for metric := range metricCh {
+		dtoMetric := &dto.Metric{}
+		if err := metric.Write(dtoMetric); err != nil {
+			continue
+		}
+
+		if dtoMetric.Histogram != nil {
+			labelMatch := true
+			for i, label := range dtoMetric.Label {
+				if i < len(labelValues) && label.GetValue() != labelValues[i] {
+					labelMatch = false
+					break
+				}
+			}
+			if labelMatch {
+				return dtoMetric.Histogram.GetSampleCount()
+			}
+		}
+	}
+
+	return 0
 }

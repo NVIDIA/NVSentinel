@@ -60,7 +60,7 @@ func (m *eventQueueManager) EnqueueEvent(ctx context.Context,
 	}
 
 	m.queue.Add(nodeEvent)
-	metrics.NodeQueueDepth.WithLabelValues(nodeName).Set(float64(m.queue.Len()))
+	metrics.QueueDepth.Set(float64(m.queue.Len()))
 
 	return nil
 }

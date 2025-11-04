@@ -43,9 +43,16 @@ const (
 
 // SetupJanitorWebhookWithManager registers the webhook for CRs managed by Janitor.
 func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error {
+	uncachedClient, err := client.New(mgr.GetConfig(), client.Options{
+		Scheme: mgr.GetScheme(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create uncached client: %w", err)
+	}
+
 	validator := &JanitorCustomValidator{
 		Config: cfg,
-		Client: mgr.GetClient(),
+		Client: uncachedClient,
 	}
 
 	// Register webhook for RebootNode
