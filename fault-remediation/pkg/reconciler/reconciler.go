@@ -104,6 +104,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher WatcherInterface,
 	collection MongoInterface) {
 	start := time.Now()
+
 	defer func() {
 		eventHandlingDuration.Observe(time.Since(start).Seconds())
 	}()
@@ -193,7 +194,7 @@ func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *protos.He
 
 // performRemediation attempts to create maintenance resource with retries
 func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStatus *HealthEventDoc) (bool, string) {
-	nodeName := healthEventWithStatus.HealthEventWithStatus.HealthEvent.NodeName
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
 	// Update state to "remediating"
 	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,

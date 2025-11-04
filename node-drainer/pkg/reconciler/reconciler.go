@@ -75,6 +75,7 @@ func (r *Reconciler) Shutdown() {
 func (r *Reconciler) ProcessEvent(ctx context.Context,
 	event bson.M, collection queue.MongoCollectionAPI, nodeName string) error {
 	start := time.Now()
+
 	defer func() {
 		metrics.EventHandlingDuration.Observe(time.Since(start).Seconds())
 	}()
@@ -301,38 +302,6 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 				"error", err)
 			metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 		}
-
-		metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(1)
-	} else {
-		metrics.NodeDrainStatus.WithLabelValues(nodeName).Set(0)
-	}
-}
-
-func (r *Reconciler) updateQuarantineMetrics(healthEventWithStatus *model.HealthEventWithStatus) {
-	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == nil {
-		slog.Warn("NodeQuarantined is nil, skipping metrics update",
-			"node", healthEventWithStatus.HealthEvent.NodeName)
-
-		return
-	}
-
-	//nolint:exhaustive
-	switch *healthEventWithStatus.HealthEventStatus.NodeQuarantined {
-	case model.Quarantined:
-		metrics.UnhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
-			healthEventWithStatus.HealthEvent.CheckName).Inc()
-	case model.UnQuarantined:
-		metrics.HealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
-			healthEventWithStatus.HealthEvent.CheckName).Inc()
-	case model.AlreadyQuarantined:
-		slog.Info("Node already quarantined",
-			"node", healthEventWithStatus.HealthEvent.NodeName)
-		metrics.UnhealthyEvent.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName,
-			healthEventWithStatus.HealthEvent.CheckName).Inc()
-	default:
-		slog.Warn("Unknown NodeQuarantined status",
-			"node", healthEventWithStatus.HealthEvent.NodeName,
-			"status", *healthEventWithStatus.HealthEventStatus.NodeQuarantined)
 	}
 }
 

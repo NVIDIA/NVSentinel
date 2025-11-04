@@ -54,6 +54,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 
 func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, error) {
 	start := time.Now()
+
 	defer func() {
 		metrics.XidProcessingLatency.Observe(time.Since(start).Seconds())
 	}()

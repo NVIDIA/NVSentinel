@@ -392,8 +392,6 @@ func (l *Labeler) getDriverLabelForNodeExcluding(nodeName string, excludePod *v1
 
 // updateNodeLabelsForPod updates only DCGM and driver labels (kata is handled separately by node events)
 func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expectedDriverLabel string) error {
-	updateStartTime := time.Now()
-
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
