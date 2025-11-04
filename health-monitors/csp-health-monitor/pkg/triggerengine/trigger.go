@@ -484,15 +484,15 @@ func (e *Engine) isNodeReady(ctx context.Context, nodeName string) (bool, error)
 func (e *Engine) monitorNodeReadiness(ctx context.Context, nodeName, eventID string, event model.MaintenanceEvent) {
 	defer func() {
 		// Clean up the monitoring flag when done
-		slog.Info("Deleting monitoring flag for node %s (EventID: %s)", nodeName, eventID)
+		slog.Info("Deleting monitoring flag for node",
+			"node", nodeName,
+			"eventID", eventID)
 		e.monitoredNodes.Delete(nodeName)
 	}()
 
-	slog.Info(
-		"Starting background node readiness monitoring for node %s (EventID: %s)",
-		nodeName,
-		eventID,
-	)
+	slog.Info("Starting background node readiness monitoring",
+		"node", nodeName,
+		"eventID", eventID)
 
 	// Create a context with configurable timeout
 	nodeReadinessTimeout := time.Duration(e.config.NodeReadinessTimeoutMinutes) * time.Minute

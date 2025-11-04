@@ -140,6 +140,11 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 		return true
 	}
 
+	if healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
+		*healthEventWithStatus.HealthEventStatus.FaultRemediated {
+		return true
+	}
+
 	if common.GetRemediationGroupForAction(action) != "" {
 		return false
 	}
@@ -351,7 +356,9 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, collection 
 		return fmt.Errorf("error updating document with ID: %v, error: %w", document["_id"], err)
 	}
 
-	slog.Info("Health event with ID %v has been updated with status %+v", document["_id"], nodeRemediatedStatus)
+	slog.Info("Health event has been updated with status",
+		"id", document["_id"],
+		"status", nodeRemediatedStatus)
 
 	return nil
 }

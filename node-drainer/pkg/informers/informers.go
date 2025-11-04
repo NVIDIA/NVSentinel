@@ -194,8 +194,12 @@ func (i *Informers) filterEvictablePods(pods []*v1.Pod) []*v1.Pod {
 		}
 
 		if pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed {
-			slog.Info("Ignoring completed pod %s in namespace %s on node %s (status: %s) during eviction check",
-				pod.Name, pod.Namespace, pod.Spec.NodeName, pod.Status.Phase)
+			slog.Info("Ignoring completed pod during eviction check",
+				"pod", pod.Name,
+				"namespace", pod.Namespace,
+				"node", pod.Spec.NodeName,
+				"status", pod.Status.Phase)
+
 			continue
 		}
 
@@ -634,7 +638,10 @@ func (i *Informers) extractNamespacesFromPods(objs []any,
 
 		shouldIncludeNamespace, err := i.shouldIncludeNamespace(pod.Namespace, includePattern, excludeRegex)
 		if err != nil {
-			slog.Error("Failed to check if namespace %s should be included: %v", pod.Namespace, err)
+			slog.Error("Failed to check if namespace should be included",
+				"namespace", pod.Namespace,
+				"error", err)
+
 			return nil, fmt.Errorf("failed to check if namespace %s should be included: %w", pod.Namespace, err)
 		}
 
@@ -757,7 +764,9 @@ func (i *Informers) CheckIfAllPodsAreEvictedInImmediateMode(ctx context.Context,
 		remainingPodNames = append(remainingPodNames, fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 	}
 
-	slog.Info("Pods still present on node %s, will retry: %v", nodeName, remainingPodNames)
+	slog.Info("Pods still present on node, will retry",
+		"node", nodeName,
+		"pods", remainingPodNames)
 
 	return false
 }

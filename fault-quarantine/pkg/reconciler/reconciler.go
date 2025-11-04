@@ -766,8 +766,10 @@ func (r *Reconciler) handleQuarantinedNode(
 	}
 
 	if !hasExistingCheck {
-		slog.Debug("Received healthy event for untracked check %s on node %s (other checks may still be failing)",
-			event.CheckName, event.NodeName)
+		slog.Debug("Received healthy event for untracked check (other checks may still be failing)",
+			"check", event.CheckName,
+			"node", event.NodeName)
+
 		return true
 	}
 
@@ -782,8 +784,9 @@ func (r *Reconciler) handleQuarantinedNode(
 			"node", event.NodeName,
 			"remainingEntities", healthEventsAnnotationMap.Count())
 	} else {
-		slog.Debug("No matching entities to remove for check %s on node %s",
-			event.CheckName, event.NodeName)
+		slog.Debug("No matching entities to remove for check on node",
+			"check", event.CheckName,
+			"node", event.NodeName)
 	}
 
 	if healthEventsAnnotationMap.IsEmpty() {
@@ -939,8 +942,9 @@ func (r *Reconciler) performUncordon(
 	event *protos.HealthEvent,
 	annotations map[string]string,
 ) bool {
-	slog.Info("All entities recovered for check %s on node %s - proceeding with uncordon",
-		event.CheckName, event.NodeName)
+	slog.Info("All entities recovered for check - proceeding with uncordon",
+		"check", event.CheckName,
+		"node", event.NodeName)
 
 	// Prepare uncordon parameters
 	taintsToBeRemoved, annotationsToBeRemoved, isUnCordon, labelsMap, err := r.prepareUncordonParams(

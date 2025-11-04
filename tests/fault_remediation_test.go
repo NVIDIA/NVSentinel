@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-func TestExistingCRPreventsNewCreation(t *testing.T) {
+func TestNewCRsAreCreatedAfterFaultsAreReemdiated(t *testing.T) {
 	feature := features.New("TestExistingCRPreventsNewCreation").
 		WithLabel("suite", "fault-remediation-advanced")
 
@@ -46,12 +46,12 @@ func TestExistingCRPreventsNewCreation(t *testing.T) {
 		cr1Name := cr1.GetName()
 		t.Logf("First CR created: %s", cr1Name)
 
-		t.Log("Triggering remediation flow again without cleanup")
+		t.Log("Triggering remediation flow")
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
 
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying no duplicate CR was created - should have exactly the original CR")
+		t.Log("Verifying that 2 CRs were created, one for each fault")
 		require.Eventually(t, func() bool {
 			crList, err := helpers.GetRebootNodeCRsForNode(ctx, client, testCtx.NodeName)
 			if err != nil {

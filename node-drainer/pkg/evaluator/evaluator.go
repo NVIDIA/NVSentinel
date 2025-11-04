@@ -57,7 +57,9 @@ func (e *NodeDrainEvaluator) EvaluateEvent(ctx context.Context, healthEvent mode
 	if statusPtr != nil && *statusPtr == model.AlreadyQuarantined {
 		isDrained, err := mongodb.IsNodeAlreadyDrained(ctx, collection, nodeName)
 		if err != nil {
-			slog.Error("Failed to check if node %s is already drained: %v", nodeName, err)
+			slog.Error("Failed to check if node is already drained",
+				"node", nodeName,
+				"error", err)
 
 			return &DrainActionResult{
 				Action:    ActionWait,

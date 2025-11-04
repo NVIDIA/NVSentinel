@@ -57,14 +57,19 @@ func (xidHandler *XIDHandler) ProcessLine(message string) (*pb.HealthEvents, err
 		normPCI := xidHandler.normalizePCI(pciID)
 		xidHandler.pciToGPUUUID[normPCI] = gpuUUID
 
-		slog.Info("Updated PCI->GPU UUID mapping: %s -> %s", normPCI, gpuUUID)
+		slog.Info("Updated PCI->GPU UUID mapping",
+			"pci", normPCI,
+			"gpuUUID", gpuUUID)
 
 		return nil, nil
 	}
 
 	xidResp, err := xidHandler.parser.Parse(message)
 	if err != nil {
-		slog.Debug("XID parsing failed for message: %s, error: %v", message, err)
+		slog.Debug("XID parsing failed for message",
+			"message", message,
+			"error", err)
+
 		return nil, nil
 	}
 

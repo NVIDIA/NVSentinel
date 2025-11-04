@@ -111,7 +111,6 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 	// don't check too early, wait like 5 minutes before checking, return not ready if too early
 	storedTime, err := time.Parse(time.RFC3339, message)
 	if err != nil {
-		fmt.Println("Error parsing time:", err)
 		return false, err
 	}
 

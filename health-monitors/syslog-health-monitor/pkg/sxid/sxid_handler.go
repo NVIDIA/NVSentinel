@@ -141,7 +141,10 @@ func (sxidHandler *SXIDHandler) getGPUID(pciAddress string, nvlink int) (int, er
 	// Try dynamic topology using PCI address
 	gpuID, err := provider.GetGPUFromPCINVLink(pciAddress, nvlink)
 	if err != nil {
-		slog.Error("Dynamic topology lookup failed for PCI %s: %s", pciAddress, err.Error())
+		slog.Error("Dynamic topology lookup failed",
+			"pci", pciAddress,
+			"error", err.Error())
+
 		return -1, fmt.Errorf("dynamic topology lookup failed for PCI %s: %w", pciAddress, err)
 	}
 
