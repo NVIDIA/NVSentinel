@@ -409,16 +409,31 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# Include override files you do wish to add to version control using negated pattern
-# !example_override.tf
-
-# Ignore CLI configuration files
-.terraformrc
-terraform.rc
-
 ### Helm ###
 # Chart dependencies
 **/charts/*.tgz
+
+
+# Ignore generated credentials from google-github-actions/auth
+gha-creds-*.json
+
+
+# Terraform 
+.terraformrc
+*_override.tf
+*_override.tf.json
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.*.log
+crash.log
+override.tf
+override.tf.json
+terraform.rc
+
+# Teraform Demo 
+.terraform
+.terraform.lock.hcl
 
 # ============================================================================
 # Project-Specific Files

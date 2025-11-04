@@ -116,6 +116,32 @@ func initializeK8sConnector(
 	return k8sRingBuffer, processor, nil
 }
 
+func initializeNodeMetadataProcessor(
+	ctx context.Context,
+	config map[string]interface{},
+	clientset k8s.Interface,
+) (nodemetadata.Processor, error) {
+	cfg, err := nodemetadata.NewConfigFromMap(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node metadata config: %w", err)
+	}
+
+	if !cfg.Enabled {
+		slog.Info("Node metadata enrichment is disabled")
+
+		return nil, nil
+	}
+
+	processor, err := nodemetadata.NewProcessor(ctx, nodemetadata.PlatformKubernetes, cfg, clientset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node metadata processor: %w", err)
+	}
+
+	slog.Info("Node metadata processor initialized successfully")
+
+	return processor, nil
+}
+
 func initializeMongoDBConnector(
 	ctx context.Context,
 	mongoClientCertMountPath string,
@@ -133,7 +159,7 @@ func initializeMongoDBConnector(
 	return storeConnector, nil
 }
 
-func startGRPCServer(ctx context.Context, socket string) (net.Listener, error) {
+func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.Processor) (net.Listener, error) {
 	err := os.Remove(socket)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
@@ -257,7 +283,7 @@ func run() error {
 		return err
 	}
 
-	lis, err := startGRPCServer(ctx, *socket)
+	lis, err := startGRPCServer(ctx, *socket, processor)
 	if err != nil {
 		return err
 	}
