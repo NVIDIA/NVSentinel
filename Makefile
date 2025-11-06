@@ -118,9 +118,9 @@ endif
 
 # Setup development environment
 .PHONY: dev-env-setup
-dev-env-setup: ## Setup complete development environment (installs all required tools)
+dev-env-setup: ## Setup complete development environment (installs all required tools). Use AUTO_MODE=true to skip prompts
 	@echo "Setting up NVSentinel development environment..."
-	@bash scripts/setup-dev-env.sh
+	@AUTO_MODE=$(AUTO_MODE) bash scripts/setup-dev-env.sh
 
 # Install lint tools
 .PHONY: install-lint-tools

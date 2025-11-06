@@ -81,9 +81,10 @@ prompt_continue() {
         return 0
     fi
     
-    read -p "Continue? [Y/n] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]] && [[ -n $REPLY ]]; then
+    read -p "Continue? [Y/n] " -r
+    # Default to Y if empty (just pressed Enter)
+    REPLY=${REPLY:-Y}
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         log_warning "Skipped"
         return 1
     fi
