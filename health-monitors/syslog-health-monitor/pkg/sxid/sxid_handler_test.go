@@ -40,7 +40,7 @@ func TestNewSXIDHandler(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName)
+			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, "/tmp/metadata.json")
 
 			require.NoError(t, err)
 			require.NotNil(t, handler)
@@ -48,6 +48,7 @@ func TestNewSXIDHandler(t *testing.T) {
 			assert.Equal(t, tc.agentName, handler.defaultAgentName)
 			assert.Equal(t, tc.componentClass, handler.defaultComponentClass)
 			assert.Equal(t, tc.checkName, handler.checkName)
+			require.NotNil(t, handler.metadataReader)
 		})
 	}
 }
@@ -165,7 +166,7 @@ func TestProcessLine(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check")
+			handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check", "/tmp/metadata.json")
 			require.NoError(t, err)
 
 			events, err := handler.ProcessLine(tc.message)
@@ -179,9 +180,8 @@ func TestProcessLine(t *testing.T) {
 					require.NotNil(t, events)
 					require.Len(t, events.Events, 1)
 					event := events.Events[0]
-					// Validate Message field contains full journal message
 					assert.Equal(t, tc.message, event.Message)
-					assert.Empty(t, event.Metadata)
+					assert.NotEmpty(t, event.Metadata)
 				} else {
 					assert.Nil(t, events)
 				}

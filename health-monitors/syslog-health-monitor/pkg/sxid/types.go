@@ -16,6 +16,8 @@ package sxid
 
 import (
 	"regexp"
+
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 )
 
 var (
@@ -28,6 +30,7 @@ type SXIDHandler struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
+	metadataReader        *metadata.Reader
 }
 
 type sxidErrorEvent struct {

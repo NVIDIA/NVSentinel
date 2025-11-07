@@ -65,6 +65,8 @@ var (
 		"Endpoint to the XID analyser service.")
 	kataEnabled = flag.String("kata-enabled", "false",
 		"Indicates if this monitor is running in Kata Containers mode (set by DaemonSet variant).")
+	metadataPath = flag.String("metadata-path", "/var/lib/nvsentinel/gpu_metadata.json",
+		"Path to GPU metadata JSON file.")
 )
 
 var checks []fd.CheckDefinition
@@ -166,6 +168,7 @@ func run() error {
 		*pollingIntervalFlag,
 		*stateFileFlag,
 		*xidAnalyserEndpoint,
+		*metadataPath,
 	)
 	if err != nil {
 		return fmt.Errorf("error creating syslog health monitor: %w", err)

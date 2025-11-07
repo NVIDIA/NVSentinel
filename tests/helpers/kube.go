@@ -1448,3 +1448,127 @@ func EnsureNodeConditionNotPresent(ctx context.Context, t *testing.T, c klient.C
 		return false
 	}, NeverWaitTimeout, WaitInterval, "node %s should NOT have a condition with check name %s", nodeName, checkName)
 }
+
+func InjectSyslogMessages(t *testing.T, httpPort int, messages []string) {
+	t.Helper()
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	ctx := context.Background()
+
+	t.Logf("Injecting %d syslog messages", len(messages))
+
+	for i, msg := range messages {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			fmt.Sprintf("http://localhost:%d/add", httpPort),
+			strings.NewReader(msg))
+		require.NoError(t, err, "failed to create request for message %d", i+1)
+		req.Header.Set("Content-Type", "text/plain")
+
+		resp, err := httpClient.Do(req)
+		require.NoError(t, err, "failed to inject message %d", i+1)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "stub journal should return 200 OK for message %d", i+1)
+
+		resp.Body.Close()
+	}
+
+	t.Logf("All %d messages injected successfully", len(messages))
+}
+
+// VerifyNodeConditionMatchesSequence verifies that a node condition contains expected patterns in sequence using regex
+func VerifyNodeConditionMatchesSequence(t *testing.T, ctx context.Context,
+	c klient.Client, nodeName, checkName, conditionReason string, expectedPatterns []string) bool {
+	t.Helper()
+
+	condition, err := CheckNodeConditionExists(ctx, c, nodeName, checkName, conditionReason)
+	if err != nil || condition == nil {
+		t.Logf("Condition not found: %v", err)
+		return false
+	}
+
+	message := condition.Message
+	lastIndex := 0
+
+	for i, pattern := range expectedPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Logf("Invalid regex pattern at position %d: %s (error: %v)", i+1, pattern, err)
+			return false
+		}
+
+		loc := re.FindStringIndex(message[lastIndex:])
+		if loc == nil {
+			t.Logf("Missing expected pattern at position %d: %s", i+1, pattern)
+			t.Logf("Searched in: %s", message[lastIndex:])
+
+			return false
+		}
+
+		matchStart := lastIndex + loc[0]
+		matchEnd := lastIndex + loc[1]
+		t.Logf("Pattern %d matched: %s", i+1, message[matchStart:matchEnd])
+		lastIndex = matchEnd
+	}
+
+	t.Logf("Node condition verified: all %d patterns matched in sequence", len(expectedPatterns))
+
+	return true
+}
+
+// VerifyEventsMatchPatterns verifies that events contain expected regex patterns
+func VerifyEventsMatchPatterns(t *testing.T, ctx context.Context,
+	c klient.Client, nodeName, checkName, eventReason string, expectedPatterns []string) bool {
+	t.Helper()
+
+	eventList, err := GetNodeEvents(ctx, c, nodeName, checkName)
+	if err != nil {
+		t.Logf("Error listing events: %v", err)
+		return false
+	}
+
+	var allMessages []string
+
+	for _, event := range eventList.Items {
+		if event.Reason == eventReason {
+			allMessages = append(allMessages, event.Message)
+		}
+	}
+
+	if len(allMessages) == 0 {
+		t.Log("No events found yet")
+		return false
+	}
+
+	allMessagesStr := strings.Join(allMessages, " ")
+	foundPatterns := make(map[string]bool)
+
+	for i, pattern := range expectedPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Logf("Invalid regex pattern at position %d: %s (error: %v)", i+1, pattern, err)
+			return false
+		}
+
+		if re.MatchString(allMessagesStr) {
+			foundPatterns[pattern] = true
+			match := re.FindString(allMessagesStr)
+
+			matchPreview := match
+			if len(match) > 150 {
+				matchPreview = match[:70] + " ... " + match[len(match)-75:]
+			}
+
+			t.Logf("Pattern %d matched: %s", i+1, matchPreview)
+		} else {
+			t.Logf("Pattern %d not found: %s", i+1, pattern)
+		}
+	}
+
+	if len(foundPatterns) != len(expectedPatterns) {
+		t.Logf("Found %d/%d expected patterns in events", len(foundPatterns), len(expectedPatterns))
+		return false
+	}
+
+	t.Logf("Events verified: all %d patterns matched", len(expectedPatterns))
+
+	return true
+}

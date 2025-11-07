@@ -18,6 +18,9 @@ global:
     tag: "main"
   metricsPort: 2112
 
+  # Shared metadata path used by metadata-collector and syslog-health-monitor
+  metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+
   nodeSelector: {}
   tolerations: []
   affinity: {}

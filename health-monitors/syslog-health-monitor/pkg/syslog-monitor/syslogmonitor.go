@@ -38,21 +38,38 @@ import (
 )
 
 // NewSyslogMonitor creates a new SyslogMonitor instance
-func NewSyslogMonitor(nodeName string, checks []CheckDefinition, pcClient pb.PlatformConnectorClient,
-	defaultAgentName string, defaultComponentClass string,
-	pollingInterval string, stateFilePath string, xidAnalyserEndpoint string) (*SyslogMonitor, error) {
+func NewSyslogMonitor(
+	nodeName string,
+	checks []CheckDefinition,
+	pcClient pb.PlatformConnectorClient,
+	defaultAgentName string,
+	defaultComponentClass string,
+	pollingInterval string,
+	stateFilePath string,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
-		xidAnalyserEndpoint,
+		xidAnalyserEndpoint, metadataPath,
 	)
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
 //
 //nolint:cyclop
-func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcClient pb.PlatformConnectorClient,
-	defaultAgentName string, defaultComponentClass string, pollingInterval string,
-	stateFilePath string, journalFactory JournalFactory, xidAnalyserEndpoint string) (*SyslogMonitor, error) {
+func NewSyslogMonitorWithFactory(
+	nodeName string,
+	checks []CheckDefinition,
+	pcClient pb.PlatformConnectorClient,
+	defaultAgentName string,
+	defaultComponentClass string,
+	pollingInterval string,
+	stateFilePath string,
+	journalFactory JournalFactory,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
 	if err != nil {
@@ -86,7 +103,7 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 		switch check.Name {
 		case XIDErrorCheck:
 			xidHandler, err := xid.NewXIDHandler(nodeName,
-				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint)
+				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath)
 			if err != nil {
 				slog.Error("Error initializing XID handler", "error", err.Error())
 				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
@@ -96,7 +113,7 @@ func NewSyslogMonitorWithFactory(nodeName string, checks []CheckDefinition, pcCl
 
 		case SXIDErrorCheck:
 			sxidHandler, err := sxid.NewSXIDHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name)
+				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath)
 			if err != nil {
 				slog.Error("Error initializing SXID handler", "error", err.Error())
 				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)

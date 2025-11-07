@@ -50,7 +50,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --output-path={{ .Values.outputPath }}
+            - --output-path={{ .Values.global.metadataPath }}
           env:
             - name: NODE_NAME
               valueFrom:

@@ -20,19 +20,21 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	lsnvlink "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid/lsnvlink"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func NewSXIDHandler(nodeName, defaultAgentName,
-	defaultComponentClass, checkName string) (*SXIDHandler, error) {
+	defaultComponentClass, checkName, metadataPath string) (*SXIDHandler, error) {
 	return &SXIDHandler{
 		nodeName:              nodeName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
+		metadataReader:        metadata.NewReader(metadataPath),
 	}, nil
 }
 
@@ -47,7 +49,7 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 		return nil, nil
 	}
 
-	gpuID, err := sxidHandler.getGPUID(sxidErrorEvent.PCI, sxidErrorEvent.Link)
+	gpuID, gpuInfo, err := sxidHandler.getGPUID(sxidErrorEvent.PCI, sxidErrorEvent.Link)
 	if err != nil {
 		slog.Error("Error finding GPU ID",
 			"pci", sxidErrorEvent.PCI,
@@ -74,24 +76,33 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 		errRes = pb.RecommendedAction_CONTACT_SUPPORT
 	}
 
+	entities := []*pb.Entity{
+		{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidErrorEvent.NVSwitch)},
+		{EntityType: "PCI", EntityValue: sxidErrorEvent.PCI},
+		{EntityType: "NVLINK", EntityValue: strconv.Itoa(sxidErrorEvent.Link)},
+		{EntityType: "GPU", EntityValue: strconv.Itoa(gpuID)},
+		{EntityType: "GPU_UUID", EntityValue: gpuInfo.UUID},
+	}
+
+	metadata := make(map[string]string)
+	if chassisSerial := sxidHandler.metadataReader.GetChassisSerial(); chassisSerial != nil {
+		metadata["chassis_serial"] = *chassisSerial
+	}
+
 	event := &pb.HealthEvent{
 		Version:            1,
 		Agent:              sxidHandler.defaultAgentName,
 		CheckName:          sxidHandler.checkName,
 		ComponentClass:     sxidHandler.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
-		EntitiesImpacted: []*pb.Entity{
-			{EntityType: "NVSWITCH", EntityValue: strconv.Itoa(sxidErrorEvent.NVSwitch)},
-			{EntityType: "PCI", EntityValue: sxidErrorEvent.PCI},
-			{EntityType: "NVLINK", EntityValue: strconv.Itoa(sxidErrorEvent.Link)},
-			{EntityType: "GPU", EntityValue: strconv.Itoa(gpuID)},
-		},
-		Message:           message,
-		IsFatal:           sxidErrorEvent.IsFatal,
-		IsHealthy:         false,
-		NodeName:          sxidHandler.nodeName,
-		RecommendedAction: errRes,
-		ErrorCode:         []string{fmt.Sprint(sxidErrorEvent.ErrorNum)},
+		EntitiesImpacted:   entities,
+		Message:            message,
+		IsFatal:            sxidErrorEvent.IsFatal,
+		IsHealthy:          false,
+		NodeName:           sxidHandler.nodeName,
+		RecommendedAction:  errRes,
+		ErrorCode:          []string{fmt.Sprint(sxidErrorEvent.ErrorNum)},
+		Metadata:           metadata,
 	}
 
 	return &pb.HealthEvents{
@@ -131,22 +142,14 @@ func (sxidHandler *SXIDHandler) extractInfoFromNVSwitchErrorMsg(line string) (*s
 	}, nil
 }
 
-func (sxidHandler *SXIDHandler) getGPUID(pciAddress string, nvlink int) (int, error) {
-	provider := lsnvlink.GetTopologyProvider()
-
-	if !provider.HasNVSwitch() {
-		return -1, fmt.Errorf("no NVSwitches present in system")
-	}
-
-	// Try dynamic topology using PCI address
-	gpuID, err := provider.GetGPUFromPCINVLink(pciAddress, nvlink)
+func (sxidHandler *SXIDHandler) getGPUID(
+	pciAddress string,
+	nvlink int,
+) (int, *model.GPUInfo, error) {
+	gpuInfo, _, err := sxidHandler.metadataReader.GetGPUByNVSwitchLink(pciAddress, nvlink)
 	if err != nil {
-		slog.Error("Dynamic topology lookup failed",
-			"pci", pciAddress,
-			"error", err.Error())
-
-		return -1, fmt.Errorf("dynamic topology lookup failed for PCI %s: %w", pciAddress, err)
+		return -1, nil, fmt.Errorf("failed to lookup GPU from metadata: %w", err)
 	}
 
-	return gpuID, nil
+	return gpuInfo.GPUID, gpuInfo, nil
 }

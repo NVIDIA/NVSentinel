@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG CUDA_VERSION="12.1.1-base-ubuntu22.04"
-
 FROM public.ecr.aws/docker/library/golang:1.25-trixie AS builder
 
 ARG BUILD_TAGS="systemd"
@@ -47,16 +45,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN cd health-monitors/syslog-health-monitor && \
     CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w" -o syslog-health-monitor main.go
 
-FROM nvcr.io/nvidia/cuda:${CUDA_VERSION} AS runtime
+# Runtime stage - using Debian slim for systemd journal support
+FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
-RUN apt-get update && apt-get install -y \
-    systemd-sysv \
-    --no-install-recommends \
+# Install required system libraries for systemd journal
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsystemd0 \
+    liblz4-1 \
+    libzstd1 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /go/src/nvsentinel/health-monitors/syslog-health-monitor/syslog-health-monitor /app/syslog-health-monitor
-
-RUN apt-get update && \
-    apt-get install -y libsystemd0 liblz4-1 libzstd1
 
 ENTRYPOINT ["/app/syslog-health-monitor"] 

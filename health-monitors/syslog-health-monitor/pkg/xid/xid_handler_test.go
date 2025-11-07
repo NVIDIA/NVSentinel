@@ -86,7 +86,7 @@ func TestNormalizePCI(t *testing.T) {
 
 func TestDetermineFatality(t *testing.T) {
 	xidHandler, err := NewXIDHandler("test-node",
-		"test-agent", "test-component", "test-check", "http://localhost:8080")
+		"test-agent", "test-component", "test-check", "http://localhost:8080", "/tmp/metadata.json")
 	assert.Nil(t, err)
 
 	testCases := []struct {
@@ -138,18 +138,13 @@ func TestProcessLine(t *testing.T) {
 			name:    "NVRM GPU Map Line",
 			message: "NVRM: GPU at PCI:0000:00:08.0: GPU-12345678-1234-1234-1234-123456789012",
 			setupHandler: func() *XIDHandler {
-				return &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return nil, nil
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return nil, nil
 					},
 				}
+				return h
 			},
 			expectEvent: false,
 			expectError: false,
@@ -158,27 +153,22 @@ func TestProcessLine(t *testing.T) {
 			name:    "Valid XID Message",
 			message: "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process",
 			setupHandler: func() *XIDHandler {
-				return &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return &parser.Response{
-								Success: true,
-								Result: parser.XIDDetails{
-									DecodedXIDStr: "Xid 79",
-									PCIE:          "0000:00:08.0",
-									Mnemonic:      "GPU has fallen off the bus",
-									Resolution:    "CONTACT_SUPPORT",
-									Number:        79,
-								},
-							}, nil
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return &parser.Response{
+							Success: true,
+							Result: parser.XIDDetails{
+								DecodedXIDStr: "Xid 79",
+								PCIE:          "0000:00:08.0",
+								Mnemonic:      "GPU has fallen off the bus",
+								Resolution:    "CONTACT_SUPPORT",
+								Number:        79,
+							},
+						}, nil
 					},
 				}
+				return h
 			},
 			expectEvent: true,
 			expectError: false,
@@ -206,29 +196,23 @@ func TestProcessLine(t *testing.T) {
 			name:    "Valid XID with GPU UUID",
 			message: "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process",
 			setupHandler: func() *XIDHandler {
-				handler := &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return &parser.Response{
-								Success: true,
-								Result: parser.XIDDetails{
-									DecodedXIDStr: "Xid 79",
-									PCIE:          "0000:00:08.0",
-									Mnemonic:      "GPU has fallen off the bus",
-									Resolution:    "CONTACT_SUPPORT",
-									Number:        79,
-								},
-							}, nil
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return &parser.Response{
+							Success: true,
+							Result: parser.XIDDetails{
+								DecodedXIDStr: "Xid 79",
+								PCIE:          "0000:00:08.0",
+								Mnemonic:      "GPU has fallen off the bus",
+								Resolution:    "CONTACT_SUPPORT",
+								Number:        79,
+							},
+						}, nil
 					},
 				}
-				handler.pciToGPUUUID["0000:00:08"] = "GPU-12345678-1234-1234-1234-123456789012"
-				return handler
+				h.pciToGPUUUID["0000:00:08"] = "GPU-12345678-1234-1234-1234-123456789012"
+				return h
 			},
 			expectEvent: true,
 			expectError: false,
@@ -238,7 +222,7 @@ func TestProcessLine(t *testing.T) {
 				event := events.Events[0]
 				require.Len(t, event.EntitiesImpacted, 2)
 				assert.Equal(t, "PCI", event.EntitiesImpacted[0].EntityType)
-				assert.Equal(t, "GPU", event.EntitiesImpacted[1].EntityType)
+				assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[1].EntityType)
 				assert.Equal(t, "GPU-12345678-1234-1234-1234-123456789012", event.EntitiesImpacted[1].EntityValue)
 				assert.Equal(t, "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process", event.Message)
 				assert.Empty(t, event.Metadata)
@@ -248,18 +232,13 @@ func TestProcessLine(t *testing.T) {
 			name:    "Parser Returns Error",
 			message: "Some random message",
 			setupHandler: func() *XIDHandler {
-				return &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return nil, errors.New("parse error")
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return nil, errors.New("parse error")
 					},
 				}
+				return h
 			},
 			expectEvent: false,
 			expectError: false,
@@ -268,18 +247,13 @@ func TestProcessLine(t *testing.T) {
 			name:    "Parser Returns Nil Response",
 			message: "Some random message",
 			setupHandler: func() *XIDHandler {
-				return &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return nil, nil
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return nil, nil
 					},
 				}
+				return h
 			},
 			expectEvent: false,
 			expectError: false,
@@ -288,20 +262,15 @@ func TestProcessLine(t *testing.T) {
 			name:    "Parser Returns Success=false",
 			message: "Some random message",
 			setupHandler: func() *XIDHandler {
-				return &XIDHandler{
-					nodeName:              "test-node",
-					defaultAgentName:      "test-agent",
-					defaultComponentClass: "GPU",
-					checkName:             "xid-check",
-					pciToGPUUUID:          make(map[string]string),
-					parser: &mockParser{
-						parseFunc: func(msg string) (*parser.Response, error) {
-							return &parser.Response{
-								Success: false,
-							}, nil
-						},
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return &parser.Response{
+							Success: false,
+						}, nil
 					},
 				}
+				return h
 			},
 			expectEvent: false,
 			expectError: false,
@@ -332,13 +301,7 @@ func TestProcessLine(t *testing.T) {
 }
 
 func TestCreateHealthEventFromResponse(t *testing.T) {
-	handler := &XIDHandler{
-		nodeName:              "test-node",
-		defaultAgentName:      "test-agent",
-		defaultComponentClass: "GPU",
-		checkName:             "xid-check",
-		pciToGPUUUID:          make(map[string]string),
-	}
+	handler, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
 
 	testCases := []struct {
 		name          string
@@ -404,7 +367,7 @@ func TestCreateHealthEventFromResponse(t *testing.T) {
 				require.Len(t, event.EntitiesImpacted, 2)
 				assert.Equal(t, "PCI", event.EntitiesImpacted[0].EntityType)
 				assert.Equal(t, "0000:00:09.0", event.EntitiesImpacted[0].EntityValue)
-				assert.Equal(t, "GPU", event.EntitiesImpacted[1].EntityType)
+				assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[1].EntityType)
 				assert.Equal(t, "GPU-ABCDEF12-3456-7890-ABCD-EF1234567890", event.EntitiesImpacted[1].EntityValue)
 				assert.Equal(t, "Test XID message", event.Message)
 				assert.Empty(t, event.Metadata)
@@ -458,7 +421,7 @@ func TestNewXIDHandler(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, tc.xidAnalyserEndpoint)
+			handler, err := NewXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, tc.xidAnalyserEndpoint, "/tmp/metadata.json")
 
 			if tc.expectError {
 				assert.Error(t, err)
@@ -472,6 +435,7 @@ func TestNewXIDHandler(t *testing.T) {
 				assert.Equal(t, tc.checkName, handler.checkName)
 				assert.NotNil(t, handler.pciToGPUUUID)
 				assert.NotNil(t, handler.parser)
+				assert.NotNil(t, handler.metadataReader)
 			}
 		})
 	}

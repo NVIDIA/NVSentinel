@@ -23,6 +23,7 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 
@@ -30,7 +31,7 @@ import (
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
-	defaultComponentClass, checkName, xidAnalyserEndpoint string) (*XIDHandler, error) {
+	defaultComponentClass, checkName, xidAnalyserEndpoint, metadataPath string) (*XIDHandler, error) {
 	config := parser.ParserConfig{
 		NodeName:            nodeName,
 		XidAnalyserEndpoint: xidAnalyserEndpoint,
@@ -49,6 +50,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		checkName:             checkName,
 		pciToGPUUUID:          make(map[string]string),
 		parser:                xidParser,
+		metadataReader:        metadata.NewReader(metadataPath),
 	}, nil
 }
 
@@ -110,17 +112,42 @@ func (xidHandler *XIDHandler) determineFatality(recommendedAction pb.Recommended
 	}, recommendedAction)
 }
 
-// createHealthEventFromResponse creates a health event from Response (works for both sidecar and local parsing)
-func (xidHandler *XIDHandler) createHealthEventFromResponse(xidResp *parser.Response, message string) *pb.HealthEvents {
-	entitesImpacted := []*pb.Entity{
+func (xidHandler *XIDHandler) getGPUUUID(normPCI string) string {
+	gpuInfo, err := xidHandler.metadataReader.GetGPUByPCI(normPCI)
+	if err == nil && gpuInfo != nil {
+		return gpuInfo.UUID
+	}
+
+	if err != nil {
+		slog.Error("Error getting GPU UUID from metadata", "pci", normPCI, "error", err)
+	}
+
+	if uuid, ok := xidHandler.pciToGPUUUID[normPCI]; ok {
+		return uuid
+	}
+
+	return ""
+}
+
+func (xidHandler *XIDHandler) createHealthEventFromResponse(
+	xidResp *parser.Response,
+	message string,
+) *pb.HealthEvents {
+	entities := []*pb.Entity{
 		{EntityType: "PCI", EntityValue: xidResp.Result.PCIE},
 	}
 
 	normPCI := xidHandler.normalizePCI(xidResp.Result.PCIE)
-	if uuid, ok := xidHandler.pciToGPUUUID[normPCI]; ok && uuid != "" {
-		entitesImpacted = append(entitesImpacted, &pb.Entity{
-			EntityType: "GPU", EntityValue: uuid,
+
+	if uuid := xidHandler.getGPUUUID(normPCI); uuid != "" {
+		entities = append(entities, &pb.Entity{
+			EntityType: "GPU_UUID", EntityValue: uuid,
 		})
+	}
+
+	metadata := make(map[string]string)
+	if chassisSerial := xidHandler.metadataReader.GetChassisSerial(); chassisSerial != nil {
+		metadata["chassis_serial"] = *chassisSerial
 	}
 
 	metrics.XidCounterMetric.WithLabelValues(
@@ -135,14 +162,14 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(xidResp *parser.Resp
 		CheckName:          xidHandler.checkName,
 		ComponentClass:     xidHandler.defaultComponentClass,
 		GeneratedTimestamp: timestamppb.New(time.Now()),
-		EntitiesImpacted:   entitesImpacted,
+		EntitiesImpacted:   entities,
 		Message:            message,
 		IsFatal:            xidHandler.determineFatality(recommendedAction),
 		IsHealthy:          false,
 		NodeName:           xidHandler.nodeName,
 		RecommendedAction:  recommendedAction,
 		ErrorCode:          []string{xidResp.Result.DecodedXIDStr},
-		Metadata:           map[string]string{},
+		Metadata:           metadata,
 	}
 
 	return &pb.HealthEvents{
