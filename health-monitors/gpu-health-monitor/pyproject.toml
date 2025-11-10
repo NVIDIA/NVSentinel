@@ -16,7 +16,7 @@ googleapis-common-protos = ">=1.56.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
-coverage = "^7.5.4"
+coverage = "^7.11.3"
 pytest = "^8.2.2"
 
 [build-system]
