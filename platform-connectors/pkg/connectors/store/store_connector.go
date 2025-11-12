@@ -77,6 +77,13 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 		return nil, fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
 	}
 
+	// Check if TLS is enabled (default: true)
+	tlsEnabledStr := os.Getenv("MONGODB_TLS_ENABLED")
+	tlsEnabled := true // default to enabled
+	if tlsEnabledStr != "" {
+		tlsEnabled = tlsEnabledStr != "false"
+	}
+
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
 		return nil, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
@@ -87,45 +94,50 @@ func InitializeMongoDbStoreConnector(ctx context.Context, ringbuffer *ringbuffer
 		return nil, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
-	clientCertPath := clientCertMountPath + "/tls.crt"
+	var clientOpts *options.ClientOptions
 
-	clientKeyPath := clientCertMountPath + "/tls.key"
+	if tlsEnabled {
+		clientCertPath := clientCertMountPath + "/tls.crt"
+		clientKeyPath := clientCertMountPath + "/tls.key"
+		mongoCACertPath := clientCertMountPath + "/ca.crt"
 
-	mongoCACertPath := clientCertMountPath + "/ca.crt"
+		totalCertTimeout := time.Duration(totalCACertTimeoutSeconds) * time.Second
+		intervalCert := time.Duration(intervalCACertSeconds) * time.Second
 
-	totalCertTimeout := time.Duration(totalCACertTimeoutSeconds) * time.Second
-	intervalCert := time.Duration(intervalCACertSeconds) * time.Second
+		// load CA certificate
+		caCert, err := pollTillCACertIsMountedSuccessfully(mongoCACertPath, totalCertTimeout, intervalCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load CA certificate: %w", err)
+		}
 
-	// load CA certificate
-	caCert, err := pollTillCACertIsMountedSuccessfully(mongoCACertPath, totalCertTimeout, intervalCert)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load CA certificate: %w", err)
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to append CA certificate to pool")
+		}
+
+		// Load client certificate and key
+		clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{clientCert},
+			RootCAs:      caCertPool,
+			MinVersion:   tls.VersionTLS12,
+		}
+
+		clientOpts = options.Client().ApplyURI(mongoDbURI).SetTLSConfig(tlsConfig)
+
+		credential := options.Credential{
+			AuthMechanism: "MONGODB-X509",
+			AuthSource:    "$external",
+		}
+		clientOpts.SetAuth(credential)
+	} else {
+		// TLS disabled - connect without TLS configuration
+		clientOpts = options.Client().ApplyURI(mongoDbURI)
 	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("failed to append CA certificate to pool")
-	}
-
-	// Load client certificate and key
-	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      caCertPool,
-		MinVersion:   tls.VersionTLS12,
-	}
-
-	clientOpts := options.Client().ApplyURI(mongoDbURI).SetTLSConfig(tlsConfig)
-
-	credential := options.Credential{
-		AuthMechanism: "MONGODB-X509",
-		AuthSource:    "$external",
-	}
-	clientOpts.SetAuth(credential)
 
 	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
