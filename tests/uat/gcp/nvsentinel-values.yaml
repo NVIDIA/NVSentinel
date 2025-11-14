@@ -54,11 +54,12 @@ fault-quarantine:
 
 janitor:
   csp:
+    provider: gcp
     # TODO: Set using environment variables
     gcp:
       project: "nv-dgxck8s-20250306"
       zone: "europe-west4"
-      serviceAccount: "github-actions-user@nv-dgxck8s-20250306.iam.gserviceaccount.com"
+      serviceAccount: "github-actions-user"
 
 mongodb-store:
   mongodb:

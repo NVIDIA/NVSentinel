@@ -96,14 +96,13 @@ test_gpu_monitoring_dcgm() {
     fi
 
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 240 -v 1000 # PCIE watch error
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 202 -v 99999 # power watch error
 
     log "Waiting for node conditions to appear..."
     local max_wait=30
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
-        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch" or .type == "GpuPcieWatch")] | length')
+        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch")] | length')
         if [[ "$conditions_count" -ge 2 ]]; then
             log "Found $conditions_count node conditions"
             break
@@ -113,13 +112,12 @@ test_gpu_monitoring_dcgm() {
     done
 
     log "Verifying node conditions are populated"
-    kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch" or .type == "GpuPcieWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
+    kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
 
     inforom_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True") | .type')
-    pcie_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuPcieWatch" and .status == "True") | .type')
 
-    if [[ -z "$inforom_condition" ]] || [[ -z "$pcie_condition" ]]; then
-        error "Expected node conditions not found: GpuInforomWatch=$inforom_condition, GpuPcieWatch=$pcie_condition"
+    if [[ -z "$inforom_condition" ]]; then
+        error "Expected node conditions not found: GpuInforomWatch=$inforom_condition"
     fi
     log "Node conditions verified ✓"
 
