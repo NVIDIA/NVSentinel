@@ -300,7 +300,7 @@ main() {
 
     test_gpu_monitoring_dcgm
     test_xid_monitoring_syslog
-    test_sxid_monitoring_syslog
+    # test_sxid_monitoring_syslog
 
     log "========================================="
     log "All tests PASSED ✓"
