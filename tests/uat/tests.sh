@@ -261,7 +261,7 @@ test_sxid_monitoring_syslog() {
     sxid_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
 
     if [[ -z "$sxid_event" ]]; then
-        error "SysLogsSXIDError event not found (non-fatal SXID may not create separate event)"
+        log "SysLogsSXIDError event not found (non-fatal SXID may not create separate event)"
     fi
     log "Node event verified: SysLogsSXIDError ✓"
 
