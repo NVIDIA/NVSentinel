@@ -77,3 +77,7 @@ mongodb:
             values: ["kwok"]
   tolerations:
   - operator: Exists
+
+platformConnector:
+  nodeMetadata:
+    enabled: true
