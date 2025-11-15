@@ -30,8 +30,6 @@ driver:
   enabled: true
 gfd:
   enabled: true
-hostPaths:
-  driverInstallDir: /run/nvidia/driver
 toolkit:
   enabled: true
   env:
