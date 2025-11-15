@@ -121,6 +121,19 @@ test_gpu_monitoring_dcgm() {
     fi
     log "Node conditions verified ✓"
 
+    log "Waiting for node events to appear..."
+    local max_wait=30
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuPowerWatchIsNotHealthy") | .reason')
+        if [[ -n "$power_event" ]]; then
+            log "Found power event"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
     log "Verifying node events are populated (non-fatal errors appear here)"
     kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason | contains("IsNotHealthy")) | "\(.reason) Message=\(.message)"' | head -5
 
