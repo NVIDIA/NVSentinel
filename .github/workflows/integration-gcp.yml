@@ -29,7 +29,7 @@ permissions:
 jobs:
   integration-test-gcp:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       NVSENTINEL_VERSION: main-3f3c256
       IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
