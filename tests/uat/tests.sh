@@ -96,7 +96,7 @@ test_gpu_monitoring_dcgm() {
     fi
 
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 202 -v 99999 # power watch error
+    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 240 -v 99999 # power watch error
 
     log "Waiting for node conditions to appear..."
     local max_wait=30
