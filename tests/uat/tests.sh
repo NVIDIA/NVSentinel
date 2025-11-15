@@ -147,7 +147,6 @@ test_gpu_monitoring_dcgm() {
     log "Waiting for node to be quarantined and rebooted..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
-
     log "Test 1 PASSED ✓"
 }
 
