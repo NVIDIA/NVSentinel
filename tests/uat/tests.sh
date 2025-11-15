@@ -102,8 +102,8 @@ test_gpu_monitoring_dcgm() {
     local max_wait=30
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
-        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch")] | length')
-        if [[ "$conditions_count" -ge 2 ]]; then
+        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True")] | length')
+        if [[ "$conditions_count" -ge 1 ]]; then
             log "Found $conditions_count node conditions"
             break
         fi
@@ -247,7 +247,17 @@ test_sxid_monitoring_syslog() {
     kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated"
 
     log "Waiting for node conditions to appear..."
-    sleep 15
+    local max_wait=30
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "SysLogsSXIDError" and .status == "True")] | length')
+        if [[ "$conditions_count" -ge 1 ]]; then
+            log "Found $conditions_count node conditions"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
 
     log "Verifying SXID node condition is populated (fatal SXID 20034)"
     sxid_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "SysLogsSXIDError" and .status == "True") | .type')
@@ -256,6 +266,18 @@ test_sxid_monitoring_syslog() {
         error "SysLogsSXIDError condition not found (fatal SXID should create condition)"
     fi
     log "Node condition verified: SysLogsSXIDError ✓"
+
+    local max_wait=30
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
+        if [[ -n "$power_event" ]]; then
+            log "Found sxid event"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
 
     log "Verifying SXID node event is populated (non-fatal SXID 28002)"
     sxid_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
