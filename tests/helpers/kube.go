@@ -59,13 +59,16 @@ const (
 	NVSentinelNamespace   = "nvsentinel"
 )
 
-func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, shouldCordon bool) {
+func WaitForNodesCordonState(
+	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, shouldCordon bool,
+) {
 	require.Eventually(t, func() bool {
 		targetCount := len(nodeNames)
 		actualCount := 0
 
 		for _, nodeName := range nodeNames {
 			var node v1.Node
+
 			err := c.Resources().Get(ctx, nodeName, "", &node)
 			if err != nil {
 				t.Logf("failed to get node %s: %v", nodeName, err)
@@ -78,6 +81,7 @@ func WaitForNodesCordonState(ctx context.Context, t *testing.T, c klient.Client,
 		}
 
 		t.Logf("Nodes with cordon state %v: %d/%d", shouldCordon, actualCount, targetCount)
+
 		return actualCount == targetCount
 	}, EventuallyWaitTimeout, WaitInterval, "nodes should have cordon state %v", shouldCordon)
 }
@@ -94,6 +98,7 @@ func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 		if apierrors.IsAlreadyExists(err) {
 			return nil
 		}
+
 		return fmt.Errorf("failed to create namespace %s: %w", name, err)
 	}
 
@@ -114,7 +119,9 @@ func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name st
 
 	require.Eventually(t, func() bool {
 		var ns v1.Namespace
+
 		err := c.Resources().Get(ctx, name, "", &ns)
+
 		return err != nil && apierrors.IsNotFound(err)
 	}, EventuallyWaitTimeout, WaitInterval, "namespace %s should be deleted", name)
 
@@ -122,7 +129,8 @@ func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name st
 }
 
 /*
-This function ensures that the given node follows the given label values in order for the dgxc.nvidia.com/nvsentinel-state
+This function ensures that the given node follows the given label values in order for the
+dgxc.nvidia.com/nvsentinel-state
 node label. We leverage this helper function to ensure that a node progresses through the following NVSentinel states:
 
 - dgxc.nvidia.com/nvsentinel-state: quarantined
@@ -137,6 +145,7 @@ intended sequence rather than starting without the label value. This is required
 between the end of the TestScaleHealthEvents where a node may have the remediation-succeeded when the test completes.
 This workaround can be removed after KACE-1703 is completed.
 */
+//nolint:cyclop,gocognit // Test helper with complex state machine logic
 func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 	labelValueSequence []string, success chan bool) error {
 	currentLabelIndex := 0
@@ -151,6 +160,7 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 						nodeName, currentValue, i)
 					currentLabelIndex = i + 1 // Start watching for the NEXT label
 					prevLabelValue = currentValue
+
 					break
 				}
 			}
@@ -163,23 +173,29 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 	// thead to read from the success channel. This is the desired behavior because we only want to have 1 UpdateFunc
 	// thread write true/false.
 	var lock sync.Mutex
+
 	t.Logf("[LabelWatcher] Starting watcher for node %s, expecting sequence: %v (starting at index %d)",
 		nodeName, labelValueSequence, currentLabelIndex)
+
 	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
 		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
 		WithUpdateFunc(func(updated interface{}) {
 			lock.Lock()
 			defer lock.Unlock()
+
 			node := updated.(*v1.Node)
+
 			actualValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
-			if exists && currentLabelIndex < len(labelValueSequence) {
+			if exists && currentLabelIndex < len(labelValueSequence) { //nolint:nestif // Complex label state tracking logic
 				expectedValue := labelValueSequence[currentLabelIndex]
 				t.Logf("[LabelWatcher] Node %s update: %s=%s (progress: %d/%d, expected: %s, prev: %s)",
 					nodeName, statemanager.NVSentinelStateLabelKey, actualValue,
 					currentLabelIndex, len(labelValueSequence), expectedValue, prevLabelValue)
+				//nolint:gocritic // Complex boolean logic appropriate for state transitions
 				if currentLabelIndex < len(labelValueSequence) && actualValue == labelValueSequence[currentLabelIndex] {
 					t.Logf("[LabelWatcher] ✓ MATCHED expected label [%d]: %s", currentLabelIndex, actualValue)
 					prevLabelValue = labelValueSequence[currentLabelIndex]
+
 					currentLabelIndex++
 					if currentLabelIndex == len(labelValueSequence) {
 						t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(labelValueSequence))
@@ -189,17 +205,25 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 					// we missed early labels due to race condition. Check if this label appears later in sequence.
 					if currentLabelIndex == 0 {
 						foundLaterInSequence := false
+
 						for i := 1; i < len(labelValueSequence); i++ {
 							if actualValue == labelValueSequence[i] {
 								foundLaterInSequence = true
-								t.Logf("[LabelWatcher] ✗ MISSED early labels: First label received is '%s' (expected index %d), but expected to start with '%s' (index 0)",
-									actualValue, i, labelValueSequence[0])
+
+								t.Logf(
+									"[LabelWatcher] ✗ MISSED early labels: First label received is '%s' (expected index %d), "+
+										"but expected to start with '%s' (index 0)",
+									actualValue, i, labelValueSequence[0],
+								)
+
 								break
 							}
 						}
+
 						if !foundLaterInSequence {
 							t.Logf("[LabelWatcher] ✗ UNEXPECTED first label: got '%s', not in expected sequence at all", actualValue)
 						}
+
 						t.Logf("[LabelWatcher] Sending FAILURE to channel (missed early labels)")
 						sendNodeLabelResult(ctx, success, false)
 					} else {
@@ -215,14 +239,16 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 			} else {
 				t.Logf("[LabelWatcher] Node %s update: %s label doesn't exist (progress: %d/%d)",
 					nodeName, statemanager.NVSentinelStateLabelKey, currentLabelIndex, len(labelValueSequence))
-				if currentLabelIndex == len(labelValueSequence) {
+
+				switch {
+				case currentLabelIndex == len(labelValueSequence):
 					t.Logf("[LabelWatcher] ✓ All labels observed and now removed. Sending SUCCESS to channel")
 					sendNodeLabelResult(ctx, success, true)
-				} else if currentLabelIndex != 0 {
+				case currentLabelIndex != 0:
 					t.Logf("[LabelWatcher] ✗ Label removed prematurely (only saw %d/%d labels). Sending FAILURE to channel",
 						currentLabelIndex, len(labelValueSequence))
 					sendNodeLabelResult(ctx, success, false)
-				} else {
+				default:
 					t.Logf("[LabelWatcher] Waiting for first label to appear...")
 				}
 			}
@@ -241,8 +267,11 @@ func sendNodeLabelResult(ctx context.Context, success chan bool, result bool) {
 	}
 }
 
-// WaitForNodesWithLabel waits for nodes with names specified in `nodeNames` to have a label with key `labelKey` set to `expectedValue`.
-func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, labelKey, expectedValue string) {
+// WaitForNodesWithLabel waits for nodes with names specified in `nodeNames` to have a label
+// with key `labelKey` set to `expectedValue`.
+func WaitForNodesWithLabel(
+	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, labelKey, expectedValue string,
+) {
 	require.Eventually(t, func() bool {
 		targetCount := len(nodeNames)
 		actualCount := 0
@@ -260,6 +289,7 @@ func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, n
 		}
 
 		t.Logf("Nodes with label %s=%s: %d/%d", labelKey, expectedValue, actualCount, targetCount)
+
 		return actualCount == targetCount
 	}, EventuallyWaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
 }
@@ -267,19 +297,24 @@ func WaitForNodesWithLabel(ctx context.Context, t *testing.T, c klient.Client, n
 func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string, expectedEvent v1.Event) {
 	require.Eventually(t, func() bool {
 		fieldSelector := resources.WithFieldSelector(fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName))
+
 		var eventsForNode v1.EventList
+
 		err := c.Resources().List(ctx, &eventsForNode, fieldSelector)
 		if err != nil {
 			t.Logf("Got an error listing events for node %s: %s", nodeName, err)
 			return false
 		}
+
 		for _, event := range eventsForNode.Items {
 			if event.Type == expectedEvent.Type && event.Reason == expectedEvent.Reason {
 				t.Logf("Matching event for node %s: %v", nodeName, event)
 				return true
 			}
 		}
+
 		t.Logf("Did not find any events for node %s matching event %v", nodeName, expectedEvent)
+
 		return false
 	}, EventuallyWaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
 }
@@ -288,6 +323,7 @@ func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeNa
 // Prefers uncordoned nodes but will fall back to the first node if none are available.
 func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klient.Client) string {
 	t.Log("Selecting an available uncordoned test node")
+
 	nodes, err := GetAllNodesNames(ctx, client)
 	require.NoError(t, err)
 	require.NotEmpty(t, nodes, "no nodes found in cluster")
@@ -298,6 +334,7 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 		if err != nil {
 			continue
 		}
+
 		if !node.Spec.Unschedulable {
 			t.Logf("Selected uncordoned node: %s", name)
 			return name
@@ -306,11 +343,13 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 
 	nodeName := nodes[0]
 	t.Logf("No uncordoned node found, using first node: %s", nodeName)
+
 	return nodeName
 }
 
 func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.Node, error) {
 	var node v1.Node
+
 	err := c.Resources().Get(ctx, nodeName, "", &node)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
@@ -342,10 +381,12 @@ func listAllRebootNodes(ctx context.Context, c klient.Client) (*unstructured.Uns
 		Version: "v1alpha1",
 		Kind:    "RebootNodeList",
 	})
+
 	err := c.Resources().List(ctx, rebootNodeList)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list rebootnodes: %v", err)
+		return nil, fmt.Errorf("failed to list rebootnodes: %w", err)
 	}
+
 	return rebootNodeList, nil
 }
 
@@ -372,11 +413,15 @@ func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, n
 				return true
 			}
 		}
+
 		return false
-	}, NeverWaitTimeout, WaitInterval, "RebootNode CR should not be created for node %s", nodeName)
+	}, NeverWaitTimeout, WaitInterval,
+		"RebootNode CR should not be created for node %s", nodeName)
 }
 
-func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) *unstructured.Unstructured {
+func WaitForRebootNodeCR(
+	ctx context.Context, t *testing.T, c klient.Client, nodeName string,
+) *unstructured.Unstructured {
 	var resultCR *unstructured.Unstructured
 
 	t.Logf("Waiting for RebootNode CR to be created for node %s", nodeName)
@@ -386,11 +431,13 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 			t.Logf("failed to list rebootnodes: %v", err)
 			return false
 		}
+
 		for _, item := range rebootNodeList.Items {
 			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
 			if err != nil {
 				continue
 			}
+
 			if !found {
 				continue
 			}
@@ -403,35 +450,47 @@ func WaitForRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nod
 				}
 
 				t.Logf("RebootNode for node %s completed", nodeName)
+
 				resultCR = &item
+
 				return true
 			}
 		}
+
 		t.Logf("No RebootNode CR found for node %s", nodeName)
+
 		return false
-	}, EventuallyWaitTimeout, WaitInterval, "RebootNode CR should complete for node %s", nodeName)
+	}, EventuallyWaitTimeout, WaitInterval,
+		"RebootNode CR should complete for node %s", nodeName)
 
 	t.Logf("RebootNode CR created for node %s", nodeName)
+
 	return resultCR
 }
 
 func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) error {
 	rebootNodeList, err := listAllRebootNodes(ctx, c)
 	if err != nil {
-		return fmt.Errorf("failed to list rebootnodes: %v", err)
+		return fmt.Errorf("failed to list rebootnodes: %w", err)
 	}
+
 	for _, item := range rebootNodeList.Items {
 		err = DeleteRebootNodeCR(ctx, c, &item)
 		if err != nil {
-			return fmt.Errorf("failed to delete reboot node: %v", err)
+			return fmt.Errorf("failed to delete reboot node: %w", err)
 		}
 	}
+
 	return nil
 }
 
 func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstructured.Unstructured) error {
 	err := c.Resources().Delete(ctx, rebootNode)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
 		return fmt.Errorf("failed to delete RebootNode CR %s: %w", rebootNode.GetName(), err)
 	}
 
@@ -440,6 +499,7 @@ func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstru
 
 func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	var nodeList v1.NodeList
+
 	err := c.Resources().List(ctx, &nodeList, resources.WithLabelSelector("type=kwok"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
@@ -453,16 +513,22 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	return nodeNames, nil
 }
 
-func CreatePodsAndWaitTillRunning(ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, podTemplate *v1.Pod) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errs []error
+func CreatePodsAndWaitTillRunning(
+	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, podTemplate *v1.Pod,
+) {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+
 	gpuCount := 8
 	totalPods := len(nodeNames) * gpuCount
 
 	for _, nodeName := range nodeNames {
 		for gpuIndex := 1; gpuIndex <= gpuCount; gpuIndex++ {
 			wg.Add(1)
+
 			go func(nodeName string) {
 				defer wg.Done()
 
@@ -473,7 +539,9 @@ func CreatePodsAndWaitTillRunning(ctx context.Context, t *testing.T, c klient.Cl
 				if err != nil {
 					mu.Lock()
 					defer mu.Unlock()
+
 					errs = append(errs, fmt.Errorf("failed to create pod on node %s: %w", nodeName, err))
+
 					return
 				}
 
@@ -491,9 +559,11 @@ func CreatePodsAndWaitTillRunning(ctx context.Context, t *testing.T, c klient.Cl
 	t.Logf("Created and verified %d pods total", totalPods)
 }
 
-// DrainRunningPodsInNamespace finds all running pods in the specified `namespace` and deletes them to simulate node draining.
+// DrainRunningPodsInNamespace finds all running pods in the specified `namespace`
+// and deletes them to simulate node draining.
 func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Client, namespace string) {
 	var podList v1.PodList
+
 	err := c.Resources(namespace).List(ctx, &podList)
 	if err != nil {
 		t.Fatalf("Failed to list pods in namespace %s: %v", namespace, err)
@@ -516,7 +586,9 @@ func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Cli
 
 		if isRunning {
 			runningPodsFound++
+
 			t.Logf("Found running pod: %s, deleting it", pod.Name)
+
 			err = DeletePod(ctx, c, namespace, pod.Name)
 			if err != nil {
 				t.Errorf("Failed to delete pod %s: %v", pod.Name, err)
@@ -565,20 +637,25 @@ func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 	}
 }
 
-func waitForPodRunning(ctx context.Context, t *testing.T, c klient.Client, podName, namespace string) {
+func waitForPodRunning(
+	ctx context.Context, t *testing.T, c klient.Client, podName, namespace string,
+) {
 	require.Eventually(t, func() bool {
 		isRunning, err := isPodRunning(ctx, c, namespace, podName)
 		if err != nil {
 			t.Logf("failed to check pod %s status: %v", podName, err)
 			return false
 		}
+
 		return isRunning
 	}, EventuallyWaitTimeout, WaitInterval, "pod %s should be running", podName)
-
 }
 
-func isPodRunning(ctx context.Context, c klient.Client, namespace, podName string) (bool, error) {
+func isPodRunning(
+	ctx context.Context, c klient.Client, namespace, podName string,
+) (bool, error) {
 	var pod v1.Pod
+
 	err := c.Resources().Get(ctx, podName, namespace, &pod)
 	if err != nil {
 		return false, fmt.Errorf("failed to get pod %s in namespace %s: %w", podName, namespace, err)
@@ -587,9 +664,13 @@ func isPodRunning(ctx context.Context, c klient.Client, namespace, podName strin
 	return pod.Status.Phase == v1.PodRunning, nil
 }
 
-func GetPodsOnNode(ctx context.Context, client *resources.Resources, nodeName string) ([]v1.Pod, error) {
+func GetPodsOnNode(
+	ctx context.Context, client *resources.Resources, nodeName string,
+) ([]v1.Pod, error) {
 	var podList v1.PodList
-	err := client.List(ctx, &podList, resources.WithFieldSelector(fmt.Sprintf("spec.nodeName=%s", nodeName)))
+
+	err := client.List(ctx, &podList,
+		resources.WithFieldSelector(fmt.Sprintf("spec.nodeName=%s", nodeName)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
 	}
@@ -629,6 +710,7 @@ func CreateRebootNodeCR(
 
 func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []byte, name, namespace string) error {
 	cm := &v1.ConfigMap{}
+
 	err := yaml.Unmarshal(yamlData, cm)
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal config map: %w", err)
@@ -639,33 +721,34 @@ func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []b
 	}
 
 	if namespace != "" {
-		cm.ObjectMeta.Namespace = namespace
+		cm.Namespace = namespace
 	}
 
-	cm.ObjectMeta.ResourceVersion = ""
-	cm.ObjectMeta.UID = ""
-	cm.ObjectMeta.Generation = 0
-	cm.ObjectMeta.CreationTimestamp = metav1.Time{}
-	cm.ObjectMeta.ManagedFields = nil
+	cm.ResourceVersion = ""
+	cm.UID = ""
+	cm.Generation = 0
+	cm.CreationTimestamp = metav1.Time{}
+	cm.ManagedFields = nil
 
 	existingCM := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cm.ObjectMeta.Name,
-			Namespace: cm.ObjectMeta.Namespace,
+			Name:      cm.Name,
+			Namespace: cm.Namespace,
 		},
 	}
 	_ = c.Resources().Delete(ctx, existingCM)
 
 	backoff := retry.DefaultBackoff
 	backoff.Steps = 3
+
 	err = retry.OnError(backoff, apierrors.IsAlreadyExists, func() error {
 		createErr := c.Resources().Create(ctx, cm)
 		if apierrors.IsAlreadyExists(createErr) {
 			_ = c.Resources().Delete(ctx, existingCM)
 		}
+
 		return createErr
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to create config map: %w", err)
 	}
@@ -682,12 +765,15 @@ func createConfigMapFromFilePath(ctx context.Context, c klient.Client, filePath,
 	return createConfigMapFromBytes(ctx, c, content, name, namespace)
 }
 
-func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace string) ([]byte, error) {
+func BackupConfigMap(
+	ctx context.Context, c klient.Client, name, namespace string,
+) ([]byte, error) {
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 	}
+
 	err := c.Resources().Get(ctx, name, namespace, cm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config map: %w", err)
@@ -701,10 +787,11 @@ func BackupConfigMap(ctx context.Context, c klient.Client, name, namespace strin
 	return yamlData, nil
 }
 
-func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name, namespace, tomlKey string,
-	modifier func(*T) error) error {
-
+func UpdateConfigMapTOMLField[T any](
+	ctx context.Context, c klient.Client, name, namespace, tomlKey string, modifier func(*T) error,
+) error {
 	cm := &v1.ConfigMap{}
+
 	err := c.Resources().Get(ctx, name, namespace, cm)
 	if err != nil {
 		return fmt.Errorf("failed to get configmap %s/%s: %w", namespace, name, err)
@@ -729,6 +816,7 @@ func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name,
 	}
 
 	var buf strings.Builder
+
 	encoder := toml.NewEncoder(&buf)
 	if err := encoder.Encode(&cfg); err != nil {
 		return fmt.Errorf("failed to marshal TOML: %w", err)
@@ -742,8 +830,12 @@ func UpdateConfigMapTOMLField[T any](ctx context.Context, c klient.Client, name,
 	return nil
 }
 
-func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client, name, namespace string) {
-	t.Logf("Waiting for rollout to complete for deployment %s/%s", namespace, name)
+//nolint:cyclop,gocognit // Test helper with complex deployment rollout logic
+func WaitForDeploymentRollout(
+	ctx context.Context, t *testing.T, c klient.Client, name, namespace string,
+) {
+	t.Logf("Waiting for rollout to complete for deployment %s/%s",
+		namespace, name)
 
 	require.Eventually(t, func() bool {
 		deployment := &appsv1.Deployment{}
@@ -783,10 +875,12 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 		// Find the current ReplicaSet (highest revision) to verify we're checking the right pods
 		rsList := &appsv1.ReplicaSetList{}
 		rsLabelSelector := ""
+
 		rsLabels := []string{}
 		for k, v := range deployment.Spec.Selector.MatchLabels {
 			rsLabels = append(rsLabels, fmt.Sprintf("%s=%s", k, v))
 		}
+
 		rsLabelSelector = strings.Join(rsLabels, ",")
 
 		if err := c.Resources(namespace).List(ctx, rsList, resources.WithLabelSelector(rsLabelSelector)); err != nil {
@@ -796,18 +890,26 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 
 		// Find the ReplicaSet with highest revision (current one)
 		var currentRS *appsv1.ReplicaSet
+
 		highestRevision := int64(-1)
+
 		for i := range rsList.Items {
 			rs := &rsList.Items[i]
 			if rs.Annotations == nil {
 				continue
 			}
+
 			revisionStr := rs.Annotations["deployment.kubernetes.io/revision"]
 			if revisionStr == "" {
 				continue
 			}
+
 			revision := int64(0)
-			fmt.Sscanf(revisionStr, "%d", &revision)
+			if _, err := fmt.Sscanf(revisionStr, "%d", &revision); err != nil {
+				// Skip this replica set if revision parsing fails
+				continue
+			}
+
 			if revision > highestRevision {
 				highestRevision = revision
 				currentRS = rs
@@ -824,10 +926,12 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 
 		// Now verify at least one pod from the current ReplicaSet is ready
 		labelSelector := ""
+
 		labels := []string{}
 		for k, v := range deployment.Spec.Selector.MatchLabels {
 			labels = append(labels, fmt.Sprintf("%s=%s", k, v))
 		}
+
 		labelSelector = strings.Join(labels, ",")
 
 		pods := &v1.PodList{}
@@ -837,6 +941,7 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 		}
 
 		readyPodFound := false
+
 		for _, pod := range pods.Items {
 			if pod.DeletionTimestamp != nil {
 				continue
@@ -850,7 +955,9 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 
 			if pod.Status.Phase == v1.PodRunning && IsPodReady(pod) {
 				t.Logf("Found ready pod from current ReplicaSet: %s", pod.Name)
+
 				readyPodFound = true
+
 				break
 			}
 		}
@@ -860,6 +967,7 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 		}
 
 		t.Logf("Rollout complete: all %d replicas are updated, ready, and available", expectedReplicas)
+
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
 
@@ -869,7 +977,9 @@ func WaitForDeploymentRollout(ctx context.Context, t *testing.T, c klient.Client
 // RestartDeployment triggers a rolling restart of the specified deployment by updating
 // the restartedAt annotation on the pod template, then waits for the rollout to complete.
 // Uses retry.RetryOnConflict for automatic retry handling with exponential backoff.
-func RestartDeployment(ctx context.Context, t *testing.T, c klient.Client, name, namespace string) error {
+func RestartDeployment(
+	ctx context.Context, t *testing.T, c klient.Client, name, namespace string,
+) error {
 	t.Logf("Triggering rollout restart for deployment %s/%s", namespace, name)
 
 	restartTime := time.Now().Format(time.RFC3339)
@@ -883,6 +993,7 @@ func RestartDeployment(ctx context.Context, t *testing.T, c klient.Client, name,
 		if deployment.Spec.Template.Annotations == nil {
 			deployment.Spec.Template.Annotations = make(map[string]string)
 		}
+
 		deployment.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartTime
 
 		if err := c.Resources().Update(ctx, deployment); err != nil {
@@ -891,12 +1002,12 @@ func RestartDeployment(ctx context.Context, t *testing.T, c klient.Client, name,
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to trigger rollout restart: %w", err)
 	}
 
 	WaitForDeploymentRollout(ctx, t, c, name, namespace)
+
 	return nil
 }
 
@@ -905,7 +1016,9 @@ func RestartDeployment(ctx context.Context, t *testing.T, c klient.Client, name,
 //   - (*v1.NodeCondition, nil) if the node exists and has the specified condition
 //   - (nil, nil) if the node exists but doesn't have the specified condition
 //   - (nil, error) if the node cannot be retrieved
-func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName, conditionType, reason string) (*v1.NodeCondition, error) {
+func CheckNodeConditionExists(
+	ctx context.Context, c klient.Client, nodeName, conditionType, reason string,
+) (*v1.NodeCondition, error) {
 	node, err := GetNodeByName(ctx, c, nodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
@@ -918,6 +1031,7 @@ func CheckNodeConditionExists(ctx context.Context, c klient.Client, nodeName, co
 			return &condition, nil
 		}
 	}
+
 	return nil, nil
 }
 
@@ -944,7 +1058,9 @@ func GetNodeEvents(ctx context.Context, c klient.Client, nodeName string, eventT
 // Node events are queried from the default namespace with field selectors for efficient filtering.
 // - eventReason: if empty, reason is not checked
 // - afterTime: if zero, time is not checked
-func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string, afterTime ...time.Time) (bool, *v1.Event) {
+func CheckNodeEventExists(
+	ctx context.Context, c klient.Client, nodeName string, eventType, eventReason string, afterTime ...time.Time,
+) (bool, *v1.Event) {
 	eventList, err := GetNodeEvents(ctx, c, nodeName, eventType)
 	if err != nil {
 		return false, nil
@@ -968,6 +1084,7 @@ func CheckNodeEventExists(ctx context.Context, c klient.Client, nodeName string,
 
 		return true, &event
 	}
+
 	return false, nil
 }
 
@@ -988,7 +1105,7 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 			return fmt.Errorf("service %s/%s has no ports", namespace, serviceName)
 		}
 
-		svc.Spec.Ports[0].Port = int32(targetPort)
+		svc.Spec.Ports[0].Port = int32(targetPort) // #nosec G115 - test port values are within int32 range
 		svc.Spec.Ports[0].TargetPort = intstr.FromInt(targetPort)
 
 		if err := c.Resources().Update(ctx, svc); err != nil {
@@ -997,7 +1114,6 @@ func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceNa
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to patch service port: %w", err)
 	}
@@ -1039,6 +1155,7 @@ func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, no
 
 	if node.Labels != nil {
 		delete(node.Labels, "k8saas.nvidia.com/ManagedByNVSentinel")
+
 		err = c.Resources().Update(ctx, node)
 		if err != nil {
 			return fmt.Errorf("failed to update node labels: %w", err)
@@ -1049,10 +1166,13 @@ func RemoveNodeManagedByNVSentinelLabel(ctx context.Context, c klient.Client, no
 }
 
 // GetPodOnWorkerNode returns a running pod matching the given name pattern on a real worker node
-func GetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client, namespace, podNamePattern string) (*v1.Pod, error) {
+func GetPodOnWorkerNode(
+	ctx context.Context, t *testing.T, client klient.Client, namespace, podNamePattern string,
+) (*v1.Pod, error) {
 	t.Helper()
 
 	pods := &v1.PodList{}
+
 	err := client.Resources().List(ctx, pods, func(opts *metav1.ListOptions) {
 		opts.FieldSelector = fmt.Sprintf("metadata.namespace=%s", namespace)
 	})
@@ -1079,7 +1199,9 @@ func GetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client,
 }
 
 // WaitForNodeLabel waits for a node to have a specific label value
-func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, nodeName, labelKey, expectedValue string) {
+func WaitForNodeLabel(
+	ctx context.Context, t *testing.T, client klient.Client, nodeName, labelKey, expectedValue string,
+) {
 	t.Helper()
 	t.Logf("Waiting for node %s to have label %s=%s", nodeName, labelKey, expectedValue)
 	require.Eventually(t, func() bool {
@@ -1087,30 +1209,37 @@ func WaitForNodeLabel(ctx context.Context, t *testing.T, client klient.Client, n
 		if err != nil {
 			return false
 		}
+
 		if node.Labels == nil {
 			return false
 		}
+
 		value, exists := node.Labels[labelKey]
 		if !exists {
 			return false
 		}
+
 		return value == expectedValue
 	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("Node %s has label %s=%s", nodeName, labelKey, expectedValue)
 }
 
-func AssertPodsNeverDeleted(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
+func AssertPodsNeverDeleted(
+	ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string,
+) {
 	t.Helper()
 	t.Logf("Asserting %d pods in namespace %s are never deleted", len(podNames), namespace)
 	require.Never(t, func() bool {
 		for _, podName := range podNames {
 			pod := &v1.Pod{}
+
 			err := client.Resources().Get(ctx, podName, namespace, pod)
 			if err != nil {
 				t.Logf("Pod %s was deleted unexpectedly", podName)
 				return true
 			}
 		}
+
 		return false
 	}, NeverWaitTimeout, WaitInterval, "pods should not be deleted")
 	t.Logf("All %d pods remain running in namespace %s", len(podNames), namespace)
@@ -1122,12 +1251,14 @@ func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client,
 	require.Eventually(t, func() bool {
 		for _, podName := range podNames {
 			pod := &v1.Pod{}
+
 			err := client.Resources().Get(ctx, podName, namespace, pod)
 			if err == nil {
 				t.Logf("Pod %s still exists", podName)
 				return false
 			}
 		}
+
 		return true
 	}, EventuallyWaitTimeout, WaitInterval)
 	t.Logf("All pods deleted from namespace %s", namespace)
@@ -1136,22 +1267,27 @@ func WaitForPodsDeleted(ctx context.Context, t *testing.T, client klient.Client,
 func WaitForPodsRunning(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Waiting for %d pods to be running in namespace %s", len(podNames), namespace)
+
 	for _, podName := range podNames {
 		require.Eventually(t, func() bool {
 			pod := &v1.Pod{}
+
 			err := client.Resources().Get(ctx, podName, namespace, pod)
 			if err != nil {
 				return false
 			}
+
 			return pod.Status.Phase == v1.PodRunning
 		}, EventuallyWaitTimeout, WaitInterval)
 	}
+
 	t.Logf("All %d pods running", len(podNames))
 }
 
 func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, namespace string, podNames []string) {
 	t.Helper()
 	t.Logf("Deleting %d pods from namespace %s", len(podNames), namespace)
+
 	for _, podName := range podNames {
 		pod := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1165,7 +1301,9 @@ func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, 
 }
 
 // ExecInPod executes a command in a pod and returns stdout, stderr
-func ExecInPod(ctx context.Context, restConfig *rest.Config, namespace, podName, containerName string, command []string) (string, string, error) {
+func ExecInPod(
+	ctx context.Context, restConfig *rest.Config, namespace, podName, containerName string, command []string,
+) (string, string, error) {
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create clientset: %w", err)
@@ -1191,6 +1329,7 @@ func ExecInPod(ctx context.Context, restConfig *rest.Config, namespace, podName,
 	}
 
 	var stdout, stderr bytes.Buffer
+
 	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
@@ -1205,6 +1344,7 @@ func IsPodReady(pod v1.Pod) bool {
 			return condition.Status == v1.ConditionTrue
 		}
 	}
+
 	return false
 }
 
@@ -1212,7 +1352,9 @@ func IsPodReady(pod v1.Pod) bool {
 // Returns (stopChan, readyChan) where:
 // - stopChan: close this to stop port forwarding
 // - readyChan: will be closed when port-forward is ready
-func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, podName string, localPort, podPort int) (chan struct{}, chan struct{}) {
+func PortForwardPod(
+	ctx context.Context, restConfig *rest.Config, namespace, podName string, localPort, podPort int,
+) (chan struct{}, chan struct{}) {
 	stopChan := make(chan struct{}, 1)
 	readyChan := make(chan struct{})
 
@@ -1254,4 +1396,183 @@ func PortForwardPod(ctx context.Context, restConfig *rest.Config, namespace, pod
 	}()
 
 	return stopChan, readyChan
+}
+
+// WaitForNodeConditionWithCheckName waits for the node to have a condition with the reason as checkName.
+func WaitForNodeConditionWithCheckName(
+	ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName, message string,
+) {
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		for _, condition := range node.Status.Conditions {
+			if condition.Status == v1.ConditionTrue &&
+				condition.Reason == checkName+"IsNotHealthy" {
+				t.Logf("Checking if message matches: expected message=%s, actual message=%s", message, condition.Message)
+
+				if message == condition.Message {
+					t.Logf("Found node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+						condition.Type, condition.Reason, condition.Status, condition.Message)
+
+					return true
+				}
+			}
+		}
+
+		t.Logf("Node %s does not have a condition with check name '%s'", nodeName, checkName)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval, "node %s should have a condition with check name %s", nodeName, checkName)
+}
+
+// EnsureNodeConditionNotPresent ensures that the node does NOT have a condition with the reason as checkName.
+func EnsureNodeConditionNotPresent(ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName string) {
+	require.Never(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		for _, condition := range node.Status.Conditions {
+			if condition.Status == v1.ConditionTrue && condition.Reason == checkName+"IsNotHealthy" {
+				t.Logf("ERROR: Found unexpected node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+					condition.Type, condition.Reason, condition.Status, condition.Message)
+
+				return true
+			}
+		}
+
+		t.Logf("Node %s correctly does not have a condition with check name '%s'", nodeName, checkName)
+
+		return false
+	}, NeverWaitTimeout, WaitInterval, "node %s should NOT have a condition with check name %s", nodeName, checkName)
+}
+
+func InjectSyslogMessages(t *testing.T, httpPort int, messages []string) {
+	t.Helper()
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	ctx := context.Background()
+
+	t.Logf("Injecting %d syslog messages", len(messages))
+
+	for i, msg := range messages {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			fmt.Sprintf("http://localhost:%d/add", httpPort),
+			strings.NewReader(msg))
+		require.NoError(t, err, "failed to create request for message %d", i+1)
+		req.Header.Set("Content-Type", "text/plain")
+
+		resp, err := httpClient.Do(req)
+		require.NoError(t, err, "failed to inject message %d", i+1)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "stub journal should return 200 OK for message %d", i+1)
+
+		resp.Body.Close()
+	}
+
+	t.Logf("All %d messages injected successfully", len(messages))
+}
+
+// VerifyNodeConditionMatchesSequence verifies that a node condition contains expected patterns in sequence using regex
+func VerifyNodeConditionMatchesSequence(t *testing.T, ctx context.Context,
+	c klient.Client, nodeName, checkName, conditionReason string, expectedPatterns []string) bool {
+	t.Helper()
+
+	condition, err := CheckNodeConditionExists(ctx, c, nodeName, checkName, conditionReason)
+	if err != nil || condition == nil {
+		t.Logf("Condition not found: %v", err)
+		return false
+	}
+
+	message := condition.Message
+	lastIndex := 0
+
+	for i, pattern := range expectedPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Logf("Invalid regex pattern at position %d: %s (error: %v)", i+1, pattern, err)
+			return false
+		}
+
+		loc := re.FindStringIndex(message[lastIndex:])
+		if loc == nil {
+			t.Logf("Missing expected pattern at position %d: %s", i+1, pattern)
+			t.Logf("Searched in: %s", message[lastIndex:])
+
+			return false
+		}
+
+		matchStart := lastIndex + loc[0]
+		matchEnd := lastIndex + loc[1]
+		t.Logf("Pattern %d matched: %s", i+1, message[matchStart:matchEnd])
+		lastIndex = matchEnd
+	}
+
+	t.Logf("Node condition verified: all %d patterns matched in sequence", len(expectedPatterns))
+
+	return true
+}
+
+// VerifyEventsMatchPatterns verifies that events contain expected regex patterns
+func VerifyEventsMatchPatterns(t *testing.T, ctx context.Context,
+	c klient.Client, nodeName, checkName, eventReason string, expectedPatterns []string) bool {
+	t.Helper()
+
+	eventList, err := GetNodeEvents(ctx, c, nodeName, checkName)
+	if err != nil {
+		t.Logf("Error listing events: %v", err)
+		return false
+	}
+
+	var allMessages []string
+
+	for _, event := range eventList.Items {
+		if event.Reason == eventReason {
+			allMessages = append(allMessages, event.Message)
+		}
+	}
+
+	if len(allMessages) == 0 {
+		t.Log("No events found yet")
+		return false
+	}
+
+	allMessagesStr := strings.Join(allMessages, " ")
+	foundPatterns := make(map[string]bool)
+
+	for i, pattern := range expectedPatterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Logf("Invalid regex pattern at position %d: %s (error: %v)", i+1, pattern, err)
+			return false
+		}
+
+		if re.MatchString(allMessagesStr) {
+			foundPatterns[pattern] = true
+			match := re.FindString(allMessagesStr)
+
+			matchPreview := match
+			if len(match) > 150 {
+				matchPreview = match[:70] + " ... " + match[len(match)-75:]
+			}
+
+			t.Logf("Pattern %d matched: %s", i+1, matchPreview)
+		} else {
+			t.Logf("Pattern %d not found: %s", i+1, pattern)
+		}
+	}
+
+	if len(foundPatterns) != len(expectedPatterns) {
+		t.Logf("Found %d/%d expected patterns in events", len(foundPatterns), len(expectedPatterns))
+		return false
+	}
+
+	t.Logf("Events verified: all %d patterns matched", len(expectedPatterns))
+
+	return true
 }

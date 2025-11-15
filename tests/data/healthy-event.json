@@ -7,9 +7,12 @@
     "isHealthy": true,
     "message": "No health failures",
     "recommendedAction": 0,
+    "errorCode": [
+        "ERROR_CODE"
+    ],
     "entitiesImpacted": [
         {
-            "entityType": "gpu",
+            "entityType": "GPU",
             "entityValue": "0"
         }
     ],

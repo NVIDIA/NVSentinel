@@ -92,10 +92,9 @@ func getInitialPollStartTime(
 	)
 	if errDb != nil {
 		slog.Warn(
-			"Failed to get last processed GCP log event timestamp for cluster %s from datastore: %v. "+
-				"Starting poll from current time.",
-			clusterName,
-			errDb,
+			"Failed to get last processed GCP log event timestamp from datastore; Starting poll from current time.",
+			"cluster", clusterName,
+			"error", errDb,
 		)
 
 		return nowUTC
@@ -103,10 +102,10 @@ func getInitialPollStartTime(
 
 	if found && !lastProcessedEventTS.IsZero() {
 		slog.Info(
-			"Resuming poll: last processed GCP log event timestamp for cluster %s is %v. "+
+			"Resuming poll: last processed GCP log event timestamp "+
 				"Next poll window will start after this.",
-			clusterName,
-			lastProcessedEventTS.Format(time.RFC3339Nano),
+			"cluster", clusterName,
+			"lastProcessedEventTimestamp", lastProcessedEventTS.Format(time.RFC3339Nano),
 		)
 
 		return lastProcessedEventTS
@@ -114,7 +113,7 @@ func getInitialPollStartTime(
 
 	slog.Info(
 		"no previous GCP logs checkpoint found in datastore for cluster. Starting poll from current time.",
-		"name", clusterName,
+		"cluster", clusterName,
 	)
 
 	return nowUTC
@@ -317,10 +316,10 @@ func (c *Client) pollLogs(ctx context.Context, eventChan chan<- model.Maintenanc
 
 	if !queryWindowStartTime.Before(queryWindowEndTime) {
 		slog.Debug(
-			"GCP Query window start time (%s) is not before query window end time (%s). "+
+			"GCP Query window start time is not before query window end time. "+
 				"Adjusting end time for query validity.",
-			queryWindowStartTime.Format(time.RFC3339Nano),
-			queryWindowEndTime.Format(time.RFC3339Nano),
+			"queryWindowStartTime", queryWindowStartTime.Format(time.RFC3339Nano),
+			"queryWindowEndTime", queryWindowEndTime.Format(time.RFC3339Nano),
 		)
 
 		if !queryWindowEndTime.After(queryWindowStartTime) {

@@ -18,14 +18,6 @@ on:
   push:
     tags:
       - 'v*'
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/*.yaml'
-      - '.github/*.yml'
-      - '.github/headers/**'
   workflow_dispatch:
     inputs:
       tag:
@@ -90,10 +82,16 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
+      - name: Load Helm version from .versions.yaml
+        id: helm-version
+        run: |
+          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
+          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Install helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
         with:
-          version: 'latest'
+          version: ${{ steps.helm-version.outputs.helm_version }}
 
       - name: Configure Helm for GitHub Packages
         run: |
@@ -143,7 +141,7 @@ jobs:
           path: .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090  # v2.4.1
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe  # v2.4.2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}

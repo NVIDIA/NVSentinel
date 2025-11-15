@@ -93,7 +93,7 @@ func TestProcessLine(t *testing.T) {
 		name          string
 		message       string
 		expectEvent   bool
-		validateEvent func(t *testing.T, events *pb.HealthEvents)
+		validateEvent func(t *testing.T, events *pb.HealthEvents, message string)
 	}{
 		{
 			name: "GPU Fallen Error with PCI ID",
@@ -101,7 +101,7 @@ func TestProcessLine(t *testing.T) {
 				"               NVRM: (PCI ID: 10de:26b5) installed in this system has\n" +
 				"               NVRM: fallen off the bus and is not responding to commands.",
 			expectEvent: true,
-			validateEvent: func(t *testing.T, events *pb.HealthEvents) {
+			validateEvent: func(t *testing.T, events *pb.HealthEvents, message string) {
 				require.NotNil(t, events)
 				require.Len(t, events.Events, 1)
 
@@ -112,7 +112,9 @@ func TestProcessLine(t *testing.T) {
 				assert.True(t, event.IsFatal)
 				assert.False(t, event.IsHealthy)
 				assert.Equal(t, pb.RecommendedAction_RESTART_BM, event.RecommendedAction)
-				assert.Contains(t, event.ErrorCode, "GPU_FALLEN_OFF_BUS")
+				require.Len(t, event.ErrorCode, 1)
+				assert.Equal(t, "GPU_FALLEN_OFF_BUS", event.ErrorCode[0])
+				assert.Equal(t, message, event.Message)
 
 				// Should have PCI and PCI_ID entities only
 				assert.Len(t, event.EntitiesImpacted, 2)
@@ -139,11 +141,12 @@ func TestProcessLine(t *testing.T) {
 				"               NVRM: installed in this system has\n" +
 				"               NVRM: fallen off the bus and is not responding to commands.",
 			expectEvent: true,
-			validateEvent: func(t *testing.T, events *pb.HealthEvents) {
+			validateEvent: func(t *testing.T, events *pb.HealthEvents, message string) {
 				require.NotNil(t, events)
 				require.Len(t, events.Events, 1)
 
 				event := events.Events[0]
+				assert.Equal(t, message, event.Message)
 
 				// Should have only PCI entity
 				assert.Len(t, event.EntitiesImpacted, 1)
@@ -175,7 +178,7 @@ func TestProcessLine(t *testing.T) {
 			if tc.expectEvent {
 				require.NotNil(t, events, "Expected an event to be generated")
 				if tc.validateEvent != nil {
-					tc.validateEvent(t, events)
+					tc.validateEvent(t, events, tc.message)
 				}
 			} else {
 				assert.Nil(t, events, "Expected no event to be generated")

@@ -21,7 +21,8 @@ export KO_LOG=info
 export KO_DOCKER_REPO="${KO_DOCKER_REPO,,}"
 export VERSION="${VERSION:-v0.1.0}"
 export GIT_COMMIT="${GIT_COMMIT:-dev}"
-export BUILD_DATE=$(date -u +%FT%TZ)
+BUILD_DATE=$(date -u +%FT%TZ)
+export BUILD_DATE
 
 # Display build variables for debugging
 echo "Build variables:"

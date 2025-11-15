@@ -72,6 +72,11 @@ This will:
 - Install development and Go tools
 - Configure Python gRPC tools
 
+**Automated installation**: To skip interactive prompts and auto-install all dependencies:
+```bash
+make dev-env-setup AUTO_MODE=true
+```
+
 ### Build System
 
 **Unified build system** features:

@@ -127,9 +127,11 @@ func (r *Reconciler) processEvent(ctx context.Context, event bson.M, watcher Wat
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	if nodeQuarantined != nil && *nodeQuarantined == model.UnQuarantined {
-		r.handleUnquarantineEvent(ctx, nodeName, watcher)
-		return
+	if nodeQuarantined != nil {
+		if *nodeQuarantined == model.UnQuarantined || *nodeQuarantined == model.Cancelled {
+			r.handleCancellationEvent(ctx, nodeName, *nodeQuarantined, watcher)
+			return
+		}
 	}
 
 	r.handleRemediationEvent(ctx, &healthEventWithStatus, event, watcher, collection)
@@ -246,14 +248,15 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 	return success, crName
 }
 
-// handleUnquarantineEvent handles node unquarantine events by clearing annotations
-func (r *Reconciler) handleUnquarantineEvent(
+func (r *Reconciler) handleCancellationEvent(
 	ctx context.Context,
 	nodeName string,
+	status model.Status,
 	watcher WatcherInterface,
 ) {
-	slog.Info("Node unquarantined, clearing remediation state annotation",
-		"node", nodeName)
+	slog.Info("Cancellation event received, clearing all remediation state",
+		"node", nodeName,
+		"status", status)
 
 	if err := r.annotationManager.ClearRemediationState(ctx, nodeName); err != nil {
 		slog.Error("Failed to clear remediation state for node",

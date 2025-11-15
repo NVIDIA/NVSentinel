@@ -139,6 +139,12 @@ spec:
                   db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
                     { 'cspStatus': 1 },
                   );
+                  db.$MONGODB_COLLECTION_NAME.createIndex({
+                    'healthevent.nodename': 1,
+                    'healthevent.entitiesimpacted.entitytype': 1,
+                    'healthevent.entitiesimpacted.entityvalue': 1,
+                    'healthevent.generatedtimestamp.seconds': 1
+                  });
                 // Check if user exists before creating
                 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
                 if (userExists) {

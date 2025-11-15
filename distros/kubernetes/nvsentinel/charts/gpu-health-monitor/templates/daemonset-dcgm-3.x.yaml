@@ -56,6 +56,8 @@ spec:
             - "/var/run/statefile"
             - --dcgm-k8s-service-enabled
             - {{ .Values.dcgm.dcgmK8sServiceEnabled | quote }}
+            - --metadata-path
+            - {{ .Values.global.metadataPath | quote }}
           securityContext:
             runAsUser: 0
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-3.x"
@@ -89,6 +91,9 @@ spec:
               mountPath: /etc/dcgmhealth
             - name: var-run-vol
               mountPath: /var/run/
+            - name: gpu-metadata
+              mountPath: /var/lib/nvsentinel
+              readOnly: true
           env: 
             - name: NODE_NAME
               valueFrom:
@@ -104,6 +109,10 @@ spec:
           hostPath:
             path: /var/run/nvsentinel
             type: Directory
+        - name: gpu-metadata
+          hostPath:
+            path: /var/lib/nvsentinel
+            type: DirectoryOrCreate
         {{- if .Values.additionalHostVolumes }}
         {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
         {{- end }}

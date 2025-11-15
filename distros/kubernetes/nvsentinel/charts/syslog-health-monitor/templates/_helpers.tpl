@@ -98,6 +98,8 @@ spec:
             {{- end }}
             - "--checks"
             - "{{ join "," $root.Values.enabledChecks }}"
+            - "--metadata-path"
+            - "{{ $root.Values.global.metadataPath }}"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
@@ -130,6 +132,9 @@ spec:
               mountPath: /var/run/
             - name: syslog-state-vol
               mountPath: /var/run/syslog_health_monitor
+            - name: metadata-vol
+              mountPath: /var/lib/nvsentinel
+              readOnly: true
             {{- if $kataMode }}
             # Kata mode: Mount systemd journal for accessing host logs
             - name: host-journal
@@ -180,6 +185,10 @@ spec:
         - name: syslog-state-vol
           hostPath:
             path: /var/run/syslog_health_monitor
+            type: DirectoryOrCreate
+        - name: metadata-vol
+          hostPath:
+            path: /var/lib/nvsentinel
             type: DirectoryOrCreate
         {{- if $kataMode }}
         # Kata mode: Systemd journal volumes for host log access

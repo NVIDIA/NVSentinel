@@ -12,7 +12,7 @@
     ],
     "entitiesImpacted": [
         {
-            "entityType": "gpu",
+            "entityType": "GPU",
             "entityValue": "0"
         }
     ],

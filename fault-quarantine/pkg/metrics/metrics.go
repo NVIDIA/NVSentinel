@@ -62,6 +62,13 @@ var (
 		},
 		[]string{"node"},
 	)
+	TotalNodesManuallyUncordoned = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_nodes_manually_uncordoned_total",
+			Help: "Total number of manually uncordons for nodes.",
+		},
+		[]string{"node"},
+	)
 	CurrentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",

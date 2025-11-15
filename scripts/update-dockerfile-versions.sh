@@ -79,7 +79,7 @@ SKIPPED_COUNT=0
 
 # Process each Dockerfile
 while IFS= read -r dockerfile; do
-    RELATIVE_PATH="${dockerfile#${REPO_ROOT}/}"
+    RELATIVE_PATH="${dockerfile#"${REPO_ROOT}"/}"
     CHANGED=false
     
     # Check for Go base images

@@ -306,7 +306,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 	filePath := testStateFile
 
 	monitor, err := NewSyslogMonitor(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json")
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, args.NodeName, monitor.nodeName)
@@ -325,7 +325,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 
 	filePath = testStateFile2
 	monitor, err = NewSyslogMonitorWithFactory(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json")
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, fakeJournalFactory, monitor.journalFactory)
@@ -396,6 +396,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 		testStateFile,
 		fakeJournalFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 
@@ -497,6 +498,7 @@ func TestJournalStateManagement(t *testing.T) {
 		testStateFile,
 		mockFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 
@@ -527,6 +529,7 @@ func TestJournalStateManagement(t *testing.T) {
 		testStateFile,
 		mockFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 
@@ -573,6 +576,7 @@ func TestBootIDChangeHandling(t *testing.T) {
 		testStateFile,
 		mockFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 
@@ -621,6 +625,7 @@ func TestRunMultipleChecks(t *testing.T) {
 		testStateFile,
 		mockFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 
@@ -660,6 +665,7 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 		testStateFile,
 		mockFactory,
 		"http://localhost:8080",
+		"/tmp/metadata.json",
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")

@@ -52,3 +52,6 @@ dependencies:
   - name: janitor
     version: "0.1.0"
     condition: global.janitor.enabled
+  - name: metadata-collector
+    version: "0.1.0"
+    condition: global.metadataCollector.enabled

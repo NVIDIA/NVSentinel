@@ -22,6 +22,9 @@
 # Simple-health-client specific settings
 CLEAN_EXTRA_FILES := simple-health-client
 
+# Go module configuration
+IS_GO_MODULE := 1
+
 # Docker configuration
 HAS_DOCKER := 1
 DOCKER_EXTRA_ARGS :=
@@ -31,6 +34,7 @@ DOCKER_EXTRA_ARGS :=
 # =============================================================================
 
 include ../../make/common.mk
+include ../../make/go.mk
 
 # =============================================================================
 # LEGACY COMPATIBILITY
@@ -44,6 +48,23 @@ publish: docker-publish
 # MODULE HELP
 # =============================================================================
 
-help:
-	@echo "Simple Health Client Makefile - Using nvsentinel common.mk standards"
+help: ## Show help for available targets
+	@echo "Simple Health Client Makefile - Using nvsentinel common.mk and go.mk standards"
+	@echo ""
+	@echo "Standard targets from go.mk:"
+	@echo "  lint-test - Lint and test Go module (vet + golangci-lint + gotestsum)"
+	@echo "  lint      - Run golangci-lint"
+	@echo "  vet       - Run go vet"
+	@echo "  test      - Run tests with coverage"
+	@echo "  build     - Build Go binary"
+	@echo "  clean     - Clean build artifacts"
+	@echo ""
+	@echo "Docker targets from common.mk:"
+	@echo "  docker         - Build and publish Docker image"
+	@echo "  docker-build   - Build Docker image"
+	@echo "  docker-publish - Publish Docker image"
+	@echo ""
+	@echo "Legacy compatibility:"
+	@echo "  image   - Alias for docker-build"
+	@echo "  publish - Alias for docker-publish"
 	@echo ""

@@ -103,9 +103,9 @@ func (p *Processor) inheritState(ctx context.Context, event *model.MaintenanceEv
 	default:
 		// This case handles any unexpected or future InternalStatus values.
 		slog.Warn(
-			"Event %s has unhandled status '%s' in inheritState; no action taken.",
-			event.EventID,
-			event.Status,
+			"Event has unhandled status in inheritState; no action taken.",
+			"eventID", event.EventID,
+			"status", event.Status,
 		)
 	}
 }
@@ -172,10 +172,10 @@ func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.
 
 	if !found || priorEvent == nil {
 		slog.Warn(
-			"[inheritOngoingToCompleted] No prior ONGOING event found for COMPLETED event %s "+
-				"(Node: %s). No inheritance applied.",
-			event.EventID,
-			event.NodeName,
+			"[inheritOngoingToCompleted] No prior ONGOING event found for COMPLETED event"+
+				"No inheritance applied.",
+			"eventID", event.EventID,
+			"nodeName", event.NodeName,
 		)
 
 		return
@@ -248,9 +248,9 @@ func (p *Processor) logEventDetails(event *model.MaintenanceEvent) {
 func (p *Processor) logMissingNode(event *model.MaintenanceEvent) {
 	if event.NodeName == "" && event.ResourceID != "" && event.ResourceID != defaultUnknown {
 		slog.Warn(
-			"Event %s has ResourceID %s but no NodeName; mapping may have failed",
-			event.EventID,
-			event.ResourceID,
+			"Event has ResourceID but no NodeName; mapping may have failed",
+			"eventID", event.EventID,
+			"resourceID", event.ResourceID,
 		)
 	}
 }

@@ -34,6 +34,7 @@ const (
 	UnQuarantined      Status = "UnQuarantined"
 	Quarantined        Status = "Quarantined"
 	AlreadyQuarantined Status = "AlreadyQuarantined"
+	Cancelled          Status = "Cancelled"
 )
 
 type OperationStatus struct {

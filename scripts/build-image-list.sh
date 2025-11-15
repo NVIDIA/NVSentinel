@@ -33,12 +33,12 @@ CONTAINER_ORG=${CONTAINER_ORG:-$(git config --get remote.origin.url | sed -n 's#
 if [[ -z "${SAFE_REF_NAME:-}" ]]; then
   CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}
   # Sanitize branch name by replacing slashes with dashes
-  SAFE_REF_NAME=$(echo "$CI_COMMIT_REF_NAME" | sed 's#/#-#g')
+  SAFE_REF_NAME=${CI_COMMIT_REF_NAME//\//-}
 fi
 
 # Initialize output file
 out="versions.txt"
-> "$out"
+: > "$out"
 
 # ------- 1) Build dynamic list -------
 # Define array of dynamic images with their respective tags (sorted!)
@@ -53,6 +53,7 @@ declare -a dynamic_images=(
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/janitor:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/labeler:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/log-collector:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/metadata-collector:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/node-drainer:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/platform-connectors:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/syslog-health-monitor:${SAFE_REF_NAME}"

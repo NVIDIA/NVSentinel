@@ -18,6 +18,9 @@ global:
     tag: "main"
   metricsPort: 2112
 
+  # Shared metadata path used by metadata-collector and syslog-health-monitor
+  metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -43,6 +46,8 @@ global:
     enabled: true
   labeler:
     enabled: true
+  metadataCollector:
+    enabled: true
   inclusterFileServer:
     enabled: false
     metricsPort: 9001
@@ -65,6 +70,8 @@ platformConnector:
       memory: 512Mi
 
   podAnnotations: {}
+
+  tolerations: []
 
   k8sConnector:
     enabled: true
@@ -100,3 +107,21 @@ platformConnector:
       - "cloud.google.com/gce-topology-subblock"
 
 socketPath: "/var/run/nvsentinel.sock"
+
+# Node condition cleanup hook configuration
+nodeConditionCleanup:
+  enabled: false
+  deprecatedConditions: []
+  # - "OldConditionType1"
+  # - "OldConditionType2"
+  image:
+    repository: docker.io/bitnamilegacy/kubectl
+    tag: "1.30.6"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi

@@ -98,6 +98,7 @@ func (h *HealthEventTemplate) WithEntity(entityType, entityValue string) *Health
 		EntityType:  entityType,
 		EntityValue: entityValue,
 	})
+
 	return h
 }
 
@@ -121,7 +122,9 @@ func (h *HealthEventTemplate) WithForceOverride() *HealthEventTemplate {
 	if h.Metadata == nil {
 		h.Metadata = make(map[string]string)
 	}
+
 	h.Metadata["creator_id"] = "test"
+
 	return h
 }
 
@@ -129,7 +132,9 @@ func (h *HealthEventTemplate) WithMetadata(key, value string) *HealthEventTempla
 	if h.Metadata == nil {
 		h.Metadata = make(map[string]string)
 	}
+
 	h.Metadata[key] = value
+
 	return h
 }
 
@@ -148,16 +153,19 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 	if err != nil {
 		tempFile.Close()
 		os.Remove(tempFile.Name())
+
 		return "", fmt.Errorf("failed to marshal health event: %w", err)
 	}
 
 	if _, err := tempFile.Write(content); err != nil {
 		tempFile.Close()
 		os.Remove(tempFile.Name())
+
 		return "", fmt.Errorf("failed to write to temp file: %w", err)
 	}
 
 	tempFile.Close()
+
 	return tempFile.Name(), nil
 }
 
@@ -166,6 +174,7 @@ func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read health event file %s: %w", eventFilePath, err)
 	}
+
 	return sendHealthEventData(nodeNames, eventData)
 }
 
@@ -174,31 +183,59 @@ func sendHealthEventData(nodeNames []string, eventData []byte) error {
 		Timeout: 10 * time.Second,
 	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errs []error
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
 
 	for _, nodeName := range nodeNames {
 		wg.Add(1)
+
 		go func(nodeName string) {
 			defer wg.Done()
 
 			eventJSON := strings.ReplaceAll(string(eventData), "NODE_NAME", nodeName)
 
-			resp, err := client.Post("http://localhost:8080/health-event", "application/json", strings.NewReader(eventJSON))
+			req, err := http.NewRequestWithContext(
+				context.Background(), "POST", "http://localhost:8080/health-event",
+				strings.NewReader(eventJSON),
+			)
 			if err != nil {
 				mu.Lock()
 				defer mu.Unlock()
-				errs = append(errs, fmt.Errorf("failed to send health event to node %s: %w", nodeName, err))
+
+				errs = append(errs,
+					fmt.Errorf("failed to create request for node %s: %w", nodeName, err))
+
+				return
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				mu.Lock()
+				defer mu.Unlock()
+
+				errs = append(errs,
+					fmt.Errorf("failed to send health event to node %s: %w", nodeName, err))
+
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
+
 				mu.Lock()
 				defer mu.Unlock()
-				errs = append(errs, fmt.Errorf("health event to node %s failed: expected status 200, got %d. Response: %s", nodeName, resp.StatusCode, string(body)))
+
+				errs = append(errs, fmt.Errorf(
+					"health event to node %s failed: expected status 200, got %d. "+
+						"Response: %s",
+					nodeName, resp.StatusCode, string(body),
+				))
 			}
 		}(nodeName)
 	}

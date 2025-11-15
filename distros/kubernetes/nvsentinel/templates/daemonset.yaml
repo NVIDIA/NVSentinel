@@ -106,7 +106,7 @@ spec:
           secret:
             secretName: mongo-app-client-cert-secret
             optional: true
-      {{- with .Values.global.tolerations }}
+      {{- with (.Values.global.tolerations | default .Values.platformConnector.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

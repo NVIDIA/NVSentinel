@@ -25,7 +25,8 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// CheckPrometheusMetricEmpty executes the Prometheus `query` and verifies that it returns no results, using `description` for error reporting.
+// CheckPrometheusMetricEmpty executes the Prometheus `query` and verifies that it returns no results,
+// using `description` for error reporting.
 func CheckPrometheusMetricEmpty(ctx context.Context, t *testing.T, query string, description string) error {
 	result, err := queryPrometheus(ctx, query)
 	if err != nil {
@@ -33,6 +34,7 @@ func CheckPrometheusMetricEmpty(ctx context.Context, t *testing.T, query string,
 	}
 
 	var resultCount int
+
 	switch v := result.(type) {
 	case model.Vector:
 		resultCount = len(v)

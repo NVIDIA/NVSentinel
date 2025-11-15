@@ -16,6 +16,7 @@ package mongodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -26,13 +27,22 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+type MongoCollectionInterface interface {
+	UpdateOne(ctx context.Context, filter interface{}, update interface{},
+		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+	UpdateMany(ctx context.Context, filter interface{}, update interface{},
+		opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
+	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) *mongo.SingleResult
+}
 
 type EventWatcher struct {
 	mongoConfig          storewatcher.MongoDBConfig
 	tokenConfig          storewatcher.TokenConfig
 	mongoPipeline        mongo.Pipeline
-	collection           *mongo.Collection
+	collection           MongoCollectionInterface
 	watcher              *storewatcher.ChangeStreamWatcher
 	processEventCallback func(
 		ctx context.Context,
@@ -55,13 +65,14 @@ type EventWatcherInterface interface {
 			event *model.HealthEventWithStatus,
 		) *model.Status,
 	)
+	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error
 }
 
 func NewEventWatcher(
 	mongoConfig storewatcher.MongoDBConfig,
 	tokenConfig storewatcher.TokenConfig,
 	mongoPipeline mongo.Pipeline,
-	collection *mongo.Collection,
+	collection MongoCollectionInterface,
 	lastProcessedObjectID LastProcessedObjectIDStore,
 ) *EventWatcher {
 	return &EventWatcher{
@@ -239,6 +250,73 @@ func (w *EventWatcher) updateNodeQuarantineStatus(
 	}
 
 	slog.Info("Document updated with status", "id", document["_id"], "status", *nodeQuarantinedStatus)
+
+	return nil
+}
+
+func (w *EventWatcher) CancelLatestQuarantiningEvents(
+	ctx context.Context,
+	nodeName string,
+) error {
+	// Find the latest Quarantined or UnQuarantined event to check current state of node
+	filter := bson.M{
+		"healthevent.nodename": nodeName,
+		"healtheventstatus.nodequarantined": bson.M{
+			"$in": []model.Status{model.Quarantined, model.UnQuarantined},
+		},
+	}
+
+	findOptions := options.FindOne().SetSort(bson.D{{Key: "createdAt", Value: -1}})
+
+	var latestEvent struct {
+		ID                primitive.ObjectID `bson:"_id"`
+		CreatedAt         time.Time          `bson:"createdAt"`
+		HealthEventStatus struct {
+			NodeQuarantined *model.Status `bson:"nodequarantined"`
+		} `bson:"healtheventstatus"`
+	}
+
+	err := w.collection.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			slog.Warn("No quarantining/unquarantining events found for node", "node", nodeName)
+			return nil
+		}
+
+		return fmt.Errorf("error finding latest quarantining event for node %s: %w", nodeName, err)
+	}
+
+	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
+	if *latestEvent.HealthEventStatus.NodeQuarantined != model.Quarantined {
+		slog.Info("No latest quarantining event found for node, no events to cancel", "node", nodeName)
+		return nil
+	}
+
+	// Update all events from the current quarantine session (Quarantined + AlreadyQuarantined)
+	// This includes the first event and all subsequent events that occurred after it
+	updateFilter := bson.M{
+		"healthevent.nodename": nodeName,
+		"createdAt":            bson.M{"$gte": latestEvent.CreatedAt},
+		"healtheventstatus.nodequarantined": bson.M{
+			"$in": []model.Status{model.Quarantined, model.AlreadyQuarantined},
+		},
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"healtheventstatus.nodequarantined": model.Cancelled,
+		},
+	}
+
+	result, err := w.collection.UpdateMany(ctx, updateFilter, update)
+	if err != nil {
+		return fmt.Errorf("error cancelling quarantining events for node %s: %w", nodeName, err)
+	}
+
+	slog.Info("Updated quarantining events to cancelled status",
+		"node", nodeName,
+		"firstEventId", latestEvent.ID.Hex(),
+		"documentsUpdated", result.ModifiedCount)
 
 	return nil
 }

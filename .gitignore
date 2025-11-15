@@ -447,5 +447,6 @@ fault-remediation/fault-remediation
 health-events-analyzer/health-events-analyzer
 health-monitors/syslog-health-monitor/syslog-health-monitor
 labeler/labeler
+metadata-collector/metadata-collector
 node-drainer/node-drainer
 platform-connectors/platform-connectors

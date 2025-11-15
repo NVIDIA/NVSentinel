@@ -224,9 +224,9 @@ func (e *Engine) processAndSendTrigger(
 
 	if event.NodeName == "" {
 		slog.Warn(
-			"Cannot trigger %s event for event %s: NodeName is missing. Skipping.",
-			triggerType,
-			event.EventID,
+			"Skipping the event; NodeName is missing.",
+			"triggerType", triggerType,
+			"eventID", event.EventID,
 		)
 		metrics.TriggerFailures.WithLabelValues(triggerType, failureReasonMapping).Inc()
 
@@ -332,8 +332,10 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 	actionEnum, ok := pb.RecommendedAction_value[event.RecommendedAction]
 	if !ok {
 		slog.Warn(
-			"Unknown recommended action '%s' for event %s. Defaulting to NONE.",
+			"Unknown recommended action; defaulting to NONE.",
+			"recommendedAction",
 			event.RecommendedAction,
+			"eventID",
 			event.EventID,
 		)
 
@@ -417,18 +419,18 @@ func (e *Engine) sendHealthEventWithRetry(ctx context.Context, healthEvent *pb.H
 
 		if isRetryableGRPCError(attemptErr) {
 			slog.Warn(
-				"Retryable error sending health event via UDS (Node: %s): %v. Retrying...",
-				healthEvent.NodeName,
-				attemptErr,
+				"Retryable error sending health event via UDS. Retrying...",
+				"node", healthEvent.NodeName,
+				"error", attemptErr,
 			)
 
 			return false, nil // Retryable error, continue loop
 		}
 
 		slog.Error(
-			"Non-retryable error sending health event via UDS (Node: %s): %v",
-			healthEvent.NodeName,
-			attemptErr,
+			"Non-retryable error sending health event via UDS. Stopping retries.",
+			"node", healthEvent.NodeName,
+			"error", attemptErr,
 		)
 
 		return false, attemptErr // Non-retryable error, stop loop and return this error

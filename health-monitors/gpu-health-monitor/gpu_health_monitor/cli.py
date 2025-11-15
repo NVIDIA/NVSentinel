@@ -31,6 +31,7 @@ def _init_event_processor(
     dcgm_errors_info_dict: dict[str, str],
     state_file_path: str,
     dcgm_health_conditions_categorization_mapping_config: dict[str, str],
+    metadata_path: str,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -42,6 +43,7 @@ def _init_event_processor(
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
+                metadata_path=metadata_path,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -58,6 +60,13 @@ def _init_event_processor(
 @click.option("--verbose", type=bool, default=False, help="Enable debug logging", required=False)
 @click.option("--state-file", type=click.Path(), help="gpu health monitor state file path", required=True)
 @click.option("--dcgm-k8s-service-enabled", type=bool, help="Is DCGM K8s service Enabled", required=True)
+@click.option(
+    "--metadata-path",
+    type=click.Path(),
+    default="/var/lib/nvsentinel/gpu_metadata.json",
+    help="Path to GPU metadata JSON file",
+    required=False,
+)
 def cli(
     dcgm_addr,
     dcgm_error_mapping_config_file,
@@ -66,6 +75,7 @@ def cli(
     verbose,
     state_file,
     dcgm_k8s_service_enabled,
+    metadata_path,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -112,6 +122,7 @@ def cli(
                 dcgm_errors_info_dict,
                 state_file_path,
                 dcgm_health_conditions_categorization_mapping_config,
+                metadata_path,
             )
         )
 

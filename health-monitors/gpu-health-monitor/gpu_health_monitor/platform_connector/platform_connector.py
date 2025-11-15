@@ -15,6 +15,7 @@
 import dataclasses
 import logging as log
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
+from gpu_health_monitor.metadata import MetadataReader
 from threading import Event
 
 from gpu_health_monitor.protos import (
@@ -46,6 +47,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         dcgm_errors_info_dict: dict[str, str],
         state_file_path: str,
         dcgm_health_conditions_categorization_mapping_config: dict[str, str],
+        metadata_path: str,
     ) -> None:
         self._exit = exit
         self._socket_path = socket_path
@@ -59,6 +61,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.old_bootid = self.read_old_system_bootid_from_state_file()
         self.entity_cache: dict[str, CachedEntityState] = {}
         self.dcgm_health_conditions_categorization_mapping_config = dcgm_health_conditions_categorization_mapping_config
+        self._metadata_reader = MetadataReader(metadata_path)
 
     def read_old_system_bootid_from_state_file(self) -> str:
         bootid = ""
@@ -93,6 +96,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
             log.info(f"Updated cache for key {key} with connectivity failure")
 
+            event_metadata = {}
+            chassis_serial = self._metadata_reader.get_chassis_serial()
+            if chassis_serial:
+                event_metadata["chassis_serial"] = chassis_serial
+
             health_event = platformconnector_pb2.HealthEvent(
                 version=self._version,
                 agent=self._agent,
@@ -106,7 +114,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 message="DCGM connectivity reported no errors",
                 recommendedAction=platformconnector_pb2.NONE,
                 nodeName=self._node_name,
-                metadata={"SerialNumber": ""},
+                metadata=event_metadata,
             )
             health_events.append(health_event)
 
@@ -152,6 +160,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entities_impacted = []
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted.append(entity)
+
+                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                        if pci_address:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                            )
+
+                        gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
+                        if gpu_uuid:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
+                            )
+
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
                         isFatal = False
                         isHealthy = True
@@ -174,6 +195,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
                             recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
 
+                            event_metadata = {}
+                            chassis_serial = self._metadata_reader.get_chassis_serial()
+                            if chassis_serial:
+                                event_metadata["chassis_serial"] = chassis_serial
+
                             health_events.append(
                                 platformconnector_pb2.HealthEvent(
                                     version=self._version,
@@ -188,7 +214,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     message=message,
                                     recommendedAction=recommended_action,
                                     nodeName=self._node_name,
-                                    metadata={"SerialNumber": serials[gpu_id]},
+                                    metadata=event_metadata,
                                 )
                             )
                             severity = (
@@ -204,6 +230,19 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
                         entities_impacted = []
                         entities_impacted.append(entity)
+
+                        pci_address = self._metadata_reader.get_pci_address(gpu_id)
+                        if pci_address:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="PCI", entityValue=pci_address)
+                            )
+
+                        gpu_uuid = self._metadata_reader.get_gpu_uuid(gpu_id)
+                        if gpu_uuid:
+                            entities_impacted.append(
+                                platformconnector_pb2.Entity(entityType="GPU_UUID", entityValue=gpu_uuid)
+                            )
+
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
                         if (
                             key not in self.entity_cache
@@ -219,6 +258,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
                                 log.debug(f"Skipping non-fatal health event for watch {watch_name}")
                             else:
+                                event_metadata = {}
+                                chassis_serial = self._metadata_reader.get_chassis_serial()
+                                if chassis_serial:
+                                    event_metadata["chassis_serial"] = chassis_serial
+
                                 health_events.append(
                                     platformconnector_pb2.HealthEvent(
                                         version=self._version,
@@ -233,7 +277,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                         message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
                                         recommendedAction=platformconnector_pb2.NONE,
                                         nodeName=self._node_name,
-                                        metadata={"SerialNumber": serials[gpu_id]},
+                                        metadata=event_metadata,
                                     )
                                 )
                             severity = (
@@ -309,6 +353,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 self.entity_cache[key] = CachedEntityState(isFatal=True, isHealthy=False)
                 log.info(f"Updated cache for key {key} with connectivity failure")
 
+                event_metadata = {}
+                chassis_serial = self._metadata_reader.get_chassis_serial()
+                if chassis_serial:
+                    event_metadata["chassis_serial"] = chassis_serial
+
                 health_event = platformconnector_pb2.HealthEvent(
                     version=self._version,
                     agent=self._agent,
@@ -322,7 +371,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     message=message,
                     recommendedAction=platformconnector_pb2.CONTACT_SUPPORT,
                     nodeName=self._node_name,
-                    metadata={"SerialNumber": ""},
+                    metadata=event_metadata,
                 )
                 health_events.append(health_event)
                 metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(1)

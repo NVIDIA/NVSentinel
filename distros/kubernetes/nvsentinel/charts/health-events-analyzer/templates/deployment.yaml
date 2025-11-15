@@ -91,7 +91,7 @@ spec:
       volumes:
       - name: config-volume
         configMap:
-          name: non-fatal-events-evaluation-rules
+          name: {{ include "health-events-analyzer.fullname" . }}-config
           items:
           - key: config.toml
             path: config.toml

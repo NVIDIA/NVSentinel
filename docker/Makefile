@@ -37,7 +37,7 @@ ALL_MODULES := $(GO_MODULES) $(PYTHON_MODULES) $(CONTAINER_MODULES)
 
 # Build all Docker images for local development
 .PHONY: build-all
-build-all: build-gpu-health-monitor build-syslog-health-monitor build-log-collector
+build-all: build-gpu-health-monitor build-syslog-health-monitor build-metadata-collector build-log-collector
 	@echo "All Docker images built successfully for local development"
 
 # GPU health monitor (special case with DCGM variants)
@@ -62,6 +62,11 @@ build-syslog-health-monitor:
 	@echo "Building syslog health monitor..."
 	$(MAKE) -C ../health-monitors/syslog-health-monitor docker-build
 
+.PHONY: build-metadata-collector
+build-metadata-collector:
+	@echo "Building metadata collector..."
+	$(MAKE) -C ../metadata-collector docker-build
+
 .PHONY: build-log-collector
 build-log-collector:
 	@echo "Building log collector..."
@@ -74,7 +79,7 @@ build-log-collector:
 
 # Publish all Docker images to registry (CI-like behavior)
 .PHONY: publish-all
-publish-all: publish-gpu-health-monitor publish-syslog-health-monitor publish-log-collector
+publish-all: publish-gpu-health-monitor publish-syslog-health-monitor publish-metadata-collector publish-log-collector
 	@echo "All Docker images published successfully to registry"
 
 # GPU health monitor publish (special case with DCGM variants)
@@ -98,6 +103,11 @@ publish-gpu-health-monitor-dcgm4:
 publish-syslog-health-monitor:
 	@echo "Publishing syslog health monitor..."
 	$(MAKE) -C ../health-monitors/syslog-health-monitor docker-publish
+
+.PHONY: publish-metadata-collector
+publish-metadata-collector:
+	@echo "Publishing metadata collector..."
+	$(MAKE) -C ../metadata-collector docker-publish
 
 .PHONY: publish-log-collector
 publish-log-collector:

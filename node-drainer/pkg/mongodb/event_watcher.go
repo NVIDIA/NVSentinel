@@ -29,11 +29,12 @@ import (
 )
 
 type EventWatcher struct {
-	mongoConfig   storewatcher.MongoDBConfig
-	tokenConfig   storewatcher.TokenConfig
-	mongoPipeline mongo.Pipeline
-	queueManager  queue.EventQueueManager
-	collection    queue.MongoCollectionAPI
+	mongoConfig         storewatcher.MongoDBConfig
+	tokenConfig         storewatcher.TokenConfig
+	mongoPipeline       mongo.Pipeline
+	queueManager        queue.EventQueueManager
+	collection          queue.MongoCollectionAPI
+	onCancellationEvent func(eventID string, nodeName string, status model.Status)
 }
 
 func NewEventWatcher(
@@ -91,6 +92,11 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 func (w *EventWatcher) Stop() error {
 	slog.Info("Stopping MongoDB event watcher")
 	return nil
+}
+
+func (w *EventWatcher) SetCancellationCallback(
+	callback func(eventID string, nodeName string, status model.Status)) {
+	w.onCancellationEvent = callback
 }
 
 func (w *EventWatcher) handleColdStart(ctx context.Context) error {
@@ -153,18 +159,39 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 		return nil
 	}
 
-	slog.Info("Enqueuing",
-		slog.Any("event", healthEventWithStatus.HealthEvent),
-		slog.Any("userPodEvictingStatus", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus))
-
-	// Extract fullDocument to access the actual document _id
 	document, ok := event["fullDocument"].(bson.M)
 	if !ok {
 		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
 	}
 
+	eventIDRaw := document["_id"]
+	eventID := fmt.Sprintf("%v", eventIDRaw)
+
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+	statusPtr := healthEventWithStatus.HealthEventStatus.NodeQuarantined
+
+	if statusPtr != nil && *statusPtr == model.Cancelled {
+		slog.Info("Detected Cancelled event, marking specific event as cancelled (not enqueueing)",
+			"node", nodeName,
+			"eventID", eventID)
+		w.onCancellationEvent(eventID, nodeName, model.Cancelled)
+
+		return nil
+	}
+
+	if statusPtr != nil && *statusPtr == model.UnQuarantined {
+		slog.Info("Detected UnQuarantined event, marking all in-progress events for node as cancelled",
+			"node", nodeName,
+			"eventID", eventID)
+		w.onCancellationEvent(eventID, nodeName, model.UnQuarantined)
+	}
+
+	slog.Info("Enqueuing",
+		slog.Any("event", healthEventWithStatus.HealthEvent),
+		slog.Any("userPodEvictingStatus", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus))
+
 	filter := bson.M{
-		"_id": document["_id"],
+		"_id": eventIDRaw,
 		"healtheventstatus.userpodsevictionstatus.status": bson.M{"$ne": model.StatusInProgress},
 	}
 	update := bson.M{
@@ -180,10 +207,8 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 
 	if result.ModifiedCount > 0 {
 		slog.Info("Set initial eviction status to InProgress for node",
-			"node", healthEventWithStatus.HealthEvent.NodeName)
+			"node", nodeName)
 	}
-
-	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
 	return w.queueManager.EnqueueEvent(ctx, nodeName, event, w.collection)
 }
@@ -191,5 +216,6 @@ func (w *EventWatcher) preprocessAndEnqueueEvent(ctx context.Context, event bson
 func isTerminalStatus(status model.Status) bool {
 	return status == model.StatusSucceeded ||
 		status == model.StatusFailed ||
+		status == model.Cancelled ||
 		status == model.AlreadyDrained
 }

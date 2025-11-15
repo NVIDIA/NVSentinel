@@ -46,8 +46,11 @@ type RemediationTestContext struct {
 	TestNamespace string
 }
 
-func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Config, testNamespace string) (context.Context, *RemediationTestContext) {
+func SetupFaultRemediationTest(
+	ctx context.Context, t *testing.T, c *envconf.Config, testNamespace string,
+) (context.Context, *RemediationTestContext) {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -73,8 +76,10 @@ func SetupFaultRemediationTest(ctx context.Context, t *testing.T, c *envconf.Con
 	return ctx, testCtx
 }
 
+//nolint:cyclop // Test teardown function with multiple cleanup steps
 func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -83,9 +88,11 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 		t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
 		return ctx
 	}
+
 	nodeName := nodeNameVal.(string)
 
 	testNamespaceVal := ctx.Value(FRKeyNamespace)
+
 	testNamespace := ""
 	if testNamespaceVal != nil {
 		testNamespace = testNamespaceVal.(string)
@@ -105,6 +112,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 		if node.Labels != nil {
 			if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
 				delete(node.Labels, statemanager.NVSentinelStateLabelKey)
+
 				modified = true
 			}
 		}
@@ -112,6 +120,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 		if node.Annotations != nil {
 			if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
 				delete(node.Annotations, "latestFaultRemediationState")
+
 				modified = true
 			}
 		}
@@ -126,10 +135,14 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 
 	if testNamespace != "" {
 		t.Logf("Cleaning up test namespace: %s", testNamespace)
-		DeleteNamespace(ctx, t, client, testNamespace)
+
+		if err := DeleteNamespace(ctx, t, client, testNamespace); err != nil {
+			t.Logf("Failed to delete test namespace %s: %v", testNamespace, err)
+		}
 	}
 
 	t.Log("Cleaning up rebootnode CRs")
+
 	err = DeleteAllRebootNodeCRs(ctx, t, client)
 	if err != nil {
 		t.Logf("Warning: Failed to cleanup rebootnode CRs: %v", err)
@@ -153,11 +166,13 @@ func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName
 	}
 
 	var crList []string
+
 	for _, cr := range crs.Items {
 		spec, found, _ := unstructured.NestedMap(cr.Object, "spec")
 		if !found {
 			continue
 		}
+
 		crNodeName, found, _ := unstructured.NestedString(spec, "nodeName")
 		if found && crNodeName == nodeName {
 			crList = append(crList, cr.GetName())
@@ -167,11 +182,14 @@ func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName
 	return crList, nil
 }
 
-func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient.Client, nodeName string, recommendedAction int) {
+func TriggerFullRemediationFlow(
+	ctx context.Context, t *testing.T, client klient.Client, nodeName string, recommendedAction int,
+) {
 	t.Helper()
 	t.Logf("Triggering full remediation flow for node %s", nodeName)
 
 	t.Log("Step 1: Send fatal health event to trigger quarantine")
+
 	fatalEvent := NewHealthEvent(nodeName).
 		WithErrorCode("79").
 		WithMessage("XID 79 fatal error").
@@ -184,6 +202,7 @@ func TriggerFullRemediationFlow(ctx context.Context, t *testing.T, client klient
 		if err != nil {
 			return false
 		}
+
 		return node.Spec.Unschedulable
 	}, EventuallyWaitTimeout, WaitInterval)
 	t.Log("Node cordoned successfully")

@@ -17,6 +17,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -43,24 +44,48 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		WithLabel("component", "multi-error")
 
 	var testNodeName string
-	var gpuHealthMonitorPod *v1.Pod
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		gpuHealthMonitorPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
+		gpuHealthMonitorPod, err := helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "gpu-health-monitor")
 		require.NoError(t, err, "failed to find GPU health monitor pod on worker node")
 		require.NotNil(t, gpuHealthMonitorPod, "GPU health monitor pod should exist on worker node")
 
 		testNodeName = gpuHealthMonitorPod.Spec.NodeName
 		t.Logf("Using GPU health monitor pod: %s on node: %s", gpuHealthMonitorPod.Name, testNodeName)
 
+		metadata := helpers.CreateTestMetadata(testNodeName)
+		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, metadata)
+
+		t.Logf("Restarting GPU health monitor pod %s to load metadata", gpuHealthMonitorPod.Name)
+		err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name)
+		require.NoError(t, err, "failed to restart GPU health monitor pod")
+		helpers.WaitForPodsDeleted(ctx, t, client, helpers.NVSentinelNamespace, []string{gpuHealthMonitorPod.Name})
+
+		t.Logf("Waiting for GPU health monitor pod to be ready on node %s", testNodeName)
+		pods, err := helpers.GetPodsOnNode(ctx, client.Resources(), testNodeName)
+		require.NoError(t, err, "failed to get pods on node %s", testNodeName)
+
+		newGPUHealthMonitorPodName := ""
+		for _, pod := range pods {
+			if strings.Contains(pod.Name, "gpu-health-monitor") && pod.Name != gpuHealthMonitorPod.Name {
+				newGPUHealthMonitorPodName = pod.Name
+				break
+			}
+		}
+
+		require.NotEmpty(t, newGPUHealthMonitorPodName, "new GPU health monitor pod name not found")
+
+		helpers.WaitForPodsRunning(ctx, t, client, helpers.NVSentinelNamespace, []string{newGPUHealthMonitorPodName})
+
 		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
 		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
 		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
 
 		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keyPodName, newGPUHealthMonitorPodName)
 		return ctx
 	})
 
@@ -72,7 +97,15 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		require.NotNil(t, nodeNameVal, "nodeName not found in context")
 		nodeName := nodeNameVal.(string)
 
+		podNameVal := ctx.Value(keyPodName)
+		require.NotNil(t, podNameVal, "podName not found in context")
+		podName := podNameVal.(string)
+
 		restConfig := client.RESTConfig()
+
+		// GPU 0 has UUID and PCI address according to test metadata
+		expectedGPUUUID := "GPU-00000000-0000-0000-0000-000000000000"
+		expectedPCIAddress := "0000:17:00.0"
 
 		errors := []struct {
 			name      string
@@ -91,12 +124,12 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 				fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f %s -v %s",
 					dcgmServiceHost, dcgmServicePort, dcgmError.fieldID, dcgmError.value)}
 
-			stdout, stderr, execErr := helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
+			stdout, stderr, execErr := helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, podName, "", cmd)
 			require.NoError(t, execErr, "failed to inject %s error: %s", dcgmError.name, stderr)
 			require.Contains(t, stdout, "Successfully injected", "%s error injection failed", dcgmError.name)
 		}
 
-		t.Logf("Waiting for node conditions to appear")
+		t.Logf("Waiting for node conditions to appear with PCI addresses and GPU UUIDs")
 		require.Eventually(t, func() bool {
 			foundConditions := make(map[string]bool)
 			for _, dcgmError := range errors {
@@ -107,11 +140,28 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 					foundConditions[dcgmError.condition] = false
 					continue
 				}
-				found := condition != nil
-				foundConditions[dcgmError.condition] = found
-				if found {
-					t.Logf("Found %s condition: %s", dcgmError.condition, condition.Message)
+				if condition == nil {
+					foundConditions[dcgmError.condition] = false
+					continue
 				}
+
+				if !strings.Contains(condition.Message, expectedPCIAddress) {
+					t.Logf("Condition %s found but missing expected PCI address %s: %s",
+						dcgmError.condition, expectedPCIAddress, condition.Message)
+					foundConditions[dcgmError.condition] = false
+					continue
+				}
+
+				if !strings.Contains(condition.Message, expectedGPUUUID) {
+					t.Logf("Condition %s found but missing expected GPU UUID %s: %s",
+						dcgmError.condition, expectedGPUUUID, condition.Message)
+					foundConditions[dcgmError.condition] = false
+					continue
+				}
+
+				t.Logf("Found %s condition with expected PCI address %s and GPU UUID %s: %s",
+					dcgmError.condition, expectedPCIAddress, expectedGPUUUID, condition.Message)
+				foundConditions[dcgmError.condition] = true
 			}
 
 			allFound := true
@@ -123,7 +173,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			}
 
 			return allFound
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "all injected error conditions should appear")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "all injected error conditions should appear with PCI addresses and GPU UUIDs")
 
 		return ctx
 	})
@@ -141,6 +191,14 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			return ctx
 		}
 		nodeName := nodeNameVal.(string)
+
+		podNameVal := ctx.Value(keyPodName)
+		if podNameVal == nil {
+			t.Log("Skipping teardown: podName not set (setup likely failed early)")
+			return ctx
+		}
+		podName := podNameVal.(string)
+
 		restConfig := client.RESTConfig()
 
 		clearCommands := []struct {
@@ -158,7 +216,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 			cmd := []string{"/bin/sh", "-c",
 				fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f %s -v %s",
 					dcgmServiceHost, dcgmServicePort, clearCmd.fieldID, clearCmd.value)}
-			_, _, _ = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, "", cmd)
+			_, _, _ = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, podName, "", cmd)
 		}
 
 		t.Logf("Waiting for node conditions to be cleared automatically on %s", nodeName)
@@ -183,6 +241,9 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 				return false
 			}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "%s condition should be cleared", clearCmd.condition)
 		}
+
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)

@@ -19,14 +19,6 @@ on:
     branches:
       - main
       - "pull-request/[0-9]+"
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/*.yaml'
-      - '.github/*.yml'
-      - '.github/headers/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -75,6 +67,9 @@ jobs:
           - component: helm-charts
             make_command: 'make helm-lint'
             step_name: 'Validate Helm charts'
+          - component: scripts
+            make_command: 'make -C scripts lint'
+            step_name: 'Run shellcheck on scripts'
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
@@ -84,11 +79,18 @@ jobs:
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
 
+      - name: Load Helm version from .versions.yaml
+        if: matrix.component == 'helm-charts'
+        id: helm-version
+        run: |
+          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
+          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
         with:
-          version: 'v3.14.4'
+          version: ${{ steps.helm-version.outputs.helm_version }}
 
       - name: Validate Helm Charts
         if: matrix.component == 'helm-charts'
@@ -102,6 +104,7 @@ jobs:
         include:
           - component: syslog-health-monitor
           - component: csp-health-monitor
+          - component: kubernetes-object-monitor
           - component: gpu-health-monitor
             install_dcgm: 'true'
             python_required: 'true'
@@ -134,12 +137,15 @@ jobs:
           - platform-connectors
           - store-client
           - commons
+          - data-models
           - health-events-analyzer
           - fault-quarantine
           - labeler
+          - metadata-collector
           - node-drainer
           - fault-remediation
           - janitor
+          - tests
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
@@ -158,11 +164,36 @@ jobs:
             ${{ matrix.component }}/coverage.txt
             ${{ matrix.component }}/report.xml
 
+  tilt-modules-lint-test:
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - tilt/simple-health-client
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C ${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: simple-health-client
+          file-paths: |
+            ${{ matrix.component }}/coverage.xml
+            ${{ matrix.component }}/coverage.txt
+            ${{ matrix.component }}/report.xml
+
   consolidated-coverage-report:
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/')
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, modules-lint-test]
+    needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 
@@ -359,7 +390,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, modules-lint-test]
+    needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 

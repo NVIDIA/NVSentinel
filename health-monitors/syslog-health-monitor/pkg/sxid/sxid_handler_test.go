@@ -40,7 +40,7 @@ func TestNewSXIDHandler(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName)
+			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, "/tmp/metadata.json")
 
 			require.NoError(t, err)
 			require.NotNil(t, handler)
@@ -48,6 +48,7 @@ func TestNewSXIDHandler(t *testing.T) {
 			assert.Equal(t, tc.agentName, handler.defaultAgentName)
 			assert.Equal(t, tc.componentClass, handler.defaultComponentClass)
 			assert.Equal(t, tc.checkName, handler.checkName)
+			require.NotNil(t, handler.metadataReader)
 		})
 	}
 }
@@ -132,6 +133,59 @@ func TestExtractInfoFromNVSwitchErrorMsg(t *testing.T) {
 			assert.Nilf(t, err, "Error was expected, but got %v", err)
 
 			assert.Equal(t, tc.expectedEvent, sxiderrorEvent)
+		})
+	}
+}
+
+func TestProcessLine(t *testing.T) {
+	testCases := []struct {
+		name        string
+		message     string
+		expectEvent bool
+		expectError bool
+	}{
+		{
+			name:        "Invalid SXID - no Link field",
+			message:     "nvidia-nvswitch0: SXid (PCI:0004:00:00.0): 26008, SOE Watchdog error",
+			expectEvent: false,
+			expectError: false,
+		},
+		{
+			name:        "Non-SXID message",
+			message:     "Some random log message",
+			expectEvent: false,
+			expectError: false,
+		},
+		{
+			name:        "Valid SXID but topology unavailable",
+			message:     "[123] nvidia-nvswitch3: SXid (PCI:0000:c1:00.0): 28006, Non-fatal, Link 46 MC TS crumbstore MCTO (First)",
+			expectEvent: false,
+			expectError: true, // getGPUID will fail without topology
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check", "/tmp/metadata.json")
+			require.NoError(t, err)
+
+			events, err := handler.ProcessLine(tc.message)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, events)
+			} else {
+				assert.NoError(t, err)
+				if tc.expectEvent {
+					require.NotNil(t, events)
+					require.Len(t, events.Events, 1)
+					event := events.Events[0]
+					assert.Equal(t, tc.message, event.Message)
+					assert.NotEmpty(t, event.Metadata)
+				} else {
+					assert.Nil(t, events)
+				}
+			}
 		})
 	}
 }

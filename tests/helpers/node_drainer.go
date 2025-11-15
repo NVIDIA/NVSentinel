@@ -49,9 +49,12 @@ const (
 )
 
 // applyNodeDrainerConfigAndRestart applies a node-drainer configmap and restarts the deployment.
-func applyNodeDrainerConfigAndRestart(ctx context.Context, t *testing.T, client klient.Client, configMapPath string) error {
+func applyNodeDrainerConfigAndRestart(
+	ctx context.Context, t *testing.T, client klient.Client, configMapPath string,
+) error {
 	t.Helper()
 	t.Logf("Applying node-drainer configmap: %s", configMapPath)
+
 	err := createConfigMapFromFilePath(ctx, client, configMapPath, "node-drainer", NVSentinelNamespace)
 	if err != nil {
 		return err
@@ -59,11 +62,15 @@ func applyNodeDrainerConfigAndRestart(ctx context.Context, t *testing.T, client 
 
 	t.Log("Restarting node-drainer deployment")
 	err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
+
 	return err
 }
 
-func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath, testNamespace string) (context.Context, *NodeDrainerTestContext) {
+func SetupNodeDrainerTest(
+	ctx context.Context, t *testing.T, c *envconf.Config, configMapPath, testNamespace string,
+) (context.Context, *NodeDrainerTestContext) {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -72,9 +79,11 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	}
 
 	t.Log("Backing up current node-drainer configmap")
+
 	backupData, err := BackupConfigMap(ctx, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Log("Backup created in memory")
+
 	testCtx.ConfigMapBackup = backupData
 
 	err = applyNodeDrainerConfigAndRestart(ctx, t, client, configMapPath)
@@ -94,7 +103,9 @@ func SetupNodeDrainerTest(ctx context.Context, t *testing.T, c *envconf.Config, 
 	return ctx, testCtx
 }
 
-func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.Client, nodeName, namespace string) []string {
+func ResetNodeAndTriggerDrain(
+	ctx context.Context, t *testing.T, client klient.Client, nodeName, namespace string,
+) []string {
 	t.Helper()
 
 	SendHealthyEvent(ctx, t, nodeName)
@@ -115,6 +126,7 @@ func ResetNodeAndTriggerDrain(ctx context.Context, t *testing.T, client klient.C
 
 func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -123,16 +135,21 @@ func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) c
 		t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
 		return ctx
 	}
+
 	nodeName := nodeNameVal.(string)
 
 	testNamespaceVal := ctx.Value(NDKeyTestNamespace)
+
 	testNamespace := ""
 	if testNamespaceVal != nil {
 		testNamespace = testNamespaceVal.(string)
 	}
 
 	t.Logf("Cleaning up test namespace: %s", testNamespace)
-	DeleteNamespace(ctx, t, client, testNamespace)
+
+	if err := DeleteNamespace(ctx, t, client, testNamespace); err != nil {
+		t.Logf("Failed to delete test namespace %s: %v", testNamespace, err)
+	}
 
 	t.Logf("Cleaning up node %s", nodeName)
 	SendHealthyEvent(ctx, t, nodeName)
@@ -140,26 +157,33 @@ func TeardownNodeDrainer(ctx context.Context, t *testing.T, c *envconf.Config) c
 	node, err := GetNodeByName(ctx, client, nodeName)
 	if err == nil && node.Spec.Unschedulable {
 		t.Log("Manually uncordoning node")
+
 		node.Spec.Unschedulable = false
-		client.Resources().Update(ctx, node)
+		if err := client.Resources().Update(ctx, node); err != nil {
+			t.Logf("Failed to manually uncordon node: %v", err)
+		}
 	}
 
 	backupDataVal := ctx.Value(NDKeyConfigMapBackup)
 	if backupDataVal != nil {
 		backupData := backupDataVal.([]byte)
+
 		t.Log("Restoring node-drainer configmap from memory")
 
 		err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)
 		if err == nil {
 			err = RestartDeployment(ctx, t, client, "node-drainer", NVSentinelNamespace)
 		}
+
 		assert.NoError(t, err)
 	}
 
 	return ctx
 }
 
-func CreatePodsFromTemplate(ctx context.Context, t *testing.T, client klient.Client, templatePath, nodeName, namespace string) []string {
+func CreatePodsFromTemplate(
+	ctx context.Context, t *testing.T, client klient.Client, templatePath, nodeName, namespace string,
+) []string {
 	t.Helper()
 	t.Logf("Creating pod from template: %s on node %s in namespace %s", templatePath, nodeName, namespace)
 
@@ -170,6 +194,7 @@ func CreatePodsFromTemplate(ctx context.Context, t *testing.T, client klient.Cli
 	contentStr = strings.ReplaceAll(contentStr, "test-namespace", namespace)
 
 	var pod v1.Pod
+
 	err = yaml.Unmarshal([]byte(contentStr), &pod)
 	require.NoError(t, err)
 
@@ -178,17 +203,22 @@ func CreatePodsFromTemplate(ctx context.Context, t *testing.T, client klient.Cli
 	require.NoError(t, err)
 
 	t.Logf("Created pod: %s", pod.Name)
+
 	return []string{pod.Name}
 }
 
 // ApplyNodeDrainerConfig backs up the current node-drainer config, applies the test config,
 // and restarts the node-drainer deployment. Returns context with backup data stored.
-func ApplyNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string) context.Context {
+func ApplyNodeDrainerConfig(
+	ctx context.Context, t *testing.T, c *envconf.Config, configMapPath string,
+) context.Context {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
 	t.Log("Backing up current node-drainer configmap")
+
 	backupData, err := BackupConfigMap(ctx, client, "node-drainer", NVSentinelNamespace)
 	require.NoError(t, err)
 	t.Log("Backup created in memory")
@@ -202,6 +232,7 @@ func ApplyNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config
 // RestoreNodeDrainerConfig restores the node-drainer config from backup and restarts the deployment.
 func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Config) {
 	t.Helper()
+
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
@@ -212,6 +243,7 @@ func RestoreNodeDrainerConfig(ctx context.Context, t *testing.T, c *envconf.Conf
 	}
 
 	backupData := backupDataVal.([]byte)
+
 	t.Log("Restoring node-drainer configmap from memory")
 
 	err = createConfigMapFromBytes(ctx, client, backupData, "node-drainer", NVSentinelNamespace)

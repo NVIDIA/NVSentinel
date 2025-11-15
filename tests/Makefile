@@ -1,12 +1,46 @@
 # Tests Makefile
 # End-to-end test targets
 
-# Go binary
-GO := go
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# =============================================================================
+# MODULE-SPECIFIC CONFIGURATION
+# =============================================================================
+
+# E2E Tests module configuration
+IS_GO_MODULE := 1
+TEST_EXTRA_FLAGS := -timeout 40m -count 1 -failfast
+
+# =============================================================================
+# INCLUDE COMMON DEFINITIONS
+# =============================================================================
+
+include ../make/common.mk
+include ../make/go.mk
+
+# =============================================================================
+# E2E-SPECIFIC TARGETS
+# =============================================================================
 
 # Default target
 .PHONY: all
 all: test
+
+.PHONY: lint-test
+lint-test: lint ## Run linting only (override go.mk comprehensive version)
+	@echo "Linting complete for $(MODULE_NAME)"
 
 # Run end-to-end tests in CI
 .PHONY: test-ci
@@ -21,18 +55,27 @@ test-ci:
 	kubectl rollout status deployment/fault-quarantine -n nvsentinel --timeout=10m
 	$(MAKE) test
 
-# Run end-to-end tests
+# Run end-to-end tests (override standard test to use gotestsum with custom format)
 .PHONY: test
-test:
-	gotestsum --format standard-verbose -- -timeout 40m -count 1 -failfast ./...
+test: ## Run end-to-end tests
+	@echo "Running end-to-end tests on $(MODULE_NAME)..."
+	$(GOTESTSUM) --format standard-verbose -- $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/...
 
-# Help target
-.PHONY: help
-help:
-	@echo "Tests Makefile - Simple end-to-end test execution"
+# =============================================================================
+# MODULE HELP
+# =============================================================================
+
+help: ## Show help for available targets
+	@echo "Tests Makefile - E2E test execution with standard linting"
 	@echo ""
-	@echo "Targets:"
+	@echo "Standard targets from go.mk:"
+	@echo "  lint-test - Lint and test Go module (vet + golangci-lint + gotestsum)"
+	@echo "  lint      - Run golangci-lint"
+	@echo "  vet       - Run go vet"
+	@echo "  test      - Run end-to-end tests with coverage"
+	@echo "  clean     - Clean build artifacts"
+	@echo ""
+	@echo "E2E-specific targets:"
 	@echo "  all       - Run test (default)"
 	@echo "  test-ci   - Run end-to-end tests in CI environment"
-	@echo "  test      - Run end-to-end tests"
 	@echo "  help      - Show this help message"

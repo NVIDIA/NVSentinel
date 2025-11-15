@@ -65,6 +65,7 @@ type AWSConfig struct {
 // LoadConfig reads the configuration from a TOML file.
 func LoadConfig(filePath string) (*Config, error) {
 	var cfg Config
+
 	// Read the file content
 	content, err := os.ReadFile(filePath)
 	if err != nil {

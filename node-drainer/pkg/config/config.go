@@ -131,6 +131,8 @@ func NewMongoPipeline() mongo.Pipeline {
 						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.AlreadyQuarantined}}}},
 					bson.D{bson.E{Key: "updateDescription.updatedFields",
 						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.UnQuarantined}}}},
+					bson.D{bson.E{Key: "updateDescription.updatedFields",
+						Value: bson.D{bson.E{Key: "healtheventstatus.nodequarantined", Value: model.Cancelled}}}},
 				}},
 			}},
 		},

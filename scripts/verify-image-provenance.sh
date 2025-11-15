@@ -52,8 +52,10 @@ readonly BLUE='\033[0;34m'
 readonly NC='\033[0m' # No Color
 
 # Paths
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly VERSIONS_FILE="${VERSIONS_FILE:-$REPO_ROOT/.versions.yaml}"
 
 # Configuration - load versions from .versions.yaml if available
@@ -416,6 +418,7 @@ EOF
         
         if [ -n "$events" ]; then
             log_info "Policy warnings detected:"
+            # shellcheck disable=SC2001 # sed is appropriate for adding indentation to multiple lines
             echo "$events" | sed 's/^/  /'
         else
             log_info "No policy warnings found in pod events (check Policy Controller logs for details)"
@@ -546,7 +549,7 @@ EOF
         # Look for successful validations (would not have "failed" or "no matching" in logs)
         # In warn mode, successful validations are silent, so we check for policy check counts
         local all_checked_modules
-        all_checked_modules=$(echo "$validated_modules")
+        all_checked_modules="$validated_modules"
         
         # Compare: modules checked vs modules failed = modules that might have passed
         local potentially_passed=""

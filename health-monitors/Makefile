@@ -10,7 +10,8 @@ GOCOVER_COBERTURA := gocover-cobertura
 # Health monitor modules
 GO_HEALTH_MONITORS := \
 	syslog-health-monitor \
-	csp-health-monitor
+	csp-health-monitor \
+	kubernetes-object-monitor
 
 PYTHON_HEALTH_MONITORS := \
 	gpu-health-monitor
@@ -54,6 +55,10 @@ lint-test-csp-health-monitor:
 lint-test-gpu-health-monitor:
 	$(MAKE) -C gpu-health-monitor lint-test
 
+.PHONY: lint-test-kubernetes-object-monitor
+lint-test-kubernetes-object-monitor:
+	$(MAKE) -C kubernetes-object-monitor lint-test
+
 # Build targets for health monitors (delegate to module Makefiles)
 .PHONY: build-all
 build-all:
@@ -78,6 +83,10 @@ build-csp-health-monitor:
 build-gpu-health-monitor:
 	$(MAKE) -C gpu-health-monitor setup
 
+.PHONY: build-kubernetes-object-monitor
+build-kubernetes-object-monitor:
+	$(MAKE) -C kubernetes-object-monitor build
+
 # Clean targets (delegate to module Makefiles)
 .PHONY: clean-all
 clean-all:
@@ -101,6 +110,10 @@ clean-csp-health-monitor:
 .PHONY: clean-gpu-health-monitor
 clean-gpu-health-monitor:
 	$(MAKE) -C gpu-health-monitor clean
+
+.PHONY: clean-kubernetes-object-monitor
+clean-kubernetes-object-monitor:
+	$(MAKE) -C kubernetes-object-monitor clean
 
 # Help target
 .PHONY: help

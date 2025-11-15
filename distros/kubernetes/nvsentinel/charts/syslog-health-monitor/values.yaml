@@ -49,3 +49,8 @@ xidSideCar:
     repository: ""
     tag: ""
     pullPolicy: IfNotPresent
+
+# Scheduling configuration
+nodeSelector: {}
+affinity: {}
+tolerations: []

@@ -20,14 +20,6 @@ on:
       - 'v*'
     branches:
       - main
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/*.yaml'
-      - '.github/*.yml'
-      - '.github/headers/**'
   workflow_dispatch:
     inputs:
       tag:
@@ -114,6 +106,9 @@ jobs:
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
             container_name: 'nvsentinel/syslog-health-monitor'
+          - component: metadata-collector
+            make_command: 'make -C metadata-collector docker-publish'
+            container_name: 'nvsentinel/metadata-collector'
           - component: log-collector
             make_command: 'make -C log-collector docker-publish-log-collector'
             container_name: 'nvsentinel/log-collector'

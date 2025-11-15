@@ -247,6 +247,10 @@ platformConnector:
   #   sidecar.istio.io/inject: "false"
   podAnnotations: {}
 
+  # Tolerations for platform-connector pods
+  # Used when global.tolerations is not specified
+  tolerations: []
+
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:

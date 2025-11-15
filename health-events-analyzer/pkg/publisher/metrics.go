@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	FatalEventPublishingError = promauto.NewCounterVec(
+	fatalEventPublishingError = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fatal_event_publishing_errors",
 			Help: "Total number of errors that occurred while publishing events to UDS",

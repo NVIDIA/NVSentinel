@@ -48,6 +48,7 @@ GO_MODULES := \
 	node-drainer \
 	fault-remediation \
 	janitor \
+	metadata-collector \
 	store-client \
 	commons
 
@@ -117,9 +118,9 @@ endif
 
 # Setup development environment
 .PHONY: dev-env-setup
-dev-env-setup: ## Setup complete development environment (installs all required tools)
+dev-env-setup: ## Setup complete development environment (installs all required tools). Use AUTO_MODE=true to skip prompts
 	@echo "Setting up NVSentinel development environment..."
-	@bash scripts/setup-dev-env.sh
+	@AUTO_MODE=$(AUTO_MODE) bash scripts/setup-dev-env.sh
 
 # Install lint tools
 .PHONY: install-lint-tools
@@ -434,6 +435,11 @@ lint-test-store-client:
 lint-test-commons:
 	@echo "Linting and testing commons..."
 	$(MAKE) -C commons lint-test
+
+.PHONY: lint-test-metadata-collector
+lint-test-metadata-collector:
+	@echo "Linting and testing metadata-collector..."
+	$(MAKE) -C metadata-collector lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules

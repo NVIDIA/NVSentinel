@@ -94,7 +94,7 @@ include('../janitor/Tiltfile')
 include('../node-drainer/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
-#include('../health-events-analyzer/Tiltfile') # This module was a proof-of-concept, never completed
+include('../health-events-analyzer/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
@@ -130,6 +130,7 @@ k8s_resource(
     ],
     resource_deps=['cert-manager'],
 )
+
 k8s_resource(
     new_name='prometheus-resources',
     objects=['nvsentinel:podmonitor'],

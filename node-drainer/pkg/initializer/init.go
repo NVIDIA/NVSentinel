@@ -97,6 +97,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		collection,
 	)
 
+	eventWatcher.SetCancellationCallback(reconciler.HandleCancellation)
+
 	slog.Info("Initialization completed successfully")
 
 	return &Components{

@@ -68,7 +68,7 @@ container_tools:
 # Testing & E2E Tools
 testing_tools:
   kind: '0.30.0'
-  helm: 'v3.14.4'
+  helm: 'v3.19.2'
   kwok: 'v0.7.0'
   kwok_chart: '0.2.0'  # KWOK Helm chart version (different from app version)
   ctlptl: '0.8.43'

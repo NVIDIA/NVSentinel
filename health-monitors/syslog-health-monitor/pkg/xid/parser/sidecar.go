@@ -35,9 +35,12 @@ type SidecarParser struct {
 
 // NewSidecarParser creates a new sidecar parser
 func NewSidecarParser(endpoint, nodeName string) *SidecarParser {
+	c := retryablehttp.NewClient()
+	c.Logger = slog.With("http", "retryablehttp-client")
+
 	return &SidecarParser{
 		url:      fmt.Sprintf("%s/decode-xid", endpoint),
-		client:   retryablehttp.NewClient(),
+		client:   c,
 		nodeName: nodeName,
 	}
 }
@@ -74,7 +77,7 @@ func (p *SidecarParser) Parse(message string) (*Response, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Error("HTTP request failed", "statusCode", resp.StatusCode)
+		slog.Debug("HTTP request failed", "statusCode", resp.StatusCode)
 		metrics.XidProcessingErrors.WithLabelValues("http_status_error", p.nodeName).Inc()
 
 		return nil, fmt.Errorf("HTTP request failed with status code: %d", resp.StatusCode)

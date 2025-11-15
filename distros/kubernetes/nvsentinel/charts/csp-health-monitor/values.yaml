@@ -29,6 +29,9 @@ resources:
 
 # Configuration for the Quarantine Trigger Engine sidecar
 quarantineTriggerEngine:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/maintenance-notifier
+    pullPolicy: IfNotPresent
   resources:
     limits:
       cpu: "500m"

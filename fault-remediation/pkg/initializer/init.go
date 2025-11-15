@@ -119,6 +119,9 @@ func createMongoPipeline() mongo.Pipeline {
 						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: model.UnQuarantined},
 						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: model.StatusSucceeded},
 					},
+					bson.D{
+						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: model.Cancelled},
+					},
 				}},
 			}},
 		},

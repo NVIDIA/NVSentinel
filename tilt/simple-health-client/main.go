@@ -73,6 +73,7 @@ func main() {
 		defer cancel()
 
 		log.Printf("Sending health event for node: %s", healthEvent.NodeName)
+
 		_, err = client.HealthEventOccurredV1(ctx, healthEvents)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to send health event: %v", err), http.StatusInternalServerError)
@@ -82,9 +83,14 @@ func main() {
 		log.Printf("SUCCESS: Health event sent for node %s", healthEvent.NodeName)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Health event sent"})
+
+		response := map[string]string{"status": "success", "message": "Health event sent"}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to encode JSON response: %v", err)
+		}
 	})
 
+	// #nosec G114 - test client, timeouts not critical
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		slog.Error("Failed to start HTTP server", "error", err)
 		os.Exit(1)

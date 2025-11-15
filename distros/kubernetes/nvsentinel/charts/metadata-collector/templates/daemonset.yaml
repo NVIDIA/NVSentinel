@@ -1,0 +1,95 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "metadata-collector.fullname" . }}
+  labels:
+    {{- include "metadata-collector.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "metadata-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "metadata-collector.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostNetwork: true
+      hostPID: true
+      initContainers:
+        - name: metadata-collector
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            privileged: true
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --output-path={{ .Values.global.metadataPath }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: output
+              mountPath: /var/lib/nvsentinel
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+      containers:
+        - name: pause
+          image: "{{ .Values.pauseImage.repository }}:{{ .Values.pauseImage.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+      volumes:
+        - name: output
+          hostPath:
+            path: /var/lib/nvsentinel
+            type: DirectoryOrCreate
+        - name: sys
+          hostPath:
+            path: /sys
+            type: Directory
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+        nvsentinel.dgxc.nvidia.com/driver.installed: "true"
+        {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+

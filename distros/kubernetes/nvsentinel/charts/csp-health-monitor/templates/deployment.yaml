@@ -55,7 +55,6 @@ spec:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/app/csp-health-monitor"]
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
@@ -81,11 +80,10 @@ spec:
                 optional: true
 
         - name: maintenance-notifier
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ .Values.quarantineTriggerEngine.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.quarantineTriggerEngine.image.pullPolicy | default .Values.image.pullPolicy }}
           securityContext:
             runAsUser: 0
-          command: ["/app/maintenance-notifier"]
           args:
           - "--config=/etc/config/config.toml"
           - "--mongo-client-cert-mount-path=/etc/ssl/mongo-client"

@@ -24,7 +24,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
@@ -59,7 +59,7 @@ func createPipeline() mongo.Pipeline {
 		bson.D{
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "insert"},
-				{Key: "fullDocument.healthevent.isfatal", Value: false},
+				{Key: "fullDocument.healthevent.agent", Value: bson.D{{Key: "$ne", Value: "health-events-analyzer"}}},
 				{Key: "fullDocument.healthevent.ishealthy", Value: false},
 			}},
 		},
@@ -74,7 +74,7 @@ func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientC
 		return nil, nil, fmt.Errorf("failed to dial platform connector UDS %s: %w", socket, err)
 	}
 
-	platformConnectorClient := pb.NewPlatformConnectorClient(conn)
+	platformConnectorClient := protos.NewPlatformConnectorClient(conn)
 	pub := publisher.NewPublisher(platformConnectorClient)
 
 	return pub, conn, nil

@@ -231,6 +231,11 @@ func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 }
 
 func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint, nodename string) error {
+	if c.DryRunMode {
+		slog.Info("DryRun mode enabled, skipping taint application", "node", nodename)
+		return nil
+	}
+
 	existingTaints := make(map[config.Taint]v1.Taint)
 	for _, taint := range node.Spec.Taints {
 		existingTaints[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = taint
@@ -339,6 +344,11 @@ func (c *FaultQuarantineClient) UnQuarantineNodeAndRemoveAnnotations(
 }
 
 func (c *FaultQuarantineClient) removeTaints(node *v1.Node, taints []config.Taint, nodename string) bool {
+	if c.DryRunMode {
+		slog.Info("DryRun mode enabled, skipping taint removal", "node", nodename)
+		return false
+	}
+
 	taintsAlreadyPresentOnNodeMap := map[config.Taint]bool{}
 	for _, taint := range node.Spec.Taints {
 		taintsAlreadyPresentOnNodeMap[config.Taint{Key: taint.Key, Value: taint.Value, Effect: string(taint.Effect)}] = true
@@ -428,6 +438,11 @@ func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 }
 
 func (c *FaultQuarantineClient) removeNodeTaints(node *v1.Node, taintsToRemove []config.Taint) {
+	if c.DryRunMode {
+		slog.Info("DryRun mode enabled, skipping node taint removal")
+		return
+	}
+
 	taintsToRemoveMap := make(map[config.Taint]bool, len(taintsToRemove))
 	for _, taint := range taintsToRemove {
 		taintsToRemoveMap[taint] = true
