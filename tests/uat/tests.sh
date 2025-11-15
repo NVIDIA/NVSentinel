@@ -95,31 +95,7 @@ test_gpu_monitoring_dcgm() {
         error "No DCGM pod found on node $gpu_node"
     fi
 
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 240 -v 99999 # power watch error
-
-    log "Waiting for node conditions to appear..."
-    local max_wait=30
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True")] | length')
-        if [[ "$conditions_count" -ge 1 ]]; then
-            log "Found $conditions_count node conditions"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    log "Verifying node conditions are populated"
-    kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
-
-    inforom_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True") | .type')
-
-    if [[ -z "$inforom_condition" ]]; then
-        error "Expected node conditions not found: GpuInforomWatch=$inforom_condition"
-    fi
-    log "Node conditions verified ✓"
 
     log "Waiting for node events to appear..."
     local max_wait=30
@@ -142,6 +118,32 @@ test_gpu_monitoring_dcgm() {
         error "GpuPowerWatch event not found (non-fatal errors should create events)"
     fi
     log "Node event verified: GpuPowerWatch is non-fatal, appears in events ✓"
+
+    log "Waiting for node conditions to appear..."
+    local max_wait=30
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True")] | length')
+        if [[ "$conditions_count" -ge 1 ]]; then
+            log "Found $conditions_count node conditions"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    
+
+    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
+
+    log "Verifying node conditions are populated"
+    kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
+
+    inforom_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True") | .type')
+
+    if [[ -z "$inforom_condition" ]]; then
+        error "Expected node conditions not found: GpuInforomWatch=$inforom_condition"
+    fi
+    log "Node conditions verified ✓"
 
     log "Waiting for node to be quarantined and rebooted..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
