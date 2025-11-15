@@ -119,6 +119,8 @@ test_gpu_monitoring_dcgm() {
     fi
     log "Node event verified: GpuPowerWatch is non-fatal, appears in events ✓"
 
+    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
+
     log "Waiting for node conditions to appear..."
     local max_wait=30
     local waited=0
@@ -131,9 +133,6 @@ test_gpu_monitoring_dcgm() {
         sleep 2
         waited=$((waited + 2))
     done
-    
-
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
 
     log "Verifying node conditions are populated"
     kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
@@ -242,11 +241,32 @@ test_sxid_monitoring_syslog() {
     fi
 
     log "Injecting SXID error messages via logger on pod: $driver_pod"
-    log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up"
 
     log "  - SXID 28002 (Non-fatal): Therm Warn Deactivated on Link $link_number"
     kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated"
+
+    local max_wait=30
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
+        if [[ -n "$power_event" ]]; then
+            log "Found sxid event"
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    log "Verifying SXID node event is populated (non-fatal SXID 28002)"
+    sxid_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
+
+    if [[ -z "$sxid_event" ]]; then
+        error "SysLogsSXIDError event not found (non-fatal SXID may not create separate event)"
+    fi
+    log "Node event verified: SysLogsSXIDError ✓"
+
+    log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
+    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up"
 
     log "Waiting for node conditions to appear..."
     local max_wait=30
@@ -268,26 +288,6 @@ test_sxid_monitoring_syslog() {
         error "SysLogsSXIDError condition not found (fatal SXID should create condition)"
     fi
     log "Node condition verified: SysLogsSXIDError ✓"
-
-    local max_wait=30
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
-        if [[ -n "$power_event" ]]; then
-            log "Found sxid event"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    log "Verifying SXID node event is populated (non-fatal SXID 28002)"
-    sxid_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')
-
-    if [[ -z "$sxid_event" ]]; then
-        error "SysLogsSXIDError event not found (non-fatal SXID may not create separate event)"
-    fi
-    log "Node event verified: SysLogsSXIDError ✓"
 
     log "Waiting for node to be quarantined and rebooted..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
