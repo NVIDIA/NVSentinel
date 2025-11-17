@@ -110,7 +110,7 @@ jobs:
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             SAFE_REF="${{ github.ref_name }}"
-          else if [[ "${{ github.ref_name }}" == "main" ]]; then
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
           else
