@@ -55,3 +55,6 @@ dependencies:
   - name: metadata-collector
     version: "0.1.0"
     condition: global.metadataCollector.enabled
+  - name: kubernetes-object-monitor
+    version: "0.1.0"
+    condition: global.kubernetesObjectMonitor.enabled

@@ -17,19 +17,19 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
-// ParseSequenceStage parses a pipeline stage and replaces "this." references
+// ParseSequenceStage parses a JSON stage string and replaces "this." references with actual event values
 func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
 	var stageMap map[string]interface{}
 	if err := json.Unmarshal([]byte(stage), &stageMap); err != nil {
-		slog.Error("Failed to unmarshal stage", "stage", stage, "error", err)
 		return nil, fmt.Errorf("failed to unmarshal stage '%s': %w", stage, err)
 	}
 
@@ -46,8 +46,7 @@ func ParseSequenceStage(stage string, event datamodels.HealthEventWithStatus) (m
 }
 
 // processValue recursively processes any value type and replaces "this." references with actual event values
-func processValue(value interface{},
-	event datamodels.HealthEventWithStatus) (interface{}, error) {
+func processValue(value interface{}, event datamodels.HealthEventWithStatus) (interface{}, error) {
 	switch v := value.(type) {
 	case string:
 		if strings.HasPrefix(v, "this.") {
@@ -58,7 +57,12 @@ func processValue(value interface{},
 				return nil, fmt.Errorf("error in getting value from path '%s': %w", fieldPath, err)
 			}
 
-			return resolvedValue, nil
+			// CRITICAL: Normalize field names for protobuf values embedded in MongoDB aggregation pipelines
+			// This converts camelCase JSON field names (entityType, entityValue) to lowercase BSON field names
+			// (entitytype, entityvalue) so they match MongoDB's storage and filter expectations
+			normalized := utils.NormalizeFieldNamesForMongoDB(resolvedValue)
+
+			return normalized, nil
 		}
 
 		return v, nil
@@ -71,8 +75,7 @@ func processValue(value interface{},
 	}
 }
 
-func processMapValue(v map[string]interface{},
-	event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
+func processMapValue(v map[string]interface{}, event datamodels.HealthEventWithStatus) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	for key, val := range v {
@@ -87,8 +90,7 @@ func processMapValue(v map[string]interface{},
 	return result, nil
 }
 
-func processArrayValue(v []interface{},
-	event datamodels.HealthEventWithStatus) ([]interface{}, error) {
+func processArrayValue(v []interface{}, event datamodels.HealthEventWithStatus) ([]interface{}, error) {
 	result := make([]interface{}, len(v))
 
 	for i, val := range v {
@@ -101,6 +103,56 @@ func processArrayValue(v []interface{},
 	}
 
 	return result, nil
+}
+
+// ParseSequenceString converts a criteria map into a database filter map
+// This uses the same map[string]interface{} type as store-client filters
+func ParseSequenceString(
+	criteria map[string]any,
+	event datamodels.HealthEventWithStatus,
+) (map[string]interface{}, error) {
+	doc := make(map[string]interface{})
+	allowedStringPattern := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+
+	for key, value := range criteria {
+		strVal, isString := value.(string)
+
+		if !isString {
+			doc[key] = value
+			continue
+		}
+
+		// "this." reference → resolve from current event
+		if strings.HasPrefix(strVal, "this.") {
+			fieldPath := strings.TrimPrefix(strVal, "this.")
+
+			resolvedValue, err := getValueFromPath(fieldPath, event)
+			if err != nil {
+				return nil, fmt.Errorf("error in getting value from path: %w", err)
+			}
+
+			doc[key] = resolvedValue
+
+			continue
+		}
+
+		// JSON object string representing database operator (e.g. '{"$ne":"x"}')
+		var operatorMap map[string]any
+		if err := json.Unmarshal([]byte(strVal), &operatorMap); err == nil {
+			doc[key] = operatorMap
+			continue
+		}
+
+		// String with only allowed characters (alphanumeric, dot, and hyphen)
+		if allowedStringPattern.MatchString(strVal) {
+			doc[key] = strVal
+			continue
+		}
+
+		return nil, fmt.Errorf("failed to parse criteria '%s'", strVal)
+	}
+
+	return doc, nil
 }
 
 func getValueFromPath(path string, event datamodels.HealthEventWithStatus) (any, error) {

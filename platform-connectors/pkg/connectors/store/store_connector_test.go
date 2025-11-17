@@ -16,37 +16,102 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestInsertHealthEvents(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).ClientOptions(options.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
+// Mock DatabaseClient
+type mockDatabaseClient struct {
+	mock.Mock
+}
 
+func (m *mockDatabaseClient) InsertMany(ctx context.Context, documents []interface{}) (*client.InsertManyResult, error) {
+	args := m.Called(ctx, documents)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*client.InsertManyResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+	args := m.Called(ctx, filter, document)
+	return args.Get(0).(*client.UpdateResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Close(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+// Additional methods to satisfy the DatabaseClient interface
+func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+	args := m.Called(ctx, documentID, statusPath, status)
+	return args.Error(0)
+}
+
+func (m *mockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *mockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+	args := m.Called(ctx, filter, update)
+	return args.Get(0).(*client.UpdateResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) UpdateManyDocuments(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+	args := m.Called(ctx, filter, update)
+	return args.Get(0).(*client.UpdateResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(client.SingleResult), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
+	args := m.Called(ctx, filter, options)
+	return args.Get(0).(client.Cursor), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+	args := m.Called(ctx, pipeline)
+	return args.Get(0).(client.Cursor), args.Error(1)
+}
+
+func (m *mockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, pipeline interface{}) (client.ChangeStreamWatcher, error) {
+	args := m.Called(ctx, tokenConfig, pipeline)
+	return args.Get(0).(client.ChangeStreamWatcher), args.Error(1)
+}
+
+func (m *mockDatabaseClient) Ping(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func TestInsertHealthEvents(t *testing.T) {
 	ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer", context.Background())
 	nodeName := "testNode"
 
-	mt.Run("successful insertion", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(), // StartTransaction
-			mtest.CreateSuccessResponse(), // InsertMany
-		)
+	t.Run("successful insertion", func(t *testing.T) {
+		mockClient := &mockDatabaseClient{}
 
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
+		// Setup mock expectations
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil)
+
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+			ringBuffer:     ringBuffer,
+			nodeName:       nodeName,
 		}
 
 		healthEvents := &protos.HealthEvents{
@@ -54,23 +119,20 @@ func TestInsertHealthEvents(t *testing.T) {
 		}
 
 		err := connector.insertHealthEvents(context.Background(), healthEvents)
-		require.NoError(mt, err)
+		require.NoError(t, err)
+		mockClient.AssertExpectations(t)
 	})
 
-	mt.Run("insertion failure", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			// InsertMany fails
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Message: "duplicate key error",
-				Name:    "DuplicateKey",
-			}),
-		)
+	t.Run("insertion failure", func(t *testing.T) {
+		mockClient := &mockDatabaseClient{}
 
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
+		// Setup mock expectations for insertion failure
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return((*client.InsertManyResult)(nil), errors.New("test error"))
+
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+			ringBuffer:     ringBuffer,
+			nodeName:       nodeName,
 		}
 
 		healthEvents := &protos.HealthEvents{
@@ -78,34 +140,29 @@ func TestInsertHealthEvents(t *testing.T) {
 		}
 
 		err := connector.insertHealthEvents(context.Background(), healthEvents)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "duplicate key error", "error message should contain 'duplicate key error'")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "insertMany failed")
+		mockClient.AssertExpectations(t)
 	})
 }
 
 func TestFetchAndProcessHealthMetric(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).ClientOptions(options.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("process health metrics", func(mt *mtest.T) {
+	t.Run("process health metrics", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer1", ctx)
 		nodeName := "testNode1"
+		mockClient := &mockDatabaseClient{}
 
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
+		// Setup mock expectations
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil)
+
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+			ringBuffer:     ringBuffer,
+			nodeName:       nodeName,
 		}
-
-		// mock responses for insertHealthEvents
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(), // StartTransaction
-			mtest.CreateSuccessResponse(), // InsertMany
-		)
 
 		healthEvent := &protos.HealthEvent{}
 
@@ -124,35 +181,35 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			return ringBuffer.CurrentLength() == 0
 		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
+		// Give a bit more time for the database operations to complete
+		time.Sleep(50 * time.Millisecond)
+
 		cancel()
-		// Note: mtest framework handles MongoDB client cleanup
+		mockClient.AssertExpectations(t)
 	})
 
-	mt.Run("process health metrics when insert fails", func(mt *mtest.T) {
+	t.Run("process health metrics when insert fails", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		ringBuffer := ringbuffer.NewRingBuffer("testRingBuffer2", ctx)
 		nodeName := "testNode2"
+		mockClient := &mockDatabaseClient{}
 
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
+		// Setup mock expectations for failure
+		mockClient.On("InsertMany", mock.Anything, mock.Anything).Return((*client.InsertManyResult)(nil), errors.New("test error"))
+
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+			ringBuffer:     ringBuffer,
+			nodeName:       nodeName,
 		}
 
-		// mock responses for insertHealthEvents
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(), // StartTransaction
-			// InsertMany fails
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Message: "duplicate key error",
-				Name:    "DuplicateKey",
-			}),
-		)
-
-		healthEvent := &protos.HealthEvent{}
+		healthEvent := &protos.HealthEvent{
+			NodeName:           "test-node",
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			CheckName:          "test-check",
+		}
 
 		healthEvents := &protos.HealthEvents{
 			Events: []*protos.HealthEvent{healthEvent},
@@ -169,295 +226,73 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			return ringBuffer.CurrentLength() == 0
 		}, 1*time.Second, 10*time.Millisecond, "event should be dequeued")
 
-		// Give the goroutine time to complete session cleanup after processing fails
-		// This prevents false positives in mtest's session leak detection
+		// Give the goroutine time to complete processing
 		time.Sleep(50 * time.Millisecond)
 
 		cancel()
-		// Note: mtest framework handles MongoDB client cleanup
+		mockClient.AssertExpectations(t)
 	})
 }
 
-func TestGetEnvAsInt(t *testing.T) {
-	tests := []struct {
-		name         string
-		envName      string
-		envValue     string
-		defaultValue int
-		expectedVal  int
-		expectError  bool
-	}{
-		{
-			name:         "Environment variable not set, use default",
-			envName:      "TEST_ENV_NOT_SET",
-			envValue:     "",
-			defaultValue: 100,
-			expectedVal:  100,
-			expectError:  false,
-		},
-		{
-			name:         "Environment variable set to valid positive integer",
-			envName:      "TEST_ENV_VALID",
-			envValue:     "250",
-			defaultValue: 100,
-			expectedVal:  250,
-			expectError:  false,
-		},
-		{
-			name:         "Environment variable set to invalid string",
-			envName:      "TEST_ENV_INVALID",
-			envValue:     "not_a_number",
-			defaultValue: 100,
-			expectedVal:  0,
-			expectError:  true,
-		},
-		{
-			name:         "Environment variable set to zero",
-			envName:      "TEST_ENV_ZERO",
-			envValue:     "0",
-			defaultValue: 100,
-			expectedVal:  0,
-			expectError:  true,
-		},
-		{
-			name:         "Environment variable set to negative number",
-			envName:      "TEST_ENV_NEGATIVE",
-			envValue:     "-10",
-			defaultValue: 100,
-			expectedVal:  0,
-			expectError:  true,
-		},
-	}
+func TestDisconnect(t *testing.T) {
+	t.Run("successful disconnect", func(t *testing.T) {
+		mockClient := &mockDatabaseClient{}
+		mockClient.On("Close", mock.Anything).Return(nil)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set or unset the environment variable
-			if tt.envValue != "" {
-				os.Setenv(tt.envName, tt.envValue)
-				defer os.Unsetenv(tt.envName)
-			} else {
-				os.Unsetenv(tt.envName)
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+		}
+
+		err := connector.Disconnect(context.Background())
+		require.NoError(t, err)
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("disconnect with nil client", func(t *testing.T) {
+		connector := &DatabaseStoreConnector{
+			databaseClient: nil,
+		}
+
+		err := connector.Disconnect(context.Background())
+		require.NoError(t, err)
+	})
+
+	t.Run("disconnect error", func(t *testing.T) {
+		mockClient := &mockDatabaseClient{}
+		mockClient.On("Close", mock.Anything).Return(errors.New("test error"))
+
+		connector := &DatabaseStoreConnector{
+			databaseClient: mockClient,
+		}
+
+		err := connector.Disconnect(context.Background())
+		require.NoError(t, err) // Should not return error, just log
+		mockClient.AssertExpectations(t)
+	})
+}
+
+func TestGenerateRandomObjectID(t *testing.T) {
+	objectID := GenerateRandomObjectID()
+	require.NotEmpty(t, objectID)
+	require.Len(t, objectID, 36) // UUID string is 36 characters
+}
+
+func TestInitializeDatabaseStoreConnector(t *testing.T) {
+	t.Run("missing NODE_NAME environment variable", func(t *testing.T) {
+		// Unset NODE_NAME if it exists
+		originalNodeName := os.Getenv("NODE_NAME")
+		os.Unsetenv("NODE_NAME")
+		defer func() {
+			if originalNodeName != "" {
+				os.Setenv("NODE_NAME", originalNodeName)
 			}
-
-			result, err := getEnvAsInt(tt.envName, tt.defaultValue)
-
-			if tt.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-				require.Equal(t, tt.expectedVal, result)
-			}
-		})
-	}
-}
-
-func TestConfirmConnectivityWithDBAndCollection(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).ClientOptions(options.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("successful connectivity", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCursorResponse(0, "testdb.$cmd.listCollections", mtest.FirstBatch, bson.D{
-				{Key: "name", Value: "testcollection"},
-			}),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.NoError(mt, err)
-	})
-
-	mt.Run("ping fails and times out", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Message: "ping failed",
-				Name:    "NetworkError",
-			}),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 500*time.Millisecond, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "retrying ping to database testdb timed out")
-	})
-
-	mt.Run("collection not found", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCursorResponse(0, "testdb.$cmd.listCollections", mtest.FirstBatch),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "no collection with name testcollection for DB testdb was found")
-	})
-
-	mt.Run("multiple collections with same name", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCursorResponse(0, "testdb.$cmd.listCollections", mtest.FirstBatch,
-				bson.D{{Key: "name", Value: "testcollection"}},
-				bson.D{{Key: "name", Value: "testcollection"}},
-			),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "more than one collection with name testcollection for DB testdb was found")
-	})
-
-	mt.Run("list collections error", func(mt *mtest.T) {
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(),
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    13,
-				Message: "not authorized",
-			}),
-		)
-
-		ctx := context.Background()
-
-		err := confirmConnectivityWithDBAndCollection(ctx, mt.Client, "testdb", "testcollection", 1*time.Second, 100*time.Millisecond)
-		require.Error(mt, err)
-		require.Contains(mt, err.Error(), "unable to get list of collections for DB testdb")
-	})
-}
-
-func TestInsertHealthEvents_ErrorScenarios(t *testing.T) {
-	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).ClientOptions(options.Client().SetRetryWrites(false))
-	mt := mtest.New(t, mtOpts)
-
-	mt.Run("session start fails", func(mt *mtest.T) {
-		ctx := context.Background()
-		ringBuffer := ringbuffer.NewRingBuffer("testRingBufferSessionFail", ctx)
-		nodeName := "testNode"
-
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
-		}
-
-		healthEvents := &protos.HealthEvents{
-			Events: []*protos.HealthEvent{
-				{
-					ComponentClass: "gpu",
-					CheckName:      "GpuXidError",
-					NodeName:       nodeName,
-				},
-			},
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    244,
-				Message: "Cannot start session",
-			}),
-		)
-
-		err := connector.insertHealthEvents(ctx, healthEvents)
-		require.Error(t, err)
-	})
-
-	mt.Run("transaction fails", func(mt *mtest.T) {
-		ctx := context.Background()
-		ringBuffer := ringbuffer.NewRingBuffer("testRingBufferTxnFail", ctx)
-		nodeName := "testNode"
-
-		connector := &MongoDbStoreConnector{
-			client:     mt.Client,
-			ringBuffer: ringBuffer,
-			nodeName:   nodeName,
-			collection: mt.Coll,
-		}
-
-		healthEvents := &protos.HealthEvents{
-			Events: []*protos.HealthEvent{
-				{
-					ComponentClass: "gpu",
-					CheckName:      "GpuXidError",
-					NodeName:       nodeName,
-				},
-			},
-		}
-
-		mt.AddMockResponses(
-			mtest.CreateSuccessResponse(), // StartSession
-			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    251,
-				Message: "Transaction aborted",
-			}),
-		)
-
-		err := connector.insertHealthEvents(ctx, healthEvents)
-		require.Error(t, err)
-	})
-}
-
-func TestPollTillCACertIsSuccessfullyMounted(t *testing.T) {
-	t.Run("cert available immediately", func(t *testing.T) {
-		tempDir, err := os.MkdirTemp("", "test_cert_poll")
-		require.NoError(t, err)
-		defer os.RemoveAll(tempDir)
-
-		certPath := filepath.Join(tempDir, "ca.crt")
-		certContent := []byte("test certificate content")
-		err = os.WriteFile(certPath, certContent, 0644)
-		require.NoError(t, err)
-
-		result, err := pollTillCACertIsMountedSuccessfully(certPath, 5*time.Second, 1*time.Second)
-		require.NoError(t, err)
-		require.Equal(t, certContent, result)
-	})
-
-	t.Run("cert not available and times out", func(t *testing.T) {
-		certPath := "/nonexistent/path/ca.crt"
-
-		start := time.Now()
-		result, err := pollTillCACertIsMountedSuccessfully(certPath, 2*time.Second, 500*time.Millisecond)
-		elapsed := time.Since(start)
-
-		require.Error(t, err)
-		require.Nil(t, result)
-		require.Contains(t, err.Error(), "retrying reading CA cert from")
-		require.GreaterOrEqual(t, elapsed, 2*time.Second)
-	})
-
-	t.Run("cert becomes available after retry", func(t *testing.T) {
-		tempDir, err := os.MkdirTemp("", "test_cert_delayed")
-		require.NoError(t, err)
-		defer os.RemoveAll(tempDir)
-
-		certPath := filepath.Join(tempDir, "ca.crt")
-		certContent := []byte("delayed certificate content")
-
-		// Write cert after a delay to simulate delayed mount
-		written := make(chan struct{})
-		go func() {
-			time.Sleep(1500 * time.Millisecond) // Increase delay to ensure polling starts first
-			err := os.WriteFile(certPath, certContent, 0600)
-			if err != nil {
-				t.Logf("Failed to write cert file: %v", err)
-			}
-			close(written)
 		}()
 
-		// Should retry and eventually read the cert
-		result, err := pollTillCACertIsMountedSuccessfully(certPath, 10*time.Second, 300*time.Millisecond)
+		ringBuffer := ringbuffer.NewRingBuffer("test", context.Background())
+		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "")
 
-		// Wait for goroutine to finish
-		<-written
-
-		require.NoError(t, err)
-		require.NotEmpty(t, result, "expected cert content but got empty slice")
-		require.Equal(t, certContent, result, "cert content mismatch")
+		require.Error(t, err)
+		require.Nil(t, connector)
+		require.Contains(t, err.Error(), "NODE_NAME is not set")
 	})
 }

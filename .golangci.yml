@@ -53,6 +53,7 @@ linters:
     - noctx
     - whitespace
     - wsl_v5
+    - gosec
   exclusions:
     generated: lax
     presets:

@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 	"tests/helpers"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -40,26 +41,26 @@ func TestNewCRsAreCreatedAfterFaultsAreReemdiated(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		// Trigger first fault and wait for CR
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
-
 		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
-		cr1Name := cr1.GetName()
-		t.Logf("First CR created: %s", cr1Name)
+		t.Logf("First CR created and completed: %s", cr1.GetName())
 
-		t.Log("Triggering remediation flow")
+		// Send healthy event to clear the fault
 		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+		time.Sleep(10 * time.Second)
 
+		// Trigger second fault
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
 
-		t.Log("Verifying that 2 CRs were created, one for each fault")
+		// Verify that 2 CRs were created
 		require.Eventually(t, func() bool {
 			crList, err := helpers.GetRebootNodeCRsForNode(ctx, client, testCtx.NodeName)
 			if err != nil {
 				return false
 			}
-
 			return len(crList) == 2
-		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "should have 2 CRs")
+		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "should have 2 completed CRs")
 
 		return ctx
 	})

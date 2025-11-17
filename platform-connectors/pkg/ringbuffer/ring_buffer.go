@@ -32,6 +32,7 @@ type RingBuffer struct {
 
 func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
 	workqueue.SetProvider(prometheusMetricsProvider{})
+
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
 		workqueue.DefaultTypedControllerRateLimiter[*protos.HealthEvents](),
 		workqueue.TypedRateLimitingQueueConfig[*protos.HealthEvents]{

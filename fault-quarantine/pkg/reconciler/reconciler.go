@@ -33,11 +33,13 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/evaluator"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/eventwatcher"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/mongodb"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/helper"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -45,6 +47,9 @@ type ReconcilerConfig struct {
 	TomlConfig            config.TomlConfig
 	DryRun                bool
 	CircuitBreakerEnabled bool
+	DataStoreConfig       *datastore.DataStoreConfig
+	TokenConfig           client.TokenConfig
+	DatabasePipeline      interface{}
 }
 
 type rulesetsConfig struct {
@@ -64,7 +69,7 @@ type Reconciler struct {
 	k8sClient             *informer.FaultQuarantineClient
 	lastProcessedObjectID atomic.Value
 	cb                    breaker.CircuitBreaker
-	eventWatcher          mongodb.EventWatcherInterface
+	eventWatcher          eventwatcher.EventWatcherInterface
 	taintInitKeys         []keyValTaint // Pre-computed taint keys for map initialization
 	taintUpdateMu         sync.Mutex    // Protects taint priority updates
 
@@ -110,26 +115,47 @@ func (r *Reconciler) SetLabelKeys(labelKeyPrefix string) {
 	r.uncordonedTimestampLabelKey = labelKeyPrefix + "uncordon-timestamp"
 }
 
-func (r *Reconciler) StoreLastProcessedObjectID(objID primitive.ObjectID) {
+func (r *Reconciler) StoreLastProcessedObjectID(objID string) {
 	r.lastProcessedObjectID.Store(objID)
 }
 
-func (r *Reconciler) LoadLastProcessedObjectID() (primitive.ObjectID, bool) {
+func (r *Reconciler) LoadLastProcessedObjectID() (string, bool) {
 	lastObjID := r.lastProcessedObjectID.Load()
 	if lastObjID == nil {
-		return primitive.ObjectID{}, false
+		return "", false
 	}
 
-	objID, ok := lastObjID.(primitive.ObjectID)
+	objID, ok := lastObjID.(string)
 
 	return objID, ok
 }
 
-func (r *Reconciler) SetEventWatcher(eventWatcher mongodb.EventWatcherInterface) {
+func (r *Reconciler) SetEventWatcher(eventWatcher eventwatcher.EventWatcherInterface) {
 	r.eventWatcher = eventWatcher
 }
 
 func (r *Reconciler) Start(ctx context.Context) error {
+	// Create datastore client bundle using helper
+	bundle, err := helper.NewDatastoreClientFromConfig(
+		ctx, "fault-quarantine", *r.config.DataStoreConfig, r.config.DatabasePipeline,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create datastore client bundle: %w", err)
+	}
+	defer bundle.Close(ctx)
+
+	// Use the clients from the bundle
+	databaseClient := bundle.DatabaseClient
+	changeStreamWatcher := bundle.ChangeStreamWatcher
+
+	// Create event watcher with the new signature
+	r.eventWatcher = eventwatcher.NewEventWatcher(
+		changeStreamWatcher,
+		databaseClient,
+		time.Second*30, // 30 second metric update interval
+		r,              // Reconciler implements LastProcessedObjectIDStore interface
+	)
+
 	r.setupNodeInformerCallbacks()
 
 	ruleSetEvals, err := r.initializeRuleSetEvaluators()
@@ -1200,13 +1226,16 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		return fmt.Errorf("failed to clean up manually uncordoned node %s: %w", nodeName, err)
 	}
 
-	if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName); err != nil {
-		slog.Error("Failed to cancel latest quarantining events for manually uncordoned node",
-			"node", nodeName,
-			"error", err)
-		metrics.ProcessingErrors.WithLabelValues("mongodb_cancelled_update_error").Inc()
+	// Cancel latest quarantining events (if eventWatcher is available)
+	if r.eventWatcher != nil {
+		if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName); err != nil {
+			slog.Error("Failed to cancel latest quarantining events for manually uncordoned node",
+				"node", nodeName,
+				"error", err)
+			metrics.ProcessingErrors.WithLabelValues("mongodb_cancelled_update_error").Inc()
 
-		return fmt.Errorf("failed to cancel latest quarantining events for node %s: %w", nodeName, err)
+			return fmt.Errorf("failed to cancel latest quarantining events for node %s: %w", nodeName, err)
+		}
 	}
 
 	metrics.TotalNodesManuallyUncordoned.WithLabelValues(nodeName).Inc()

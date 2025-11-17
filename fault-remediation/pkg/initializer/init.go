@@ -22,12 +22,12 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 )
 
 type InitializationParams struct {
@@ -44,12 +44,12 @@ type Components struct {
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
 	slog.Info("Starting fault remediation module initialization")
 
-	mongoConfig, tokenConfig, err := storewatcher.LoadConfigFromEnv("fault-remediation")
+	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-remediation")
 	if err != nil {
-		return nil, fmt.Errorf("failed to load MongoDB configuration: %w", err)
+		return nil, fmt.Errorf("failed to load token configuration: %w", err)
 	}
 
-	pipeline := createMongoPipeline()
+	pipeline := client.BuildQuarantinedAndDrainedNodesPipeline()
 
 	var tomlConfig config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlConfig); err != nil {
@@ -79,10 +79,23 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	slog.Info("Successfully initialized k8s client")
 
+	// Load datastore configuration
+	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load datastore configuration: %w", err)
+	}
+
+	// Convert store config types to the types expected by reconciler
+	clientTokenConfig := client.TokenConfig{
+		ClientName:      tokenConfig.ClientName,
+		TokenDatabase:   tokenConfig.TokenDatabase,
+		TokenCollection: tokenConfig.TokenCollection,
+	}
+
 	reconcilerCfg := reconciler.ReconcilerConfig{
-		MongoConfig:        mongoConfig,
-		TokenConfig:        tokenConfig,
-		MongoPipeline:      pipeline,
+		DataStoreConfig:    *datastoreConfig,
+		TokenConfig:        clientTokenConfig,
+		Pipeline:           pipeline,
 		RemediationClient:  k8sClient,
 		StateManager:       statemanager.NewStateManager(clientSet),
 		EnableLogCollector: params.EnableLogCollector,
@@ -97,33 +110,4 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	return &Components{
 		Reconciler: reconcilerInstance,
 	}, nil
-}
-
-func createMongoPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			bson.E{Key: "$match", Value: bson.D{
-				bson.E{Key: "operationType", Value: "update"},
-				bson.E{Key: "$or", Value: bson.A{
-					// Watch for quarantine events (for remediation)
-					bson.D{
-						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: bson.D{
-							bson.E{Key: "$in", Value: bson.A{model.StatusSucceeded, model.AlreadyDrained}},
-						}},
-						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: bson.D{
-							bson.E{Key: "$in", Value: bson.A{model.Quarantined, model.AlreadyQuarantined}},
-						}},
-					},
-					// Watch for unquarantine events (for annotation cleanup)
-					bson.D{
-						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: model.UnQuarantined},
-						bson.E{Key: "fullDocument.healtheventstatus.userpodsevictionstatus.status", Value: model.StatusSucceeded},
-					},
-					bson.D{
-						bson.E{Key: "fullDocument.healtheventstatus.nodequarantined", Value: model.Cancelled},
-					},
-				}},
-			}},
-		},
-	}
 }

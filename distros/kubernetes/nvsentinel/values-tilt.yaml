@@ -67,6 +67,9 @@ global:
   metadataCollector:
     enabled: false
 
+  kubernetesObjectMonitor:
+    enabled: true
+
 mongodb-store:
   mongodb:
     replicaCount: 1
@@ -177,3 +180,35 @@ csp-health-monitor:
 platformConnector:
   nodeMetadata:
     enabled: true
+
+kubernetes-object-monitor:
+  logLevel: debug
+
+  policies:
+    - name: node-test-condition
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.filter(c, c.type == "TestCondition" && c.status == "False").size() > 0
+      healthEvent:
+        componentClass: Node
+        isFatal: false
+        message: "Node test condition is not ready"
+        recommendedAction: CONTACT_SUPPORT
+        errorCode:
+          - NODE_TEST_CONDITION_NOT_READY
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname

@@ -42,11 +42,11 @@ import (
 )
 
 const (
-	defaultConfigPath    = "/etc/config/config.toml"
-	defaultMongoCertPath = "/etc/ssl/mongo-client"
-	defaultKubeconfig    = ""
-	defaultMetricsPort   = "2112"
-	eventChannelSize     = 100
+	defaultConfigPath       = "/etc/config/config.toml"
+	defaultDatabaseCertPath = "/etc/ssl/database-client"
+	defaultKubeconfig       = ""
+	defaultMetricsPort      = "2112"
+	eventChannelSize        = 100
 )
 
 var (
@@ -112,10 +112,10 @@ func run() error {
 		defaultKubeconfig,
 		"Path to a kubeconfig file. Only required if running out-of-cluster.",
 	)
-	mongoClientCertMountPath := flag.String(
-		"mongo-client-cert-mount-path",
-		defaultMongoCertPath,
-		"Directory where MongoDB client tls.crt, tls.key, and ca.crt are mounted.",
+	databaseClientCertMountPath := flag.String(
+		"database-client-cert-mount-path",
+		defaultDatabaseCertPath,
+		"Directory where database client tls.crt, tls.key, and ca.crt are mounted.",
 	)
 
 	flag.Parse()
@@ -132,7 +132,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := datastore.NewStore(ctx, mongoClientCertMountPath)
+	store, err := datastore.NewStore(ctx, databaseClientCertMountPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}

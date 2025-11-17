@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/initializer"
@@ -48,7 +49,8 @@ func main() {
 }
 
 func run() error {
-	metricsPort, kubeconfigPath, dryRun, circuitBreakerEnabled, tomlConfigPath := parseFlags()
+	metricsPort, databaseClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
+		tomlConfigPath := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -65,10 +67,11 @@ func run() error {
 	)
 
 	params := initializer.InitializationParams{
-		KubeconfigPath:        *kubeconfigPath,
-		TomlConfigPath:        *tomlConfigPath,
-		DryRun:                *dryRun,
-		CircuitBreakerEnabled: *circuitBreakerEnabled,
+		DatabaseClientCertMountPath: databaseClientCertMountPath,
+		KubeconfigPath:              *kubeconfigPath,
+		TomlConfigPath:              *tomlConfigPath,
+		DryRun:                      *dryRun,
+		CircuitBreakerEnabled:       *circuitBreakerEnabled,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)
@@ -103,8 +106,17 @@ func run() error {
 	return g.Wait()
 }
 
-func parseFlags() (metricsPort, kubeconfigPath *string, dryRun, circuitBreakerEnabled *bool, tomlConfigPath *string) {
+func parseFlags() (
+	metricsPort *string,
+	databaseClientCertMountPath string,
+	kubeconfigPath *string,
+	dryRun, circuitBreakerEnabled *bool,
+	tomlConfigPath *string,
+) {
 	metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+
+	// Register database certificate flags using common package
+	certConfig := flags.RegisterDatabaseCertFlags()
 
 	kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
@@ -117,6 +129,9 @@ func parseFlags() (metricsPort, kubeconfigPath *string, dryRun, circuitBreakerEn
 		"enable or disable fault quarantine circuit breaker")
 
 	flag.Parse()
+
+	// Resolve the certificate path using common logic
+	databaseClientCertMountPath = certConfig.ResolveCertPath()
 
 	return
 }

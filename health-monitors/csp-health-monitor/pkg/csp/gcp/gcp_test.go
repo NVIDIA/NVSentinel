@@ -242,7 +242,7 @@ func TestProcessLogEntries_OneValidMappableEntry(t *testing.T) {
 			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
-	fakeK8sCS.Tracker().Add(node)
+	_ = fakeK8sCS.Tracker().Add(node)
 
 	entryTime := time.Now().UTC().Add(-5 * time.Minute)
 	pendingStatus := "PENDING"
@@ -480,7 +480,7 @@ func TestProcessLogEntries_WithOperationProducer(t *testing.T) {
 			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
-	fakeK8sCS.Tracker().Add(node)
+	_ = fakeK8sCS.Tracker().Add(node)
 
 	entryTime := time.Now().UTC().Add(-5 * time.Minute)
 	pendingStatusString := "PENDING"
@@ -658,7 +658,7 @@ func TestProcessLogEntries_OngoingStatus(t *testing.T) {
 			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
-	fakeK8sCS.Tracker().Add(node)
+	_ = fakeK8sCS.Tracker().Add(node)
 
 	entryTime := time.Now().UTC().Add(-5 * time.Minute)
 	ongoingStatus := "ONGOING"
@@ -747,7 +747,7 @@ func TestProcessLogEntries_CompletedStatus(t *testing.T) {
 			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
-	fakeK8sCS.Tracker().Add(node)
+	_ = fakeK8sCS.Tracker().Add(node)
 
 	entryTime := time.Now().UTC().Add(-2 * time.Hour) // Event happened in the past
 	completedStatus := "COMPLETED"
@@ -836,7 +836,7 @@ func TestProcessLogEntries_CancelledStatus(t *testing.T) {
 			Labels:      map[string]string{ZONE: testPollLogsZone},
 		},
 	}
-	fakeK8sCS.Tracker().Add(node)
+	_ = fakeK8sCS.Tracker().Add(node)
 
 	entryTime := time.Now().UTC().Add(-30 * time.Minute)
 	cancelledStatus := "CANCELLED"

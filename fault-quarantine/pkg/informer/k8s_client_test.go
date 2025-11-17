@@ -23,7 +23,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -84,7 +84,9 @@ func setupTestClient(t *testing.T) *FaultQuarantineClient {
 	stopCh := make(chan struct{})
 	t.Cleanup(func() { close(stopCh) })
 
-	go nodeInformer.Run(stopCh)
+	go func() {
+		_ = nodeInformer.Run(stopCh)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -134,7 +136,7 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 
 func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-taint-cordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-taint-cordon")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -206,7 +208,7 @@ func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 
 func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-untaint-uncordon-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-untaint-uncordon")
 
 	annotations := map[string]string{
 		"test-annotation": "test-value",
@@ -306,7 +308,7 @@ func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
 
 func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-no-change-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-no-change")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -337,7 +339,7 @@ func TestTaintAndCordonNode_NoChanges(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-no-change-untaint-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-no-change-untaint")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -367,7 +369,7 @@ func TestUnTaintAndUnCordonNode_NoChanges(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-partial-taint-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-partial-taint")
 
 	taints := []v1.Taint{
 		{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
@@ -409,7 +411,7 @@ func TestUnTaintAndUnCordonNode_PartialTaintRemoval(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-partial-annotation-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-partial-annotation-")
 
 	annotations := map[string]string{
 		"annotation1": "val1",
@@ -456,7 +458,7 @@ func TestUnTaintAndUnCordonNode_PartialAnnotationRemoval(t *testing.T) {
 
 func TestTaintAndCordonNode_AlreadyTaintedCordoned(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-already-tainted-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-already-tainted-")
 
 	taints := []v1.Taint{
 		{Key: "test-key", Value: "test-value", Effect: v1.TaintEffectNoSchedule},
@@ -497,7 +499,7 @@ func TestTaintAndCordonNode_AlreadyTaintedCordoned(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-already-untainted-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-already-untainted-")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -524,7 +526,7 @@ func TestUnTaintAndUnCordonNode_AlreadyUntaintedUncordoned(t *testing.T) {
 
 func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-invalid-effect-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-invalid-effect-")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -543,7 +545,7 @@ func TestTaintAndCordonNode_InvalidTaintEffect(t *testing.T) {
 
 func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-overwrite-annotation-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-overwrite-annotation-")
 
 	existingAnnotations := map[string]string{"existing-key": "old-value"}
 
@@ -572,7 +574,7 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-nonexistent-taint-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-nonexistent-taint-")
 
 	taints := []v1.Taint{
 		{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
@@ -611,7 +613,7 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 
 func TestUnTaintAndUnCordonNode_NonExistentAnnotationRemoval(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-nonexistent-annotation-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-nonexistent-annotation-")
 
 	annotations := map[string]string{
 		"annotation1": "val1",
@@ -643,7 +645,7 @@ func TestUnTaintAndUnCordonNode_NonExistentAnnotationRemoval(t *testing.T) {
 
 func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-empty-taint-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-empty-taint-")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {
@@ -664,7 +666,7 @@ func TestTaintAndCordonNode_EmptyTaintKeyOrValue(t *testing.T) {
 
 func TestTaintAndCordonNode_EmptyAnnotationKey(t *testing.T) {
 	ctx := context.Background()
-	nodeName := "test-empty-annotation-key-" + primitive.NewObjectID().Hex()[:8]
+	nodeName := testutils.GenerateTestNodeName("test-empty-annotation-key-")
 
 	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
 	defer func() {

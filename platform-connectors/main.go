@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -116,6 +117,23 @@ func initializeK8sConnector(
 	return k8sRingBuffer, processor, nil
 }
 
+func initializeDatabaseStoreConnector(
+	ctx context.Context,
+	databaseClientCertMountPath string,
+) (*store.DatabaseStoreConnector, error) {
+	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
+	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
+
+	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize database store connector: %w", err)
+	}
+
+	go storeConnector.FetchAndProcessHealthMetric(ctx)
+
+	return storeConnector, nil
+}
+
 func initializeNodeMetadataProcessor(
 	ctx context.Context,
 	config map[string]interface{},
@@ -140,23 +158,6 @@ func initializeNodeMetadataProcessor(
 	slog.Info("Node metadata processor initialized successfully")
 
 	return processor, nil
-}
-
-func initializeMongoDBConnector(
-	ctx context.Context,
-	mongoClientCertMountPath string,
-) (*store.MongoDbStoreConnector, error) {
-	ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
-	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
-
-	storeConnector, err := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, mongoClientCertMountPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
-	}
-
-	go storeConnector.FetchAndProcessHealthMetric(ctx)
-
-	return storeConnector, nil
 }
 
 func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.Processor) (net.Listener, error) {
@@ -194,11 +195,11 @@ func initializeConnectors(
 	ctx context.Context,
 	config map[string]interface{},
 	stopCh chan struct{},
-	mongoClientCertMountPath string,
-) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, nodemetadata.Processor, error) {
+	databaseClientCertMountPath string,
+) (*ringbuffer.RingBuffer, *store.DatabaseStoreConnector, nodemetadata.Processor, error) {
 	var (
 		k8sRingBuffer  *ringbuffer.RingBuffer
-		storeConnector *store.MongoDbStoreConnector
+		storeConnector *store.DatabaseStoreConnector
 		processor      nodemetadata.Processor
 		err            error
 	)
@@ -210,10 +211,11 @@ func initializeConnectors(
 		}
 	}
 
+	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
 	if config["enableMongoDBStorePlatformConnector"] == True {
-		storeConnector, err = initializeMongoDBConnector(ctx, mongoClientCertMountPath)
+		storeConnector, err = initializeDatabaseStoreConnector(ctx, databaseClientCertMountPath)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}
 	}
 
@@ -224,7 +226,7 @@ func cleanupResources(
 	socket string,
 	lis net.Listener,
 	k8sRingBuffer *ringbuffer.RingBuffer,
-	storeConnector *store.MongoDbStoreConnector,
+	storeConnector *store.DatabaseStoreConnector,
 ) error {
 	if lis != nil {
 		if k8sRingBuffer != nil {
@@ -245,7 +247,7 @@ func cleanupResources(
 		defer disconnectCancel()
 
 		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
-			return fmt.Errorf("error disconnecting MongoDB store connector: %w", err)
+			return fmt.Errorf("error disconnecting database store connector: %w", err)
 		}
 	}
 
@@ -256,10 +258,14 @@ func run() error {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
+
+	// Register database certificate flags using common package
+	certConfig := flags.RegisterDatabaseCertFlags()
 
 	flag.Parse()
+
+	// Resolve the certificate path using common logic
+	databaseClientCertMountPath := certConfig.ResolveCertPath()
 
 	if *socket == "" {
 		return fmt.Errorf("socket is not present")
@@ -278,7 +284,7 @@ func run() error {
 		return err
 	}
 
-	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
+	k8sRingBuffer, storeConnector, processor, err := initializeConnectors(ctx, config, stopCh, databaseClientCertMountPath)
 	if err != nil {
 		return err
 	}

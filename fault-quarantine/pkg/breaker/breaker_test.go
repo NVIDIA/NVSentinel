@@ -22,18 +22,19 @@ import (
 	"testing"
 	"time"
 
+	"crypto/rand"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"math/big"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -41,6 +42,17 @@ var (
 	testClient *kubernetes.Clientset
 	testEnv    *envtest.Environment
 )
+
+// generateTestID generates a random hexadecimal string for test IDs
+func generateTestID() string {
+	const chars = "0123456789abcdef"
+	result := make([]byte, 24)
+	for i := range result {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		result[i] = chars[n.Int64()]
+	}
+	return string(result)
+}
 
 func TestMain(m *testing.M) {
 	var err error
@@ -187,7 +199,7 @@ func newTestBreaker(t *testing.T, ctx context.Context, totalNodes int, tripPerce
 	// Create the specified number of nodes
 	nodeNames := make([]string, totalNodes)
 	for i := 0; i < totalNodes; i++ {
-		nodeName := fmt.Sprintf("test-node-%d-%s", i, primitive.NewObjectID().Hex()[:6])
+		nodeName := fmt.Sprintf("test-node-%d-%s", i, generateTestID()[:6])
 		nodeNames[i] = nodeName
 		createTestNode(ctx, t, nodeName)
 	}
@@ -204,7 +216,7 @@ func newTestBreaker(t *testing.T, ctx context.Context, totalNodes int, tripPerce
 		return err == nil && actualNodes == totalNodes
 	}, 5*time.Second, 50*time.Millisecond, "NodeInformer should see all %d nodes", totalNodes)
 
-	configMapName := "test-breaker-" + primitive.NewObjectID().Hex()[:8]
+	configMapName := "test-breaker-" + generateTestID()[:8]
 
 	// If initialState is provided, create ConfigMap with that state
 	if initialState != "" {

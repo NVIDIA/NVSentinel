@@ -564,7 +564,7 @@ func TestBootIDChangeHandling(t *testing.T) {
 		CheckLastCursors: map[string]string{"bootCheck": "old-cursor"},
 	}
 	stateData, _ := json.Marshal(initialState)
-	os.WriteFile(testStateFile, stateData, 0644)
+	_ = os.WriteFile(testStateFile, stateData, 0644)
 
 	sm, err := NewSyslogMonitorWithFactory(
 		TEST_NODE,

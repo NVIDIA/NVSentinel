@@ -278,7 +278,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse()) // Should not requeue on completion
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on completion
 
 			// Verify no additional reboot signals were sent
 			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
@@ -342,7 +342,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse()) // Should not requeue on timeout
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on timeout
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -397,7 +397,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse()) // Should not requeue on failure
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on failure
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -433,7 +433,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse()) // Should not requeue on failure
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on failure
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode

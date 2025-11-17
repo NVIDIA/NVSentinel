@@ -63,8 +63,9 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 	}
 
 	t.Logf("Cleaning up any existing node conditions for node %s", testCtx.NodeName)
+	// Note: Using default agent (gpu-health-monitor) instead of health-events-analyzer
+	// because the reconciler filters out events from health-events-analyzer to prevent infinite loops
 	event := NewHealthEvent(testCtx.NodeName).
-		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
 		WithHealthy(true).
 		WithFatal(false).
 		WithMessage("No health failures").
@@ -73,7 +74,6 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 	SendHealthEvent(ctx, t, event)
 
 	event = NewHealthEvent(testCtx.NodeName).
-		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
 		WithHealthy(true).
 		WithFatal(false).
 		WithMessage("No health failures").
@@ -170,8 +170,9 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 	c *envconf.Config, nodeName string, configMapBackup []byte, xid string) context.Context {
 	t.Logf("Starting cleanup for node %s", nodeName)
 
+	// Note: Using default agent (gpu-health-monitor) instead of health-events-analyzer
+	// because the reconciler filters out events from health-events-analyzer to prevent infinite loops
 	event := NewHealthEvent(nodeName).
-		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
 		WithHealthy(true).
 		WithFatal(false).
 		WithMessage("No health failures").
@@ -181,7 +182,6 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 	SendHealthEvent(ctx, t, event)
 
 	event = NewHealthEvent(nodeName).
-		WithAgent(HEALTH_EVENTS_ANALYZER_AGENT).
 		WithHealthy(true).
 		WithFatal(false).
 		WithMessage("No health failures").

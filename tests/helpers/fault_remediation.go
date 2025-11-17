@@ -152,6 +152,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 }
 
 // GetRebootNodeCRsForNode returns all RebootNode CR names for a specific node
+// Only returns CRs that have a completionTime (i.e., completed CRs)
 func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName string) ([]string, error) {
 	crs := &unstructured.UnstructuredList{}
 	crs.SetGroupVersionKind(schema.GroupVersionKind{
@@ -175,7 +176,11 @@ func GetRebootNodeCRsForNode(ctx context.Context, client klient.Client, nodeName
 
 		crNodeName, found, _ := unstructured.NestedString(spec, "nodeName")
 		if found && crNodeName == nodeName {
-			crList = append(crList, cr.GetName())
+			// Only include CRs that have completed
+			completionTime, found, _ := unstructured.NestedString(cr.Object, "status", "completionTime")
+			if found && completionTime != "" {
+				crList = append(crList, cr.GetName())
+			}
 		}
 	}
 

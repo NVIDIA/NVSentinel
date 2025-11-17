@@ -96,6 +96,7 @@ include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
 include('../health-events-analyzer/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
+include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
 
@@ -157,6 +158,11 @@ if not skip_kwok_nodes:
 
 k8s_resource(
     'gpu-health-monitor-dcgm-4.x',
+    resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'kubernetes-object-monitor',
     resource_deps=['platform-connectors']
 )
 

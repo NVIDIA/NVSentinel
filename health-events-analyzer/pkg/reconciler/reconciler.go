@@ -24,30 +24,26 @@ import (
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
-	parser "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/parser"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/parser"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
-	"go.mongodb.org/mongo-driver/bson"
-
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/helper"
 )
 
-type CollectionInterface interface {
-	Aggregate(ctx context.Context, pipeline interface{}, opts ...*options.AggregateOptions) (*mongo.Cursor, error)
-}
+// No retry constants needed - EventProcessor no longer retries internally
 
 type HealthEventsAnalyzerReconcilerConfig struct {
-	MongoHealthEventCollectionConfig storewatcher.MongoDBConfig
-	TokenConfig                      storewatcher.TokenConfig
-	MongoPipeline                    mongo.Pipeline
-	HealthEventsAnalyzerRules        *config.TomlConfig
-	Publisher                        *publisher.PublisherConfig
-	CollectionClient                 CollectionInterface
+	DataStoreConfig           *datastore.DataStoreConfig
+	Pipeline                  interface{}
+	HealthEventsAnalyzerRules *config.TomlConfig
+	Publisher                 *publisher.PublisherConfig
 }
 
 type Reconciler struct {
-	config HealthEventsAnalyzerReconcilerConfig
+	config         HealthEventsAnalyzerReconcilerConfig
+	databaseClient client.DatabaseClient
+	eventProcessor client.EventProcessor
 }
 
 func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
@@ -59,92 +55,81 @@ func NewReconciler(cfg HealthEventsAnalyzerReconcilerConfig) *Reconciler {
 // Start begins the reconciliation process by listening to change stream events
 // and processing them accordingly.
 func (r *Reconciler) Start(ctx context.Context) error {
-	watcher, err := storewatcher.NewChangeStreamWatcher(
-		ctx,
-		r.config.MongoHealthEventCollectionConfig,
-		r.config.TokenConfig,
-		r.config.MongoPipeline,
+	// Use standardized datastore client initialization
+	bundle, err := helper.NewDatastoreClientFromConfig(
+		ctx, "health-events-analyzer", *r.config.DataStoreConfig, r.config.Pipeline,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create change stream watcher: %w", err)
+		return fmt.Errorf("failed to create datastore client bundle: %w", err)
 	}
-	defer watcher.Close(ctx)
+	defer bundle.Close(ctx)
 
-	r.config.CollectionClient, err = storewatcher.GetCollectionClient(ctx, r.config.MongoHealthEventCollectionConfig)
-	if err != nil {
-		slog.Error(
-			"Error initializing healthEventCollection client",
-			"config", r.config.MongoHealthEventCollectionConfig,
-			"error", err,
-		)
+	r.databaseClient = bundle.DatabaseClient
 
-		return fmt.Errorf("failed to initialize healthEventCollection client: %w", err)
-	}
-
-	watcher.Start(ctx)
-
-	slog.Info("Listening for events on the channel...")
-
-	for event := range watcher.Events() {
-		slog.Info("Processing event", "event", event)
-
-		err := r.processEvent(ctx, event)
-		if err != nil {
-			slog.Error("Error processing event", "error", err)
-		}
-
-		if err := watcher.MarkProcessed(ctx); err != nil {
-			slog.Error("Error updating resume token", "error", err)
-		}
+	// Create and configure the unified EventProcessor
+	// Note: EventProcessor no longer retries internally to prevent blocking the event stream
+	// Failed events will be retried on next pod restart (via resume token)
+	processorConfig := client.EventProcessorConfig{
+		EnableMetrics:        true,
+		MetricsLabels:        map[string]string{"module": "health-events-analyzer"},
+		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
 	}
 
-	return nil
+	r.eventProcessor = client.NewEventProcessor(bundle.ChangeStreamWatcher, bundle.DatabaseClient, processorConfig)
+
+	// Set the event handler for processing health events
+	r.eventProcessor.SetEventHandler(client.EventHandlerFunc(r.processHealthEvent))
+
+	slog.Info("Starting health events analyzer with unified event processor...")
+
+	// Start the event processor
+	return r.eventProcessor.Start(ctx)
 }
 
-func (r *Reconciler) processEvent(ctx context.Context, event bson.M) error {
+// processHealthEvent handles individual health events and implements the EventHandler interface
+func (r *Reconciler) processHealthEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) error {
 	startTime := time.Now()
 
-	healthEventWithStatus := datamodels.HealthEventWithStatus{}
-	if err := storewatcher.UnmarshalFullDocumentFromEvent(
-		event,
-		&healthEventWithStatus,
-	); err != nil {
-		slog.Error("Failed to unmarshal event", "error", err)
+	// Track event reception metrics
+	// Use nodeName as label value, fall back to first entity if available
+	labelValue := event.HealthEvent.NodeName
 
-		totalEventProcessingError.WithLabelValues("unmarshal_doc_error").Inc()
-
-		return fmt.Errorf("failed to unmarshal event: %w", err)
+	if labelValue == "" && len(event.HealthEvent.EntitiesImpacted) > 0 {
+		labelValue = event.HealthEvent.EntitiesImpacted[0].EntityValue
 	}
 
-	slog.Debug("Received event", "event", healthEventWithStatus)
+	if labelValue == "" {
+		labelValue = "unknown"
+	}
 
-	totalEventsReceived.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName).Inc()
+	totalEventsReceived.WithLabelValues(labelValue).Inc()
 
-	var err error
-
-	var publishedNewEvent bool
-
-	publishedNewEvent, err = r.handleEvent(ctx, &healthEventWithStatus)
+	// Process the event using existing business logic
+	publishedNewEvent, err := r.handleEvent(ctx, event)
 	if err != nil {
-		slog.Error("Error in handling the event", "event", healthEventWithStatus, "error", err)
-
+		// Return error - EventProcessor will NOT mark as processed
+		// Event will be retried on next pod restart
 		totalEventProcessingError.WithLabelValues("handle_event_error").Inc()
-	} else {
-		totalEventsSuccessfullyProcessed.Inc()
+		slog.Error("Failed to process health event", "error", err, "nodeName", labelValue)
 
-		if publishedNewEvent {
-			slog.Info("New event successfully published.")
-			newEventsPublishedTotal.WithLabelValues(healthEventWithStatus.HealthEvent.NodeName).Inc()
-		} else {
-			slog.Info("New event is not published, rule set criteria didn't match.")
-		}
+		return fmt.Errorf("failed to handle event: %w", err)
 	}
 
-	duration := time.Since(startTime).Seconds()
+	// Track success metrics
+	totalEventsSuccessfullyProcessed.Inc()
 
+	if publishedNewEvent {
+		slog.Info("New fatal event published.")
+		fatalEventsPublishedTotal.WithLabelValues(event.HealthEvent.EntitiesImpacted[0].EntityValue).Inc()
+	} else {
+		slog.Info("Fatal event is not published, rule set criteria didn't match.")
+	}
+
+	// Track processing duration
+	duration := time.Since(startTime).Seconds()
 	eventHandlingDuration.Observe(duration)
 
-	return err
+	return nil
 }
 
 func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEventWithStatus) (bool, error) {
@@ -172,9 +157,11 @@ func (r *Reconciler) handleEvent(ctx context.Context, event *datamodels.HealthEv
 	return publishedNewEvent, nil
 }
 
+// processRule handles the processing of a single rule against an event
 func (r *Reconciler) processRule(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) (bool, error) {
+	// Validate all sequences from DB docs
 	matchedSequences, err := r.validateAllSequenceCriteria(ctx, rule, *event)
 	if err != nil {
 		slog.Error("Error in validating all sequence criteria", "error", err)
@@ -194,6 +181,7 @@ func (r *Reconciler) processRule(ctx context.Context,
 	return true, nil
 }
 
+// publishMatchedEvent publishes an event when a rule matches
 func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 	rule config.HealthEventsAnalyzerRule,
 	event *datamodels.HealthEventWithStatus) error {
@@ -202,6 +190,8 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 
 	actionVal := r.getRecommendedActionValue(rule.RecommendedAction, rule.Name)
 
+	// No need to clone here - Publisher.Publish already clones the event
+	// The EventProcessor creates a fresh stack variable for each event, so no mutation risk
 	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal), rule.Name)
 	if err != nil {
 		slog.Error("Error in publishing the new fatal event", "error", err)
@@ -231,76 +221,105 @@ func (r *Reconciler) getRecommendedActionValue(recommendedAction, ruleName strin
 
 func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus) (bool, error) {
-	slog.Debug("Evaluating rule for event", "rule_name", rule.Name, "event", healthEventWithStatus)
+	slog.Info("→ Evaluating rule for event",
+		"rule_name", rule.Name,
+		"node", healthEventWithStatus.HealthEvent.NodeName,
+		"error_code", healthEventWithStatus.HealthEvent.ErrorCode,
+		"agent", healthEventWithStatus.HealthEvent.Agent)
 
-	pipelineStages, err := getPipelineStages(rule, healthEventWithStatus)
+	// Build aggregation pipeline from stages
+	pipelineStages, err := r.getPipelineStages(rule, healthEventWithStatus)
 	if err != nil {
-		slog.Error("Failed to generate pipeline", "error", err)
-		return false, fmt.Errorf("failed to generate pipeline: %w", err)
+		slog.Error("Failed to build pipeline stages", "error", err)
+		totalEventProcessingError.WithLabelValues("build_pipeline_error").Inc()
+
+		return false, fmt.Errorf("failed to build pipeline stages: %w", err)
 	}
 
-	slog.Debug("Generated pipeline", "pipeline_stages", pipelineStages)
+	var result []map[string]interface{}
 
-	if len(pipelineStages) == 0 {
-		slog.Debug("No pipeline stages created for rule", "rule_name", rule.Name)
-		totalEventProcessingError.WithLabelValues("no_pipeline_stages_error").Inc()
-
-		return false, nil
-	}
-
-	var result []bson.M
-
-	startTime := time.Now()
-
-	cursor, err := r.config.CollectionClient.Aggregate(ctx, pipelineStages)
+	// Execute aggregation using store-client abstraction
+	cursor, err := r.databaseClient.Aggregate(ctx, pipelineStages)
 	if err != nil {
-		slog.Error("Failed to execute aggregation pipeline", "error", err)
+		slog.Error("Failed to execute aggregation pipeline", "error", err, "rule_name", rule.Name)
 		totalEventProcessingError.WithLabelValues("execute_pipeline_error").Inc()
 
 		return false, fmt.Errorf("failed to execute aggregation pipeline: %w", err)
 	}
 
-	duration := time.Since(startTime).Seconds()
-	databaseQueryDuration.Observe(duration)
-
 	defer cursor.Close(ctx)
 
 	if err = cursor.All(ctx, &result); err != nil {
-		slog.Error("Failed to decode cursor", "error", err)
+		slog.Error("Failed to decode cursor", "error", err, "rule_name", rule.Name)
 		totalEventProcessingError.WithLabelValues("decode_cursor_error").Inc()
 
 		return false, fmt.Errorf("failed to decode cursor: %w", err)
 	}
 
+	// Check if we have results (rule matched)
 	if len(result) > 0 {
-		slog.Debug("All sequence conditions met for rule", "rule_name", rule.Name, "result", result)
+		// Check for explicit ruleMatched field (used in tests and by SequenceFacet pipelines)
+		if matched, ok := result[0]["ruleMatched"].(bool); ok {
+			if matched {
+				slog.Info("✓ Rule matched via ruleMatched field",
+					"rule_name", rule.Name,
+					"node", healthEventWithStatus.HealthEvent.NodeName)
+
+				return true, nil
+			}
+
+			slog.Info("✗ Rule did not match (ruleMatched=false)",
+				"rule_name", rule.Name,
+				"node", healthEventWithStatus.HealthEvent.NodeName,
+				"result", result[0])
+
+			return false, nil
+		}
+
+		// For Stage-based pipelines, presence of results indicates a match
+		slog.Info("✓ Rule matched via results existence",
+			"rule_name", rule.Name,
+			"node", healthEventWithStatus.HealthEvent.NodeName,
+			"result_count", len(result))
+
 		return true, nil
 	}
+
+	slog.Info("✗ Rule did not match (no results)",
+		"rule_name", rule.Name,
+		"node", healthEventWithStatus.HealthEvent.NodeName)
 
 	return false, nil
 }
 
-func getPipelineStages(rule config.HealthEventsAnalyzerRule,
-	healthEventWithStatus datamodels.HealthEventWithStatus) ([]map[string]interface{}, error) {
-	pipelineStages := []map[string]interface{}{
-		{"$match": map[string]interface{}{
-			"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
-		}},
+// getPipelineStages converts rule stages to aggregation pipeline stages
+func (r *Reconciler) getPipelineStages(
+	rule config.HealthEventsAnalyzerRule,
+	healthEventWithStatus datamodels.HealthEventWithStatus,
+) ([]map[string]interface{}, error) {
+	// CRITICAL: Always start with agent filter to exclude events from health-events-analyzer itself
+	// This prevents the analyzer from matching its own generated events, which would cause
+	// infinite loops and incorrect rule evaluations
+	pipeline := []map[string]interface{}{
+		{
+			"$match": map[string]interface{}{
+				"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
+			},
+		},
 	}
 
-	if len(rule.Stage) > 0 {
-		for _, stage := range rule.Stage {
-			processedStage, err := parser.ParseSequenceStage(stage, healthEventWithStatus)
-			if err != nil {
-				slog.Error("Failed to parse sequence stage", "error", err)
-				totalEventProcessingError.WithLabelValues("build_pipeline_error").Inc()
+	for i, stageStr := range rule.Stage {
+		// Parse the stage and resolve "this." references
+		stageMap, err := parser.ParseSequenceStage(stageStr, healthEventWithStatus)
+		if err != nil {
+			slog.Error("Failed to parse stage", "stage_index", i, "error", err, "stage_string", stageStr)
+			totalEventProcessingError.WithLabelValues("parse_stage_error").Inc()
 
-				return nil, fmt.Errorf("failed to parse stage: %w", err)
-			}
-
-			pipelineStages = append(pipelineStages, processedStage)
+			return nil, fmt.Errorf("failed to parse stage %d: %w", i, err)
 		}
+
+		pipeline = append(pipeline, stageMap)
 	}
 
-	return pipelineStages, nil
+	return pipeline, nil
 }

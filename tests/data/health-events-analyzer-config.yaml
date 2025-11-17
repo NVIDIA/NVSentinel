@@ -38,7 +38,7 @@ data:
 
     [[rules]]
     name = "RepeatedXidError"
-    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 10 seconds and sticky XIDs window is 20seconds"
+    description = "Detect occurrence of fatal XIDs 2 times within 5 minutes (E2E test window) where the burst window is 10 seconds and sticky XIDs window is 20seconds"
     recommended_action = "CONTACT_SUPPORT"
     stage = [
       '''
@@ -47,7 +47,7 @@ data:
           "$expr": {
             "$gte": [
               "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
+              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 300]}
             ]
           }
         }
@@ -67,7 +67,7 @@ data:
                       "$map": {
                         "input": {
                           "$filter": {
-                            "input": "$healthevent.entitiesimpacted",
+                            "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
                             "cond": {"$eq": ["$$this.entitytype", "GPU"]}
                           }
                         },

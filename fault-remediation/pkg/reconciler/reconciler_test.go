@@ -20,22 +20,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"k8s.io/utils/ptr"
 )
 
 // MockK8sClient is a mock implementation of K8sClient interface
 type MockK8sClient struct {
-	createMaintenanceResourceFn func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string)
+	createMaintenanceResourceFn func(ctx context.Context, healthEventData *HealthEventData) (bool, string)
 	runLogCollectorJobFn        func(ctx context.Context, nodeName string) error
 	annotationManagerOverride   NodeAnnotationManagerInterface
 	realStatusChecker           *crstatus.CRStatusChecker
@@ -45,8 +43,8 @@ type CRStatusCheckerInterface interface {
 	IsSuccessful(ctx context.Context, crName string) bool
 }
 
-func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
-	return m.createMaintenanceResourceFn(ctx, healthEventDoc)
+func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventData *HealthEventData) (bool, string) {
+	return m.createMaintenanceResourceFn(ctx, healthEventData)
 }
 
 func (m *MockK8sClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
@@ -61,11 +59,11 @@ func (m *MockK8sClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return m.realStatusChecker
 }
 
-// MockCollection is a mock implementation of mongo.Collection
-type MockCollection struct {
-	updateOneFn      func(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error)
-	countDocumentsFn func(ctx context.Context, filter interface{}, opts ...*options.CountOptions) (int64, error)
-	findFn           func(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error)
+// MockDatabaseClient is a mock implementation of DatabaseClient
+type MockDatabaseClient struct {
+	updateDocumentFn func(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error)
+	countDocumentsFn func(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error)
+	findFn           func(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error)
 }
 
 type MockCRStatusChecker struct {
@@ -129,23 +127,54 @@ func (m *MockNodeAnnotationManager) RemoveGroupFromState(ctx context.Context, no
 	return nil
 }
 
-func (m *MockCollection) UpdateOne(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
-	return m.updateOneFn(ctx, filter, update, opts...)
+func (m *MockDatabaseClient) UpdateDocument(ctx context.Context, filter interface{}, update interface{}) (*client.UpdateResult, error) {
+	if m.updateDocumentFn != nil {
+		return m.updateDocumentFn(ctx, filter, update)
+	}
+	return &client.UpdateResult{ModifiedCount: 1}, nil
 }
 
-func (m *MockCollection) CountDocuments(ctx context.Context, filter interface{}, opts ...*options.CountOptions) (int64, error) {
+func (m *MockDatabaseClient) CountDocuments(ctx context.Context, filter interface{}, options *client.CountOptions) (int64, error) {
 	if m.countDocumentsFn != nil {
-		return m.countDocumentsFn(ctx, filter, opts...)
+		return m.countDocumentsFn(ctx, filter, options)
 	}
 	return 0, nil
 }
 
-func (m *MockCollection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (*mongo.Cursor, error) {
+func (m *MockDatabaseClient) Find(ctx context.Context, filter interface{}, options *client.FindOptions) (client.Cursor, error) {
 	if m.findFn != nil {
-		return m.findFn(ctx, filter, opts...)
+		return m.findFn(ctx, filter, options)
 	}
+	return nil, nil
+}
 
-	return &mongo.Cursor{}, nil
+// Additional methods required by client.DatabaseClient interface
+func (m *MockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
+	return nil
+}
+
+func (m *MockDatabaseClient) UpsertDocument(ctx context.Context, filter interface{}, document interface{}) (*client.UpdateResult, error) {
+	return &client.UpdateResult{ModifiedCount: 1}, nil
+}
+
+func (m *MockDatabaseClient) FindOne(ctx context.Context, filter interface{}, options *client.FindOneOptions) (client.SingleResult, error) {
+	return nil, nil
+}
+
+func (m *MockDatabaseClient) Aggregate(ctx context.Context, pipeline interface{}) (client.Cursor, error) {
+	return nil, nil
+}
+
+func (m *MockDatabaseClient) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (m *MockDatabaseClient) Close(ctx context.Context) error {
+	return nil
+}
+
+func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, filter interface{}) (client.ChangeStreamWatcher, error) {
+	return nil, nil // Simple mock implementation
 }
 
 func TestNewReconciler(t *testing.T) {
@@ -172,12 +201,15 @@ func TestNewReconciler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := ReconcilerConfig{
-				MongoConfig: storewatcher.MongoDBConfig{
-					URI:      "mongodb://localhost:27017",
-					Database: "test",
+				DataStoreConfig: datastore.DataStoreConfig{
+					Provider: datastore.ProviderMongoDB,
+					Connection: datastore.ConnectionConfig{
+						Host:     "mongodb://localhost:27017",
+						Database: "test",
+					},
 				},
 				RemediationClient: &MockK8sClient{
-					createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+					createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 						assert.Equal(t, tt.nodeName, healthEventDoc.HealthEventWithStatus.HealthEvent.NodeName)
 						return tt.crCreationResult, "test-cr-name"
 					},
@@ -217,7 +249,7 @@ func TestHandleEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 					assert.Equal(t, tt.nodeName, healthEventDoc.HealthEventWithStatus.HealthEvent.NodeName)
 					assert.Equal(t, tt.recommendedAction, healthEventDoc.HealthEventWithStatus.HealthEvent.RecommendedAction)
 					return tt.shouldSucceed, "test-cr-name"
@@ -229,8 +261,8 @@ func TestHandleEvent(t *testing.T) {
 			}
 
 			r := NewReconciler(cfg, false)
-			healthEventDoc := &HealthEventDoc{
-				ID: primitive.NewObjectID(),
+			healthEventData := &HealthEventData{
+				ID: uuid.New().String(),
 				HealthEventWithStatus: model.HealthEventWithStatus{
 					HealthEvent: &protos.HealthEvent{
 						NodeName:          tt.nodeName,
@@ -238,7 +270,7 @@ func TestHandleEvent(t *testing.T) {
 					},
 				},
 			}
-			result, _ := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventDoc)
+			result, _ := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
@@ -246,7 +278,7 @@ func TestHandleEvent(t *testing.T) {
 
 func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			t.Errorf("CreateMaintenanceResource should not be called on an unsupported action")
 			return false, ""
 		},
@@ -271,7 +303,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventDoc{
+	healthEvent := HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -294,7 +326,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 func TestPerformRemediationWithSuccess(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr-success"
 		},
 	}
@@ -322,7 +354,7 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventDoc{
+	healthEvent := HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -337,7 +369,12 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 		},
 	}
 	r := NewReconciler(cfg, false)
-	success, crName := r.performRemediation(ctx, &healthEvent)
+	// Convert HealthEventData to HealthEventDoc
+	healthEventDoc := &HealthEventDoc{
+		ID:                    "test-id-123",
+		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
+	}
+	success, crName := r.performRemediation(ctx, healthEventDoc)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-success", crName)
 }
@@ -345,7 +382,7 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 func TestPerformRemediationWithFailure(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return false, ""
 		},
 	}
@@ -373,7 +410,7 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventDoc{
+	healthEvent := HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -388,7 +425,12 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 		},
 	}
 	r := NewReconciler(cfg, false)
-	success, crName := r.performRemediation(ctx, &healthEvent)
+	// Convert HealthEventData to HealthEventDoc
+	healthEventDoc := &HealthEventDoc{
+		ID:                    "test-id-123",
+		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
+	}
+	success, crName := r.performRemediation(ctx, healthEventDoc)
 	assert.False(t, success)
 	assert.Empty(t, crName)
 }
@@ -396,7 +438,7 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr-label-error"
 		},
 	}
@@ -413,7 +455,7 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventDoc{
+	healthEvent := HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -428,15 +470,20 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 		},
 	}
 	r := NewReconciler(cfg, false)
+	// Convert HealthEventData to HealthEventDoc
+	healthEventDoc := &HealthEventDoc{
+		ID:                    "test-id-123",
+		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
+	}
 	// Even with label update errors, remediation should still succeed
-	success, crName := r.performRemediation(ctx, &healthEvent)
+	success, crName := r.performRemediation(ctx, healthEventDoc)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-label-error", crName)
 }
 
 func TestShouldSkipEvent(t *testing.T) {
 	mockK8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr"
 		},
 	}
@@ -507,7 +554,7 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr-name"
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -591,7 +638,7 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 					return true, "test-cr-name"
 				},
 				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -624,7 +671,7 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr-name"
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -650,7 +697,7 @@ func TestLogCollectorDisabled(t *testing.T) {
 
 	logCollectorCalled := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 			return true, "test-cr-name"
 		},
 		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
@@ -688,17 +735,20 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		event          bson.M
+		eventToken     datastore.EventWithToken
 		nodeRemediated bool
 		mockError      error
 		expectError    bool
 	}{
 		{
 			name: "Successful update",
-			event: bson.M{
-				"fullDocument": bson.M{
-					"_id": "test-id-1",
+			eventToken: datastore.EventWithToken{
+				Event: map[string]interface{}{
+					"fullDocument": map[string]interface{}{
+						"_id": "test-id-1",
+					},
 				},
+				ResumeToken: []byte("test-token-1"),
 			},
 			nodeRemediated: true,
 			mockError:      nil,
@@ -706,10 +756,13 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 		},
 		{
 			name: "Failed update",
-			event: bson.M{
-				"fullDocument": bson.M{
-					"_id": "test-id-2",
+			eventToken: datastore.EventWithToken{
+				Event: map[string]interface{}{
+					"fullDocument": map[string]interface{}{
+						"_id": "test-id-2",
+					},
 				},
+				ResumeToken: []byte("test-token-2"),
 			},
 			nodeRemediated: false,
 			mockError:      assert.AnError,
@@ -719,23 +772,8 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockColl := &MockCollection{
-				updateOneFn: func(ctx context.Context, filter interface{}, update interface{}, opts ...*options.UpdateOptions) (*mongo.UpdateResult, error) {
-					filterDoc := filter.(bson.M)
-					updateDoc := update.(bson.M)
-
-					assert.Equal(t, tt.event["fullDocument"].(bson.M)["_id"], filterDoc["_id"])
-					assert.Equal(t, tt.nodeRemediated, updateDoc["$set"].(bson.M)["healtheventstatus.faultremediated"])
-
-					if tt.mockError != nil {
-						return nil, tt.mockError
-					}
-					return &mongo.UpdateResult{ModifiedCount: 1}, nil
-				},
-			}
-
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 					return true, "test-cr"
 				},
 			}
@@ -745,7 +783,19 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 				UpdateMaxRetries:  1,
 				UpdateRetryDelay:  0,
 			}, false)
-			err := r.updateNodeRemediatedStatus(ctx, mockColl, tt.event, tt.nodeRemediated)
+			// Create mock health event store
+			mockHealthStore := &MockHealthEventStore{
+				UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+					// Validate that the right parameters are passed
+					if tt.mockError != nil {
+						return tt.mockError
+					}
+					assert.Equal(t, tt.nodeRemediated, *status.FaultRemediated)
+					return nil
+				},
+			}
+
+			err := r.updateNodeRemediatedStatus(ctx, mockHealthStore, tt.eventToken, tt.nodeRemediated)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -800,7 +850,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			}
 
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 					return true, "test-cr"
 				},
 				annotationManagerOverride: mockAnnotationManager,
@@ -873,7 +923,7 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 			}
 
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
 					return true, "test-cr"
 				},
 				annotationManagerOverride: mockAnnotationManager,

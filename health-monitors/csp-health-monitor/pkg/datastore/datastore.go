@@ -16,28 +16,18 @@ package datastore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
-
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/config"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
+	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 )
 
-const (
-	DefaultMongoDBCollection = "MaintenanceEvents"
-	maxRetries               = 3
-	retryDelay               = 2 * time.Second
-	defaultUnknown           = "UNKNOWN"
-)
+// Removed unused constants
 
 // Store defines the interface for datastore operations related to maintenance events.
 type Store interface {
@@ -61,179 +51,92 @@ type Store interface {
 	FindActiveEventsByStatuses(ctx context.Context, csp model.CSP, statuses []string) ([]model.MaintenanceEvent, error)
 }
 
-// MongoStore implements the Store interface using MongoDB.
-type MongoStore struct {
-	client         *mongo.Collection
+// DatabaseStore implements the Store interface using store-client.
+type DatabaseStore struct {
+	databaseClient client.DatabaseClient
 	collectionName string
 }
 
-var _ Store = (*MongoStore)(nil)
+var _ Store = (*DatabaseStore)(nil)
 
-// NewStore creates a new MongoDB store client.
-func NewStore(ctx context.Context, mongoClientCertMountPath *string) (*MongoStore, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI environment variable is not set")
+// NewStore creates a new database store client using store-client.
+func NewStore(ctx context.Context, databaseClientCertMountPath *string) (*DatabaseStore, error) {
+	// Use centralized configuration with maintenance event collection support
+	var certPath string
+	if databaseClientCertMountPath != nil {
+		certPath = *databaseClientCertMountPath
 	}
 
-	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if mongoDatabase == "" {
-		return nil, fmt.Errorf("MONGODB_DATABASE_NAME environment variable is not set")
-	}
-
-	mongoCollection := os.Getenv("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME")
-	if mongoCollection == "" {
-		slog.Warn("MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME not set, using default",
-			"defaultCollection", DefaultMongoDBCollection)
-
-		mongoCollection = DefaultMongoDBCollection
-	}
-
-	totalTimeoutSeconds, _ := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
-	intervalSeconds, _ := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
-	totalCACertTimeoutSeconds, _ := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
-	intervalCACertSeconds, _ := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
-
-	if mongoClientCertMountPath == nil || *mongoClientCertMountPath == "" {
-		return nil, fmt.Errorf("mongo client certificate mount path is required")
-	}
-
-	mongoConfig := storewatcher.MongoDBConfig{
-		URI:        mongoURI,
-		Database:   mongoDatabase,
-		Collection: mongoCollection,
-		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(*mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
-		},
-		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
-		TotalPingIntervalSeconds:   intervalSeconds,
-		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
-		TotalCACertIntervalSeconds: intervalCACertSeconds,
-	}
-
-	slog.Info("Initializing MongoDB connection",
-		"mongoURI", mongoURI,
-		"database", mongoDatabase,
-		"collection", mongoCollection)
-
-	collection, err := storewatcher.GetCollectionClient(ctx, mongoConfig)
+	// Use database-agnostic collection type configuration
+	// This approach encapsulates MongoDB-specific environment variables within store-client
+	databaseConfig, err := config.NewDatabaseConfigForCollectionType(
+		certPath,
+		config.CollectionTypeMaintenanceEvents,
+	)
 	if err != nil {
-		// Consider adding a datastore connection metric error here
-		return nil, fmt.Errorf("error initializing MongoDB collection client: %w", err)
+		return nil, fmt.Errorf("failed to create database config: %w", err)
 	}
 
-	slog.Info("MongoDB collection client initialized successfully.")
+	databaseCollection := databaseConfig.GetCollectionName()
 
-	// Ensure Indexes Exist
-	indexModels := []mongo.IndexModel{
-		{
-			Keys:    bson.D{bson.E{Key: "eventId", Value: 1}},
-			Options: options.Index().SetUnique(true).SetName("unique_eventid"),
-		},
-		{
-			Keys:    bson.D{bson.E{Key: "status", Value: 1}, bson.E{Key: "scheduledStartTime", Value: 1}},
-			Options: options.Index().SetName("status_scheduledstart"),
-		},
-		{
-			Keys:    bson.D{bson.E{Key: "status", Value: 1}, bson.E{Key: "actualEndTime", Value: 1}},
-			Options: options.Index().SetName("status_actualend"),
-		},
-		{Keys: bson.D{
-			bson.E{Key: "csp", Value: 1},
-			bson.E{Key: "clusterName", Value: 1},
-			bson.E{Key: "eventReceivedTimestamp", Value: -1},
-		}, Options: options.Index().SetName("csp_cluster_received_desc")},
-		{
-			Keys:    bson.D{bson.E{Key: "cspStatus", Value: 1}},
-			Options: options.Index().SetName("csp_status"),
-		},
+	// Create client factory
+	clientFactory := factory.NewClientFactory(databaseConfig)
+
+	// Create database client
+	databaseClient, err := clientFactory.CreateDatabaseClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database client: %w", err)
 	}
 
-	indexView := collection.Indexes()
+	slog.Info("Database client initialized successfully using store-client",
+		"collection", databaseCollection)
 
-	_, indexErr := indexView.CreateMany(ctx, indexModels)
-	if indexErr != nil {
-		// Consider adding a datastore index creation metric error here (but maybe only warning level)
-		slog.Warn("Failed to create indexes (they might already exist)", "error", indexErr)
-	} else {
-		slog.Info("Successfully created or ensured MongoDB indexes exist.")
-	}
+	// Note: Index creation is not directly supported by store-client's DatabaseClient interface.
+	// Indexes should be created manually or through database administration tools.
+	// The following indexes are recommended for optimal performance:
+	// 1. unique index on "eventId" field
+	// 2. compound index on "status" + "scheduledStartTime" fields
+	// 3. compound index on "status" + "actualEndTime" fields
+	// 4. compound index on "csp" + "clusterName" + "eventReceivedTimestamp" (desc) fields
+	// 5. index on "cspStatus" field
 
-	return &MongoStore{
-		client:         collection,
-		collectionName: mongoCollection,
+	return &DatabaseStore{
+		databaseClient: databaseClient,
+		collectionName: databaseCollection,
 	}, nil
 }
 
-// getEnvAsInt parses an integer environment variable.
-func getEnvAsInt(name string, defaultVal int) (int, error) {
-	valueStr := os.Getenv(name)
-	if valueStr == "" {
-		return defaultVal, nil
-	}
-
-	value, err := strconv.Atoi(valueStr)
+// executeUpsert performs the UpsertDocument with retries for the given merged event using store-client.
+func (s *DatabaseStore) executeUpsert(ctx context.Context, filter map[string]interface{},
+	event *model.MaintenanceEvent) error {
+	inserted, updated, err := client.RetryableDocumentUpsertWithResult(ctx, s.databaseClient, filter, event,
+		client.DefaultMaxRetries, client.DefaultRetryDelay)
 	if err != nil {
-		slog.Warn("Invalid integer value for environment variable; using default",
-			"name", name,
-			"value", valueStr,
-			"default", defaultVal,
-			"error", err)
-
-		return defaultVal, fmt.Errorf("invalid value for %s: %s", name, valueStr)
+		return fmt.Errorf("upsert failed for event %s: %w", event.EventID, err)
 	}
 
-	return value, nil
-}
-
-// executeUpsert performs the UpdateOne with retries for the given merged event.
-func (s *MongoStore) executeUpsert(ctx context.Context, filter bson.D, event *model.MaintenanceEvent) error {
-	update := bson.M{"$set": event}
-	opts := options.Update().SetUpsert(true)
-
-	var lastErr error
-
-	for i := 1; i <= maxRetries; i++ {
-		slog.Debug("Attempt to upsert maintenance event",
-			"attempt", i,
+	// Log the semantic result
+	switch {
+	case inserted > 0:
+		slog.Debug("Inserted new maintenance event", "eventID", event.EventID)
+	case updated > 0:
+		slog.Debug("Updated existing maintenance event", "eventID", event.EventID)
+	default:
+		slog.Debug("Matched existing maintenance event but no fields changed",
 			"eventID", event.EventID)
-
-		result, err := s.client.UpdateOne(ctx, filter, update, opts)
-		if err == nil {
-			switch {
-			case result.UpsertedCount > 0:
-				slog.Debug("Inserted new maintenance event", "eventID", event.EventID)
-			case result.ModifiedCount > 0:
-				slog.Debug("Updated existing maintenance event", "eventID", event.EventID)
-			default:
-				slog.Debug("Matched existing maintenance event but no fields changed",
-					"eventID", event.EventID)
-			}
-
-			return nil
-		}
-
-		lastErr = err
-		slog.Warn("Attempt failed to upsert event; retrying",
-			"attempt", i,
-			"eventID", event.EventID,
-			"error", err)
-		time.Sleep(retryDelay)
 	}
 
-	return fmt.Errorf("upsert failed for event %s after %d retries: %w", event.EventID, maxRetries, lastErr)
+	return nil
 }
 
 // UpsertMaintenanceEvent inserts or updates a maintenance event.
 // Metrics are handled by the caller (Processor).
-func (s *MongoStore) UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error {
+func (s *DatabaseStore) UpsertMaintenanceEvent(ctx context.Context, event *model.MaintenanceEvent) error {
 	if event == nil || event.EventID == "" {
 		return fmt.Errorf("invalid event passed to UpsertMaintenanceEvent (nil or empty EventID)")
 	}
 
-	filter := bson.D{{Key: "eventId", Value: event.EventID}}
+	filter := map[string]interface{}{"eventId": event.EventID}
 	event.LastUpdatedTimestamp = time.Now().UTC()
 
 	// Since Processor now prepares the event fully, we directly upsert.
@@ -246,27 +149,28 @@ func (s *MongoStore) UpsertMaintenanceEvent(ctx context.Context, event *model.Ma
 
 // FindEventsToTriggerQuarantine finds events ready for quarantine trigger.
 // Metrics (duration, errors) handled by the caller (Trigger Engine).
-func (s *MongoStore) FindEventsToTriggerQuarantine(
+func (s *DatabaseStore) FindEventsToTriggerQuarantine(
 	ctx context.Context,
 	triggerTimeLimit time.Duration,
 ) ([]model.MaintenanceEvent, error) {
 	now := time.Now().UTC()
 	triggerBefore := now.Add(triggerTimeLimit)
 
-	filter := bson.D{
-		bson.E{Key: "status", Value: model.StatusDetected},
-		bson.E{Key: "scheduledStartTime", Value: bson.D{
-			bson.E{Key: "$gt", Value: now},
-			bson.E{Key: "$lte", Value: triggerBefore},
-		}},
-	}
+	// Use database-agnostic filter building
+	statusFilter := client.BuildStatusFilter("status", model.StatusDetected)
+	timeFilter := client.BuildTimeRangeFilter("scheduledStartTime", &now, &triggerBefore)
+
+	// Combine filters
+	filter := client.NewFilterBuilder().
+		And(statusFilter, timeFilter).
+		Build()
 
 	slog.Debug("Querying for quarantine triggers",
 		"status", model.StatusDetected,
 		"currentTime", now.Format(time.RFC3339),
 		"triggerBefore", triggerBefore.Format(time.RFC3339))
 
-	cursor, err := s.client.Find(ctx, filter)
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query events for quarantine trigger: %w", err)
 	}
@@ -285,26 +189,28 @@ func (s *MongoStore) FindEventsToTriggerQuarantine(
 
 // FindEventsToTriggerHealthy finds completed events ready for healthy trigger.
 // Metrics (duration, errors) handled by the caller (Trigger Engine).
-func (s *MongoStore) FindEventsToTriggerHealthy(
+func (s *DatabaseStore) FindEventsToTriggerHealthy(
 	ctx context.Context,
 	healthyDelay time.Duration,
 ) ([]model.MaintenanceEvent, error) {
 	now := time.Now().UTC()
 	triggerIfEndedBefore := now.Add(-healthyDelay) // Event must have ended *before* or *at* this time
 
-	filter := bson.D{
-		bson.E{Key: "status", Value: model.StatusMaintenanceComplete},
-		bson.E{Key: "actualEndTime", Value: bson.D{
-			bson.E{Key: "$ne", Value: nil},                   // actualEndTime must exist
-			bson.E{Key: "$lte", Value: triggerIfEndedBefore}, // and be sufficiently in the past
-		}},
-	}
+	// Use database-agnostic filter building
+	statusFilter := client.BuildStatusFilter("status", model.StatusMaintenanceComplete)
+	notNullFilter := client.BuildNotNullFilter("actualEndTime")
+	timeFilter := client.NewFilterBuilder().Lte("actualEndTime", triggerIfEndedBefore).Build()
+
+	// Combine filters
+	filter := client.NewFilterBuilder().
+		And(statusFilter, notNullFilter, timeFilter).
+		Build()
 
 	slog.Debug("Querying for healthy triggers",
 		"status", model.StatusMaintenanceComplete,
 		"actualEndTimeBefore", triggerIfEndedBefore.Format(time.RFC3339))
 
-	cursor, err := s.client.Find(ctx, filter)
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query events for healthy trigger: %w", err)
 	}
@@ -323,93 +229,75 @@ func (s *MongoStore) FindEventsToTriggerHealthy(
 
 // UpdateEventStatus updates only the status and timestamp.
 // Metrics handled by the caller (Trigger Engine).
-func (s *MongoStore) UpdateEventStatus(ctx context.Context, eventID string, newStatus model.InternalStatus) error {
+func (s *DatabaseStore) UpdateEventStatus(ctx context.Context, eventID string, newStatus model.InternalStatus) error {
 	if eventID == "" {
 		return fmt.Errorf("cannot update status for empty eventID")
 	}
 
-	filter := bson.D{bson.E{Key: "eventId", Value: eventID}}
-	update := bson.D{
-		bson.E{Key: "$set", Value: bson.D{
-			bson.E{Key: "status", Value: newStatus},
-			bson.E{Key: "lastUpdatedTimestamp", Value: time.Now().UTC()},
-		}},
+	filter := client.BuildStatusFilter("eventId", eventID)
+	update := client.BuildSetUpdate(map[string]interface{}{
+		"status":               newStatus,
+		"lastUpdatedTimestamp": time.Now().UTC(),
+	})
+
+	// Use semantic update method from store-client
+	matched, _, err := client.RetryableUpdateWithResult(ctx, s.databaseClient, filter, update,
+		client.DefaultMaxRetries, client.DefaultRetryDelay)
+	if err != nil {
+		return fmt.Errorf("failed to update status for event (EventID: %s): %w", eventID, err)
 	}
 
-	var err error
-
-	var result *mongo.UpdateResult
-
-	for i := 1; i <= maxRetries; i++ {
-		slog.Debug("Attempt to update status for event",
-			"attempt", i,
-			"newStatus", newStatus,
-			"eventID", eventID)
-
-		result, err = s.client.UpdateOne(ctx, filter, update)
-		if err == nil {
-			if result.MatchedCount == 0 {
-				slog.Warn("Attempted to update status for non-existent event", "eventID", eventID)
-				return nil // Not an error if event is gone
-			}
-
-			slog.Debug("Successfully updated status for event",
-				"newStatus", newStatus,
-				"eventID", eventID)
-
-			return nil // Success
-		}
-
-		slog.Warn("Attempt failed to update status for event; retrying",
-			"attempt", i,
-			"eventID", eventID,
-			"error", err,
-			"retryDelay", retryDelay)
-		time.Sleep(retryDelay)
+	if matched == 0 {
+		slog.Warn("Attempted to update status for non-existent event", "eventID", eventID)
+		return nil // Not an error if event is gone
 	}
 
-	return fmt.Errorf(
-		"failed to update status for event (EventID: %s) after %d retries: %w",
-		eventID, maxRetries, err)
+	slog.Debug("Successfully updated status for event",
+		"newStatus", newStatus,
+		"eventID", eventID)
+
+	return nil
 }
 
 // GetLastProcessedEventTimestampByCSP is a helper to get the latest event timestamp for a given CSP.
-func (s *MongoStore) GetLastProcessedEventTimestampByCSP(
+func (s *DatabaseStore) GetLastProcessedEventTimestampByCSP(
 	ctx context.Context,
 	clusterName string,
 	cspType model.CSP,
 	cspNameForLog string,
 ) (timestamp time.Time, found bool, err error) {
-	filter := bson.D{bson.E{Key: "csp", Value: cspType}}
+	// Use database-agnostic filter building
+	builder := client.NewFilterBuilder().Eq("csp", cspType)
 	if clusterName != "" {
-		filter = append(filter, bson.E{Key: "clusterName", Value: clusterName})
+		builder = builder.Eq("clusterName", clusterName)
 	}
 
-	findOptions := options.FindOne().
-		SetSort(bson.D{bson.E{Key: "eventReceivedTimestamp", Value: -1}})
-		// Sort by internal received time
+	filter := builder.Build()
+	findOptions := &client.FindOneOptions{
+		Sort: map[string]interface{}{"eventReceivedTimestamp": -1},
+	}
 
 	slog.Debug("Querying for last processed timestamp",
 		"csp", cspNameForLog)
 
 	var latestEvent model.MaintenanceEvent
 
-	dbErr := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
-	if dbErr != nil {
-		if errors.Is(dbErr, mongo.ErrNoDocuments) {
-			slog.Debug("No previous event timestamp found in datastore",
-				"csp", cspNameForLog,
-				"cluster", clusterName)
-
-			return time.Time{}, false, nil
-		}
-
+	found, err = client.FindOneWithExists(ctx, s.databaseClient, filter, findOptions, &latestEvent)
+	if err != nil {
 		slog.Error("Failed to query last processed log timestamp",
 			"csp", cspNameForLog,
 			"cluster", clusterName,
-			"error", dbErr)
+			"error", err)
 
-		return time.Time{}, false, fmt.Errorf("failed to query last %s log timestamp: %w", cspNameForLog, dbErr)
+		return time.Time{}, false, fmt.Errorf("failed to query last %s log timestamp: %w", cspNameForLog, err)
+	}
+
+	if !found {
+		slog.Debug("No previous event timestamp found in datastore",
+			"csp", cspNameForLog,
+			"cluster", clusterName)
+
+		return time.Time{}, false, nil
 	}
 
 	// Use EventReceivedTimestamp as the marker for when we processed it
@@ -424,7 +312,7 @@ func (s *MongoStore) GetLastProcessedEventTimestampByCSP(
 
 // FindLatestActiveEventByNodeAndType finds the most recently updated event for a
 // given node, type, and one of several statuses.
-func (s *MongoStore) FindLatestActiveEventByNodeAndType(
+func (s *DatabaseStore) FindLatestActiveEventByNodeAndType(
 	ctx context.Context,
 	nodeName string,
 	maintenanceType model.MaintenanceType,
@@ -434,16 +322,19 @@ func (s *MongoStore) FindLatestActiveEventByNodeAndType(
 		return nil, false, fmt.Errorf("nodeName, maintenanceType, and at least one status are required")
 	}
 
-	filter := bson.D{
-		bson.E{Key: "nodeName", Value: nodeName},
-		bson.E{Key: "maintenanceType", Value: maintenanceType},
-		bson.E{Key: "status", Value: bson.D{bson.E{Key: "$in", Value: statuses}}},
-	}
+	// Use database-agnostic filter building
+	filter := client.NewFilterBuilder().
+		Eq("nodeName", nodeName).
+		Eq("maintenanceType", maintenanceType).
+		In("status", statuses).
+		Build()
 
 	// Sort by LastUpdatedTimestamp descending to get the latest one.
 	// If multiple have the exact same LastUpdatedTimestamp, this will pick one arbitrarily among them.
 	// Consider adding a secondary sort key if more deterministic behavior is needed in such rare cases.
-	findOptions := options.FindOne().SetSort(bson.D{bson.E{Key: "lastUpdatedTimestamp", Value: -1}})
+	findOptions := &client.FindOneOptions{
+		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+	}
 
 	slog.Debug("Querying for latest active event",
 		"node", nodeName,
@@ -452,13 +343,8 @@ func (s *MongoStore) FindLatestActiveEventByNodeAndType(
 
 	var latestEvent model.MaintenanceEvent
 
-	err := s.client.FindOne(ctx, filter, findOptions).Decode(&latestEvent)
+	found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, findOptions, &latestEvent)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			slog.Info("No active event found", "node", nodeName, "type", maintenanceType, "statuses", statuses)
-			return nil, false, nil
-		}
-
 		slog.Error("Failed to query latest active event",
 			"node", nodeName,
 			"type", maintenanceType,
@@ -466,6 +352,11 @@ func (s *MongoStore) FindLatestActiveEventByNodeAndType(
 			"error", err)
 
 		return nil, false, fmt.Errorf("failed to query latest active event: %w", err)
+	}
+
+	if !found {
+		slog.Info("No active event found", "node", nodeName, "type", maintenanceType, "statuses", statuses)
+		return nil, false, nil
 	}
 
 	slog.Info("Found latest active event",
@@ -478,7 +369,7 @@ func (s *MongoStore) FindLatestActiveEventByNodeAndType(
 }
 
 // FindLatestOngoingEventByNode finds the most recently updated ONGOING event for a given node.
-func (s *MongoStore) FindLatestOngoingEventByNode(
+func (s *DatabaseStore) FindLatestOngoingEventByNode(
 	ctx context.Context,
 	nodeName string,
 ) (*model.MaintenanceEvent, bool, error) {
@@ -486,20 +377,26 @@ func (s *MongoStore) FindLatestOngoingEventByNode(
 		return nil, false, fmt.Errorf("nodeName is required")
 	}
 
-	filter := bson.D{{Key: "nodeName", Value: nodeName}, {Key: "status", Value: model.StatusMaintenanceOngoing}}
-	opts := options.FindOne().SetSort(bson.D{{Key: "lastUpdatedTimestamp", Value: -1}})
+	// Use database-agnostic filter building
+	filter := client.NewFilterBuilder().
+		Eq("nodeName", nodeName).
+		Eq("status", model.StatusMaintenanceOngoing).
+		Build()
+
+	opts := &client.FindOneOptions{
+		Sort: map[string]interface{}{"lastUpdatedTimestamp": -1},
+	}
 
 	var event model.MaintenanceEvent
 
-	err := s.client.FindOne(ctx, filter, opts).Decode(&event)
+	found, err := client.FindOneWithExists(ctx, s.databaseClient, filter, opts, &event)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			slog.Debug("No ongoing event found for node", "node", nodeName)
-
-			return nil, false, nil
-		}
-
 		return nil, false, fmt.Errorf("query latest ongoing event for node %s: %w", nodeName, err)
+	}
+
+	if !found {
+		slog.Debug("No ongoing event found for node", "node", nodeName)
+		return nil, false, nil
 	}
 
 	slog.Debug("Found ongoing event", "eventID", event.EventID, "node", nodeName)
@@ -508,7 +405,7 @@ func (s *MongoStore) FindLatestOngoingEventByNode(
 }
 
 // FindActiveEventsByStatuses finds active events by their csp status.
-func (s *MongoStore) FindActiveEventsByStatuses(
+func (s *DatabaseStore) FindActiveEventsByStatuses(
 	ctx context.Context,
 	csp model.CSP,
 	statuses []string,
@@ -517,16 +414,17 @@ func (s *MongoStore) FindActiveEventsByStatuses(
 		return nil, fmt.Errorf("at least one status is required")
 	}
 
-	filter := bson.D{
-		bson.E{Key: "csp", Value: csp},
-		bson.E{Key: "cspStatus", Value: bson.D{bson.E{Key: "$in", Value: statuses}}},
-	}
+	// Use database-agnostic filter building
+	filter := client.NewFilterBuilder().
+		Eq("csp", csp).
+		In("cspStatus", statuses).
+		Build()
 
 	slog.Debug("Querying for active events",
 		"csp", csp,
 		"statuses", statuses)
 
-	cursor, err := s.client.Find(ctx, filter)
+	cursor, err := s.databaseClient.Find(ctx, filter, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active events: %w", err)
 	}
