@@ -17,7 +17,7 @@ name: Integration Tests - GCP
 on:
   workflow_dispatch: {}  # allow manual runs for testing
   schedule:
-    - cron: '30 14 * * *' # daily at 14:30 UTC, runs on default branch only (aka main)
+    - cron: '30 14 * * *' # daily at 14:30 UTC, runs on default branch only
   push:
     branches:
       - main
