@@ -35,3 +35,16 @@ toolkit:
   env:
   - name: RUNTIME_CONFIG_SOURCE
     value: file
+
+# Fix deprecated node-role label warnings
+node-feature-discovery:
+  master:
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 1
+          preference:
+            matchExpressions:
+            - key: "node-role.kubernetes.io/control-plane"
+              operator: In
+              values: [""]

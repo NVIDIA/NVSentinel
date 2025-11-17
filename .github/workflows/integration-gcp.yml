@@ -130,21 +130,25 @@ jobs:
           GCP_ZONE: "${{ env.TF_VAR_zone }}"
           GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
           NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
-        run: tests/uat/install-apps.sh
+        run: |
+          set -euxo pipefail
+          tests/uat/install-apps.sh
 
       # Test
       - name: Run UAT Tests
         id: tests
         if: steps.apps.outcome == 'success'
         shell: bash
-        run: tests/uat/tests.sh
+        run: |
+          set -euxo pipefail
+          tests/uat/tests.sh
 
       # Teardown
       - name: Destroy Cluster
         if: always() && steps.cluster.outcome != 'skipped' && env.SKIP_DELETE != 'true'
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           cd tests/uat/gcp/cluster
           terraform destroy -auto-approve
 
