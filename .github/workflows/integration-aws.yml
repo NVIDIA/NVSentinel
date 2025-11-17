@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Integration Tests - GCP
+name: Integration Tests - AWS
 
 on:
   workflow_dispatch: {}  # allow manual runs for testing
   schedule:
-    - cron: '30 14 * * *' # daily at 14:30 UTC, runs on default branch only
+    - cron: '45 14 * * *' # daily at 14:45 UTC, runs on default branch only
   push:
     branches:
       - main
+      - feature/uat-aws
 
 permissions:
   contents: read
@@ -28,29 +29,22 @@ permissions:
   id-token: write
 
 jobs:
-  integration-test-gcp:
+  integration-test-aws:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      CSP: "gcp"
+      CSP: "aws"
       PREFIX: "nvs"
-      PROJECT_ID: "nv-dgxck8s-20250306"
-      IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
-      SERVICE_ACCOUNT: "github-actions-user"
-      # Terraform Vars
-      TF_VAR_deployment_id: "d${{ github.run_id }}"
-      TF_VAR_project_id: "nv-dgxck8s-20250306"
-      TF_VAR_region: "europe-west4"
-      TF_VAR_zone: "europe-west4-b"
-      TF_VAR_system_node_type: "e2-standard-4"
-      TF_VAR_system_node_count: "3"
-      TF_VAR_gpu_node_pool_name: "gpu-pool"
-      TF_VAR_gpu_machine_type: "a3-megagpu-8g"
-      TF_VAR_gpu_node_count: "1"
-      TF_VAR_gpu_reservation_project: "nv-dgxcloudprodgsc-20240206"
-      TF_VAR_gpu_reservation_name: "gsc-a3-megagpu-8g-shared-res-2"
-      TF_VAR_gpu_driver_version: "INSTALLATION_DISABLED"
-      TF_VAR_resource_labels: '{"environment":"test","team":"nvsentinel","managed_by":"terraform"}'
+      AWS_ACCOUNT_ID: "528757803597"  # Replace with actual account ID
+      AWS_REGION: "us-west-2"
+      GITHUB_ACTIONS_ROLE_NAME: "github-actions-role"
+      GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::528757803597:role/github-actions-role"  # Replace with actual role ARN
+      OIDC_PROVIDER_ARN: "arn:aws:iam::528757803597:oidc-provider/token.actions.githubusercontent.com"
+      CLUSTER_NAME: "nvs-d${{ github.run_id }}"
+      K8S_VERSION: "1.34"
+      GPU_NODE_COUNT: "1"
+      GPU_AVAILABILITY_ZONE: "us-west-2e"
+
       # Debug
       SKIP_DELETE: "false"  # skip cluster deletion
       TEST_TAG: "main-33c1d03"
@@ -67,17 +61,13 @@ jobs:
           terraform_version: "1.13.5"
 
       # Auth
-      - name: Get AuthN Token
+      - name: Configure AWS credentials
         id: auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
         with:
-          token_format: access_token
-          workload_identity_provider: ${{ env.IDENTITY_PROVIDER }}
-          service_account: "${{ env.SERVICE_ACCOUNT }}@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
-
-      # Gcloud
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+          role-to-assume: ${{ env.GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-NVSentinel-Integration
 
       # Cluster
       - name: Create Cluster
@@ -86,9 +76,7 @@ jobs:
         continue-on-error: true 
         run: |
           set -euo pipefail
-          cd tests/uat/gcp/cluster
-          terraform init
-          terraform apply -auto-approve
+          tests/uat/aws/create-eks-cluster.sh
 
       # Connect
       - name: Connect to Cluster
@@ -97,11 +85,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Installing GKE auth plugin..."
-          gcloud components install gke-gcloud-auth-plugin --quiet --project ${{ env.TF_VAR_project_id }}
-          echo "Getting cluster credentials..."
-          gcloud container clusters get-credentials "${{ env.PREFIX }}-${{ env.TF_VAR_deployment_id }}" \
-            --zone ${{ env.TF_VAR_zone }} --project ${{ env.TF_VAR_project_id }}
+          echo "Installing kubectl..."
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          echo "Verifying cluster connection..."
+          kubectl get nodes
 
       # Image Tag
       - name: Compute ref name with short SHA
@@ -125,9 +116,6 @@ jobs:
         if: steps.client.outcome == 'success'
         shell: bash
         env:
-          GCP_PROJECT_ID: "${{ env.PROJECT_ID }}"
-          GCP_ZONE: "${{ env.TF_VAR_zone }}"
-          GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
           NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
         run: |
           set -euxo pipefail
@@ -148,8 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cd tests/uat/gcp/cluster
-          terraform destroy -auto-approve
+          tests/uat/aws/delete-eks-cluster.sh
 
       # Summary
       - name: Test Summary
