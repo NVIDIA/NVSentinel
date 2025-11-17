@@ -17,7 +17,7 @@ name: Integration Tests - GCP
 on:
   workflow_dispatch: {}  # allow manual runs for testing
   schedule:
-    - cron: '30 14 * * *' # daily at 14:30 UTC
+    - cron: '30 14 * * *' # daily at 14:30 UTC, runs on default branch only (aka main)
   push:
     branches:
       - main
@@ -54,6 +54,7 @@ jobs:
       TF_VAR_resource_labels: '{"environment":"test","team":"nvsentinel","managed_by":"terraform"}'
       # Debug
       SKIP_DELETE: "false"  # skip cluster deletion
+      TEST_TAG: "main-33c1d03"
       
     steps:
       # Checkout
@@ -109,9 +110,11 @@ jobs:
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             SAFE_REF="${{ github.ref_name }}"
-          else
+          else if [[ "${{ github.ref_name }}" == "main" ]]; then
             SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
             SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          else
+            SAFE_REF="${{ env.TEST_TAG }}"
           fi
           # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
           SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
