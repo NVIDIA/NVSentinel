@@ -55,11 +55,6 @@ fault-quarantine:
 janitor:
   csp:
     provider: gcp
-    gcp:
-      # Values set via environment variables in the workflow
-      # project: ""
-      # zone: ""
-      # serviceAccount: ""
 
 mongodb-store:
   mongodb:
