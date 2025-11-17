@@ -14,7 +14,7 @@
 # limitations under the License.
 
 
-set -euo pipefail
+set -euox pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
@@ -289,7 +289,7 @@ install_nvsentinel() {
         )
     elif [[ "$CSP" == "gcp" ]]; then
         extra_set_args+=(
-            "--set" "janitor.csp.gcp.projectId=$GCP_PROJECT_ID"
+            "--set" "janitor.csp.gcp.project=$GCP_PROJECT_ID"
             "--set" "janitor.csp.gcp.zone=$GCP_ZONE"
             "--set" "janitor.csp.gcp.serviceAccount=$GCP_SERVICE_ACCOUNT"
         )
