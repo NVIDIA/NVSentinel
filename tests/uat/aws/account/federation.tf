@@ -81,6 +81,22 @@ resource "aws_iam_role" "github_actions" {
 
 # IAM Policy for EKS and EC2 permissions
 data "aws_iam_policy_document" "github_actions_permissions" {
+  # STS permissions
+  statement {
+    sid    = "STSPermissions"
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRole",
+      "sts:AssumeRoleWithWebIdentity",
+      "sts:DecodeAuthorizationMessage",
+      "sts:GetAccessKeyInfo",
+      "sts:GetCallerIdentity",
+      "sts:GetFederationToken",
+      "sts:TagSession",
+    ]
+    resources = ["*"]
+  }
+
   # EKS Cluster permissions
   statement {
     sid    = "EKSClusterPermissions"
@@ -213,24 +229,6 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "autoscaling:CreateLaunchConfiguration",
       "autoscaling:DeleteLaunchConfiguration",
       "autoscaling:DescribeLaunchConfigurations"
-    ]
-    resources = ["*"]
-  }
-
-  # ELB permissions for Load Balancers
-  statement {
-    sid    = "ELBPermissions"
-    effect = "Allow"
-    actions = [
-      "elasticloadbalancing:CreateLoadBalancer",
-      "elasticloadbalancing:DeleteLoadBalancer",
-      "elasticloadbalancing:DescribeLoadBalancers",
-      "elasticloadbalancing:ModifyLoadBalancerAttributes",
-      "elasticloadbalancing:CreateTargetGroup",
-      "elasticloadbalancing:DeleteTargetGroup",
-      "elasticloadbalancing:DescribeTargetGroups",
-      "elasticloadbalancing:RegisterTargets",
-      "elasticloadbalancing:DeregisterTargets"
     ]
     resources = ["*"]
   }
