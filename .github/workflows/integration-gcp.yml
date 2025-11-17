@@ -16,6 +16,8 @@ name: Integration Tests - GCP
 
 on:
   workflow_dispatch: {}  # allow manual runs for testing
+  schedule:
+    - cron: '30 14 * * *' # daily at 14:30 UTC
   push:
     branches:
       - main
@@ -31,12 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      NVSENTINEL_VERSION: main-19d00f2
       IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
       SERVICE_ACCOUNT: "github-actions-user@nv-dgxck8s-20250306.iam.gserviceaccount.com"
       CSP: "gcp"
       PREFIX: "nvs"
-      SKIP_DELETE: "true"  # for debugging, skip cluster deletion
+      SKIP_DELETE: "false"  # for debugging, skip cluster deletion
       TF_VAR_deployment_id: "d${{ github.run_id }}"
       TF_VAR_project_id: "nv-dgxck8s-20250306"
       TF_VAR_region: "europe-west4"
@@ -99,6 +100,16 @@ jobs:
           gcloud container clusters get-credentials "${{ env.PREFIX }}-${{ env.TF_VAR_deployment_id }}" \
             --zone ${{ env.TF_VAR_zone }} --project ${{ env.TF_VAR_project_id }}
 
+      # Compute ref name
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          # Make sure the ref is safe to use as a resource name
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
+
       # Apps
       - name: Install NVS
         id: apps
@@ -108,6 +119,7 @@ jobs:
           GCP_PROJECT_ID: "${{ env.TF_VAR_project_id }}"
           GCP_ZONE: "${{ env.TF_VAR_zone }}"
           GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
+          NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
         run: tests/uat/install-apps.sh
 
       # Test

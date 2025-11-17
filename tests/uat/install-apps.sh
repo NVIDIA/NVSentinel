@@ -51,7 +51,7 @@ GCP_COS_GPU_DS="https://raw.githubusercontent.com/GoogleCloudPlatform/container-
 # AWS
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
-# GPG
+# GCP
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
 GCP_ZONE="${GCP_ZONE:-}"
 GCP_SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-}"
