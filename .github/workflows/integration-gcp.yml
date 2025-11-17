@@ -104,6 +104,10 @@ jobs:
         id: apps
         if: steps.client.outcome == 'success'
         shell: bash
+        env:
+          GCP_PROJECT_ID: "${{ env.TF_VAR_project_id }}"
+          GCP_ZONE: "${{ env.TF_VAR_zone }}"
+          GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
         run: tests/uat/install-apps.sh
 
       # Test
