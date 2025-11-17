@@ -33,11 +33,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
-      SERVICE_ACCOUNT: "github-actions-user@nv-dgxck8s-20250306.iam.gserviceaccount.com"
       CSP: "gcp"
       PREFIX: "nvs"
-      SKIP_DELETE: "false"  # for debugging, skip cluster deletion
+      PROJECT_ID: "nv-dgxck8s-20250306"
+      IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+      SERVICE_ACCOUNT: "github-actions-user"
+      # Terraform Vars
       TF_VAR_deployment_id: "d${{ github.run_id }}"
       TF_VAR_project_id: "nv-dgxck8s-20250306"
       TF_VAR_region: "europe-west4"
@@ -51,6 +52,8 @@ jobs:
       TF_VAR_gpu_reservation_name: "gsc-a3-megagpu-8g-shared-res-2"
       TF_VAR_gpu_driver_version: "INSTALLATION_DISABLED"
       TF_VAR_resource_labels: '{"environment":"test","team":"nvsentinel","managed_by":"terraform"}'
+      # Debug
+      SKIP_DELETE: "false"  # skip cluster deletion
       
     steps:
       # Checkout
@@ -70,7 +73,7 @@ jobs:
         with:
           token_format: access_token
           workload_identity_provider: ${{ env.IDENTITY_PROVIDER }}
-          service_account: ${{ env.SERVICE_ACCOUNT }}
+          service_account: "${{ env.SERVICE_ACCOUNT }}@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
 
       # Gcloud
       - name: Setup gcloud CLI
@@ -100,13 +103,17 @@ jobs:
           gcloud container clusters get-credentials "${{ env.PREFIX }}-${{ env.TF_VAR_deployment_id }}" \
             --zone ${{ env.TF_VAR_zone }} --project ${{ env.TF_VAR_project_id }}
 
-      # Compute ref name
+      # Image Tag
       - name: Compute ref name with short SHA
         id: ref-name
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
-          # Make sure the ref is safe to use as a resource name
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            SAFE_REF="${{ github.ref_name }}"
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
           SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
           echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
 
@@ -116,7 +123,7 @@ jobs:
         if: steps.client.outcome == 'success'
         shell: bash
         env:
-          GCP_PROJECT_ID: "${{ env.TF_VAR_project_id }}"
+          GCP_PROJECT_ID: "${{ env.PROJECT_ID }}"
           GCP_ZONE: "${{ env.TF_VAR_zone }}"
           GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
           NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
