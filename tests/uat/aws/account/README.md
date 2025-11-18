@@ -110,9 +110,9 @@ jobs:
   integration-test-aws:
     runs-on: ubuntu-latest
     env:
-      AWS_ACCOUNT_ID: "528757803597"  # From terraform output
-      AWS_REGION: "us-west-2"
-      GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::528757803597:role/github-actions-role"
+      AWS_ACCOUNT_ID: "12345678910"  # From terraform output
+      AWS_REGION: "us-east-1"
+      GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::12345678910:role/github-actions-role"
       
     steps:
       - name: Configure AWS credentials

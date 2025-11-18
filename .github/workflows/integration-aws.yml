@@ -43,7 +43,7 @@ jobs:
       CLUSTER_NAME: "nvs-d${{ github.run_id }}"
       K8S_VERSION: "1.34"
       EKSCTL_VERSION: "0.216.0"
-      GPU_AVAILABILITY_ZONE: "us-east-1e"
+      GPU_AVAILABILITY_ZONE: "e"
       GPU_NODE_COUNT: "1"
       CAPACITY_RESERVATION_ID: "cr-0cbe491320188dfa6"
 
