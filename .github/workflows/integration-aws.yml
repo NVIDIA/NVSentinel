@@ -69,6 +69,27 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-NVSentinel-Integration
 
+      # Install eksctl
+      - name: Install eksctl
+        run: |
+          set -euo pipefail
+          # Check if eksctl is already installed
+          if command -v eksctl >/dev/null 2>&1; then
+            echo "eksctl is already installed:"
+            eksctl version
+            exit 0
+          fi
+          
+          echo "Installing eksctl..."
+          EKSCTL_VERSION="0.194.0"  # Pin to specific version
+          curl -LO "https://github.com/eksctl-io/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_linux_amd64.tar.gz"
+          tar -xzf eksctl_linux_amd64.tar.gz
+          chmod +x eksctl
+          sudo mv eksctl /usr/local/bin/
+          rm eksctl_linux_amd64.tar.gz
+          echo "eksctl installed successfully:"
+          eksctl version
+
       # Cluster
       - name: Create Cluster
         id: cluster
@@ -85,6 +106,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Check if kubectl is already installed
+          if command -v kubectl >/dev/null 2>&1; then
+            echo "kubectl is already installed:"
+            kubectl version
+            exit 0
+          fi
+
           echo "Installing kubectl..."
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
