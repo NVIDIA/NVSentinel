@@ -41,7 +41,7 @@ jobs:
       GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::528757803597:role/github-actions-role"  # Replace with actual role ARN
       OIDC_PROVIDER_ARN: "arn:aws:iam::528757803597:oidc-provider/token.actions.githubusercontent.com"
       CLUSTER_NAME: "nvs-d${{ github.run_id }}"
-      K8S_VERSION: "1.34"
+      K8S_VERSION: "1.31"
       GPU_NODE_COUNT: "1"
       GPU_AVAILABILITY_ZONE: "us-west-2e"
 
