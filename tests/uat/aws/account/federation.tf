@@ -99,20 +99,26 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "iam:AddRoleToInstanceProfile",
       "iam:AttachRolePolicy",
       "iam:CreateInstanceProfile",
+      "iam:CreateOpenIDConnectProvider",
       "iam:CreateRole",
       "iam:DeleteInstanceProfile",
+      "iam:DeleteOpenIDConnectProvider",
       "iam:DeleteRole",
       "iam:DetachRolePolicy",
       "iam:GetInstanceProfile",
       "iam:GetOpenIDConnectProvider",
       "iam:GetRole",
       "iam:ListAttachedRolePolicies",
+      "iam:ListOpenIDConnectProviders",
       "iam:ListRoles",
       "iam:ListRoleTags",
       "iam:PassRole",
       "iam:RemoveRoleFromInstanceProfile",
+      "iam:TagOpenIDConnectProvider",
       "iam:TagRole",
+      "iam:UntagOpenIDConnectProvider",
       "iam:UntagRole",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
     ]
     resources = ["*"]
   }
@@ -131,7 +137,9 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "EKSClusterPermissions"
     effect = "Allow"
-    actions = ["eks:*"]
+    actions = [
+      "eks:*"
+    ]
     resources = ["*"]
   }
 
