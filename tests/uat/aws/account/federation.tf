@@ -46,12 +46,6 @@ data "aws_iam_policy_document" "github_actions_assume_role_policy" {
     }
 
     condition {
-      test     = "StringEquals"
-      variable = "${replace(var.oidc_provider_url, "https://", "")}:sub"
-      values   = ["repo:${var.git_repo}:ref:refs/heads/main"]
-    }
-
-    condition {
       test     = "StringLike"
       variable = "${replace(var.oidc_provider_url, "https://", "")}:sub"
       values   = [
@@ -87,7 +81,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     effect = "Allow"
     actions = [
       "sts:AssumeRole",
-      "sts:AssumeRoleWithWebIdentity",
+      "sts:AssumeRoleWithWebIdentity",      
       "sts:DecodeAuthorizationMessage",
       "sts:GetAccessKeyInfo",
       "sts:GetCallerIdentity",
