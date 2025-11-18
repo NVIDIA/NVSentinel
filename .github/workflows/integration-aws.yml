@@ -41,7 +41,8 @@ jobs:
       GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::528757803597:role/github-actions-role"  # Replace with actual role ARN
       OIDC_PROVIDER_ARN: "arn:aws:iam::528757803597:oidc-provider/token.actions.githubusercontent.com"
       CLUSTER_NAME: "nvs-d${{ github.run_id }}"
-      K8S_VERSION: "1.31"
+      K8S_VERSION: "1.34"
+      EKSCTL_VERSION: "0.216.0"
       GPU_NODE_COUNT: "1"
       GPU_AVAILABILITY_ZONE: "us-west-2e"
 
@@ -66,7 +67,7 @@ jobs:
       # Install eksctl
       - name: Install eksctl
         run: |
-          set -euo pipefail
+          set -euox pipefail
           # Check if eksctl is already installed
           if command -v eksctl >/dev/null 2>&1; then
             echo "eksctl is already installed:"
@@ -75,7 +76,6 @@ jobs:
           fi
           
           echo "Installing eksctl..."
-          EKSCTL_VERSION="0.194.0"  # Pin to specific version
           curl -LO "https://github.com/eksctl-io/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_linux_amd64.tar.gz"
           tar -xzf eksctl_linux_amd64.tar.gz
           chmod +x eksctl
@@ -87,10 +87,9 @@ jobs:
       # Cluster
       - name: Create Cluster
         id: cluster
-        shell: bash
-        continue-on-error: true 
+        shell: bash 
         run: |
-          set -euo pipefail
+          set -euox pipefail
           tests/uat/aws/create-eks-cluster.sh
 
       # Connect
@@ -99,7 +98,7 @@ jobs:
         if: steps.cluster.outcome == 'success'
         shell: bash
         run: |
-          set -euo pipefail
+          set -euox pipefail
           # Check if kubectl is already installed
           if command -v kubectl >/dev/null 2>&1; then
             echo "kubectl is already installed:"
@@ -119,6 +118,7 @@ jobs:
       # Image Tag
       - name: Compute ref name with short SHA
         id: ref-name
+        if: steps.cluster.outcome == 'success'
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             SAFE_REF="${{ github.ref_name }}"
