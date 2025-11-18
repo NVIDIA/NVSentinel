@@ -35,17 +35,17 @@ jobs:
     env:
       CSP: "aws"
       PREFIX: "nvs"
-      AWS_ACCOUNT_ID: "528757803597"  # Replace with actual account ID
-      AWS_REGION: "us-west-2"
+      AWS_ACCOUNT_ID: "615299774277"  # Replace with actual account ID
+      AWS_REGION: "us-east-1"
       GITHUB_ACTIONS_ROLE_NAME: "github-actions-role"
       GITHUB_ACTIONS_ROLE_ARN: "arn:aws:iam::528757803597:role/github-actions-role"  # Replace with actual role ARN
-      OIDC_PROVIDER_ARN: "arn:aws:iam::528757803597:oidc-provider/token.actions.githubusercontent.com"
+      OIDC_PROVIDER_ARN: "arn:aws:iam::615299774277:oidc-provider/token.actions.githubusercontent.com"
       CLUSTER_NAME: "nvs-d${{ github.run_id }}"
       K8S_VERSION: "1.34"
       EKSCTL_VERSION: "0.216.0"
-      GPU_AVAILABILITY_ZONE: "us-west-2e"
-      GPU_NODE_COUNT: "0"
-      CAPACITY_RESERVATION_ID: ""
+      GPU_AVAILABILITY_ZONE: "us-east-1e"
+      GPU_NODE_COUNT: "1"
+      CAPACITY_RESERVATION_ID: "cr-0cbe491320188dfa6"
 
       # Debug
       SKIP_DELETE: "true"  # skip cluster deletion
