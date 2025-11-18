@@ -43,8 +43,9 @@ jobs:
       CLUSTER_NAME: "nvs-d${{ github.run_id }}"
       K8S_VERSION: "1.34"
       EKSCTL_VERSION: "0.216.0"
-      GPU_NODE_COUNT: "1"
       GPU_AVAILABILITY_ZONE: "us-west-2e"
+      GPU_NODE_COUNT: "0"
+      CAPACITY_RESERVATION_ID: ""
 
       # Debug
       SKIP_DELETE: "true"  # skip cluster deletion
