@@ -86,7 +86,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "sts:GetAccessKeyInfo",
       "sts:GetCallerIdentity",
       "sts:GetFederationToken",
-      "sts:TagSession"
+      "sts:TagSession",
     ]
     resources = ["*"]
   }
@@ -96,22 +96,23 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid    = "IAMPermissions"
     effect = "Allow"
     actions = [
-      "iam:CreateRole",
-      "iam:DeleteRole",
-      "iam:GetRole",
-      "iam:ListRoles",
-      "iam:PassRole",
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
-      "iam:ListAttachedRolePolicies",
-      "iam:CreateInstanceProfile",
-      "iam:DeleteInstanceProfile",
-      "iam:GetInstanceProfile",
       "iam:AddRoleToInstanceProfile",
+      "iam:AttachRolePolicy",
+      "iam:CreateInstanceProfile",
+      "iam:CreateRole",
+      "iam:DeleteInstanceProfile",
+      "iam:DeleteRole",
+      "iam:DetachRolePolicy",
+      "iam:GetInstanceProfile",
+      "iam:GetOpenIDConnectProvider",
+      "iam:GetRole",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRoles",
+      "iam:ListRoleTags",
+      "iam:PassRole",
       "iam:RemoveRoleFromInstanceProfile",
       "iam:TagRole",
       "iam:UntagRole",
-      "iam:ListRoleTags"
     ]
     resources = ["*"]
   }
@@ -121,7 +122,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid    = "SSMNodePermissions"
     effect = "Allow"
     actions = [
-      "ssm:GetParameter"
+      "ssm:GetParameter",
     ]
     resources = ["*"]
   }
@@ -130,9 +131,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "EKSClusterPermissions"
     effect = "Allow"
-    actions = [
-      "eks:*"
-    ]
+    actions = ["eks:*"]
     resources = ["*"]
   }
 
@@ -140,9 +139,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "EC2Permissions"
     effect = "Allow"
-    actions = [
-      "ec2:*"
-    ]
+    actions = ["ec2:*"]
     resources = ["*"]
   }
 
@@ -150,9 +147,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "CloudFormationPermissions"
     effect = "Allow"
-    actions = [
-      "cloudformation:*"
-    ]
+    actions = ["cloudformation:*"]
     resources = ["*"]
   }
 
@@ -160,9 +155,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "AutoScalingPermissions"
     effect = "Allow"
-    actions = [
-      "autoscaling:*"
-    ]
+    actions = ["autoscaling:*"]
     resources = ["*"]
   }
 }
