@@ -24,9 +24,6 @@ metadata:
     Project: nvsentinel
     ManagedBy: eksctl
 
-autoModeConfig:
-  enabled: false
-
 iam:
   withOIDC: true
   serviceAccounts:
