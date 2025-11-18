@@ -79,15 +79,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "STSPermissions"
     effect = "Allow"
-    actions = [
-      "sts:AssumeRole",
-      "sts:AssumeRoleWithWebIdentity",      
-      "sts:DecodeAuthorizationMessage",
-      "sts:GetAccessKeyInfo",
-      "sts:GetCallerIdentity",
-      "sts:GetFederationToken",
-      "sts:TagSession",
-    ]
+    actions = ["sts:*"]
     resources = ["*"]
   }
 
@@ -95,31 +87,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "IAMPermissions"
     effect = "Allow"
-    actions = [
-      "iam:AddRoleToInstanceProfile",
-      "iam:AttachRolePolicy",
-      "iam:CreateInstanceProfile",
-      "iam:CreateOpenIDConnectProvider",
-      "iam:CreateRole",
-      "iam:DeleteInstanceProfile",
-      "iam:DeleteOpenIDConnectProvider",
-      "iam:DeleteRole",
-      "iam:DetachRolePolicy",
-      "iam:GetInstanceProfile",
-      "iam:GetOpenIDConnectProvider",
-      "iam:GetRole",
-      "iam:ListAttachedRolePolicies",
-      "iam:ListOpenIDConnectProviders",
-      "iam:ListRoles",
-      "iam:ListRoleTags",
-      "iam:PassRole",
-      "iam:RemoveRoleFromInstanceProfile",
-      "iam:TagOpenIDConnectProvider",
-      "iam:TagRole",
-      "iam:UntagOpenIDConnectProvider",
-      "iam:UntagRole",
-      "iam:UpdateOpenIDConnectProviderThumbprint",
-    ]
+    actions = ["iam:*"]
     resources = ["*"]
   }
 
@@ -127,9 +95,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     sid    = "SSMNodePermissions"
     effect = "Allow"
-    actions = [
-      "ssm:GetParameter",
-    ]
+    actions = ["ssm:*"]
     resources = ["*"]
   }
 
