@@ -116,6 +116,16 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     resources = ["*"]
   }
 
+  # SSM permissions for EKS nodes
+  statement {
+    sid    = "SSMNodePermissions"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter"
+    ]
+    resources = ["*"]
+  }
+
   # EKS Cluster permissions
   statement {
     sid    = "EKSClusterPermissions"
