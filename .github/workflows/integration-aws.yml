@@ -47,7 +47,7 @@ jobs:
       GPU_AVAILABILITY_ZONE: "us-west-2e"
 
       # Debug
-      SKIP_DELETE: "false"  # skip cluster deletion
+      SKIP_DELETE: "true"  # skip cluster deletion
       TEST_TAG: "main-33c1d03"
       
     steps:
