@@ -86,85 +86,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
       "sts:GetAccessKeyInfo",
       "sts:GetCallerIdentity",
       "sts:GetFederationToken",
-      "sts:TagSession",
-    ]
-    resources = ["*"]
-  }
-
-  # EKS Cluster permissions
-  statement {
-    sid    = "EKSClusterPermissions"
-    effect = "Allow"
-    actions = [
-      "eks:CreateCluster",
-      "eks:DeleteCluster",
-      "eks:DescribeCluster",
-      "eks:ListClusters",
-      "eks:UpdateClusterConfig",
-      "eks:UpdateClusterVersion",
-      "eks:TagResource",
-      "eks:UntagResource",
-      "eks:ListTagsForResource"
-    ]
-    resources = ["*"]
-  }
-
-  # EKS Node Group permissions
-  statement {
-    sid    = "EKSNodeGroupPermissions"
-    effect = "Allow"
-    actions = [
-      "eks:CreateNodegroup",
-      "eks:DeleteNodegroup",
-      "eks:DescribeNodegroup",
-      "eks:ListNodegroups",
-      "eks:UpdateNodegroupConfig",
-      "eks:UpdateNodegroupVersion"
-    ]
-    resources = ["*"]
-  }
-
-  # EC2 permissions for EKS
-  statement {
-    sid    = "EC2Permissions"
-    effect = "Allow"
-    actions = [
-      "ec2:CreateVpc",
-      "ec2:DeleteVpc",
-      "ec2:DescribeVpcs",
-      "ec2:ModifyVpcAttribute",
-      "ec2:CreateSubnet",
-      "ec2:DeleteSubnet",
-      "ec2:DescribeSubnets",
-      "ec2:ModifySubnetAttribute",
-      "ec2:CreateInternetGateway",
-      "ec2:DeleteInternetGateway",
-      "ec2:DescribeInternetGateways",
-      "ec2:AttachInternetGateway",
-      "ec2:DetachInternetGateway",
-      "ec2:CreateRouteTable",
-      "ec2:DeleteRouteTable",
-      "ec2:DescribeRouteTables",
-      "ec2:CreateRoute",
-      "ec2:DeleteRoute",
-      "ec2:AssociateRouteTable",
-      "ec2:DisassociateRouteTable",
-      "ec2:CreateSecurityGroup",
-      "ec2:DeleteSecurityGroup",
-      "ec2:DescribeSecurityGroups",
-      "ec2:AuthorizeSecurityGroupIngress",
-      "ec2:AuthorizeSecurityGroupEgress",
-      "ec2:RevokeSecurityGroupIngress",
-      "ec2:RevokeSecurityGroupEgress",
-      "ec2:CreateTags",
-      "ec2:DeleteTags",
-      "ec2:DescribeTags",
-      "ec2:DescribeInstances",
-      "ec2:DescribeInstanceTypes",
-      "ec2:RunInstances",
-      "ec2:TerminateInstances",
-      "ec2:DescribeAvailabilityZones",
-      "ec2:DescribeRegions"
+      "sts:TagSession"
     ]
     resources = ["*"]
   }
@@ -194,18 +116,32 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     resources = ["*"]
   }
 
+  # EKS Cluster permissions
+  statement {
+    sid    = "EKSClusterPermissions"
+    effect = "Allow"
+    actions = [
+      "eks:*"
+    ]
+    resources = ["*"]
+  }
+
+  # EC2 permissions for EKS
+  statement {
+    sid    = "EC2Permissions"
+    effect = "Allow"
+    actions = [
+      "ec2:*"
+    ]
+    resources = ["*"]
+  }
+
   # CloudFormation permissions (EKS uses CloudFormation)
   statement {
     sid    = "CloudFormationPermissions"
     effect = "Allow"
     actions = [
-      "cloudformation:CreateStack",
-      "cloudformation:DeleteStack",
-      "cloudformation:DescribeStacks",
-      "cloudformation:DescribeStackEvents",
-      "cloudformation:DescribeStackResources",
-      "cloudformation:ListStacks",
-      "cloudformation:UpdateStack"
+      "cloudformation:*"
     ]
     resources = ["*"]
   }
@@ -215,14 +151,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid    = "AutoScalingPermissions"
     effect = "Allow"
     actions = [
-      "autoscaling:CreateAutoScalingGroup",
-      "autoscaling:DeleteAutoScalingGroup",
-      "autoscaling:DescribeAutoScalingGroups",
-      "autoscaling:DescribeAutoScalingInstances",
-      "autoscaling:UpdateAutoScalingGroup",
-      "autoscaling:CreateLaunchConfiguration",
-      "autoscaling:DeleteLaunchConfiguration",
-      "autoscaling:DescribeLaunchConfigurations"
+      "autoscaling:*"
     ]
     resources = ["*"]
   }
