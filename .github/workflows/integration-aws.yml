@@ -17,7 +17,7 @@ name: Integration Tests - AWS
 on:
   workflow_dispatch: {}  # allow manual runs for testing
   schedule:
-    - cron: '45 14 * * *' # daily at 14:45 UTC, runs on default branch only
+    - cron: '0 8 * * *' # daily at 14:45 UTC, runs on default branch only
   push:
     branches:
       - main
