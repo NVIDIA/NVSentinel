@@ -31,6 +31,8 @@ global:
     enabled: true
   janitor:
     enabled: true
+  mongodbStore:
+    enabled: true
   
   tolerations:
   - key: nvidia.com/gpu
@@ -56,3 +58,7 @@ mongodb-store:
   mongodb:
     global:
       defaultStorageClass: "gp2"
+
+platformConnector:
+  nodeMetadata:
+    enabled: true
