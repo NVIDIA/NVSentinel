@@ -21,7 +21,6 @@ on:
   push:
     branches:
       - main
-      - feature/uat-aws
 
 permissions:
   contents: read
@@ -46,7 +45,7 @@ jobs:
       CAPACITY_RESERVATION_ID: "cr-0cbe491320188dfa6"
 
       # Debug
-      SKIP_DELETE: "true"  # skip cluster deletion
+      SKIP_DELETE: "false"  # skip cluster deletion
       TEST_TAG: "main-33c1d03"
       
     steps:
