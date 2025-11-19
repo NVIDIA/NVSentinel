@@ -224,8 +224,8 @@ webhook:
   # Directory containing webhook TLS certs
   certDir: "/tmp/k8s-webhook-server/serving-certs"
   # Cert-manager issuer to use for webhook certificate
-  # This issuer must exist in the same namespace
-  certIssuer: "selfsigned-ca-issuer"
+  # Janitor creates its own self-signed issuer
+  certIssuer: "janitor-selfsigned-issuer"
 
 # Metrics Configuration
 metrics:

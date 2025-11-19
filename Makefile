@@ -708,7 +708,32 @@ tilt-ci: ## Run Tilt in CI mode (no UI, waits for all resources)
 	@echo "Waiting for all statefulsets to be ready..."
 	@kubectl get statefulsets --all-namespaces --no-headers -o custom-columns=":metadata.namespace,:metadata.name" | while read ns name; do \
 		echo "Waiting for statefulset $$name in namespace $$ns..."; \
-		kubectl rollout status statefulset/$$name -n $$ns --timeout=300s || exit 1; \
+		if kubectl rollout status statefulset/$$name -n $$ns --timeout=300s 2>/dev/null; then \
+			echo "StatefulSet $$name rolled out successfully"; \
+		else \
+			echo "Rollout status not available, checking ready replicas..."; \
+			desired=$$(kubectl get statefulset $$name -n $$ns -o jsonpath='{.spec.replicas}' 2>/dev/null); \
+			if [ -z "$$desired" ]; then \
+				echo "Failed to get replica count for statefulset $$name"; \
+				exit 1; \
+			fi; \
+			timeout=300; elapsed=0; \
+			while [ $$elapsed -lt $$timeout ]; do \
+				ready=$$(kubectl get statefulset $$name -n $$ns -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0"); \
+				if [ "$$ready" = "$$desired" ]; then \
+					echo "StatefulSet $$name is ready ($$ready/$$desired replicas)"; \
+					break; \
+				fi; \
+				if [ $$elapsed -eq 0 ] || [ $$((elapsed % 30)) -eq 0 ]; then \
+					echo "Waiting for $$name: $$ready/$$desired replicas ready..."; \
+				fi; \
+				sleep 5; elapsed=$$((elapsed + 5)); \
+			done; \
+			if [ $$elapsed -ge $$timeout ]; then \
+				echo "Timeout waiting for statefulset $$name"; \
+				exit 1; \
+			fi; \
+		fi; \
 	done
 	@echo "All workloads are ready!"
 

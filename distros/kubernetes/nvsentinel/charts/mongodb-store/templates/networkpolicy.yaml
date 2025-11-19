@@ -17,22 +17,27 @@ kind: NetworkPolicy
 metadata:
   name: mongodb-networkpolicy
 spec:
-  # Select the MongoDB pods in nvsentinel
   podSelector:
+{{- if .Values.usePerconaOperator }}
+    matchLabels:
+      app.kubernetes.io/name: percona-server-mongodb
+{{- else }}
     matchLabels:
       app.kubernetes.io/component: mongodb
       app.kubernetes.io/instance: {{ .Release.Namespace }}
       app.kubernetes.io/name: mongodb
-
+{{- end }}
   policyTypes:
     - Ingress
-
   ingress:
     - ports:
         - port: 27017
           protocol: TCP
+{{- if .Values.usePerconaOperator }}
+        - port: 9216
+          protocol: TCP
+{{- end }}
       from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
-

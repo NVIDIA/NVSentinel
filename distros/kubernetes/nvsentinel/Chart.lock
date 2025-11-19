@@ -29,5 +29,14 @@ dependencies:
 - name: labeler
   repository: ""
   version: 0.1.0
-digest: sha256:c10f6e7fdb0b99a47f38e210c25e610da182c94fe32d89753a34352d12c0bb22
-generated: "2025-10-15T10:37:19.739789+05:30"
+- name: janitor
+  repository: ""
+  version: 0.1.0
+- name: metadata-collector
+  repository: ""
+  version: 0.1.0
+- name: kubernetes-object-monitor
+  repository: ""
+  version: 0.1.0
+digest: sha256:b72ab10b3e61b4073ae964a5e4062d251f238852b38b0445a2c3269114b26b30
+generated: "2025-11-19T14:51:23.601934963+05:30"

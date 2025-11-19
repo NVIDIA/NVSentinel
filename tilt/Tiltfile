@@ -116,21 +116,76 @@ yaml = helm(
     namespace='nvsentinel',
     values=values_files,
 )
+
+local_resource(
+    'wait-for-cert-manager-crds',
+    cmd='''
+        echo "Waiting for cert-manager webhook to be ready..."
+        kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
+        
+        echo "Verifying CRDs..."
+        kubectl wait --for=condition=established --timeout=60s crd/certificates.cert-manager.io crd/issuers.cert-manager.io
+        
+        echo "cert-manager is ready"
+    ''',
+    resource_deps=['cert-manager'],
+)
+
 k8s_yaml(yaml)
 
-k8s_resource(
-    new_name='cert-manager-resources',
-    objects=[
+tilt_values = read_yaml('../distros/kubernetes/nvsentinel/values-tilt.yaml')
+use_percona = tilt_values.get('mongodb-store', {}).get('usePerconaOperator', False)
+
+mongodb_dep = 'mongodb' if not use_percona else 'create-mongodb-database'
+cert_objects = [
+    'janitor-selfsigned-issuer:issuer',
+    'janitor-webhook-cert:certificate',
+]
+
+if use_percona:
+    cert_objects.append('mongo-app-client-cert:certificate')
+else:
+    cert_objects.extend([
         'mongo-root-ca:certificate',
         'mongo-ca-issuer:issuer', 
         'selfsigned-ca-issuer:issuer',
         'mongo-server-cert-0:certificate',
         'mongo-app-client-cert:certificate',
-        'mongo-dgxcops-client-cert:certificate',
-        'janitor-webhook-cert:certificate'
-    ],
-    resource_deps=['cert-manager'],
+    ])
+
+k8s_resource(
+    new_name='cert-manager-resources',
+    objects=cert_objects,
+    resource_deps=['wait-for-cert-manager-crds'],
 )
+
+local_resource(
+    'wait-for-janitor-cert',
+    cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-webhook-cert -n nvsentinel',
+    resource_deps=['cert-manager-resources'],
+)
+
+k8s_resource(
+    'janitor',
+    resource_deps=['wait-for-janitor-cert'],
+)
+
+if use_percona:
+    k8s_resource(
+        'nvsentinel-psmdb-operator',
+        resource_deps=['wait-for-cert-manager-crds'],
+    )
+
+k8s_resource(
+    'create-mongodb-database',
+    resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
+)
+
+if not use_percona:
+    k8s_resource(
+        'mongodb',
+        resource_deps=['wait-for-cert-manager-crds'],
+    )
 
 k8s_resource(
     new_name='prometheus-resources',
@@ -152,7 +207,7 @@ if not skip_kwok_nodes:
         new_name='kwok-fake-nodes',
         objects=kwok_all_node_names,
         resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation', 
-            'labeler', 'node-drainer', 'mongodb', 'simple-health-client'
+            'labeler', 'node-drainer', mongodb_dep, 'simple-health-client'
         ], 
     )
 
@@ -178,22 +233,22 @@ k8s_resource(
 
 k8s_resource(
     'platform-connectors',
-    resource_deps=['mongodb']
+    resource_deps=[mongodb_dep]
 )
 
 k8s_resource(
     'fault-quarantine',
-    resource_deps=['mongodb']
+    resource_deps=[mongodb_dep]
 )
 
 k8s_resource(
     'node-drainer',
-    resource_deps=['mongodb']
+    resource_deps=[mongodb_dep]
 )
 
 k8s_resource(
     'fault-remediation',
-    resource_deps=['mongodb']
+    resource_deps=[mongodb_dep]
 )
 
 k8s_resource(

@@ -12,29 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# MongoDB Server Certificates
-{{- $replicaCount := int .Values.mongodb.replicaCount }}
-{{- range $i := until $replicaCount }}
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: mongo-server-cert-{{ $i }}
-  namespace: {{ $.Release.Namespace }}
-spec:
-  secretName: mongo-server-cert-{{ $i }}
-  duration: 8760h   # 1 year
-  renewBefore: 360h # 15 days before expiration
-  commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
-  dnsNames:
-    - {{ printf "mongodb-%d.mongodb-headless.%s.svc.cluster.local" $i $.Release.Namespace }}
-    - {{ printf "mongodb-headless.%s.svc.cluster.local" $.Release.Namespace }}
-  issuerRef:
-    name: mongo-ca-issuer
-    kind: Issuer
+{{- if .Values.usePerconaOperator }}
 ---
-{{- end }}
-
-# MongoDB Client Certificate
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -57,20 +36,42 @@ spec:
     countries:
       - US
   issuerRef:
-    name: mongo-ca-issuer
+    name: mongodb-psmdb-issuer
     kind: Issuer
----
-# MongoDB DGXCOPS Client Certificate
+    group: cert-manager.io
+{{- else }}
+
+{{- $replicaCount := int .Values.mongodb.replicaCount }}
+{{- range $i := until $replicaCount }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: mongo-dgxcops-client-cert
+  name: mongo-server-cert-{{ $i }}
   namespace: {{ $.Release.Namespace }}
 spec:
-  secretName: mongo-dgxcops-client-cert-secret
+  secretName: mongo-server-cert-{{ $i }}
+  duration: 8760h   # 1 year
+  renewBefore: 360h # 15 days before expiration
+  commonName: {{ printf "%s-mongo-%d" $.Release.Namespace $i }}
+  dnsNames:
+    - {{ printf "mongodb-%d.mongodb-headless.%s.svc.cluster.local" $i $.Release.Namespace }}
+    - {{ printf "mongodb-headless.%s.svc.cluster.local" $.Release.Namespace }}
+  issuerRef:
+    name: mongo-ca-issuer
+    kind: Issuer
+---
+{{- end }}
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mongo-app-client-cert
+  namespace: {{ $.Release.Namespace }}
+spec:
+  secretName: mongo-app-client-cert-secret
   duration: 8760h
   renewBefore: 360h
-  commonName: mongo-dgxcops-client
+  commonName: mongo-user-client
   subject:
     organizations:
       - Nvidia
@@ -120,3 +121,4 @@ spec:
   issuerRef:
     name: selfsigned-ca-issuer
     kind: Issuer
+{{- end }}

@@ -12,18 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if not .Values.usePerconaOperator }}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+apiVersion: cert-manager.io/v1
+kind: Issuer
 metadata:
-  name: "{{ .Release.Namespace }}-mongodb-role"
+  name: {{ .Values.webhook.certIssuer }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "nvsentinel.labels" . | nindent 4 }}
-rules:
-  - apiGroups: ["cert-manager.io"]
-    resources: ["certificates"]
-    verbs: ["get", "list", "watch", "patch"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["create", "list", "get", "patch", "update"]
-{{- end }}
+    {{- include "janitor.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+

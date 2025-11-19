@@ -13,8 +13,33 @@
 # limitations under the License.
 
 {{ if (eq .Values.mode "manual") }}
+{{- if .Values.usePerconaOperator }}
+{{- /* Percona PVs - one per replica */ -}}
+{{- $replicaCount := index .Values "psmdb-db" "replsets" "rs0" "size" | default 3 | int }}
+{{- range $i := until $replicaCount }}
+---
+# PV for Percona MongoDB replica {{ $i }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-rs0-pv-{{ $i }}
+  labels:
+    type: local
+spec:
+  capacity:
+    storage: "8Gi"
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual-mongodb
+  hostPath:
+    path: /data/mongodb-rs0-{{ $i }}
+    type: DirectoryOrCreate
+{{- end }}
+{{- else }}
 {{- range $i := until (.Values.mongodb.replicaCount | default 3 | int) }}
-# PV for MongoDB replica {{ $i }}
+---
+# PV for Bitnami MongoDB replica {{ $i }}
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -31,6 +56,7 @@ spec:
   hostPath:
     path: /data/mongodb-{{ $i }}
     type: DirectoryOrCreate
----
+{{- end }}
 {{- end }}
 {{ end }}
+

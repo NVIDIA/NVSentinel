@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -23,7 +24,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get"]
+  verbs: ["get", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -37,6 +38,19 @@ subjects:
 - kind: ServiceAccount
   name: mongodb-job-sa
   namespace: {{ .Release.Namespace }}
+---
+{{- $helperImages := .Values.mongodb.helperImages }}
+{{- $rootUsername := "root" }}
+{{- $issuerSecret := "mongo-root-ca-secret" }}
+{{- $passwordSecretName := "mongodb" }}
+{{- $passwordSecretKey := "mongodb-root-password" }}
+{{- if .Values.usePerconaOperator }}
+  {{- $helperImages = .Values.psmdb.helperImages }}
+  {{- $rootUsername = "$MONGODB_ROOT_USER" }}
+  {{- $issuerSecret = "mongodb-ca-cert" }}
+  {{- $passwordSecretName = "internal-mongodb-users" }}
+  {{- $passwordSecretKey = "MONGODB_DATABASE_ADMIN_PASSWORD" }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -54,9 +68,148 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
+{{- if .Values.usePerconaOperator }}
+      # Percona-specific init containers
+      # Create MongoDB keyfile and encryption key secrets if they don't exist
+      - name: create-mongodb-secrets
+        image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
+        imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          
+          NAMESPACE="{{ .Release.Namespace }}"
+          
+          echo "Initializing MongoDB secrets..."
+          
+          # Create MongoDB keyfile secret
+          SECRET_NAME="mongodb-keyfile"
+          if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "[INFO] Keyfile secret already exists. Reusing."
+          else
+            KEYFILE=$(head -c 768 /dev/urandom | base64 | tr -d '\n' | head -c 1024)
+            if [ -z "$KEYFILE" ]; then
+              echo "[ERROR] Failed to generate keyfile"
+              exit 1
+            fi
+            
+            if kubectl create secret generic "$SECRET_NAME" \
+              -n "$NAMESPACE" \
+              --from-literal=mongodb-key="$KEYFILE" \
+              --dry-run=client -o yaml | \
+              sed '/^metadata:/a\  annotations:\n    helm.sh/resource-policy: keep' | \
+              kubectl apply -f -; then
+              echo "[SUCCESS] Keyfile secret created."
+            else
+              echo "[ERROR] Failed to create keyfile secret"
+              exit 1
+            fi
+          fi
+          
+          # Create MongoDB encryption key secret
+          SECRET_NAME="mongodb-encryption-key"
+          if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "[INFO] Encryption key secret already exists. Reusing."
+          else
+            # Generate 32 bytes and base64 encode (MongoDB accepts base64-encoded 32-byte keys)
+            ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+            if [ -z "$ENCRYPTION_KEY" ]; then
+              echo "[ERROR] Failed to generate encryption key"
+              exit 1
+            fi
+            
+            if kubectl create secret generic "$SECRET_NAME" \
+              -n "$NAMESPACE" \
+              --from-literal=encryption-key="$ENCRYPTION_KEY" \
+              --dry-run=client -o yaml | \
+              sed '/^metadata:/a\  annotations:\n    helm.sh/resource-policy: keep' | \
+              kubectl apply -f -; then
+              echo "[SUCCESS] Encryption key secret created."
+            else
+              echo "[ERROR] Failed to create encryption key secret"
+              exit 1
+            fi
+          fi
+          
+          echo "MongoDB secrets initialization completed."
+      
+      # Check if client cert CA matches current issuer CA, delete secret if mismatched
+      - name: validate-client-cert-ca
+        image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
+        imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          
+          NAMESPACE="{{ .Release.Namespace }}"
+          CLIENT_CERT_SECRET="mongo-app-client-cert-secret"
+          ISSUER_SECRET="{{ $issuerSecret }}"
+          
+          echo "Validating client certificate CA..."
+
+          if ! kubectl get secret "$CLIENT_CERT_SECRET" -n "$NAMESPACE" >/dev/null 2>&1; then
+            echo "[INFO] Client cert secret does not exist yet. Skipping validation."
+            exit 0
+          fi
+          
+          WAIT_COUNT=0
+          MAX_WAIT=60  # Wait up to 5 minutes
+          while ! kubectl get secret "$ISSUER_SECRET" -n "$NAMESPACE" >/dev/null 2>&1; do
+            WAIT_COUNT=$((WAIT_COUNT + 1))
+            if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+              echo "[ERROR] Timeout waiting for issuer CA secret '$ISSUER_SECRET'"
+              exit 1
+            fi
+            [ $((WAIT_COUNT % 12)) -eq 0 ] && echo "[INFO] Waiting for issuer CA secret..."
+            sleep 5
+          done
+          
+          # Extract and compare CAs
+          CLIENT_CA=$(kubectl get secret "$CLIENT_CERT_SECRET" -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' | base64 -d | head -n 20)
+          ISSUER_CA=$(kubectl get secret "$ISSUER_SECRET" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d | head -n 20)
+          
+          if [ -z "$CLIENT_CA" ] || [ -z "$ISSUER_CA" ]; then
+            echo "[ERROR] Failed to extract CA certificates"
+            exit 1
+          fi
+          
+          if [ "$CLIENT_CA" = "$ISSUER_CA" ]; then
+            echo "[INFO] Client cert CA matches issuer CA. No action needed."
+          else
+            echo "[WARN] Client cert CA mismatch detected!"
+            echo "[INFO] Deleting old client cert secret..."
+            
+            if kubectl delete secret "$CLIENT_CERT_SECRET" -n "$NAMESPACE" --ignore-not-found=true; then
+              echo "[SUCCESS] Secret deleted. Cert-manager will reissue with current CA."
+            else
+              echo "[ERROR] Failed to delete secret"
+              exit 1
+            fi
+          fi
+          
+          echo "Client cert CA validation completed."
+      
+      - name: wait-for-mongodb-users
+        image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
+        imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MongoDB operator-generated users secret..."
+          while ! kubectl get secret internal-mongodb-users -n {{ .Release.Namespace }} >/dev/null 2>&1; do
+            echo "Secret internal-mongodb-users not found yet, waiting..."
+            sleep 5
+          done
+          echo "MongoDB users secret is available, proceeding..."
+{{- else }}
       - name: wait-for-mongodb-secret
-        image: "{{ .Values.mongodb.helperImages.kubectl.repository }}:{{ .Values.mongodb.helperImages.kubectl.tag }}"
-        imagePullPolicy: {{ .Values.mongodb.helperImages.kubectl.pullPolicy }}
+        image: "{{ $helperImages.kubectl.repository }}:{{ $helperImages.kubectl.tag }}"
+        imagePullPolicy: {{ $helperImages.kubectl.pullPolicy }}
         command:
         - sh
         - -c
@@ -67,10 +220,11 @@ spec:
             sleep 5
           done
           echo "Secret mongodb is available, proceeding..."
+{{- end }}
       containers:
       - name: mongo-client
-        image: "{{ .Values.mongodb.helperImages.mongosh.repository }}:{{ .Values.mongodb.helperImages.mongosh.tag }}"
-        imagePullPolicy: {{ .Values.mongodb.helperImages.mongosh.pullPolicy }}
+        image: "{{ $helperImages.mongosh.repository }}:{{ $helperImages.mongosh.tag }}"
+        imagePullPolicy: {{ $helperImages.mongosh.pullPolicy }}
         command:
           - sh
           - -c
@@ -95,7 +249,7 @@ spec:
 
             until mongosh "$MONGODB_URI" \
               --authenticationMechanism SCRAM-SHA-256 \
-              --username root --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
               --tls \
               --tlsCAFile /certs/ca.crt \
               --tlsCertificateKeyFile /tmp/tls.pem \
@@ -178,11 +332,23 @@ spec:
             echo "mongodb user creation completed."
             echo "=============================="
         env:
+{{- if .Values.usePerconaOperator }}
+          - name: MONGODB_CLUSTER_MONITOR_USER
+            valueFrom:
+              secretKeyRef:
+                name: internal-mongodb-users
+                key: MONGODB_CLUSTER_MONITOR_USER
+          - name: MONGODB_ROOT_USER
+            valueFrom:
+              secretKeyRef:
+                name: internal-mongodb-users
+                key: MONGODB_DATABASE_ADMIN_USER
+{{- end }}
           - name: MONGODB_ROOT_PASSWORD
             valueFrom:
               secretKeyRef:
-                name: mongodb
-                key: mongodb-root-password
+                name: {{ $passwordSecretName }}
+                key: {{ $passwordSecretKey }}
           - name: MONGODB_APPLICATION_USER_DN
             value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
           - name: MONGODB_DGXCOPS_USER_DN
@@ -205,12 +371,23 @@ spec:
                 path: tls.key
               - key: ca.crt
                 path: ca.crt
-      {{- with .Values.mongodb.nodeSelector }}
+      # Job scheduling configuration with backward-compatible fallback
+      # Prefers: job.nodeSelector -> Falls back to: mongodb.nodeSelector
+      {{- $jobNodeSelector := .Values.mongodb.nodeSelector }}
+      {{- if .Values.job }}
+        {{- $jobNodeSelector = .Values.job.nodeSelector | default .Values.mongodb.nodeSelector }}
+      {{- end }}
+      {{- with $jobNodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.mongodb.jobTolerations }}
+      # Prefers: job.tolerations -> Falls back to: mongodb.jobTolerations
+      {{- $jobTolerations := .Values.mongodb.jobTolerations }}
+      {{- if .Values.job }}
+        {{- $jobTolerations = .Values.job.tolerations | default .Values.mongodb.jobTolerations }}
+      {{- end }}
+      {{- with $jobTolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+{{- end }}
       restartPolicy: OnFailure
