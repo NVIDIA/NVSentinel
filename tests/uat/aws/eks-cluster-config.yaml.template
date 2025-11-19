@@ -28,7 +28,7 @@ iam:
   withOIDC: true
   serviceAccounts:
   - metadata:
-      name: nvsentinel-janitor
+      name: janitor
       namespace: nvsentinel
     attachPolicyARNs:
     - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
