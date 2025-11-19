@@ -43,8 +43,14 @@ iam:
         - ec2:DescribeInstanceStatus
         - ec2:DescribeInstances
         Resource: "*"
+      - Effect: Allow
+        Action:
+        - sts:AssumeRoleWithWebIdentity
+        - sts:GetCallerIdentity
+        - sts:DecodeAuthorizationMessage
+        Resource: "*"
     roleName: ${CLUSTER_NAME}-janitor
-    roleOnly: true
+    roleOnly: false
 
 addons:
   - name: aws-ebs-csi-driver
