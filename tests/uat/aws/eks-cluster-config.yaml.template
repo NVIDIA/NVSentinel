@@ -50,7 +50,7 @@ iam:
         - sts:DecodeAuthorizationMessage
         Resource: "*"
     roleName: ${CLUSTER_NAME}-janitor
-    roleOnly: false
+    roleOnly: true
 
 addons:
   - name: aws-ebs-csi-driver
