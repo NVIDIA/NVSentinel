@@ -49,6 +49,7 @@ GO_MODULES := \
 	fault-remediation \
 	janitor \
 	metadata-collector \
+	event-exporter \
 	store-client \
 	commons
 
@@ -440,6 +441,11 @@ lint-test-commons:
 lint-test-metadata-collector:
 	@echo "Linting and testing metadata-collector..."
 	$(MAKE) -C metadata-collector lint-test
+
+.PHONY: lint-test-event-exporter
+lint-test-event-exporter:
+	@echo "Linting and testing event-exporter..."
+	$(MAKE) -C event-exporter lint-test
 
 # Python module lint-test targets (non-health-monitors)
 # Currently no non-health-monitor Python modules

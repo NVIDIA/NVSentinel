@@ -135,6 +135,7 @@ jobs:
       matrix:
         component:
           - platform-connectors
+          - event-exporter
           - store-client
           - commons
           - data-models

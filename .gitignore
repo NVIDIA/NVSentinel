@@ -451,3 +451,4 @@ labeler/labeler
 metadata-collector/metadata-collector
 node-drainer/node-drainer
 platform-connectors/platform-connectors
+event-exporter/event-exporter
