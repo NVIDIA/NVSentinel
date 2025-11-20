@@ -53,14 +53,7 @@ main() {
     kubectl config use-context "kind-${CLUSTER_NAME}" > /dev/null 2>&1
     
     log "Cluster Nodes:"
-    echo ""
-    echo "  (STATUS may show GPU monitoring conditions - this is normal)"
-    echo ""
-    kubectl get nodes -o custom-columns=\
-NAME:.metadata.name,\
-STATUS:.status.conditions[-1].type,\
-SCHEDULING:.spec.unschedulable,\
-VERSION:.status.nodeInfo.kubeletVersion
+    kubectl get nodes 
     
     echo ""
     log "Checking node scheduling status..."
