@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "agent": "gpu-health-monitor",
+  "componentClass": "GPU",
+  "checkName": "GpuXidError",
+  "isFatal": true,
+  "isHealthy": false,
+  "message": "XID error 79: GPU has fallen off the bus. This is a critical hardware failure requiring node quarantine.",
+  "recommendedAction": 15,
+  "errorCode": [
+    "79"
+  ],
+  "entitiesImpacted": [
+    {
+      "entityType": "GPU",
+      "entityValue": "0"
+    }
+  ],
+  "nodeName": "NODE_NAME"
+}
+

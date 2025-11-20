@@ -98,6 +98,20 @@ kubectl get nodes  # Verify GPU nodes are visible
 
 > **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
 
+## 🎮 Try the Demo
+
+Want to see NVSentinel in action without GPU hardware? Try our **[local XID demo](demos/local-xid-demo/README.md)**:
+
+- 🚀 **5-minute setup** - runs entirely in a local KIND cluster
+- 🔍 **Real pipeline** - see fault detection → quarantine → node cordon
+- 🎯 **No GPU required** - uses simulated DCGM for testing
+
+```bash
+cd demos/local-xid-demo
+make demo  # Automated: creates cluster, installs NVSentinel, injects fault, verifies cordon
+```
+
+Perfect for learning, presentations, or CI/CD testing!
 
 ## 🏗️ Architecture
 
