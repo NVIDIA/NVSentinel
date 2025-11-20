@@ -394,7 +394,7 @@ wait_for_pods() {
     
     # Wait for platform-connectors
     kubectl wait --for=condition=ready pod \
-        -l app=platform-connectors \
+        -l app.kubernetes.io/name=nvsentinel \
         -n "$NAMESPACE" \
         --timeout=300s > /dev/null 2>&1 || {
             error "Platform Connectors failed to start"
@@ -403,7 +403,7 @@ wait_for_pods() {
     
     # Wait for fault-quarantine
     kubectl wait --for=condition=ready pod \
-        -l app=fault-quarantine \
+        -l app.kubernetes.io/name=fault-quarantine \
         -n "$NAMESPACE" \
         --timeout=300s > /dev/null 2>&1 || {
             error "Fault Quarantine failed to start"
