@@ -25,10 +25,10 @@ Welcome! This demo shows NVSentinel's core functionality running locally on your
 - **kubectl** - Kubernetes command-line tool ([install](https://kubernetes.io/docs/tasks/tools/))
 - **kind** - Kubernetes IN Docker ([install](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
 - **helm** - Kubernetes package manager ([install](https://helm.sh/docs/intro/install/))
+- **jq** - JSON processor for parsing Kubernetes output ([install](https://jqlang.github.io/jq/download/))
 
-**Optional (improves output formatting):**
+**Optional:**
 - **curl** - For sending HTTP requests (usually pre-installed)
-- **jq** - JSON processor for prettier output ([install](https://jqlang.github.io/jq/download/))
 
 ## 🚀 Quick Start
 

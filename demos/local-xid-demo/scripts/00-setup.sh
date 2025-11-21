@@ -63,6 +63,10 @@ check_prerequisites() {
         missing+=("helm")
     fi
     
+    if ! command -v jq &> /dev/null; then
+        missing+=("jq")
+    fi
+    
     if [ ${#missing[@]} -ne 0 ]; then
         error "Missing required tools: ${missing[*]}\nPlease install them and try again. See README.md for installation links."
     fi
