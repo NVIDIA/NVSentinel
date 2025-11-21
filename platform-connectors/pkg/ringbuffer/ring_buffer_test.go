@@ -99,7 +99,10 @@ func TestRingBuffer_Queue(t *testing.T) {
 	}
 
 	for testCase, healthEvent := range healthEventsList {
-		item := ringBuffer.Dequeue()
+		item, quit := ringBuffer.Dequeue()
+		if quit {
+			t.Errorf("Unexpected quit signal during normal operation")
+		}
 		for _, healthEventItem := range item.Events {
 			if healthEventItem.CheckName != healthEvent.expectedHealthEventOutput {
 				t.Errorf("Testcase %d. The expected healthEvent %s is not matching with the currentEvent %s from the queue", testCase, healthEvent.expectedHealthEventOutput, healthEventItem.CheckName)
@@ -132,9 +135,12 @@ func TestRingBuffer_DequeueWithCancelledContext(t *testing.T) {
 	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 	ringBuffer.Enqueue(&healthEvents)
 
-	result := ringBuffer.Dequeue()
+	result, quit := ringBuffer.Dequeue()
+	if !quit {
+		t.Errorf("Expected quit=true when context is cancelled, got quit=false")
+	}
 	if result != nil {
-		t.Errorf("Expected nil when context is cancelled, got %+v", result)
+		t.Errorf("Expected nil result when context is cancelled, got %+v", result)
 	}
 }
 
@@ -154,7 +160,10 @@ func TestRingBuffer_HealthMetricEleProcessingFailed(t *testing.T) {
 	healthEvents := protos.HealthEvents{Version: 1, Events: []*protos.HealthEvent{healthEvent}}
 
 	ringBuffer.Enqueue(&healthEvents)
-	item := ringBuffer.Dequeue()
+	item, quit := ringBuffer.Dequeue()
+	if quit {
+		t.Errorf("Unexpected quit signal during normal operation")
+	}
 
 	ringBuffer.HealthMetricEleProcessingFailed(item)
 
@@ -181,14 +190,21 @@ func TestRingBuffer_ShutDown(t *testing.T) {
 
 	ringBuffer.ShutDownHealthMetricQueue()
 
-	result := ringBuffer.Dequeue()
+	result, quit := ringBuffer.Dequeue()
+	if quit {
+		t.Errorf("Expected quit=false for first item after shutdown, got quit=true")
+	}
 	if result == nil {
 		t.Errorf("Expected to get the enqueued item, got nil")
 	}
+	ringBuffer.HealthMetricEleProcessingCompleted(result)
 
-	result2 := ringBuffer.Dequeue()
+	result2, quit2 := ringBuffer.Dequeue()
+	if !quit2 {
+		t.Errorf("Expected quit=true on second dequeue after shutdown, got quit=false")
+	}
 	if result2 != nil {
-		t.Errorf("Expected nil on second dequeue after shutdown, got %+v", result2)
+		t.Errorf("Expected nil result on second dequeue after shutdown, got %+v", result2)
 	}
 }
 

@@ -75,6 +75,8 @@ platformConnector:
 
   tolerations: []
 
+  logLevel: info
+
   k8sConnector:
     enabled: true
     qps: 5.0

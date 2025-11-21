@@ -51,21 +51,24 @@ func (rb *RingBuffer) Enqueue(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Add(data)
 }
 
-func (rb *RingBuffer) Dequeue() *protos.HealthEvents {
+func (rb *RingBuffer) Dequeue() (*protos.HealthEvents, bool) {
 	healthEvents, quit := rb.healthMetricQueue.Get()
 	if quit {
-		slog.Info("quitting from queue processing")
-		return nil
+		slog.Info("Queue signaled shutdown")
+		return nil, true
 	}
 
 	slog.Info("Successfully got item", "healthEvents", healthEvents)
 
 	if errors.Is(rb.ctx.Err(), context.Canceled) {
-		slog.Info("Processing cancelled")
-		return nil
+		slog.Info("Context cancelled, signaling quit")
+		rb.healthMetricQueue.Forget(healthEvents)
+		rb.healthMetricQueue.Done(healthEvents)
+
+		return nil, true
 	}
 
-	return healthEvents
+	return healthEvents, false
 }
 
 func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *protos.HealthEvents) {
@@ -74,10 +77,11 @@ func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *protos.HealthEven
 
 func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Forget(data)
+	rb.healthMetricQueue.Done(data)
 }
 
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
-	rb.healthMetricQueue.ShutDown()
+	rb.healthMetricQueue.ShutDownWithDrain()
 }
 
 func (rb *RingBuffer) CurrentLength() int {

@@ -90,6 +90,8 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            - name: LOG_LEVEL
+              value: "{{ .Values.platformConnector.logLevel }}"
           envFrom:
             - configMapRef:
                 name: mongodb-config

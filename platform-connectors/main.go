@@ -243,6 +243,8 @@ func cleanupResources(
 	}
 
 	if storeConnector != nil {
+		storeConnector.ShutdownRingBuffer()
+
 		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer disconnectCancel()
 

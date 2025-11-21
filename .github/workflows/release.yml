@@ -119,6 +119,7 @@ jobs:
           HELM_REGISTRY_TYPE: oci
           HELM_OCI_REGISTRY: ghcr.io
           HELM_OCI_REPOSITORY: nvidia
+          SAFE_REF: ${{ steps.ref-name.outputs.value }}
         run: make -C distros/kubernetes helm-publish
 
   create-github-release:
