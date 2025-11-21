@@ -108,10 +108,6 @@ main() {
         kubectl get "$node" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' | \
             grep -v "^Ready\|^MemoryPressure\|^DiskPressure\|^PIDPressure\|^NetworkUnavailable" || true
         
-        # Check for XID conditions specifically
-        if kubectl get "$node" -o json | jq -r '.status.conditions[] | select(.type | contains("XID")) | .type' | grep -q .; then
-            has_conditions=true
-        fi
     done
     
     if [ "$has_conditions" = false ]; then

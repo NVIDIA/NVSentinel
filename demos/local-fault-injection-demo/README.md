@@ -1,4 +1,4 @@
-# NVSentinel Local Demo: XID Error Detection and Node Quarantine
+# NVSentinel Local Demo: Fault Injection and Node Quarantine
 
 Welcome! This demo shows NVSentinel's core functionality running locally on your laptop. You'll see how NVSentinel automatically detects GPU failures and protects your cluster by cordoning faulty nodes.
 
@@ -7,7 +7,7 @@ Welcome! This demo shows NVSentinel's core functionality running locally on your
 
 ## 🎯 What You'll Learn
 
-1. **GPU Health Monitoring** - How NVSentinel detects hardware failures (XID errors)
+1. **GPU Health Monitoring** - How NVSentinel detects hardware failures
 2. **Automated Response** - How faulty nodes are automatically quarantined
 3. **Event-Driven Architecture** - How health events flow through the system
 
@@ -74,23 +74,17 @@ make cleanup
 
 ## 📚 Understanding the Demo
 
-### What is an XID Error?
+### What GPU Faults Does NVSentinel Detect?
 
-**XID errors** are NVIDIA GPU error codes that indicate hardware or driver failures. They're logged by the NVIDIA driver when a GPU experiences issues.
+NVSentinel monitors GPU health through multiple channels and can detect various hardware and driver failures through DCGM health checks, XID error codes, and system logs.
 
-**Common XID Errors:**
-- **XID 79**: "GPU has fallen off the bus" - critical hardware failure
-- **XID 119**: RPC timeout from GPU - communication failure
-- **XID 48**: Double Bit ECC error - memory corruption
-- **XID 94**: Contained ECC error - correctable memory error
-
-This demo simulates a **corrupt InfoROM fault**, which is a fatal GPU hardware error that requires the node to be removed from service.
+This demo simulates a **fatal GPU hardware fault** (corrupt InfoROM) using DCGM's error injection capability. This type of fault requires the node to be removed from service to protect workloads.
 
 ### How NVSentinel Responds
 
-When an XID error is detected, NVSentinel:
+When a GPU fault is detected, NVSentinel:
 
-1. **Health Monitor** detects the XID error (from GPU monitor or syslog)
+1. **Health Monitor** detects the GPU error (from DCGM, syslog, or other sources)
 2. **Platform Connectors** receives the health event via gRPC
 3. **MongoDB** stores the event in the persistent event database
 4. **Fault Quarantine** watches for new events and evaluates rules
@@ -106,7 +100,7 @@ This demo uses a **minimal NVSentinel deployment** with:
 
 - **KIND Cluster** - 1 control plane + 1 worker node
 - **Fake DCGM** - Simulates NVIDIA GPU monitoring (with NVML injection)
-- **GPU Health Monitor** - Detects XID errors from DCGM
+- **GPU Health Monitor** - Detects GPU errors from DCGM
 - **Platform Connectors** - gRPC server for receiving health events
 - **Fault Quarantine** - Rule engine that cordons nodes on fatal errors
 - **MongoDB** - Event storage and change streams
@@ -188,26 +182,7 @@ Both nodes should be `Ready` with no scheduling restrictions.
 - GPU Health Monitor polls DCGM every few seconds and detects the error
 - NVSentinel automatically processes the event and cordons the node
 
-This demonstrates the **actual production workflow** - no manual intervention, just like with real GPUs:
 
-```json
-{
-  "version": 1,
-  "agent": "gpu-health-monitor",
-  "componentClass": "GPU",
-  "checkName": "GpuXidError",
-  "isFatal": true,
-  "isHealthy": false,
-  "message": "XID error 79: GPU has fallen off the bus",
-  "recommendedAction": 15,
-  "errorCode": ["79"],
-  "entitiesImpacted": [{
-    "entityType": "GPU",
-    "entityValue": "0"
-  }],
-  "nodeName": "nvsentinel-demo-worker2"
-}
-```
 
 The GPU Health Monitor detects this from DCGM and sends it via gRPC to Platform Connectors - exactly like production!
 
@@ -229,7 +204,7 @@ nvsentinel-demo-control-plane   Ready                      control-plane   12m  
 nvsentinel-demo-worker          Ready,SchedulingDisabled   <none>          12m   v1.31.0
 ```
 
-Notice the worker node now shows `SchedulingDisabled` - NVSentinel automatically cordoned it after detecting the XID error! 🎉
+Notice the worker node now shows `SchedulingDisabled` - NVSentinel automatically cordoned it after detecting the GPU fault! 🎉
 
 ### Cleanup (99-cleanup.sh)
 
@@ -325,7 +300,7 @@ kubectl logs -n nvsentinel deployment/simple-health-client
 kubectl logs -n nvsentinel deployment/fault-quarantine
 
 # Verify event was received
-kubectl get events -A | grep XID
+kubectl get events -A | grep GPU
 ```
 
 ### Port conflicts
@@ -350,7 +325,7 @@ After trying this demo, explore more NVSentinel capabilities:
 - **[Architecture Guide](../../docs/OVERVIEW.md)** - Detailed system architecture
 - **[Development Guide](../../DEVELOPMENT.md)** - Contributing and development setup
 - **[Helm Chart Configuration](../../distros/kubernetes/README.md)** - All configuration options
-- **[XID Error Reference](https://docs.nvidia.com/deploy/xid-errors/)** - NVIDIA's XID error documentation
+- **[NVIDIA GPU Error Codes (XIDs)](https://docs.nvidia.com/deploy/xid-errors/)** - Reference for GPU error codes
 
 ## 🤝 Contributing
 

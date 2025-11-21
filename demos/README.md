@@ -4,7 +4,7 @@ Interactive demonstrations of NVSentinel's core capabilities that run locally on
 
 ## Available Demos
 
-### [Local XID Demo](local-xid-demo/)
+### [Local Fault Injection Demo](local-fault-injection-demo/)
 
 **What it shows:** GPU failure detection and automated node quarantine
 

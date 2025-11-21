@@ -75,8 +75,8 @@ check_node_exists() {
     fi
 }
 
-inject_xid_error() {
-    section "Injecting XID Error"
+inject_gpu_error() {
+    section "Injecting GPU Error"
     
     log "Simulating GPU failure on node: $TARGET_NODE"
     echo ""
@@ -110,7 +110,7 @@ inject_xid_error() {
     
     echo "The health event is now flowing through NVSentinel:"
     echo ""
-    echo "  1. 🔍 GPU Health Monitor detects the XID error from DCGM"
+    echo "  1. 🔍 GPU Health Monitor detects the GPU error from DCGM"
     echo "  2. 📡 Sends health event to Platform Connectors via gRPC"
     echo "  3. 📊 Platform Connectors store event in MongoDB"
     echo "  4. 👀 Fault Quarantine watches MongoDB change stream"
@@ -118,7 +118,7 @@ inject_xid_error() {
     echo "  6. 🔒 Node will be cordoned AUTOMATICALLY"
     echo ""
     
-    success "XID error injection complete!"
+    success "GPU error injection complete!"
     echo ""
     echo "Next step: Run './scripts/03-verify-cordon.sh' to verify the node was cordoned"
     echo "  (The script will poll for cordon status with retries)"
@@ -126,12 +126,12 @@ inject_xid_error() {
 }
 
 main() {
-    section "XID Error Injection"
+    section "GPU Error Injection"
     
     check_cluster
     find_target_node
     check_node_exists
-    inject_xid_error
+    inject_gpu_error
 }
 
 main "$@"

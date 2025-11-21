@@ -144,7 +144,7 @@ install_nvsentinel() {
 global:
   dryRun: false
   
-  # Enable GPU health monitor for XID detection (works with fake DCGM)
+  # Enable GPU health monitor for Error detection (works with fake DCGM)
   gpuHealthMonitor:
     enabled: true
   syslogHealthMonitor:

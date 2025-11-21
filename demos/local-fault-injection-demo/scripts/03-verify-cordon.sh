@@ -182,7 +182,7 @@ verify_cordon() {
     echo "You've successfully completed the NVSentinel local demo!"
     echo ""
     echo "What you learned:"
-    echo "  ✅ How NVSentinel detects GPU failures (XID errors)"
+    echo "  ✅ How NVSentinel detects GPU failures"
     echo "  ✅ How events flow through the system (HTTP → gRPC → MongoDB)"
     echo "  ✅ How Fault Quarantine automatically cordons faulty nodes"
     echo "  ✅ How Kubernetes prevents new workloads on failed hardware"
