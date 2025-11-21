@@ -130,7 +130,7 @@ main() {
     success "Cluster is ready for demo"
     echo ""
     echo "Next steps:"
-    echo "  1. Run './scripts/02-inject-xid.sh' to simulate a GPU failure"
+    echo "  1. Run './scripts/02-inject-error.sh' to simulate a GPU failure"
     echo "  2. Run './scripts/03-verify-cordon.sh' to verify the node was cordoned"
     echo ""
 }

@@ -189,9 +189,8 @@ verify_cordon() {
     echo ""
     echo "Next steps:"
     echo "  1. Explore NVSentinel logs: kubectl logs -n $NAMESPACE -l app=platform-connectors"
-    echo "  2. Try modifying the XID error in data/xid-79-error.json"
-    echo "  3. Check out the full NVSentinel docs: ../../README.md"
-    echo "  4. When done, clean up: ./scripts/99-cleanup.sh"
+    echo "  2. Check out the full NVSentinel docs: ../../README.md"
+    echo "  3. When done, clean up: ./scripts/99-cleanup.sh"
     echo ""
 }
 

@@ -62,7 +62,7 @@ make cleanup
 ./scripts/01-show-cluster.sh
 
 # Step 2: Inject a GPU fault (simulates hardware failure)
-./scripts/02-inject-xid.sh
+./scripts/02-inject-error.sh
 
 # Step 3: Verify node was cordoned
 ./scripts/03-verify-cordon.sh
@@ -179,7 +179,7 @@ nvsentinel-demo-worker          Ready    <none>          2m    v1.31.0
 
 Both nodes should be `Ready` with no scheduling restrictions.
 
-### Phase 2: Failure Injection (02-inject-xid.sh)
+### Phase 2: Failure Injection (02-inject-error.sh)
 
 **Injects a GPU hardware fault** into the fake DCGM service. The GPU Health Monitor detects this error automatically (just like it would with real GPU hardware) and NVSentinel quarantines the node.
 

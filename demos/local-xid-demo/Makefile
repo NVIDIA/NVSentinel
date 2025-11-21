@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help setup show-cluster inject-xid verify cleanup demo
+.PHONY: help setup show-cluster inject-error verify cleanup demo
 
 help: ## Show this help message
 	@echo "NVSentinel Local Demo - XID Error Detection"
@@ -31,8 +31,8 @@ setup: ## Create KIND cluster and install NVSentinel
 show-cluster: ## Show current cluster status
 	@./scripts/01-show-cluster.sh
 
-inject-xid: ## Inject XID error to simulate GPU failure
-	@./scripts/02-inject-xid.sh
+inject-error: ## Inject error to simulate GPU failure
+	@./scripts/02-inject-error.sh
 
 verify: ## Verify node was cordoned
 	@./scripts/03-verify-cordon.sh
@@ -40,10 +40,12 @@ verify: ## Verify node was cordoned
 cleanup: ## Delete the demo cluster
 	@./scripts/99-cleanup.sh
 
-demo: setup show-cluster inject-xid verify ## Run the complete demo (setup → show → inject → verify)
+demo: setup show-cluster inject-error verify ## Run the complete demo (setup → show → inject → verify)
 	@echo ""
 	@echo "✅ Demo complete! Run 'make cleanup' when finished."
 	@echo ""
 
 .DEFAULT_GOAL := help
+
+
 
