@@ -67,7 +67,7 @@ jobs:
           - component: file-server-cleanup
             make_command: 'make -C log-collector docker-build-file-server-cleanup'
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -125,7 +125,7 @@ jobs:
           - module: event-exporter
             path: .
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
