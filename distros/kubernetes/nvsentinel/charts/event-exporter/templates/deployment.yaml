@@ -1,0 +1,125 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "event-exporter.fullname" . }}
+  labels:
+    {{- include "event-exporter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "event-exporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "event-exporter.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: event-exporter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          args:
+          - "--config=/etc/config/config.toml"
+          - "--metrics-port={{ .Values.global.metricsPort }}"
+          - "--oidc-secret-path=/var/secrets/oidc-client-secret"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.global.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+          - name: config-volume
+            mountPath: /etc/config/config.toml
+            subPath: config.toml
+          - name: oidc-secret
+            mountPath: /var/secrets
+            readOnly: true
+          - name: mongo-app-client-cert
+            mountPath: /etc/ssl/mongo-client
+            readOnly: true
+          - name: var-run-vol
+            mountPath: /var/run/
+          env:
+            - name: MONGODB_CLIENT_CERT_PATH
+              value: "/etc/ssl/mongo-client/tls.crt"
+            - name: MONGODB_CLIENT_KEY_PATH
+              value: "/etc/ssl/mongo-client/tls.key"
+            - name: MONGODB_CA_CERT_PATH
+              value: "/etc/ssl/mongo-client/ca.crt"
+          envFrom:
+            - configMapRef:
+                name: mongodb-config
+                optional: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: {{ include "event-exporter.fullname" . }}
+          items:
+          - key: config.toml
+            path: config.toml
+      - name: oidc-secret
+        secret:
+          secretName: {{ .Values.oidcSecretName }}
+          optional: false
+      - name: var-run-vol
+        hostPath:
+          path: /var/run/nvsentinel
+          type: DirectoryOrCreate
+      - name: mongo-app-client-cert
+        secret:
+          secretName: mongo-app-client-cert-secret
+          optional: true
+      restartPolicy: Always
+      {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.systemNodeTolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+

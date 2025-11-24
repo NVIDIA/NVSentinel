@@ -45,14 +45,16 @@ type ExporterConfig struct {
 type MetadataConfig map[string]string
 
 type SinkConfig struct {
-	Endpoint string `toml:"endpoint"`
-	Timeout  string `toml:"timeout"`
+	Endpoint           string `toml:"endpoint"`
+	Timeout            string `toml:"timeout"`
+	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 }
 
 type OIDCConfig struct {
-	TokenURL string `toml:"token_url"`
-	ClientID string `toml:"client_id"`
-	Scope    string `toml:"scope"`
+	TokenURL           string `toml:"token_url"`
+	ClientID           string `toml:"client_id"`
+	Scope              string `toml:"scope"`
+	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
 }
 
 type BackfillConfig struct {

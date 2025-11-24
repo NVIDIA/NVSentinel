@@ -61,6 +61,7 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		cfg.Exporter.Sink.Endpoint,
 		cfg.Exporter.Sink.GetTimeout(),
 		tokenProvider,
+		cfg.Exporter.Sink.InsecureSkipVerify,
 	)
 
 	cloudEventsTransformer := transformer.NewCloudEventsTransformer(cfg.Exporter.Metadata)
@@ -110,6 +111,7 @@ func initializeOIDC(cfg *config.Config, secretPath string) (*auth.TokenProvider,
 		cfg.Exporter.OIDC.ClientID,
 		strings.TrimSpace(string(clientSecretBytes)),
 		cfg.Exporter.OIDC.Scope,
+		cfg.Exporter.OIDC.InsecureSkipVerify,
 	)
 
 	slog.Info("OIDC token provider initialized",
