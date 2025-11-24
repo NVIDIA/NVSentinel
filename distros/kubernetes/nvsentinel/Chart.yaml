@@ -58,3 +58,6 @@ dependencies:
   - name: kubernetes-object-monitor
     version: "0.1.0"
     condition: global.kubernetesObjectMonitor.enabled
+  - name: event-exporter
+    version: "0.1.0"
+    condition: global.eventExporter.enabled

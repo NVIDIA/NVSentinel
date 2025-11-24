@@ -33,10 +33,11 @@ import (
 )
 
 type TokenProvider struct {
-	tokenURL     string
-	clientID     string
-	clientSecret string
-	scope        string
+	tokenURL           string
+	clientID           string
+	clientSecret       string
+	scope              string
+	insecureSkipVerify bool
 
 	mu             sync.Mutex
 	cachedToken    string
@@ -48,12 +49,13 @@ type tokenResponse struct {
 	ExpiresIn   float64 `json:"expires_in"`
 }
 
-func NewTokenProvider(tokenURL, clientID, clientSecret, scope string) *TokenProvider {
+func NewTokenProvider(tokenURL, clientID, clientSecret, scope string, insecureSkipVerify bool) *TokenProvider {
 	return &TokenProvider{
-		tokenURL:     tokenURL,
-		clientID:     clientID,
-		clientSecret: clientSecret,
-		scope:        scope,
+		tokenURL:           tokenURL,
+		clientID:           clientID,
+		clientSecret:       clientSecret,
+		scope:              scope,
+		insecureSkipVerify: insecureSkipVerify,
 	}
 }
 
@@ -159,7 +161,8 @@ func (p *TokenProvider) executeTokenRequest(req *http.Request) (*tokenResponse, 
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: p.insecureSkipVerify, //nolint:gosec // This is only used for testing
 			},
 		},
 	}

@@ -39,6 +39,7 @@ func NewHTTPSink(
 	endpoint string,
 	timeout time.Duration,
 	tokenProvider *auth.TokenProvider,
+	insecureSkipVerify bool,
 ) *HTTPSink {
 	return &HTTPSink{
 		endpoint:      endpoint,
@@ -48,7 +49,8 @@ func NewHTTPSink(
 			Timeout: timeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
+					MinVersion:         tls.VersionTLS12,
+					InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // This is only used for testing
 				},
 			},
 		},

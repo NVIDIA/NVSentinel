@@ -1,0 +1,81 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nvidia/nvsentinel/event-exporter
+  pullPolicy: IfNotPresent
+  tag: ""
+
+podAnnotations: {}
+
+resources:
+  limits:
+    cpu: "1"
+    memory: "1Gi"
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+
+# OIDC secret configuration
+# The secret should contain a key named 'oidc-client-secret'
+# You must create this secret manually before deploying this chart
+oidcSecretName: "event-exporter-oidc-secret"
+
+# Event exporter configuration
+exporter:
+  # Metadata configuration
+  # Add any custom metadata fields here - they will be included in CloudEvents data.metadata
+  metadata:
+    cluster: "my-cluster"
+    environment: "production"
+    # Additional custom metadata fields (optional):
+    # region: "us-west-2"
+    # datacenter: "dc01"
+    # tenant: "acme-corp"
+
+  # Sink configuration for event destination
+  sink:
+    endpoint: "https://events.example.com/api/v1/events"
+    timeout: "30s"
+    insecureSkipVerify: false
+
+  # OIDC configuration for authentication
+  oidc:
+    tokenUrl: "https://auth.example.com/oauth2/token"
+    clientId: "nvsentinel-exporter"
+    scope: "events:write"
+    insecureSkipVerify: false
+
+  # Backfill configuration for historical events
+  backfill:
+    enabled: true
+    maxAge: "720h"       # 30 days
+    maxEvents: 1000000
+    batchSize: 500
+    rateLimit: 1000      # events per second
+
+  # Resume token storage configuration
+  resumeToken:
+    database: "nvsentinel"
+    collection: "resumetokens"
+
+  # Failure handling and retry configuration
+  failureHandling:
+    maxRetries: 17           # ~30 minutes of retries
+    initialBackoff: "1s"
+    maxBackoff: "5m"
+    backoffMultiplier: 2.0
+

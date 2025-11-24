@@ -1,0 +1,59 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "event-exporter.fullname" . }}
+  labels:
+    {{- include "event-exporter.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [exporter.metadata]
+    cluster = "{{ .Values.exporter.metadata.cluster }}"
+    environment = "{{ .Values.exporter.metadata.environment }}"
+    {{- range $key, $value := .Values.exporter.metadata }}
+    {{- if and (ne $key "cluster") (ne $key "environment") }}
+    {{ $key }} = "{{ $value }}"
+    {{- end }}
+    {{- end }}
+
+    [exporter.sink]
+    endpoint = "{{ .Values.exporter.sink.endpoint }}"
+    timeout = "{{ .Values.exporter.sink.timeout }}"
+    insecure_skip_verify = {{ .Values.exporter.sink.insecureSkipVerify }}
+
+    [exporter.oidc]
+    token_url = "{{ .Values.exporter.oidc.tokenUrl }}"
+    client_id = "{{ .Values.exporter.oidc.clientId }}"
+    scope = "{{ .Values.exporter.oidc.scope }}"
+    insecure_skip_verify = {{ .Values.exporter.oidc.insecureSkipVerify }}
+
+    [exporter.backfill]
+    enabled = {{ .Values.exporter.backfill.enabled }}
+    max_age = "{{ .Values.exporter.backfill.maxAge }}"
+    max_events = {{ .Values.exporter.backfill.maxEvents }}
+    batch_size = {{ .Values.exporter.backfill.batchSize }}
+    rate_limit = {{ .Values.exporter.backfill.rateLimit }}
+
+    [exporter.resume_token]
+    database = "{{ .Values.exporter.resumeToken.database }}"
+    collection = "{{ .Values.exporter.resumeToken.collection }}"
+
+    [exporter.failure_handling]
+    max_retries = {{ .Values.exporter.failureHandling.maxRetries }}
+    initial_backoff = "{{ .Values.exporter.failureHandling.initialBackoff }}"
+    max_backoff = "{{ .Values.exporter.failureHandling.maxBackoff }}"
+    backoff_multiplier = {{ .Values.exporter.failureHandling.backoffMultiplier }}
+
