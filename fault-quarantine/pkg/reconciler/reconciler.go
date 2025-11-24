@@ -414,6 +414,8 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 ) *model.Status {
 	healthEventsAnnotationMap, _, err := r.getHealthEventsFromAnnotation(event)
 
+	forceQuarantine := event.QuarantineOverrides != nil && event.QuarantineOverrides.Force
+
 	// Only propagate events to ND/FR if they will modify node annotations
 	// Returning nil prevents unnecessary MongoDB writes and downstream processing
 	switch {
@@ -430,7 +432,7 @@ func (r *Reconciler) handleAlreadyQuarantinedNode(
 		if !hasExistingCheck {
 			return nil
 		}
-	case !r.eventMatchesAnyRule(event, ruleSetEvals):
+	case !forceQuarantine && !r.eventMatchesAnyRule(event, ruleSetEvals):
 		return nil
 	}
 
@@ -752,7 +754,9 @@ func (r *Reconciler) handleUnhealthyEventOnQuarantinedNode(
 	ruleSetEvals []evaluator.RuleSetEvaluatorIface,
 	healthEventsAnnotationMap *healthEventsAnnotation.HealthEventsAnnotationMap,
 ) bool {
-	if !r.eventMatchesAnyRule(event, ruleSetEvals) {
+	forceQuarantine := event.QuarantineOverrides != nil && event.QuarantineOverrides.Force
+
+	if !forceQuarantine && !r.eventMatchesAnyRule(event, ruleSetEvals) {
 		slog.Info("Unhealthy event on node doesn't match any rules, skipping annotation update",
 			"checkName", event.CheckName, "node", event.NodeName)
 
