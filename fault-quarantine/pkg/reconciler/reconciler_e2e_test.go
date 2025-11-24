@@ -3259,6 +3259,124 @@ func TestE2E_UnhealthyEventOnQuarantinedNodeNoRuleMatch(t *testing.T) {
 	assert.True(t, node.Spec.Unschedulable, "Node should remain quarantined")
 }
 
+func TestE2E_ForceQuarantineOnAlreadyQuarantinedNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-force-q-node-" + generateShortTestID()
+
+	// Create node already quarantined with an existing event
+	existingEvent := &protos.HealthEvent{
+		NodeName:       nodeName,
+		Agent:          "gpu-health-monitor",
+		CheckName:      "GpuXidError",
+		ComponentClass: "GPU",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	existingMap.AddOrUpdateEvent(existingEvent)
+	existingBytes, err := json.Marshal(existingMap)
+	require.NoError(t, err)
+
+	annotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:           string(existingBytes),
+		common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	// Configure rules that won't match the new event
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-only",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event with force=true for different check (doesn't match rules)")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID1,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "dgxcops",
+				"componentclass": "NODE",
+				"checkname":      "ManualReboot",
+				"version":        uint32(1),
+				"ishealthy":      false,
+				"message":        "Force quarantine for maintenance",
+				"entitiesimpacted": []interface{}{
+					datastore.Event{
+						"entitytype":  "node",
+						"entityvalue": nodeName,
+					},
+				},
+				"quarantineoverrides": datastore.Event{
+					"force": true,
+				},
+			},
+		},
+	}}
+
+	t.Log("Verify status is AlreadyQuarantined (force=true bypasses rule matching)")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be AlreadyQuarantined with force override on already-quarantined node")
+
+	t.Log("Verify annotation is updated with the new event (despite not matching rules)")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		annotationStr := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+		if annotationStr == "" {
+			return false
+		}
+
+		var annotationMap healthEventsAnnotation.HealthEventsAnnotationMap
+		if err := json.Unmarshal([]byte(annotationStr), &annotationMap); err != nil {
+			return false
+		}
+
+		// Should now have 2 events: original GpuXidError + new ManualReboot
+		return annotationMap.Count() == 2
+	}, eventuallyTimeout, eventuallyPollInterval, "Annotation should be updated with force=true event")
+
+	t.Log("Verify node remains quarantined")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, node.Spec.Unschedulable, "Node should remain quarantined")
+}
+
 func TestE2E_DryRunMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
