@@ -94,7 +94,9 @@ include('../janitor/Tiltfile')
 include('../node-drainer/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
+include('./event-exporter-mock/Tiltfile')
 include('../health-events-analyzer/Tiltfile')
+include('../event-exporter/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
@@ -229,6 +231,13 @@ k8s_resource(
 k8s_resource(
     'simple-health-client',
     resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'event-exporter',
+    port_forwards='2112:2112',
+    labels=['event-exporter'],
+    resource_deps=['event-exporter-mock', mongodb_dep]
 )
 
 k8s_resource(

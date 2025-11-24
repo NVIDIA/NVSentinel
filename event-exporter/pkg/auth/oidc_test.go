@@ -100,7 +100,7 @@ func TestCreateTokenRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			provider := NewTokenProvider(tt.tokenURL, tt.clientID, tt.clientSecret, tt.scope)
+			provider := NewTokenProvider(tt.tokenURL, tt.clientID, tt.clientSecret, tt.scope, false)
 			ctx := context.Background()
 
 			req, err := provider.createTokenRequest(ctx)
@@ -214,7 +214,7 @@ func TestExecuteTokenRequest(t *testing.T) {
 			server := httptest.NewServer(tt.serverHandler)
 			defer server.Close()
 
-			provider := NewTokenProvider(server.URL, "test-client", "test-secret", "test-scope")
+			provider := NewTokenProvider(server.URL, "test-client", "test-secret", "test-scope", false)
 			ctx := context.Background()
 
 			req, err := provider.createTokenRequest(ctx)
@@ -255,7 +255,7 @@ func TestGetToken_Caching(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewTokenProvider(server.URL, "test-client", "test-secret", "test-scope")
+	provider := NewTokenProvider(server.URL, "test-client", "test-secret", "test-scope", false)
 	ctx := context.Background()
 
 	token1, err := provider.GetToken(ctx)
