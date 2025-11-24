@@ -22,4 +22,13 @@ appVersion: "1.16.0"
 dependencies:
   - name: mongodb
     version: "16.2.2"
-    condition: global.mongodbStore.enabled
+    repository: ""
+    condition: useBitnami
+  - name: psmdb-operator
+    version: "1.21.1"
+    repository: ""
+    condition: usePerconaOperator
+  - name: psmdb-db
+    version: "1.21.1"
+    repository: ""
+    condition: usePerconaOperator

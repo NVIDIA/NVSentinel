@@ -54,6 +54,8 @@ global:
     cleanupMetricsPort: 9002
   mongodbStore:
     enabled: false
+  kubernetesObjectMonitor:
+    enabled: false
 
 platformConnector:
   image:
@@ -72,6 +74,8 @@ platformConnector:
   podAnnotations: {}
 
   tolerations: []
+
+  logLevel: info
 
   k8sConnector:
     enabled: true

@@ -23,8 +23,8 @@ import (
 type HealthEventsAnalyzerRule struct {
 	Name              string   `toml:"name"`
 	Description       string   `toml:"description"`
-	RecommendedAction string   `toml:"recommended_action"`
 	Stage             []string `toml:"stage"`
+	RecommendedAction string   `toml:"recommended_action"`
 }
 
 type TomlConfig struct {

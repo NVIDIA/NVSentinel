@@ -82,7 +82,12 @@ func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 			slog.Info("k8sConnector queue received stop signal")
 			return
 		default:
-			healthEvents := r.ringBuffer.Dequeue()
+			healthEvents, quit := r.ringBuffer.Dequeue()
+			if quit {
+				slog.Info("Queue signaled shutdown, exiting processing loop")
+				return
+			}
+
 			if err := r.processHealthEvents(ctx, healthEvents); err != nil {
 				slog.Error("Not able to process healthEvent", "error", err)
 				r.ringBuffer.HealthMetricEleProcessingFailed(healthEvents)

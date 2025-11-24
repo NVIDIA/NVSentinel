@@ -1,0 +1,169 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Integration Tests - AWS
+
+on:
+  workflow_dispatch: {}  # allow manual runs for testing
+  schedule:
+    - cron: '0 8 * * *' # daily at midnight PST, runs on default branch only
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  integration-test-aws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CSP: "aws"
+      PREFIX: "nvs"
+      AWS_ACCOUNT_ID: "615299774277"
+      AWS_REGION: "us-east-1"
+      GITHUB_ACTIONS_ROLE_NAME: "github-actions-role"
+      CLUSTER_NAME: "nvs-d${{ github.run_id }}"
+      K8S_VERSION: "1.34"
+      EKSCTL_VERSION: "0.216.0"
+      GPU_AVAILABILITY_ZONE: "e"
+      GPU_NODE_COUNT: "1"
+      CAPACITY_RESERVATION_ID: "cr-0cbe491320188dfa6"
+
+      # Debug
+      SKIP_DELETE: "false"  # skip cluster deletion
+      TEST_TAG: "main-33c1d03"
+      
+    steps:
+      # Checkout
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      # Auth
+      - name: Configure AWS credentials
+        id: auth
+        uses: aws-actions/configure-aws-credentials@00943011d9042930efac3dcd3a170e4273319bc8  # v5.1.0
+        with:
+          role-to-assume: "arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.GITHUB_ACTIONS_ROLE_NAME }}"
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-NVSentinel-Integration
+
+      # Install eksctl
+      - name: Install eksctl
+        run: |
+          set -euox pipefail
+          # Check if eksctl is already installed
+          if command -v eksctl >/dev/null 2>&1; then
+            echo "eksctl is already installed:"
+            eksctl version
+            exit 0
+          fi
+          
+          echo "Installing eksctl..."
+          curl -LO "https://github.com/eksctl-io/eksctl/releases/download/v${EKSCTL_VERSION}/eksctl_linux_amd64.tar.gz"
+          tar -xzf eksctl_linux_amd64.tar.gz
+          chmod +x eksctl
+          sudo mv eksctl /usr/local/bin/
+          rm eksctl_linux_amd64.tar.gz
+          echo "eksctl installed successfully:"
+          eksctl version
+
+      # Cluster
+      - name: Create Cluster
+        id: cluster
+        shell: bash 
+        run: |
+          set -euox pipefail
+          tests/uat/aws/create-eks-cluster.sh
+
+      # Connect
+      - name: Connect to Cluster
+        id: client
+        if: steps.cluster.outcome == 'success'
+        shell: bash
+        run: |
+          set -euox pipefail
+          # Check if kubectl is already installed
+          if command -v kubectl >/dev/null 2>&1; then
+            echo "kubectl is already installed:"
+            kubectl version
+            exit 0
+          fi
+
+          echo "Installing kubectl..."
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          echo "Updating kubeconfig..."
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          echo "Verifying cluster connection..."
+          kubectl get nodes
+
+      # Image Tag
+      - name: Compute ref name with short SHA
+        id: ref-name
+        if: steps.cluster.outcome == 'success'
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            SAFE_REF="${{ github.ref_name }}"
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          else
+            SAFE_REF="${{ env.TEST_TAG }}"
+          fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
+
+      # Apps
+      - name: Install NVS
+        id: apps
+        if: steps.client.outcome == 'success'
+        shell: bash
+        env:
+          NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
+        run: |
+          set -euxo pipefail
+          tests/uat/install-apps.sh
+
+      # Test
+      - name: Run UAT Tests
+        id: tests
+        if: steps.apps.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tests/uat/tests.sh
+
+      # Teardown
+      - name: Destroy Cluster
+        if: always() && steps.cluster.outcome != 'skipped' && env.SKIP_DELETE != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tests/uat/aws/delete-eks-cluster.sh
+
+      # Summary
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Cluster: ${{ steps.cluster.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Connection: ${{ steps.client.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Apps: ${{ steps.apps.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: ${{ steps.tests.outcome }}" >> $GITHUB_STEP_SUMMARY

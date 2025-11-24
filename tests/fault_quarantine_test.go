@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -46,6 +47,99 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 			WithCheckName("UnknownCheck").
 			WithErrorCode("999")
 		helpers.SendHealthEvent(ctx, t, event)
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownQuarantineTest(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestManualUncordonBehavior(t *testing.T) {
+	feature := features.New("TestManualUncordonBehavior").
+		WithLabel("suite", "fault-quarantine-cel")
+
+	var testCtx *helpers.QuarantineTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred")
+		helpers.SendHealthEvent(newCtx, t, event)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		helpers.AssertQuarantineState(newCtx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectTaint: &v1.Taint{
+				Key:    "AggregatedNodeHealth",
+				Value:  "False",
+				Effect: v1.TaintEffectNoSchedule,
+			},
+			ExpectCordoned:   true,
+			ExpectAnnotation: true,
+		})
+
+		return newCtx
+	})
+
+	feature.Assess("manual uncordon clears quarantine state", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			require.NoError(t, err)
+
+			node.Spec.Unschedulable = false
+			return client.Resources().Update(ctx, node)
+		})
+		assert.NoError(t, err, "failed to uncordon node")
+
+		t.Log("Waiting for state to be updated")
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("failed to get node %s: %v", testCtx.NodeName, err)
+				return false
+			}
+
+			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+				return false
+			}
+
+			manualUncordon, exists := node.Annotations["quarantinedNodeUncordonedManually"]
+			if !exists || manualUncordon != "True" {
+				return false
+			}
+
+			for _, taint := range node.Spec.Taints {
+				if taint.Key == "AggregatedNodeHealth" {
+					return false
+				}
+			}
+
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
+
+		return ctx
+	})
+
+	feature.Assess("healthy event clears all annotations", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
 			ExpectCordoned:   false,

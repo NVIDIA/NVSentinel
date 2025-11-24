@@ -1,0 +1,162 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Integration Tests - GCP
+
+on:
+  workflow_dispatch: {}  # allow manual runs for testing
+  schedule:
+    - cron: '30 14 * * *' # daily at 14:30 UTC, runs on default branch only
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  integration-test-gcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CSP: "gcp"
+      PREFIX: "nvs"
+      PROJECT_ID: "nv-dgxck8s-20250306"
+      IDENTITY_PROVIDER: "projects/1015254933832/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+      SERVICE_ACCOUNT: "github-actions-user"
+      # Terraform Vars
+      TF_VAR_deployment_id: "d${{ github.run_id }}"
+      TF_VAR_project_id: "nv-dgxck8s-20250306"
+      TF_VAR_region: "europe-west4"
+      TF_VAR_zone: "europe-west4-b"
+      TF_VAR_system_node_type: "e2-standard-4"
+      TF_VAR_system_node_count: "3"
+      TF_VAR_gpu_node_pool_name: "gpu-pool"
+      TF_VAR_gpu_machine_type: "a3-megagpu-8g"
+      TF_VAR_gpu_node_count: "1"
+      TF_VAR_gpu_reservation_project: "nv-dgxcloudprodgsc-20240206"
+      TF_VAR_gpu_reservation_name: "gsc-a3-megagpu-8g-shared-res-2"
+      TF_VAR_gpu_driver_version: "INSTALLATION_DISABLED"
+      TF_VAR_resource_labels: '{"environment":"test","team":"nvsentinel","managed_by":"terraform"}'
+      # Debug
+      SKIP_DELETE: "false"  # skip cluster deletion
+      TEST_TAG: "main-33c1d03"
+      
+    steps:
+      # Checkout
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+
+      # Terraform
+      - name: Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3.1.2
+        with:
+          terraform_version: "1.13.5"
+
+      # Auth
+      - name: Get AuthN Token
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ env.IDENTITY_PROVIDER }}
+          service_account: "${{ env.SERVICE_ACCOUNT }}@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+
+      # Gcloud
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+
+      # Cluster
+      - name: Create Cluster
+        id: cluster
+        shell: bash
+        continue-on-error: true 
+        run: |
+          set -euo pipefail
+          cd tests/uat/gcp/cluster
+          terraform init
+          terraform apply -auto-approve
+
+      # Connect
+      - name: Connect to Cluster
+        id: client
+        if: steps.cluster.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Installing GKE auth plugin..."
+          gcloud components install gke-gcloud-auth-plugin --quiet --project ${{ env.TF_VAR_project_id }}
+          echo "Getting cluster credentials..."
+          gcloud container clusters get-credentials "${{ env.PREFIX }}-${{ env.TF_VAR_deployment_id }}" \
+            --zone ${{ env.TF_VAR_zone }} --project ${{ env.TF_VAR_project_id }}
+
+      # Image Tag
+      - name: Compute ref name with short SHA
+        id: ref-name
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            SAFE_REF="${{ github.ref_name }}"
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            SAFE_REF="${{ github.ref_name }}-${SHORT_SHA}"
+          else
+            SAFE_REF="${{ env.TEST_TAG }}"
+          fi
+          # Sanitize ref name: replace slashes with hyphens for Docker tag compatibility
+          SAFE_REF=$(echo "$SAFE_REF" | sed 's/\//-/g')
+          echo "value=$SAFE_REF" >> $GITHUB_OUTPUT
+
+      # Apps
+      - name: Install NVS
+        id: apps
+        if: steps.client.outcome == 'success'
+        shell: bash
+        env:
+          GCP_PROJECT_ID: "${{ env.PROJECT_ID }}"
+          GCP_ZONE: "${{ env.TF_VAR_zone }}"
+          GCP_SERVICE_ACCOUNT: "${{ env.SERVICE_ACCOUNT }}"
+          NVSENTINEL_VERSION: "${{ steps.ref-name.outputs.value }}"
+        run: |
+          set -euxo pipefail
+          tests/uat/install-apps.sh
+
+      # Test
+      - name: Run UAT Tests
+        id: tests
+        if: steps.apps.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tests/uat/tests.sh
+
+      # Teardown
+      - name: Destroy Cluster
+        if: always() && steps.cluster.outcome != 'skipped' && env.SKIP_DELETE != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd tests/uat/gcp/cluster
+          terraform destroy -auto-approve
+
+      # Summary
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Cluster: ${{ steps.cluster.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Connection: ${{ steps.client.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Apps: ${{ steps.apps.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: ${{ steps.tests.outcome }}" >> $GITHUB_STEP_SUMMARY

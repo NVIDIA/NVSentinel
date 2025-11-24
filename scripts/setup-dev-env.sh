@@ -39,7 +39,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-AUTO_MODE=false
+AUTO_MODE=${AUTO_MODE:-false}  # Preserve environment variable if set
 SKIP_GO=false
 SKIP_DOCKER=false
 SKIP_PYTHON=false
@@ -49,9 +49,17 @@ SKIP_TOOLS=false
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 
+# Map architecture names for different use cases
 case "${ARCH}" in
-    x86_64) ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
+    x86_64) 
+        GO_ARCH="amd64"      # Go uses amd64
+        PROTOC_ARCH="x86_64" # Protocol Buffers uses x86_64
+        ;;
+    aarch64|arm64) 
+        GO_ARCH="arm64"
+        PROTOC_ARCH="aarch_64"  # Protocol Buffers uses aarch_64
+        ARCH="arm64"  # Normalize to arm64
+        ;;
     *) echo -e "${RED}❌ Unsupported architecture: ${ARCH}${NC}" && exit 1 ;;
 esac
 
@@ -70,6 +78,50 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}❌ $*${NC}"
+}
+
+log_debug() {
+    if [[ "${DEBUG:-false}" == "true" ]]; then
+        echo -e "${BLUE}🔍 DEBUG: $*${NC}"
+    fi
+}
+
+# Function to verify and log download URLs
+verify_download_url() {
+    local url="$1"
+    local description="$2"
+    
+    log_debug "Attempting to verify: $description"
+    log_debug "URL: $url"
+    
+    # Test URL accessibility (without downloading the full file)
+    local http_code
+    http_code=$(curl -f -s -I -L -w "%{http_code}" -o /dev/null "$url" 2>/dev/null)
+    local curl_exit_code=$?
+    
+    if [[ $curl_exit_code -ne 0 || "$http_code" != "200" ]]; then
+        log_error "Failed to access URL for $description"
+        log_error "URL: $url"
+        log_error "HTTP status code: ${http_code:-unknown}"
+        log_error "curl exit code: $curl_exit_code"
+        
+        # Provide helpful suggestions based on the error
+        if [[ "$http_code" == "404" ]]; then
+            log_error "File not found (404). The version or architecture might not be available."
+            log_error "Suggestion: Check if the version exists in the GitHub releases page"
+        elif [[ "$http_code" == "403" ]]; then
+            log_error "Access forbidden (403). This might be a rate limit or authentication issue."
+        elif [[ $curl_exit_code -eq 6 ]]; then
+            log_error "Could not resolve host. Check your internet connection."
+        elif [[ $curl_exit_code -eq 7 ]]; then
+            log_error "Failed to connect to host. Check your internet connection and firewall."
+        fi
+        
+        return 1
+    fi
+    
+    log_debug "URL verified successfully for $description (HTTP $http_code)"
+    return 0
 }
 
 command_exists() {
@@ -105,6 +157,10 @@ OPTIONS:
     --skip-tools        Skip development tools installation
     --help              Show this help message
 
+ENVIRONMENT VARIABLES:
+    AUTO_MODE=true      Same as --auto flag (non-interactive mode)
+    DEBUG=true          Enable debug output (shows URLs, architecture mappings, etc.)
+
 EXAMPLES:
     # Interactive mode
     $0
@@ -114,6 +170,12 @@ EXAMPLES:
 
     # Install only tools (Go already installed)
     $0 --skip-go --skip-docker
+
+    # Enable debug output to troubleshoot download issues
+    DEBUG=true $0
+
+    # Automated setup with debug output
+    AUTO_MODE=true DEBUG=true $0
 
 EOF
 }
@@ -156,10 +218,14 @@ done
 # Banner
 echo ""
 echo "╔════════════════════════════════════════════════════════╗"
-echo "║   NVSentinel Development Environment Setup            ║"
+echo "║   NVSentinel Development Environment Setup             ║"
 echo "╚════════════════════════════════════════════════════════╝"
 echo ""
-log_info "Platform: ${OS}-${ARCH}"
+log_info "Platform: ${OS}-${GO_ARCH}"
+log_debug "Architecture mappings:"
+log_debug "  Raw ARCH: ${ARCH}"
+log_debug "  GO_ARCH (for Go tools, yq, kubectl): ${GO_ARCH}"
+log_debug "  PROTOC_ARCH (for Protocol Buffers): ${PROTOC_ARCH}"
 echo ""
 
 # Check if .versions.yaml exists
@@ -181,8 +247,18 @@ if ! command_exists yq; then
             exit 1
         fi
     elif [[ "${OS}" == "linux" ]]; then
-        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_"${ARCH}"
-        sudo chmod +x /usr/local/bin/yq
+        YQ_URL="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${GO_ARCH}"
+        log_debug "Architecture mapping: ${ARCH} -> GO_ARCH=${GO_ARCH}"
+        
+        if verify_download_url "$YQ_URL" "yq for Linux ${GO_ARCH}"; then
+            log_debug "Downloading yq from: $YQ_URL"
+            sudo wget -qO /usr/local/bin/yq "$YQ_URL"
+            sudo chmod +x /usr/local/bin/yq
+            log_debug "yq installed successfully to /usr/local/bin/yq"
+        else
+            log_error "Failed to install yq. Please install manually or check your architecture."
+            exit 1
+        fi
     fi
     
     log_success "yq installed"
@@ -364,9 +440,22 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 brew install kubectl
             elif [[ "${OS}" == "linux" ]]; then
+                log_debug "Fetching latest kubectl version..."
                 KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
-                sudo curl -L "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl
-                sudo chmod +x /usr/local/bin/kubectl
+                KUBECTL_URL="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${GO_ARCH}/kubectl"
+                
+                log_debug "kubectl version: ${KUBECTL_VERSION}"
+                log_debug "Architecture mapping: ${ARCH} -> GO_ARCH=${GO_ARCH}"
+                
+                if verify_download_url "$KUBECTL_URL" "kubectl ${KUBECTL_VERSION} for Linux ${GO_ARCH}"; then
+                    log_debug "Downloading kubectl from: $KUBECTL_URL"
+                    sudo curl -L "$KUBECTL_URL" -o /usr/local/bin/kubectl
+                    sudo chmod +x /usr/local/bin/kubectl
+                    log_debug "kubectl installed successfully to /usr/local/bin/kubectl"
+                else
+                    log_error "Failed to install kubectl. Please install manually or check your architecture."
+                    exit 1
+                fi
             fi
             log_success "kubectl installed"
         fi
@@ -383,12 +472,24 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 PROTOC_ZIP="protoc-${PROTOBUF_VERSION_NUM}-osx-universal_binary.zip"
             elif [[ "${OS}" == "linux" ]]; then
-                PROTOC_ZIP="protoc-${PROTOBUF_VERSION_NUM}-linux-${ARCH}.zip"
+                PROTOC_ZIP="protoc-${PROTOBUF_VERSION_NUM}-linux-${PROTOC_ARCH}.zip"
             fi
             
-            TMP_DIR=$(mktemp -d)
-            cd "${TMP_DIR}"
-            wget -q "https://github.com/protocolbuffers/protobuf/releases/download/${PROTOBUF_VERSION}/${PROTOC_ZIP}"
+            PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/${PROTOBUF_VERSION}/${PROTOC_ZIP}"
+            
+            log_debug "protobuf version: ${PROTOBUF_VERSION} (${PROTOBUF_VERSION_NUM})"
+            log_debug "Architecture mapping: ${ARCH} -> PROTOC_ARCH=${PROTOC_ARCH}"
+            log_debug "Expected file: ${PROTOC_ZIP}"
+            
+            if verify_download_url "$PROTOC_URL" "protoc ${PROTOBUF_VERSION} for ${OS} ${PROTOC_ARCH}"; then
+                TMP_DIR=$(mktemp -d)
+                cd "${TMP_DIR}"
+                log_debug "Downloading protoc from: $PROTOC_URL"
+                wget -q "$PROTOC_URL"
+            else
+                log_error "Failed to download protoc. Please check the version and architecture."
+                exit 1
+            fi
             unzip -q "${PROTOC_ZIP}"
             sudo cp bin/protoc /usr/local/bin/
             sudo mkdir -p /usr/local/include
@@ -406,16 +507,33 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
     else
         log_info "Installing shellcheck ${SHELLCHECK_VERSION}..."
         if prompt_continue; then
-            SHELLCHECK_VERSION_NUM=${SHELLCHECK_VERSION#v}
-            
             if [[ "${OS}" == "darwin" ]]; then
                 brew install shellcheck
             elif [[ "${OS}" == "linux" ]]; then
                 TMP_DIR=$(mktemp -d)
                 cd "${TMP_DIR}"
-                wget -q "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION_NUM}.linux.${ARCH}.tar.xz"
-                tar -xJ -f "shellcheck-${SHELLCHECK_VERSION_NUM}.linux.${ARCH}.tar.xz"
-                sudo cp "shellcheck-${SHELLCHECK_VERSION_NUM}/shellcheck" /usr/local/bin/
+                # Shellcheck uses x86_64 for amd64 and aarch64 for arm64
+                SHELLCHECK_ARCH=${PROTOC_ARCH}
+                if [[ "${ARCH}" == "arm64" ]]; then
+                    SHELLCHECK_ARCH="aarch64"
+                fi
+                
+                SHELLCHECK_FILE="shellcheck-${SHELLCHECK_VERSION}.linux.${SHELLCHECK_ARCH}.tar.xz"
+                SHELLCHECK_URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_FILE}"
+                
+                log_debug "shellcheck version: ${SHELLCHECK_VERSION}"
+                log_debug "Architecture mapping: ${ARCH} -> PROTOC_ARCH=${PROTOC_ARCH} -> SHELLCHECK_ARCH=${SHELLCHECK_ARCH}"
+                log_debug "Expected file: ${SHELLCHECK_FILE}"
+                
+                if verify_download_url "$SHELLCHECK_URL" "shellcheck ${SHELLCHECK_VERSION} for Linux ${SHELLCHECK_ARCH}"; then
+                    log_debug "Downloading shellcheck from: $SHELLCHECK_URL"
+                    wget -q "$SHELLCHECK_URL"
+                else
+                    log_error "Failed to download shellcheck. Please check the version and architecture."
+                    exit 1
+                fi
+                tar -xJ -f "shellcheck-${SHELLCHECK_VERSION}.linux.${SHELLCHECK_ARCH}.tar.xz"
+                sudo cp "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/
                 sudo chmod +x /usr/local/bin/shellcheck
                 cd - >/dev/null
                 rm -rf "${TMP_DIR}"
@@ -514,7 +632,7 @@ if [[ "${SKIP_PYTHON}" == "false" ]] && command_exists python3; then
     log_info "Python gRPC Tools"
     echo "════════════════════════════════════════════════════════"
     
-    log_info "Installing Python gRPC tools (grpcio, grpcio-tools)..."
+    log_info "Installing Python gRPC tools: grpcio, grpcio-tools..."
     
     if prompt_continue; then
         if [[ "${OS}" == "darwin" ]]; then

@@ -21,7 +21,7 @@ import (
 )
 
 type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEventDoc *HealthEventDoc) (bool, string)
+	CreateMaintenanceResource(ctx context.Context, healthEventData *HealthEventData) (bool, string)
 	RunLogCollectorJob(ctx context.Context, nodeName string) error
 	GetAnnotationManager() NodeAnnotationManagerInterface
 	GetStatusChecker() *crstatus.CRStatusChecker

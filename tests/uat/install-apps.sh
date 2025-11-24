@@ -14,7 +14,7 @@
 # limitations under the License.
 
 
-set -euo pipefail
+set -euox pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
@@ -36,21 +36,54 @@ CERT_MANAGER_VERSION=$(yq eval '.cluster.cert_manager' "$VERSIONS_FILE")
 
 # Configuration
 CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-uat}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
 CSP="${CSP:-kind}"  # Default to kind for local development
 NVSENTINEL_VERSION="${NVSENTINEL_VERSION:-}"
 FAKE_GPU_NODE_COUNT="${FAKE_GPU_NODE_COUNT:-10}"
-
 VALUES_DIR="${SCRIPT_DIR}/${CSP}"
-
 PROMETHEUS_VALUES="${VALUES_DIR}/prometheus-operator-values.yaml"
 GPU_OPERATOR_VALUES="${VALUES_DIR}/gpu-operator-values.yaml"
 CERT_MANAGER_VALUES="${VALUES_DIR}/cert-manager-values.yaml"
 NVSENTINEL_VALUES="${VALUES_DIR}/nvsentinel-values.yaml"
 NVSENTINEL_CHART="${REPO_ROOT}/distros/kubernetes/nvsentinel"
+RESOURCE_QUOTA_RESOURCE="${VALUES_DIR}/resource-quota.yaml"
+GCP_COS_GPU_DS="https://raw.githubusercontent.com/GoogleCloudPlatform/container-engine-accelerators/master/nvidia-driver-installer/cos/daemonset-preloaded.yaml"
+
+# AWS
+AWS_REGION="${AWS_REGION:-us-east-1}"
+
+# GCP
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
+GCP_ZONE="${GCP_ZONE:-}"
+GCP_SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-}"
 
 # ARM64-specific values file (if needed)
 NVSENTINEL_ARM64_VALUES="${REPO_ROOT}/distros/kubernetes/nvsentinel/values-tilt-arm64.yaml"
+
+
+# Print out variables for debugging (alphabetical order)
+log "Using configuration (raw):"
+log "  - AWS_REGION: $AWS_REGION"
+log "  - CERT_MANAGER_VALUES: $CERT_MANAGER_VALUES"
+log "  - CERT_MANAGER_VERSION: $CERT_MANAGER_VERSION"
+log "  - CLUSTER_NAME: $CLUSTER_NAME"
+log "  - CSP: $CSP"
+log "  - FAKE_GPU_NODE_COUNT: $FAKE_GPU_NODE_COUNT" 
+log "  - GCP_PROJECT_ID: $GCP_PROJECT_ID"
+log "  - GCP_SERVICE_ACCOUNT: $GCP_SERVICE_ACCOUNT"
+log "  - GCP_ZONE: $GCP_ZONE"
+log "  - GPU_OPERATOR_VALUES: $GPU_OPERATOR_VALUES"
+log "  - GPU_OPERATOR_VERSION: $GPU_OPERATOR_VERSION"
+log "  - KWOK_VERSION: $KWOK_VERSION (chart: $KWOK_CHART_VERSION)"
+log "  - NVSENTINEL_ARM64_VALUES: $NVSENTINEL_ARM64_VALUES"
+log "  - NVSENTINEL_CHART: $NVSENTINEL_CHART"
+log "  - NVSENTINEL_VALUES: $NVSENTINEL_VALUES"
+log "  - NVSENTINEL_VERSION: $NVSENTINEL_VERSION"
+log "  - PROMETHEUS_OPERATOR_VERSION: $PROMETHEUS_OPERATOR_VERSION"
+log "  - PROMETHEUS_VALUES: $PROMETHEUS_VALUES"
+log "  - RESOURCE_QUOTA_RESOURCE: $RESOURCE_QUOTA_RESOURCE"
+log "  - VALUES_DIR: $VALUES_DIR"
+log ""
+
 
 install_prometheus_operator() {
     log "Installing Prometheus Operator (version $PROMETHEUS_OPERATOR_VERSION)..."
@@ -151,6 +184,15 @@ install_gpu_operator() {
     helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
     helm repo update
     
+    if [[ "$CSP" == "gcp" ]]; then
+        log "Applying resource quota for GPU Operator on GCP..."
+        kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
+        if ! kubectl apply -f "$RESOURCE_QUOTA_RESOURCE" -n gpu-operator; then
+            error "Failed to apply resource quota for GPU Operator"
+        fi
+        log "Resource quota applied successfully ✓"
+    fi
+
     if ! helm upgrade --install gpu-operator nvidia/gpu-operator \
         --namespace gpu-operator \
         --create-namespace \
@@ -245,6 +287,14 @@ install_nvsentinel() {
             "--set" "janitor.csp.aws.accountId=$aws_account_id"
             "--set" "janitor.csp.aws.iamRoleName=$janitor_role_name"
         )
+    elif [[ "$CSP" == "gcp" ]]; then
+        extra_set_args+=(
+            "--set" "janitor.csp.gcp.project=$GCP_PROJECT_ID"
+            "--set" "janitor.csp.gcp.zone=$GCP_ZONE"
+            "--set" "janitor.csp.gcp.serviceAccount=$GCP_SERVICE_ACCOUNT"
+        )
+    else
+        log "Janitor extra args not defined for: $CSP"
     fi
     
     # Build helm command with proper array handling
@@ -255,7 +305,7 @@ install_nvsentinel() {
         "--values" "$NVSENTINEL_VALUES"
     )
     
-    # Add ARM64-specific values if on ARM architecture
+    # # Add ARM64-specific values if on ARM architecture
     if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
         if [[ -f "$NVSENTINEL_ARM64_VALUES" ]]; then
             log "Using ARM64-specific values: $NVSENTINEL_ARM64_VALUES"
@@ -290,10 +340,6 @@ main() {
     log "  - Prometheus Operator: $PROMETHEUS_OPERATOR_VERSION"
     log "  - GPU Operator: $GPU_OPERATOR_VERSION"
     log "  - cert-manager: $CERT_MANAGER_VERSION"
-    
-    if [[ "$ARCH" == "arm64" ]] || [[ "$ARCH" == "aarch64" ]]; then
-        log "ARM64 architecture detected - using compatible image overrides for MongoDB"
-    fi
     
     install_prometheus_operator
     install_cert_manager

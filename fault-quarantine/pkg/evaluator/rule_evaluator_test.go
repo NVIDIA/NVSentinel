@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -172,7 +172,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			nodeName := "test-node-" + primitive.NewObjectID().Hex()[:8]
+			nodeName := testutils.GenerateTestNodeName("test-node")
 
 			createTestNode(ctx, t, nodeName, tt.nodeLabels)
 			defer func() {
@@ -187,7 +187,9 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			stopCh := make(chan struct{})
 			defer close(stopCh)
 
-			go nodeInformer.Run(stopCh)
+			go func() {
+				_ = nodeInformer.Run(stopCh)
+			}()
 
 			if ok := cache.WaitForCacheSync(stopCh, nodeInformer.GetInformer().HasSynced); !ok {
 				t.Fatalf("NodeInformer failed to sync")

@@ -230,7 +230,9 @@ protos-generate: protos-clean
 	@mkdir -p gpu_health_monitor/protos
 	python3 -m grpc_tools.protoc -I ../../data-models/protobufs/ --python_out=gpu_health_monitor/protos --pyi_out=gpu_health_monitor/protos --grpc_python_out=gpu_health_monitor/protos ../../data-models/protobufs/health_event.proto
 	# Fix relative imports in generated gRPC files
-	@if [ "$$(uname)" = "Darwin" ]; then \
+	@if command -v gsed >/dev/null 2>&1; then \
+		gsed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \
+	elif [ "$$(uname)" = "Darwin" ]; then \
 		sed -i '' 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \
 	else \
 		sed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \

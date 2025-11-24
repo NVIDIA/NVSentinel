@@ -25,36 +25,44 @@ import (
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/mongodb"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 )
 
 type InitializationParams struct {
-	KubeconfigPath        string
-	TomlConfigPath        string
-	DryRun                bool
-	CircuitBreakerEnabled bool
+	KubeconfigPath              string
+	TomlConfigPath              string
+	DryRun                      bool
+	CircuitBreakerEnabled       bool
+	DatabaseClientCertMountPath string
 }
 
 type Components struct {
-	Reconciler     *reconciler.Reconciler
-	EventWatcher   *mongodb.EventWatcher
-	K8sClient      *informer.FaultQuarantineClient
-	CircuitBreaker breaker.CircuitBreaker
+	Reconciler      *reconciler.Reconciler
+	K8sClient       *informer.FaultQuarantineClient
+	CircuitBreaker  breaker.CircuitBreaker
+	DatastoreConfig *datastore.DataStoreConfig
+	Pipeline        interface{}
 }
 
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
 	slog.Info("Starting fault quarantine module initialization")
 
-	mongoConfig, tokenConfig, err := storewatcher.LoadConfigFromEnv("fault-quarantine")
+	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-quarantine")
 	if err != nil {
-		return nil, fmt.Errorf("failed to load MongoDB configuration: %w", err)
+		return nil, fmt.Errorf("failed to load token configuration: %w", err)
 	}
 
-	pipeline := createMongoPipeline()
+	// Load datastore configuration using new pattern
+	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load datastore configuration: %w", err)
+	}
+
+	pipeline := client.BuildAllHealthEventInsertsPipeline()
 
 	var tomlCfg config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlCfg); err != nil {
@@ -72,29 +80,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	slog.Info("Successfully initialized kubernetes client with embedded node informer")
 
-	var circuitBreaker breaker.CircuitBreaker
-
-	if params.CircuitBreakerEnabled {
-		cb, err := initializeCircuitBreaker(
-			ctx,
-			k8sClient,
-			tomlCfg.CircuitBreaker,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("error while initializing circuit breaker: %w", err)
-		}
-
-		circuitBreaker = cb
-
-		slog.Info("Successfully initialized circuit breaker")
-	} else {
-		slog.Info("Circuit breaker is disabled, skipping initialization")
+	circuitBreaker, err := setupCircuitBreaker(ctx, params, tomlCfg, k8sClient)
+	if err != nil {
+		return nil, err
 	}
 
 	reconcilerCfg := createReconcilerConfig(
 		tomlCfg,
 		params.DryRun,
 		params.CircuitBreakerEnabled,
+		datastoreConfig,
+		tokenConfig,
+		pipeline,
 	)
 
 	reconcilerInstance := reconciler.NewReconciler(
@@ -103,65 +100,64 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		circuitBreaker,
 	)
 
-	healthEventCollection, err := initializeMongoCollection(ctx, mongoConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error while initializing mongo collection: %w", err)
-	}
-
-	eventWatcher := mongodb.NewEventWatcher(
-		mongoConfig,
-		tokenConfig,
-		pipeline,
-		healthEventCollection,
-		reconcilerInstance,
-	)
-
-	reconcilerInstance.SetEventWatcher(eventWatcher)
-
 	slog.Info("Initialization completed successfully")
 
 	return &Components{
-		Reconciler:     reconcilerInstance,
-		EventWatcher:   eventWatcher,
-		K8sClient:      k8sClient,
-		CircuitBreaker: circuitBreaker,
+		Reconciler:      reconcilerInstance,
+		K8sClient:       k8sClient,
+		CircuitBreaker:  circuitBreaker,
+		DatastoreConfig: datastoreConfig,
+		Pipeline:        pipeline,
 	}, nil
-}
-
-func createMongoPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			bson.E{Key: "$match", Value: bson.D{
-				bson.E{Key: "operationType", Value: bson.D{
-					bson.E{Key: "$in", Value: bson.A{"insert"}},
-				}},
-			}},
-		},
-	}
 }
 
 func createReconcilerConfig(
 	tomlCfg config.TomlConfig,
 	dryRun bool,
 	circuitBreakerEnabled bool,
+	datastoreConfig *datastore.DataStoreConfig,
+	tokenConfig storeconfig.TokenConfig,
+	pipeline interface{},
 ) reconciler.ReconcilerConfig {
+	// Convert store config types to the types expected by reconciler
+	clientTokenConfig := client.TokenConfig{
+		ClientName:      tokenConfig.ClientName,
+		TokenDatabase:   tokenConfig.TokenDatabase,
+		TokenCollection: tokenConfig.TokenCollection,
+	}
+
 	return reconciler.ReconcilerConfig{
 		TomlConfig:            tomlCfg,
 		DryRun:                dryRun,
 		CircuitBreakerEnabled: circuitBreakerEnabled,
+		DataStoreConfig:       datastoreConfig,
+		TokenConfig:           clientTokenConfig,
+		DatabasePipeline:      pipeline,
 	}
 }
 
-func initializeMongoCollection(
+func setupCircuitBreaker(
 	ctx context.Context,
-	mongoConfig storewatcher.MongoDBConfig,
-) (*mongo.Collection, error) {
-	collection, err := storewatcher.GetCollectionClient(ctx, mongoConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get MongoDB collection: %w", err)
+	params InitializationParams,
+	tomlCfg config.TomlConfig,
+	k8sClient *informer.FaultQuarantineClient,
+) (breaker.CircuitBreaker, error) {
+	if !params.CircuitBreakerEnabled {
+		slog.Info("Circuit breaker is disabled, skipping initialization")
+		return nil, nil
 	}
 
-	return collection, nil
+	// Use command line parameters if provided, otherwise fall back to TOML config
+	cbConfig := tomlCfg.CircuitBreaker
+
+	cb, err := initializeCircuitBreaker(ctx, k8sClient, cbConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error while initializing circuit breaker: %w", err)
+	}
+
+	slog.Info("Successfully initialized circuit breaker")
+
+	return cb, nil
 }
 
 func initializeCircuitBreaker(

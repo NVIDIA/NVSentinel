@@ -17,7 +17,11 @@ kind: ConfigMap
 metadata:
   name: mongodb-config
 data:
+{{- if .Values.usePerconaOperator }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+{{- else }}
   MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+{{- end }}
   MONGODB_DATABASE_NAME: "HealthEventsDatabase"
   MONGODB_COLLECTION_NAME: "HealthEvents"
   MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: "MaintenanceEvents"

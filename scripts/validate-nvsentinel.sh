@@ -25,7 +25,7 @@ IMAGE_PATTERN=""
 
 usage() {
     echo "Usage: $0 --version VERSION [--namespace NAMESPACE] [--image-pattern PATTERN] [--verbose]"
-    echo "  --version       Required. Expected image version (e.g., v0.0.3)"
+    echo "  --version       Required. Expected image version (e.g., v0.0.3, tilt)"
     echo "  --namespace     Optional. Kubernetes namespace (default: nvsentinel)"
     echo "  --image-pattern Optional. Image pattern to validate (default: ghcr.io/nvidia/nvsentinel)"
     echo "  --verbose       Optional. Print detailed image lists"
@@ -228,8 +228,10 @@ check_daemonset() {
 }
 
 check_statefulset() {
-    local name="$1" expected_replicas="$2"
+    local name="$1"
     if kubectl get statefulset "$name" -n "$NAMESPACE" >/dev/null 2>&1; then
+        # Automatically detect expected replicas from StatefulSet spec
+        expected_replicas=$(kubectl get statefulset "$name" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
         ready=$(kubectl get statefulset "$name" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
         # shellcheck disable=SC2015  # && || pattern is intentional for conditional execution
         [[ "$ready" == "$expected_replicas" ]] && ok "$name: $ready/$expected_replicas ready" || error "$name: $ready/$expected_replicas ready"
@@ -261,7 +263,7 @@ check_job() {
 
 # Check statefulsets
 echo "=== StatefulSets ==="
-check_statefulset "mongodb" 3
+check_statefulset "mongodb"
 
 # Check jobs
 echo "=== Jobs ==="
@@ -271,6 +273,7 @@ check_job "create-mongodb-database"
 echo "=== Deployments ==="
 check_deployment "fault-quarantine" 1
 check_deployment "fault-remediation" 1
+check_deployment "janitor" 1
 check_deployment "labeler" 1
 check_deployment "node-drainer" 1
 check_optional_deployment "simple-health-client" 1
@@ -314,7 +317,8 @@ fi
 
 # Services
 echo "=== Services ==="
-services=("mongodb-headless" "simple-health-client")
+# Required services
+services=("mongodb-headless" "mongodb-metrics" "janitor")
 for svc in "${services[@]}"; do
     if kubectl get service "$svc" -n "$NAMESPACE" >/dev/null 2>&1; then
         endpoints=$(kubectl get endpoints "$svc" -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | wc -w || echo "0")
@@ -322,6 +326,18 @@ for svc in "${services[@]}"; do
         [[ "$endpoints" -gt 0 ]] && ok "$svc: $endpoints endpoints" || warn "$svc: no endpoints"
     else
         warn "$svc not found"
+    fi
+done
+
+# Optional services
+optional_services=("simple-health-client")
+for svc in "${optional_services[@]}"; do
+    if kubectl get service "$svc" -n "$NAMESPACE" >/dev/null 2>&1; then
+        endpoints=$(kubectl get endpoints "$svc" -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | wc -w || echo "0")
+        # shellcheck disable=SC2015  # && || pattern is intentional for conditional execution
+        [[ "$endpoints" -gt 0 ]] && ok "$svc: $endpoints endpoints (optional)" || warn "$svc: no endpoints (optional)"
+    else
+        warn "$svc not found (optional service)"
     fi
 done
 

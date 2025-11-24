@@ -122,6 +122,8 @@ jobs:
             path: ./cmd/csp-health-monitor
           - module: health-monitors/csp-health-monitor
             path: ./cmd/maintenance-notifier
+          - module: event-exporter
+            path: .
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
 

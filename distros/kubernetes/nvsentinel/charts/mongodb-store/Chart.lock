@@ -2,5 +2,11 @@ dependencies:
 - name: mongodb
   repository: ""
   version: 16.2.2
-digest: sha256:7bc0222d2ca507e5b3c38829401a888800575ea76a693b42b4ab8edb2cd0ff37
-generated: "2025-09-19T18:55:22.424746878+05:30"
+- name: psmdb-operator
+  repository: ""
+  version: 1.21.1
+- name: psmdb-db
+  repository: ""
+  version: 1.21.1
+digest: sha256:52544f60c2e88079cc18da78164440e042103e5adc065668a648864e2ad938b9
+generated: "2025-11-19T15:26:21.985280107+05:30"

@@ -26,8 +26,9 @@ import (
 )
 
 type DrainEvaluator interface {
-	EvaluateEvent(context.Context,
-		model.HealthEventWithStatus, queue.MongoCollectionAPI) (*DrainActionResult, error)
+	// Database-agnostic method
+	EvaluateEventWithDatabase(context.Context,
+		model.HealthEventWithStatus, queue.DataStore) (*DrainActionResult, error)
 }
 
 type NodeDrainEvaluator struct {

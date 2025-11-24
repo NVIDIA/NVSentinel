@@ -46,6 +46,7 @@ runs:
         echo "gocover_cobertura_version=$(yq '.go_tools.gocover_cobertura' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> $GITHUB_OUTPUT
 
     - name: Install base dependencies
       shell: bash
@@ -78,7 +79,7 @@ runs:
     - name: Install Helm
       uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
       with:
-        version: 'v3.14.4'
+        version: ${{ steps.versions.outputs.helm_version }}
 
     - name: Cache Helm plugins
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0

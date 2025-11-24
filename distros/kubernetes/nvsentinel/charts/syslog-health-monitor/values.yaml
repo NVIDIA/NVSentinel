@@ -54,3 +54,5 @@ xidSideCar:
 nodeSelector: {}
 affinity: {}
 tolerations: []
+
+logLevel: info

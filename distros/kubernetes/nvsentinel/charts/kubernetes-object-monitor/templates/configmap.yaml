@@ -1,0 +1,53 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubernetes-object-monitor.fullname" . }}
+  labels:
+    {{- include "kubernetes-object-monitor.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    {{- range .Values.policies }}
+    [[policies]]
+      name = {{ .name | quote }}
+      enabled = {{ .enabled }}
+      
+      [policies.resource]
+        group = {{ .resource.group | quote }}
+        version = {{ .resource.version | quote }}
+        kind = {{ .resource.kind | quote }}
+      
+      [policies.predicate]
+        expression = {{ if contains "\n" .predicate.expression }}'''
+{{ .predicate.expression | trim | nindent 10 }}
+        '''{{ else }}{{ .predicate.expression | quote }}{{ end }}
+      
+      {{- if .nodeAssociation }}
+      [policies.nodeAssociation]
+        expression = {{ .nodeAssociation.expression | quote }}
+      {{- end }}
+      
+      [policies.healthEvent]
+        componentClass = {{ .healthEvent.componentClass | quote }}
+        isFatal = {{ .healthEvent.isFatal }}
+        message = {{ .healthEvent.message | quote }}
+        recommendedAction = {{ .healthEvent.recommendedAction | quote }}
+        {{- if .healthEvent.errorCode }}
+        errorCode = [{{- range $index, $code := .healthEvent.errorCode }}{{- if $index }}, {{ end }}{{ $code | quote }}{{- end }}]
+        {{- end }}
+    
+    {{- end }}
+

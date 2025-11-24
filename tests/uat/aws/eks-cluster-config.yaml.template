@@ -24,14 +24,11 @@ metadata:
     Project: nvsentinel
     ManagedBy: eksctl
 
-autoModeConfig:
-  enabled: false
-
 iam:
   withOIDC: true
   serviceAccounts:
   - metadata:
-      name: nvsentinel-janitor
+      name: janitor
       namespace: nvsentinel
     attachPolicyARNs:
     - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
@@ -41,6 +38,16 @@ iam:
       - Effect: Allow
         Action:
         - ec2:RebootInstances
+        - ec2:StartInstances
+        - ec2:StopInstances
+        - ec2:DescribeInstanceStatus
+        - ec2:DescribeInstances
+        Resource: "*"
+      - Effect: Allow
+        Action:
+        - sts:AssumeRoleWithWebIdentity
+        - sts:GetCallerIdentity
+        - sts:DecodeAuthorizationMessage
         Resource: "*"
     roleName: ${CLUSTER_NAME}-janitor
     roleOnly: true

@@ -1,0 +1,21 @@
+{{- if .Values.usePerconaOperator }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: percona-server-mongodb
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9216"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: percona-server-mongodb
+  ports:
+    - name: metrics
+      port: 9216
+      targetPort: metrics
+{{- end }}

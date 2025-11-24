@@ -54,10 +54,12 @@ func TestMultipleRemediationsCompleted(t *testing.T) {
 		gpuNodeName := testCtx.NodeName
 
 		event := helpers.NewHealthEvent(gpuNodeName).
+			WithFatal(true).
 			WithErrorCode(helpers.ERRORCODE_31).
 			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
 		helpers.SendHealthEvent(ctx, t, event)
 
+		// FIXME(dims): This is not happening correctly and causing failures in CI.
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, gpuNodeName, "MultipleRemediations", "ErrorCode:31 GPU:0 Recommended Action=CONTACT_SUPPORT;")
 
 		return ctx
@@ -136,10 +138,11 @@ func TestRepeatedXIDRule(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create client")
 		t.Logf("Cleaning up any existing node conditions for node %s", testCtx.NodeName)
+		// Note: Using default agent (gpu-health-monitor) instead of health-events-analyzer
+		// because the reconciler filters out events from health-events-analyzer to prevent infinite loops
 		errorsToInject := []string{helpers.ERRORCODE_119, helpers.ERRORCODE_120, helpers.ERRORCODE_48, helpers.ERRORCODE_79}
 		for _, xid := range errorsToInject {
 			event := helpers.NewHealthEvent(testCtx.NodeName).
-				WithAgent(helpers.HEALTH_EVENTS_ANALYZER_AGENT).
 				WithCheckName("RepeatedXidError").
 				WithHealthy(true).
 				WithFatal(false).

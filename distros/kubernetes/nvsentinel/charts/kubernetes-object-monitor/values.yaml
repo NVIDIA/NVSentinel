@@ -1,0 +1,106 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for kubernetes-object-monitor.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+logLevel: info
+
+image:
+  repository: ghcr.io/nvidia/nvsentinel/kubernetes-object-monitor
+  pullPolicy: IfNotPresent
+  tag: ""
+
+podAnnotations: {}
+
+maxConcurrentReconciles: 1
+resyncPeriod: 5m
+
+# RBAC permissions are automatically generated based on the resources defined in policies.
+# Nodes always get write permissions (patch/update) for annotations.
+# All other resources get read-only permissions (get/list/watch).
+policies:
+  - name: node-not-ready
+    enabled: true
+    resource:
+      group: ""
+      version: v1
+      kind: Node
+    predicate:
+      expression: |
+        resource.status.conditions.filter(c, c.type == "Ready" && c.status == "False").size() > 0
+    healthEvent:
+      componentClass: Node
+      isFatal: true
+      message: "Node is not ready"
+      recommendedAction: CONTACT_SUPPORT
+      errorCode:
+        - NODE_NOT_READY
+
+  # Example: Monitor a custom resource (e.g., a GPU Job)
+  # Uncomment and modify to monitor your own custom resources
+  #
+  # - name: gpu-job-failed
+  #   enabled: true
+  #   resource:
+  #     group: batch.example.com
+  #     version: v1alpha1
+  #     kind: GPUJob
+  #   predicate:
+  #     # CEL expression to detect unhealthy state
+  #     # Access the resource via 'resource' variable
+  #     expression: |
+  #       has(resource.status.state) && resource.status.state == "Failed"
+  #   nodeAssociation:
+  #     # Optional: CEL expression to map this resource to a specific node
+  #     # This is useful for resources that run on specific nodes
+  #     
+  #     # Example 1: Direct node reference
+  #     expression: resource.spec.nodeName
+  #     
+  #     # Example 2: Use lookup() to find the node from a related Pod
+  #     # Useful when monitoring resources that reference other resources
+  #     # expression: |
+  #     #   lookup('v1', 'Pod', resource.metadata.namespace, resource.spec.podName).spec.nodeName
+  #     
+  #     # Example 3: Chain lookup() calls to traverse multiple resources
+  #     # expression: |
+  #     #   lookup('v1', 'Node', '', 
+  #     #     lookup('v1', 'Pod', resource.metadata.namespace, resource.status.podName).spec.nodeName
+  #     #   ).metadata.name
+  #   healthEvent:
+  #     componentClass: GPU
+  #     isFatal: false
+  #     message: "GPU job failed on node"
+  #     recommendedAction: CONTACT_SUPPORT
+  #     errorCode:
+  #       - GPU_JOB_FAILED
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+volumes:
+  - name: socket
+    hostPath:
+      path: /var/run/nvsentinel
+      type: DirectoryOrCreate
+

@@ -67,7 +67,7 @@ config: |
 
   [[rules]]
   name = "RepeatedXidError"
-  description = "Detect occurrence of fatal XIDs 5 times within 24 hours"
+  description = "Detect occurrence of fatal XIDs 5 times within 24 hours (production: 86400s for real workloads)"
   recommended_action = "CONTACT_SUPPORT"
   stage = [
     '''
@@ -96,7 +96,7 @@ config: |
                     "$map": {
                       "input": {
                         "$filter": {
-                          "input": "$healthevent.entitiesimpacted",
+                          "input": {"$ifNull": ["$healthevent.entitiesimpacted", []]},
                           "cond": {"$eq": ["$$this.entitytype", "GPU"]}
                         }
                       },

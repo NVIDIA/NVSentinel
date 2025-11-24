@@ -12,6 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Feature flags to switch between Bitnami MongoDB and Percona MongoDB Operator
+# Due to Helm limitations, both flags must be explicitly set when switching modes
+# 
+# Default (Bitnami MongoDB - backward compatible):
+#   global.mongodbStore.enabled: true
+#   mongodb-store.useBitnami: true           # Default
+#   mongodb-store.usePerconaOperator: false  # Default
+# 
+# Percona MongoDB Operator:
+#   global.mongodbStore.enabled: true
+#   mongodb-store.useBitnami: false          # Must explicitly disable
+#   mongodb-store.usePerconaOperator: true   # Must explicitly enable
+#
+# IMPORTANT: These flags control which chart dependencies are loaded.
+# Both must be set correctly to avoid loading unnecessary charts.
+
+useBitnami: true
+usePerconaOperator: false
+
+# Common Job configuration (applies to both Bitnami and Percona)
+# If not set, falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
+job:
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
+# Bitnami MongoDB Configuration (used when usePerconaOperator=false)
+# =============================================================================
 mongodb:
   # Helper images for MongoDB operations
   helperImages:
@@ -188,6 +216,8 @@ mongodb:
     - "authenticationMechanisms=MONGODB-X509,SCRAM-SHA-256"
 
   tolerations: []
+  
+  nodeSelector: {}
       
   jobTolerations: []
 
@@ -208,3 +238,109 @@ mongodb:
       - |
         export HOSTNAME=$(hostname)
         /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
+
+# =============================================================================
+# Percona MongoDB Operator Configuration (used when usePerconaOperator=true)
+# =============================================================================
+psmdb-operator:
+  nodeSelector: {}
+  tolerations: []
+
+psmdb-db:
+  nameOverride: mongodb
+  fullnameOverride: mongodb
+  replsets:
+    rs0:
+      name: rs0
+      size: 3
+      configuration: |
+        setParameter:
+          authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
+      replsetOverrides:
+        mongodb-rs0-0:
+          priority: 3  # Preferred primary
+        mongodb-rs0-1:
+          priority: 1
+        mongodb-rs0-2:
+          priority: 1
+      resources:
+        requests:
+          cpu: "1"
+          memory: "1.5Gi"
+        limits:
+          cpu: "1.5"
+          memory: "2Gi"
+      volumeSpec:
+        pvc:
+          resources:
+            requests:
+              storage: "8Gi"
+      nodeSelector: {}
+      tolerations: []
+      podDisruptionBudget:
+        maxUnavailable: 1
+      sidecars:
+        - name: mongodb-exporter
+          image: percona/mongodb_exporter:0.40.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --discovering-mode
+            - --compatible-mode
+            - --collect-all
+            - --web.listen-address=:9216
+            - --mongodb.direct-connect
+            - --collector.replicasetstatus
+            - --collector.dbstats
+            - --collector.dbstatsfreestorage
+            - --collector.collstats
+            - --collector.topmetrics
+            - --collector.indexstats
+          env:
+            - name: MONGODB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: internal-mongodb-users
+                  key: MONGODB_CLUSTER_MONITOR_USER
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: internal-mongodb-users
+                  key: MONGODB_CLUSTER_MONITOR_PASSWORD
+            - name: MONGODB_URI
+              value: "mongodb://localhost:27017/admin?directConnection=true&tls=true&tlsInsecure=true&authMechanism=SCRAM-SHA-256"
+          ports:
+            - name: metrics
+              containerPort: 9216
+              protocol: TCP
+  
+  sharding:
+    enabled: false
+    
+  logcollector:
+    enabled: false
+  
+  tls:
+    mode: requireTLS
+
+  secrets:
+    keyFile: mongodb-keyfile
+    encryptionKey: mongodb-encryption-key
+  
+  backup:
+    enabled: false
+    storages: {}
+    tasks: []
+    volumeMounts: []
+  
+  finalizers: []
+
+psmdb:
+  helperImages:
+    kubectl:
+      repository: docker.io/lachlanevenson/k8s-kubectl
+      tag: "v1.25.4"
+      pullPolicy: IfNotPresent
+    mongosh:
+      repository: ghcr.io/rtsp/docker-mongosh
+      tag: "2.5.2"
+      pullPolicy: IfNotPresent

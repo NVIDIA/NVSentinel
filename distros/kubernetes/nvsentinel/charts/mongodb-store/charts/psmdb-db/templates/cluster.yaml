@@ -1,0 +1,780 @@
+apiVersion: psmdb.percona.com/v1
+kind: PerconaServerMongoDB
+metadata:
+  {{- if .Values.annotations }}
+  annotations:
+{{ .Values.annotations | toYaml | indent 4 }}
+  {{- end }}
+  name: {{ include "psmdb-database.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "psmdb-database.labels" . | indent 4 }}
+  finalizers:
+{{ .Values.finalizers | toYaml | indent 4 }}
+spec:
+  crVersion: {{ .Values.crVersion }}
+  pause: {{ .Values.pause }}
+  unmanaged: {{ .Values.unmanaged }}
+  {{- if .Values.platform }}
+  platform: {{ .Values.platform }}
+  {{- end }}
+  enableVolumeExpansion: {{ .Values.enableVolumeExpansion }}
+  {{- if hasKey .Values "enableExternalVolumeAutoscaling" }}
+  enableExternalVolumeAutoscaling: {{ .Values.enableExternalVolumeAutoscaling }}
+  {{- end }}
+  {{- if .Values.clusterServiceDNSSuffix }}
+  clusterServiceDNSSuffix: {{ .Values.clusterServiceDNSSuffix }}
+  {{- end }}
+  {{- if .Values.clusterServiceDNSMode }}
+  clusterServiceDNSMode: {{ .Values.clusterServiceDNSMode }}
+  {{- end }}
+  image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+  imagePullPolicy: "{{ .Values.imagePullPolicy }}"
+  {{- if .Values.unsafeFlags }}
+  unsafeFlags:
+{{ .Values.unsafeFlags | toYaml | indent 4 }}
+  {{- end }}
+  {{- if .Values.ignoreAnnotations }}
+  ignoreAnnotations:
+{{ .Values.ignoreAnnotations | toYaml | indent 4 }}
+  {{- end }}
+  {{- if .Values.ignoreLabels }}
+  ignoreLabels:
+{{ .Values.ignoreLabels | toYaml | indent 4 }}
+  {{- end }}
+  multiCluster:
+    enabled: {{ .Values.multiCluster.enabled }}
+    {{- if .Values.multiCluster.DNSSuffix }}
+    DNSSuffix: {{ .Values.multiCluster.DNSSuffix }}
+    {{- end }}
+  {{- if .Values.imagePullSecrets }}
+  imagePullSecrets:
+{{ .Values.imagePullSecrets | toYaml | indent 4 }}
+  {{- end }}
+  {{- if .Values.initImage }}
+  initImage: "{{ .Values.initImage.repository }}:{{ .Values.initImage.tag }}"
+  {{- end }}
+  {{- if .Values.initContainerSecurityContext }}
+  initContainerSecurityContext:
+{{ .Values.initContainerSecurityContext | toYaml | indent 4 }}
+  {{- end }}
+  {{- if .Values.tls }}
+  tls:
+{{ .Values.tls | toYaml | indent 4 }}
+  {{- end }}
+  {{- if .Values.secrets }}
+  secrets:
+{{ tpl (.Values.secrets | toYaml) . | indent 4 }}
+  {{- else }}
+  secrets:
+    users: {{ include "psmdb-database.fullname" . }}-secrets
+  {{- end }}
+  {{- if .Values.updateStrategy }}
+  updateStrategy: {{ .Values.updateStrategy }}
+  upgradeOptions:
+    versionServiceEndpoint: {{ .Values.upgradeOptions.versionServiceEndpoint }}
+    apply: {{ .Values.upgradeOptions.apply }}
+    schedule: {{ .Values.upgradeOptions.schedule }}
+    setFCV: {{ .Values.upgradeOptions.setFCV }}
+  {{- end }}
+  pmm:
+    enabled: {{ .Values.pmm.enabled }}
+    image: "{{ .Values.pmm.image.repository }}:{{ .Values.pmm.image.tag }}"
+    serverHost: {{ .Values.pmm.serverHost }}
+    {{- if .Values.pmm.mongodParams }}
+    mongodParams: {{ .Values.pmm.mongodParams }}
+    {{- end }}
+    {{- if .Values.pmm.mongosParams }}
+    mongosParams: {{ .Values.pmm.mongosParams }}
+    {{- end }}
+    {{- if .Values.pmm.resources }}
+    resources:
+{{ .Values.pmm.resources | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.pmm.containerSecurityContext }}
+    containerSecurityContext:
+{{ .Values.pmm.containerSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.pmm.customClusterName }}
+    customClusterName: {{ .Values.pmm.customClusterName }}
+    {{- end }}
+
+  replsets:
+  {{- range $k,$replset := .Values.replsets }}
+  {{- if $replset.name }}
+  - name: {{ $replset.name }}
+  {{- else }}
+  - name: {{ $k }}
+  {{- end }}
+    size: {{ $replset.size }}
+    {{- if $replset.terminationGracePeriodSeconds }}
+    terminationGracePeriodSeconds: {{ $replset.terminationGracePeriodSeconds }}
+    {{- end }}
+    {{- if $replset.externalNodes }}
+    externalNodes:
+{{ $replset.externalNodes | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.configuration }}
+    configuration: |
+{{ $replset.configuration | indent 6 }}
+    {{- end }}
+    {{- if $replset.topologySpreadConstraints }}
+    topologySpreadConstraints:
+{{ $replset.topologySpreadConstraints | toYaml | indent 6 }}
+    {{- end }}
+{{- if $replset.replsetOverrides }}
+    replsetOverrides:
+{{ $replset.replsetOverrides | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.serviceAccountName }}
+    serviceAccountName: {{ $replset.serviceAccountName }}
+    {{- end }}
+    {{- if $replset.affinity }}
+    affinity:
+{{ $replset.affinity | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.priorityClass }}
+    priorityClassName: {{ $replset.priorityClass }}
+    {{- end }}
+    {{- if $replset.primaryPreferTagSelector }}
+    primaryPreferTagSelector: 
+{{ $replset.primaryPreferTagSelector | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.annotations }}
+    annotations:
+{{ $replset.annotations | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.labels }}
+    labels:
+{{ $replset.labels | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.nodeSelector }}
+    nodeSelector:
+{{ $replset.nodeSelector | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.tolerations }}
+    tolerations:
+{{ $replset.tolerations | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.livenessProbe }}
+    livenessProbe:
+{{ $replset.livenessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.readinessProbe }}
+    readinessProbe:
+{{ $replset.readinessProbe | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.storage }}
+    storage:
+{{ $replset.storage | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.podSecurityContext }}
+    podSecurityContext:
+{{ $replset.podSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.containerSecurityContext }}
+    containerSecurityContext:
+{{ $replset.containerSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.runtimeClass }}
+    runtimeClassName: {{ $replset.runtimeClass }}
+    {{- end }}
+    {{- if $replset.sidecars }}
+    sidecars:
+{{ $replset.sidecars | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.sidecarVolumes }}
+    sidecarVolumes:
+{{ $replset.sidecarVolumes | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.sidecarPVCs }}
+    sidecarPVCs:
+{{ $replset.sidecarPVCs | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.podDisruptionBudget }}
+    podDisruptionBudget:
+      {{- if $replset.podDisruptionBudget.maxUnavailable }}
+      maxUnavailable: {{ $replset.podDisruptionBudget.maxUnavailable }}
+      {{- else }}
+      minAvailable: {{ $replset.podDisruptionBudget.minAvailable }}
+      {{- end }}
+    {{- end }}
+    {{- if $replset.splitHorizons }}
+    splitHorizons:
+{{ $replset.splitHorizons | toYaml | indent 6 }}
+    {{- end }}
+    {{- if $replset.expose }}
+    expose:
+      enabled: {{ $replset.expose.enabled }}
+      type: {{ $replset.expose.type }}
+      {{- if $replset.expose.loadBalancerClass }}
+      loadBalancerClass: {{ $replset.expose.loadBalancerClass }}
+      {{- end }}
+      {{- if $replset.expose.loadBalancerIP }}
+      loadBalancerIP: {{ $replset.expose.loadBalancerIP }}
+      {{- end }}
+      {{- if $replset.expose.loadBalancerSourceRanges }}
+      loadBalancerSourceRanges:
+{{ $replset.expose.loadBalancerSourceRanges | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.expose.annotations }}
+      annotations:
+{{ $replset.expose.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.expose.labels }}
+      labels:
+{{ $replset.expose.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.expose.internalTrafficPolicy }}
+      internalTrafficPolicy: {{ $replset.expose.internalTrafficPolicy }}
+      {{- end }}
+      {{- if $replset.expose.externalTrafficPolicy }}
+      externalTrafficPolicy: {{ $replset.expose.externalTrafficPolicy }}
+      {{- end }}
+    {{- end }}
+    {{- if $replset.schedulerName }}
+    schedulerName: {{ $replset.schedulerName }}
+    {{- end }}
+    resources:
+    {{- if $replset.resources }}
+{{ $replset.resources | toYaml | indent 6 }}
+    {{- end }}
+    volumeSpec:
+    {{- if $replset.volumeSpec }}
+      {{- if $replset.volumeSpec.hostPath }}
+      hostPath:
+        path: {{ $replset.volumeSpec.hostPath.path }}
+        {{- if $replset.volumeSpec.hostPath.type }}
+        type: {{ $replset.volumeSpec.hostPath.type }}
+        {{- else }}
+        type: Directory
+        {{- end }}
+      {{- else if $replset.volumeSpec.pvc }}
+      persistentVolumeClaim:
+{{ $replset.volumeSpec.pvc | toYaml | indent 8 }}
+      {{- else }}
+      emptyDir: {}
+      {{- end }}
+    {{- end }}
+    {{- if $replset.hostAliases }}
+    hostAliases:
+{{ $replset.hostAliases | toYaml | indent 6 }}
+    {{- end }}
+
+{{- if $replset.hidden }}
+    hidden:
+      enabled: {{ $replset.hidden.enabled }}
+      size: {{ $replset.hidden.size }}
+      {{- if $replset.hidden.configuration }}
+      configuration: |
+{{ $replset.hidden.configuration | indent 8 }}
+      {{- end }}
+      affinity:
+      {{- if $replset.hidden.affinity }}
+{{ $replset.hidden.affinity | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.priorityClassName }}
+      priorityClassName: {{ $replset.hidden.priorityClassName }}
+      {{- end }}
+      {{- if $replset.hidden.annotations }}
+      annotations:
+{{ $replset.hidden.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.labels }}
+      labels:
+{{ $replset.hidden.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.podSecurityContext }}
+      podSecurityContext:
+{{ $replset.hidden.podSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.containerSecurityContext }}
+      containerSecurityContext:
+{{ $replset.hidden.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.nodeSelector }}
+      nodeSelector:
+{{ $replset.hidden.nodeSelector | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.tolerations }}
+      tolerations:
+{{ $replset.hidden.tolerations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.podDisruptionBudget }}
+      podDisruptionBudget:
+        {{- if $replset.hidden.podDisruptionBudget.maxUnavailable }}
+        maxUnavailable: {{ $replset.hidden.podDisruptionBudget.maxUnavailable }}
+        {{- else }}
+        minAvailable: {{ $replset.hidden.podDisruptionBudget.minAvailable }}
+        {{- end }}
+      {{- end }}
+      {{- if $replset.hidden.resources }}
+      resources:
+{{ $replset.hidden.resources | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.hidden.volumeSpec }}
+      volumeSpec:
+        {{- if $replset.hidden.volumeSpec.hostPath }}
+        hostPath:
+          path: {{ $replset.hidden.volumeSpec.hostPath.path }}
+          {{- if $replset.hidden.volumeSpec.hostPath.type }}
+          type: {{ $replset.hidden.volumeSpec.hostPath.type }}
+          {{- else }}
+          type: Directory
+          {{- end }}
+        {{- else if $replset.hidden.volumeSpec.pvc }}
+        persistentVolumeClaim:
+{{ $replset.hidden.volumeSpec.pvc | toYaml | indent 10 }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $replset.nonvoting }}
+    nonvoting:
+      enabled: {{ $replset.nonvoting.enabled }}
+      size: {{ $replset.nonvoting.size }}
+      {{- if $replset.nonvoting.configuration }}
+      configuration: |
+{{ $replset.nonvoting.configuration | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.serviceAccountName }}
+      serviceAccountName: {{ $replset.nonvoting.serviceAccountName }}
+      {{- end }}
+      affinity:
+      {{- if $replset.nonvoting.affinity }}
+{{ $replset.nonvoting.affinity | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.priorityClass }}
+      priorityClassName: {{ $replset.nonvoting.priorityClass }}
+      {{- end }}
+      {{- if $replset.nonvoting.annotations }}
+      annotations:
+{{ $replset.nonvoting.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.labels }}
+      labels:
+{{ $replset.nonvoting.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.podSecurityContext }}
+      podSecurityContext:
+{{ $replset.nonvoting.podSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.containerSecurityContext }}
+      containerSecurityContext:
+{{ $replset.nonvoting.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.nodeSelector }}
+      nodeSelector:
+{{ $replset.nonvoting.nodeSelector | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.tolerations }}
+      tolerations:
+{{ $replset.nonvoting.tolerations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.podDisruptionBudget }}
+      podDisruptionBudget:
+        {{- if $replset.nonvoting.podDisruptionBudget.maxUnavailable }}
+        maxUnavailable: {{ $replset.nonvoting.podDisruptionBudget.maxUnavailable }}
+        {{- else }}
+        minAvailable: {{ $replset.nonvoting.podDisruptionBudget.minAvailable }}
+        {{- end }}
+      {{- end }}
+      {{- if $replset.nonvoting.resources }}
+      resources:
+{{ $replset.nonvoting.resources | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.nonvoting.volumeSpec }}
+      volumeSpec:
+        {{- if $replset.nonvoting.volumeSpec.hostPath }}
+        hostPath:
+          path: {{ $replset.nonvoting.volumeSpec.hostPath.path }}
+          {{- if $replset.nonvoting.volumeSpec.hostPath.type }}
+          type: {{ $replset.nonvoting.volumeSpec.hostPath.type }}
+          {{- else }}
+          type: Directory
+          {{- end }}
+        {{- else if $replset.nonvoting.volumeSpec.pvc }}
+        persistentVolumeClaim:
+{{ $replset.nonvoting.volumeSpec.pvc | toYaml | indent 10 }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+    {{- if $replset.arbiter }}
+    arbiter:
+      enabled: {{ $replset.arbiter.enabled }}
+      size: {{ $replset.arbiter.size }}
+      {{- if $replset.arbiter.serviceAccountName }}
+      serviceAccountName: {{ $replset.arbiter.serviceAccountName }}
+      {{- end }}
+      {{- if $replset.affinity }}
+      affinity:
+{{ $replset.arbiter.affinity | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.priorityClass }}
+      priorityClassName: {{ $replset.arbiter.priorityClass }}
+      {{- end }}
+      {{- if $replset.arbiter.annotations }}
+      annotations:
+{{ $replset.arbiter.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.labels }}
+      labels:
+{{ $replset.arbiter.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.nodeSelector }}
+      nodeSelector:
+{{ $replset.arbiter.nodeSelector | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.tolerations }}
+      tolerations:
+{{ $replset.arbiter.tolerations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if $replset.arbiter.resources }}
+      resources:
+{{ $replset.arbiter.resources | toYaml | indent 8 }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+
+  sharding:
+    enabled: {{ .Values.sharding.enabled }}
+    balancer:
+      enabled: {{ .Values.sharding.balancer.enabled }}
+
+    configsvrReplSet:
+      size: {{ .Values.sharding.configrs.size }}
+      {{- if .Values.sharding.configrs.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.sharding.configrs.terminationGracePeriodSeconds }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.externalNodes }}
+      externalNodes:
+{{ .Values.sharding.configrs.externalNodes | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.configuration }}
+      configuration: |
+{{ .Values.sharding.configrs.configuration | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ .Values.sharding.configrs.topologySpreadConstraints | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.serviceAccountName }}
+      serviceAccountName: {{ .Values.sharding.configrs.serviceAccountName }}
+      {{- end }}
+      affinity:
+{{ .Values.sharding.configrs.affinity | toYaml | indent 8 }}
+      {{- if .Values.sharding.configrs.priorityClass }}
+      priorityClassName: {{ .Values.sharding.configrs.priorityClass }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.annotations }}
+      annotations:
+{{ .Values.sharding.configrs.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.labels }}
+      labels:
+{{ .Values.sharding.configrs.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.nodeSelector }}
+      nodeSelector:
+{{ .Values.sharding.configrs.nodeSelector | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.tolerations }}
+      tolerations:
+{{ .Values.sharding.configrs.tolerations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.livenessProbe }}
+      livenessProbe:
+{{ .Values.sharding.configrs.livenessProbe | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.readinessProbe }}
+      readinessProbe:
+{{ .Values.sharding.configrs.readinessProbe | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.storage }}
+      storage:
+{{ .Values.sharding.configrs.storage | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.podSecurityContext }}
+      podSecurityContext:
+{{ .Values.sharding.configrs.podSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.containerSecurityContext }}
+      containerSecurityContext:
+{{ .Values.sharding.configrs.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.runtimeClass }}
+      runtimeClassName: {{ .Values.sharding.configrs.runtimeClass }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.sidecars }}
+      sidecars:
+{{ .Values.sharding.configrs.sidecars | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.sidecarVolumes }}
+      sidecarVolumes:
+{{ .Values.sharding.configrs.sidecarVolumes | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.sidecarPVCs }}
+      sidecarPVCs:
+{{ .Values.sharding.configrs.sidecarPVCs | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.podDisruptionBudget }}
+      podDisruptionBudget:
+        {{- if .Values.sharding.configrs.podDisruptionBudget.maxUnavailable }}
+        maxUnavailable: {{ .Values.sharding.configrs.podDisruptionBudget.maxUnavailable }}
+        {{- else }}
+        minAvailable: {{ .Values.sharding.configrs.podDisruptionBudget.minAvailable }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.sharding.configrs.expose }}
+      expose:
+        enabled: {{ .Values.sharding.configrs.expose.enabled }}
+        type: {{ .Values.sharding.configrs.expose.type }}
+        {{- if .Values.sharding.configrs.expose.loadBalancerClass }}
+        loadBalancerClass: {{ .Values.sharding.configrs.expose.loadBalancerClass }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.loadBalancerIP }}
+        loadBalancerIP: {{ .Values.sharding.configrs.expose.loadBalancerIP }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.loadBalancerSourceRanges }}
+        loadBalancerSourceRanges:
+{{ .Values.sharding.configrs.expose.loadBalancerSourceRanges | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.annotations }}
+        annotations:
+{{ .Values.sharding.configrs.expose.annotations | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.labels }}
+        labels:
+{{ .Values.sharding.configrs.expose.labels | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.internalTrafficPolicy }}
+        internalTrafficPolicy: {{ .Values.sharding.configrs.expose.internalTrafficPolicy }}
+        {{- end }}
+        {{- if .Values.sharding.configrs.expose.externalTrafficPolicy }}
+        externalTrafficPolicy: {{ .Values.sharding.configrs.expose.externalTrafficPolicy }}
+        {{- end }}
+      {{- end }}
+      resources:
+        limits:
+          cpu: {{ .Values.sharding.configrs.resources.limits.cpu }}
+          memory: {{ .Values.sharding.configrs.resources.limits.memory }}
+        requests:
+          cpu: {{ .Values.sharding.configrs.resources.requests.cpu }}
+          memory: {{ .Values.sharding.configrs.resources.requests.memory }}
+      volumeSpec:
+        {{- if .Values.sharding.configrs.volumeSpec.hostPath }}
+        hostPath:
+          path: {{ .Values.sharding.configrs.volumeSpec.hostPath.path }}
+          {{- if .Values.sharding.configrs.volumeSpec.hostPath.type }}
+          type: {{ .Values.sharding.configrs.volumeSpec.hostPath.type }}
+          {{- else }}
+          type: Directory
+          {{- end }}
+        {{- else if .Values.sharding.configrs.volumeSpec.pvc }}
+        persistentVolumeClaim:
+{{ .Values.sharding.configrs.volumeSpec.pvc | toYaml | indent 10 }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- if .Values.sharding.configrs.hostAliases }}
+      hostAliases:
+{{ .Values.sharding.configrs.hostAliases | toYaml | indent 8 }}
+      {{- end }}
+
+    mongos:
+      size: {{ .Values.sharding.mongos.size }}
+      {{- if .Values.sharding.mongos.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.sharding.mongos.terminationGracePeriodSeconds }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.configuration }}
+      configuration: |
+{{ .Values.sharding.mongos.configuration | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ .Values.sharding.mongos.topologySpreadConstraints | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.serviceAccountName }}
+      serviceAccountName: {{ .Values.sharding.mongos.serviceAccountName }}
+      {{- end }}
+      affinity:
+{{ .Values.sharding.mongos.affinity | toYaml | indent 8 }}
+      {{- if .Values.sharding.mongos.priorityClass }}
+      priorityClassName: {{ .Values.sharding.mongos.priorityClass }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.annotations }}
+      annotations:
+{{ .Values.sharding.mongos.annotations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.labels }}
+      labels:
+{{ .Values.sharding.mongos.labels | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.nodeSelector }}
+      nodeSelector:
+{{ .Values.sharding.mongos.nodeSelector | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.tolerations }}
+      tolerations:
+{{ .Values.sharding.mongos.tolerations | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.livenessProbe }}
+      livenessProbe:
+{{ .Values.sharding.mongos.livenessProbe | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.readinessProbe }}
+      readinessProbe:
+{{ .Values.sharding.mongos.readinessProbe | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.podSecurityContext }}
+      podSecurityContext:
+{{ .Values.sharding.mongos.podSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.containerSecurityContext }}
+      containerSecurityContext:
+{{ .Values.sharding.mongos.containerSecurityContext | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.runtimeClass }}
+      runtimeClassName: {{ .Values.sharding.mongos.runtimeClass }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.sidecars }}
+      sidecars:
+{{ .Values.sharding.mongos.sidecars | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.sidecarVolumes }}
+      sidecarVolumes:
+{{ .Values.sharding.mongos.sidecarVolumes | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.sidecarPVCs }}
+      sidecarPVCs:
+{{ .Values.sharding.mongos.sidecarPVCs | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.podDisruptionBudget }}
+      podDisruptionBudget:
+        {{- if .Values.sharding.mongos.podDisruptionBudget.maxUnavailable }}
+        maxUnavailable: {{ .Values.sharding.mongos.podDisruptionBudget.maxUnavailable }}
+        {{- else }}
+        minAvailable: {{ .Values.sharding.mongos.podDisruptionBudget.minAvailable }}
+        {{- end }}
+      {{- end }}
+      resources:
+        limits:
+          cpu: {{ .Values.sharding.mongos.resources.limits.cpu }}
+          memory: {{ .Values.sharding.mongos.resources.limits.memory }}
+        requests:
+          cpu: {{ .Values.sharding.mongos.resources.requests.cpu }}
+          memory: {{ .Values.sharding.mongos.resources.requests.memory }}
+      expose:
+        type: {{ .Values.sharding.mongos.expose.type }}
+        {{- if .Values.sharding.mongos.expose.loadBalancerClass }}
+        loadBalancerClass: {{ .Values.sharding.mongos.expose.loadBalancerClass }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.loadBalancerIP }}
+        loadBalancerIP: {{ .Values.sharding.mongos.expose.loadBalancerIP }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.servicePerPod }}
+        servicePerPod: {{ .Values.sharding.mongos.expose.servicePerPod }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.loadBalancerSourceRanges }}
+        loadBalancerSourceRanges:
+{{ .Values.sharding.mongos.expose.loadBalancerSourceRanges | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.annotations }}
+        annotations:
+{{ .Values.sharding.mongos.expose.annotations | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.labels }}
+        labels:
+{{ .Values.sharding.mongos.expose.labels | toYaml | indent 10 }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.internalTrafficPolicy }}
+        internalTrafficPolicy: {{ .Values.sharding.mongos.expose.internalTrafficPolicy }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.externalTrafficPolicy }}
+        externalTrafficPolicy: {{ .Values.sharding.mongos.expose.externalTrafficPolicy }}
+        {{- end }}
+        {{- if .Values.sharding.mongos.expose.nodePort }}
+        nodePort: {{ .Values.sharding.mongos.expose.nodePort }}
+        {{- end }}
+      {{- if .Values.sharding.mongos.auditLog }}
+      auditLog:
+{{ .Values.sharding.mongos.auditLog | toYaml | indent 8 }}
+      {{- end }}
+      {{- if .Values.sharding.mongos.hostAliases }}
+      hostAliases:
+{{ .Values.sharding.mongos.hostAliases | toYaml | indent 8 }}
+      {{- end }}
+
+  {{- if .Values.users }}
+  users:
+{{ .Values.users | toYaml | indent 2 }}
+  {{- end }}
+
+  {{- if .Values.roles }}
+  roles:
+{{ .Values.roles | toYaml | indent 2 }}
+  {{- end }}
+
+  backup:
+    enabled: {{ .Values.backup.enabled }}
+    {{- if .Values.backup.startingDeadlineSeconds }}
+    startingDeadlineSeconds: {{ .Values.backup.startingDeadlineSeconds }}
+    {{- end }}
+    {{- if .Values.backup.annotations }}
+    annotations:
+{{ .Values.backup.annotations | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.backup.podSecurityContext }}
+    podSecurityContext:
+{{ .Values.backup.podSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    {{- if .Values.backup.containerSecurityContext }}
+    containerSecurityContext:
+{{ .Values.backup.containerSecurityContext | toYaml | indent 6 }}
+    {{- end }}
+    image: "{{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}"
+    {{- if .Values.backup.resources }}
+    resources:
+{{ .Values.backup.resources | toYaml | indent 6 }}
+    {{- end }}
+    storages:
+{{ .Values.backup.storages | toYaml | indent 6 }}
+    volumeMounts:
+{{ .Values.backup.volumeMounts | toYaml | indent 6 }}
+    pitr:
+    {{- if and .Values.backup.enabled .Values.backup.pitr.enabled }}
+      enabled: true
+      {{- if .Values.backup.pitr.oplogOnly }}
+      oplogOnly: {{ .Values.backup.pitr.oplogOnly }}
+      {{- end }}
+      {{- if .Values.backup.pitr.oplogSpanMin }}
+      oplogSpanMin: {{ .Values.backup.pitr.oplogSpanMin }}
+      {{- end }}
+      {{- if .Values.backup.pitr.compressionType }}
+      compressionType: {{ .Values.backup.pitr.compressionType }}
+      {{- end }}
+      {{- if .Values.backup.pitr.compressionLevel }}
+      compressionLevel: {{ .Values.backup.pitr.compressionLevel }}
+      {{- end }}
+    {{- else }}
+      enabled: false
+    {{- end }}
+    {{- if .Values.backup.configuration }}
+    configuration:
+{{ .Values.backup.configuration | toYaml | indent 6 }}
+    {{- end }}
+    tasks:
+{{ .Values.backup.tasks | toYaml | indent 6 }}
+  logcollector:
+    enabled: {{ .Values.logcollector.enabled }}
+    image: "{{ .Values.logcollector.image.repository }}:{{ .Values.logcollector.image.tag }}"
+    {{- if .Values.logcollector.configuration }}
+    configuration: {{ .Values.logcollector.configuration }}
+    {{- end }}
+    {{- if .Values.logcollector.resources }}
+    resources:
+{{ .Values.logcollector.resources | toYaml | indent 6 }}
+    {{- end }}

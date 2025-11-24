@@ -28,11 +28,10 @@ import (
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
-	"github.com/nvidia/nvsentinel/store-client/pkg/storewatcher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"golang.org/x/sync/errgroup"
-
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -54,16 +53,44 @@ func main() {
 	}
 }
 
-func createPipeline() mongo.Pipeline {
-	return mongo.Pipeline{
-		bson.D{
-			{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: "insert"},
-				{Key: "fullDocument.healthevent.agent", Value: bson.D{{Key: "$ne", Value: "health-events-analyzer"}}},
-				{Key: "fullDocument.healthevent.ishealthy", Value: false},
-			}},
-		},
+// getCertPath checks if the certificate exists at the new path, falls back to legacy path
+func getCertPath(databaseClientCertMountPath string) string {
+	// Check if ca.crt exists at the new path
+	if _, err := os.Stat(databaseClientCertMountPath + "/ca.crt"); err == nil {
+		return databaseClientCertMountPath
 	}
+
+	// Fall back to legacy mongo-client path
+	legacyPath := "/etc/ssl/mongo-client"
+	if _, err := os.Stat(legacyPath + "/ca.crt"); err == nil {
+		slog.Info("Using legacy certificate path for backward compatibility", "path", legacyPath)
+		return legacyPath
+	}
+
+	// If neither exists, return the new path (original behavior)
+	return databaseClientCertMountPath
+}
+
+func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStoreConfig, error) {
+	// Load using the new unified datastore configuration
+	config, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load datastore config: %w", err)
+	}
+
+	// Override SSL cert path if provided via command line
+	if databaseClientCertMountPath != "" && config.Connection.SSLCert == "" {
+		certPath := getCertPath(databaseClientCertMountPath)
+		config.Connection.SSLCert = certPath + "/tls.crt"
+		config.Connection.SSLKey = certPath + "/tls.key"
+		config.Connection.SSLRootCert = certPath + "/ca.crt"
+	}
+
+	return config, nil
+}
+
+func createPipeline() interface{} {
+	return client.BuildNonFatalUnhealthyInsertsPipeline()
 }
 
 func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {
@@ -86,12 +113,14 @@ func run() error {
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml", "path to TOML config file")
+	databaseClientCertMountPath := flag.String("database-client-cert-mount-path", "/etc/ssl/database-client",
+		"path where the database client cert is mounted")
 
 	flag.Parse()
 
-	mongoConfig, tokenConfig, err := storewatcher.LoadConfigFromEnv("health-events-analyzer")
+	databaseConfig, err := loadDatabaseConfig(*databaseClientCertMountPath)
 	if err != nil {
-		return fmt.Errorf("failed to load MongoDB configuration: %w", err)
+		return err
 	}
 
 	pipeline := createPipeline()
@@ -109,11 +138,10 @@ func run() error {
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{
-		MongoHealthEventCollectionConfig: mongoConfig,
-		TokenConfig:                      tokenConfig,
-		MongoPipeline:                    pipeline,
-		HealthEventsAnalyzerRules:        tomlConfig,
-		Publisher:                        pub,
+		DataStoreConfig:           databaseConfig,
+		Pipeline:                  pipeline,
+		HealthEventsAnalyzerRules: tomlConfig,
+		Publisher:                 pub,
 	}
 
 	rec := reconciler.NewReconciler(reconcilerCfg)

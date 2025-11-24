@@ -67,7 +67,87 @@ global:
   metadataCollector:
     enabled: false
 
+  kubernetesObjectMonitor:
+    enabled: true
+
 mongodb-store:
+  useBitnami: true
+  usePerconaOperator: false
+  
+  job:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+      - operator: Exists
+  
+  psmdb-operator:
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+    tolerations:
+      - operator: Exists
+
+  psmdb-db:
+    nameOverride: mongodb
+    fullnameOverride: mongodb
+    replsets:
+      rs0:
+        name: rs0
+        size: 3
+        configuration: |
+          setParameter:
+            authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
+        replsetOverrides:
+          mongodb-rs0-0:
+            priority: 3
+          mongodb-rs0-1:
+            priority: 1
+          mongodb-rs0-2:
+            priority: 1
+        volumeSpec:
+          pvc:
+            resources:
+              requests:
+                storage: "1Gi"
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+        tolerations:
+          - operator: Exists
+        podDisruptionBudget:
+          maxUnavailable: 1
+    
+    sharding:
+      enabled: false
+      
+    logcollector:
+      enabled: false
+    
+    tls:
+      mode: requireTLS
+
+    secrets:
+      keyFile: mongodb-keyfile
+      encryptionKey: mongodb-encryption-key
+    
+    backup:
+      enabled: false
+      storages: {}
+      tasks: []
+      volumeMounts: []
+    
+    finalizers: []
+
+  psmdb:
+    helperImages:
+      kubectl:
+        repository: docker.io/lachlanevenson/k8s-kubectl
+        tag: "v1.25.4"
+        pullPolicy: IfNotPresent
+      mongosh:
+        repository: ghcr.io/rtsp/docker-mongosh
+        tag: "2.5.2"
+        pullPolicy: IfNotPresent
+  
+  # Bitnami configuration
   mongodb:
     replicaCount: 1
     nodeSelector:
@@ -162,6 +242,10 @@ health-events-analyzer:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
 
+janitor:
+  webhook:
+    certIssuer: "janitor-selfsigned-issuer"
+
 labeler:
   logLevel: debug
   # Test kata label override with the annotation present on kata test nodes
@@ -177,3 +261,35 @@ csp-health-monitor:
 platformConnector:
   nodeMetadata:
     enabled: true
+
+kubernetes-object-monitor:
+  logLevel: debug
+
+  policies:
+    - name: node-test-condition
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Node
+      predicate:
+        expression: |
+          resource.status.conditions.filter(c, c.type == "TestCondition" && c.status == "False").size() > 0
+      healthEvent:
+        componentClass: Node
+        isFatal: false
+        message: "Node test condition is not ready"
+        recommendedAction: CONTACT_SUPPORT
+        errorCode:
+          - NODE_TEST_CONDITION_NOT_READY
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname

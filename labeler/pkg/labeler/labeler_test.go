@@ -531,7 +531,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 
 			cfg, err := testEnv.Start()
 			require.NoError(t, err, "failed to setup envtest")
-			defer testEnv.Stop()
+			defer func() { _ = testEnv.Stop() }()
 
 			cli, err := kubernetes.NewForConfig(cfg)
 			require.NoError(t, err, "failed to create a client")
@@ -663,7 +663,7 @@ func TestKataLabelOverride(t *testing.T) {
 			testEnv := envtest.Environment{}
 			cfg, err := testEnv.Start()
 			require.NoError(t, err, "failed to setup envtest")
-			defer testEnv.Stop()
+			defer func() { _ = testEnv.Stop() }()
 
 			clientset, err := kubernetes.NewForConfig(cfg)
 			require.NoError(t, err, "failed to create kubernetes client")
@@ -698,7 +698,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 	testEnv := envtest.Environment{}
 	cfg, err := testEnv.Start()
 	require.NoError(t, err, "failed to setup envtest")
-	defer testEnv.Stop()
+	defer func() { _ = testEnv.Stop() }()
 
 	clientset, err := kubernetes.NewForConfig(cfg)
 	require.NoError(t, err, "failed to create kubernetes client")
@@ -849,7 +849,7 @@ func TestKataLabelDetection(t *testing.T) {
 			testEnv := envtest.Environment{}
 			cfg, err := testEnv.Start()
 			require.NoError(t, err, "failed to setup envtest")
-			defer testEnv.Stop()
+			defer func() { _ = testEnv.Stop() }()
 
 			cli, err := kubernetes.NewForConfig(cfg)
 			require.NoError(t, err, "failed to create kubernetes client")

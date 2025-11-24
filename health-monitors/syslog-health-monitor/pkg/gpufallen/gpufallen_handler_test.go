@@ -390,9 +390,9 @@ func TestXIDTracking(t *testing.T) {
 		xidMsg2 := "NVRM: Xid (PCI:0000:b4:00.0): 79"
 		xidMsg3 := "NVRM: Xid (PCI:0000:b5:00.0): 79"
 
-		handler8.ProcessLine(xidMsg1)
-		handler8.ProcessLine(xidMsg2)
-		handler8.ProcessLine(xidMsg3)
+		_, _ = handler8.ProcessLine(xidMsg1)
+		_, _ = handler8.ProcessLine(xidMsg2)
+		_, _ = handler8.ProcessLine(xidMsg3)
 
 		// Verify all entries exist
 		handler8.mu.RLock()

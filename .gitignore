@@ -446,7 +446,9 @@ fault-quarantine/fault-quarantine
 fault-remediation/fault-remediation
 health-events-analyzer/health-events-analyzer
 health-monitors/syslog-health-monitor/syslog-health-monitor
+health-monitors/kubernetes-object-monitor/kubernetes-object-monitor
 labeler/labeler
 metadata-collector/metadata-collector
 node-drainer/node-drainer
 platform-connectors/platform-connectors
+event-exporter/event-exporter

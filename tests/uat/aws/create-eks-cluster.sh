@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -euox pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common.sh"
@@ -27,13 +27,31 @@ CPU_NODE_TYPE="${CPU_NODE_TYPE:-m7a.4xlarge}"
 CPU_NODE_COUNT="${CPU_NODE_COUNT:-3}"
 
 GPU_NODE_TYPE="${GPU_NODE_TYPE:-p5.48xlarge}"
-GPU_NODE_COUNT="${GPU_NODE_COUNT:-2}"
+GPU_NODE_COUNT="${GPU_NODE_COUNT:-1}"
 
 CAPACITY_RESERVATION_ID="${CAPACITY_RESERVATION_ID:-}"
 
 BASE_TEMPLATE_FILE="${SCRIPT_DIR}/eks-cluster-config.yaml.template"
 GPU_TEMPLATE_FILE="${SCRIPT_DIR}/eks-gpu-nodegroup-config.yaml.template"
 CONFIG_FILE="/tmp/eks-cluster-config-${CLUSTER_NAME}.yaml"
+
+# Validate that required tools are installed
+if ! command -v eksctl &> /dev/null; then
+    error "eksctl could not be found. Please install eksctl to proceed."
+fi
+
+if ! command -v envsubst &> /dev/null; then
+    error "envsubst could not be found. Please install gettext package."
+fi
+
+# Validate the template files exist
+if [[ ! -f "$BASE_TEMPLATE_FILE" ]]; then
+    error "Base template file not found: $BASE_TEMPLATE_FILE"
+fi
+
+if [[ ! -f "$GPU_TEMPLATE_FILE" ]]; then
+    error "GPU template file not found: $GPU_TEMPLATE_FILE"
+fi
 
 create_base_cluster() {
     log "Creating base EKS cluster (CPU nodes only)..."
@@ -95,8 +113,20 @@ create_gpu_subnet() {
     
     log "Creating private subnet in $az..." >&2
     
-    local subnet_cidr="192.168.128.0/19"
-    log "Using CIDR: $subnet_cidr" >&2
+    # Find available CIDR block to avoid conflicts
+    local subnet_cidr
+    for i in {128..192}; do
+        subnet_cidr="192.168.${i}.0/19"
+        if ! aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+                      "Name=cidr-block,Values=$subnet_cidr" \
+            --region "$AWS_REGION" \
+            --query 'Subnets[0]' \
+            --output text 2>/dev/null | grep -q .; then
+            break
+        fi
+    done
+    log "Using available CIDR: $subnet_cidr" >&2
     
     local subnet_id
     subnet_id=$(aws ec2 create-subnet \
@@ -117,7 +147,7 @@ create_gpu_subnet() {
     local route_table_id
     route_table_id=$(aws ec2 describe-route-tables \
         --filters "Name=vpc-id,Values=$vpc_id" \
-                  "Name=tag:Name,Values=*rivate*" \
+                  "Name=tag:Name,Values=*Private*" \
         --query 'RouteTables[0].RouteTableId' \
         --output text \
         --region "$AWS_REGION" 2>/dev/null || echo "None")
@@ -150,7 +180,15 @@ generate_cluster_config() {
     export CAPACITY_RESERVATION_ID
     export GPU_SUBNET_ID="$gpu_subnet_id"
     
+    # Generate base config
     envsubst < "$GPU_TEMPLATE_FILE" > "$CONFIG_FILE"
+    
+    # Remove capacity reservation section if not specified
+    if [[ -z "$CAPACITY_RESERVATION_ID" ]]; then
+        log "Removing capacity reservation section (no reservation specified)"
+        # Remove the entire capacityReservation block
+        sed -i '/capacityReservation:/,/capacityReservationID:/d' "$CONFIG_FILE"
+    fi
     
     log "Cluster configuration generated: $CONFIG_FILE"
 }

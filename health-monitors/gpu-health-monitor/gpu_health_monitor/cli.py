@@ -128,7 +128,7 @@ def cli(
 
     prom_server, t = start_http_server(port)
 
-    def process_exit_signal():
+    def process_exit_signal(signum, frame):
         exit.set()
         prom_server.shutdown()
         t.join()

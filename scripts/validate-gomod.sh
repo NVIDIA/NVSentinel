@@ -31,6 +31,7 @@ TOTAL_MODULES=0
 MODULES_WITH_ISSUES=0
 TOTAL_ISSUES=0
 TOTAL_TIDY_ISSUES=0
+TOTAL_MONGODB_ISSUES=0
 
 # Function to print colored output
 print_error() {
@@ -167,6 +168,44 @@ check_mod_tidy() {
         print_info "  ✓ Module is tidy"
         return 0
     fi
+}
+
+# Function to check for direct MongoDB driver usage via go.mod dependencies
+check_mongodb_imports() {
+    local gomod_file="$1"
+    local gomod_dir
+    gomod_dir="$(dirname "$gomod_file")"
+    local mongodb_issues=0
+    
+    # Get the module name
+    local module_name
+    if ! module_name=$(cd "$gomod_dir" && go list -m 2>/dev/null); then
+        return 0  # Skip if we can't determine the module name
+    fi
+    
+    # Skip store-client module - it's allowed to import MongoDB driver
+    if [[ "$module_name" == *"/store-client" ]]; then
+        print_info "  ✓ store-client is allowed to use MongoDB driver"
+        return 0
+    fi
+    
+    # Check for direct (non-indirect) MongoDB driver dependencies
+    local mongodb_deps
+    mongodb_deps=$(cd "$gomod_dir" && go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all 2>/dev/null | grep "^go.mongodb.org/mongo-driver" || true)
+
+    if [[ -n "$mongodb_deps" ]]; then
+        print_error "  ✗ Direct MongoDB driver dependency detected in go.mod:"
+        print_error "    $mongodb_deps"
+        print_error "    Only store-client module should depend on MongoDB driver directly"
+        print_error "    Other modules should use store-client's database-agnostic interfaces"
+        print_error "    Run 'go mod tidy' to remove unused dependencies"
+        mongodb_issues=1
+        TOTAL_MONGODB_ISSUES=$((TOTAL_MONGODB_ISSUES + 1))
+    else
+        print_info "  ✓ No direct MongoDB driver dependency found"
+    fi
+    
+    return $mongodb_issues
 }
 
 # Function to validate a single go.mod file
@@ -329,6 +368,15 @@ validate_gomod() {
         fi
     done <<< "$required_deps"
 
+    # Check for direct MongoDB driver usage
+    local mongodb_issues=0
+    if ! check_mongodb_imports "$gomod_file"; then
+        mongodb_issues=$((mongodb_issues + 1))
+        if [[ $issues_found -eq 0 ]]; then
+            MODULES_WITH_ISSUES=$((MODULES_WITH_ISSUES + 1))
+        fi
+    fi
+
     # Check if go mod tidy is needed
     local tidy_issues=0
     if ! check_mod_tidy "$gomod_file"; then
@@ -339,7 +387,7 @@ validate_gomod() {
     fi
 
     # Summary for this module
-    local total_module_issues=$((issues_found + tidy_issues))
+    local total_module_issues=$((issues_found + mongodb_issues + tidy_issues))
     if [[ $total_module_issues -eq 0 ]]; then
         print_info "  ✓ All validations passed"
     else
@@ -386,12 +434,13 @@ main() {
     print_info "========================================"
     print_info "Total modules checked: $TOTAL_MODULES"
 
-    if [[ $TOTAL_ISSUES -eq 0 && $TOTAL_TIDY_ISSUES -eq 0 ]]; then
+    if [[ $TOTAL_ISSUES -eq 0 && $TOTAL_TIDY_ISSUES -eq 0 && $TOTAL_MONGODB_ISSUES -eq 0 ]]; then
         print_success "All go.mod files are valid!"
         print_info "✓ No circular self-references found"
         print_info "✓ All local module dependencies have proper replace directives"
         print_info "✓ All local module dependencies use v0.0.0 version"
         print_info "✓ All modules are properly tidied"
+        print_info "✓ No direct MongoDB driver usage outside store-client"
     else
         print_error "Validation failed!"
         print_error "Modules with issues: $MODULES_WITH_ISSUES"
@@ -400,6 +449,9 @@ main() {
         fi
         if [[ $TOTAL_TIDY_ISSUES -gt 0 ]]; then
             print_error "Modules needing 'go mod tidy': $TOTAL_TIDY_ISSUES"
+        fi
+        if [[ $TOTAL_MONGODB_ISSUES -gt 0 ]]; then
+            print_error "Modules with direct MongoDB driver usage: $TOTAL_MONGODB_ISSUES"
         fi
         print_info ""
         print_info "To fix these issues:"
@@ -411,6 +463,12 @@ main() {
             print_info "   - Update local module versions to v0.0.0 (remove timestamps)"
             step=$((step + 1))
         fi
+        if [[ $TOTAL_MONGODB_ISSUES -gt 0 ]]; then
+            print_info "$step. Remove direct MongoDB driver imports from modules other than store-client"
+            print_info "   - Replace go.mongodb.org/mongo-driver imports with store-client interfaces"
+            print_info "   - Use database-agnostic types from store-client/pkg/datastore"
+            step=$((step + 1))
+        fi
         if [[ $TOTAL_TIDY_ISSUES -gt 0 ]]; then
             print_info "$step. Run 'go mod tidy' in each affected module directory"
             step=$((step + 1))
@@ -418,7 +476,7 @@ main() {
         print_info "$step. Re-run this script to verify fixes"
     fi
 
-    exit $((TOTAL_ISSUES + TOTAL_TIDY_ISSUES > 0 ? 1 : 0))
+    exit $((TOTAL_ISSUES + TOTAL_TIDY_ISSUES + TOTAL_MONGODB_ISSUES > 0 ? 1 : 0))
 }
 
 # Handle script arguments
@@ -441,13 +499,19 @@ DESCRIPTION:
     4. Checks that replace paths point to the correct local directories
     5. Validates that local module dependencies use v0.0.0 version (no timestamps)
     6. Verifies that 'go mod tidy' has been run (go.mod/go.sum are clean)
-    7. Reports any circular self-references
-    8. Reports any missing or incorrect replace directives
-    9. Reports any local modules with incorrect versions
-    10. Reports any modules that need 'go mod tidy' to be run
+    7. Ensures no direct MongoDB driver imports outside store-client module
+    8. Reports any circular self-references
+    9. Reports any missing or incorrect replace directives
+    10. Reports any local modules with incorrect versions
+    11. Reports any modules that need 'go mod tidy' to be run
+    12. Reports any modules with direct MongoDB driver usage (except store-client)
 
     The script will exit with code 0 if all validations pass, or code 1 if
     any issues are found.
+
+    Database Abstraction: Only the store-client module is allowed to import
+    go.mongodb.org/mongo-driver directly. All other modules must use the
+    database-agnostic interfaces provided by store-client.
 
 EXAMPLES:
     # Validate all go.mod files

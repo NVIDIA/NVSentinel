@@ -79,11 +79,18 @@ jobs:
       - name: ${{ matrix.step_name }}
         run: ${{ matrix.make_command }}
 
+      - name: Load Helm version from .versions.yaml
+        if: matrix.component == 'helm-charts'
+        id: helm-version
+        run: |
+          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
+          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+
       - name: Setup Helm
         if: matrix.component == 'helm-charts'
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
         with:
-          version: 'v3.14.4'
+          version: ${{ steps.helm-version.outputs.helm_version }}
 
       - name: Validate Helm Charts
         if: matrix.component == 'helm-charts'
@@ -128,6 +135,7 @@ jobs:
       matrix:
         component:
           - platform-connectors
+          - event-exporter
           - store-client
           - commons
           - data-models

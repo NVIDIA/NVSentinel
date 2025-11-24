@@ -11,16 +11,22 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/initializer"
+	_ "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
 )
 
 const (
@@ -31,17 +37,44 @@ var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
+
+	policyConfigPath = flag.String(
+		"policy-config-path",
+		"/etc/nvsentinel/config/policies.toml",
+		"Path to policy configuration file",
+	)
+	metricsBindAddress = flag.String(
+		"metrics-bind-address",
+		":8080",
+		"Address to bind Prometheus metrics endpoint",
+	)
+	healthProbeBindAddress = flag.String(
+		"health-probe-bind-address",
+		":8081",
+		"Address to bind health probe endpoints",
+	)
+	resyncPeriod = flag.Duration(
+		"resync-period",
+		5*time.Minute,
+		"Periodic reconciliation interval",
+	)
+	maxConcurrentReconciles = flag.Int(
+		"max-concurrent-reconciles",
+		1,
+		"Maximum number of resources to reconcile concurrently",
+	)
+	platformConnectorSocket = flag.String(
+		"platform-connector-socket",
+		"unix:///var/run/nvsentinel.sock",
+		"Platform Connector gRPC socket",
+	)
 )
 
 func main() {
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel == "" {
-		logLevel = "info"
-	}
+	flag.Parse()
 
 	logger.SetDefaultStructuredLogger(defaultAgentName, version)
-	slog.Info("Starting kubernetes-object-monitor", "version",
-		version, "commit", commit, "date", date, "log_level", logLevel)
+	slog.Info("Starting kubernetes-object-monitor", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {
 		slog.Error("Fatal error", "error", err)
@@ -53,12 +86,26 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("Kubernetes Object Monitor started successfully")
-	slog.Info("TODO: Implement controller-runtime based monitor with CEL policy evaluation")
+	params := initializer.Params{
+		PolicyConfigPath:        *policyConfigPath,
+		MetricsBindAddress:      *metricsBindAddress,
+		HealthProbeBindAddress:  *healthProbeBindAddress,
+		ResyncPeriod:            *resyncPeriod,
+		MaxConcurrentReconciles: *maxConcurrentReconciles,
+		PlatformConnectorSocket: *platformConnectorSocket,
+	}
 
-	<-ctx.Done()
+	components, err := initializer.InitializeAll(ctx, params)
+	if err != nil {
+		return fmt.Errorf("failed to initialize components: %w", err)
+	}
+	defer components.GRPCConn.Close()
 
-	slog.Info("Shutdown signal received, exiting gracefully")
+	slog.Info("Starting manager")
+
+	if err := components.Manager.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start manager: %w", err)
+	}
 
 	return nil
 }

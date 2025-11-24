@@ -41,12 +41,12 @@ var (
 		[]string{"error_type"},
 	)
 
-	newEventsPublishedTotal = promauto.NewCounterVec(
+	fatalEventsPublishedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "new_events_published_total",
-			Help: "Total number of times a new event is published for a node.",
+			Name: "fatal_events_published_total",
+			Help: "Total number of times a fatal event is published for an entity.",
 		},
-		[]string{"node_name"},
+		[]string{"entity_value"},
 	)
 
 	ruleMatchedTotal = promauto.NewCounterVec(
@@ -62,14 +62,6 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "health_event_analyzer_event_handling_duration_seconds",
 			Help:    "Histogram of event handling durations.",
-			Buckets: prometheus.DefBuckets,
-		},
-	)
-
-	databaseQueryDuration = promauto.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    "database_query_duration_seconds",
-			Help:    "Time taken for MongoDB aggregation queries.",
 			Buckets: prometheus.DefBuckets,
 		},
 	)

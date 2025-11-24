@@ -77,6 +77,19 @@ This will:
 make dev-env-setup AUTO_MODE=true
 ```
 
+**Debugging setup issues**: If the setup script fails, enable debug mode for detailed output:
+```bash
+DEBUG=true make dev-env-setup AUTO_MODE=true
+```
+
+This will show:
+- Architecture detection and mappings
+- URL construction for all downloads
+- HTTP response codes for failed downloads
+- Detailed error messages with suggestions
+
+Common setup issues and solutions are documented in the [Debugging](#-debugging) section.
+
 ### Build System
 
 **Unified build system** features:
@@ -850,6 +863,187 @@ The CI environment uses:
    # Ubuntu: apt-get install shellcheck
    # See: https://github.com/koalaman/shellcheck#installing
    ```
+
+### Debugging Setup Script Issues
+
+The `scripts/setup-dev-env.sh` script installs all development dependencies. If you encounter issues:
+
+#### Enable Debug Mode
+
+```bash
+# Run with detailed debugging output
+DEBUG=true make dev-env-setup AUTO_MODE=true
+
+# Or run the script directly
+DEBUG=true AUTO_MODE=true ./scripts/setup-dev-env.sh
+```
+
+**Debug output includes**:
+- Architecture detection (x86_64 → amd64, aarch64 → arm64)
+- Architecture mappings for different tools (GO_ARCH vs PROTOC_ARCH)
+- Complete URLs being constructed for downloads
+- HTTP response codes from URL verification
+- Version information from `.versions.yaml`
+
+#### Common Setup Issues
+
+**1. Download Failures (404 errors)**
+
+If you see errors like "HTTP 404 Not Found":
+
+```bash
+# Enable debug mode to see the exact URL
+DEBUG=true ./scripts/setup-dev-env.sh
+
+# Verify the URL manually
+curl -I "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz"
+
+# Check if the release exists on GitHub
+# Visit: https://github.com/<owner>/<repo>/releases
+```
+
+**Common causes**:
+- Version in `.versions.yaml` doesn't exist in GitHub releases
+- Architecture-specific filename doesn't match release assets
+- Tool project changed their release naming convention
+
+**2. Architecture Mismatch**
+
+Different tools use different architecture naming:
+- **Go tools** (yq, kubectl, helm): `amd64`, `arm64`, `darwin`
+- **Protocol Buffers**: `x86_64`, `aarch_64`, `osx-universal_binary`
+- **Shellcheck**: `x86_64`, `aarch64`, `darwin`
+
+The script automatically maps these:
+```bash
+# See mappings in debug output
+DEBUG=true ./scripts/setup-dev-env.sh
+# Look for: "DEBUG: Architecture mappings: Raw ARCH: x86_64, GO_ARCH: amd64, PROTOC_ARCH: x86_64"
+```
+
+**3. Permission Issues**
+
+```bash
+# If installation to /usr/local/bin fails
+sudo make dev-env-setup AUTO_MODE=true
+
+# Or install to user directory (requires PATH modification)
+mkdir -p ~/bin
+export PATH="$HOME/bin:$PATH"
+# Modify script to use ~/bin instead of /usr/local/bin
+```
+
+**4. Network/Proxy Issues**
+
+```bash
+# Test connectivity to GitHub
+curl -I https://github.com
+
+# If behind proxy, configure:
+export HTTP_PROXY="http://proxy.example.com:8080"
+export HTTPS_PROXY="http://proxy.example.com:8080"
+export NO_PROXY="localhost,127.0.0.1"
+
+# Then retry
+DEBUG=true make dev-env-setup AUTO_MODE=true
+```
+
+**5. Version Validation**
+
+```bash
+# Check what versions are configured
+cat .versions.yaml
+
+# Verify specific tool version exists
+TOOL_VERSION=$(yq eval '.SHELLCHECK_VERSION' .versions.yaml)
+echo "Checking shellcheck version: $TOOL_VERSION"
+curl -I "https://github.com/koalaman/shellcheck/releases/tag/$TOOL_VERSION"
+
+# Update version if needed
+yq eval '.SHELLCHECK_VERSION = "v0.11.0"' -i .versions.yaml
+```
+
+#### Testing URL Construction
+
+To test URL construction without running the full setup:
+
+```bash
+# Source the script functions
+source scripts/setup-dev-env.sh
+
+# Test specific tool URLs
+echo "yq URL: $YQ_URL"
+echo "kubectl URL: $KUBECTL_URL"
+echo "protoc URL: $PROTOC_URL"
+echo "shellcheck URL: $SHELLCHECK_URL"
+
+# Test URL accessibility
+curl -I "$SHELLCHECK_URL"
+```
+
+#### Manual Verification Steps
+
+1. **Verify tool exists in releases**:
+   ```bash
+   # Check GitHub releases page
+   open "https://github.com/koalaman/shellcheck/releases"
+   
+   # Or use API
+   curl -s "https://api.github.com/repos/koalaman/shellcheck/releases/latest" | grep browser_download_url
+   ```
+
+2. **Test download manually**:
+   ```bash
+   # Download specific asset
+   wget "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz"
+   
+   # Verify archive integrity
+   tar -tzf shellcheck-v0.11.0.linux.x86_64.tar.xz
+   ```
+
+3. **Validate script syntax**:
+   ```bash
+   # Check for syntax errors
+   bash -n scripts/setup-dev-env.sh
+   
+   # Run shellcheck on the script itself
+   shellcheck scripts/setup-dev-env.sh
+   ```
+
+#### Reporting Setup Issues
+
+When reporting setup script issues, include:
+
+1. **Debug output**:
+   ```bash
+   DEBUG=true make dev-env-setup AUTO_MODE=true 2>&1 | tee setup-debug.log
+   ```
+
+2. **Environment details**:
+   ```bash
+   echo "OS: $(uname -s)"
+   echo "Architecture: $(uname -m)"
+   echo "Shell: $SHELL"
+   echo "Bash version: $BASH_VERSION"
+   ```
+
+3. **Version file content**:
+   ```bash
+   cat .versions.yaml
+   ```
+
+4. **Failed URL** (from debug output):
+   ```
+   Look for lines like:
+   ❌ ERROR: Failed to verify URL: https://...
+   HTTP Status: 404 Not Found
+   ```
+
+This information helps diagnose whether the issue is:
+- Version-specific (tool version doesn't exist)
+- Architecture-specific (wrong filename for platform)
+- Network-related (connectivity or proxy issues)
+- Script bug (incorrect URL construction logic)
 
 ## 🔧 Makefile Reference
 
