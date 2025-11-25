@@ -31,3 +31,5 @@ resources:
     cpu: 100m
     memory: 128Mi
 
+# Runtime class name for the pod. If empty or not set, the field will be omitted.
+runtimeClassName: "nvidia"
