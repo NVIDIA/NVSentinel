@@ -91,7 +91,7 @@ To simulate production-scale load, we deploy a DaemonSet of event generators (on
 | **Medium** | 100 events/sec | 11× | 10 min | ✅ Minimal (P75 stable at 20ms) |
 | **Heavy** | 300 events/sec | 34× | 10 min | ✅ Excellent (P75 stable at 19ms) |
 
-See [results/MongoDB_Load_and_API_Server_Impact.md](results/MongoDB_Load_and_API_Server_Impact.md) for detailed metrics and Prometheus queries.
+See [results/API_and_MongoDB_Results.md](results/API_and_MongoDB_Results.md) for detailed metrics and Prometheus queries.
 
 ## Key Findings
 
@@ -155,7 +155,7 @@ Monitor the test for the desired duration (10 minutes). Use the Prometheus UI or
 
 ## Detailed Results
 
-- 📊 [MongoDB Load & API Server Impact](results/MongoDB_Load_and_API_Server_Impact.md) - Light/Medium/Heavy load test results
+- 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
 
 ## Directory Structure
@@ -169,7 +169,7 @@ tests/scale-tests/
 │   ├── event-generator-config-medium.yaml
 │   └── event-generator-config-heavy.yaml
 ├── results/                         # Test results
-│   ├── MongoDB_Load_and_API_Server_Impact.md
+│   ├── API_and_MongoDB_Results.md
 │   └── PRODUCTION_BASELINE.md
 ├── event-generator/                 # Event generator source code
 │   ├── main.go

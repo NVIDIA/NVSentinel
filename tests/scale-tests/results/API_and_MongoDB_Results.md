@@ -1,7 +1,6 @@
-# MongoDB Load & API Server Impact
+# API Server Impact & MongoDB Performance
 
-**Objective:** Validate that NVSentinel does not negatively impact Kubernetes API server performance or 
-overwhelm MongoDB at realistic production event rates.
+**Objective:** Validate that NVSentinel does not negatively impact Kubernetes API server performance or overwhelm MongoDB at realistic production event rates.
 
 
 ## Test Configuration
@@ -34,13 +33,13 @@ overwhelm MongoDB at realistic production event rates.
 
 ## MongoDB Performance
 
-| Test | Insert Rate | Total Events | Performance |
-|------|-------------|--------------|-------------|
-| **Light** | 1,985 ops/min (~33 events/sec) | ~19,850 events | ✅ No errors |
-| **Medium** | 6,061 ops/min (~101 events/sec) | ~60,610 events | ✅ No errors |
-| **Heavy** | 18,036 ops/min (~300 events/sec) | ~180,360 events | ✅ No errors |
+| Test | Insert Rate | Total Events | Memory (MB) | Connections | Performance |
+|------|-------------|--------------|-------------|-------------|-------------|
+| **Light** | 1,985 ops/min (~33 events/sec) | ~19,850 events | 2,200 | 4,543 | ✅ Stable |
+| **Medium** | 6,061 ops/min (~101 events/sec) | ~60,610 events | 1,934 | 4,549 | ✅ Stable |
+| **Heavy** | 18,036 ops/min (~300 events/sec) | ~180,360 events | 2,178 | 4,543 | ✅ Stable |
 
-**Result:** MongoDB successfully processed sustained event loads at all tested rates with all writes going to the primary replica (mongodb-0).
+**Result:** MongoDB successfully processed sustained event loads at all tested rates with stable memory (~2 GB) and connection counts (~4,500). Memory variation of ~13% across tests reflects normal cache management rather than resource accumulation. All writes went to the primary replica (mongodb-0).
 
 ## Conclusion
 
@@ -67,6 +66,12 @@ histogram_quantile(0.75, sum(rate(apiserver_request_duration_seconds_bucket[5m])
 
 # MongoDB Insert Operations (ops/min)
 rate(mongodb_op_counters_total{type="insert",pod="mongodb-0"}[5m])*60
+
+# MongoDB Memory (MB)
+mongodb_ss_mem_resident{pod="mongodb-0"}
+
+# MongoDB Connections
+mongodb_ss_connections{pod="mongodb-0",conn_type="current"}
 ```
 
 ---
