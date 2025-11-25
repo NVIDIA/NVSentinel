@@ -25,12 +25,12 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 ```bash
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v0.4.0 \
+  --version v0.4.1 \
   --namespace nvsentinel \
   --create-namespace
 
 # View chart information
-helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.4.0
+helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.4.1
 ```
 
 ## ✨ Key Features
@@ -75,7 +75,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v0.4.0
+NVSENTINEL_VERSION=v0.4.1
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
@@ -91,7 +91,7 @@ kubectl get pods -n nvsentinel
 kubectl get nodes  # Verify GPU nodes are visible
 
 # Run comprehensive validation
-./scripts/validate-nvsentinel.sh --version v0.4.0 --verbose
+./scripts/validate-nvsentinel.sh --version v0.4.1 --verbose
 ```
 
 > **Testing**: The example above uses default settings. For production, customize values for your environment.

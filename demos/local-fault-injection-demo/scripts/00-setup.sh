@@ -274,7 +274,7 @@ EOF
     
     # Install NVSentinel from OCI registry (uses published images)
     # For latest development code, build and load images into KIND first
-    local nvsentinel_version="${NVSENTINEL_VERSION:-v0.4.0}"
+    local nvsentinel_version="${NVSENTINEL_VERSION:-v0.4.1}"
     
     log "Installing NVSentinel ${nvsentinel_version} from OCI registry..."
     log "(Set NVSENTINEL_VERSION env var to use a different version)"
