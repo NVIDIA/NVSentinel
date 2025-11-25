@@ -11,7 +11,7 @@ This test suite validates NVSentinel's performance and scalability under realist
 
 **Testing Version:** NVSentinel v0.4.0  
 **Cluster Scale:** 1500 nodes  
-**Test Load:** 30 events/sec (3.4× production peak)
+**Test Loads:** 30, 100, 300 events/sec (3.4×, 11×, 34× production peak)
 
 ## Quick Start
 
@@ -85,23 +85,19 @@ To simulate production-scale load, we deploy a DaemonSet of event generators (on
 
 ## Test Results
 
-We validated system performance at a conservative baseline (3.4× production peak):
+| Scenario | Event Rate | Production Peak Multiplier | Duration | API Server Impact |
+|----------|-----------|----------------------------|----------|-------------------|
+| **Light** | 30 events/sec | 3.4× | 10 min | ✅ No impact |
+| **Medium** | 100 events/sec | 11× | 10 min | ✅ Minimal (P75 stable at 20ms) |
+| **Heavy** | 300 events/sec | 34× | 10 min | ✅ Excellent (P75 stable at 19ms) |
 
-| Scenario | Event Rate (per node) | Total Cluster Load | Duration | Status |
-|----------|----------------------|-------------------|----------|--------|
-| **Light Load** | 0.02 events/sec | 30 events/sec | 10 min | ✅ No impact |
-
-See [results/MongoDB_Load_and_API_Server_Impact.md](results/MongoDB_Load_and_API_Server_Impact.md) for detailed metrics.
+See [results/MongoDB_Load_and_API_Server_Impact.md](results/MongoDB_Load_and_API_Server_Impact.md) for detailed metrics and Prometheus queries.
 
 ## Key Findings
 
-### 1. API Server Impact: ✅ None
+**API Server Impact:** NVSentinel shows minimal impact even at heavy loads (34× production peak). The critical P75 latency metric remained stable at ~20ms across all test scenarios.
 
-NVSentinel at 30 events/sec (3.4× production peak) on a 1500-node cluster shows no measurable API server latency impact. Request rate increased 28% as expected from NVSentinel operations, but P50 and P75 latency remained stable.
-
-### 2. MongoDB Performance: ✅ Excellent
-
-MongoDB successfully processed ~33 events/sec sustained load (~1,985 ops/min) with no errors or performance degradation.
+**MongoDB Performance:** Successfully processed sustained event loads ranging from 33 to 300 events/sec with no errors or performance degradation.
 
 ## MongoDB Metrics
 
@@ -159,16 +155,8 @@ Monitor the test for the desired duration (10 minutes). Use the Prometheus UI or
 
 ## Detailed Results
 
-- 📊 [MongoDB Load & API Server Impact](results/MongoDB_Load_and_API_Server_Impact.md) - 30 events/sec, 10 minutes
+- 📊 [MongoDB Load & API Server Impact](results/MongoDB_Load_and_API_Server_Impact.md) - Light/Medium/Heavy load test results
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
-
-## Production Recommendations
-
-Based on these scale tests at 30 events/sec (3.4× production peak):
-
-- **API Server Impact:** None - NVSentinel does not affect API server latency at this scale
-- **MongoDB:** Handles the load with no issues using default configuration
-- **Monitoring:** Enable MongoDB metrics for observability (see configs/values-v0.4.0-with-mongodb-metrics.yaml)
 
 ## Directory Structure
 
@@ -204,9 +192,9 @@ tests/scale-tests/
 
 NVSentinel v0.4.0 is validated for production deployment on 1500-node clusters:
 
-- **API Server:** No measurable latency impact at 30 events/sec (3.4× production peak)
-- **MongoDB:** Successfully handles the sustained event load with default configuration
-- **Scalability:** System performs well at realistic production event rates
+- **API Server:** Minimal latency impact with P75 stable at ~20ms even at 300 events/sec (34× production peak)
+- **MongoDB:** Successfully handles sustained loads from 30-300 events/sec with default configuration
+- **Scalability:** Excellent - system maintains stable performance across a wide range of event rates
 
 ---
 

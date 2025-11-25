@@ -16,17 +16,15 @@ We are using production data as a baseline for these scale tests.  We analyzed c
 
 ### MongoDB Production Event Rates
 
-In looking at the `mongodb_op_counters_total`:
+In looking at the `mongodb_op_counters_total`, we identified these representative production clusters:
 
-| Activity Level | Mean Ops/Min | Events/Sec | Number of Nodes |
-|---------|--------------|------------|----------------|
-| Peak  | 531 | **8.85** | 23 |
-| Moderate  | 256 | **4.27** | 573 |
-| Low  | 127 | **2.12** | 19 |
-| Minimal  | 9.56 |  **0.16**| 375 |
-| Steady* | 5-50 | **0.1-0.8** | ~15-600 |
-
-*\*Steady activity represents 50+ additional production clusters with low, steady-state activity*
+| Example Cluster | Nodes | Activity Level | Events/Sec | Ops/Min |
+|----------------|-------|----------------|------------|---------|
+| Cluster A | 23 | Peak activity | **8.85** | 531 |
+| Cluster B | 573 | Moderate activity | **4.27** | 256 |
+| Cluster C | 19 | Low activity | **2.12** | 127 |
+| Cluster D | 375 | Minimal activity | **0.16** | 9.56 |
+| 50+ other clusters | ~15-600 | Steady baseline | **0.1-0.8** | 5-50 |
 
 **Note:** The amount of MongoDB/API server load is more closely correlated with health events happening on the cluster than the number of nodes directly. We include number of nodes to demonstrate this.
 
