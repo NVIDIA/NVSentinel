@@ -207,7 +207,7 @@ func main() {
 ```
 
 **Deployment**:
-- `NVIDIA/NVSentinel` included plugins deployed via Helm sub-charts alongside Janitor
+- `NVIDIA/NVSentinel` will include _some_ plugin implementations for widely used CSPs which will be deployed via Helm sub-charts alongside Janitor
 - Standard Kubernetes Service for network discovery
 
 ## Rationale
@@ -239,7 +239,7 @@ func main() {
 
 ### Mitigations
 
-- **Helm Chart Integration**: NVSentinel Helm chart will include plugin sub-charts with sensible defaults
+- **Helm Chart Integration**: NVSentinel Helm chart will include plugin sub-charts for _some_ widely used CSPs with sensible defaults
 - **Health Checks**: gRPC health check probes ensure Janitor fails fast on plugin unavailability
 - **Circuit Breakers**: Implement client-side retry logic with exponential backoff for transient failures
 - **Documentation**: Provide comprehensive migration guide, example custom plugins, and troubleshooting playbooks
