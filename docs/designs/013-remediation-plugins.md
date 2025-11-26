@@ -163,6 +163,47 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 - Example AWS server implementing SendRebootSignal:
 
 ```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+
+	"google.golang.org/grpc"
+	pb "github.com/nvidia/nvsentinel/janitor/protos/v1"
+)
+
+type cspPluginServer struct {
+	pb.UnimplementedCSPPluginServiceServer
+}
+
+func (s *cspPluginServer) SendRebootSignal(ctx context.Context, req *pb.SendRebootSignalRequest) (*pb.SendRebootSignalResponse, error) {
+	log.Printf("Received reboot request for node: %s", req.NodeName)
+
+	_, err = c.ec2.RebootInstances(ctx, &ec2.RebootInstancesInput{
+		InstanceIds: []string{req.NodeName},
+	})
+
+	requestID := fmt.Sprintf("reboot-%s-123456", req.NodeName)
+	return &pb.SendRebootSignalResponse{RequestId: requestID}, nil
+}
+
+func main() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterCSPPluginServiceServer(grpcServer, &cspPluginServer{})
+
+	log.Printf("CSP Plugin Server listening on :50051")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
+}
 ```
 
 **Deployment**:
