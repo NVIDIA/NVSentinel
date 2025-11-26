@@ -29,7 +29,7 @@ type CSPClient interface {
 }
 ```
 
-Controllers instantiate CSP clients directly and call methods synchronously during reconciliation loops.
+Controllers instantiate CSP clients directly and call methods during reconciliation loops.
 
 This hardcoded approach has several limitations:
 
@@ -65,16 +65,35 @@ This enables users to deploy their own plugin implementations with custom logic 
 New protobuf definition included in `janitor/`:
 
 ```proto
-syntax = "proto3";
-package janitor.csp.v1;
-
-service CSPService {
-  rpc SendRebootSignal(RebootRequest) returns (RebootResponse) {}
-  rpc IsNodeReady(NodeReadyRequest) returns (NodeReadyResponse) {}
-  rpc SendTerminateSignal(TerminateRequest) returns (TerminateResponse) {}
+service CSPPluginService {
+  rpc SendRebootSignal(SendRebootSignalRequest) returns (SendRebootSignalResponse) {}
+  rpc IsNodeReady(IsNodeReadyRequest) returns (IsNodeReadyResponse) {}
+  rpc SendTerminateSignal(SendTerminateSignalRequest) returns (SendTerminateSignalResponse) {}
 }
 
-// continue with definition
+message SendRebootSignalRequest {
+  string node_name = 1;
+}
+
+message SendRebootSignalResponse {
+  string request_id = 1;
+}
+
+message IsNodeReadyRequest {
+  string node_name = 1;
+}
+
+message IsNodeReadyResponse {
+  bool is_ready = 1;
+}
+
+message SendTerminateSignalRequest {
+  string node_name = 1;
+}
+
+message SendTerminateSignalResponse {
+  string request_id = 1;
+}
 ```
 
 ### Configuration
@@ -100,10 +119,51 @@ terminateNodeController:
 **Janitor Side**:
 - Controllers instantiate a gRPC client from config (endpoint, timeout, etc)
 - Use the codegen client from the protobuf definition for handing server calls
+- Example usage in the RebootNode controller reconciler
+
+```go
+type RebootNodeReconciler struct {
+  client.Client
+  Scheme    *runtime.Scheme
+  Config    *config.RebootNodeControllerConfig
+  CSPClient protos.CSPPluginServiceClient
+}
+
+func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+  // reconiliation start omitted
+
+  // if reboot signal not sent then:
+  rsp, rebootErr := r.CSPClient.SendRebootSignal(cspCtx, &protos.SendRebootSignalRequest{NodeName: node.Name})
+  if rebootErr != nil {
+    return ctrl.Result{}, rebootErr
+  }
+  reqRef := rsp.RequestId
+
+  // reconiliation end omitted
+}
+
+func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	grpcClient, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	r.CSPClient = protos.NewCSPPluginServiceClient(grpcClient)
+	if err != nil {
+		return fmt.Errorf("failed to create CSP client: %w", err)
+	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
+		Named("rebootnode").
+		Complete(r)
+}
+```
 
 **Plugin Side**:
 - Handle cloud provider SDK calls and any custom logic (approvals, logging, etc.)
 - Deploy as separate Kubernetes Deployment/Service
+- Example AWS server implementing SendRebootSignal:
+
+```go
+```
 
 **Deployment**:
 - `NVIDIA/NVSentinel` included plugins deployed via Helm sub-charts alongside Janitor
