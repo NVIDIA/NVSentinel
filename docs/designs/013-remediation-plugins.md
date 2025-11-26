@@ -2,7 +2,7 @@
 
 ## Context
 
-NVSentinel has multiple `RecommendedAction` values defined in the [health event protobuf](../../data-models/protobufs/health_event.proto) such as:
+NVSentinel has multiple `RecommendedAction` values defined in the [health event protobuf](https://github.com/NVIDIA/NVSentinel/blob/e8edbb9da9a92120d8d7b5424f8f3f74063e61c3/data-models/protobufs/health_event.proto) such as:
 
 - `COMPONENT_RESET` - Reset GPU or other component
 - `RESTART_VM` - Reboot virtual machine node
@@ -254,5 +254,5 @@ func main() {
 
 ## References
 
-- [NVSentinel Health Event Protobuf](../../data-models/protobufs/health_event.proto)
-- [Current CSP Interface](https://github.com/NVIDIA/NVSentinel/blob/main/janitor/pkg/model/csp.go)
+- [NVSentinel Health Event Protobuf](https://github.com/NVIDIA/NVSentinel/blob/e8edbb9da9a92120d8d7b5424f8f3f74063e61c3/data-models/protobufs/health_event.proto)
+- [Current CSP Interface](https://github.com/NVIDIA/NVSentinel/blob/e8edbb9da9a92120d8d7b5424f8f3f74063e61c3/janitor/pkg/csp/client.go)
