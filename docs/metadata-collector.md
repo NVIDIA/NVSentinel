@@ -1,0 +1,96 @@
+# Metadata Collector
+
+## Overview
+
+The Metadata Collector gathers comprehensive GPU and NVSwitch topology information from nodes and writes it to a local file. This metadata is consumed by health monitors (like Syslog Health Monitor) to correlate errors with specific hardware components.
+
+Think of it as a hardware inventory scanner - it catalogs all GPUs, their connections, and NVSwitch fabric topology, making this information available for error analysis and troubleshooting.
+
+### Why Do You Need This?
+
+Health monitors need detailed hardware information to create accurate health events:
+
+- **Error correlation**: Map PCI addresses and NVLink IDs to specific GPUs
+- **Topology awareness**: Understand GPU interconnect fabric for SXID error analysis
+- **Hardware identification**: Track GPU UUIDs, serial numbers, and device names
+- **NVSwitch mapping**: Identify which NVSwitches connect which GPUs
+
+Without metadata collection, health monitors can only report generic errors without knowing which specific GPU or NVLink is affected.
+
+## How It Works
+
+The Metadata Collector runs as an init container on each GPU node:
+
+1. Initializes NVML (NVIDIA Management Library)
+2. Queries GPU information (UUID, PCI address, serial number, device name)
+3. Parses NVLink topology from nvidia-smi
+4. Builds NVSwitch fabric map
+5. Writes comprehensive metadata to JSON file
+6. Exits after collection completes
+
+The JSON file persists on the node and is read by health monitors via a shared volume.
+
+## Configuration
+
+Configure the Metadata Collector through Helm values:
+
+```yaml
+metadata-collector:
+  enabled: true
+  
+  # Runtime class for GPU access (omit for CRI-O environments)
+  runtimeClassName: "nvidia"
+  
+  pauseImage:
+    repository: "registry.k8s.io/pause"
+    tag: "3.10"
+```
+
+### Configuration Options
+
+- **Runtime Class**: Specify runtime class name for GPU access (typically "nvidia" for containerd). For CRI-O environments, do not set this field.
+- **Output Path**: Path where metadata JSON is written (default: `/var/lib/nvsentinel/gpu_metadata.json`)
+
+## What It Collects
+
+The metadata collector gathers:
+
+### GPU Information
+- GPU UUID (unique identifier)
+- PCI address
+- Serial number
+- Device name/model
+- GPU index
+
+### NVLink Topology
+- NVLink connections between GPUs
+- Remote GPU endpoints for each link
+- Link status and capability
+- Peer-to-peer connectivity map
+
+### NVSwitch Information
+- NVSwitch PCI addresses
+- Which GPUs connect through each switch
+- Fabric topology
+
+### System Information
+- Node name (hostname)
+- Chassis serial number (if available)
+- Timestamp of collection
+
+## Key Features
+
+### NVML-Based Collection
+Uses NVIDIA Management Library for reliable, direct hardware queries without external dependencies.
+
+### Topology Parsing
+Parses nvidia-smi output to build complete NVLink topology map showing GPU interconnections.
+
+### Init Container Pattern
+Runs as init container, collects metadata once per pod lifecycle, then exits - minimal resource consumption.
+
+### Shared Volume
+Writes metadata to shared volume accessible by health monitor sidecars for error correlation.
+
+### JSON Output
+Structured JSON format for easy parsing and consumption by health monitors.

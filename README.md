@@ -253,20 +253,24 @@ For detailed module configuration, see the **[Helm Chart Configuration Guide](di
 
 ### 🔍 Health Monitors
 
-- **GPU Health Monitor**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
-- **Syslog Health Monitor**: Analyzes system logs for hardware and software fault patterns via journalctl
+- **[GPU Health Monitor](docs/gpu-health-monitor.md)**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
+- **[Syslog Health Monitor](docs/syslog-health-monitor.md)**: Analyzes system logs for hardware and software fault patterns via journalctl
 - **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
+- **[Kubernetes Object Monitor](docs/kubernetes-object-monitor.md)**: Policy-based monitoring for any Kubernetes resource using CEL expressions
 
 ### 🏗️ Core Modules
 
-- **Platform Connectors**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
-- **Fault Quarantine**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
-- **Node Drainer**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
-- **Fault Remediation**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
+- **[Platform Connectors](docs/platform-connectors.md)**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
+- **[Fault Quarantine](docs/fault-quarantine.md)**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
+- **[Node Drainer](docs/node-drainer.md)**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
+- **[Fault Remediation](docs/fault-remediation.md)**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
 - **Janitor**: Executes node reboots and terminations via cloud provider APIs
 - **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
+- **[Event Exporter](docs/event-exporter.md)**: Streams health events to external systems in CloudEvents format
 - **MongoDB Store**: Persistent storage for health events with real-time change streams
-- **Labeler**: Automatically labels nodes with DCGM and driver versions
+- **[Labeler](docs/labeler.md)**: Automatically labels nodes with DCGM and driver versions for self-configuration
+- **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
+- **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
 
 ## 📋 Requirements
 

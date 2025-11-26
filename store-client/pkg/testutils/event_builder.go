@@ -112,6 +112,10 @@ func (e *testEvent) GetDocumentID() (string, error) {
 	return e.id, nil
 }
 
+func (e *testEvent) GetRecordUUID() (string, error) {
+	return e.id, nil
+}
+
 func (e *testEvent) GetNodeName() (string, error) {
 	return e.nodeName, nil
 }

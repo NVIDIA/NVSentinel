@@ -16,6 +16,11 @@ global:
   dryRun: false
   kubeVersion: 1.31.0
 
+  # NOTE: Datastore configuration is provided by:
+  # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
+  # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
+  # This ensures proper configuration for both database backends
+
   nodeSelector: {}
   
   tolerations: 
@@ -56,7 +61,7 @@ global:
       enabled: false
 
   inclusterFileServer:
-    enabled: false
+    enabled: true
   
   janitor:
     enabled: true
@@ -84,7 +89,7 @@ mongodb-store:
       node-role.kubernetes.io/control-plane: ""
     tolerations:
       - operator: Exists
-  
+
   psmdb-operator:
     nodeSelector:
       node-role.kubernetes.io/control-plane: ""
@@ -152,7 +157,7 @@ mongodb-store:
         tag: "2.5.2"
         pullPolicy: IfNotPresent
   
-  # Bitnami configuration
+  # Bitnami MongoDB configuration
   mongodb:
     replicaCount: 1
     nodeSelector:
@@ -188,6 +193,12 @@ mongodb-store:
         repository: bitnamilegacy/mongodb-exporter
         tag: 0.41.2-debian-12-r1
 
+# Subchart-specific configuration for incluster-file-server
+incluster-file-server:
+  # Disable log cleanup in Tilt - the cleanup image may not be available
+  logCleanup:
+    enabled: false
+
 # Override log levels for all modules during testing
 fault-quarantine:
   logLevel: debug
@@ -206,6 +217,15 @@ fault-quarantine:
 fault-remediation:
   logLevel: debug
 
+  logCollector:
+    enabled: true
+    image:
+      repository: localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector
+      tag: latest  
+      pullPolicy: Always 
+    timeout: "10s"  # Short timeout for faster testing (production default: "10m")
+    env:
+      MOCK_MODE: "true"  
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:

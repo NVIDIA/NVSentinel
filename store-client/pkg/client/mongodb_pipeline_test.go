@@ -119,12 +119,14 @@ func TestConvertAgnosticPipelineToMongo_QuarantineUpdate(t *testing.T) {
 }
 
 func TestQuarantinedAndDrainedPipelineMatchesMainBranch(t *testing.T) {
-	// This test ensures our agnostic pipeline produces the EXACT same structure as the main branch
-	// Main branch direct pipeline (what actually works in production)
-	mainBranchPipeline := mongo.Pipeline{
+	// This test ensures our agnostic pipeline produces the expected structure for cross-database compatibility
+	// Updated to accept both INSERT and UPDATE operations for PostgreSQL compatibility
+	expectedPipeline := mongo.Pipeline{
 		bson.D{
 			bson.E{Key: "$match", Value: bson.D{
-				bson.E{Key: "operationType", Value: "update"},
+				bson.E{Key: "operationType", Value: bson.D{
+					bson.E{Key: "$in", Value: bson.A{"insert", "update"}},
+				}},
 				bson.E{Key: "$or", Value: bson.A{
 					// Watch for quarantine events (for remediation)
 					bson.D{
@@ -158,27 +160,27 @@ func TestQuarantinedAndDrainedPipelineMatchesMainBranch(t *testing.T) {
 	require.True(t, ok, "Converted pipeline should be mongo.Pipeline")
 
 	// Compare structure
-	require.Equal(t, len(mainBranchPipeline), len(ourBranchPipeline), "Pipeline lengths should match")
+	require.Equal(t, len(expectedPipeline), len(ourBranchPipeline), "Pipeline lengths should match")
 
 	// Compare using string representation for debugging
-	mainStr := fmt.Sprintf("%+v", mainBranchPipeline)
-	ourStr := fmt.Sprintf("%+v", ourBranchPipeline)
+	expectedStr := fmt.Sprintf("%+v", expectedPipeline)
+	actualStr := fmt.Sprintf("%+v", ourBranchPipeline)
 
-	if mainStr != ourStr {
-		t.Log("Main branch pipeline:")
-		t.Logf("%s", mainStr)
-		t.Log("\nOur branch pipeline:")
-		t.Logf("%s", ourStr)
+	if expectedStr != actualStr {
+		t.Log("Expected pipeline:")
+		t.Logf("%s", expectedStr)
+		t.Log("\nActual pipeline:")
+		t.Logf("%s", actualStr)
 		t.Fatal("Pipelines do not match")
 	}
 
 	// Also verify the structure manually
-	mainStage := mainBranchPipeline[0]
-	ourStage := ourBranchPipeline[0]
+	expectedStage := expectedPipeline[0]
+	actualStage := ourBranchPipeline[0]
 
-	require.Equal(t, len(mainStage), len(ourStage), "Stage lengths should match")
-	require.Equal(t, "$match", mainStage[0].Key)
-	require.Equal(t, "$match", ourStage[0].Key)
+	require.Equal(t, len(expectedStage), len(actualStage), "Stage lengths should match")
+	require.Equal(t, "$match", expectedStage[0].Key)
+	require.Equal(t, "$match", actualStage[0].Key)
 }
 
 func TestConvertAgnosticPipelineToMongo_CompareWithDeprecated(t *testing.T) {
@@ -384,7 +386,18 @@ func TestBuildQuarantinedAndDrainedNodesPipeline(t *testing.T) {
 	for _, elem := range matchDoc {
 		if elem.Key == "operationType" {
 			foundOpType = true
-			assert.Equal(t, "update", elem.Value)
+			// Should be a document with $in operator containing both "insert" and "update"
+			opTypeDoc, ok := elem.Value.(bson.D)
+			require.True(t, ok, "operationType should be a document with $in operator")
+			require.Len(t, opTypeDoc, 1, "operationType document should have 1 element")
+			require.Equal(t, "$in", opTypeDoc[0].Key)
+
+			// Verify $in contains both "insert" and "update"
+			inArray, ok := opTypeDoc[0].Value.(bson.A)
+			require.True(t, ok, "$in value should be an array")
+			require.Len(t, inArray, 2, "$in should contain 2 operation types")
+			require.Contains(t, inArray, "insert", "Should include 'insert' operation type")
+			require.Contains(t, inArray, "update", "Should include 'update' operation type")
 		}
 		if elem.Key == "$or" {
 			foundOr = true

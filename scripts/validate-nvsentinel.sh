@@ -22,11 +22,13 @@ NAMESPACE=""
 VERSION=""
 VERBOSE=false
 IMAGE_PATTERN=""
+DATASTORE=""
 
 usage() {
-    echo "Usage: $0 --version VERSION [--namespace NAMESPACE] [--image-pattern PATTERN] [--verbose]"
+    echo "Usage: $0 --version VERSION [--namespace NAMESPACE] [--datastore DATASTORE] [--image-pattern PATTERN] [--verbose]"
     echo "  --version       Required. Expected image version (e.g., v0.0.3, tilt)"
     echo "  --namespace     Optional. Kubernetes namespace (default: nvsentinel)"
+    echo "  --datastore     Optional. Datastore provider: mongodb or postgresql (default: auto-detect)"
     echo "  --image-pattern Optional. Image pattern to validate (default: ghcr.io/nvidia/nvsentinel)"
     echo "  --verbose       Optional. Print detailed image lists"
     exit 1
@@ -36,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --version) VERSION="$2"; shift 2 ;;
         --namespace) NAMESPACE="$2"; shift 2 ;;
+        --datastore) DATASTORE="$2"; shift 2 ;;
         --image-pattern) IMAGE_PATTERN="$2"; shift 2 ;;
         --verbose) VERBOSE=true; shift ;;
         -h|--help) usage ;;
@@ -55,6 +58,23 @@ error() { echo "✗ $1"; ((ERRORS++)); }
 ok() { echo "✓ $1"; }
 warn() { echo "⚠ $1"; }
 
+# Auto-detect datastore if not specified
+if [[ -z "$DATASTORE" ]]; then
+    if kubectl get statefulset nvsentinel-postgresql -n "$NAMESPACE" >/dev/null 2>&1; then
+        DATASTORE="postgresql"
+    elif kubectl get statefulset mongodb -n "$NAMESPACE" >/dev/null 2>&1; then
+        DATASTORE="mongodb"
+    else
+        DATASTORE="mongodb"  # Default to mongodb if neither found
+    fi
+else
+    # Validate datastore parameter
+    if [[ "$DATASTORE" != "mongodb" && "$DATASTORE" != "postgresql" ]]; then
+        error "invalid datastore: $DATASTORE (must be 'mongodb' or 'postgresql')"
+        exit 1
+    fi
+fi
+
 # Prerequisites
 command -v kubectl >/dev/null || { error "kubectl not found"; exit 1; }
 kubectl cluster-info >/dev/null || { error "cluster not accessible"; exit 1; }
@@ -66,6 +86,10 @@ if kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
 else
     error "namespace $NAMESPACE missing"
 fi
+
+# Datastore
+echo "=== Datastore ==="
+ok "using datastore: $DATASTORE"
 
 # Node counts
 echo "=== Cluster Nodes ==="
@@ -263,11 +287,19 @@ check_job() {
 
 # Check statefulsets
 echo "=== StatefulSets ==="
-check_statefulset "mongodb"
+if [[ "$DATASTORE" == "postgresql" ]]; then
+    check_statefulset "nvsentinel-postgresql"
+else
+    check_statefulset "mongodb"
+fi
 
 # Check jobs
 echo "=== Jobs ==="
-check_job "create-mongodb-database"
+if [[ "$DATASTORE" == "mongodb" ]]; then
+    check_job "create-mongodb-database"
+else
+    ok "no initialization jobs required for postgresql (schema auto-initialized)"
+fi
 
 # Check deployments (application components)
 echo "=== Deployments ==="
@@ -317,8 +349,13 @@ fi
 
 # Services
 echo "=== Services ==="
-# Required services
-services=("mongodb-headless" "mongodb-metrics" "janitor")
+# Required services (datastore-specific)
+if [[ "$DATASTORE" == "postgresql" ]]; then
+    services=("nvsentinel-postgresql" "nvsentinel-postgresql-hl" "janitor")
+else
+    services=("mongodb-headless" "mongodb-metrics" "janitor")
+fi
+
 for svc in "${services[@]}"; do
     if kubectl get service "$svc" -n "$NAMESPACE" >/dev/null 2>&1; then
         endpoints=$(kubectl get endpoints "$svc" -n "$NAMESPACE" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | wc -w || echo "0")
@@ -359,7 +396,12 @@ high_restart_containers=$(kubectl get pods -n "$NAMESPACE" -o jsonpath='{range .
 # Certificates (if cert-manager available)
 if kubectl api-resources | grep -q certificates.cert-manager.io; then
     echo "=== Certificates ==="
-    certs=("mongo-root-ca" "mongo-app-client-cert")
+    if [[ "$DATASTORE" == "postgresql" ]]; then
+        certs=("postgresql-root-ca" "postgresql-server-cert" "postgresql-client-cert")
+    else
+        certs=("mongo-root-ca" "mongo-app-client-cert")
+    fi
+
     for cert in "${certs[@]}"; do
         if kubectl get certificate "$cert" -n "$NAMESPACE" >/dev/null 2>&1; then
             ready=$(kubectl get certificate "$cert" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")

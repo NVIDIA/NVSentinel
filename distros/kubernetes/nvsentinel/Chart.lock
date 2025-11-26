@@ -5,6 +5,9 @@ dependencies:
 - name: mongodb-store
   repository: ""
   version: 0.1.0
+- name: postgresql
+  repository: ""
+  version: 15.5.38
 - name: fault-quarantine
   repository: ""
   version: 0.1.0

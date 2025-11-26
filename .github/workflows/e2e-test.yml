@@ -15,12 +15,13 @@
 name: E2E Tests
 
 # This workflow runs end-to-end tests on both AMD64 and ARM64 architectures in parallel
-# to ensure compatibility across different hardware platforms.
+# with both MongoDB and PostgreSQL datastores to ensure compatibility across different
+# hardware platforms and database backends.
 #
 # Configuration:
 # - Set RUNNER_ARCH_LARGE_AMD64 variable to override default AMD64 runner
 # - Set RUNNER_ARCH_LARGE_ARM64 variable to override default ARM64 runner
-# - Each architecture gets its own isolated cluster and test artifacts
+# - Each architecture + datastore combination gets its own isolated cluster and test artifacts
 
 on:
   push:
@@ -39,18 +40,33 @@ permissions:
 
 jobs:
   e2e-test:
+    # Run E2E tests on both AMD64 and ARM64 architectures with both MongoDB and PostgreSQL
     strategy:
-      fail-fast: false  # Allow both architectures to complete even if one fails
+      fail-fast: false  # Allow all combinations to complete even if some fail
       matrix:
         include:
           - arch: amd64
             runner: ${{ vars.RUNNER_ARCH_LARGE_AMD64 || 'linux-amd64-cpu32' }}
             arch_name: "AMD64"
+            datastore: "mongodb"
+            datastore_name: "MongoDB"
           - arch: arm64
             runner: ${{ vars.RUNNER_ARCH_LARGE_ARM64 || 'linux-arm64-cpu32' }}
             arch_name: "ARM64"
+            datastore: "mongodb"
+            datastore_name: "MongoDB"
+          - arch: amd64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_AMD64 || 'linux-amd64-cpu32' }}
+            arch_name: "AMD64"
+            datastore: "postgresql"
+            datastore_name: "PostgreSQL"
+          - arch: arm64
+            runner: ${{ vars.RUNNER_ARCH_LARGE_ARM64 || 'linux-arm64-cpu32' }}
+            arch_name: "ARM64"
+            datastore: "postgresql"
+            datastore_name: "PostgreSQL"
 
-    name: "E2E Tests (${{ matrix.arch_name }})"
+    name: "E2E Tests (${{ matrix.arch_name }} + ${{ matrix.datastore_name }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -120,24 +136,32 @@ jobs:
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
           CTLPTL_YAML: .ctlptl.yaml
-          # Make cluster names unique per architecture to avoid conflicts in parallel runs
-          CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}"
+          # Make cluster names unique per architecture and datastore to avoid conflicts in parallel runs
+          CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}-${{ matrix.datastore }}"
         run: |
           make cluster-create
+
+      - name: Override MongoDB image for ARM64
+        if: matrix.arch == 'arm64' && matrix.datastore == 'mongodb'
+        run: |
+          sed -i 's/repository: "bitnamilegacy\/mongodb"/repository: "dlavrenuek\/bitnami-mongodb-arm"/' distros/kubernetes/nvsentinel/values-tilt.yaml
+          sed -i 's/tag: "8.0.3-debian-12-r1"/tag: "8.0.4"/' distros/kubernetes/nvsentinel/values-tilt.yaml
 
       - name: Run E2E tests
         env:
           CI_COMMIT_REF_NAME: ${{ steps.ref-name.outputs.value }}
           CTLPTL_YAML: .ctlptl.yaml
           # Use same cluster name suffix for consistency
-          CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}"
+          CLUSTER_NAME_SUFFIX: "-${{ matrix.arch }}-${{ matrix.datastore }}"
+          # Set USE_POSTGRESQL for PostgreSQL tests (our integrated Tiltfile approach)
+          USE_POSTGRESQL: ${{ matrix.datastore == 'postgresql' && '1' || '0' }}
         run: |
           make e2e-test-ci
 
       - name: Upload test results
         uses: ./.github/actions/upload-test-artifacts
         with:
-          component-name: e2e-test-${{ matrix.arch }}
+          component-name: e2e-test-${{ matrix.arch }}-${{ matrix.datastore }}
           file-paths: |
             tests/results/
             tests/*.log
@@ -152,6 +176,20 @@ jobs:
             kind export logs /tmp/kind-logs --name "$CLUSTER_NAME" || true
           fi
 
+      - name: Pull Kind container logs via crictl
+        if: always()
+        run: |
+          chmod +x ./scripts/pull_kind_logs.sh
+          ./scripts/pull_kind_logs.sh /tmp/kind-container-logs || true
+
+      - name: Upload Kind container logs
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        with:
+          name: e2e-kind-container-logs-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
+          path: /tmp/kind-container-logs/
+          retention-days: 7
+
       - name: Collect debug artifacts
         if: failure()
         run: |
@@ -162,12 +200,19 @@ jobs:
           kubectl logs --all-namespaces --all-containers=true --tail=500 > /tmp/debug-artifacts/all-logs.txt || true
           docker images > /tmp/debug-artifacts/docker-images.txt || true
           df -h > /tmp/debug-artifacts/disk-usage.txt || true
+          # Comprehensive cluster state dump for debugging
+          kubectl cluster-info dump --all-namespaces --output-directory=/tmp/debug-artifacts/cluster-info-dump || true
+          # Get node details including cordon state
+          kubectl get nodes -o wide > /tmp/debug-artifacts/nodes-wide.txt || true
+          kubectl get nodes -o yaml > /tmp/debug-artifacts/nodes-full.yaml || true
+          # Get node descriptions for annotations and conditions
+          kubectl describe nodes > /tmp/debug-artifacts/nodes-describe.txt || true
 
       - name: Upload Kind logs
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
-          name: e2e-kind-logs-${{ matrix.arch }}-${{ github.run_id }}
+          name: e2e-kind-logs-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
           path: /tmp/kind-logs/
           retention-days: 7
 
@@ -175,7 +220,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
         with:
-          name: e2e-debug-artifacts-${{ matrix.arch }}-${{ github.run_id }}
+          name: e2e-debug-artifacts-${{ matrix.arch }}-${{ matrix.datastore }}-${{ github.run_id }}
           path: /tmp/debug-artifacts/
           retention-days: 7
 

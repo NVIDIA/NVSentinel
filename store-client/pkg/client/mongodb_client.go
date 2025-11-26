@@ -74,6 +74,12 @@ func (e *mongoEvent) GetDocumentID() (string, error) {
 	return objectID.Hex(), nil
 }
 
+// GetRecordUUID returns the record UUID.
+// For MongoDB, this is the same as GetDocumentID since MongoDB's _id is the primary identifier.
+func (e *mongoEvent) GetRecordUUID() (string, error) {
+	return e.GetDocumentID()
+}
+
 func (e *mongoEvent) GetNodeName() (string, error) {
 	fullDocument, ok := e.rawEvent["fullDocument"]
 	if !ok {
@@ -257,99 +263,46 @@ func BuildNonFatalInsertPipeline() interface{} {
 
 // BuildAllHealthEventInsertsPipeline creates a pipeline that watches for all health event inserts
 // This is used by fault-quarantine to detect all new health events without filtering
+//
+// Deprecated: Use GetPipelineBuilder().BuildAllHealthEventInsertsPipeline() instead.
+// This function is maintained for backward compatibility and will be removed in a future version.
 func BuildAllHealthEventInsertsPipeline() datastore.Pipeline {
-	return datastore.ToPipeline(
-		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", datastore.D(
-					datastore.E("$in", datastore.A("insert")),
-				)),
-			)),
-		),
-	)
+	builder := GetPipelineBuilder()
+	return builder.BuildAllHealthEventInsertsPipeline()
 }
 
 // BuildNodeQuarantineStatusUpdatesPipeline creates a pipeline that watches for node quarantine status changes
 // This is used by node-drainer to detect when nodes are quarantined/unquarantined and need draining
+//
+// Deprecated: Use GetPipelineBuilder().BuildNodeQuarantineStatusPipeline() instead.
+// This function is maintained for backward compatibility and will be removed in a future version.
+// The new PipelineBuilder interface provides database-specific optimizations for MongoDB and PostgreSQL.
 func BuildNodeQuarantineStatusUpdatesPipeline() datastore.Pipeline {
-	return datastore.ToPipeline(
-		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", "update"),
-				datastore.E("$or", datastore.A(
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.Quarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.UnQuarantined)),
-						)),
-					),
-					datastore.D(
-						datastore.E("updateDescription.updatedFields", datastore.D(
-							datastore.E("healtheventstatus.nodequarantined", string(model.Cancelled)),
-						)),
-					),
-				)),
-			)),
-		),
-	)
+	// For backward compatibility, use the PipelineBuilder interface
+	// This ensures the correct pipeline is selected based on the database provider
+	builder := GetPipelineBuilder()
+	return builder.BuildNodeQuarantineStatusPipeline()
 }
 
 // BuildNonFatalUnhealthyInsertsPipeline creates a pipeline that watches for non-fatal, unhealthy event inserts
 // This is used by health-events-analyzer to detect warning-level health events for pattern analysis
+//
+// Deprecated: Use GetPipelineBuilder().BuildNonFatalUnhealthyInsertsPipeline() instead.
+// This function is maintained for backward compatibility and will be removed in a future version.
 func BuildNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
-	return datastore.ToPipeline(
-		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", "insert"),
-				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
-				datastore.E("fullDocument.healthevent.ishealthy", false),
-			)),
-		),
-	)
+	builder := GetPipelineBuilder()
+	return builder.BuildNonFatalUnhealthyInsertsPipeline()
 }
 
 // BuildQuarantinedAndDrainedNodesPipeline creates a pipeline that watches for nodes ready for remediation
 // This watches for updates where both quarantine and eviction status indicate the node is ready for reboot,
 // or where the node has been unquarantined and needs cleanup, or where quarantine was cancelled
+//
+// Deprecated: Use GetPipelineBuilder().BuildQuarantinedAndDrainedNodesPipeline() instead.
+// This function is maintained for backward compatibility and will be removed in a future version.
 func BuildQuarantinedAndDrainedNodesPipeline() datastore.Pipeline {
-	// Note: Using string() conversion to ensure constants are passed as their string values
-	// This is necessary because the constants are typed (model.Status) but MongoDB expects strings
-	return datastore.ToPipeline(
-		datastore.D(
-			datastore.E("$match", datastore.D(
-				datastore.E("operationType", "update"),
-				datastore.E("$or", datastore.A(
-					// Watch for quarantine events (for remediation)
-					datastore.D(
-						datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", datastore.D(
-							datastore.E("$in", datastore.A(string(model.StatusSucceeded), string(model.AlreadyDrained))),
-						)),
-						datastore.E("fullDocument.healtheventstatus.nodequarantined", datastore.D(
-							datastore.E("$in", datastore.A(string(model.Quarantined), string(model.AlreadyQuarantined))),
-						)),
-					),
-					// Watch for unquarantine events (for annotation cleanup)
-					datastore.D(
-						datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.UnQuarantined)),
-						datastore.E("fullDocument.healtheventstatus.userpodsevictionstatus.status", string(model.StatusSucceeded)),
-					),
-					// Watch for cancelled quarantine events (for annotation cleanup)
-					datastore.D(
-						datastore.E("fullDocument.healtheventstatus.nodequarantined", string(model.Cancelled)),
-					),
-				)),
-			)),
-		),
-	)
+	builder := GetPipelineBuilder()
+	return builder.BuildQuarantinedAndDrainedNodesPipeline()
 }
 
 // MongoDBClient implements DatabaseClient for MongoDB

@@ -161,6 +161,8 @@ func initializeNodeMetadataProcessor(
 }
 
 func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.Processor) (net.Listener, error) {
+	slog.Info("Starting gRPC server on Unix socket", "socket", socket)
+
 	err := os.Remove(socket)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
@@ -173,6 +175,13 @@ func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.
 		return nil, fmt.Errorf("failed to listen on unix socket %s: %w", socket, err)
 	}
 
+	// Set socket permissions to allow other processes to connect (0666 = rw-rw-rw-)
+	if err := os.Chmod(socket, 0666); err != nil {
+		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
+	}
+
+	slog.Info("gRPC server socket created successfully", "socket", socket, "permissions", "0666")
+
 	var opts []grpc.ServerOption
 
 	grpcServer := grpc.NewServer(opts...)
@@ -181,6 +190,8 @@ func startGRPCServer(ctx context.Context, socket string, processor nodemetadata.
 	})
 
 	go func() {
+		slog.Info("Starting gRPC server listener", "socket", socket)
+
 		err = grpcServer.Serve(lis)
 		if err != nil {
 			slog.Error("Not able to accept incoming connections", "error", err)
@@ -212,7 +223,7 @@ func initializeConnectors(
 	}
 
 	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
-	if config["enableMongoDBStorePlatformConnector"] == True {
+	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
 		storeConnector, err = initializeDatabaseStoreConnector(ctx, databaseClientCertMountPath)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)

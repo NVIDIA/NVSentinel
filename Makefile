@@ -852,3 +852,16 @@ help: ## Display available make targets
 	@echo "  CTLPTL_CONFIG_FILE=$(CTLPTL_CONFIG_FILE), REGISTRY_PORT=$(REGISTRY_PORT)"
 	@echo ""
 	@echo "Sub-Makefiles: health-monitors/, docker/, distros/kubernetes/, tests/"
+
+#==============================================================================
+# PostgreSQL Schema Management
+#==============================================================================
+
+.PHONY: validate-postgres-schema
+validate-postgres-schema: ## Validate PostgreSQL schema consistency between docs and Helm values
+	@./scripts/validate-postgres-schema.sh
+
+.PHONY: update-helm-postgres-schema
+update-helm-postgres-schema: ## Update Helm values file with schema from docs/postgresql-schema.sql
+	@./scripts/update-helm-postgres-schema.sh
+

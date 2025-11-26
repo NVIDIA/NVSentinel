@@ -235,8 +235,15 @@ func handleStructField(value reflect.Value, fieldName string, remainingParts []s
 
 func handleSliceOrArray(value reflect.Value, indexStr string, remainingParts []string) (any, error) {
 	idx, err := strconv.Atoi(indexStr)
-	if err != nil || idx < 0 || idx >= value.Len() {
+	if err != nil {
 		return nil, fmt.Errorf("invalid index: %s", indexStr)
+	}
+
+	// Check bounds
+	if idx < 0 || idx >= value.Len() {
+		// Return nil for out-of-bounds access (common when arrays are empty)
+		// This matches MongoDB behavior where accessing non-existent array elements returns null
+		return nil, nil
 	}
 
 	return getValueByReflection(value.Index(idx), remainingParts)

@@ -30,7 +30,6 @@ import (
 	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
-	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -50,8 +49,10 @@ type Components struct {
 	QueueManager   queue.EventQueueManager
 	Reconciler     *reconciler.Reconciler
 	DatabaseClient client.DatabaseClient
+	DataStore      datastore.DataStore
 }
 
+//nolint:cyclop // Complexity slightly over limit (11 vs 10) but function is clear and linear
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
 	slog.Info("Starting node drainer initialization")
 
@@ -105,27 +106,48 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	reconcilerCfg := createReconcilerConfig(*tomlCfg, databaseConfig, clientTokenConfig, pipeline, stateManager)
 
-	// Create client factory and database client
-	clientFactory := factory.NewClientFactory(databaseConfig)
-
-	// Create the database client for the reconciler to use for preprocessing
-	databaseClient, err := clientFactory.CreateDatabaseClient(ctx)
+	// Create NEW database-agnostic datastore
+	ds, err := datastore.NewDataStore(ctx, *dsConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create database client: %w", err)
+		return nil, fmt.Errorf("failed to create datastore: %w", err)
 	}
+
+	slog.Debug("Created datastore", "provider", dsConfig.Provider)
+
+	// Get database client and change stream watcher from datastore
+	datastoreAdapter, ok := ds.(interface {
+		GetDatabaseClient() client.DatabaseClient
+		CreateChangeStreamWatcher(
+			ctx context.Context, clientName string, pipeline interface{},
+		) (datastore.ChangeStreamWatcher, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("datastore does not support required operations")
+	}
+
+	databaseClient := datastoreAdapter.GetDatabaseClient()
 
 	// Reconciler creates its own queue manager and needs the database client
 	reconciler := initializeReconciler(reconcilerCfg, params.DryRun, clientSet, informersInstance, databaseClient)
 	queueManager := reconciler.GetQueueManager()
 
-	// CRITICAL: Pass the existing databaseClient to avoid creating duplicate clients
-	changeStreamWatcher, err := clientFactory.CreateChangeStreamWatcher(ctx, databaseClient, "node-drainer", pipeline)
+	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
+		ctx, "node-drainer", pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
-	// Use the change stream watcher directly
-	eventWatcher := changeStreamWatcher
+	// Unwrap for EventWatcher compatibility
+	type unwrapper interface {
+		Unwrap() client.ChangeStreamWatcher
+	}
+
+	unwrapable, ok := changeStreamWatcher.(unwrapper)
+	if !ok {
+		return nil, fmt.Errorf("watcher does not support unwrapping to client.ChangeStreamWatcher")
+	}
+
+	eventWatcher := unwrapable.Unwrap()
 
 	slog.Info("Initialization completed successfully")
 
@@ -135,6 +157,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		QueueManager:   queueManager,
 		Reconciler:     reconciler,
 		DatabaseClient: databaseClient,
+		DataStore:      ds,
 	}, nil
 }
 

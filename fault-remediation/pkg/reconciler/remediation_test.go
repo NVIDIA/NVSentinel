@@ -24,6 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -325,6 +326,15 @@ spec:
 						Version:  "v1alpha1",
 						ApiGroup: "janitor.dgxc.nvidia.com",
 					},
+				},
+				// Mock nodeExistsFunc to return a fake node for unit tests
+				nodeExistsFunc: func(ctx context.Context, nodeName string) (*corev1.Node, error) {
+					return &corev1.Node{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: nodeName,
+							UID:  "test-uid",
+						},
+					}, nil
 				},
 			}
 			if tt.dryRun {

@@ -36,7 +36,7 @@ spec:
       {{- end }}
       containers:
         - name: log-collector
-          image: {{ .Values.logCollector.image.repository }}:{{ .Values.global.image.tag | default "latest"  }}
+          image: {{ .Values.logCollector.image.repository }}:{{ .Values.logCollector.image.tag | default .Values.global.image.tag | default "latest"  }}
           imagePullPolicy: {{ .Values.logCollector.image.pullPolicy }}          
           securityContext:
             privileged: true
@@ -61,6 +61,10 @@ spec:
               value: {{ .Values.logCollector.enableGcpSosCollection | quote }}
             - name: ENABLE_AWS_SOS_COLLECTION
               value: {{ .Values.logCollector.enableAwsSosCollection | quote }}
+            {{- range $key, $value := .Values.logCollector.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
           volumeMounts:
             - name: artifacts
               mountPath: /artifacts

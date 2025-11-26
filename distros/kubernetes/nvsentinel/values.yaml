@@ -16,7 +16,21 @@ global:
   dryRun: false
   image:
     tag: "main"
+  initContainerImage:
+    repository: docker.io/bitnamilegacy/os-shell
+    tag: "12-debian-12-r30"
+    pullPolicy: IfNotPresent
   metricsPort: 2112
+
+  # Datastore configuration
+  # By default, datastore is not configured (use mongodb-config ConfigMap directly)
+  # To use the centralized datastore configuration, uncomment and configure below
+  # datastore:
+  #   provider: "mongodb"  # or "postgresql"
+  #   connection:
+  #     host: "mongodb"
+  #     port: 27017
+  #     database: "nvsentinel"
 
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
@@ -79,6 +93,13 @@ platformConnector:
 
   logLevel: info
 
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+
+  postgresqlStore:
+    clientCertMountPath: "/etc/ssl/client-certs"
+
   k8sConnector:
     enabled: true
     qps: 5.0
@@ -131,3 +152,9 @@ nodeConditionCleanup:
     requests:
       cpu: 50m
       memory: 64Mi
+
+# PostgreSQL subchart configuration
+# Only enabled when using PostgreSQL as the datastore
+# See values-postgresql.yaml for a complete PostgreSQL configuration example
+postgresql:
+  enabled: false

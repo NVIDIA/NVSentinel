@@ -174,6 +174,7 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 		return false
 	}
 
+	// Unsupported action detected
 	slog.Info("Unsupported recommended action for node",
 		"action", action.String(),
 		"node", nodeName)
@@ -237,6 +238,7 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 		}
 
 		success, crName = r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
+
 		if success {
 			break
 		}

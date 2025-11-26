@@ -17,6 +17,9 @@ replicaCount: 1
 
 logLevel: info
 
+# Client certificate mount path for database connections
+clientCertMountPath: /etc/ssl/client-certs
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/fault-remediation
   pullPolicy: IfNotPresent
@@ -96,6 +99,7 @@ logCollector:
   enabled: false
   image:
     repository: ghcr.io/nvidia/nvsentinel/log-collector
+    # tag: latest  # Optional: Override global.image.tag for log-collector
     pullPolicy: IfNotPresent
   # HTTP endpoint where collected logs will be uploaded
   uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
@@ -105,3 +109,11 @@ logCollector:
   enableGcpSosCollection: false
   # Enable AWS-specific SOS report collection
   enableAwsSosCollection: false
+  # Timeout for waiting for log collection job to complete
+  timeout: "10m"
+  # Additional environment variables to pass to the log-collector container
+  # Example:
+  # env:
+  #   MOCK_MODE: "true"
+  #   DEBUG: "1"
+  env: {}

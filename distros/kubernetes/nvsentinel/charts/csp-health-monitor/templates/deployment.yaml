@@ -36,6 +36,34 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "csp-health-monitor.fullname" . }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      initContainers:
+        - name: fix-cert-permissions
+          image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
+          imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying PostgreSQL client certificates with correct permissions..."
+              cp /etc/ssl/client-certs-original/tls.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/ca.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/tls.key /etc/ssl/client-certs-fixed/
+              chmod 644 /etc/ssl/client-certs-fixed/tls.crt
+              chmod 644 /etc/ssl/client-certs-fixed/ca.crt
+              chmod 600 /etc/ssl/client-certs-fixed/tls.key
+              echo "Certificate permissions fixed:"
+              ls -la /etc/ssl/client-certs-fixed/
+          volumeMounts:
+            - name: postgresql-client-cert-original
+              mountPath: /etc/ssl/client-certs-original
+              readOnly: true
+            - name: client-certs-fixed
+              mountPath: /etc/ssl/client-certs-fixed
+      {{- end }}
       volumes:
       - name: config-volume
         configMap:
@@ -43,10 +71,19 @@ spec:
           items:
           - key: config.toml
             path: config.toml
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      - name: postgresql-client-cert-original
+        secret:
+          secretName: postgresql-client-cert
+          optional: false
+      - name: client-certs-fixed
+        emptyDir: {}
+      {{- else }}
       - name: mongo-app-client-cert
         secret:
           secretName: mongo-app-client-cert-secret # Defined in mongodb-store chart
           optional: true
+      {{- end }}
       - name: platform-connector-uds
         hostPath:
           path: /var/run/nvsentinel
@@ -55,10 +92,19 @@ spec:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+          {{- end }}
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
-          - "--mongo-client-cert-mount-path=/etc/ssl/mongo-client"
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- else }}
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -68,25 +114,40 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          - name: mongo-app-client-cert
-            mountPath: /etc/ssl/mongo-client
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - name: client-certs-fixed
+            mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          {{- else }}
+          - name: mongo-app-client-cert
+            mountPath: {{ .Values.clientCertMountPath }}
+            readOnly: true
+          {{- end }}
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
           envFrom:
             - configMapRef:
-                name: mongodb-config
+                name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
 
         - name: maintenance-notifier
           image: "{{ .Values.quarantineTriggerEngine.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.quarantineTriggerEngine.image.pullPolicy | default .Values.image.pullPolicy }}
           securityContext:
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            runAsUser: 1001
+            runAsGroup: 1001
+            {{- else }}
             runAsUser: 0
+            {{- end }}
           args:
           - "--config=/etc/config/config.toml"
-          - "--mongo-client-cert-mount-path=/etc/ssl/mongo-client"
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- else }}
+          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- end }}
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
           - "--metrics-port=2113"
           resources:
@@ -98,9 +159,15 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          - name: mongo-app-client-cert
-            mountPath: /etc/ssl/mongo-client
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - name: client-certs-fixed
+            mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          {{- else }}
+          - name: mongo-app-client-cert
+            mountPath: {{ .Values.clientCertMountPath }}
+            readOnly: true
+          {{- end }}
           - name: platform-connector-uds
             mountPath: /run/nvsentinel
           env:
@@ -108,7 +175,7 @@ spec:
               value: "{{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"
           envFrom:
             - configMapRef:
-                name: mongodb-config
+                name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}

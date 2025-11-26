@@ -264,6 +264,7 @@ func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint
 
 func (c *FaultQuarantineClient) handleCordon(node *v1.Node, nodename string) bool {
 	_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+
 	if node.Spec.Unschedulable {
 		if exist {
 			slog.Info("Node already cordoned by FQM; skipping taint/annotation updates", "node", nodename)

@@ -243,7 +243,37 @@ func TestScaleHealthEvents(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		helpers.WaitForNodesCordonState(ctx, t, client, healthCheckNodes, false)
+		// Log which nodes we're waiting to uncordon
+		t.Logf("Waiting for %d nodes to be uncordoned: %v", len(healthCheckNodes), healthCheckNodes)
+
+		// Track last state for detailed failure logging
+		var lastCordonedNodes []string
+
+		require.Eventually(t, func() bool {
+			cordonedNodes := []string{}
+			uncordonedCount := 0
+
+			for _, nodeName := range healthCheckNodes {
+				node, err := helpers.GetNodeByName(ctx, client, nodeName)
+				if err != nil {
+					cordonedNodes = append(cordonedNodes, nodeName)
+					continue
+				}
+
+				if node.Spec.Unschedulable {
+					cordonedNodes = append(cordonedNodes, nodeName)
+				} else {
+					uncordonedCount++
+				}
+			}
+
+			lastCordonedNodes = cordonedNodes
+			t.Logf("Uncordon progress: %d/%d uncordoned, still cordoned: %v",
+				uncordonedCount, len(healthCheckNodes), cordonedNodes)
+
+			return len(cordonedNodes) == 0
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"nodes should be uncordoned, stuck nodes: %v", lastCordonedNodes)
 
 		return ctx
 	})

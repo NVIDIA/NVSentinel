@@ -76,7 +76,31 @@ const (
 	DefaultChangeStreamRetryDeadline = 60  // 1 minute
 	DefaultChangeStreamRetryInterval = 3   // 3 seconds
 	DefaultCertMountPath             = "/etc/ssl/mongo-client"
+	DefaultPostgreSQLCertMountPath   = "/etc/ssl/client-certs"
 )
+
+// GetCertMountPath returns the appropriate certificate mount path based on the provider.
+// For PostgreSQL, it checks POSTGRESQL_CLIENT_CERT_MOUNT_PATH first, then falls back to default.
+// For MongoDB, it checks MONGODB_CLIENT_CERT_MOUNT_PATH first, then falls back to default.
+func GetCertMountPath() string {
+	provider := os.Getenv("DATASTORE_PROVIDER")
+
+	switch provider {
+	case "postgresql":
+		if path := os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH"); path != "" {
+			return path
+		}
+
+		return DefaultPostgreSQLCertMountPath
+	default:
+		// MongoDB or default
+		if path := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH"); path != "" {
+			return path
+		}
+
+		return DefaultCertMountPath
+	}
+}
 
 // StandardDatabaseConfig implements DatabaseConfig for MongoDB with standard environment variables
 type StandardDatabaseConfig struct {
@@ -154,7 +178,12 @@ func NewDatabaseConfigForCollectionType(certMountPath, collectionType string) (D
 func NewDatabaseConfigWithCollection(
 	certMountPath, collectionEnvVar, defaultCollection string,
 ) (DatabaseConfig, error) {
-	// Load required environment variables
+	// Check if using PostgreSQL datastore - if so, delegate to datastore config
+	if provider := os.Getenv("DATASTORE_PROVIDER"); provider == "postgresql" {
+		return newPostgreSQLCompatibleConfig(certMountPath)
+	}
+
+	// Load required MongoDB environment variables
 	connectionURI := os.Getenv(EnvMongoDBURI)
 	if connectionURI == "" {
 		return nil, fmt.Errorf("required environment variable %s is not set", EnvMongoDBURI)
@@ -196,6 +225,84 @@ func NewDatabaseConfigWithCollection(
 	return &StandardDatabaseConfig{
 		connectionURI:  connectionURI,
 		databaseName:   databaseName,
+		collectionName: collectionName,
+		certConfig:     certConfig,
+		timeoutConfig:  timeoutConfig,
+	}, nil
+}
+
+// newPostgreSQLCompatibleConfig creates a PostgreSQL-compatible database config
+// using DATASTORE_* environment variables instead of MONGODB_* variables
+//
+//nolint:cyclop // Config validation requires checking multiple environment variables
+func newPostgreSQLCompatibleConfig(certMountPath string) (DatabaseConfig, error) {
+	host := os.Getenv("DATASTORE_HOST")
+	if host == "" {
+		return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set")
+	}
+
+	port := os.Getenv("DATASTORE_PORT")
+	if port == "" {
+		port = "5432" // Default PostgreSQL port
+	}
+
+	database := os.Getenv("DATASTORE_DATABASE")
+	if database == "" {
+		return nil, fmt.Errorf("required environment variable DATASTORE_DATABASE is not set")
+	}
+
+	username := os.Getenv("DATASTORE_USERNAME")
+	if username == "" {
+		return nil, fmt.Errorf("required environment variable DATASTORE_USERNAME is not set")
+	}
+
+	// Build PostgreSQL connection URI
+	// Format: "host=%s port=%s dbname=%s user=%s sslmode=require ..."
+	sslmode := os.Getenv("DATASTORE_SSLMODE")
+	if sslmode == "" {
+		sslmode = "require"
+	}
+
+	sslcert := os.Getenv("DATASTORE_SSLCERT")
+	if sslcert == "" {
+		sslcert = filepath.Join(certMountPath, "tls.crt")
+	}
+
+	sslkey := os.Getenv("DATASTORE_SSLKEY")
+	if sslkey == "" {
+		sslkey = filepath.Join(certMountPath, "tls.key")
+	}
+
+	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
+	if sslrootcert == "" {
+		sslrootcert = filepath.Join(certMountPath, "ca.crt")
+	}
+
+	// Build connection URI in PostgreSQL format
+	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
+		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+
+	// Use health_events as the default collection for PostgreSQL
+	collectionName := os.Getenv("MONGODB_COLLECTION_NAME")
+	if collectionName == "" {
+		collectionName = "health_events"
+	}
+
+	// Load timeout configuration
+	timeoutConfig, err := loadTimeoutConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load timeout configuration: %w", err)
+	}
+
+	certConfig := &StandardCertificateConfig{
+		certPath:   sslcert,
+		keyPath:    sslkey,
+		caCertPath: sslrootcert,
+	}
+
+	return &StandardDatabaseConfig{
+		connectionURI:  connectionURI,
+		databaseName:   database,
 		collectionName: collectionName,
 		certConfig:     certConfig,
 		timeoutConfig:  timeoutConfig,

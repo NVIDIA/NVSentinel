@@ -31,6 +31,9 @@ resources:
 
 logLevel: info
 
+# Client certificate mount path for database connections
+clientCertMountPath: /etc/ssl/client-certs
+
 config: |
   # The node condition for these rules needs to be removed manually because health-events-analyzer does not publish healthy events to clear it.
   # Please run the command below to remove the node condition:

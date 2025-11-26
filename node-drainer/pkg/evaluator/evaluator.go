@@ -240,6 +240,8 @@ func isTerminalStatus(status model.Status) bool {
 }
 
 // isNodeAlreadyDrained checks if a node has already been drained using the database-agnostic interface
+//
+//nolint:cyclop // Complexity acceptable for dual-case field name lookups (MongoDB vs PostgreSQL)
 func isNodeAlreadyDrained(ctx context.Context, database queue.DataStore, nodeName string) (bool, error) {
 	// Use database-agnostic filter building
 	filter := client.NewFilterBuilder().
@@ -268,14 +270,24 @@ func isNodeAlreadyDrained(ctx context.Context, database queue.DataStore, nodeNam
 		return false, fmt.Errorf("failed to decode result for node %s: %w", nodeName, err)
 	}
 
+	// Try lowercase first (MongoDB compatibility)
 	healthEventStatus, ok := document["healtheventstatus"].(map[string]interface{})
 	if !ok {
-		return false, fmt.Errorf("invalid healtheventstatus format for node %s", nodeName)
+		// Try camelCase (PostgreSQL JSON)
+		healthEventStatus, ok = document["healthEventStatus"].(map[string]interface{})
+		if !ok {
+			return false, fmt.Errorf("invalid healtheventstatus format for node %s", nodeName)
+		}
 	}
 
+	// Try lowercase first (MongoDB compatibility)
 	nodeQuarantined, ok := healthEventStatus["nodequarantined"].(string)
 	if !ok {
-		return false, fmt.Errorf("invalid nodequarantined format for node %s", nodeName)
+		// Try camelCase (PostgreSQL JSON)
+		nodeQuarantined, ok = healthEventStatus["nodeQuarantined"].(string)
+		if !ok {
+			return false, fmt.Errorf("invalid nodequarantined format for node %s", nodeName)
+		}
 	}
 
 	if nodeQuarantined == string(model.UnQuarantined) {

@@ -17,11 +17,13 @@ package mongodb
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -286,4 +288,114 @@ func TestMongoHealthEventStore_FindLatestEventForNode(t *testing.T) {
 		mockDB.AssertExpectations(t)
 		mockResult.AssertExpectations(t)
 	})
+}
+
+func TestNormalizeValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected interface{}
+	}{
+		{
+			name: "primitive.D with nested values",
+			input: primitive.D{
+				{Key: "nodename", Value: "test-node"},
+				{Key: "status", Value: "healthy"},
+				{Key: "metadata", Value: primitive.D{
+					{Key: "region", Value: "us-west"},
+					{Key: "zone", Value: "a"},
+				}},
+			},
+			expected: map[string]interface{}{
+				"nodename": "test-node",
+				"status":   "healthy",
+				"metadata": map[string]interface{}{
+					"region": "us-west",
+					"zone":   "a",
+				},
+			},
+		},
+		{
+			name: "primitive.D with array containing primitive.D",
+			input: primitive.D{
+				{Key: "items", Value: []interface{}{
+					primitive.D{
+						{Key: "name", Value: "item1"},
+						{Key: "value", Value: int32(100)},
+					},
+					primitive.D{
+						{Key: "name", Value: "item2"},
+						{Key: "value", Value: int32(200)},
+					},
+				}},
+			},
+			expected: map[string]interface{}{
+				"items": []interface{}{
+					map[string]interface{}{
+						"name":  "item1",
+						"value": int32(100),
+					},
+					map[string]interface{}{
+						"name":  "item2",
+						"value": int32(200),
+					},
+				},
+			},
+		},
+		{
+			name: "already normalized map",
+			input: map[string]interface{}{
+				"key1": "value1",
+				"key2": map[string]interface{}{
+					"nested": "value2",
+				},
+			},
+			expected: map[string]interface{}{
+				"key1": "value1",
+				"key2": map[string]interface{}{
+					"nested": "value2",
+				},
+			},
+		},
+		{
+			name: "array with mixed types",
+			input: []interface{}{
+				"string",
+				123,
+				primitive.D{{Key: "key", Value: "value"}},
+				map[string]interface{}{"already": "normalized"},
+			},
+			expected: []interface{}{
+				"string",
+				123,
+				map[string]interface{}{"key": "value"},
+				map[string]interface{}{"already": "normalized"},
+			},
+		},
+		{
+			name:     "primitive string",
+			input:    "test-string",
+			expected: "test-string",
+		},
+		{
+			name:     "primitive int",
+			input:    42,
+			expected: 42,
+		},
+		{
+			name:     "nil value",
+			input:    nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeValue(tt.input)
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("normalizeValue() = %v (type: %T), expected %v (type: %T)",
+					result, result, tt.expected, tt.expected)
+			}
+		})
+	}
 }

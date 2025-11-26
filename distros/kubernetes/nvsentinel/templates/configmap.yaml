@@ -24,7 +24,8 @@ data:
       "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
-      "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}"
+      "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}",
+      "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
       {{- if .Values.platformConnector.nodeMetadata }}
       ,"nodeMetadataAugmentationEnabled": "{{ .Values.platformConnector.nodeMetadata.enabled }}"
       ,"nodeMetadataCacheSize": {{ .Values.platformConnector.nodeMetadata.cacheSize }}

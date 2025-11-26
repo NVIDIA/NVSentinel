@@ -42,7 +42,10 @@ RUN useradd -u 10001 -m nvsentinel
 WORKDIR /opt/log-collector
 
 COPY log-collector/entrypoint.sh /opt/log-collector/entrypoint.sh
-RUN chmod +x /opt/log-collector/entrypoint.sh
+COPY log-collector/mock-nvidia-bug-report.sh /opt/log-collector/mock-nvidia-bug-report.sh
+COPY log-collector/mock-must-gather.sh /opt/log-collector/mock-must-gather.sh
+RUN chmod +x /opt/log-collector/entrypoint.sh /opt/log-collector/mock-nvidia-bug-report.sh /opt/log-collector/mock-must-gather.sh
+
 
 ENV PATH="/opt/log-collector:${PATH}"
 

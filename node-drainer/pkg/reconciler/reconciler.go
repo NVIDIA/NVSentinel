@@ -108,6 +108,11 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 		return fmt.Errorf("failed to extract health event with status: %w", err)
 	}
 
+	nodeName := healthEventWithStatus.HealthEvent.NodeName
+	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
+
+	slog.Debug("Preprocessing event", "node", nodeName, "nodeQuarantined", nodeQuarantined)
+
 	// Skip if already in terminal state
 	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
 		slog.Debug("Skipping event - already in terminal state",
@@ -117,16 +122,16 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 		return nil
 	}
 
-	nodeName := healthEventWithStatus.HealthEvent.NodeName
-
 	documentID, err := utils.ExtractDocumentIDNative(document)
 	if err != nil {
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
 	// Handle cancellation logic (Cancelled/UnQuarantined events)
-	if shouldSkipDueToCancellation := r.handleEventCancellation(
-		documentID, nodeName, healthEventWithStatus.HealthEventStatus.NodeQuarantined); shouldSkipDueToCancellation {
+	if shouldSkip := r.handleEventCancellation(
+		documentID, nodeName, healthEventWithStatus.HealthEventStatus.NodeQuarantined); shouldSkip {
+		slog.Debug("Event skipped due to cancellation", "node", nodeName)
+
 		return nil
 	}
 
@@ -136,16 +141,22 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 
 // handleEventCancellation handles Cancelled and UnQuarantined events
 // Returns true if the event should be skipped (not enqueued)
-func (r *Reconciler) handleEventCancellation(documentID interface{}, nodeName string, statusPtr *model.Status) bool {
+func (r *Reconciler) handleEventCancellation(
+	documentID interface{},
+	nodeName string,
+	statusPtr *model.Status,
+) bool {
 	if statusPtr == nil {
 		return false
 	}
 
 	eventID := fmt.Sprintf("%v", documentID)
 
-	// Handle Cancelled events - mark them as cancelled without enqueueing
+	slog.Debug("Processing cancellation", "node", nodeName, "eventID", eventID, "status", *statusPtr)
+
+	// Handle Cancelled events - mark specific event as cancelled
 	if *statusPtr == model.Cancelled {
-		slog.Info("Detected Cancelled event, marking specific event as cancelled (not enqueueing)",
+		slog.Info("Detected Cancelled event, marking event as cancelled",
 			"node", nodeName,
 			"eventID", eventID)
 		r.HandleCancellation(eventID, nodeName, model.Cancelled)
@@ -239,11 +250,9 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 		return err
 	}
 
-	// Extract event ID for cancellation tracking
-	eventID := ""
-	if id, exists := event["_id"]; exists {
-		eventID = fmt.Sprintf("%v", id)
-	}
+	eventID := utils.ExtractEventID(event)
+
+	slog.Debug("Processing event", "node", nodeName, "eventID", eventID)
 
 	metrics.TotalEventsReceived.Inc()
 
@@ -251,6 +260,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	if r.isEventCancelled(eventID, nodeName, nodeQuarantinedStatus) {
 		slog.Info("Event was cancelled, performing cleanup", "node", nodeName, "eventID", eventID)
+
 		return r.handleCancelledEvent(ctx, nodeName, &healthEventWithStatus, event, database, eventID)
 	}
 
@@ -259,6 +269,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database)
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("evaluate_event_error", nodeName).Inc()
+
 		return fmt.Errorf("failed to evaluate event: %w", err)
 	}
 
@@ -291,7 +302,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 	case evaluator.ActionEvictWithTimeout:
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
-		return r.executeTimeoutEviction(ctx, action, healthEvent)
+		return r.executeTimeoutEviction(ctx, action, healthEvent, eventID)
 
 	case evaluator.ActionCheckCompletion:
 		slog.Debug("Executing ActionCheckCompletion", "node", nodeName)
@@ -355,13 +366,45 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context,
 }
 
 func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
+	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus, eventID string) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	timeoutMinutes := int(action.Timeout.Minutes())
 
+	// Check if this event has been cancelled before proceeding with timeout eviction
+	// This prevents force-deleting pods when a manual uncordon has happened
+	r.nodeEventsMapMu.Lock()
+	eventStatus, eventExists := r.nodeEventsMap[nodeName][eventID]
+	_, nodeCancelled := r.cancelledNodes[nodeName]
+	r.nodeEventsMapMu.Unlock()
+
+	slog.Debug("Checking cancellation status before timeout eviction", "node", nodeName, "eventID", eventID)
+
+	if (eventExists && eventStatus == model.Cancelled) || nodeCancelled {
+		slog.Info("Event cancelled, aborting timeout eviction",
+			"node", nodeName,
+			"eventID", eventID)
+
+		// Return nil (success) to stop requeueing - the event was handled via cancellation
+		return nil
+	}
+
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
 		nodeName, action.Namespaces, timeoutMinutes, &healthEvent); err != nil {
+		// Check again after the operation in case cancellation happened during execution
+		r.nodeEventsMapMu.Lock()
+		checkEventStatus, checkEventExists := r.nodeEventsMap[nodeName][eventID]
+		_, checkNodeCancelled := r.cancelledNodes[nodeName]
+		r.nodeEventsMapMu.Unlock()
+
+		if (checkEventExists && checkEventStatus == model.Cancelled) || checkNodeCancelled {
+			slog.Info("Event was cancelled during timeout eviction, stopping",
+				"node", nodeName, "eventID", eventID)
+
+			return nil
+		}
+
 		metrics.ProcessingErrors.WithLabelValues("timeout_eviction_error", nodeName).Inc()
+
 		return fmt.Errorf("failed timeout eviction for node %s: %w", nodeName, err)
 	}
 
@@ -540,6 +583,8 @@ func (r *Reconciler) HandleCancellation(eventID string, nodeName string, status 
 	r.nodeEventsMapMu.Lock()
 	defer r.nodeEventsMapMu.Unlock()
 
+	slog.Debug("HandleCancellation called", "node", nodeName, "eventID", eventID, "status", status)
+
 	//nolint:exhaustive // we don't need to handle other statuses
 	switch status {
 	case model.Cancelled:
@@ -563,6 +608,8 @@ func (r *Reconciler) HandleCancellation(eventID string, nodeName string, status 
 			}
 		}
 	}
+
+	slog.Debug("Cancellation processed", "node", nodeName, "eventID", eventID)
 }
 
 func (r *Reconciler) isEventCancelled(eventID string, nodeName string, nodeQuarantinedStatus *model.Status) bool {
@@ -611,10 +658,17 @@ func (r *Reconciler) markEventInProgress(eventID string, nodeName string) {
 		r.nodeEventsMap[nodeName] = make(eventStatusMap)
 		// Clear node-level cancellation flag when starting fresh drain
 		// (re-arm the node for new quarantine session)
+		_, wasNodeCancelled := r.cancelledNodes[nodeName]
+		if wasNodeCancelled {
+			slog.Info("Clearing node-level cancellation flag when starting new drain session", "node", nodeName)
+		}
+
 		delete(r.cancelledNodes, nodeName)
 	}
 
 	r.nodeEventsMap[nodeName][eventID] = model.StatusInProgress
+
+	slog.Debug("Event marked as in progress", "node", nodeName, "eventID", eventID)
 }
 
 func (r *Reconciler) clearEventStatus(eventID string, nodeName string) {

@@ -1,0 +1,55 @@
+# KWOK Stage to simulate log-collector pod failure for negative testing
+# WARNING: This will affect ALL log-collector pods cluster-wide while active
+# The test MUST run in isolation and clean up the Stage in teardown
+# Weight: 10 ensures this Stage takes precedence over default stage-fast (weight 0)
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: log-collector-failure
+spec:
+  resourceRef:
+    apiGroup: ""
+    kind: Pod
+  selector:
+    matchLabels:
+      app: log-collector
+  weight: 10
+  delay:
+    durationMilliseconds: 100
+  when:
+  - field: status.phase
+    operator: In
+    values:
+    - ""
+    - "Pending"
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+      - lastProbeTime: null
+        lastTransitionTime: {{ $now }}
+        message: "Simulated log-collector failure for testing"
+        reason: Error
+        status: "False"
+        type: ContainersReady
+      - lastProbeTime: null
+        lastTransitionTime: {{ $now }}
+        message: "Simulated log-collector failure for testing"
+        reason: Error
+        status: "False"
+        type: Ready
+      containerStatuses:
+      - image: {{ index .spec.containers 0 "image" }}
+        name: {{ index .spec.containers 0 "name" }}
+        ready: false
+        restartCount: 0
+        started: false
+        state:
+          terminated:
+            exitCode: 1
+            finishedAt: {{ $now }}
+            reason: Error
+            message: "Simulated failure for log-collector testing"
+            startedAt: {{ $now }}
+      phase: Failed
+

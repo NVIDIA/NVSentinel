@@ -16,6 +16,9 @@ replicaCount: 1
 
 logLevel: info
 
+# Client certificate mount path for database connections
+clientCertMountPath: /etc/ssl/client-certs
+
 image:
   repository: ghcr.io/nvidia/nvsentinel/node-drainer
   pullPolicy: IfNotPresent

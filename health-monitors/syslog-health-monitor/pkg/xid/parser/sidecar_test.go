@@ -26,17 +26,18 @@ import (
 
 func TestSidecarParser_Parse(t *testing.T) {
 	testCases := []struct {
-		name              string
-		message           string
-		mockResponse      *Response
-		mockStatusCode    int
-		expectedSuccess   bool
-		expectedXIDCode   int
-		expectedPCIAddr   string
-		expectedMnemonic  string
-		expectedErrorCode string
-		expectError       bool
-		expectedErrorType string
+		name               string
+		message            string
+		mockResponse       *Response
+		mockStatusCode     int
+		expectedSuccess    bool
+		expectedXIDCode    int
+		expectedPCIAddr    string
+		expectedMnemonic   string
+		expectedErrorCode  string
+		expectError        bool
+		expectedErrorType  string
+		expectedResolution string
 	}{
 		{
 			name:    "Successful XID parsing with full details",
@@ -56,12 +57,13 @@ func TestSidecarParser_Parse(t *testing.T) {
 					Resolution:          "APPLICATION_RESTART",
 				},
 			},
-			mockStatusCode:    200,
-			expectedSuccess:   true,
-			expectedXIDCode:   32,
-			expectedPCIAddr:   "0000:66:00",
-			expectedMnemonic:  "XID 32",
-			expectedErrorCode: "32",
+			mockStatusCode:     200,
+			expectedSuccess:    true,
+			expectedXIDCode:    32,
+			expectedPCIAddr:    "0000:66:00",
+			expectedMnemonic:   "XID 32",
+			expectedErrorCode:  "32",
+			expectedResolution: "APPLICATION_RESTART",
 		},
 		{
 			name:    "Sidecar parsing failure",
@@ -96,6 +98,32 @@ func TestSidecarParser_Parse(t *testing.T) {
 			expectedPCIAddr:   "0000:9b:00",
 			expectedMnemonic:  "",
 			expectedErrorCode: "",
+		},
+		{
+			name:    "XID 154",
+			message: "NVRM: Xid (PCI:0008:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x1 (GPU Reset Required)",
+			mockResponse: &Response{
+				Success: true,
+				Result: XIDDetails{
+					Context:             "GPU context",
+					DecodedXIDStr:       "154",
+					Driver:              "nvidia-driver-550",
+					InvestigatoryAction: "Check GPU memory",
+					Machine:             "DGX-A100",
+					Mnemonic:            "XID 154",
+					Name:                "154",
+					Number:              154,
+					PCIE:                "0008:01:00",
+					Resolution:          "GPU Reset Required",
+				},
+			},
+			mockStatusCode:     200,
+			expectedSuccess:    true,
+			expectedXIDCode:    154,
+			expectedPCIAddr:    "0008:01:00",
+			expectedMnemonic:   "XID 154",
+			expectedErrorCode:  "154",
+			expectedResolution: "COMPONENT_RESET",
 		},
 	}
 
@@ -161,6 +189,7 @@ func TestSidecarParser_Parse(t *testing.T) {
 			assert.Equal(t, tc.expectedMnemonic, result.Result.Mnemonic, "Mnemonic should match")
 			assert.Equal(t, tc.expectedErrorCode, result.Result.DecodedXIDStr, "Decoded XID string should match")
 			assert.Equal(t, tc.expectedErrorCode, result.Result.Name, "Name should match")
+			assert.Equal(t, tc.expectedResolution, result.Result.Resolution, "Resolution should match")
 
 			assert.Empty(t, result.Error, "Error field should be empty for successful parse")
 		})

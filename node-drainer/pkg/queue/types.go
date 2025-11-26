@@ -24,6 +24,7 @@ import (
 
 type NodeEvent struct {
 	NodeName string
+	EventID  string           // Unique event ID for deduplication (from _id field)
 	Event    *datastore.Event // Database-agnostic event data
 	Database DataStore        // New database-agnostic interface
 

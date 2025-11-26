@@ -78,7 +78,7 @@ data:
                       "$map": {
                         "input": {
                           "$filter": {
-                            "input": "this.healthevent.entitiesimpacted",
+                            "input": {"$ifNull": ["this.healthevent.entitiesimpacted", []]},
                             "cond": {"$eq": ["$$this.entitytype", "GPU"]}
                           }
                         },

@@ -79,8 +79,12 @@ func (w *EventWatcher) SetProcessEventCallback(
 func (w *EventWatcher) Start(ctx context.Context) error {
 	slog.Info("Starting event watcher")
 
-	w.changeStreamWatcher.Start(ctx)
-	slog.Info("Change stream watcher started")
+	if w.changeStreamWatcher != nil {
+		w.changeStreamWatcher.Start(ctx)
+	} else {
+		<-ctx.Done()
+		return nil
+	}
 
 	go w.updateUnprocessedEventsMetric(ctx)
 
@@ -109,7 +113,9 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 		watchErr = fmt.Errorf("event watcher terminated: %w", err)
 	}
 
-	w.changeStreamWatcher.Close(ctx)
+	if w.changeStreamWatcher != nil {
+		w.changeStreamWatcher.Close(ctx)
+	}
 
 	return watchErr
 }
@@ -127,7 +133,7 @@ func (w *EventWatcher) watchEvents(ctx context.Context) error {
 		resumeToken := event.GetResumeToken()
 		if err := w.changeStreamWatcher.MarkProcessed(ctx, resumeToken); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("mark_processed_error").Inc()
-			slog.Error("Error updating resume token", "error", err)
+			slog.Error("Failed to mark event as processed", "error", err)
 
 			return fmt.Errorf("failed to mark event as processed: %w", err)
 		}
@@ -153,14 +159,22 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		return fmt.Errorf("error getting document ID: %w", err)
 	}
 
+	// Get the record UUID for database updates (different from changelog ID for PostgreSQL)
+	recordUUID, err := event.GetRecordUUID()
+	if err != nil {
+		return fmt.Errorf("error getting record UUID: %w", err)
+	}
+
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
 	startTime := time.Now()
 	status := w.processEventCallback(ctx, &healthEventWithStatus)
 
 	if status != nil {
-		if err := w.updateNodeQuarantineStatus(ctx, eventID, status); err != nil {
+		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()
+			slog.Error("Failed to update node quarantine status", "error", err)
+
 			return fmt.Errorf("failed to update node quarantine status: %w", err)
 		}
 	}
@@ -226,7 +240,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	filter := map[string]interface{}{
 		"healthevent.nodename": nodeName,
 		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []model.Status{model.Quarantined, model.UnQuarantined},
+			"$in": []interface{}{model.Quarantined, model.UnQuarantined},
 		},
 	}
 
@@ -245,21 +259,32 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
 	if err != nil {
 		if errors.Is(err, client.ErrNoDocuments) {
-			slog.Warn("No quarantining/unquarantining events found for node", "node", nodeName)
+			slog.Debug("No quarantining/unquarantining events found for node", "node", nodeName)
+
 			return nil
 		}
+
+		slog.Error("Error finding latest quarantining event", "node", nodeName, "error", err)
 
 		return fmt.Errorf("error finding latest quarantining event for node %s: %w", nodeName, err)
 	}
 
 	if err := result.Decode(&latestEvent); err != nil {
+		slog.Error("Error decoding latest event", "node", nodeName, "error", err)
+
 		return fmt.Errorf("error decoding latest quarantining event for node %s: %w", nodeName, err)
 	}
+
+	slog.Debug("Found latest event",
+		"node", nodeName,
+		"eventID", latestEvent.ID,
+		"status", latestEvent.HealthEventStatus.NodeQuarantined)
 
 	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
 	if latestEvent.HealthEventStatus.NodeQuarantined == nil ||
 		*latestEvent.HealthEventStatus.NodeQuarantined != model.Quarantined {
-		slog.Info("No latest quarantining event found for node, no events to cancel", "node", nodeName)
+		slog.Debug("Latest event is not Quarantined, no events to cancel", "node", nodeName)
+
 		return nil
 	}
 
@@ -269,7 +294,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"healthevent.nodename": nodeName,
 		"createdAt":            map[string]interface{}{"$gte": latestEvent.CreatedAt},
 		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []model.Status{model.Quarantined, model.AlreadyQuarantined},
+			"$in": []interface{}{model.Quarantined, model.AlreadyQuarantined},
 		},
 	}
 

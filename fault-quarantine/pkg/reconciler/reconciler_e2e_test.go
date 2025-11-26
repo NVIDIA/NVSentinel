@@ -112,6 +112,11 @@ func (e *TestEvent) GetDocumentID() (string, error) {
 	return "", fmt.Errorf("document ID not found")
 }
 
+func (e *TestEvent) GetRecordUUID() (string, error) {
+	// For test events, return the same as document ID
+	return e.GetDocumentID()
+}
+
 func (e *TestEvent) GetNodeName() (string, error) {
 	if fullDoc, ok := e.Data["fullDocument"].(datastore.Event); ok {
 		if healthEvent, ok := fullDoc["healthevent"].(datastore.Event); ok {

@@ -270,7 +270,7 @@ func (e *HealthEventsExporter) processEvent(ctx context.Context, healthEvent cli
 		eventTime = event.GeneratedTimestamp.AsTime().Format(time.RFC3339)
 	}
 
-	slog.Info("Publishing stream event",
+	slog.Debug("Publishing stream event",
 		"nodeName", event.NodeName,
 		"checkName", event.CheckName,
 		"generatedAt", eventTime)
@@ -321,7 +321,7 @@ func (e *HealthEventsExporter) publishWithRetry(ctx context.Context, event *pb.H
 
 		publishErr := e.sink.Publish(ctx, cloudEvent)
 		if publishErr == nil {
-			slog.Info("Publish succeeded after retry", "attempt", attempt)
+			slog.Debug("Publish succeeded", "attempt", attempt)
 
 			metrics.PublishDuration.Observe(time.Since(startTime).Seconds())
 			metrics.EventsPublished.WithLabelValues(metrics.StatusSuccess).Inc()

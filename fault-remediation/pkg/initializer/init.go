@@ -49,7 +49,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to load token configuration: %w", err)
 	}
 
-	pipeline := client.BuildQuarantinedAndDrainedNodesPipeline()
+	builder := client.GetPipelineBuilder()
+	pipeline := builder.BuildQuarantinedAndDrainedNodesPipeline()
 
 	var tomlConfig config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlConfig); err != nil {
