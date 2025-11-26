@@ -1,8 +1,5 @@
 # ADR-013: Architecture — Remediation Plugins
 
-## Status
-**Proposed** | Date: 2025-11-25
-
 ## Context
 
 NVSentinel has multiple `RecommendedAction` values defined in the [health event protobuf](../../data-models/protobufs/health_event.proto) such as:
@@ -19,7 +16,7 @@ These `RecommendedActions`'s map to a Janitor custom resource in the fault-remed
 
 This strong coupling can let implementation of the individual actions in a workflow be delegated to an outside system (e.g. new CSPs).
 
-Janitor currently uses an internal Go package ([`janitor/pkg/csp`](https://github.com/NVIDIA/NVSentinel/tree/main/janitor/pkg/csp)) that provides hardcoded implementations for major cloud providers (AWS, Azure, GCP, OCI). The package implements the `CSPClient` interface:
+Janitor currently uses an internal Go package ([`janitor/pkg/csp`](https://github.com/NVIDIA/NVSentinel/tree/e8edbb9da9a92120d8d7b5424f8f3f74063e61c3/janitor/pkg/csp)) that provides hardcoded implementations for major cloud providers (AWS, Azure, GCP, OCI). The package implements the `CSPClient` interface:
 
 ```go
 type CSPClient interface {
