@@ -1,17 +1,17 @@
-# Scale Tests: API Server & MongoDB Load
+# NVSentinel Scale Tests
 
-Scale testing for **NVSentinel v0.4.0** validating API server impact and MongoDB performance at production scale (1500+ nodes).
+Comprehensive scale testing for **NVSentinel v0.4.0** validating performance and scalability at production scale (1500+ nodes).
 
 ## Overview
 
 This test suite validates NVSentinel's performance and scalability under realistic production conditions:
 
 1. **Does NVSentinel affect the API server load and cause slowdown at scale of 1000+ nodes?**
-2. **Does MongoDB function at scale or do we need to increase the replica count?**
+2. **Does MongoDB function at scale in our use case?**
+3. *(Additional test objectives will be added as testing continues)*
 
 **Testing Version:** NVSentinel v0.4.0  
-**Cluster Scale:** 1500 nodes  
-**Test Loads:** 30, 100, 300 events/sec (3.4×, 11×, 34× production peak)
+**Cluster Scale:** 1500 nodes
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
 
 ### Building Event Generator
 
-The event generator image is **not publicly available**. You must build it yourself.
+The event generator code that we used to create test events is included in this repo. You must build it and push it to a repo your cluster has access to.
 
 **One image handles all test scenarios** - everything is configured via ConfigMaps!
 
@@ -83,75 +83,64 @@ To simulate production-scale load, we deploy a DaemonSet of event generators (on
 - **Deployment:** DaemonSet (one pod per worker node)
 - **Modes:** Continuous generation with configurable event rates
 
-## Test Results
+## Test Results Summary
 
-| Scenario | Event Rate | Production Peak Multiplier | Duration | API Server Impact |
-|----------|-----------|----------------------------|----------|-------------------|
-| **Light** | 30 events/sec | 3.4× | 10 min | ✅ No impact |
-| **Medium** | 100 events/sec | 11× | 10 min | ✅ Minimal (P75 stable at 20ms) |
-| **Heavy** | 300 events/sec | 34× | 10 min | ✅ Excellent (P75 stable at 19ms) |
+See [results/](results/) for detailed test reports.
 
-See [results/API_and_MongoDB_Results.md](results/API_and_MongoDB_Results.md) for detailed metrics and Prometheus queries.
+### 1. API Server Impact & MongoDB Performance
 
-## Key Findings
+**Objective:** Validate that NVSentinel does not negatively impact Kubernetes API server or overwhelm MongoDB
 
-**API Server Impact:** NVSentinel shows minimal impact even at heavy loads (34× production peak). The critical P75 latency metric remained stable at ~20ms across all test scenarios.
+**Test Scenarios (1500-node cluster):**
+- Light load: 30 events/sec (3.4× production peak)
+- Medium load: 100 events/sec (11× production peak)
+- Heavy load: 300 events/sec (34× production peak)
 
-**MongoDB Performance:** Successfully processed sustained event loads ranging from 33 to 300 events/sec with no errors or performance degradation.
+**Note:** Event rates are configured for a 1500-node cluster. If your cluster has a different size, you'll need to adjust the `EVENT_RATE` in the ConfigMaps (`manifests/event-generator-config-*.yaml`) proportionally. For example, for a 750-node cluster, use half the event rate per node.
 
-## MongoDB Metrics
+**Key Findings:**
+- API server P75 latency stable at ~20ms across all loads
+- MongoDB successfully processed up to 300 events/sec with default configuration
 
-The test configuration enables MongoDB metrics for Prometheus. If using `kube-prometheus-stack`, ensure the ServiceMonitor has the `release: prometheus` label (or matches your Prometheus Operator's `serviceMonitorSelector`). This is included in `configs/values-v0.4.0-with-mongodb-metrics.yaml`.
+📊 **[Full Results](results/API_and_MongoDB_Results.md)**
 
-## Running the Tests
+### Additional Tests
 
-### Step 1: Deploy Event Generators
+*(More test results will be added here as testing continues)*
+
+## Running Tests
+
+Each test has specific setup instructions in its results document. General approach:
+
+### 1. Deploy Event Generators
 
 ```bash
-# Light load (30 events/sec cluster-wide for 1500-node cluster)
-kubectl apply -f manifests/event-generator-config-light.yaml
+# Apply the test-specific ConfigMap
+kubectl apply -f manifests/event-generator-config-<TEST>.yaml
+
+# Deploy the DaemonSet
 kubectl apply -f manifests/event-generator-daemonset.yaml
 
-# Verify deployment
+# Verify deployment (one pod per worker node)
 kubectl get pods -n nvsentinel -l app=event-generator
-
-# Expected: One pod per worker node in Running state
 ```
 
-### Step 2: Monitor System Performance
-
-#### MongoDB Health
-```bash
-# Check MongoDB pod status
-kubectl get pods -n nvsentinel -l app.kubernetes.io/component=mongodb
-
-# Monitor memory usage
-kubectl top pods -n nvsentinel -l app.kubernetes.io/component=mongodb
-
-# Check replica set status
-kubectl exec -n nvsentinel mongodb-0 -- mongosh --eval "rs.status()"
-```
-
-#### API Server Metrics (via Prometheus)
-
-If Prometheus is installed:
+### 2. Access Prometheus
 
 ```bash
 # Port-forward to Prometheus
 kubectl port-forward -n monitoring svc/prometheus-server 9090:80
 
-# Access Prometheus UI
-# Open http://localhost:9090
+# Access at http://localhost:9090
 ```
 
-**Key metrics to monitor:**
-- `apiserver_request_duration_seconds` - API server request latency
-- `apiserver_request_total` - API server request rate
-- `mongodb_op_counters_total` - MongoDB operations per second
+### 3. Monitor & Collect Metrics
 
-### Step 3: Monitor Test
+Use the Prometheus UI or API to observe metrics during the test. Each test document includes specific queries and monitoring instructions.
 
-Monitor the test for the desired duration (10 minutes). Use the Prometheus UI or direct API queries to observe API server latency and MongoDB operations in real-time.
+## MongoDB Metrics
+
+The test configuration enables MongoDB metrics for Prometheus. If using `kube-prometheus-stack`, ensure the ServiceMonitor has the `release: prometheus` label (or matches your Prometheus Operator's `serviceMonitorSelector`). This is included in `configs/values-v0.4.0-with-mongodb-metrics.yaml`.
 
 ## Detailed Results
 
@@ -188,15 +177,15 @@ tests/scale-tests/
 - **Event Generator:** Go + gRPC (Unix socket communication)
 - **Metrics:** Prometheus + Kubernetes API
 
-## Conclusion
+## Summary
 
-NVSentinel v0.4.0 is validated for production deployment on 1500-node clusters:
+Initial scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
 
 - **API Server:** Minimal latency impact with P75 stable at ~20ms even at 300 events/sec (34× production peak)
 - **MongoDB:** Successfully handles sustained loads from 30-300 events/sec with default configuration
-- **Scalability:** Excellent - system maintains stable performance across a wide range of event rates
+
+Additional testing in progress.
 
 ---
 
-**Last Updated:** November 24, 2025
-
+**Last Updated:** December 1, 2025

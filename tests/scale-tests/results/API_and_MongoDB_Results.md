@@ -15,6 +15,57 @@
 | **Medium** | 100 events/sec | 11× |
 | **Heavy** | 300 events/sec | 34× |
 
+## Test Setup & Execution
+
+### Deploy Event Generators
+
+For each test scenario:
+
+```bash
+# Light load (30 events/sec)
+kubectl apply -f manifests/event-generator-config-light.yaml
+kubectl apply -f manifests/event-generator-daemonset.yaml
+
+# Medium load (100 events/sec)
+kubectl apply -f manifests/event-generator-config-medium.yaml
+kubectl apply -f manifests/event-generator-daemonset.yaml
+
+# Heavy load (300 events/sec)
+kubectl apply -f manifests/event-generator-config-heavy.yaml
+kubectl apply -f manifests/event-generator-daemonset.yaml
+
+# Verify deployment
+kubectl get pods -n nvsentinel -l app=event-generator
+# Expected: 1500 pods (one per worker node) in Running state
+```
+
+### Monitor During Test
+
+#### MongoDB Health
+```bash
+# Check MongoDB pod status
+kubectl get pods -n nvsentinel -l app.kubernetes.io/component=mongodb
+
+# Monitor memory usage
+kubectl top pods -n nvsentinel -l app.kubernetes.io/component=mongodb
+
+# Check replica set status
+kubectl exec -n nvsentinel mongodb-0 -- mongosh --eval "rs.status()"
+```
+
+#### Prometheus Setup
+```bash
+# Port-forward to Prometheus
+kubectl port-forward -n monitoring svc/prometheus-server 9090:80
+
+# Access Prometheus UI at http://localhost:9090
+```
+
+
+### Test Duration
+
+Each test ran for **10 minutes** with metrics collected at the midpoint using 5-minute rate windows.
+
 ## API Server Impact
 
 | Test | Request Rate | P50 Latency | P75 Latency | P95/P99 Latency |
