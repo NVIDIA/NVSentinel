@@ -207,6 +207,93 @@ func main() {
 - `NVIDIA/NVSentinel` will include _some_ plugin implementations for widely used CSPs which will be deployed via Helm sub-charts alongside Janitor
 - Standard Kubernetes Service for network discovery
 
+### Authentication
+
+Plugin services need to authenticate incoming requests from Janitor to prevent unauthorized remediation actions. We'll use Kubernetes service account JWT tokens for a simple, native authentication flow:
+
+**Client Side (Janitor)**:
+- Read the mounted service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token`
+- Include token in gRPC metadata with each request
+
+```go
+func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    // ...
+    token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+    if err != nil {
+        return ctrl.Result{}, fmt.Errorf("failed to read SA token: %w", err)
+    }
+
+    md := metadata.New(map[string]string{
+        "authorization": fmt.Sprintf("Bearer %s", token),
+    })
+    cspCtx := metadata.NewOutgoingContext(context.Background(), md)
+
+    rsp, err := r.CSPClient.SendRebootSignal(cspCtx, &protos.SendRebootSignalRequest{NodeName: node.Name})
+    // ...
+}
+```
+
+**Server Side (Plugin)**:
+- Extract token from incoming gRPC metadata
+- Validate token against Kubernetes API server using TokenReview API
+- Verify the service account has expected identity (e.g., `system:serviceaccount:nvsentinel:janitor`)
+
+```go
+func authReq(ctx context.Context, req any, info *UnaryServerInfo, handler UnaryHandler) (any, error) {
+    md, ok := metadata.FromIncomingContext(ctx)
+    if !ok {
+        return nil, status.Error(codes.Unauthenticated, "missing metadata")
+    }
+
+    authHeader := md.Get("authorization")
+    if len(authHeader) == 0 {
+        return nil, status.Error(codes.Unauthenticated, "missing authorization header")
+    }
+
+    token := strings.TrimPrefix(authHeader[0], "Bearer ")
+
+    tr := &authenticationv1.TokenReview{
+        Spec: authenticationv1.TokenReviewSpec{
+            Token: token,
+        },
+    }
+
+    result, err := s.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, tr, metav1.CreateOptions{})
+    if err != nil || !result.Status.Authenticated {
+        return nil, status.Error(codes.Unauthenticated, "invalid token")
+    }
+
+    if result.Status.User.Username != "system:serviceaccount:nvsentinel:janitor" {
+        return nil, status.Error(codes.PermissionDenied, "unauthorized service account")
+    }
+
+    return handler(ctx, req)
+}
+
+func main() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	grpcServer := grpc.NewServer(
+    grpc.UnaryInterceptor(authReq),
+  )
+	pb.RegisterCSPPluginServiceServer(grpcServer, &cspPluginServer{})
+
+	log.Printf("CSP Plugin Server listening on :50051")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
+}
+```
+
+**Benefits**:
+- No additional secrets or credentials to manage
+- Tokens automatically rotated by kubelet
+- Native Kubernetes RBAC integration
+- Plugins can enforce fine-grained access control based on service account identity
+
 ## Rationale
 
 ### Why gRPC?
