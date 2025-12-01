@@ -8,7 +8,7 @@
 #   - MongoDB 6Gi memory (validated from previous tests)
 #   - Platform Connector writes to MongoDB
 #   - Complete fault remediation pipeline enabled
-#   - ✨ NEW: MongoDB metrics enabled for Prometheus
+#   - MongoDB metrics enabled for Prometheus
 #
 # Date: November 24, 2025
 # Version: v0.4.0
@@ -37,11 +37,11 @@ global:
   healthEventsAnalyzer:
     enabled: false
   faultQuarantine:
-    enabled: true  # ✅ Enable for testing
+    enabled: true  # Enable for testing
   nodeDrainer:
-    enabled: true  # ✅ Enable for testing
+    enabled: true  # Enable for testing
   faultRemediation:
-    enabled: true  # ✅ Enable for fault remediation
+    enabled: true  # Enable for fault remediation
   janitor:
     enabled: false  # Not needed for initial testing
   cspHealthMonitor:
@@ -55,7 +55,7 @@ global:
   inclusterFileServer:
     enabled: false
   mongodbStore:
-    enabled: true  # ✅ Required for FQM
+    enabled: true  # Required for FQM
 
 platformConnector:
   image:
@@ -74,7 +74,7 @@ platformConnector:
     qps: 5.0
     burst: 10
   mongodbStore:
-    enabled: true  # ✅ CRITICAL: Required for platform connector to write to MongoDB
+    enabled: true  # CRITICAL: Required for platform connector to write to MongoDB
   nodeMetadata:
     enabled: false
 
@@ -97,7 +97,7 @@ mongodb-store:
     persistence:
       enabled: true
       size: 20Gi
-    # ✨ NEW: Enable MongoDB metrics for Prometheus
+    # Enable MongoDB metrics for Prometheus
     metrics:
       enabled: true
       serviceMonitor:

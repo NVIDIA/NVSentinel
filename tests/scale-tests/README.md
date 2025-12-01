@@ -92,9 +92,9 @@ See [results/](results/) for detailed test reports.
 **Objective:** Validate that NVSentinel does not negatively impact Kubernetes API server or overwhelm MongoDB
 
 **Test Scenarios (1500-node cluster):**
-- Light load: 30 events/sec (3.4× production peak)
-- Medium load: 100 events/sec (11× production peak)
-- Heavy load: 300 events/sec (34× production peak)
+- Light load: 30 events/sec (3-4× production peak)
+- Medium load: 100 events/sec (10-12× production peak)
+- Heavy load: 300 events/sec (30-35× production peak)
 
 **Note:** Event rates are configured for a 1500-node cluster. If your cluster has a different size, you'll need to adjust the `EVENT_RATE` in the ConfigMaps (`manifests/event-generator-config-*.yaml`) proportionally. For example, for a 750-node cluster, use half the event rate per node.
 
@@ -181,7 +181,7 @@ tests/scale-tests/
 
 Initial scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
 
-- **API Server:** Minimal latency impact with P75 stable at ~20ms even at 300 events/sec (34× production peak)
+- **API Server:** Minimal latency impact with P75 stable at ~20ms even at 300 events/sec (30-35× production peak)
 - **MongoDB:** Successfully handles sustained loads from 30-300 events/sec with default configuration
 
 Additional testing in progress.

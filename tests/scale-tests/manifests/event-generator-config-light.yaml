@@ -7,9 +7,8 @@ metadata:
     app: event-generator
     load-type: light
 data:
-  # Light Load: Conservative baseline for 1500 nodes (3.4× production peak)
-  # 0.02 events/sec/node = 1.2 events/minute/node
-  # For a 1500-node cluster: 30 events/sec total
+  # Light Load: Conservative baseline for 1500 nodes (3-4× production peak)
+  # For a 1500-node cluster: 0.02 events/sec/node = 30 events/sec total
   EVENT_RATE: "0.02"
   
   # Logging configuration
@@ -18,4 +17,3 @@ data:
   # Retry and stats configuration
   RETRY_ATTEMPTS: "3"
   STATS_INTERVAL: "100"
-

@@ -11,9 +11,11 @@
 
 | Test | Event Rate | Production Peak Multiplier |
 |------|-----------|----------------------------|
-| **Light** | 30 events/sec | 3.4× |
-| **Medium** | 100 events/sec | 11× |
-| **Heavy** | 300 events/sec | 34× |
+| **Light** | 30 events/sec | 3-4× peak |
+| **Medium** | 100 events/sec | 10-12× peak |
+| **Heavy** | 300 events/sec | 30-35× peak |
+
+*See [PRODUCTION_BASELINE.md](PRODUCTION_BASELINE.md) for production event rate analysis (peak: 8.85 events/sec)*
 
 ## Test Setup & Execution
 
@@ -95,9 +97,9 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 ## Conclusion
 
 NVSentinel on a 1500-node cluster shows minimal API server impact and MongoDB handles the load without issues:
-- **Light load (30 events/sec, 3.4× production peak):** No measurable latency impact
-- **Medium load (100 events/sec, 11× production peak):** Minimal latency impact (P75 stable at 20ms)
-- **Heavy load (300 events/sec, 34× production peak):** P75 latency remained stable at 19ms - excellent scalability
+- **Light load (30 events/sec, 3-4× production peak):** No measurable latency impact
+- **Medium load (100 events/sec, 10-12× production peak):** Minimal latency impact (P75 stable at 20ms)
+- **Heavy load (300 events/sec, 30-35× production peak):** P75 latency remained stable at 19ms - excellent scalability
 
 ---
 

@@ -7,15 +7,13 @@ metadata:
     app: event-generator
     load-type: medium
 data:
-  # Medium Load: Moderate stress test (11× production peak)
-  # 0.067 events/sec/node = 4.0 events/minute/node
-  # For a 1500-node cluster: 100 events/sec total
+  # Medium Load: Moderate stress test (10-12× production peak)
+  # For a 1500-node cluster: 0.067 events/sec/node = 100 events/sec total
   EVENT_RATE: "0.067"
   
   # Logging configuration
   LOG_LEVEL: "INFO"
   
   # Retry and stats configuration
-  RETRY_ATTEMPTS: "3"
-  STATS_INTERVAL: "100"
-
+  RETRY_ATTEMPTS: "5"
+  STATS_INTERVAL: "50"

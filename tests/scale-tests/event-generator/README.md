@@ -113,15 +113,15 @@ kill -USR1 <pid>
 **Change test loads by switching ConfigMaps:**
 
 ```bash
-# Light Load (30 events/sec @ 1500 nodes = 3.4× production peak)
+# Light Load (30 events/sec @ 1500 nodes = 3-4× production peak)
 kubectl apply -f ../manifests/event-generator-config-light.yaml
 kubectl apply -f ../manifests/event-generator-daemonset.yaml
 
-# Medium Load (100 events/sec @ 1500 nodes = 11× production peak)
+# Medium Load (100 events/sec @ 1500 nodes = 10-12× production peak)
 kubectl apply -f ../manifests/event-generator-config-medium.yaml
 kubectl apply -f ../manifests/event-generator-daemonset.yaml
 
-# Heavy Load (300 events/sec @ 1500 nodes = 34× production peak)
+# Heavy Load (300 events/sec @ 1500 nodes = 30-35× production peak)
 kubectl apply -f ../manifests/event-generator-config-heavy.yaml
 kubectl apply -f ../manifests/event-generator-daemonset.yaml
 ```
@@ -134,21 +134,21 @@ These examples assume a **1500-node cluster**. Adjust `EVENT_RATE` based on your
 ```yaml
 data:
   EVENT_RATE: "0.02"  # 1.2 events/min/node
-  # At 1500 nodes: 30 events/sec cluster-wide (3.4× production peak)
+  # At 1500 nodes: 30 events/sec cluster-wide (3-4× production peak)
 ```
 
 **Medium Load (Moderate stress):**
 ```yaml
 data:
   EVENT_RATE: "0.067"  # 4.0 events/min/node
-  # At 1500 nodes: 100 events/sec cluster-wide (11× production peak)
+  # At 1500 nodes: 100 events/sec cluster-wide (10-12× production peak)
 ```
 
 **Heavy Load (High stress):**
 ```yaml
 data:
   EVENT_RATE: "0.2"  # 12.0 events/min/node
-  # At 1500 nodes: 300 events/sec cluster-wide (34× production peak)
+  # At 1500 nodes: 300 events/sec cluster-wide (30-35× production peak)
 ```
 
 **For different cluster sizes:**

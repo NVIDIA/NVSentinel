@@ -28,21 +28,5 @@ In looking at the `mongodb_op_counters_total`, we identified these representativ
 
 **Note:** The amount of MongoDB/API server load is more closely correlated with health events happening on the cluster than the number of nodes directly. We include number of nodes to demonstrate this.
 
-## Recommended Scale Test Scenarios
-
-Based on production data, we plan to do scale testing of a 1500-node cluster at these event rates based on extrapolate from production data of smaller clusters:
-
-**MongoDB Event Rates:**
-
-| Test Scenario | Target Event Rate | Scale Factor | Description |
-|--------------|------------------|--------------|-------------|
-| **Light Load** | 30 events/sec | 3.4× peak | Conservative baseline for 1500 nodes |
-| **Medium Load** | 100 events/sec | 11× peak | Moderate stress test |
-| **Heavy Load** | 300 events/sec | 34× peak | High stress test |
----
-
-**Note:** API server impact will be measured in scale tests at production event rates. Production clusters do not consistently expose API server metrics, but NVSentinel's API operations (node condition updates, tainting, cordoning) will be validated on test clusters.
-
 *Data collected: October 2025*  
 *Analysis based on 7-day MongoDB operations monitoring*
-
