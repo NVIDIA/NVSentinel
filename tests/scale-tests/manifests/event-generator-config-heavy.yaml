@@ -7,9 +7,9 @@ metadata:
     app: event-generator
     load-type: heavy
 data:
-  # Heavy Load: High stress test (30-35× production peak)
-  # For a 1500-node cluster: 0.2 events/sec/node = 300 events/sec total
-  EVENT_RATE: "0.2"
+  # Heavy Load: Elevated sustained load test
+  # For a 1500-node cluster: 0.333 events/sec/node = 500 events/sec total
+  EVENT_RATE: "0.333"
   
   # Logging configuration
   LOG_LEVEL: "INFO"
