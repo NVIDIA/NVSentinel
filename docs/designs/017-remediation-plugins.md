@@ -1,4 +1,4 @@
-# ADR-013: Architecture — Remediation Plugins
+# ADR-017: Architecture — Remediation Plugins
 
 ## Context
 
