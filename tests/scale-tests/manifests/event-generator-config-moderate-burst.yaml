@@ -5,7 +5,7 @@ metadata:
   namespace: nvsentinel
   labels:
     app: event-generator
-    load-type: burst
+    load-type: moderate-burst
 data:
   # Moderate Burst Test: Mid-range production burst (1,500 events/sec)
   # For a 1500-node cluster: 1.0 events/sec/node = 1,500 events/sec total
