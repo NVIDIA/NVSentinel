@@ -17,12 +17,14 @@ package aws
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -74,8 +76,13 @@ func WithEC2Client(ctx context.Context) ClientOptionFunc {
 			return nil
 		}
 
+		httpClient := &http.Client{
+			Transport: auditlogger.NewAuditingRoundTripper(http.DefaultTransport),
+		}
+
 		cfg, err := config.LoadDefaultConfig(ctx,
 			config.WithRegion(os.Getenv("AWS_REGION")),
+			config.WithHTTPClient(httpClient),
 		)
 		if err != nil {
 			return fmt.Errorf("failed to load config for EC2 client: %w", err)

@@ -28,6 +28,7 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/mod v0.30.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
 
 require (

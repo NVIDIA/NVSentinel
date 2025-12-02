@@ -21,6 +21,15 @@ global:
   # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
   # This ensures proper configuration for both database backends
 
+  # Audit logging enabled for Tilt development
+  auditLogging:
+    enabled: true
+    logRequestBody: false
+    maxSizeMB: 100
+    maxBackups: 3
+    maxAgeDays: 7
+    compress: true
+
   nodeSelector: {}
   
   tolerations: 

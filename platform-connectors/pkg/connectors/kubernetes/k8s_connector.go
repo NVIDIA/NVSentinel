@@ -18,7 +18,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"k8s.io/client-go/kubernetes"
@@ -71,6 +73,10 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 
 	config.Burst = burst
 	config.QPS = qps
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {

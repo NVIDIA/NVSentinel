@@ -20,11 +20,13 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"text/template"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -92,6 +94,10 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 			return nil, nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
 		}
 	}
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientset, err := dynamic.NewForConfig(config)
 	if err != nil {

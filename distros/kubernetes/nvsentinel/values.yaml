@@ -35,6 +35,15 @@ global:
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
+  # Audit logging configuration
+  auditLogging:
+    enabled: false  # Enable/disable audit logging for all components
+    logRequestBody: false  # Log request body in audit logs (may contain sensitive data)
+    maxSizeMB: 100  # Maximum size of each audit log file in MB
+    maxBackups: 7  # Maximum number of rotated log files to keep
+    maxAgeDays: 30  # Maximum age of rotated log files in days
+    compress: true  # Compress rotated log files
+
   nodeSelector: {}
   tolerations: []
   affinity: {}

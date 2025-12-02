@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
@@ -41,9 +42,22 @@ func main() {
 	logger.SetDefaultStructuredLogger("fault-remediation", version)
 	slog.Info("Starting fault-remediation", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("fault-remediation"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
 	if err := run(); err != nil {
 		slog.Error("Application encountered a fatal error", "error", err)
+
+		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+			slog.Warn("Failed to close audit logger", "error", closeErr)
+		}
+
 		os.Exit(1)
+	}
+
+	if err := auditlogger.CloseAuditLogger(); err != nil {
+		slog.Warn("Failed to close audit logger", "error", err)
 	}
 }
 

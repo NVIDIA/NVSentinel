@@ -18,11 +18,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 
 	compute "cloud.google.com/go/compute/apiv1"
 	computepb "cloud.google.com/go/compute/apiv1/computepb"
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/option"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -45,6 +49,21 @@ func NewClient(ctx context.Context) (*Client, error) {
 	// GCP client initialization is deferred until first API call
 	// This allows validation to happen at construction time in the future
 	return &Client{}, nil
+}
+
+// getAuthenticatedHTTPClient creates an authenticated HTTP client using ADC
+// and wraps it with audit logging for CSP API calls.
+func getAuthenticatedHTTPClient(ctx context.Context) (*http.Client, error) {
+	// Get an authenticated client using Application Default Credentials
+	client, err := google.DefaultClient(ctx, compute.DefaultAuthScopes()...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authenticated client: %w", err)
+	}
+
+	// Wrap the transport with audit logging
+	client.Transport = auditlogger.NewAuditingRoundTripper(client.Transport)
+
+	return client, nil
 }
 
 func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
@@ -89,7 +108,12 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	logger := log.FromContext(ctx)
 
-	instancesClient, err := compute.NewInstancesRESTClient(ctx)
+	httpClient, err := getAuthenticatedHTTPClient(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +149,12 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	logger := log.FromContext(ctx)
 
-	zoneOperationsClient, err := compute.NewZoneOperationsRESTClient(ctx)
+	httpClient, err := getAuthenticatedHTTPClient(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	zoneOperationsClient, err := compute.NewZoneOperationsRESTClient(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return false, err
 	}
@@ -164,7 +193,12 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
 	logger := log.FromContext(ctx)
 
-	instancesClient, err := compute.NewInstancesRESTClient(ctx)
+	httpClient, err := getAuthenticatedHTTPClient(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return "", err
 	}

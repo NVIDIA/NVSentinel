@@ -40,6 +40,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "labeler.fullname" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      initContainers:
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -72,9 +80,24 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+          {{- if .Values.global.auditLogging.enabled }}
+          volumeMounts:
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+          {{- end }}
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      volumes:
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+      {{- end }}
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

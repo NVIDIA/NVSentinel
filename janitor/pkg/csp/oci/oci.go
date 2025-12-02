@@ -17,9 +17,11 @@ package oci
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
@@ -73,6 +75,21 @@ func WithComputeClient() ClientOptionFunc {
 		computeClient, err := core.NewComputeClientWithConfigurationProvider(cfgProvider)
 		if err != nil {
 			return err
+		}
+
+		// Preserve OCI SDK's custom timeouts, TLS config, and other transport settings
+		// by wrapping only the transport, not replacing the entire client
+		if existingClient, ok := computeClient.HTTPClient.(*http.Client); ok && existingClient != nil {
+			existingTransport := existingClient.Transport
+			if existingTransport == nil {
+				existingTransport = http.DefaultTransport
+			}
+
+			existingClient.Transport = auditlogger.NewAuditingRoundTripper(existingTransport)
+		} else {
+			computeClient.HTTPClient = &http.Client{
+				Transport: auditlogger.NewAuditingRoundTripper(http.DefaultTransport),
+			}
 		}
 
 		c.compute = computeClient

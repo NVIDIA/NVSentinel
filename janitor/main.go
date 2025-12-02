@@ -40,6 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -65,6 +66,10 @@ func main() {
 	logger.SetDefaultStructuredLogger("janitor", version)
 	slog.Info("Starting janitor", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("janitor"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
 	// Bridge slog to logr for controller-runtime
 	// This ensures that controllers using log.FromContext(ctx) get slog
 	slogHandler := slog.Default().Handler()
@@ -73,7 +78,16 @@ func main() {
 
 	if err := run(); err != nil {
 		slog.Error("Application encountered a fatal error", "error", err)
+
+		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+			slog.Warn("Failed to close audit logger", "error", closeErr)
+		}
+
 		os.Exit(1)
+	}
+
+	if err := auditlogger.CloseAuditLogger(); err != nil {
+		slog.Warn("Failed to close audit logger", "error", err)
 	}
 }
 
@@ -265,7 +279,13 @@ func run() error {
 	}
 
 	// Setup controller manager
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// Get the Kubernetes config and wrap it with audit logging
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,

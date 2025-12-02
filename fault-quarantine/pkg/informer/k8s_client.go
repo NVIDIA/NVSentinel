@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
@@ -55,6 +57,10 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
