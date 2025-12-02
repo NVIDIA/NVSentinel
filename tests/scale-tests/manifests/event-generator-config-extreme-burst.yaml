@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: extreme-burst
+data:
+  # Extreme Burst Test: Catastrophic cluster-wide event (4,200 events/sec)
+  # For a 1500-node cluster: 2.8 events/sec/node = 4,200 events/sec total
+  EVENT_RATE: "2.8"
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+  
+  # Retry and stats configuration
+  RETRY_ATTEMPTS: "5"
+  STATS_INTERVAL: "30"
