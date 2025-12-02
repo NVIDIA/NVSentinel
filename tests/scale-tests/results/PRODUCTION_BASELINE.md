@@ -28,7 +28,7 @@ In looking at the `mongodb_op_counters_total`, we identified these representativ
 | Cluster E | 37 | Moderate activity | **307** | 5 |
 | Cluster F | 65 | Low activity | **160** | 8 |
 | Cluster G | 375 | Low activity | **67** | 9 |
-| 50+ other clusters | ~15-600 | Steady baseline | **0-1** | 0-1 |
+| 50+ other clusters | ~15-600 | Steady baseline | **0-10** | 0-10 |
 
 **Key Observations:**
 - **Peak vs Average:** Production clusters show significant differences between peak burst events and sustained average loads. Most clusters maintain low average event rates (5-239 events/sec) during normal operation, with occasional bursts reaching much higher peaks (67-2,033 events/sec). However, there are exceptions, such as Cluster B which shows sustained higher activity levels (373 events/sec average) showing ongoing health events.
