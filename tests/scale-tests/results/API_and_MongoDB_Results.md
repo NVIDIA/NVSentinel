@@ -92,12 +92,12 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 
 | Test | Request Rate | P50 Latency | P75 Latency | P95/P99 Latency |
 |------|-------------|-------------|-------------|-----------------|
-| **Baseline** (no load) | 240 req/s | 0.005 s (5 ms) | 0.02 s (20 ms) | ≥60s* |
-| **Light load** (30 events/sec) | 308 req/s | 0.006 s (6 ms) | 0.02 s (20 ms) | ≥60s* |
-| **Medium load** (100 events/sec) | 456 req/s | 0.010 s (10 ms) | 0.02 s (20 ms) | ≥60s* |
-| **Heavy load** (500 events/sec) | 1255 req/s | 0.014 s (14 ms) | 0.021 s (21 ms) | ≥60s* |
+| **Baseline** (no load) | 240 req/s | 5 ms | 20 ms | ≥60s* |
+| **Light load** (30 events/sec) | 308 req/s | 6 ms | 20 ms | ≥60s* |
+| **Medium load** (100 events/sec) | 456 req/s | 10 ms | 20 ms | ≥60s* |
+| **Heavy load** (500 events/sec) | 1255 req/s | 14 ms | 21 ms | ≥60s* |
 
-*P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
+\* _P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing._
 
 **Result:** 
 - **Light load:** Request rate +28%, latency stable - no measurable impact
@@ -170,13 +170,15 @@ This behavior validates MongoDB's suitability for production deployments where b
 
 | Test | Duration | P50 Latency | P75 Latency | P95/P99 Latency | System Status |
 |------|----------|-------------|-------------|-----------------|---------------|
-| **Moderate Burst** (1,500 events/sec) | 1 min | 0.014 s (14 ms) | 0.020 s (20 ms) | ≥60s* | ✅ Stable |
-| **Moderate Burst** (1,500 events/sec) | 3 min | 0.045 s (45 ms) | 0.093 s (93 ms) | ≥60s* | ✅ Stable |
-| **High Burst** (3,000 events/sec) | 1 min | 0.015 s (15 ms) | 0.022 s (22 ms) | ≥60s* | ✅ Stable |
-| **High Burst** (3,000 events/sec) | 3 min | 0.180 s (180 ms) | 0.350 s (350 ms) | ≥60s* | 🟡 Slower |
-| **Extreme Burst** (4,200 events/sec) | 1 min | 0.015 s (15 ms) | 0.022 s (22 ms) | ≥60s* | ✅ Stable |
-| **Extreme Burst** (4,200 events/sec) | 3 min | 0.250 s (250 ms) | 0.482 s (482 ms) | ≥60s* | ⚠️ Degraded |
+| **Moderate Burst** (1,500 events/sec) | 1 min | 14 ms | 20 ms | ≥60s* | ✅ Stable |
+| **Moderate Burst** (1,500 events/sec) | 3 min | 45 ms | 93 ms | ≥60s* | ✅ Stable |
+| **High Burst** (3,000 events/sec) | 1 min | 15 ms | 22 ms | ≥60s* | ✅ Stable |
+| **High Burst** (3,000 events/sec) | 3 min | 180 ms | 350 ms | ≥60s* | 🟡 Slower |
+| **Extreme Burst** (4,200 events/sec) | 1 min | 15 ms | 22 ms | ≥60s* | ✅ Stable |
+| **Extreme Burst** (4,200 events/sec) | 3 min | 250 ms | 482 ms | ≥60s* | ⚠️ Degraded |
 | **Extended Extreme Burst** (4,200 events/sec) | 5 min | - | - | - | 🔴 Test invalid (primary failover/MongoDB restart) |
+
+\* _P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing._
 
 #### MongoDB Performance During Burst Testing
 
@@ -200,16 +202,18 @@ This behavior validates MongoDB's suitability for production deployments where b
 
 ## Prometheus Queries
 
-Data collected using 5-minute rate windows:
+Data collected using appropriate rate windows for each test duration:
 
 ```promql
 # API Server Request Rate
+# Sustained tests (10-min): [5m] window
+# Burst tests (1-3 min): [1m] window or range queries
 sum(rate(apiserver_request_duration_seconds_count[5m]))
 
 # P50 Latency
 histogram_quantile(0.50, sum(rate(apiserver_request_duration_seconds_bucket[5m])) by (le))
 
-# P75 Latency
+# P75 Latency  
 histogram_quantile(0.75, sum(rate(apiserver_request_duration_seconds_bucket[5m])) by (le))
 
 # MongoDB Insert Operations (ops/min)
@@ -224,9 +228,6 @@ mongodb_ss_connections{pod="mongodb-0",conn_type="current"}
 
 ---
 
-## Previous Extreme Stress Testing
-
-In earlier testing, we validated MongoDB at **1,125 events/sec** to identify breaking points. At this extreme load, MongoDB required **6Gi memory per replica** to maintain stability. This scenario demonstrated that MongoDB can scale to handle significantly higher loads with appropriate resource allocation.
 
 ---
 

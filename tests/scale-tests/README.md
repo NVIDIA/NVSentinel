@@ -35,7 +35,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --wait
 ```
 
-**Note:** The values file enables MongoDB metrics for Prometheus with the required `release: prometheus` label.
+**Note:** The values file enables MongoDB metrics for Prometheus with the required `release: prometheus` label and includes 6Gi memory per MongoDB replica for burst scenario testing.
 
 ### Building Event Generator
 
@@ -92,15 +92,19 @@ See [results/](results/) for detailed test reports.
 **Objective:** Validate that NVSentinel does not negatively impact Kubernetes API server or overwhelm MongoDB
 
 **Test Scenarios (1500-node cluster):**
-- Light load: 30 events/sec (3-4× production peak)
-- Medium load: 100 events/sec (10-12× production peak)
-- Heavy load: 300 events/sec (30-35× production peak)
+
+**Sustained Load Testing:**
+- Light/Medium/Heavy loads: 30-500 events/sec (validates typical production operation)
+
+**Burst Testing:**
+- Moderate/High/Extreme bursts: 1,500-4,200 events/sec (1-minute duration based on production incident patterns - validates system limits during major incidents)
 
 **Note:** Event rates are configured for a 1500-node cluster. If your cluster has a different size, you'll need to adjust the `EVENT_RATE` in the ConfigMaps (`manifests/event-generator-config-*.yaml`) proportionally. For example, for a 750-node cluster, use half the event rate per node.
 
 **Key Findings:**
-- API server P75 latency stable at ~20ms across all loads
-- MongoDB successfully processed up to 300 events/sec with default configuration
+- API server P75 latency stable at ~20ms across sustained loads up to 500 events/sec
+- MongoDB successfully processed sustained loads up to 500 events/sec with default configuration
+- Additional burst testing validated system behavior under extreme loads to identify operational limits
 
 📊 **[Full Results](results/API_and_MongoDB_Results.md)**
 
@@ -181,8 +185,8 @@ tests/scale-tests/
 
 Initial scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
 
-- **API Server:** Minimal latency impact with P75 stable at ~20ms even at 300 events/sec (30-35× production peak)
-- **MongoDB:** Successfully handles sustained loads from 30-300 events/sec with default configuration
+- **API Server:** Minimal latency impact with P75 stable at ~20ms even at 500 events/sec sustained load
+- **MongoDB:** Successfully handles sustained loads from 30-500 events/sec with default configuration
 
 Additional testing in progress.
 
