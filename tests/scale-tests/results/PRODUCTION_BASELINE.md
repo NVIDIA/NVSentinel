@@ -9,11 +9,11 @@ We are using production data as a baseline for these scale tests.  For this expe
 
 ## Data Collection
 
-**Data Source:** Production Operations Grafana  
-**Metric:** `mongodb_op_counters_total` (1-minute rate)
-**Query:** `sum(rate(mongodb_op_counters_total{env="prod", type!="command"}[1m])) by (cluster, type)`
-**Time Period:** 1-month observation (peak 1-minute rates shown)
-**Clusters Analyzed:** 50+ production clusters across multiple regions and clouds
+* **Data Source:** Production Operations Grafana
+* **Metric:** `mongodb_op_counters_total` (1-minute rate)
+* **Query:** `sum(rate(mongodb_op_counters_total{env="prod", type!="command"}[1m])) by (cluster, type)`
+* **Time Period:** 1-month observation (peak 1-minute rates shown)
+* **Clusters Analyzed:** 50+ production clusters across multiple regions and clouds
 
 ### MongoDB Production Event Rates
 
@@ -32,7 +32,7 @@ In looking at the `mongodb_op_counters_total`, we identified these representativ
 
 **Key Observations:**
 - **Peak vs Average:** Production clusters show significant differences between peak burst events and sustained average loads. Most clusters maintain low average event rates (5-239 events/sec) during normal operation, with occasional bursts reaching much higher peaks (67-2,033 events/sec). However, there are exceptions, such as Cluster B which shows sustained higher activity levels (373 events/sec average) showing ongoing health events.
-- **Node Count vs Load:** The amount of MongoDB/API server load is more closely correlated with health events happening on the cluster than the number of nodes directly. 
+- **Node Count vs Load:** The amount of MongoDB/API server load is more closely correlated with health events happening on the cluster than the number of nodes directly.
 
 ### Production Incident Pattern Example
 
