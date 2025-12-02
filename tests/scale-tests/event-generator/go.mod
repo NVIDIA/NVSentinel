@@ -3,7 +3,7 @@ module github.com/nvidia/nvsentinel/tests/scale-tests/event-generator
 go 1.25
 
 require (
-	github.com/nvidia/nvsentinel/data-models v0.3.0
+	github.com/nvidia/nvsentinel/data-models v0.0.0
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.10
 )

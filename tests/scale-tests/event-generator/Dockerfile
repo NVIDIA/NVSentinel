@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM alpine:latest
+FROM public.ecr.aws/docker/library/alpine:latest
 
 RUN apk --no-cache add ca-certificates
 
