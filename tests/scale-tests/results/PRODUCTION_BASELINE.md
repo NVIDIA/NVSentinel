@@ -53,4 +53,4 @@ Real MongoDB event spikes during a production incident (Cluster A, 27 nodes):
 
 **Pattern Analysis:** Production bursts are typically 1-2 minutes in duration with immediate recovery periods between spikes. This spike-and-recovery pattern is characteristic of incident-driven load, contrasting with sustained high-load scenarios used in stress testing.
 
-*Analysis based on November 2025 (entire month) MongoDB operations monitoring*
+Analysis based on November 2025 (entire month) MongoDB operations monitoring

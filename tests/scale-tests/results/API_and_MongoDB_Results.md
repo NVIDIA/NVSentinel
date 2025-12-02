@@ -97,7 +97,7 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 | **Medium load** (100 events/sec) | 456 req/s | 10 ms | 20 ms | ≥60s* |
 | **Heavy load** (500 events/sec) | 1255 req/s | 14 ms | 21 ms | ≥60s* |
 
-\* _P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing._
+\* *P95 and P99 are capped at the histogram bucket limit of 60s*, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
 
 **Result:** 
 - **Light load:** Request rate +28%, latency stable - no measurable impact
@@ -178,7 +178,7 @@ This behavior validates MongoDB's suitability for production deployments where b
 | **Extreme Burst** (4,200 events/sec) | 3 min | 250 ms | 482 ms | ≥60s* | ⚠️ Degraded |
 | **Extended Extreme Burst** (4,200 events/sec) | 5 min | - | - | - | 🔴 Test invalid (primary failover/MongoDB restart) |
 
-\* _P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing._
+\* *P95 and P99 are capped at the histogram bucket limit of 60s*, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
 
 #### MongoDB Performance During Burst Testing
 
