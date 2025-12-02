@@ -129,7 +129,8 @@ func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bo
 		return nil, false, fmt.Errorf("failed to load datastore config: %w", err)
 	}
 
-	pipeline := client.BuildAllHealthEventInsertsPipeline()
+	builder := client.GetPipelineBuilder()
+	pipeline := builder.BuildAllHealthEventInsertsPipeline()
 
 	bundle, err := helper.NewDatastoreClientFromConfig(ctx, "event-exporter", *datastoreConfig, pipeline)
 	if err != nil {
@@ -160,8 +161,11 @@ func checkResumeTokenExists(ctx context.Context) (bool, error) {
 		"collection", tokenConfig.TokenCollection,
 		"clientName", tokenConfig.ClientName)
 
+	// Use dynamic cert mount path based on provider (PostgreSQL or MongoDB)
+	certMountPath := storeconfig.GetCertMountPath()
+
 	dbConfig, err := storeconfig.NewDatabaseConfigForCollectionType(
-		storeconfig.DefaultCertMountPath,
+		certMountPath,
 		storeconfig.CollectionTypeTokens,
 	)
 	if err != nil {

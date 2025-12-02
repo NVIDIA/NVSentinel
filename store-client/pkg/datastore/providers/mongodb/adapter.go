@@ -138,6 +138,17 @@ func (a *AdaptedMongoStore) Provider() datastore.DataStoreProvider {
 	return datastore.ProviderMongoDB
 }
 
+// GetDatabaseClient returns the underlying database client for MongoDB-specific operations
+// This is used by services that need MongoDB-specific functionality like aggregation pipelines
+func (a *AdaptedMongoStore) GetDatabaseClient() client.DatabaseClient {
+	return a.databaseClient
+}
+
+// GetCollectionClient returns the underlying collection client for MongoDB-specific operations
+func (a *AdaptedMongoStore) GetCollectionClient() client.CollectionClient {
+	return a.collectionClient
+}
+
 // CreateChangeStreamWatcher creates a change stream watcher
 func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clientName string,
 	pipeline interface{}) (datastore.ChangeStreamWatcher, error) {
@@ -154,6 +165,42 @@ func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clien
 
 	// Adapt the existing watcher to the new interface
 	return NewAdaptedChangeStreamWatcher(watcher), nil
+}
+
+// NewChangeStreamWatcher creates a new change stream watcher for the MongoDB datastore
+// This method makes MongoDB compatible with the datastore abstraction layer using a config map
+func (a *AdaptedMongoStore) NewChangeStreamWatcher(
+	ctx context.Context, config interface{},
+) (datastore.ChangeStreamWatcher, error) {
+	// Convert the generic config to MongoDB-specific parameters
+	var clientName string
+
+	var pipeline interface{}
+
+	// Handle different config types that might be passed
+
+	switch c := config.(type) {
+	case map[string]interface{}:
+		// Support generic config format from factory
+		if clientNameVal, ok := c["ClientName"].(string); ok {
+			clientName = clientNameVal
+		}
+
+		// Pipeline is optional for MongoDB
+		if pipelineVal, ok := c["Pipeline"]; ok {
+			pipeline = pipelineVal
+		}
+	default:
+		return nil, fmt.Errorf("unsupported config type: %T", config)
+	}
+
+	// Validate required parameters
+	if clientName == "" {
+		return nil, fmt.Errorf("ClientName is required")
+	}
+
+	// Use the existing CreateChangeStreamWatcher method
+	return a.CreateChangeStreamWatcher(ctx, clientName, pipeline)
 }
 
 // AdaptedChangeStreamWatcher adapts our existing change stream watcher to the new interface
@@ -214,4 +261,10 @@ func (a *AdaptedChangeStreamWatcher) MarkProcessed(ctx context.Context, token []
 // Close closes the watcher
 func (a *AdaptedChangeStreamWatcher) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
+}
+
+// Unwrap returns the underlying client.ChangeStreamWatcher
+// This is needed for services that still use the old EventWatcher/EventProcessor
+func (a *AdaptedChangeStreamWatcher) Unwrap() client.ChangeStreamWatcher {
+	return a.watcher
 }

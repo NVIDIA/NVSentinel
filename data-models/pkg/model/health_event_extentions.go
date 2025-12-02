@@ -43,10 +43,11 @@ type OperationStatus struct {
 }
 
 type HealthEventStatus struct {
-	NodeQuarantined          *Status         `bson:"nodequarantined"`
-	UserPodsEvictionStatus   OperationStatus `bson:"userpodsevictionstatus"`
-	FaultRemediated          *bool           `bson:"faultremediated"`
-	LastRemediationTimestamp *time.Time      `bson:"lastremediationtimestamp,omitempty"`
+	NodeQuarantined        *Status         `bson:"nodequarantined" json:"nodequarantined,omitempty"`
+	UserPodsEvictionStatus OperationStatus `bson:"userpodsevictionstatus" json:"userpodsevictionstatus"`
+	FaultRemediated        *bool           `bson:"faultremediated" json:"faultremediated,omitempty"`
+	//nolint:lll // Long line due to struct tags for both bson and json serialization
+	LastRemediationTimestamp *time.Time `bson:"lastremediationtimestamp,omitempty" json:"lastremediationtimestamp,omitempty"`
 }
 
 type HealthEventWithStatus struct {

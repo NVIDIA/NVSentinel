@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -170,6 +171,9 @@ func (h *HealthEventTemplate) WriteToTempFile() (string, error) {
 }
 
 func SendHealthEventsToNodes(nodeNames []string, eventFilePath string) error {
+	log.Printf("[SendHealthEventsToNodes] Sending health events to %d nodes from file %s", len(nodeNames), eventFilePath)
+	log.Printf("[SendHealthEventsToNodes] Target nodes: %v", nodeNames)
+
 	eventData, err := os.ReadFile(eventFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to read health event file %s: %w", eventFilePath, err)

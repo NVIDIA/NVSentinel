@@ -18,6 +18,9 @@ import (
 	"context"
 	"fmt"
 
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -100,6 +103,9 @@ func (h *MongoHealthEventStore) FindHealthEventsByNode(ctx context.Context,
 		).WithMetadata("nodeName", nodeName)
 	}
 
+	// Normalize HealthEvent fields from bson.M to map[string]interface{}
+	normalizeHealthEvents(events)
+
 	return events, nil
 }
 
@@ -118,14 +124,54 @@ func (h *MongoHealthEventStore) FindHealthEventsByFilter(ctx context.Context,
 
 	var events []datastore.HealthEventWithStatus
 
-	err = cursor.All(ctx, &events)
-	if err != nil {
+	// Iterate manually to populate both the struct and RawEvent with _id
+	for cursor.Next(ctx) {
+		// First decode into a raw map to preserve _id
+		var rawDoc map[string]interface{}
+		if err := cursor.Decode(&rawDoc); err != nil {
+			return nil, datastore.NewQueryError(
+				datastore.ProviderMongoDB,
+				"failed to decode raw document",
+				err,
+			).WithMetadata("filter", filter)
+		}
+
+		// Then use bson to convert the raw map into our struct
+		var event datastore.HealthEventWithStatus
+
+		bsonBytes, err := bson.Marshal(rawDoc)
+		if err != nil {
+			return nil, datastore.NewQueryError(
+				datastore.ProviderMongoDB,
+				"failed to marshal raw document to BSON",
+				err,
+			).WithMetadata("filter", filter)
+		}
+
+		if err := bson.Unmarshal(bsonBytes, &event); err != nil {
+			return nil, datastore.NewQueryError(
+				datastore.ProviderMongoDB,
+				"failed to unmarshal BSON to health event",
+				err,
+			).WithMetadata("filter", filter)
+		}
+
+		// Store the raw document (with _id) in RawEvent
+		event.RawEvent = rawDoc
+
+		events = append(events, event)
+	}
+
+	if err := cursor.Err(); err != nil {
 		return nil, datastore.NewQueryError(
 			datastore.ProviderMongoDB,
-			"failed to decode health events by filter",
+			"cursor error while iterating health events",
 			err,
 		).WithMetadata("filter", filter)
 	}
+
+	// Normalize HealthEvent fields from bson.M to map[string]interface{}
+	normalizeHealthEvents(events)
 
 	return events, nil
 }
@@ -161,6 +207,9 @@ func (h *MongoHealthEventStore) FindHealthEventsByStatus(ctx context.Context,
 			err,
 		).WithMetadata("status", string(status))
 	}
+
+	// Normalize HealthEvent fields from bson.M to map[string]interface{}
+	normalizeHealthEvents(events)
 
 	return events, nil
 }
@@ -246,4 +295,115 @@ func (h *MongoHealthEventStore) FindLatestEventForNode(
 	}
 
 	return &event, nil
+}
+
+// FindHealthEventsByQuery finds health events using query builder
+// MongoDB: converts builder to map and uses existing FindHealthEventsByFilter
+func (h *MongoHealthEventStore) FindHealthEventsByQuery(ctx context.Context,
+	builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	// Convert query builder to MongoDB filter
+	filter := builder.ToMongo()
+
+	// Use existing implementation
+	return h.FindHealthEventsByFilter(ctx, filter)
+}
+
+// UpdateHealthEventsByQuery updates health events using query builder
+// MongoDB: converts builders to maps and uses existing UpdateMany
+func (h *MongoHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context,
+	queryBuilder datastore.QueryBuilder, updateBuilder datastore.UpdateBuilder) error {
+	// Convert query builder to MongoDB filter
+	filter := queryBuilder.ToMongo()
+
+	// Convert update builder to MongoDB update document
+	update := updateBuilder.ToMongo()
+
+	// Use MongoDB UpdateManyDocuments
+	_, err := h.databaseClient.UpdateManyDocuments(ctx, filter, update)
+	if err != nil {
+		return datastore.NewUpdateError(
+			datastore.ProviderMongoDB,
+			"failed to update health events by query",
+			err,
+		)
+	}
+
+	return nil
+}
+
+// normalizeHealthEvents converts bson.M types to map[string]interface{} in HealthEvent fields
+// This ensures consistency across database providers (MongoDB-specific types -> generic maps)
+func normalizeHealthEvents(events []datastore.HealthEventWithStatus) {
+	for i := range events {
+		if events[i].HealthEvent != nil {
+			events[i].HealthEvent = normalizeValue(events[i].HealthEvent)
+		}
+	}
+}
+
+// normalizeValue recursively converts MongoDB types (bson.M, primitive.D, primitive.A, etc.) to standard Go types
+func normalizeValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case primitive.D:
+		return normalizePrimitiveD(val)
+	case primitive.A:
+		return normalizeArray(val)
+	case map[string]interface{}:
+		return normalizeMap(val)
+	case []interface{}:
+		return normalizeArray(val)
+	default:
+		// Primitive types, return as-is
+		return val
+	}
+}
+
+// normalizePrimitiveD converts primitive.D to map[string]interface{} and normalizes nested values
+func normalizePrimitiveD(val primitive.D) interface{} {
+	bsonBytes, err := bson.Marshal(val)
+	if err != nil {
+		return val // Return as-is if marshal fails
+	}
+
+	var m map[string]interface{}
+	if err := bson.Unmarshal(bsonBytes, &m); err != nil {
+		return val // Return as-is if unmarshal fails
+	}
+
+	return normalizeMap(m)
+}
+
+// normalizeMap recursively normalizes all values in a map
+func normalizeMap(m map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		result[k] = normalizeValue(v)
+	}
+
+	return result
+}
+
+// normalizeArray recursively normalizes all elements in an array
+func normalizeArray(arr interface{}) []interface{} {
+	var length int
+
+	var getValue func(int) interface{}
+
+	switch v := arr.(type) {
+	case primitive.A:
+		length = len(v)
+		getValue = func(i int) interface{} { return v[i] }
+	case []interface{}:
+		length = len(v)
+		getValue = func(i int) interface{} { return v[i] }
+	default:
+		return nil
+	}
+
+	result := make([]interface{}, length)
+	for i := 0; i < length; i++ {
+		result[i] = normalizeValue(getValue(i))
+	}
+
+	return result
 }

@@ -17,6 +17,5 @@ package providers
 // Import all providers to ensure they are registered
 import (
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb"
-	// Additional providers can be added here
-	// _ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/postgresql"
+	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/postgresql"
 )

@@ -325,7 +325,7 @@ involvedObject:
   kind: Node
   name: gpu-node-01
 reason: Warning
-message: "[DCGM_FR_CLOCK_THROTTLE_THERMAL] GPU thermal throttling detected - RecommendedAction: IGNORE"
+message: "[DCGM_FR_CLOCK_THROTTLE_THERMAL] GPU thermal throttling detected - RecommendedAction: NONE"
 type: GpuThermalWatch
 source:
   component: gpu-health-monitor
@@ -743,7 +743,6 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 | `RESTART_VM`      | Software-recoverable error      | Node reboot via janitor                     |
 | `COMPONENT_RESET` | Hardware reset required         | GPU/driver reset                            |
 | `CONTACT_SUPPORT` | Manual intervention needed      | Create support ticket, manual investigation |
-| `IGNORE`          | Informational, no action needed | Log for awareness                           |
 | `NONE`            | Health check informational      | No action required                          |
 
 ### Example Mappings
@@ -754,7 +753,7 @@ NVSentinel maps DCGM error codes to recommended actions using a canonical CSV fi
 | `DCGM_FR_VOLATILE_DBE_DETECTED`     | `COMPONENT_RESET`  | `GpuMemoryError`       |
 | `DCGM_FR_NVLINK_DOWN`               | `RESTART_VM`       | `NVLinkDown`           |
 | `DCGM_FR_NVSWITCH_FATAL_ERROR`      | `CONTACT_SUPPORT`  | `NVSwitchFatalError`   |
-| `DCGM_FR_CLOCK_THROTTLE_THERMAL`    | `IGNORE`           | `GpuThermalWatch`      |
+| `DCGM_FR_CLOCK_THROTTLE_THERMAL`    | `NONE`             | `GpuThermalWatch`      |
 | `DCGM_FR_SXID_ERROR`                | `RESTART_VM`       | `GpuXidError`          |
 
 Full mapping contains 121 error codes. See CSV file for complete reference.
@@ -817,7 +816,7 @@ status:
     - type: GpuThermalWatch
       status: "True"
       reason: "ThermalThrottling"
-      message: "[DCGM_FR_CLOCK_THROTTLE_THERMAL] GPU thermal throttling detected - RecommendedAction: IGNORE"
+      message: "[DCGM_FR_CLOCK_THROTTLE_THERMAL] GPU thermal throttling detected - RecommendedAction: NONE"
       lastTransitionTime: "2025-11-06T10:02:00Z"
 ```
 

@@ -147,16 +147,7 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	pciAddr := m[1]
 
-	var recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
-	if errRes, found := p.errorResolutionMap[xidCode]; found {
-		recommendedAction = errRes.RecommendedAction
-		slog.Info("Found action for XID code",
-			"xidCode", xidCode,
-			"action", recommendedAction.String())
-	} else {
-		slog.Info("No action found for XID code, defaulting to CONTACT_SUPPORT",
-			"xidCode", xidCode)
-	}
+	recommendedAction := p.getRecommendedActionForXid(xidCode, message)
 
 	xidDetails := XIDDetails{
 		DecodedXIDStr: fmt.Sprintf("%d", xidCode),
@@ -173,6 +164,47 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 		Result:  xidDetails,
 		Error:   "",
 	}, nil
+}
+
+func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.RecommendedAction {
+	var recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
+	if errRes, found := p.errorResolutionMap[xidCode]; found {
+		recommendedAction = errRes.RecommendedAction
+		slog.Info("Found action for XID code",
+			"xidCode", xidCode,
+			"action", recommendedAction.String())
+	} else {
+		slog.Info("No action found for XID code, defaulting to CONTACT_SUPPORT",
+			"xidCode", xidCode)
+	}
+
+	if xidCode == 154 {
+		// format is NVRM: Xid (PCI:0008:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x1 (GPU Reset Required)
+		lastOpenParan := strings.LastIndex(message, "(")
+		lastCloseParan := strings.LastIndex(message, ")")
+
+		if lastOpenParan != -1 && lastCloseParan != -1 {
+			// recommendations should be "GPU Reset Required", i.e., the string inside the last ()
+			recommendation := message[lastOpenParan+1 : lastCloseParan]
+
+			slog.Debug("recommendation from log", "recommendation", recommendation)
+
+			switch recommendation {
+			case "GPU Reset Required", "Drain and Reset":
+				recommendedAction = pb.RecommendedAction_COMPONENT_RESET
+			case "Node Reboot Required":
+				recommendedAction = pb.RecommendedAction_RESTART_BM
+			case "None":
+				recommendedAction = pb.RecommendedAction_NONE
+			default:
+				recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
+			}
+		} else {
+			slog.Warn("xid 154 did not have expected format", "msg", message)
+		}
+	}
+
+	return recommendedAction
 }
 
 func (p *CSVParser) matchesNVL5Rule(rule common.NVL5DecodingRule, intrInfo int64, errorStatusStr string) bool {

@@ -145,6 +145,14 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 	return nil, nil
 }
 
+func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	return nil, nil
+}
+
+func (m *MockHealthEventStore) UpdateHealthEventsByQuery(ctx context.Context, queryBuilder datastore.QueryBuilder, updateBuilder datastore.UpdateBuilder) error {
+	return nil
+}
+
 var (
 	testClient     *kubernetes.Clientset
 	testDynamic    dynamic.Interface

@@ -16,6 +16,6 @@
 custom_build(
     'ghcr.io/nvidia/nvsentinel/fault-remediation',
     '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
-    deps=['./'],
+    deps=['./', '../store-client'],
     skips_local_docker=True
 )

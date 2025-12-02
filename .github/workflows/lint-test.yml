@@ -67,6 +67,9 @@ jobs:
           - component: helm-charts
             make_command: 'make helm-lint'
             step_name: 'Validate Helm charts'
+          - component: postgres-schema
+            make_command: 'make validate-postgres-schema'
+            step_name: 'Validate PostgreSQL schema consistency'
           - component: scripts
             make_command: 'make -C scripts lint'
             step_name: 'Run shellcheck on scripts'

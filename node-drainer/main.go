@@ -24,13 +24,14 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -196,6 +197,13 @@ func startMetricsServer(g *errgroup.Group, gCtx context.Context, srv server.Serv
 // startEventWatcher starts the event watcher goroutine
 func startEventWatcher(ctx context.Context, components *initializer.Components, criticalError chan<- error) {
 	go func() {
+		if components.EventWatcher == nil {
+			slog.Warn("No event watcher available")
+			<-ctx.Done()
+
+			return
+		}
+
 		// Start the change stream watcher
 		components.EventWatcher.Start(ctx)
 		slog.Info("Event watcher started, consuming events")
@@ -231,60 +239,69 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 	// 1. Events with StatusInProgress (actively being processed when we went down)
 	// 2. Events that are Quarantined but haven't started processing yet (status is empty or NotStarted)
 	// This handles cases where node-drainer was restarted after quarantine but before processing started
-	filter := map[string]interface{}{
-		"$or": []interface{}{
-			// Case 1: Events that were in-progress
-			map[string]interface{}{
-				"healtheventstatus.userpodsevictionstatus.status": string(model.StatusInProgress),
-			},
-			// Case 2: Quarantined events that haven't been processed yet
-			map[string]interface{}{
-				"healtheventstatus.nodequarantined": string(model.Quarantined),
-				"healtheventstatus.userpodsevictionstatus.status": map[string]interface{}{
-					"$in": []interface{}{"", string(model.StatusNotStarted)},
-				},
-			},
-			// Case 3: AlreadyQuarantined events that haven't been processed yet
-			map[string]interface{}{
-				"healtheventstatus.nodequarantined": string(model.AlreadyQuarantined),
-				"healtheventstatus.userpodsevictionstatus.status": map[string]interface{}{
-					"$in": []interface{}{"", string(model.StatusNotStarted)},
-				},
-			},
-		},
-	}
 
-	// Use Find to get all events requiring processing
-	cursor, err := components.DatabaseClient.Find(ctx, filter, nil)
+	// Build database-agnostic query using query builder
+	q := query.New().Build(
+		query.Or(
+			// Case 1: Events that were in-progress
+			query.Eq("healtheventstatus.userpodsevictionstatus.status", string(model.StatusInProgress)),
+
+			// Case 2: Quarantined events that haven't been processed yet
+			query.And(
+				query.Eq("healtheventstatus.nodequarantined", string(model.Quarantined)),
+				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			),
+
+			// Case 3: AlreadyQuarantined events that haven't been processed yet
+			query.And(
+				query.Eq("healtheventstatus.nodequarantined", string(model.AlreadyQuarantined)),
+				query.In("healtheventstatus.userpodsevictionstatus.status", []interface{}{"", string(model.StatusNotStarted)}),
+			),
+		),
+	)
+
+	// Get health event store (database-agnostic)
+	healthStore := components.DataStore.HealthEventStore()
+
+	// Execute query (works with both MongoDB and PostgreSQL)
+	healthEvents, err := healthStore.FindHealthEventsByQuery(ctx, q)
 	if err != nil {
 		return fmt.Errorf("failed to query events for cold start: %w", err)
 	}
-	defer cursor.Close(ctx)
 
-	var events []datastore.Event
-	if err := cursor.All(ctx, &events); err != nil {
-		return fmt.Errorf("failed to decode events for cold start: %w", err)
-	}
-
-	slog.Info("Found events to re-process", "count", len(events))
+	slog.Info("Found events to re-process", "count", len(healthEvents))
 
 	// Re-process each event
-	for _, event := range events {
-		// Extract health event (datastore.Event is map[string]interface{})
-		healthEvent, ok := event["healthevent"].(datastore.Event)
-		if !ok {
-			slog.Error("Failed to extract healthevent from cold start event")
+	for _, he := range healthEvents {
+		// Use the RawEvent from the database query which includes _id
+		// This is critical for status updates to work properly
+		event := he.RawEvent
+		if len(event) == 0 {
+			slog.Error("RawEvent is empty, skipping cold start event")
 			continue
 		}
 
-		nodeName, ok := healthEvent["nodename"].(string)
-		if !ok {
-			slog.Error("Failed to extract node name from cold start event")
+		// Parse the event to extract node name
+		parsedEvent, err := eventutil.ParseHealthEventFromEvent(event)
+		if err != nil {
+			slog.Error("Failed to parse health event from cold start event", "error", err)
+			continue
+		}
+
+		if parsedEvent.HealthEvent == nil {
+			slog.Error("Health event is nil in cold start event")
+			continue
+		}
+
+		nodeName := parsedEvent.HealthEvent.GetNodeName()
+		if nodeName == "" {
+			slog.Error("Node name is empty in cold start event")
 			continue
 		}
 
 		// Create adapter to bridge interface differences
 		dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
+
 		if err := components.QueueManager.EnqueueEventGeneric(ctx, nodeName, event, dbAdapter); err != nil {
 			slog.Error("Failed to enqueue cold start event", "error", err, "nodeName", nodeName)
 		} else {
@@ -301,8 +318,10 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 func shutdownComponents(ctx context.Context, components *initializer.Components) error {
 	slog.Info("Shutting down node drainer")
 
-	if errStop := components.EventWatcher.Close(ctx); errStop != nil {
-		return fmt.Errorf("failed to close event watcher: %w", errStop)
+	if components.EventWatcher != nil {
+		if errStop := components.EventWatcher.Close(ctx); errStop != nil {
+			return fmt.Errorf("failed to close event watcher: %w", errStop)
+		}
 	}
 
 	components.QueueManager.Shutdown()

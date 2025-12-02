@@ -17,8 +17,8 @@ package parser
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,6 +132,16 @@ func TestCSVParser_Parse(t *testing.T) {
 			name:            "Malformed XID - invalid number",
 			message:         "NVRM: Xid (PCI:0000:66:00): abc, pid=2280636",
 			expectedSuccess: false,
+		},
+		{
+			name:              "XID 154",
+			message:           "NVRM: Xid (PCI:0008:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x1 (GPU Reset Required)",
+			expectedSuccess:   true,
+			expectedXIDCode:   154,
+			expectedPCIAddr:   "0008:01:00",
+			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
+			expectedMnemonic:  "XID 154",
+			expectedErrorCode: "154",
 		},
 	}
 

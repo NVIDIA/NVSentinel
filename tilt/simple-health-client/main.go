@@ -50,6 +50,9 @@ func main() {
 			return
 		}
 
+		log.Printf("[DEBUG] Received health event - Node: %s, CheckName: %s, Agent: %s, IsFatal: %v, RecommendedAction: %v",
+			healthEvent.NodeName, healthEvent.CheckName, healthEvent.Agent, healthEvent.IsFatal, healthEvent.RecommendedAction)
+
 		healthEvent.GeneratedTimestamp = timestamppb.Now()
 
 		conn, err := grpc.NewClient(
@@ -72,15 +75,19 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		log.Printf("Sending health event for node: %s", healthEvent.NodeName)
+		log.Printf("[DEBUG] Sending health event to platform-connector - Node: %s, CheckName: %s, RecommendedAction: %v",
+			healthEvent.NodeName, healthEvent.CheckName, healthEvent.RecommendedAction)
 
 		_, err = client.HealthEventOccurredV1(ctx, healthEvents)
 		if err != nil {
+			log.Printf("[ERROR] Failed to send health event: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to send health event: %v", err), http.StatusInternalServerError)
+
 			return
 		}
 
-		log.Printf("SUCCESS: Health event sent for node %s", healthEvent.NodeName)
+		log.Printf("[DEBUG] SUCCESS: Health event sent for node %s with CheckName: %s",
+			healthEvent.NodeName, healthEvent.CheckName)
 
 		w.Header().Set("Content-Type", "application/json")
 

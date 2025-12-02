@@ -74,11 +74,11 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict["DCGM_FR_UNRECOGNIZED"] = "CONTACT_SUPPORT"
         dcgm_errors_info_dict["DCGM_FR_PCI_REPLAY_RATE"] = "CONTACT_SUPPORT"
         dcgm_errors_info_dict["DCGM_FR_VOLATILE_DBE_DETECTED"] = "COMPONENT_RESET"
-        dcgm_errors_info_dict["DCGM_FR_VOLATILE_SBE_DETECTED"] = "IGNORE"
-        dcgm_errors_info_dict["DCGM_FR_PENDING_PAGE_RETIREMENTS"] = "IGNORE"
+        dcgm_errors_info_dict["DCGM_FR_VOLATILE_SBE_DETECTED"] = "NONE"
+        dcgm_errors_info_dict["DCGM_FR_PENDING_PAGE_RETIREMENTS"] = "NONE"
         dcgm_errors_info_dict["DCGM_FR_RETIRED_PAGES_LIMIT"] = "CONTECT_SUPPORT"
         dcgm_errors_info_dict["DCGM_FR_CORRUPT_INFOROM"] = "COMPONENT_RESET"
-        dcgm_errors_info_dict["DCGM_HEALTH_WATCH_INFOROM"] = "IGNORE"
+        dcgm_errors_info_dict["DCGM_HEALTH_WATCH_INFOROM"] = "NONE"
 
         dcgm_health_conditions_categorization_mapping_config = {}
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"

@@ -1,0 +1,59 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# MongoDB-specific values for Tilt development
+# This file is automatically included when USE_POSTGRESQL is not set
+# Example: Run `tilt up` (default uses MongoDB)
+
+global:
+  dryRun: false
+  kubeVersion: 1.31.0
+  clusterType: standalone  # Required for cert-manager MongoDB resources
+
+  # Keep legacy resource naming for Tilt compatibility
+  useLegacyResourceNames: true
+
+  # Configure MongoDB as the datastore provider
+  datastore:
+    provider: "mongodb"
+    connection:
+      # Use the headless service for replica set connection
+      host: "mongodb-headless.nvsentinel.svc.cluster.local"
+      port: 27017
+      database: "HealthEventsDatabase"
+      collection: "HealthEvents"
+      tokenCollection: "ResumeTokens"
+      # MongoDB-specific parameters for replica set and TLS
+      extraParams:
+        replicaSet: "rs0"
+        tls: "true"
+    options:
+      maxConnections: "25"
+      maxIdleConnections: "10"
+      connectionMaxLifetime: "1h"
+      pollInterval: "5s"
+
+  # Enable MongoDB store
+  mongodbStore:
+    enabled: true
+
+# Disable PostgreSQL subchart
+postgresql:
+  enabled: false
+
+# MongoDB subchart configuration
+mongodb-store:
+  mongodb:
+    enabled: true
+

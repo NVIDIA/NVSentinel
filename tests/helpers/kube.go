@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v2"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -40,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -50,6 +53,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
+	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 )
 
 const (
@@ -201,35 +205,50 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 						t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(labelValueSequence))
 					}
 				} else if actualValue != labelValueSequence[currentLabelIndex] && prevLabelValue != actualValue {
-					// If this is the first label we're seeing (currentLabelIndex == 0) and it doesn't match,
-					// we missed early labels due to race condition. Check if this label appears later in sequence.
-					if currentLabelIndex == 0 {
-						foundLaterInSequence := false
+					// Check if the actual label appears later in the sequence (skipped intermediate states)
+					// This can happen with fast state transitions, especially with PostgreSQL LISTEN/NOTIFY
+					foundLaterInSequence := false
+					skippedIndex := -1
 
-						for i := 1; i < len(labelValueSequence); i++ {
-							if actualValue == labelValueSequence[i] {
-								foundLaterInSequence = true
+					for i := currentLabelIndex + 1; i < len(labelValueSequence); i++ {
+						if actualValue == labelValueSequence[i] {
+							foundLaterInSequence = true
+							skippedIndex = i
 
-								t.Logf(
-									"[LabelWatcher] ✗ MISSED early labels: First label received is '%s' (expected index %d), "+
-										"but expected to start with '%s' (index 0)",
-									actualValue, i, labelValueSequence[0],
-								)
-
-								break
-							}
+							break
 						}
+					}
 
-						if !foundLaterInSequence {
-							t.Logf("[LabelWatcher] ✗ UNEXPECTED first label: got '%s', not in expected sequence at all", actualValue)
+					if foundLaterInSequence {
+						// We skipped intermediate states - log warning but continue
+						skippedLabels := labelValueSequence[currentLabelIndex:skippedIndex]
+						t.Logf(
+							"[LabelWatcher] ⚠ SKIPPED intermediate labels: %v (jumped from '%s' to '%s')",
+							skippedLabels, prevLabelValue, actualValue,
+						)
+						t.Logf("[LabelWatcher] ⚠ This is expected with fast state transitions (PostgreSQL LISTEN/NOTIFY)")
+
+						// Update state to the current label
+						prevLabelValue = actualValue
+						currentLabelIndex = skippedIndex + 1
+
+						if currentLabelIndex == len(labelValueSequence) {
+							t.Logf("[LabelWatcher] ✓ Reached final state despite skipped labels! Waiting for label removal...")
 						}
-
+					} else if currentLabelIndex == 0 {
+						// First label doesn't match and isn't in sequence - missed early labels
+						t.Logf(
+							"[LabelWatcher] ✗ MISSED early labels: First label received is '%s', "+
+								"but expected to start with '%s' (index 0)",
+							actualValue, labelValueSequence[0],
+						)
 						t.Logf("[LabelWatcher] Sending FAILURE to channel (missed early labels)")
 						sendNodeLabelResult(ctx, success, false)
 					} else {
-						// Not the first label, unexpected transition
+						// Completely unexpected transition (not in sequence at all)
 						t.Logf("[LabelWatcher] ✗ UNEXPECTED label transition: got '%s', expected '%s' (prev: '%s')",
 							actualValue, labelValueSequence[currentLabelIndex], prevLabelValue)
+						t.Logf("[LabelWatcher] ✗ Label '%s' is not in expected sequence", actualValue)
 						t.Logf("[LabelWatcher] Sending FAILURE to channel")
 						sendNodeLabelResult(ctx, success, false)
 					}
@@ -292,6 +311,38 @@ func WaitForNodesWithLabel(
 
 		return actualCount == targetCount
 	}, EventuallyWaitTimeout, WaitInterval, "all nodes should have label %s=%s", labelKey, expectedValue)
+}
+
+// WaitForNodeLabelNotEqual waits for a single node's label to NOT equal a specific value.
+// This is useful for waiting for state transitions when you don't know the final state.
+func WaitForNodeLabelNotEqual(
+	ctx context.Context, t *testing.T, c klient.Client, nodeName, labelKey, notExpectedValue string,
+) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		node, err := GetNodeByName(ctx, c, nodeName)
+		if err != nil {
+			t.Logf("failed to get node %s: %v", nodeName, err)
+			return false
+		}
+
+		actualValue, exists := node.Labels[labelKey]
+		if !exists {
+			t.Logf("Node %s: label %s does not exist", nodeName, labelKey)
+			return false
+		}
+
+		if actualValue != notExpectedValue {
+			t.Logf("Node %s: label %s=%s (not %s) ✓", nodeName, labelKey, actualValue, notExpectedValue)
+			return true
+		}
+
+		t.Logf("Node %s: label %s still equals %s (waiting for change)", nodeName, labelKey, actualValue)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"expected node %s label %s to not equal %s", nodeName, labelKey, notExpectedValue)
 }
 
 func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string, expectedEvent v1.Event) {
@@ -422,9 +473,10 @@ func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, n
 func WaitForRebootNodeCR(
 	ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 ) *unstructured.Unstructured {
+	t.Helper()
+
 	var resultCR *unstructured.Unstructured
 
-	t.Logf("Waiting for RebootNode CR to be created for node %s", nodeName)
 	require.Eventually(t, func() bool {
 		rebootNodeList, err := listAllRebootNodes(ctx, c)
 		if err != nil {
@@ -432,38 +484,34 @@ func WaitForRebootNodeCR(
 			return false
 		}
 
-		for _, item := range rebootNodeList.Items {
+		for i := range rebootNodeList.Items {
+			item := &rebootNodeList.Items[i]
+
 			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
-			if err != nil {
+			if err != nil || !found || nodeNameInCR != nodeName {
 				continue
 			}
 
-			if !found {
-				continue
+			// Found the CR for this node
+			completionTime, found, err := unstructured.NestedString(item.Object, "status", "completionTime")
+			if err != nil || !found || completionTime == "" {
+				t.Logf("RebootNode for node %s: waiting for completion", nodeName)
+
+				return false
 			}
 
-			if nodeNameInCR == nodeName {
-				completionTime, found, err := unstructured.NestedString(item.Object, "status", "completionTime")
-				if err != nil || !found || completionTime == "" {
-					t.Logf("RebootNode for node %s: waiting for completion", nodeName)
-					return false
-				}
+			t.Logf("RebootNode for node %s completed at %s", nodeName, completionTime)
 
-				t.Logf("RebootNode for node %s completed", nodeName)
+			resultCR = item
 
-				resultCR = &item
-
-				return true
-			}
+			return true
 		}
 
-		t.Logf("No RebootNode CR found for node %s", nodeName)
+		t.Logf("No RebootNode CR found for node %s yet", nodeName)
 
 		return false
 	}, EventuallyWaitTimeout, WaitInterval,
-		"RebootNode CR should complete for node %s", nodeName)
-
-	t.Logf("RebootNode CR created for node %s", nodeName)
+		"RebootNode CR should be created and complete for node %s", nodeName)
 
 	return resultCR
 }
@@ -513,6 +561,29 @@ func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
 	return nodeNames, nil
 }
 
+// GetRealNodeName returns a real (non-KWOK) worker node name from the cluster.
+// Prefers schedulable workers, falls back to unschedulable workers if needed.
+func GetRealNodeName(ctx context.Context, c klient.Client) (string, error) {
+	var nodeList v1.NodeList
+
+	err := c.Resources().List(ctx, &nodeList,
+		resources.WithLabelSelector("type!=kwok,!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/agent"))
+	if err != nil {
+		return "", fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	if len(nodeList.Items) == 0 {
+		return "", fmt.Errorf("no real worker nodes found in cluster")
+	}
+
+	for _, node := range nodeList.Items {
+		if !node.Spec.Unschedulable {
+			return node.Name, nil
+		}
+	}
+
+	return nodeList.Items[0].Name, nil
+}
 func CreatePodsAndWaitTillRunning(
 	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, podTemplate *v1.Pod,
 ) {
@@ -1398,10 +1469,14 @@ func PortForwardPod(
 	return stopChan, readyChan
 }
 
-// WaitForNodeConditionWithCheckName waits for the node to have a condition with the reason as checkName.
+// WaitForNodeConditionWithCheckName waits for a node condition matching the given criteria.
+// Optional parameters (use empty string to skip): expectedMessage, expectedReason, expectedStatus.
 func WaitForNodeConditionWithCheckName(
-	ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName, message string,
+	ctx context.Context, t *testing.T, c klient.Client, nodeName, checkName, expectedMessage, expectedReason string,
+	expectedStatus v1.ConditionStatus,
 ) {
+	t.Helper()
+
 	require.Eventually(t, func() bool {
 		node, err := GetNodeByName(ctx, c, nodeName)
 		if err != nil {
@@ -1410,23 +1485,124 @@ func WaitForNodeConditionWithCheckName(
 		}
 
 		for _, condition := range node.Status.Conditions {
-			if condition.Status == v1.ConditionTrue &&
-				condition.Reason == checkName+"IsNotHealthy" {
-				t.Logf("Checking if message matches: expected message=%s, actual message=%s", message, condition.Message)
-
-				if message == condition.Message {
-					t.Logf("Found node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
-						condition.Type, condition.Reason, condition.Status, condition.Message)
-
-					return true
-				}
+			if string(condition.Type) != checkName {
+				continue
 			}
+
+			// Check message if specified
+			if expectedMessage != "" && !containsAllExpectedParts(condition.Message, expectedMessage) {
+				t.Logf("Checking if message matches: expected=%s, actual=%s", expectedMessage, condition.Message)
+				continue
+			}
+
+			// Check reason if specified
+			if expectedReason != "" && condition.Reason != expectedReason {
+				continue
+			}
+
+			// Check status if specified
+			if expectedStatus != "" && condition.Status != expectedStatus {
+				continue
+			}
+
+			t.Logf("Found matching node condition: Type=%s, Reason=%s, Status=%s, Message=%s",
+				condition.Type, condition.Reason, condition.Status, condition.Message)
+
+			return true
 		}
 
-		t.Logf("Node %s does not have a condition with check name '%s'", nodeName, checkName)
+		t.Logf("Node %s does not have matching condition for check name '%s'", nodeName, checkName)
 
 		return false
 	}, EventuallyWaitTimeout, WaitInterval, "node %s should have a condition with check name %s", nodeName, checkName)
+}
+
+// containsAllExpectedParts checks if all semicolon-separated parts of expected are in actual.
+// This allows for flexible matching where the expected error codes don't need to be contiguous.
+func containsAllExpectedParts(actual, expected string) bool {
+	// Split expected message by semicolon
+	parts := strings.Split(expected, ";")
+	matchCount := 0
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		if !strings.Contains(actual, part) {
+			return false
+		}
+
+		matchCount++
+	}
+
+	// Ensure at least one part matched
+	return matchCount > 0
+}
+
+// SetNodeConditionStatus sets a node condition to a specific status for testing purposes.
+func SetNodeConditionStatus(
+	ctx context.Context,
+	t *testing.T,
+	client klient.Client,
+	nodeName string,
+	conditionType v1.NodeConditionType,
+	status v1.ConditionStatus,
+) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			node, err := GetNodeByName(ctx, client, nodeName)
+			if err != nil {
+				return err
+			}
+
+			found := false
+			modified := false
+
+			for i := range node.Status.Conditions {
+				if node.Status.Conditions[i].Type == conditionType {
+					found = true
+
+					if node.Status.Conditions[i].Status != status {
+						node.Status.Conditions[i].Status = status
+						node.Status.Conditions[i].LastTransitionTime = metav1.Now()
+						node.Status.Conditions[i].LastHeartbeatTime = metav1.Now()
+						modified = true
+					}
+
+					break
+				}
+			}
+
+			if !found {
+				now := metav1.Now()
+				node.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
+					Type:               conditionType,
+					Status:             status,
+					LastTransitionTime: now,
+					LastHeartbeatTime:  now,
+					Reason:             "TestCondition",
+					Message:            "Set by test",
+				})
+				modified = true
+			}
+
+			if !modified {
+				return nil
+			}
+
+			return client.Resources().UpdateStatus(ctx, node)
+		})
+		if err != nil {
+			t.Logf("Failed to update node status: %v", err)
+			return false
+		}
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval)
 }
 
 // EnsureNodeConditionNotPresent ensures that the node does NOT have a condition with the reason as checkName.
@@ -1577,65 +1753,269 @@ func VerifyEventsMatchPatterns(t *testing.T, ctx context.Context,
 	return true
 }
 
-func SetNodeConditionStatus(
-	ctx context.Context,
-	t *testing.T,
-	client klient.Client,
-	nodeName string,
-	conditionType v1.NodeConditionType,
-	status v1.ConditionStatus,
+// ApplyKwokStageFromFile applies a KWOK Stage YAML for testing (e.g., failure injection).
+// If nodeName is provided, replaces NODE_NAME_PLACEHOLDER in the YAML with the actual node name.
+func ApplyKwokStageFromFile(
+	ctx context.Context, t *testing.T, c klient.Client, stageFilePath string, nodeName ...string,
 ) {
 	t.Helper()
 
-	require.Eventually(t, func() bool {
-		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			node, err := GetNodeByName(ctx, client, nodeName)
-			if err != nil {
-				return err
-			}
+	content, err := os.ReadFile(stageFilePath)
+	require.NoError(t, err, "failed to read KWOK stage file: %s", stageFilePath)
 
-			found := false
-			modified := false
+	stageYAML := string(content)
+	if len(nodeName) > 0 && nodeName[0] != "" {
+		stageYAML = strings.ReplaceAll(stageYAML, "NODE_NAME_PLACEHOLDER", nodeName[0])
+		t.Logf("Applying KWOK stage from %s (node: %s)", stageFilePath, nodeName[0])
+	} else {
+		t.Logf("Applying KWOK stage from %s", stageFilePath)
+	}
 
-			for i := range node.Status.Conditions {
-				if node.Status.Conditions[i].Type == conditionType {
-					found = true
+	// Decode and create KWOK Stage using the test client's scheme which has KWOK types registered
+	decoder := serializer.NewCodecFactory(c.Resources().GetScheme()).UniversalDeserializer()
+	obj, _, err := decoder.Decode([]byte(stageYAML), nil, nil)
+	require.NoError(t, err, "failed to decode KWOK stage YAML")
 
-					if node.Status.Conditions[i].Status != status {
-						node.Status.Conditions[i].Status = status
-						node.Status.Conditions[i].LastTransitionTime = metav1.Now()
-						node.Status.Conditions[i].LastHeartbeatTime = metav1.Now()
-						modified = true
-					}
+	stage, ok := obj.(*kwokv1alpha1.Stage)
+	require.True(t, ok, "decoded object is not a KWOK Stage")
 
-					break
-				}
-			}
+	err = c.Resources().Create(ctx, stage)
+	require.NoError(t, err, "failed to create KWOK stage %s", stage.Name)
+}
 
-			if !found {
-				now := metav1.Now()
-				node.Status.Conditions = append(node.Status.Conditions, v1.NodeCondition{
-					Type:               conditionType,
-					Status:             status,
-					LastTransitionTime: now,
-					LastHeartbeatTime:  now,
-					Reason:             "TestCondition",
-					Message:            "Set by test",
-				})
-				modified = true
-			}
+// DeleteKwokStage removes a KWOK Stage by name (idempotent - won't fail if not found).
+func DeleteKwokStage(ctx context.Context, t *testing.T, c klient.Client, stageName string) {
+	t.Helper()
 
-			if !modified {
-				return nil
-			}
+	stage := &kwokv1alpha1.Stage{}
+	stage.SetName(stageName)
 
-			return client.Resources().UpdateStatus(ctx, node)
+	err := c.Resources().Delete(ctx, stage)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			t.Logf("KWOK stage %s already deleted", stageName)
+		} else {
+			t.Logf("Warning: failed to delete KWOK stage %s: %v", stageName, err)
+		}
+
+		return
+	}
+}
+
+// DeleteAllLogCollectorJobs deletes all log-collector jobs in the nvsentinel namespace.
+// This is useful for cleaning up leftover jobs from previous tests.
+func DeleteAllLogCollectorJobs(ctx context.Context, t *testing.T, c klient.Client) {
+	t.Helper()
+
+	var jobList batchv1.JobList
+
+	err := c.Resources(NVSentinelNamespace).List(ctx, &jobList, resources.WithLabelSelector("app=log-collector"))
+	if err != nil {
+		t.Logf("Warning: failed to list log-collector jobs: %v", err)
+		return
+	}
+
+	if len(jobList.Items) == 0 {
+		t.Logf("No log-collector jobs to clean up")
+		return
+	}
+
+	t.Logf("Deleting %d old log-collector job(s)", len(jobList.Items))
+
+	for _, job := range jobList.Items {
+		// Delete with PropagationPolicy=Background to also delete pods
+		deletePolicy := metav1.DeletePropagationBackground
+
+		err := c.Resources(NVSentinelNamespace).Delete(ctx, &job, func(do *metav1.DeleteOptions) {
+			do.PropagationPolicy = &deletePolicy
 		})
+		if err != nil && !apierrors.IsNotFound(err) {
+			t.Logf("Warning: failed to delete job %s: %v", job.Name, err)
+		}
+	}
+
+	// Wait for all jobs to be deleted
+	require.Eventually(t, func() bool {
+		var remainingJobs batchv1.JobList
+
+		err := c.Resources(NVSentinelNamespace).List(ctx, &remainingJobs, resources.WithLabelSelector("app=log-collector"))
 		if err != nil {
-			t.Logf("Failed to update node status: %v", err)
+			t.Logf("failed to list jobs: %v", err)
 			return false
 		}
 
-		return true
-	}, EventuallyWaitTimeout, WaitInterval)
+		return len(remainingJobs.Items) == 0
+	}, EventuallyWaitTimeout, WaitInterval, "log-collector jobs should be deleted")
+
+	t.Logf("Log-collector jobs cleanup completed")
+}
+
+// checkLogCollectorJobStatus checks if a job matches the expected status.
+// Returns (matched, shouldReturn) where matched indicates if status matches,
+// shouldReturn indicates if we should exit the wait loop.
+func checkLogCollectorJobStatus(
+	t *testing.T, job *batchv1.Job, nodeName, expectedStatus string,
+) (matched, shouldReturn bool) {
+	// Check for job completion conditions
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == batchv1.JobComplete && condition.Status == v1.ConditionTrue {
+			t.Logf("Log-collector job %s completed successfully on node %s", job.Name, nodeName)
+
+			return expectedStatus == "Complete", true
+		}
+
+		if condition.Type == batchv1.JobFailed && condition.Status == v1.ConditionTrue {
+			t.Logf("Log-collector job %s failed (exhausted retries) on node %s", job.Name, nodeName)
+
+			return expectedStatus == "Failed", true
+		}
+	}
+
+	// For "Failed" expectation, check if pods are failing (faster than waiting for retries)
+	if expectedStatus == "Failed" && job.Status.Failed > 0 {
+		t.Logf("Log-collector job %s has %d failed pod(s) on node %s - pods are failing as expected",
+			job.Name, job.Status.Failed, nodeName)
+
+		return true, true
+	}
+
+	t.Logf("Log-collector job %s on node %s: active=%d, succeeded=%d, failed=%d (waiting for %s)",
+		job.Name, nodeName, job.Status.Active, job.Status.Succeeded, job.Status.Failed, expectedStatus)
+
+	return false, false
+}
+
+// WaitForLogCollectorJobStatus waits for a log-collector job to reach the specified status.
+// For "Failed" status, checks if pods are in Error state (no wait for job retry exhaustion).
+func WaitForLogCollectorJobStatus(
+	ctx context.Context, t *testing.T, c klient.Client, nodeName, expectedStatus string,
+) *batchv1.Job {
+	t.Helper()
+
+	var foundJob *batchv1.Job
+
+	require.Eventually(t, func() bool {
+		var jobList batchv1.JobList
+
+		err := c.Resources(NVSentinelNamespace).List(ctx, &jobList, resources.WithLabelSelector("app=log-collector"))
+		if err != nil {
+			t.Logf("failed to list log-collector jobs: %v", err)
+			return false
+		}
+
+		for i := range jobList.Items {
+			job := &jobList.Items[i]
+			if job.Spec.Template.Spec.NodeName != nodeName {
+				continue
+			}
+
+			matched, shouldReturn := checkLogCollectorJobStatus(t, job, nodeName, expectedStatus)
+			if shouldReturn {
+				if matched {
+					foundJob = job
+				}
+
+				return matched
+			}
+		}
+
+		t.Logf("No log-collector job found for node %s yet", nodeName)
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"log-collector job for node %s should reach status %s", nodeName, expectedStatus)
+
+	return foundJob
+}
+
+// VerifyNodeLabelNotEqual verifies that a node's label is NOT equal to the specified value.
+func VerifyNodeLabelNotEqual(
+	ctx context.Context, t *testing.T, c klient.Client, nodeName, labelKey, notExpectedValue string,
+) {
+	t.Helper()
+
+	node, err := GetNodeByName(ctx, c, nodeName)
+	require.NoError(t, err, "failed to get node %s", nodeName)
+
+	actualValue, exists := node.Labels[labelKey]
+	if !exists {
+		t.Logf("Node %s does not have label %s (expected it to NOT be %s)", nodeName, labelKey, notExpectedValue)
+		return
+	}
+
+	require.NotEqual(t, notExpectedValue, actualValue,
+		"Node %s label %s should NOT be %s", nodeName, labelKey, notExpectedValue)
+
+	t.Logf("Node %s label %s=%s (not %s as expected)", nodeName, labelKey, actualValue, notExpectedValue)
+}
+
+// VerifyLogFilesUploaded verifies that the log-collector job uploaded files to the file server.
+// It checks if files exist by querying the NGINX autoindex endpoint via HTTP port-forward.
+func VerifyLogFilesUploaded(ctx context.Context, t *testing.T, c klient.Client, job *batchv1.Job) {
+	t.Helper()
+
+	require.NotNil(t, job, "job cannot be nil")
+	nodeName := job.Spec.Template.Spec.NodeName
+
+	// Find running file server pod
+	var podList v1.PodList
+
+	err := c.Resources("nvsentinel").List(ctx, &podList,
+		resources.WithLabelSelector("app.kubernetes.io/name=incluster-file-server"))
+	require.NoError(t, err, "failed to list file server pods")
+
+	var fileServerPod *v1.Pod
+
+	for i := range podList.Items {
+		if podList.Items[i].Status.Phase == v1.PodRunning {
+			fileServerPod = &podList.Items[i]
+			break
+		}
+	}
+
+	require.NotNil(t, fileServerPod, "no running file server pod found")
+
+	// Setup port-forward
+	localPort := 18080
+	stopChan, readyChan := PortForwardPod(
+		ctx, c.RESTConfig(), fileServerPod.Namespace, fileServerPod.Name, localPort, 8080)
+	<-readyChan
+
+	defer close(stopChan)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Helper to fetch directory listing
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	fetchListing := func(path string) string {
+		req, err := http.NewRequestWithContext(
+			ctx, http.MethodGet, fmt.Sprintf("http://localhost:%d%s", localPort, path), nil)
+		require.NoError(t, err, "failed to create request")
+
+		resp, err := httpClient.Do(req)
+		require.NoError(t, err, "failed to fetch %s", path)
+
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		return string(body)
+	}
+
+	// Get timestamp directory
+	listing := fetchListing(fmt.Sprintf("/upload/%s/", nodeName))
+	timestampRegex := regexp.MustCompile(`<a href="(\d{8}-\d{6})/`)
+	matches := timestampRegex.FindStringSubmatch(listing)
+	require.NotEmpty(t, matches, "no upload directories found for node %s", nodeName)
+
+	// Check files in timestamp directory
+	filesListing := fetchListing(fmt.Sprintf("/upload/%s/%s/", nodeName, matches[1]))
+	require.Contains(t, filesListing, fmt.Sprintf("nvidia-bug-report-%s-", nodeName),
+		"no nvidia-bug-report files found")
+	require.Contains(t, filesListing, ".log.gz", "no .log.gz files found")
+
+	t.Logf("✓ Log files verified for node %s", nodeName)
 }

@@ -25,12 +25,12 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 ```bash
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v0.4.0 \
+  --version v0.4.1 \
   --namespace nvsentinel \
   --create-namespace
 
 # View chart information
-helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.4.0
+helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.4.1
 ```
 
 ## ✨ Key Features
@@ -75,7 +75,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v0.4.0
+NVSENTINEL_VERSION=v0.4.1
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
@@ -91,7 +91,7 @@ kubectl get pods -n nvsentinel
 kubectl get nodes  # Verify GPU nodes are visible
 
 # Run comprehensive validation
-./scripts/validate-nvsentinel.sh --version v0.4.0 --verbose
+./scripts/validate-nvsentinel.sh --version v0.4.1 --verbose
 ```
 
 > **Testing**: The example above uses default settings. For production, customize values for your environment.
@@ -253,20 +253,24 @@ For detailed module configuration, see the **[Helm Chart Configuration Guide](di
 
 ### 🔍 Health Monitors
 
-- **GPU Health Monitor**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
-- **Syslog Health Monitor**: Analyzes system logs for hardware and software fault patterns via journalctl
+- **[GPU Health Monitor](docs/gpu-health-monitor.md)**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
+- **[Syslog Health Monitor](docs/syslog-health-monitor.md)**: Analyzes system logs for hardware and software fault patterns via journalctl
 - **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
+- **[Kubernetes Object Monitor](docs/kubernetes-object-monitor.md)**: Policy-based monitoring for any Kubernetes resource using CEL expressions
 
 ### 🏗️ Core Modules
 
-- **Platform Connectors**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
-- **Fault Quarantine**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
-- **Node Drainer**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
-- **Fault Remediation**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
+- **[Platform Connectors](docs/platform-connectors.md)**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
+- **[Fault Quarantine](docs/fault-quarantine.md)**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
+- **[Node Drainer](docs/node-drainer.md)**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
+- **[Fault Remediation](docs/fault-remediation.md)**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
 - **Janitor**: Executes node reboots and terminations via cloud provider APIs
 - **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
+- **[Event Exporter](docs/event-exporter.md)**: Streams health events to external systems in CloudEvents format
 - **MongoDB Store**: Persistent storage for health events with real-time change streams
-- **Labeler**: Automatically labels nodes with DCGM and driver versions
+- **[Labeler](docs/labeler.md)**: Automatically labels nodes with DCGM and driver versions for self-configuration
+- **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
+- **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
 
 ## 📋 Requirements
 

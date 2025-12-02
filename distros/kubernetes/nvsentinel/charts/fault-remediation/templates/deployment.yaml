@@ -36,10 +36,43 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "fault-remediation.fullname" . }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      initContainers:
+        - name: fix-cert-permissions
+          image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
+          imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying PostgreSQL client certificates with correct permissions..."
+              cp /etc/ssl/client-certs-original/tls.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/ca.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/tls.key /etc/ssl/client-certs-fixed/
+              chmod 644 /etc/ssl/client-certs-fixed/tls.crt
+              chmod 644 /etc/ssl/client-certs-fixed/ca.crt
+              chmod 600 /etc/ssl/client-certs-fixed/tls.key
+              echo "Certificate permissions fixed:"
+              ls -la /etc/ssl/client-certs-fixed/
+          volumeMounts:
+            - name: postgresql-client-cert-original
+              mountPath: /etc/ssl/client-certs-original
+              readOnly: true
+            - name: client-certs-fixed
+              mountPath: /etc/ssl/client-certs-fixed
+      {{- end }}
       containers:
         - name: fault-remediation
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          securityContext:
+            runAsUser: 1001
+            runAsGroup: 1001
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           args:
@@ -65,9 +98,15 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           volumeMounts:
-          - name: mongo-app-client-cert
-            mountPath: /etc/ssl/mongo-client
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - name: client-certs-fixed
+            mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          {{- else }}
+          - name: mongo-app-client-cert
+            mountPath: {{ .Values.clientCertMountPath }}
+            readOnly: true
+          {{- end }}
           - name: config-volume
             mountPath: /etc/config
           env:
@@ -75,25 +114,37 @@ spec:
             value: "{{ .Values.logLevel }}"
           - name: LOG_COLLECTOR_MANIFEST_PATH
             value: /etc/config/log-collector-job.yaml
+          - name: LOG_COLLECTOR_TIMEOUT
+            value: "{{ .Values.logCollector.timeout | default "10m" }}"
           - name: ENABLE_GCP_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableGcpSosCollection }}"
           - name: ENABLE_AWS_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableAwsSosCollection }}"
-          - name: MONGODB_CLIENT_CERT_PATH
-            value: "/etc/ssl/mongo-client/tls.crt"
-          - name: MONGODB_CLIENT_KEY_PATH
-            value: "/etc/ssl/mongo-client/tls.key"
-          - name: MONGODB_CA_CERT_PATH
-            value: "/etc/ssl/mongo-client/ca.crt"
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
+            value: {{ .Values.clientCertMountPath }}
+          {{- else }}
+          - name: MONGODB_CLIENT_CERT_MOUNT_PATH
+            value: {{ .Values.clientCertMountPath }}
+          {{- end }}
           envFrom:
             - configMapRef:
-                name: mongodb-config
+                name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
       volumes:
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      - name: postgresql-client-cert-original
+        secret:
+          secretName: postgresql-client-cert
+          optional: false
+      - name: client-certs-fixed
+        emptyDir: {}
+      {{- else }}
       - name: mongo-app-client-cert
         secret:
           secretName: mongo-app-client-cert-secret
           optional: true
+      {{- end }}
       - name: config-volume
         configMap:
           name: {{ include "fault-remediation.fullname" . }}

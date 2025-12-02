@@ -22,6 +22,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 
 	"k8s.io/client-go/util/workqueue"
 )
@@ -56,11 +57,16 @@ func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context,
 	default:
 	}
 
+	eventID := utils.ExtractEventID(event)
+
 	nodeEvent := NodeEvent{
 		NodeName: nodeName,
+		EventID:  eventID,
 		Event:    &event,
 		Database: database,
 	}
+
+	slog.Debug("Enqueueing event", "nodeName", nodeName, "eventID", eventID)
 
 	m.queue.Add(nodeEvent)
 	metrics.QueueDepth.Set(float64(m.queue.Len()))

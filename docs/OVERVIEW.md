@@ -110,7 +110,7 @@ NVSentinel is open source and easy to deploy:
 
 1. **Install** (one command, takes ~5 minutes):
    ```bash
-   helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v0.4.0
+   helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v0.4.1
    ```
 
 2. **Configure** (choose what actions to enable):

@@ -101,6 +101,7 @@ func NewDatastoreClient(ctx context.Context, config DatastoreClientConfig) (*Dat
 
 	// Create change stream watcher if pipeline is provided
 	// CRITICAL: Pass the SAME database client to avoid creating duplicate clients with different channels!
+	// PostgreSQL uses polling-based change detection via datastore_changelog table
 	if config.Pipeline != nil {
 		changeStreamWatcher, err := clientFactory.CreateChangeStreamWatcher(
 			ctx, databaseClient, config.ModuleName, config.Pipeline)
@@ -151,10 +152,25 @@ func createStandardizedFactory(config DatastoreClientConfig) (*factory.ClientFac
 	}
 
 	// Method 3: Check environment variable for cert path
-	if envCertPath := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH"); envCertPath != "" {
+	// For PostgreSQL, check POSTGRESQL_CLIENT_CERT_MOUNT_PATH
+	// For MongoDB, check MONGODB_CLIENT_CERT_MOUNT_PATH
+	provider := os.Getenv("DATASTORE_PROVIDER")
+
+	var envCertPath string
+	if provider == "postgresql" {
+		envCertPath = os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH")
+	}
+
+	if envCertPath == "" {
+		// Fallback to MongoDB env var for backward compatibility
+		envCertPath = os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH")
+	}
+
+	if envCertPath != "" {
 		slog.Debug("Using environment config with cert path from env var",
 			"module", config.ModuleName,
-			"certPath", envCertPath)
+			"certPath", envCertPath,
+			"provider", provider)
 
 		return factory.NewClientFactoryFromEnvWithCertPath(envCertPath)
 	}

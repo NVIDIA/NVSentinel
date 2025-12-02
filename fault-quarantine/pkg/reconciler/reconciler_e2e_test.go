@@ -18,13 +18,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"crypto/rand"
+	"math/big"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -44,7 +49,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"math/big"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -106,6 +110,11 @@ func (e *TestEvent) GetDocumentID() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("document ID not found")
+}
+
+func (e *TestEvent) GetRecordUUID() (string, error) {
+	// For test events, return the same as document ID
+	return e.GetDocumentID()
 }
 
 func (e *TestEvent) GetNodeName() (string, error) {
@@ -3259,6 +3268,124 @@ func TestE2E_UnhealthyEventOnQuarantinedNodeNoRuleMatch(t *testing.T) {
 	assert.True(t, node.Spec.Unschedulable, "Node should remain quarantined")
 }
 
+func TestE2E_ForceQuarantineOnAlreadyQuarantinedNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
+	defer cancel()
+
+	nodeName := "e2e-force-q-node-" + generateShortTestID()
+
+	// Create node already quarantined with an existing event
+	existingEvent := &protos.HealthEvent{
+		NodeName:       nodeName,
+		Agent:          "gpu-health-monitor",
+		CheckName:      "GpuXidError",
+		ComponentClass: "GPU",
+		Version:        1,
+		IsHealthy:      false,
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	existingMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	existingMap.AddOrUpdateEvent(existingEvent)
+	existingBytes, err := json.Marshal(existingMap)
+	require.NoError(t, err)
+
+	annotations := map[string]string{
+		common.QuarantineHealthEventAnnotationKey:           string(existingBytes),
+		common.QuarantineHealthEventIsCordonedAnnotationKey: "True",
+	}
+
+	createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, true)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	// Configure rules that won't match the new event
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-only",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError'"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	t.Log("Send unhealthy event with force=true for different check (doesn't match rules)")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID1,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "dgxcops",
+				"componentclass": "NODE",
+				"checkname":      "ManualReboot",
+				"version":        uint32(1),
+				"ishealthy":      false,
+				"message":        "Force quarantine for maintenance",
+				"entitiesimpacted": []interface{}{
+					datastore.Event{
+						"entitytype":  "node",
+						"entityvalue": nodeName,
+					},
+				},
+				"quarantineoverrides": datastore.Event{
+					"force": true,
+				},
+			},
+		},
+	}}
+
+	t.Log("Verify status is AlreadyQuarantined (force=true bypasses rule matching)")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID1)
+		return status != nil && *status == model.AlreadyQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be AlreadyQuarantined with force override on already-quarantined node")
+
+	t.Log("Verify annotation is updated with the new event (despite not matching rules)")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+
+		annotationStr := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+		if annotationStr == "" {
+			return false
+		}
+
+		var annotationMap healthEventsAnnotation.HealthEventsAnnotationMap
+		if err := json.Unmarshal([]byte(annotationStr), &annotationMap); err != nil {
+			return false
+		}
+
+		// Should now have 2 events: original GpuXidError + new ManualReboot
+		return annotationMap.Count() == 2
+	}, eventuallyTimeout, eventuallyPollInterval, "Annotation should be updated with force=true event")
+
+	t.Log("Verify node remains quarantined")
+	node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, node.Spec.Unschedulable, "Node should remain quarantined")
+}
+
 func TestE2E_DryRunMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(e2eTestContext, 20*time.Second)
 	defer cancel()
@@ -3858,4 +3985,350 @@ func TestE2E_ManualUncordonMultipleEvents(t *testing.T) {
 		}
 		return node.Annotations[common.QuarantineHealthEventAnnotationKey] == ""
 	}, eventuallyTimeout, eventuallyPollInterval, "Quarantine annotation should be cleared")
+}
+
+// delayedWatchRoundTripper intercepts HTTP requests made by the Kubernetes client.
+//
+// Kubernetes informers maintain a local cache by establishing a persistent "watch" connection
+// to the API server (HTTP requests with ?watch=true in the URL). The server streams updates
+// through this connection, and the informer updates its cache when it reads each event.
+//
+// By wrapping the HTTP transport, we can selectively delay reads from watch connections,
+// simulating real-world scenarios where the informer cache lags behind the API server due to
+// network latency or API server load. Non-watch requests (GET, POST, PATCH, DELETE) are
+// unaffected, so direct API operations remain instant while cache sync is artificially slowed.
+type delayedWatchRoundTripper struct {
+	delegate   http.RoundTripper
+	watchDelay time.Duration
+	enabled    bool
+	cancelCh   chan struct{}
+	mu         sync.RWMutex
+}
+
+// SetEnabled toggles the delay mechanism. When disabling, it closes cancelCh to immediately
+// unblock any in-flight Read() calls that are waiting on the delay. This is essential for
+// graceful shutdown - without it, the informer's watch connection would hang for up to 500ms
+// during each read, causing envtest to timeout waiting for connections to close.
+func (d *delayedWatchRoundTripper) SetEnabled(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.enabled = enabled
+	if !enabled && d.cancelCh != nil {
+		close(d.cancelCh)
+		d.cancelCh = nil
+	} else if enabled && d.cancelCh == nil {
+		d.cancelCh = make(chan struct{})
+	}
+}
+
+func (d *delayedWatchRoundTripper) getCancelCh() <-chan struct{} {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cancelCh
+}
+
+func (d *delayedWatchRoundTripper) IsEnabled() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.enabled
+}
+
+// RoundTrip implements http.RoundTripper. It forwards all requests to the delegate, but for
+// watch requests (identified by ?watch=true), it wraps the response body to inject delays.
+// This distinction is key: informers use watch for cache sync, while direct API calls (Get,
+// Patch, etc.) don't have this parameter - so we only slow down cache updates, not operations.
+func (d *delayedWatchRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := d.delegate.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	if d.IsEnabled() && strings.Contains(req.URL.RawQuery, "watch=true") {
+		resp.Body = &delayedReadCloser{
+			reader:   resp.Body,
+			delay:    d.watchDelay,
+			cancelCh: d.getCancelCh,
+		}
+	}
+
+	return resp, err
+}
+
+// delayedReadCloser wraps the HTTP response body for watch connections. Kubernetes watch
+// responses are chunked streams - the informer repeatedly calls Read() to receive events.
+// By delaying each Read(), we delay when the informer sees updates, creating stale cache.
+type delayedReadCloser struct {
+	reader   io.ReadCloser
+	delay    time.Duration
+	cancelCh func() <-chan struct{}
+}
+
+// Read delays before reading the next chunk from the watch stream. The select allows immediate
+// cancellation when SetEnabled(false) is called - closing the channel unblocks all waiters.
+func (d *delayedReadCloser) Read(p []byte) (int, error) {
+	if ch := d.cancelCh(); ch != nil {
+		select {
+		case <-ch:
+			// Cancelled - skip delay
+		case <-time.After(d.delay):
+			// Delay completed
+		}
+	}
+	return d.reader.Read(p)
+}
+
+func (d *delayedReadCloser) Close() error {
+	return d.reader.Close()
+}
+
+// TestE2E_ConcurrentHealthyEvents_WithDelayedInformer verifies that the reconciler correctly
+// uncordons a node when multiple health checks recover simultaneously, even when the informer
+// cache is stale.
+//
+// SCENARIO:
+// A node has two different failing health checks. Both checks recover at the same time,
+// generating two healthy events that are processed concurrently. Each event:
+//   - Reads the node state from the informer cache
+//   - Removes its own check from the annotation
+//   - Decides whether to uncordon based on remaining checks
+//
+// CHALLENGE:
+// When both events read the cache before either update propagates back, they both see
+// stale data showing "the other check is still failing." The reconciler must handle this
+// correctly and ensure the node is uncordoned when all checks have actually recovered.
+//
+// TEST STRATEGY:
+// We inject a 500ms delay into the informer's watch connection, simulating real-world
+// cache lag due to network latency or API server load. The delay is toggled:
+//   - DISABLED during setup: allows normal operation to quarantine the node
+//   - ENABLED during trigger: forces concurrent events to see stale cache
+func TestE2E_ConcurrentHealthyEvents_WithDelayedInformer(t *testing.T) {
+	// This test requires its own envtest instance with a custom transport wrapper
+	testEnv := &envtest.Environment{}
+	restConfig, err := testEnv.Start()
+	require.NoError(t, err, "Failed to start test environment")
+
+	// Start with delay DISABLED - we need normal operation during setup phase
+	delayedRT := &delayedWatchRoundTripper{
+		watchDelay: 500 * time.Millisecond,
+		enabled:    false,
+	}
+
+	stopCh := make(chan struct{})
+
+	// Shutdown order matters: disable delay first (unblocks any pending reads), then stop
+	// informer (closes watch connection), then stop envtest (can now shut down cleanly)
+	defer func() {
+		delayedRT.SetEnabled(false)
+		close(stopCh)
+		if err := testEnv.Stop(); err != nil {
+			t.Logf("Warning: Failed to stop test environment: %v", err)
+		}
+	}()
+
+	// Wrap the transport to delay only watch requests (informer cache sync)
+	// Regular GET/POST/PUT/DELETE requests are unaffected
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		delayedRT.delegate = rt
+		return delayedRT
+	})
+
+	k8sClient, err := kubernetes.NewForConfig(restConfig)
+	require.NoError(t, err, "Failed to create k8s client")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nodeName := "concurrent-recovery-" + generateShortTestID()
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Spec:       corev1.NodeSpec{Unschedulable: false},
+		Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+	}
+	_, err = k8sClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	require.NoError(t, err, "Failed to create test node")
+	defer func() {
+		_ = k8sClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{{
+			Name:     "gpu-fatal-errors",
+			Version:  "1",
+			Priority: 10,
+			Match:    config.Match{Any: []config.Rule{{Kind: "HealthEvent", Expression: "event.isFatal == true"}}},
+			Taint:    config.Taint{Key: "nvidia.com/gpu-error", Value: "true", Effect: "NoSchedule"},
+			Cordon:   config.Cordon{ShouldCordon: true},
+		}},
+	}
+
+	// Resync period of 0 disables periodic re-listing. The informer only updates via watch
+	// events, not by periodically fetching all nodes. This ensures cache staleness is controlled
+	// solely by our delayed watch transport.
+	nodeInformer, err := informer.NewNodeInformer(k8sClient, 0)
+	require.NoError(t, err)
+
+	fqClient := &informer.FaultQuarantineClient{
+		Clientset:    k8sClient,
+		DryRunMode:   false,
+		NodeInformer: nodeInformer,
+	}
+
+	go func() { _ = nodeInformer.Run(stopCh) }()
+
+	require.Eventually(t, nodeInformer.HasSynced, 10*time.Second, 100*time.Millisecond, "NodeInformer should sync")
+
+	ruleSetEvals, err := evaluator.InitializeRuleSetEvaluators(tomlConfig.RuleSets, fqClient.NodeInformer)
+	require.NoError(t, err)
+
+	r := NewReconciler(ReconcilerConfig{TomlConfig: tomlConfig}, fqClient, nil)
+	r.SetLabelKeys(tomlConfig.LabelPrefix)
+	fqClient.SetLabelKeys(r.cordonedReasonLabelKey, r.uncordonedReasonLabelKey)
+
+	rulesetsConfig := rulesetsConfig{
+		TaintConfigMap:     make(map[string]*config.Taint),
+		CordonConfigMap:    make(map[string]bool),
+		RuleSetPriorityMap: make(map[string]int),
+	}
+	for _, rs := range tomlConfig.RuleSets {
+		if rs.Taint.Key != "" {
+			rulesetsConfig.TaintConfigMap[rs.Name] = &rs.Taint
+		}
+		if rs.Cordon.ShouldCordon {
+			rulesetsConfig.CordonConfigMap[rs.Name] = true
+		}
+		if rs.Priority > 0 {
+			rulesetsConfig.RuleSetPriorityMap[rs.Name] = rs.Priority
+		}
+	}
+
+	r.precomputeTaintInitKeys(ruleSetEvals, rulesetsConfig)
+	fqClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+
+	mockWatcher := testutils.NewMockChangeStreamWatcher()
+	t.Cleanup(func() { close(mockWatcher.EventsChan) })
+
+	go func() {
+		for event := range mockWatcher.Events() {
+			var healthEventWithStatus model.HealthEventWithStatus
+			if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
+				continue
+			}
+			r.ProcessEvent(ctx, &healthEventWithStatus, ruleSetEvals, rulesetsConfig)
+		}
+	}()
+
+	// === SETUP: Quarantine node with TWO different checks ===
+	t.Log("Setup: Quarantining node with two checks")
+
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		generateTestID(), nodeName, "GpuInforomWatch", false, true,
+		[]*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		return n.Spec.Unschedulable
+	}, 10*time.Second, 100*time.Millisecond, "Node should be quarantined")
+
+	mockWatcher.EventsChan <- &TestEvent{Data: createHealthEventBSON(
+		generateTestID(), nodeName, "GpuDcgmConnectivityFailure", false, true,
+		[]*protos.Entity{}, model.StatusInProgress,
+	)}
+
+	require.Eventually(t, func() bool {
+		n, _ := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		var m healthEventsAnnotation.HealthEventsAnnotationMap
+		if err := json.Unmarshal([]byte(n.Annotations[common.QuarantineHealthEventAnnotationKey]), &m); err != nil {
+			return false
+		}
+		return m.Count() == 2
+	}, 10*time.Second, 100*time.Millisecond, "Both checks should be tracked")
+
+	// === TRIGGER: Process both healthy events CONCURRENTLY with delayed watch ===
+	t.Log("Trigger: Enabling watch delay and processing healthy events concurrently")
+
+	// From this point, every informer cache update is delayed by 500ms. Any K8s API update
+	// the reconciler makes won't be visible in the cache until well after both events finish.
+	delayedRT.SetEnabled(true)
+
+	// Recovery events for both checks - these will be processed simultaneously
+	eventA := &model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
+			CheckName: "GpuDcgmConnectivityFailure", IsHealthy: true, IsFatal: false,
+			EntitiesImpacted: []*protos.Entity{}, NodeName: nodeName,
+		},
+	}
+
+	eventB := &model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			Version: 1, Agent: "gpu-health-monitor", ComponentClass: "GPU",
+			CheckName: "GpuInforomWatch", IsHealthy: true, IsFatal: false,
+			EntitiesImpacted: []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}}, NodeName: nodeName,
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// startBarrier ensures both goroutines begin at exactly the same instant. Both block
+	// on receiving from this channel; closing the channel unblocks all receivers simultaneously.
+	// This maximizes overlap between the two ProcessEvent calls, guaranteeing they both read
+	// the cache before either has a chance to see the other's updates.
+	startBarrier := make(chan struct{})
+
+	go func() {
+		defer wg.Done()
+		<-startBarrier
+		r.ProcessEvent(ctx, eventA, ruleSetEvals, rulesetsConfig)
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-startBarrier
+		r.ProcessEvent(ctx, eventB, ruleSetEvals, rulesetsConfig)
+	}()
+
+	close(startBarrier)
+	wg.Wait()
+
+	// === VERIFY: Node should be fully recovered ===
+	delayedRT.SetEnabled(false)
+
+	// Read directly from API server (not cache) to get the true final state
+	finalNode, err := k8sClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	annotation := finalNode.Annotations[common.QuarantineHealthEventAnnotationKey]
+	isStillCordoned := finalNode.Spec.Unschedulable
+
+	t.Logf("Final state: annotation=%q, stillCordoned=%v", annotation, isStillCordoned)
+
+	// Verify annotation is empty - both events successfully removed their checks
+	var healthEventsMap healthEventsAnnotation.HealthEventsAnnotationMap
+	annotationIsEmpty := annotation == "" || annotation == "[]"
+	if !annotationIsEmpty && annotation != "" {
+		if err := json.Unmarshal([]byte(annotation), &healthEventsMap); err == nil {
+			annotationIsEmpty = healthEventsMap.IsEmpty()
+		}
+	}
+
+	require.True(t, annotationIsEmpty, "Annotation should be empty after both checks recovered, got: %s", annotation)
+
+	// With all checks recovered (empty annotation), node must be uncordoned
+	require.False(t, isStillCordoned,
+		"Node should be uncordoned when all health checks have recovered. "+
+			"The reconciler must correctly handle concurrent recovery events even with stale cache.")
+
+	require.Empty(t, finalNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey])
+
+	fqTaintCount := 0
+	for _, taint := range finalNode.Spec.Taints {
+		if taint.Key == "nvidia.com/gpu-error" {
+			fqTaintCount++
+		}
+	}
+	require.Equal(t, 0, fqTaintCount, "FQ taints should be removed")
 }

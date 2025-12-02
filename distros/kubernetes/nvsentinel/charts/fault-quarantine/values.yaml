@@ -37,6 +37,9 @@ podAnnotations: {}
 # Log level for the fault quarantine module (e.g. "debug", "info", "warn", "error")
 logLevel: info
 
+# Client certificate mount path for database connections
+clientCertMountPath: /etc/ssl/client-certs
+
 # Label prefix for node labels and annotations
 # Used to generate label keys like: <labelPrefix>cordon-by, <labelPrefix>cordon-reason, <labelPrefix>cordon-timestamp
 # Also used for uncordon labels: <labelPrefix>uncordon-by, <labelPrefix>uncordon-reason, <labelPrefix>uncordon-timestamp
@@ -53,8 +56,9 @@ circuitBreaker:
   # Maximum percentage of cluster nodes that can be quarantined before circuit breaker trips
   # Example: 50 means if 50% or more nodes are cordoned, no new quarantines will be allowed
   percentage: 50
-  # Duration to wait before attempting to close the circuit breaker after it trips
-  # During this cooldown period, the circuit breaker remains open even if node count drops below threshold
+  # Time window for the sliding window circuit breaker
+  # The circuit breaker counts cordon events within this time window
+  # Example: "5m" means if 50% of nodes are cordoned within any 5-minute window, the circuit breaker trips
   duration: "5m"
 
 # Rule sets for node quarantine actions

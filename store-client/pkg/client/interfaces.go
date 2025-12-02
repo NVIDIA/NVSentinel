@@ -59,6 +59,7 @@ type CollectionClient interface {
 // Event represents a database change event in a generic way
 type Event interface {
 	GetDocumentID() (string, error)
+	GetRecordUUID() (string, error)
 	GetNodeName() (string, error)
 	GetResumeToken() []byte
 	UnmarshalDocument(v interface{}) error

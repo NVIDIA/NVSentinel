@@ -1,0 +1,157 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package nvidia.nvsentinel.v1alpha1;
+
+option go_package = "github.com/nvidia/nvsentinel/api/gen/go/device/v1alpha1;v1alpha1";
+
+import "google/protobuf/timestamp.proto";
+
+// ==========================================
+// Resource Definitions
+// ==========================================
+
+// Gpu represents a single GPU resource.
+//
+// Its structure follows the Kubernetes Resource Model pattern (Spec/Status).
+message Gpu {
+  // name is the unique logical identifier of the GPU resource.
+  //
+  // This is typically the lowercased GPU UUID, but may take other forms.
+  //
+  // Example: "gpu-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
+  string name = 1;
+
+  // spec defines the identity and desired attributes of the GPU resource.
+  GpuSpec spec = 2;
+
+  // status contains the most recently observed state of the GPU resource.
+  // This data may lag slightly behind the actual on-device state.
+  GpuStatus status = 3;
+}
+
+// GpuList is a collection of GPU resources.
+message GpuList {
+  // items is the list of GPU resources.
+  repeated Gpu items = 1;
+}
+
+// GpuSpec describes the identity and desired attributes of the GPU.
+message GpuSpec {
+  // uuid is the physical hardware UUID of this GPU.
+  //
+  // Format: 'GPU-<hex-string>' (e.g., 'GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6').
+  string uuid = 1;
+}
+
+// GpuStatus defines the observed state of the GPU.
+message GpuStatus {
+  // conditions represent the observations of this GPU's current state.
+  repeated Condition conditions = 1;
+
+  // recommended_action is a suggestion for resolving the current negative state.
+  string recommended_action = 2;
+}
+
+// Condition contains details for one aspect of the current state of a GPU.
+message Condition {
+  // type describes the category of the condition.
+  //
+  // Format: CamelCase or a domain-prefixed string (e.g., foo.example.com/CamelCase)
+  string type = 1;
+
+  // status of the condition.
+  //
+  // Valid values: "True", "False", "Unknown".
+  string status = 2;
+
+  // last_transition_time is the timestamp corresponding to the last time the condition transitioned from one status to another. 
+  google.protobuf.Timestamp last_transition_time = 3;
+
+  // reason is a machine-readable, UpperCamelCase text string indicating the reason for the condition's last transition.
+  string reason = 4;
+
+  // message is a human-readable message indicating details about the transition.
+  string message = 5;
+}
+
+// ==========================================
+// Service Definition
+// ==========================================
+
+// GpuService provides an API for observing GPU resources.
+service GpuService {
+  // GetGpu retrieves a single GPU resource by its unique name.
+  rpc GetGpu(GetGpuRequest) returns (GetGpuResponse);
+
+  // ListGpus retrieves a list of GPU resources.
+  rpc ListGpus(ListGpusRequest) returns (ListGpusResponse);
+
+  // WatchGpus streams lifecycle events for GPU resources.
+  rpc WatchGpus(WatchGpusRequest) returns (stream WatchGpusResponse);
+}
+
+// ==========================================
+// Request / Response Messages
+// ==========================================
+
+// GetGpuRequest specifies the GPU to retrieve.
+message GetGpuRequest {
+  // The unique resource name of the GPU to retrieve.
+  string name = 1;
+}
+
+// GetGpuResponse contains the requested GPU resource.
+message GetGpuResponse {
+  // gpu is the requested GPU resource.
+  Gpu gpu = 1;
+}
+
+// ListGpusRequest specifies the criteria for listing GPU resources.
+//
+// NOTE: The request is currently empty, but reserved for future support
+// of filtering and pagination.
+message ListGpusRequest {}
+
+// ListGpusResponse contains the list of GPU resources.
+message ListGpusResponse {
+  // gpu_list contains the list of retrieved GPU resources.
+  GpuList gpu_list = 1;
+}
+
+// WatchGpusRequest specifies the parameters for the watch stream.
+//
+// NOTE: The request is currently empty, but reserved for future support
+// of filtering and resource versioning (resumption).
+message WatchGpusRequest {}
+
+// WatchGpusResponse describes a change event for a GPU resource.
+message WatchGpusResponse {
+  // type indicates the nature of the change.
+  //
+  // Valid values:
+  //  - "ADDED": The GPU resource was created or first observed.
+  //  - "MODIFIED": The GPU resource was updated.
+  //  - "DELETED": The GPU resource was removed.
+  //  - "ERROR": An error occurred during the watch stream.
+  string type = 1;
+
+  // object is the GPU resource.
+  //
+  // For "DELETED", this contains the last known state.
+  // For "ERROR", this may be empty or contain partial data.
+  Gpu object = 2;
+}

@@ -51,6 +51,7 @@ func run() error {
 	configPath := flag.String("config", "/etc/config/config.toml", "Path to configuration file")
 	metricsPort := flag.String("metrics-port", "2112", "Port to expose Prometheus metrics and health endpoints")
 	oidcSecretPath := flag.String("oidc-secret-path", "/var/secrets/oidc-client-secret", "Path to OIDC client secret file")
+
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
