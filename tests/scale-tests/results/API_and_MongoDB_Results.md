@@ -97,7 +97,7 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 | **Medium load** (100 events/sec) | 456 req/s | 10 ms | 20 ms | ≥60s* |
 | **Heavy load** (500 events/sec) | 1255 req/s | 14 ms | 21 ms | ≥60s* |
 
-\* *P95 and P99 are capped at the histogram bucket limit of 60s*, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
+\* *P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
 
 **Result:** 
 - **Light load:** Request rate +28%, latency stable - no measurable impact
@@ -108,8 +108,8 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 
 | Test | Insert Rate | Total Events | Memory (MB) | Connections | Performance |
 |------|-------------|--------------|-------------|-------------|-------------|
-| **Light** | 1,985 ops/min (~33 events/sec) | ~19,850 events | 2,200 | 4,543 | ✅ Stable |
-| **Medium** | 6,061 ops/min (~101 events/sec) | ~60,610 events | 1,934 | 4,549 | ✅ Stable |
+| **Light** | 1,985 ops/min (~30 events/sec) | ~19,850 events | 2,200 | 4,543 | ✅ Stable |
+| **Medium** | 6,061 ops/min (~100 events/sec) | ~60,610 events | 1,934 | 4,549 | ✅ Stable |
 | **Heavy** | 30,032 ops/min (~500 events/sec) | ~300,320 events | 2,637 | 4,543 | ✅ Stable |
 
 **Result:** MongoDB successfully processed sustained event loads at all tested rates with stable memory (2-2.6 GB) and connection counts (~4,500). Memory scales appropriately with load while remaining well within reasonable bounds. Connection counts remain stable across all test scenarios. All writes went to the primary replica (mongodb-0).
@@ -178,7 +178,7 @@ This behavior validates MongoDB's suitability for production deployments where b
 | **Extreme Burst** (4,200 events/sec) | 3 min | 250 ms | 482 ms | ≥60s* | ⚠️ Degraded |
 | **Extended Extreme Burst** (4,200 events/sec) | 5 min | - | - | - | 🔴 Test invalid (primary failover/MongoDB restart) |
 
-\* *P95 and P99 are capped at the histogram bucket limit of 60s*, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
+\* *P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
 
 #### MongoDB Performance During Burst Testing
 
