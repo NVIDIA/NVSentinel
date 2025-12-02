@@ -60,6 +60,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("Invalid EVENT_RATE value '%s': %v", eventRateStr, err)
 		}
+		if eventRate <= 0 {
+			log.Fatalf("EVENT_RATE must be > 0, got %f", eventRate)
+		}
 		continuousMode = true
 		log.Printf("Starting NVSentinel Event Generator - Continuous Mode")
 		log.Printf("Configuration:")
