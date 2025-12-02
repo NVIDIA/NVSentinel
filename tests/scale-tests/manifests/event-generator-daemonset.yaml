@@ -37,13 +37,13 @@ spec:
       containers:
       - name: event-generator
         # ⚠️  CHANGE THIS IMAGE to your own registry!
-        # Replace "nvcr.io/nv-ngc-devops" with your registry
+        # Replace "ghcr.io/nvidia/nvsentinel" with your registry
         # Build instructions: tests/scale-tests/event-generator/BUILD.md
         # 
         # One-line update:
-        #   sed -i 's|nvcr.io/nv-ngc-devops|YOUR_REGISTRY|g' manifests/event-generator-daemonset.yaml
+        #   sed -i 's|ghcr.io/nvidia/nvsentinel|YOUR_REGISTRY|g' manifests/event-generator-daemonset.yaml
         #
-        image: nvcr.io/nv-ngc-devops/event-generator:v1
+        image: ghcr.io/nvidia/nvsentinel/event-generator:v1
         imagePullPolicy: Always
         
         # Environment variables from ConfigMap and downward API

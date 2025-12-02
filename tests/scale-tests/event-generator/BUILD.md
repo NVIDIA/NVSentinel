@@ -25,7 +25,7 @@ docker push YOUR_REGISTRY/event-generator:v1
 
 # 5. Update manifests to use your registry
 cd ../manifests
-sed -i 's|nvcr.io/nv-ngc-devops|YOUR_REGISTRY|g' event-generator-daemonset.yaml
+sed -i 's|ghcr.io/nvidia/nvsentinel|YOUR_REGISTRY|g' event-generator-daemonset.yaml
 ```
 
 Done! The same image works for all test scenarios (light/medium/heavy) - just change the ConfigMap.

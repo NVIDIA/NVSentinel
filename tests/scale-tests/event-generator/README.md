@@ -82,7 +82,7 @@ docker push ${IMAGE_REGISTRY}/event-generator:v1
 
 # Update manifests to use your registry
 cd ../manifests
-sed -i "s|nvcr.io/nv-ngc-devops|${IMAGE_REGISTRY}|g" event-generator-daemonset.yaml
+sed -i "s|ghcr.io/nvidia/nvsentinel|${IMAGE_REGISTRY}|g" event-generator-daemonset.yaml
 ```
 
 

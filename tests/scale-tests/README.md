@@ -55,8 +55,9 @@ docker build -t YOUR_REGISTRY/event-generator:v1 .
 docker push YOUR_REGISTRY/event-generator:v1
 
 # Update all manifests to use your registry (one command!)
+# Note: Replace ghcr.io/nvidia/nvsentinel with your actual container registry
 cd ../manifests
-sed -i 's|nvcr.io/nv-ngc-devops|YOUR_REGISTRY|g' event-generator-daemonset.yaml
+sed -i 's|ghcr.io/nvidia/nvsentinel|YOUR_REGISTRY|g' event-generator-daemonset.yaml
 ```
 
 **Configure test scenarios by changing the ConfigMap:**
