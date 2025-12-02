@@ -8,7 +8,7 @@ This document covers two phases of testing:
 1. **Phase 1: Sustained Production Load** - Validates performance at typical production sustained rates
 2. **Phase 2: Production Burst Events** - Tests resilience during production-level burst scenarios
 
-*See [PRODUCTION_BASELINE.md](PRODUCTION_BASELINE.md) for production event rate analysis (sustained: 11-414 events/sec, peak bursts: up to 4,190 events/sec)*
+*See [PRODUCTION_BASELINE.md](PRODUCTION_BASELINE.md) for production event rate analysis (sustained: 5-373 events/sec, peak bursts: up to 2,033 events/sec)*
 
 ---
 
@@ -97,7 +97,7 @@ Each test ran for **10 minutes** with metrics collected at the midpoint using 5-
 | **Medium load** (100 events/sec) | 456 req/s | 0.010 s (10 ms) | 0.02 s (20 ms) | ≥60s* |
 | **Heavy load** (500 events/sec) | 1255 req/s | 0.014 s (14 ms) | 0.021 s (21 ms) | ≥60s* |
 
-*P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel.*
+*P95 and P99 are capped at the histogram bucket limit of 60s, indicating the API server has some slow background operations unrelated to NVSentinel. This applies to both sustained load and burst testing.*
 
 **Result:** 
 - **Light load:** Request rate +28%, latency stable - no measurable impact
@@ -121,21 +121,80 @@ NVSentinel on a 1500-node cluster shows minimal API server impact and MongoDB ha
 - **Medium load (100 events/sec):** Minimal latency impact (P75 stable at 20ms) - typical production sustained load
 - **Heavy load (500 events/sec):** P75 latency remained stable at 21ms despite 422% increase in request rate - demonstrates excellent scalability beyond current production demands
 
+**MongoDB Memory Usage:** Scales appropriately from 1.9 GB (light) to 2.6 GB (heavy), remaining well within the 6 GB allocation and providing ample headroom for Phase 2 burst testing.
+
 ---
 
 ## Phase 2: Production Burst Events Testing
 
 ### Test Configuration
 
-**Objective:** Validate NVSentinel resilience during production-level burst scenarios  
-**Duration:** 2-3 minutes per burst test
+**Objective:** Validate NVSentinel resilience during production-level burst scenarios and extreme cluster-wide health events  
+**Duration:** 1 minute per burst test (based on observed production spikes)
 
 | Test | Event Rate | Production Context |
 |------|-----------|-------------------|
-| **Burst Test** | 1,500 events/sec | Mid-range production burst |
-| **Peak Burst** | 4,200 events/sec | Maximum observed production burst |
+| **Moderate Burst** | 1,500 events/sec | Mid-range production burst scenario |
+| **High Burst** | 3,000 events/sec | **Major multi-node health event** |
+| **Extreme Burst** | 4,200 events/sec | **Catastrophic cluster-wide event** |
 
-*Phase 2 testing planned for future validation*
+### Production Context
+
+The highest production peak observed is **2,033 events/sec** (see [PRODUCTION_BASELINE.md](PRODUCTION_BASELINE.md)). Our burst tests validate NVSentinel behavior at and beyond production peaks:
+
+- **1,500 events/sec:** Below maximum production peak - validates normal burst handling
+- **3,000 events/sec:** ~50% above maximum production peak - tests major incident scenarios  
+- **4,200 events/sec:** ~100% above maximum production peak - validates system survival during catastrophic events
+
+
+### Prerequisites for Burst Testing
+
+MongoDB requires **6Gi memory per replica** for burst scenarios above 1,000 events/sec (validated in previous extreme stress testing). Current deployment already includes this configuration.
+
+### MongoDB Resilience During Burst Testing
+
+During high-stress burst testing, MongoDB demonstrates robust failover capabilities:
+
+- **Automatic failover:** When the primary replica experiences stress, MongoDB automatically promotes a healthy secondary to primary
+- **Data integrity:** MongoDB is designed to maintain data consistency during failover, though brief write interruptions may occur during stress-induced restarts
+- **Service continuity:** NVSentinel continues operating during failover, with the system recovering once the new primary is established
+- **Recovery:** Stressed replicas recover and rejoin the replica set as secondaries
+
+This behavior validates MongoDB's suitability for production deployments where brief service disruptions may occur during major cluster incidents.
+
+**MongoDB Memory Behavior:** MongoDB exhibits aggressive memory caching behavior - once it claims memory during high-load scenarios, it retains that memory for future use rather than releasing it. This means memory usage reflects peak historical load rather than current load. Sequential burst tests show progressively degraded API server performance as MongoDB's memory footprint grows, demonstrating the importance of memory limits and periodic restarts in production environments.
+
+### Phase 2 Results
+
+#### API Server Impact During Burst Testing
+
+| Test | Duration | P50 Latency | P75 Latency | P95/P99 Latency | System Status |
+|------|----------|-------------|-------------|-----------------|---------------|
+| **Moderate Burst** (1,500 events/sec) | 1 min | 0.014 s (14 ms) | 0.020 s (20 ms) | ≥60s* | ✅ Stable |
+| **Moderate Burst** (1,500 events/sec) | 3 min | 0.045 s (45 ms) | 0.093 s (93 ms) | ≥60s* | ✅ Stable |
+| **High Burst** (3,000 events/sec) | 1 min | 0.015 s (15 ms) | 0.022 s (22 ms) | ≥60s* | ✅ Stable |
+| **High Burst** (3,000 events/sec) | 3 min | 0.180 s (180 ms) | 0.350 s (350 ms) | ≥60s* | 🟡 Slower |
+| **Extreme Burst** (4,200 events/sec) | 1 min | 0.015 s (15 ms) | 0.022 s (22 ms) | ≥60s* | ✅ Stable |
+| **Extreme Burst** (4,200 events/sec) | 3 min | 0.250 s (250 ms) | 0.482 s (482 ms) | ≥60s* | ⚠️ Degraded |
+| **Extended Extreme Burst** (4,200 events/sec) | 5 min | - | - | - | 🔴 Test invalid (primary failover/MongoDB restart) |
+
+#### MongoDB Performance During Burst Testing
+
+| Test | Insert Rate | Memory (MB) | Connections | Performance |
+|------|-------------|-------------|-------------|-------------|
+| **Moderate Burst** | ~25,000 ops/min (~417 events/sec) | 2,329 | 4,537 | ✅ Stable |
+| **High Burst** | ~50,000 ops/min (~833 events/sec) | 2,754 | 4,538 | ✅ Stable |
+| **Extreme Burst** | ~70,000 ops/min (~1,167 events/sec) | 3,630 | 4,538 | ✅ Stable |
+| **Extended Extreme Burst** | ~70,000 ops/min (~1,167 events/sec) | 3,710 | 4,538  | 🔴 Test invalid (primary failover/MongoDB restart) |
+
+**Phase 2 Results:**
+- **1-Minute Burst Tests:** System handles all production burst scenarios excellently with P75 latency remaining at 20-22ms across all loads (1,500-4,200 events/sec). MongoDB memory scales appropriately (2.3-3.7 GB) with no performance degradation.
+- **3-Minute Sustained Bursts:** Duration significantly impacts performance. Moderate burst (1,500 events/sec) shows P75 latency of 93ms, while extreme burst (4,200 events/sec) degrades to 482ms P75 latency. MongoDB primary remains stable throughout.
+- **5-Minute Extended Extreme Burst:** **System operational limits reached.** This represents an extreme test scenario - prolonged extreme load (4,200 events/sec for 5 minutes) caused MongoDB primary instability with multiple restarts, invalidating latency measurements. 
+
+**Important context:** Real production incidents show much shorter burst durations (typically 1-2 minutes, see [Real Production Incident Pattern](PRODUCTION_BASELINE.md#real-production-incident-pattern) table), making this test scenario significantly more stressful than observed production patterns. 
+
+**Key finding:** Extended extreme cluster-wide events exceed MongoDB's operational capacity in this configuration - system requires enhanced MongoDB resilience for sustained extreme loads beyond typical production incident patterns.
 
 ---
 
