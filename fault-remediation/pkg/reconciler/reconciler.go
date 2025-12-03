@@ -16,11 +16,10 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
@@ -28,29 +27,27 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	nvstoreclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
-	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
+	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 type ReconcilerConfig struct {
 	DataStoreConfig    datastore.DataStoreConfig
-	TokenConfig        client.TokenConfig
+	TokenConfig        nvstoreclient.TokenConfig
 	Pipeline           datastore.Pipeline
 	RemediationClient  FaultRemediationClientInterface
 	StateManager       statemanager.StateManager
 	EnableLogCollector bool
 	UpdateMaxRetries   int
 	UpdateRetryDelay   time.Duration
-}
-
-type Reconciler struct {
-	Config              ReconcilerConfig
-	NodeEvictionContext sync.Map
-	DryRun              bool
-	annotationManager   NodeAnnotationManagerInterface
-	remediationClient   FaultRemediationClientInterface
 }
 
 type HealthEventDoc struct {
@@ -64,64 +61,47 @@ type HealthEventData struct {
 	model.HealthEventWithStatus `bson:",inline"`
 }
 
-func NewReconciler(cfg ReconcilerConfig, dryRunEnabled bool) *Reconciler {
-	return &Reconciler{
-		Config:              cfg,
-		NodeEvictionContext: sync.Map{},
-		DryRun:              dryRunEnabled,
-		remediationClient:   cfg.RemediationClient,
-		annotationManager:   cfg.RemediationClient.GetAnnotationManager(),
+// FaultRemediationReconciler reconciles health events from a datastore change stream
+// and manages fault remediation lifecycle. It supports both standalone execution
+// and controller-runtime managed operation via SetupWithManager.
+type FaultRemediationReconciler struct {
+	client.Client
+	ds                datastore.DataStore
+	Watcher           datastore.ChangeStreamWatcher
+	healthEventStore  datastore.HealthEventStore
+	config            ReconcilerConfig
+	annotationManager NodeAnnotationManagerInterface
+	dryRun            bool
+}
+
+// NewFaultRemediationReconciler creates a new FaultRemediationReconciler with the provided dependencies.
+func NewFaultRemediationReconciler(
+	ds datastore.DataStore,
+	watcher datastore.ChangeStreamWatcher,
+	healthEventStore datastore.HealthEventStore,
+	config ReconcilerConfig,
+	dryRun bool,
+) FaultRemediationReconciler {
+	return FaultRemediationReconciler{
+		ds:                ds,
+		Watcher:           watcher,
+		healthEventStore:  healthEventStore,
+		config:            config,
+		annotationManager: config.RemediationClient.GetAnnotationManager(),
+		dryRun:            dryRun,
 	}
 }
 
-func (r *Reconciler) Start(ctx context.Context) error {
-	// Create datastore instance
-	ds, err := datastore.NewDataStore(ctx, r.Config.DataStoreConfig)
-	if err != nil {
-		return fmt.Errorf("error initializing datastore: %w", err)
-	}
-
-	defer func() {
-		if err := ds.Close(ctx); err != nil {
-			slog.Error("failed to close datastore", "error", err)
-		}
-	}()
-
-	// Create watcher using the factory pattern
-	watcherConfig := watcher.WatcherConfig{
-		Pipeline:       r.Config.Pipeline,
-		CollectionName: "HealthEvents",
-	}
-
-	watcherInstance, err := watcher.CreateChangeStreamWatcher(ctx, ds, watcherConfig)
-	if err != nil {
-		return fmt.Errorf("error initializing change stream watcher: %w", err)
-	}
-
-	defer func() {
-		if err := watcherInstance.Close(ctx); err != nil {
-			slog.Error("failed to close watcher", "error", err)
-		}
-	}()
-
-	// Get the HealthEventStore for document operations
-	healthEventStore := ds.HealthEventStore()
-
-	watcherInstance.Start(ctx)
-	slog.Info("Listening for events on the channel...")
-
-	for event := range watcherInstance.Events() {
-		slog.Info("Event received", "event", event)
-		r.processEvent(ctx, event, watcherInstance, healthEventStore)
-	}
-
-	return nil
-}
-
-// processEvent handles a single event from the watcher
-func (r *Reconciler) processEvent(ctx context.Context, eventWithToken datastore.EventWithToken,
-	watcherInstance datastore.ChangeStreamWatcher, healthEventStore datastore.HealthEventStore) {
+// Reconcile processes a single health event from the datastore change stream.
+// It parses the event, determines the appropriate action (cancellation or remediation),
+// and returns a result instructing controller-runtime on requeue behavior.
+func (r *FaultRemediationReconciler) Reconcile(
+	ctx context.Context,
+	event *datastore.EventWithToken,
+) (ctrl.Result, error) {
 	start := time.Now()
+
+	slog.Info("Reconciling Event")
 
 	defer func() {
 		eventHandlingDuration.Observe(time.Since(start).Seconds())
@@ -129,15 +109,15 @@ func (r *Reconciler) processEvent(ctx context.Context, eventWithToken datastore.
 
 	totalEventsReceived.Inc()
 
-	healthEventWithStatus, err := r.parseHealthEvent(eventWithToken, watcherInstance)
+	healthEventWithStatus, err := r.parseHealthEvent(*event, r.Watcher)
 	if err != nil {
-		return
+		return ctrl.Result{}, nil
 	}
 
 	// Safety checks for nil pointers
 	if healthEventWithStatus.HealthEvent == nil {
 		slog.Warn("HealthEvent is nil, skipping processing")
-		return
+		return ctrl.Result{}, nil
 	}
 
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
@@ -145,15 +125,14 @@ func (r *Reconciler) processEvent(ctx context.Context, eventWithToken datastore.
 
 	if nodeQuarantined != nil {
 		if *nodeQuarantined == model.UnQuarantined || *nodeQuarantined == model.Cancelled {
-			r.handleCancellationEvent(ctx, nodeName, *nodeQuarantined, watcherInstance, eventWithToken.ResumeToken)
-			return
+			return r.handleCancellationEvent(ctx, nodeName, *nodeQuarantined, r.Watcher, event.ResumeToken)
 		}
 	}
 
-	r.handleRemediationEvent(ctx, &healthEventWithStatus, eventWithToken, watcherInstance, healthEventStore)
+	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
 }
 
-func (r *Reconciler) shouldSkipEvent(ctx context.Context,
+func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 	healthEventWithStatus model.HealthEventWithStatus) bool {
 	action := healthEventWithStatus.HealthEvent.RecommendedAction
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
@@ -180,7 +159,7 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 		"node", nodeName)
 	totalUnsupportedRemediationActions.WithLabelValues(action.String(), nodeName).Inc()
 
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	_, err := r.config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediationFailedLabelValue, false)
 	if err != nil {
@@ -195,28 +174,34 @@ func (r *Reconciler) shouldSkipEvent(ctx context.Context,
 }
 
 // runLogCollector runs log collector for non-NONE actions if enabled
-func (r *Reconciler) runLogCollector(ctx context.Context, healthEvent *protos.HealthEvent) {
-	if healthEvent.RecommendedAction == protos.RecommendedAction_NONE ||
-		!r.Config.EnableLogCollector {
-		return
+func (r *FaultRemediationReconciler) runLogCollector(ctx context.Context, healthEvent *protos.HealthEvent) error {
+	if healthEvent.RecommendedAction == protos.RecommendedAction_NONE || !r.config.EnableLogCollector {
+		return nil
 	}
 
 	slog.Info("Log collector feature enabled; running log collector for node",
 		"node", healthEvent.NodeName)
 
-	if err := r.Config.RemediationClient.RunLogCollectorJob(ctx, healthEvent.NodeName); err != nil {
+	if err := r.config.RemediationClient.RunLogCollectorJob(ctx, healthEvent.NodeName); err != nil {
 		slog.Error("Log collector job failed for node",
 			"node", healthEvent.NodeName,
 			"error", err)
+
+		return err
 	}
+
+	return nil
 }
 
 // performRemediation attempts to create maintenance resource with retries
-func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStatus *HealthEventDoc) (bool, string) {
+func (r *FaultRemediationReconciler) performRemediation(
+	ctx context.Context,
+	healthEventWithStatus *HealthEventDoc,
+) (bool, string, error) {
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
 	// Update state to "remediating"
-	_, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	_, err := r.config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		statemanager.RemediatingLabelValue, false)
 	if err != nil {
@@ -227,7 +212,8 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 	success := false
 	crName := ""
 
-	for i := 1; i <= r.Config.UpdateMaxRetries; i++ {
+	//TODO: return error to use built in ctrl runtime retries
+	for i := 1; i <= r.config.UpdateMaxRetries; i++ {
 		slog.Info("Handle event for node",
 			"attempt", i,
 			"node", healthEventWithStatus.HealthEvent.NodeName)
@@ -237,14 +223,13 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 			HealthEventWithStatus: healthEventWithStatus.HealthEventWithStatus,
 		}
 
-		success, crName = r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
-
+		success, crName = r.config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
 		if success {
 			break
 		}
 
-		if i < r.Config.UpdateMaxRetries {
-			time.Sleep(r.Config.UpdateRetryDelay)
+		if i < r.config.UpdateMaxRetries {
+			time.Sleep(r.config.UpdateRetryDelay)
 		}
 	}
 
@@ -258,7 +243,7 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 		remediationLabelValue = statemanager.RemediationSucceededLabelValue
 	}
 
-	_, err = r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+	_, err = r.config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		healthEventWithStatus.HealthEvent.NodeName,
 		remediationLabelValue, false)
 	if err != nil {
@@ -268,17 +253,17 @@ func (r *Reconciler) performRemediation(ctx context.Context, healthEventWithStat
 		processingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 	}
 
-	return success, crName
+	return success, crName, nil
 }
 
 // handleCancellationEvent handles node unquarantine and cancellation events by clearing annotations
-func (r *Reconciler) handleCancellationEvent(
+func (r *FaultRemediationReconciler) handleCancellationEvent(
 	ctx context.Context,
 	nodeName string,
 	status model.Status,
 	watcherInstance datastore.ChangeStreamWatcher,
 	resumeToken []byte,
-) {
+) (ctrl.Result, error) {
 	slog.Info("Cancellation event received, clearing all remediation state",
 		"node", nodeName,
 		"status", status)
@@ -287,22 +272,28 @@ func (r *Reconciler) handleCancellationEvent(
 		slog.Error("Failed to clear remediation state for node",
 			"node", nodeName,
 			"error", err)
+
+		return ctrl.Result{}, err
 	}
 
 	if err := watcherInstance.MarkProcessed(context.Background(), resumeToken); err != nil {
 		processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 		slog.Error("Error updating resume token", "error", err)
+
+		return ctrl.Result{}, err
 	}
+
+	return ctrl.Result{}, nil
 }
 
 // handleRemediationEvent processes remediation for quarantined nodes
-func (r *Reconciler) handleRemediationEvent(
+func (r *FaultRemediationReconciler) handleRemediationEvent(
 	ctx context.Context,
 	healthEventWithStatus *HealthEventDoc,
 	eventWithToken datastore.EventWithToken,
 	watcherInstance datastore.ChangeStreamWatcher,
 	healthEventStore datastore.HealthEventStore,
-) {
+) (ctrl.Result, error) {
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
@@ -311,15 +302,19 @@ func (r *Reconciler) handleRemediationEvent(
 		if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
 			processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 			slog.Error("Error updating resume token", "error", err)
+
+			return ctrl.Result{}, err
 		}
 
-		return
+		return ctrl.Result{}, nil
 	}
 
 	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent)
 	if err != nil {
 		processingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.Error("Error checking existing CR status", "node", nodeName, "error", err)
+
+		return ctrl.Result{}, err
 	}
 
 	if !shouldCreateCR {
@@ -329,37 +324,50 @@ func (r *Reconciler) handleRemediationEvent(
 
 		eventsProcessed.WithLabelValues(CRStatusSkipped, nodeName).Inc()
 
-		if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
+		if err = watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
 			processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 			slog.Error("Error updating resume token", "error", err)
+
+			return ctrl.Result{}, err
 		}
 
-		return
+		return ctrl.Result{}, nil
 	}
 
 	// Run log collector only when we're about to create a new CR
 	// This prevents duplicate log-collector jobs when multiple events arrive for the same node
-	r.runLogCollector(ctx, healthEvent)
+	_ = r.runLogCollector(ctx, healthEvent)
 
-	nodeRemediatedStatus, _ := r.performRemediation(ctx, healthEventWithStatus)
+	nodeRemediatedStatus, _, err := r.performRemediation(ctx, healthEventWithStatus)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, nodeRemediatedStatus); err != nil {
+	if err = r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, nodeRemediatedStatus); err != nil {
 		processingErrors.WithLabelValues("update_status_error", nodeName).Inc()
-		log.Printf("\nError updating remediation status for node: %+v\n", err)
+		slog.Error("Error updating remediation status for node", "error", err)
 
-		return
+		return ctrl.Result{}, err
 	}
 
 	eventsProcessed.WithLabelValues(CRStatusCreated, nodeName).Inc()
 
-	if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
+	if err = watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
 		processingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 		slog.Error("Error updating resume token", "error", err)
+
+		return ctrl.Result{}, nil
 	}
+
+	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, healthEventStore datastore.HealthEventStore,
-	eventWithToken datastore.EventWithToken, nodeRemediatedStatus bool) error {
+func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
+	ctx context.Context,
+	healthEventStore datastore.HealthEventStore,
+	eventWithToken datastore.EventWithToken,
+	nodeRemediatedStatus bool,
+) error {
 	documentID, err := utils.ExtractDocumentID(eventWithToken.Event)
 	if err != nil {
 		return err
@@ -377,7 +385,7 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, healthEvent
 	}
 
 	// Use the healthEventStore to update the status with retries
-	for i := 1; i <= r.Config.UpdateMaxRetries; i++ {
+	for i := 1; i <= r.config.UpdateMaxRetries; i++ {
 		slog.Info("Updating health event with ID",
 			"attempt", i,
 			"id", documentID)
@@ -387,8 +395,8 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, healthEvent
 			break
 		}
 
-		if i < r.Config.UpdateMaxRetries {
-			time.Sleep(r.Config.UpdateRetryDelay)
+		if i < r.config.UpdateMaxRetries {
+			time.Sleep(r.config.UpdateRetryDelay)
 		}
 	}
 
@@ -403,7 +411,7 @@ func (r *Reconciler) updateNodeRemediatedStatus(ctx context.Context, healthEvent
 	return nil
 }
 
-func (r *Reconciler) checkExistingCRStatus(
+func (r *FaultRemediationReconciler) checkExistingCRStatus(
 	ctx context.Context,
 	healthEvent *protos.HealthEvent,
 ) (bool, string, error) {
@@ -432,7 +440,7 @@ func (r *Reconciler) checkExistingCRStatus(
 		return true, "", nil
 	}
 
-	statusChecker := r.remediationClient.GetStatusChecker()
+	statusChecker := r.config.RemediationClient.GetStatusChecker()
 	if statusChecker == nil {
 		slog.Warn("Status checker is not available, allowing creation")
 		return true, "", nil
@@ -455,7 +463,7 @@ func (r *Reconciler) checkExistingCRStatus(
 
 // parseHealthEvent extracts and parses health event from change stream event
 // The eventWithToken.Event is already the fullDocument extracted by the store-client
-func (r *Reconciler) parseHealthEvent(eventWithToken datastore.EventWithToken,
+func (r *FaultRemediationReconciler) parseHealthEvent(eventWithToken datastore.EventWithToken,
 	watcherInstance datastore.ChangeStreamWatcher) (HealthEventDoc, error) {
 	var result HealthEventDoc
 
@@ -505,4 +513,90 @@ func (r *Reconciler) parseHealthEvent(eventWithToken datastore.EventWithToken,
 	result.HealthEventWithStatus = healthEventWithStatus
 
 	return result, nil
+}
+
+// StartWatcherStream starts the watcher stream for non-controller-runtime managed mode.
+// This method should not be used when running under controller-runtime management;
+// use SetupWithManager instead for ctrl-runtime integration.
+func (r *FaultRemediationReconciler) StartWatcherStream(ctx context.Context) {
+	r.Watcher.Start(ctx)
+}
+
+// CloseAll closes all resources (datastore and watcher) and aggregates any errors.
+// It attempts to close all resources even if individual Close operations fail.
+func (r *FaultRemediationReconciler) CloseAll(ctx context.Context) error {
+	var errs []error
+
+	if err := r.ds.Close(ctx); err != nil {
+		slog.Error("failed to close datastore", "error", err)
+		errs = append(errs, err)
+	}
+
+	if err := r.Watcher.Close(ctx); err != nil {
+		slog.Error("failed to close Watcher", "error", err)
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
+}
+
+// SetupWithManager configures the reconciler for controller-runtime managed operation.
+// It starts the watcher stream using the provided context and registers the reconciler
+// with the manager using a typed channel source. This method should only be called
+// when running under controller-runtime management.
+func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+	r.Watcher.Start(ctx)
+
+	reconciler := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr)
+	typedCh := AdaptEvents(ctx, r.Watcher.Events())
+
+	src := source.TypedChannel[*datastore.EventWithToken, *datastore.EventWithToken](
+		typedCh,
+		handler.TypedFuncs[*datastore.EventWithToken, *datastore.EventWithToken]{
+			GenericFunc: func(
+				ctx context.Context,
+				e event.TypedGenericEvent[*datastore.EventWithToken],
+				q workqueue.TypedRateLimitingInterface[*datastore.EventWithToken],
+			) {
+				q.Add(e.Object)
+			},
+		},
+	)
+
+	return reconciler.
+		Named("fault-remediation-controller").
+		WatchesRawSource(
+			src,
+		).
+		Complete(r)
+}
+
+// AdaptEvents transforms a channel of EventWithToken into a channel of controller-runtime
+// TypedGenericEvent. It spawns a goroutine that continuously reads from the input channel
+// until either the context is cancelled or the input channel is closed.
+func AdaptEvents(
+	ctx context.Context,
+	in <-chan datastore.EventWithToken,
+) <-chan event.TypedGenericEvent[*datastore.EventWithToken] {
+	out := make(chan event.TypedGenericEvent[*datastore.EventWithToken])
+
+	go func() {
+		defer close(out)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-in:
+				if !ok {
+					return
+				}
+
+				eventOut := e
+				out <- event.TypedGenericEvent[*datastore.EventWithToken]{Object: &eventOut}
+			}
+		}
+	}()
+
+	return out
 }

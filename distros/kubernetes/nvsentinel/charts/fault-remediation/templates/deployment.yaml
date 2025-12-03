@@ -87,21 +87,29 @@ spec:
           args:
           - "--dry-run={{ ((.Values.global).dryRun) | default false }}"
           - "--enable-log-collector={{ .Values.logCollector.enabled }}"
+          {{- if  (.Values.global).ctrlRuntimeEnabled }}
+          - "--controller-runtime=true"
+          - "--leader-elect=true"
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
+            {{- if  (.Values.global).ctrlRuntimeEnabled }}
+            - name: health
+              containerPort: {{ ((.Values.global).healthPort) | default 9440 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: metrics
+              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
-              port: metrics
+              path:  {{ ternary "/readyz" "/healthz" ((.Values.global).ctrlRuntimeEnabled) }}
+              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3

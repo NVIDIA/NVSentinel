@@ -16,10 +16,13 @@ package reconciler
 
 import (
 	"context"
+	"k8s.io/client-go/kubernetes/scheme"
 	"log"
-	"log/slog"
 	"os"
 	"path/filepath"
+	ctrl "sigs.k8s.io/controller-runtime"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sync"
 	"testing"
 	"text/template"
 	"time"
@@ -51,11 +54,13 @@ import (
 
 // MockChangeStreamWatcher provides a mock implementation of datastore.ChangeStreamWatcher for testing
 type MockChangeStreamWatcher struct {
+	// Used for concurrency safety between reconciler calling writes and tests reading counts
+	mu                 sync.Mutex
 	EventsChan         chan datastore.EventWithToken
 	markProcessedCount int
 }
 
-// NewMockChangeStreamWatcher creates a new mock change stream watcher
+// NewMockChangeStreamWatcher creates a new mock change stream Watcher
 func NewMockChangeStreamWatcher() *MockChangeStreamWatcher {
 	return &MockChangeStreamWatcher{
 		EventsChan: make(chan datastore.EventWithToken, 10),
@@ -67,18 +72,21 @@ func (m *MockChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 	return m.EventsChan
 }
 
-// Start starts the change stream watcher (no-op for tests)
+// Start starts the change stream Watcher (no-op for tests)
 func (m *MockChangeStreamWatcher) Start(ctx context.Context) {
 	// No-op for tests
 }
 
 // MarkProcessed marks an event as processed (no-op for tests)
 func (m *MockChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.markProcessedCount++
+
 	return nil
 }
 
-// Close closes the change stream watcher
+// Close closes the change stream Watcher
 func (m *MockChangeStreamWatcher) Close(ctx context.Context) error {
 	close(m.EventsChan)
 	return nil
@@ -88,12 +96,15 @@ func (m *MockChangeStreamWatcher) Close(ctx context.Context) error {
 func (m *MockChangeStreamWatcher) GetCallCounts() (int, int, int, int) {
 	// Return counts for: start, markProcessed, close, getUnprocessed
 	// For simplicity, only tracking markProcessed
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return 0, m.markProcessedCount, 0, 0
 }
 
 // MockHealthEventStore provides a mock implementation of datastore.HealthEventStore for testing
 type MockHealthEventStore struct {
 	UpdateHealthEventStatusFn func(ctx context.Context, id string, status datastore.HealthEventStatus) error
+	updateCalled              int
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -160,6 +171,9 @@ var (
 	testCancelFunc context.CancelFunc
 	testEnv        *envtest.Environment
 	testRestConfig *rest.Config
+	mockWatcher    *MockChangeStreamWatcher
+	mockStore      *MockHealthEventStore
+	reconciler     FaultRemediationReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -188,6 +202,51 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("Failed to create dynamic client: %v", err)
 	}
+
+	remediationClient, err := createTestRemediationClient(false)
+	if err != nil {
+		log.Fatalf("Failed to create remediation client: %v", err)
+	}
+
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      statemanager.NewStateManager(testClient),
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+
+	// Create mock health event store
+	mockStore = &MockHealthEventStore{
+		updateCalled: 0,
+	}
+	mockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
+		mockStore.updateCalled++
+		return nil
+	}
+
+	// Create mock Watcher with event channel
+	mockWatcher = NewMockChangeStreamWatcher()
+
+	reconciler = NewFaultRemediationReconciler(nil, mockWatcher, mockStore, cfg, false)
+	mgr, err := ctrl.NewManager(testEnv.Config, ctrl.Options{
+		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	err = reconciler.SetupWithManager(testContext, mgr)
+	if err != nil {
+		log.Fatalf("Failed to launch reconciler with mgr %v", err)
+	}
+
+	go func() {
+		if err := mgr.Start(testContext); err != nil {
+			log.Fatalf("Failed to start the test environment manager: %v", err)
+		}
+	}()
 
 	// Create test nodes with dummy labels to avoid nil map panic
 	dummyLabels := map[string]string{"test": "label"}
@@ -235,22 +294,27 @@ func tearDownTestEnvironment() {
 }
 
 // createTestRemediationClient creates a real FaultRemediationClient for e2e tests
-func createTestRemediationClient(t *testing.T, dryRun bool) *FaultRemediationClient {
-	t.Helper()
+func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 
 	// Create discovery client for RESTMapper
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(testRestConfig)
-	require.NoError(t, err)
+	if err != nil {
+		return nil, err
+	}
 
 	cachedClient := memory.NewMemCacheClient(discoveryClient)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 
 	templatePath := filepath.Join("templates", "rebootnode-template.yaml")
 	templateContent, err := os.ReadFile(templatePath)
-	require.NoError(t, err, "Failed to read production template at %s", templatePath)
+	if err != nil {
+		return nil, err
+	}
 
 	tmpl, err := template.New("maintenance").Parse(string(templateContent))
-	require.NoError(t, err)
+	if err != nil {
+		return nil, err
+	}
 
 	templateData := TemplateData{
 		TemplateMountPath: "/tmp",
@@ -285,7 +349,7 @@ func createTestRemediationClient(t *testing.T, dryRun bool) *FaultRemediationCli
 		dryRun,
 	)
 
-	return client
+	return client, nil
 }
 
 func TestCRBasedDeduplication_Integration(t *testing.T) {
@@ -300,7 +364,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("FirstEvent_CreatesAnnotation", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient := createTestRemediationClient(t, false)
+		remediationClient, err := createTestRemediationClient(false)
+		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
@@ -308,7 +373,11 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := NewReconciler(cfg, false)
+
+		r := FaultRemediationReconciler{
+			config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
 
 		// Process Event 1
 		healthEventDoc := &HealthEventDoc{
@@ -321,7 +390,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			},
 		}
 
-		success, crName := r.performRemediation(ctx, healthEventDoc)
+		success, crName, err := r.performRemediation(ctx, healthEventDoc)
+		assert.NoError(t, err)
 		assert.True(t, success, "First event should create CR")
 		assert.NotEmpty(t, crName)
 
@@ -354,7 +424,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("SecondEvent_SkippedWhenCRInProgress", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient := createTestRemediationClient(t, false)
+		remediationClient, err := createTestRemediationClient(false)
+		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
@@ -362,7 +433,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := NewReconciler(cfg, false)
+		r := FaultRemediationReconciler{
+			config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
 
 		// Event 1: Create first CR
 		event1 := &HealthEventDoc{
@@ -374,7 +448,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		_, firstCRName := r.performRemediation(ctx, event1)
+		_, firstCRName, err := r.performRemediation(ctx, event1)
+		assert.NoError(t, err)
 
 		// Update CR status to InProgress
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
@@ -402,7 +477,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("FailedCR_CleansAnnotationAndAllowsRetry", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient := createTestRemediationClient(t, false)
+		remediationClient, err := createTestRemediationClient(false)
+		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
@@ -410,7 +486,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := NewReconciler(cfg, false)
+		r := FaultRemediationReconciler{
+			config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
 
 		// Event 1: Create first CR
 		event1 := &HealthEventDoc{
@@ -422,7 +501,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		_, firstCRName := r.performRemediation(ctx, event1)
+		_, firstCRName, err := r.performRemediation(ctx, event1)
+		assert.NoError(t, err)
 
 		// Simulate CR failure
 		updateRebootNodeStatus(ctx, t, firstCRName, "Failed")
@@ -448,7 +528,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			},
 		}
 
-		_, secondCRName := r.performRemediation(ctx, event2)
+		_, secondCRName, err := r.performRemediation(ctx, event2)
+		assert.NoError(t, err)
 
 		// Verify new annotation
 		state, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -470,7 +551,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("CrossAction_SameGroupDeduplication", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient := createTestRemediationClient(t, false)
+		remediationClient, err := createTestRemediationClient(false)
+		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
@@ -478,7 +560,10 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
-		r := NewReconciler(cfg, false)
+		r := FaultRemediationReconciler{
+			config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
 
 		// Event 1: COMPONENT_RESET
 		event1 := &HealthEventDoc{
@@ -490,7 +575,8 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		_, firstCRName := r.performRemediation(ctx, event1)
+		_, firstCRName, err := r.performRemediation(ctx, event1)
+		assert.NoError(t, err)
 
 		// Set InProgress status
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
@@ -533,7 +619,8 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 
 	cleanupNodeAnnotations(ctx, t, nodeName)
 
-	remediationClient := createTestRemediationClient(t, false)
+	remediationClient, err := createTestRemediationClient(false)
+	assert.NoError(t, err)
 
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
@@ -541,7 +628,10 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
-	r := NewReconciler(cfg, false)
+	r := FaultRemediationReconciler{
+		config:            cfg,
+		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+	}
 
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
@@ -559,7 +649,8 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
-	success, crName1 := r.performRemediation(ctx, event1)
+	success, crName1, err := r.performRemediation(ctx, event1)
+	assert.NoError(t, err)
 	assert.True(t, success)
 
 	// Verify annotation on actual node
@@ -621,7 +712,8 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
-	_, crName2 := r.performRemediation(ctx, event5)
+	_, crName2, err := r.performRemediation(ctx, event5)
+	assert.NoError(t, err)
 
 	// Verify new annotation
 	state, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -654,43 +746,10 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	}
 
 	t.Run("CompleteFlow_WithEventLoop", func(t *testing.T) {
-		remediationClient := createTestRemediationClient(t, false)
-
-		// Create mock health event store
-		updateCalled := 0
-		mockStore := &MockHealthEventStore{
-			UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-				updateCalled++
-				return nil
-			},
-		}
-
-		// Create mock watcher with event channel
-		mockWatcher := NewMockChangeStreamWatcher()
-
-		cfg := ReconcilerConfig{
-			RemediationClient: remediationClient,
-			StateManager:      statemanager.NewStateManager(testClient),
-			UpdateMaxRetries:  3,
-			UpdateRetryDelay:  100 * time.Millisecond,
-		}
-
-		reconcilerInstance := NewReconciler(cfg, false)
+		mockStore.updateCalled = 0
 
 		beforeReceived := getCounterValue(t, totalEventsReceived)
 		beforeDuration := getHistogramCount(t, eventHandlingDuration)
-
-		// Start event processing loop (simulating Start() event loop)
-		reconcilerDone := make(chan struct{})
-		go func() {
-			defer close(reconcilerDone)
-			mockWatcher.Start(ctx)
-			slog.Info("Test: Listening for events on the channel...")
-			for event := range mockWatcher.Events() {
-				slog.Info("Test: Event received", "eventData", event)
-				reconcilerInstance.processEvent(ctx, event, mockWatcher, mockStore)
-			}
-		}()
 
 		// Event 1: Send quarantine event through channel
 		eventID1 := "test-event-id-1"
@@ -704,7 +763,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Wait for CR creation
 		var crName string
 		assert.Eventually(t, func() bool {
-			state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+			state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 			if err != nil {
 				return false
 			}
@@ -721,7 +780,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		require.Contains(t, node.Annotations, AnnotationKey, "Node should have remediation annotation")
 
 		// Verify annotation content
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		require.NoError(t, err)
 		assert.Contains(t, state.EquivalenceGroups, "restart", "Should have restart equivalence group")
 		assert.Equal(t, crName, state.EquivalenceGroups["restart"].MaintenanceCR, "Annotation should contain correct CR name")
@@ -746,7 +805,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, crName, "InProgress")
 
 		// Record MongoDB update count before sending duplicate event
-		updateCountBefore := updateCalled
+		updateCountBefore := mockStore.updateCalled
 
 		eventID2 := "test-event-id-2"
 		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_COMPONENT_RESET)
@@ -758,7 +817,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 
 		// Wait for event to be processed and verify deduplication
 		assert.Eventually(t, func() bool {
-			state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+			state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 			if err != nil {
 				t.Logf("Failed to get remediation state: %v", err)
 				return false
@@ -778,7 +837,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		require.Contains(t, node.Annotations, AnnotationKey, "Node should still have remediation annotation")
 
 		// Verify no new CR created (deduplication) - annotation should be unchanged
-		state, err = reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err = reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		require.NoError(t, err)
 		assert.Equal(t, crName, state.EquivalenceGroups["restart"].MaintenanceCR, "Should still be same CR (deduplicated)")
 
@@ -794,7 +853,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		assert.Equal(t, 1, crCount2, "Should still be only one CR (duplicate event was skipped)")
 
 		// Verify MongoDB update was NOT called (event was skipped due to deduplication)
-		assert.Equal(t, updateCountBefore, updateCalled, "MongoDB update should not be called for skipped event")
+		assert.Equal(t, updateCountBefore, mockStore.updateCalled, "MongoDB update should not be called for skipped event")
 
 		// Event 3: Send unquarantine event
 		unquarantineEvent := createUnquarantineEvent(nodeName)
@@ -806,7 +865,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 
 		// Wait for annotation cleanup
 		assert.Eventually(t, func() bool {
-			state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+			state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 			if err != nil {
 				return false
 			}
@@ -820,19 +879,9 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		_, hasAnnotation := node.Annotations[AnnotationKey]
 		if hasAnnotation {
 			// Annotation might exist but should be empty or not contain "restart" group
-			state, err = reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+			state, err = reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 			require.NoError(t, err)
 			assert.NotContains(t, state.EquivalenceGroups, "restart", "Restart group should be removed from annotation")
-		}
-
-		// Stop the reconciler by closing the events channel
-		close(mockWatcher.EventsChan)
-
-		select {
-		case <-reconcilerDone:
-			// Reconciler stopped cleanly
-		case <-time.After(5 * time.Second):
-			t.Fatal("Reconciler did not stop in time")
 		}
 
 		// Verify MarkProcessed was called for processed events
@@ -854,7 +903,8 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	})
 
 	t.Run("UnsupportedAction_TrackedInMetrics", func(t *testing.T) {
-		remediationClient := createTestRemediationClient(t, false)
+		remediationClient, err := createTestRemediationClient(false)
+		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
@@ -863,7 +913,10 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
 
-		reconcilerInstance := NewReconciler(cfg, false)
+		reconcilerInstance := FaultRemediationReconciler{
+			config:            cfg,
+			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+		}
 
 		beforeUnsupported := getCounterVecValue(t, totalUnsupportedRemediationActions, "UNKNOWN", nodeName)
 
@@ -940,6 +993,7 @@ func createCancelledEvent(eventID string, nodeName string, action protos.Recomme
 
 // TestReconciler_CancelledEventCleansAnnotation tests that a cancelled event removes the equivalence group from the annotation
 func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
+	mockStore.updateCalled = 0
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -951,41 +1005,11 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 
 	cleanupNodeAnnotations(ctx, t, nodeName)
 
-	remediationClient := createTestRemediationClient(t, false)
-
-	cfg := ReconcilerConfig{
-		RemediationClient: remediationClient,
-		StateManager:      statemanager.NewStateManager(testClient),
-		UpdateMaxRetries:  3,
-		UpdateRetryDelay:  100 * time.Millisecond,
-	}
-	reconcilerInstance := NewReconciler(cfg, false)
-
-	// Create mock health event store
-	mockStore := &MockHealthEventStore{
-		UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-			return nil
-		},
-	}
-
-	// Create mock watcher with event channel
-	mockWatcher := NewMockChangeStreamWatcher()
-
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
 		Version:  "v1alpha1",
 		Resource: "rebootnodes",
 	}
-
-	// Start event processing loop
-	reconcilerDone := make(chan struct{})
-	go func() {
-		defer close(reconcilerDone)
-		mockWatcher.Start(ctx)
-		for event := range mockWatcher.Events() {
-			reconcilerInstance.processEvent(ctx, event, mockWatcher, mockStore)
-		}
-	}()
 
 	t.Log("Send Quarantined event to create CR and annotation")
 	eventID1 := "test-event-id-1"
@@ -999,7 +1023,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	// Wait for CR creation and annotation
 	var crName string
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1011,7 +1035,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "CR and annotation should be created")
 
 	t.Log("Verify annotation contains restart group")
-	state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+	state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
 	require.Contains(t, state.EquivalenceGroups, "restart", "Annotation should contain restart group")
 
@@ -1025,7 +1049,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 
 	t.Log("Verify group removed from annotation")
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1038,13 +1062,12 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	require.NoError(t, err, "CR should still exist")
 
 	// Cleanup
-	mockWatcher.Close(ctx)
-	<-reconcilerDone
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }
 
 // TestReconciler_CancelledEventClearsAllGroups tests that a cancelled event clears all equivalence groups
 func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
+	mockStore.updateCalled = 0
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1056,38 +1079,11 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 	cleanupNodeAnnotations(ctx, t, nodeName)
 
-	remediationClient := createTestRemediationClient(t, false)
-
-	cfg := ReconcilerConfig{
-		RemediationClient: remediationClient,
-		StateManager:      statemanager.NewStateManager(testClient),
-		UpdateMaxRetries:  3,
-		UpdateRetryDelay:  100 * time.Millisecond,
-	}
-	reconcilerInstance := NewReconciler(cfg, false)
-
-	mockStore := &MockHealthEventStore{
-		UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-			return nil
-		},
-	}
-
-	mockWatcher := NewMockChangeStreamWatcher()
-
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
 		Version:  "v1alpha1",
 		Resource: "rebootnodes",
 	}
-
-	reconcilerDone := make(chan struct{})
-	go func() {
-		defer close(reconcilerDone)
-		mockWatcher.Start(ctx)
-		for event := range mockWatcher.Events() {
-			reconcilerInstance.processEvent(ctx, event, mockWatcher, mockStore)
-		}
-	}()
 
 	t.Log("Send multiple Quarantined events with different recommended actions")
 	eventID1 := "test-event-id-1"
@@ -1101,7 +1097,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	// Wait for first CR
 	var crName1 string
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1125,7 +1121,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	t.Log("Verify annotation has restart group")
-	state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+	state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
 	require.Contains(t, state.EquivalenceGroups, "restart", "Should have restart group")
 
@@ -1139,7 +1135,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 	t.Log("Verify all groups cleared from annotation")
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1147,13 +1143,12 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "All groups should be cleared")
 
 	// Cleanup
-	mockWatcher.Close(ctx)
-	<-reconcilerDone
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName1, metav1.DeleteOptions{})
 }
 
 // TestReconciler_CancelledAndUnQuarantinedClearAllState tests that Cancelled followed by UnQuarantined clears all state
 func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
+	mockStore.updateCalled = 0
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1165,38 +1160,11 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 
 	cleanupNodeAnnotations(ctx, t, nodeName)
 
-	remediationClient := createTestRemediationClient(t, false)
-
-	cfg := ReconcilerConfig{
-		RemediationClient: remediationClient,
-		StateManager:      statemanager.NewStateManager(testClient),
-		UpdateMaxRetries:  3,
-		UpdateRetryDelay:  100 * time.Millisecond,
-	}
-	reconcilerInstance := NewReconciler(cfg, false)
-
-	mockStore := &MockHealthEventStore{
-		UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-			return nil
-		},
-	}
-
-	mockWatcher := NewMockChangeStreamWatcher()
-
 	gvr := schema.GroupVersionResource{
 		Group:    "janitor.dgxc.nvidia.com",
 		Version:  "v1alpha1",
 		Resource: "rebootnodes",
 	}
-
-	reconcilerDone := make(chan struct{})
-	go func() {
-		defer close(reconcilerDone)
-		mockWatcher.Start(ctx)
-		for event := range mockWatcher.Events() {
-			reconcilerInstance.processEvent(ctx, event, mockWatcher, mockStore)
-		}
-	}()
 
 	t.Log("Send Quarantined event")
 	eventID1 := "test-event-id-1"
@@ -1209,7 +1177,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 
 	var crName string
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1229,7 +1197,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	mockWatcher.EventsChan <- cancelledEventToken
 
 	require.Eventually(t, func() bool {
-		state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+		state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 		if err != nil {
 			return false
 		}
@@ -1248,7 +1216,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	t.Log("Verify complete state cleanup")
-	state, err := reconcilerInstance.annotationManager.GetRemediationState(ctx, nodeName)
+	state, err := reconciler.annotationManager.GetRemediationState(ctx, nodeName)
 	require.NoError(t, err)
 	require.Empty(t, state.EquivalenceGroups, "All state should be cleared")
 
@@ -1259,8 +1227,6 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	require.False(t, hasAnnotation, "Annotation should be removed after complete cleanup")
 
 	// Cleanup
-	mockWatcher.Close(ctx)
-	<-reconcilerDone
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
 }
 
@@ -1376,21 +1342,21 @@ func cleanupNodeAnnotations(ctx context.Context, t *testing.T, nodeName string) 
 
 // TestMetrics_ProcessingErrors tests error tracking
 func TestMetrics_ProcessingErrors(t *testing.T) {
-	reconciler := &Reconciler{}
-
 	beforeError := getCounterVecValue(t, processingErrors, "unmarshal_doc_error", "unknown")
 
-	invalidEventToken := datastore.EventWithToken{
+	invalidEventToken := &datastore.EventWithToken{
 		Event: map[string]interface{}{
 			"fullDocument": "invalid-data",
 		},
 		ResumeToken: []byte("test-token"),
 	}
+	watcher := NewMockChangeStreamWatcher()
 
-	mockWatcher := NewMockChangeStreamWatcher()
-	mockStore := &MockHealthEventStore{}
+	r := &FaultRemediationReconciler{
+		Watcher: watcher,
+	}
 
-	reconciler.processEvent(testContext, invalidEventToken, mockWatcher, mockStore)
+	r.Reconcile(testContext, invalidEventToken)
 
 	afterError := getCounterVecValue(t, processingErrors, "unmarshal_doc_error", "unknown")
 	assert.Greater(t, afterError, beforeError, "processingErrors should increment for unmarshal error")

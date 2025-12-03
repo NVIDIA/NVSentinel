@@ -386,6 +386,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	}
 
 	watchCtx, cancel := context.WithTimeout(ctx, timeout)
+
 	defer cancel()
 
 	// Use SharedInformerFactory for efficient job status monitoring with filtering

@@ -30,6 +30,8 @@ global:
     maxAgeDays: 7
     compress: true
 
+  ctrlRuntimeEnabled: true
+
   nodeSelector: {}
   
   tolerations: 
@@ -224,6 +226,8 @@ fault-quarantine:
         topologyKey: kubernetes.io/hostname
 
 fault-remediation:
+  replicaCount: 1
+
   logLevel: debug
 
   logCollector:
