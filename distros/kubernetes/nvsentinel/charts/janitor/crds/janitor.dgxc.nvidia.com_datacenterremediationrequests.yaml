@@ -1,0 +1,111 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: datacenterremediationrequests.janitor.dgxc.nvidia.com
+spec:
+  group: janitor.dgxc.nvidia.com
+  names:
+    kind: DataCenterRemediationRequest
+    listKind: DataCenterRemediationRequestList
+    plural: datacenterremediationrequests
+    singular: datacenterremediationrequest
+    shortNames:
+    - dcrr
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        description: DataCenterRemediationRequest signals that data center intervention is needed for a node
+        type: object
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation of an object'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this object represents'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DataCenterRemediationRequestSpec defines the request details
+            type: object
+            required:
+            - nodeName
+            - reason
+            properties:
+              nodeName:
+                description: The name of the node requiring data center intervention
+                type: string
+              reason:
+                description: The reason for data center intervention
+                type: string
+              healthEventID:
+                description: ID of the health event that triggered this request
+                type: string
+              recommendedAction:
+                description: The original recommended action that led to this request
+                type: string
+          status:
+            description: DataCenterRemediationRequestStatus defines the observed state
+            type: object
+            properties:
+              acknowledged:
+                description: Whether the request has been acknowledged by data center team
+                type: boolean
+              acknowledgedAt:
+                description: Timestamp when the request was acknowledged
+                type: string
+                format: date-time
+              completedAt:
+                description: Timestamp when the remediation was completed
+                type: string
+                format: date-time
+              conditions:
+                description: Conditions represent the latest available observations
+                type: array
+                items:
+                  description: Condition contains details for one aspect of the current state
+                  type: object
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  properties:
+                    lastTransitionTime:
+                      description: lastTransitionTime is the last time the condition transitioned
+                      type: string
+                      format: date-time
+                    message:
+                      description: message is a human readable message
+                      type: string
+                    reason:
+                      description: reason contains a programmatic identifier
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown
+                      type: string
+                    type:
+                      description: type of condition
+                      type: string
+                      enum:
+                      - Acknowledged
+                      - RemediationComplete

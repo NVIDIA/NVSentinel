@@ -62,6 +62,7 @@ type FaultRemediationClient struct {
 	templateData      TemplateData
 	annotationManager NodeAnnotationManagerInterface
 	statusChecker     *crstatus.CRStatusChecker
+	crSelector        *CRTypeSelector
 	// nodeExistsFunc allows tests to override node existence checking.
 	// If nil, uses the default implementation that checks with kubeClient.
 	nodeExistsFunc func(ctx context.Context, nodeName string) (*corev1.Node, error)
@@ -75,6 +76,8 @@ type TemplateData struct {
 	TemplateMountPath string
 	TemplateFileName  string
 	config.MaintenanceResource
+	// Additional field for DataCenterRemediationRequest
+	RemediationReason string
 }
 
 // nolint: cyclop // todo
@@ -152,6 +155,9 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	// Initialize annotation manager
 	client.annotationManager = NewNodeAnnotationManager(kubeClient)
 
+	// Initialize CR selector for multi-CR type support
+	client.crSelector = NewCRTypeSelector(templateData.TemplateMountPath)
+
 	client.statusChecker = crstatus.NewCRStatusChecker(
 		clientset,
 		mapper,
@@ -197,16 +203,65 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return false, ""
 	}
 
-	log.Printf("Creating RebootNode CR for node: %s (UID: %s)", healthEvent.NodeName, node.UID)
-	c.templateData.NodeName = healthEvent.NodeName
-	c.templateData.RecommendedAction = healthEvent.RecommendedAction
-	c.templateData.HealthEventID = healthEventID
-
-	// Execute the template
+	// Use CR selector if available, otherwise fall back to existing template
 	var buf bytes.Buffer
-	if err := c.template.Execute(&buf, c.templateData); err != nil {
-		slog.Error("Failed to execute maintenance template", "error", err)
-		return false, ""
+	if c.crSelector != nil {
+		// Get the appropriate template data based on action
+		templateData, err := c.crSelector.GetTemplateDataForAction(
+			healthEvent.RecommendedAction, 
+			healthEvent.NodeName, 
+			healthEventID,
+		)
+		if err != nil {
+			slog.Error("Failed to get template data for action", 
+				"action", healthEvent.RecommendedAction.String(),
+				"error", err)
+			return false, ""
+		}
+
+		// Load and execute the appropriate template
+		templatePath, err := c.crSelector.GetTemplatePath(healthEvent.RecommendedAction)
+		if err != nil {
+			slog.Error("Failed to get template path", "error", err)
+			return false, ""
+		}
+
+		templateContent, err := os.ReadFile(templatePath)
+		if err != nil {
+			slog.Error("Failed to read template file", "path", templatePath, "error", err)
+			return false, ""
+		}
+
+		tmpl, err := template.New("cr").Parse(string(templateContent))
+		if err != nil {
+			slog.Error("Failed to parse template", "error", err)
+			return false, ""
+		}
+
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			slog.Error("Failed to execute template", "error", err)
+			return false, ""
+		}
+
+		// Update CR name based on the CR type
+		group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
+		if group == "datacenter" {
+			crName = fmt.Sprintf("dc-remediation-%s-%s", healthEvent.NodeName, healthEventID)
+		}
+
+		log.Printf("Creating %s CR for node: %s (UID: %s)", 
+			templateData.MaintenanceResource.Kind, healthEvent.NodeName, node.UID)
+	} else {
+		// Fall back to existing behavior
+		log.Printf("Creating RebootNode CR for node: %s (UID: %s)", healthEvent.NodeName, node.UID)
+		c.templateData.NodeName = healthEvent.NodeName
+		c.templateData.RecommendedAction = healthEvent.RecommendedAction
+		c.templateData.HealthEventID = healthEventID
+
+		if err := c.template.Execute(&buf, c.templateData); err != nil {
+			slog.Error("Failed to execute maintenance template", "error", err)
+			return false, ""
+		}
 	}
 
 	log.Printf("Generated YAML: %s", buf.String())

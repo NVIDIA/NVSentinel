@@ -28,6 +28,10 @@ var RemediationEquivalenceGroups = map[string][]protos.RecommendedAction{
 		protos.RecommendedAction_RESTART_VM,
 		protos.RecommendedAction_RESTART_BM,
 	},
+	"datacenter": {
+		protos.RecommendedAction_CONTACT_SUPPORT,
+		protos.RecommendedAction_REPLACE_VM,
+	},
 }
 
 // GetRemediationGroupForAction returns the equivalence group key for a given action.

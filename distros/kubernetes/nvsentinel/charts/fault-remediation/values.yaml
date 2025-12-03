@@ -67,6 +67,7 @@ maintenance:
   resourceNames:
     - "rebootnodes"
     - "terminatenodes"
+    - "datacenterremediationrequests"
   
   # Template for generating maintenance resources
   # This Go template is executed with the following variables:
