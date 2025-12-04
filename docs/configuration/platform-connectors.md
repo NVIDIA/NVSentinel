@@ -38,6 +38,7 @@ Configures the Kubernetes API client used for node metadata enrichment.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
 ```
@@ -59,6 +60,7 @@ Maximum burst of queries allowed to the Kubernetes API server.
 platformConnector:
   k8sConnector:
     enabled: true
+    maxNodeConditionMessageLength: 1024
     qps: 10.0
     burst: 20
 ```

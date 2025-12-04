@@ -94,18 +94,12 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 31, Graphics SM Warp Exception on (GPC 1, TPC 0, SM 0): Misaligned Address",
 			"kernel: [16450076.435584] NVRM: Xid (PCI:0000:19:00): 62, 32260b5e 000154b0 00000000 2026da96 202b5626 202b5832 202b5872 202b58be",
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000b",
-			"kernel: [16450076.436857] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000c",
-			"kernel: [16450076.449750] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000d",
-			"kernel: [16450076.463693] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000e",
 		}
 
 		expectedSequencePatterns := []string{
 			`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
 			`ErrorCode:79 PCI:0001:00:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0001:00:00\): 79.*?Recommended Action=RESTART_BM`,
 			`ErrorCode:62 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 62.*?Recommended Action=COMPONENT_RESET`,
-			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Recommended Action=CONTACT_SUPPORT`,
-			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Recommended Action=CONTACT_SUPPORT`,
-			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Recommended Action=CONTACT_SUPPORT`,
 			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Recommended Action=CONTACT_SUPPORT`,
 		}
 		expectedEventPatterns := []string{
@@ -427,6 +421,163 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
 		if err != nil {
 			t.Logf("Warning: failed to remove label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestSyslogHealthMonitorNodeConditionTruncation tests that node condition messages are truncated to 1KB
+func TestSyslogHealthMonitorNodeConditionTruncation(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - Node Condition Truncation").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "xid-detection")
+
+	const (
+		maxConditionMessageLength = 1024
+		truncationSuffix          = "..."
+	)
+
+	var testNodeName string
+	var syslogPod *v1.Pod
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "syslog-health-monitor")
+		require.NoError(t, err, "failed to find syslog health monitor pod")
+		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
+
+		testNodeName = syslogPod.Spec.NodeName
+		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
+
+		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
+		stopChan, readyChan := helpers.PortForwardPod(
+			ctx,
+			client.RESTConfig(),
+			syslogPod.Namespace,
+			syslogPod.Name,
+			stubJournalHTTPPort,
+			stubJournalHTTPPort,
+		)
+		<-readyChan
+		t.Log("Port-forward ready")
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		return ctx
+	})
+
+	feature.Assess("Inject many XID errors and verify message truncation to 1KB", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		// Generate 15 fatal XID errors - each generates ~200+ chars in the condition message
+		// This should easily exceed the 1KB limit and trigger truncation
+		var xidMessages []string
+		for i := 0; i < 15; i++ {
+			// Use different PCI addresses to ensure each message is unique and not deduplicated
+			pciAddr := "0000:" + string(rune('1'+i/10)) + string(rune('0'+i%10)) + ":00"
+			msg := "kernel: [16450076.435595] NVRM: Xid (PCI:" + pciAddr + "): 79, pid=123456, name=test, GPU has fallen off the bus."
+			xidMessages = append(xidMessages, msg)
+		}
+
+		t.Logf("Injecting %d XID messages to trigger truncation", len(xidMessages))
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, xidMessages)
+
+		t.Log("Verifying node condition message is truncated to 1KB limit")
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil || condition == nil {
+				t.Logf("Condition not found yet: %v", err)
+				return false
+			}
+
+			messageLen := len(condition.Message)
+			t.Logf("Node condition message length: %d characters", messageLen)
+
+			// Verify message length is within the 1KB limit
+			if messageLen > maxConditionMessageLength {
+				t.Logf("FAIL: Message length %d exceeds max %d", messageLen, maxConditionMessageLength)
+				return false
+			}
+
+			// Verify truncation suffix is present (indicates truncation occurred)
+			if !strings.HasSuffix(condition.Message, truncationSuffix) {
+				t.Logf("FAIL: Message should end with truncation suffix '%s'", truncationSuffix)
+				t.Logf("Message ends with: ...%s", condition.Message[max(0, messageLen-50):])
+				return false
+			}
+
+			// Verify at least some error content is present
+			if !strings.Contains(condition.Message, "ErrorCode:79") {
+				t.Logf("FAIL: Message should contain ErrorCode:79")
+				return false
+			}
+
+			t.Logf("SUCCESS: Message truncated correctly to %d chars with suffix '%s'",
+				messageLen, truncationSuffix)
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"Node condition message should be truncated to 1KB with truncation suffix")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		podNameVal := ctx.Value(keySyslogPodName)
+		if podNameVal != nil {
+			podName := podNameVal.(string)
+			t.Logf("Restarting syslog-health-monitor pod %s to clear conditions", podName)
+			err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, podName)
+			if err != nil {
+				t.Logf("Warning: failed to delete pod: %v", err)
+			} else {
+				t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
+				require.Eventually(t, func() bool {
+					condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+						"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
+					if err != nil {
+						return false
+					}
+					return condition != nil && condition.Status == v1.ConditionFalse
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
+			}
+		}
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
 		}
 
 		return ctx

@@ -284,6 +284,11 @@ csp-health-monitor:
 
 # Enable node metadata enrichment for testing
 platformConnector:
+  k8sConnector:
+    enabled: true
+    maxNodeConditionMessageLength: 1024
+    qps: 5.0
+    burst: 10
   nodeMetadata:
     enabled: true
 

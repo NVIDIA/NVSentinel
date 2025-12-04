@@ -96,12 +96,19 @@ func initializeK8sConnector(
 
 	qps := float32(qpsTemp)
 
+	maxNodeConditionMessageLength, ok := config["MaxNodeConditionMessageLength"].(int64)
+	if !ok {
+		return nil, nil, fmt.Errorf("failed to convert MaxNodeConditionMessageLength to int64: %v",
+			config["MaxNodeConditionMessageLength"])
+	}
+
 	burst, ok := config["K8sConnectorBurst"].(int64)
 	if !ok {
 		return nil, nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
-	k8sConnector, clientset, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	k8sConnector, clientset, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst),
+		stopCh, maxNodeConditionMessageLength)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}
