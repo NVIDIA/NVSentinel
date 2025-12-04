@@ -251,6 +251,67 @@ func TestToCloudEvent(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "event with GPU_UUID in entitiesImpacted",
+			event: &pb.HealthEvent{
+				Version:            1,
+				Agent:              "gpu-health-monitor",
+				ComponentClass:     "GPU",
+				CheckName:          "XidError",
+				NodeName:           "gpu-node-1",
+				GeneratedTimestamp: fixedTimestamp,
+				IsFatal:            true,
+				IsHealthy:          false,
+				Message:            "GPU error detected",
+				EntitiesImpacted: []*pb.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "PCI", EntityValue: "0000:17:00.0"},
+					{EntityType: "GPU_UUID", EntityValue: "GPU-12345678-abcd-1234-abcd-123456789abc"},
+				},
+			},
+			metadata: map[string]string{"cluster": "test-cluster"},
+			wantErr:  false,
+			validateFunc: func(t *testing.T, ce *CloudEvent) {
+				healthEvent := ce.Data["healthEvent"].(map[string]any)
+				entities := healthEvent["entitiesImpacted"].([]map[string]any)
+				if len(entities) != 3 {
+					t.Errorf("entitiesImpacted length = %v, want 3", len(entities))
+				}
+				// Verify GPU_UUID is extracted and added as a top-level field
+				gpuUUID, exists := healthEvent["gpuUUID"]
+				if !exists {
+					t.Error("gpuUUID should exist in healthEvent")
+				}
+				if gpuUUID != "GPU-12345678-abcd-1234-abcd-123456789abc" {
+					t.Errorf("gpuUUID = %v, want GPU-12345678-abcd-1234-abcd-123456789abc", gpuUUID)
+				}
+			},
+		},
+		{
+			name: "event without GPU_UUID in entitiesImpacted",
+			event: &pb.HealthEvent{
+				Version:            1,
+				Agent:              "test-agent",
+				ComponentClass:     "GPU",
+				CheckName:          "Test",
+				NodeName:           "node-1",
+				GeneratedTimestamp: fixedTimestamp,
+				EntitiesImpacted: []*pb.Entity{
+					{EntityType: "GPU", EntityValue: "0"},
+					{EntityType: "PCI", EntityValue: "0000:17:00.0"},
+				},
+			},
+			metadata: map[string]string{"cluster": "test-cluster"},
+			wantErr:  false,
+			validateFunc: func(t *testing.T, ce *CloudEvent) {
+				healthEvent := ce.Data["healthEvent"].(map[string]any)
+				// Verify GPU_UUID field is not present when not in entitiesImpacted
+				_, exists := healthEvent["gpuUUID"]
+				if exists {
+					t.Error("gpuUUID should not exist when not in entitiesImpacted")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

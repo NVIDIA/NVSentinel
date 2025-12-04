@@ -38,11 +38,16 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 	}
 
 	entities := make([]map[string]any, 0, len(event.EntitiesImpacted))
+	var gpuUUID string
 	for _, e := range event.EntitiesImpacted {
 		entities = append(entities, map[string]any{
 			"entityType":  e.EntityType,
 			"entityValue": e.EntityValue,
 		})
+
+		if e.EntityType == "GPU_UUID" {
+			gpuUUID = e.EntityValue
+		}
 	}
 
 	errorCodes := make([]string, len(event.ErrorCode))
@@ -80,6 +85,10 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 			"force": event.DrainOverrides.Force,
 			"skip":  event.DrainOverrides.Skip,
 		}
+	}
+
+	if gpuUUID != "" {
+		healthEventData["gpuUUID"] = gpuUUID
 	}
 
 	clusterName, ok := metadata["cluster"]
