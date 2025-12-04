@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: fqm-latency
+data:
+  # FQM Latency Testing: NO EVENT_RATE = SIGUSR1 on-demand mode
+  # When EVENT_RATE is not set, event generator waits for SIGUSR1 signals
+  # to trigger fatal events (used for latency measurement)
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+

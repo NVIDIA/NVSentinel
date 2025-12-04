@@ -127,7 +127,7 @@ func main() {
 		// Wait for SIGUSR1 signals
 		for sig := range sigChan {
 			log.Printf("🚨 Signal received: %v - sending fatal GPU XID event", sig)
-			fatalEvent := generateFatalGpuXidEvent(nodeName)
+			fatalEvent := generateFatalGpuXidEventForFQM(nodeName) // Uses gpu-health-monitor agent
 			success := sendHealthEvent(ctx, client, fatalEvent)
 			if success {
 				log.Printf("✅ Fatal event sent successfully for latency test")
@@ -266,10 +266,31 @@ func generateSystemInfoEvent(nodeName string) *pb.HealthEvent {
 	}
 }
 
+// generateFatalGpuXidEvent - for continuous mode (API/MongoDB tests)
+// Uses agent="event-generator" so FQM IGNORES it (no accidental cordons)
 func generateFatalGpuXidEvent(nodeName string) *pb.HealthEvent {
 	return &pb.HealthEvent{
 		Version:            1,
-		Agent:              "event-generator",
+		Agent:              "event-generator", // FQM ignores - won't cordon
+		ComponentClass:     "GPU",
+		CheckName:          "GpuXidError",
+		IsFatal:            true,
+		IsHealthy:          false,
+		Message:            "XID 79 - GPU has fallen off the bus",
+		RecommendedAction:  pb.RecommendedAction_COMPONENT_RESET,
+		ErrorCode:          []string{"79"},
+		EntitiesImpacted:   []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
+		NodeName:           nodeName,
+		GeneratedTimestamp: timestamppb.Now(),
+	}
+}
+
+// generateFatalGpuXidEventForFQM - for SIGUSR1 on-demand mode (FQM latency tests)
+// Uses agent="gpu-health-monitor" so FQM MATCHES and CORDONS the node
+func generateFatalGpuXidEventForFQM(nodeName string) *pb.HealthEvent {
+	return &pb.HealthEvent{
+		Version:            1,
+		Agent:              "gpu-health-monitor", // FQM matches - WILL cordon!
 		ComponentClass:     "GPU",
 		CheckName:          "GpuXidError",
 		IsFatal:            true,

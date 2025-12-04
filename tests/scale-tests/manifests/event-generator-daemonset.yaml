@@ -57,6 +57,7 @@ spec:
             configMapKeyRef:
               name: event-generator-config
               key: EVENT_RATE
+              optional: true  # Not set = SIGUSR1 on-demand mode
         - name: LOG_LEVEL
           valueFrom:
             configMapKeyRef:
