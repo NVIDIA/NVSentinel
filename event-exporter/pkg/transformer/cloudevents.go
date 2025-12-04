@@ -38,7 +38,9 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 	}
 
 	entities := make([]map[string]any, 0, len(event.EntitiesImpacted))
+
 	var gpuUUID string
+
 	for _, e := range event.EntitiesImpacted {
 		entities = append(entities, map[string]any{
 			"entityType":  e.EntityType,
