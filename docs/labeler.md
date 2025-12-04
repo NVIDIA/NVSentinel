@@ -72,7 +72,17 @@ Indicates which major version of DCGM is running on the node.
 **Label**: `nvsentinel.dgxc.nvidia.com/driver.installed`
 **Values**: `true` or `false`
 
-Indicates whether the NVIDIA driver pod is running on the node.
+Indicates whether the NVIDIA driver is installed on the node. The Labeler detects drivers by watching for:
+- `nvidia-driver-daemonset` pods (GPU Operator managed)
+- `nvidia-driver-installer` pods in `kube-system` (GKE managed)
+
+In GKE clusters with pre-installed drivers, the `nvidia-driver-daemonset` is not deployed. Instead, Google manages driver installation through `nvidia-driver-installer` DaemonSet pods. The Labeler watches these pods to detect driver installation in GKE environments with pre-installed drivers.
+
+**Note**: For environments with pre-installed drivers where no `nvidia-driver-installer` pods exist (e.g., custom machine images with pre-baked drivers), use the following command to manually label the node:
+
+```bash
+kubectl label nodes <node-name> nvsentinel.dgxc.nvidia.com/driver.installed=true
+```
 
 ### Kata Enabled
 **Label**: `nvsentinel.dgxc.nvidia.com/kata.enabled`

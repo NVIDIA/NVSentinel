@@ -39,6 +39,7 @@ SHELLCHECK_VERSION := $(shell $(YQ) '.linting.shellcheck' .versions.yaml)
 
 # Go modules with specific patterns from CI
 GO_MODULES := \
+	api \
 	health-monitors/syslog-health-monitor \
 	health-monitors/csp-health-monitor \
 	platform-connectors \
@@ -288,6 +289,8 @@ protos-generate: protos-clean ## Generate protobuf files from .proto sources
 	@echo "========================"
 	# Generate Go protobuf files in data-models (shared by all Go modules)
 	$(MAKE) -C data-models protos-generate
+	# Generate Go protobuf files in api
+	$(MAKE) -C api protos-generate
 	# Generate Python protobuf files for gpu-health-monitor
 	$(MAKE) -C health-monitors/gpu-health-monitor protos-generate
 

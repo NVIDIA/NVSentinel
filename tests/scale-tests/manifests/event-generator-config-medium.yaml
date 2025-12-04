@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: medium
+data:
+  # Medium Load: Moderate stress test (10-12× production peak)
+  # For a 1500-node cluster: 0.067 events/sec/node = 100 events/sec total
+  EVENT_RATE: "0.067"
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+  
+  # Retry and stats configuration
+  RETRY_ATTEMPTS: "5"
+  STATS_INTERVAL: "50"

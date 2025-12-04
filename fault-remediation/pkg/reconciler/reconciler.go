@@ -306,8 +306,6 @@ func (r *Reconciler) handleRemediationEvent(
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
-	r.runLogCollector(ctx, healthEvent)
-
 	// Check if we should skip this event (NONE actions or unsupported actions)
 	if r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus) {
 		if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
@@ -338,6 +336,10 @@ func (r *Reconciler) handleRemediationEvent(
 
 		return
 	}
+
+	// Run log collector only when we're about to create a new CR
+	// This prevents duplicate log-collector jobs when multiple events arrive for the same node
+	r.runLogCollector(ctx, healthEvent)
 
 	nodeRemediatedStatus, _ := r.performRemediation(ctx, healthEventWithStatus)
 

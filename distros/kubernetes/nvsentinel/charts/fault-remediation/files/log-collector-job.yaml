@@ -49,12 +49,10 @@ spec:
                   fieldPath: spec.nodeName
             - name: KEEP_ALIVE
               value: "false"
-            - name: GPU_OPERATOR_NAMESPACES
+            - name: GPU_OPERATOR_NAMESPACE
               value: {{ .Values.logCollector.gpuOperatorNamespaces | default "gpu-operator" | quote }}
             - name: ENABLE_GPU_OPERATOR_MUST_GATHER
-              value: "false"
-            - name: COLLECTION_TIMEOUT_SECONDS
-              value: "900"
+              value: {{ .Values.logCollector.enableGpuOperatorMustGather | quote }}
             - name: UPLOAD_URL_BASE
               value: {{ .Values.logCollector.uploadURL | quote }}
             - name: ENABLE_GCP_SOS_COLLECTION

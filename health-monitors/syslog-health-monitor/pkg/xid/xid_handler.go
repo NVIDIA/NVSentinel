@@ -145,6 +145,26 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		})
 	}
 
+	if xidResp.Result.Metadata != nil {
+		if gpc, ok := xidResp.Result.Metadata["GPC"]; ok {
+			entities = append(entities, &pb.Entity{
+				EntityType: "GPC", EntityValue: gpc,
+			})
+		}
+
+		if tpc, ok := xidResp.Result.Metadata["TPC"]; ok {
+			entities = append(entities, &pb.Entity{
+				EntityType: "TPC", EntityValue: tpc,
+			})
+		}
+
+		if sm, ok := xidResp.Result.Metadata["SM"]; ok {
+			entities = append(entities, &pb.Entity{
+				EntityType: "SM", EntityValue: sm,
+			})
+		}
+	}
+
 	metadata := make(map[string]string)
 	if chassisSerial := xidHandler.metadataReader.GetChassisSerial(); chassisSerial != nil {
 		metadata["chassis_serial"] = *chassisSerial

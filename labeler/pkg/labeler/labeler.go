@@ -40,8 +40,9 @@ const (
 	KataEnabledLabel        = "nvsentinel.dgxc.nvidia.com/kata.enabled"
 	KataRuntimeDefaultLabel = "katacontainers.io/kata-runtime"
 
-	NodeDCGMIndex   = "nodeDCGM"
-	NodeDriverIndex = "nodeDriver"
+	NodeDCGMIndex               = "nodeDCGM"
+	NodeDriverIndex             = "nodeDriver"
+	NodeGKEDriverInstallerIndex = "nodeGKEDriverInstaller"
 
 	// Label values
 	LabelValueTrue  = "true"
@@ -55,21 +56,28 @@ var (
 
 // Labeler manages node labeling based on pod information
 type Labeler struct {
-	clientset       kubernetes.Interface
-	podInformer     cache.SharedIndexInformer
-	nodeInformer    cache.SharedIndexInformer
-	informersSynced []cache.InformerSynced
-	ctx             context.Context
-	dcgmAppLabel    string
-	driverAppLabel  string
-	kataLabels      []string // Instance-specific kata labels
+	clientset            kubernetes.Interface
+	podInformer          cache.SharedIndexInformer
+	nodeInformer         cache.SharedIndexInformer
+	gkeInstallerInformer cache.SharedIndexInformer
+	informersSynced      []cache.InformerSynced
+	ctx                  context.Context
+	dcgmAppLabel         string
+	driverAppLabel       string
+	gkeInstallerAppLabel string
+	kataLabels           []string // Instance-specific kata labels
 }
 
 // NewLabeler creates a new Labeler instance
 // nolint: cyclop // todo
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	dcgmApp, driverApp, kataLabelOverride string) (*Labeler, error) {
+	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string) (*Labeler, error) {
 	labelSelector, err := labels.Parse(fmt.Sprintf("app in (%s,%s)", dcgmApp, driverApp))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse label selector: %w", err)
+	}
+
+	gkeInstallerLabelSelector, err := labels.Parse(fmt.Sprintf("k8s-app=%s", gkeInstallerApp))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse label selector: %w", err)
 	}
@@ -88,11 +96,19 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			options.LabelSelector = labelSelector.String()
 		}),
 	)
+	gkeInstallerInformerFactory := informers.NewSharedInformerFactoryWithOptions(
+		clientset,
+		resyncPeriod,
+		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
+			options.LabelSelector = gkeInstallerLabelSelector.String()
+		}),
+	)
 
 	// Create node informer factory (no filtering needed)
 	nodeInformerFactory := informers.NewSharedInformerFactory(clientset, resyncPeriod)
 
 	podInformer := podInformerFactory.Core().V1().Pods().Informer()
+	gkeInstallerInformer := gkeInstallerInformerFactory.Core().V1().Pods().Informer()
 	nodeInformer := nodeInformerFactory.Core().V1().Nodes().Informer()
 
 	err = podInformer.GetIndexer().AddIndexers(
@@ -126,15 +142,40 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to add indexer: %w", err)
 	}
 
+	err = gkeInstallerInformer.GetIndexer().AddIndexers(
+		cache.Indexers{
+			NodeGKEDriverInstallerIndex: func(obj any) ([]string, error) {
+				pod, ok := obj.(*v1.Pod)
+				if !ok {
+					return nil, fmt.Errorf("object is not a pod")
+				}
+
+				if app, exists := pod.Labels["k8s-app"]; exists && app == gkeInstallerApp {
+					return []string{pod.Spec.NodeName}, nil
+				}
+
+				return []string{}, nil
+			},
+		})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add indexer: %w", err)
+	}
+
 	l := &Labeler{
-		clientset:       clientset,
-		podInformer:     podInformer,
-		nodeInformer:    nodeInformer,
-		informersSynced: []cache.InformerSynced{podInformer.HasSynced, nodeInformer.HasSynced},
-		ctx:             context.Background(),
-		dcgmAppLabel:    dcgmApp,
-		driverAppLabel:  driverApp,
-		kataLabels:      kataLabels,
+		clientset:            clientset,
+		podInformer:          podInformer,
+		nodeInformer:         nodeInformer,
+		gkeInstallerInformer: gkeInstallerInformer,
+		informersSynced: []cache.InformerSynced{
+			podInformer.HasSynced,
+			nodeInformer.HasSynced,
+			gkeInstallerInformer.HasSynced,
+		},
+		ctx:                  context.Background(),
+		dcgmAppLabel:         dcgmApp,
+		driverAppLabel:       driverApp,
+		gkeInstallerAppLabel: gkeInstallerApp,
+		kataLabels:           kataLabels,
 	}
 
 	// Register event handlers
@@ -151,8 +192,55 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	return l, nil
 }
 
+func (l *Labeler) getEventHandlers() cache.ResourceEventHandlerFuncs {
+	return cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if err := l.handlePodEvent(obj); err != nil {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
+				slog.Error("Failed to handle pod add event", "error", err)
+			} else {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
+			}
+		},
+		UpdateFunc: func(oldObj, newObj any) {
+			oldPod, oldOk := oldObj.(*v1.Pod)
+
+			newPod, newOk := newObj.(*v1.Pod)
+			if !oldOk || !newOk {
+				slog.Error("Failed to cast objects to pods in UpdateFunc")
+				return
+			}
+
+			oldReady := podutil.IsPodReady(oldPod)
+
+			newReady := podutil.IsPodReady(newPod)
+			if oldReady == newReady {
+				slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
+				return
+			}
+
+			if err := l.handlePodEvent(newPod); err != nil {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
+				slog.Error("Failed to handle pod update event", "error", err)
+			} else {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if err := l.handlePodDeleteEvent(obj); err != nil {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
+				slog.Error("Failed to handle pod delete event", "error", err)
+			} else {
+				metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
+			}
+		},
+	}
+}
+
 // registerPodEventHandlers sets up event handlers for pod informer
 func (l *Labeler) registerPodEventHandlers() error {
+	eventHandlers := l.getEventHandlers()
+
 	_, err := l.podInformer.AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: func(obj any) bool {
 			pod, ok := obj.(*v1.Pod)
@@ -162,51 +250,25 @@ func (l *Labeler) registerPodEventHandlers() error {
 
 			return pod.Spec.NodeName != ""
 		},
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj any) {
-				if err := l.handlePodEvent(obj); err != nil {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					slog.Error("Failed to handle pod add event", "error", err)
-				} else {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
-				}
-			},
-			UpdateFunc: func(oldObj, newObj any) {
-				oldPod, oldOk := oldObj.(*v1.Pod)
-
-				newPod, newOk := newObj.(*v1.Pod)
-				if !oldOk || !newOk {
-					slog.Error("Failed to cast objects to pods in UpdateFunc")
-					return
-				}
-
-				oldReady := podutil.IsPodReady(oldPod)
-
-				newReady := podutil.IsPodReady(newPod)
-				if oldReady == newReady {
-					slog.Debug("Pod readiness unchanged", "pod", newPod.Name, "ready", newReady)
-					return
-				}
-
-				if err := l.handlePodEvent(newPod); err != nil {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					slog.Error("Failed to handle pod update event", "error", err)
-				} else {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
-				}
-			},
-			DeleteFunc: func(obj any) {
-				if err := l.handlePodDeleteEvent(obj); err != nil {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusFailed).Inc()
-					slog.Error("Failed to handle pod delete event", "error", err)
-				} else {
-					metrics.EventsProcessed.WithLabelValues(metrics.StatusSuccess).Inc()
-				}
-			},
-		},
+		Handler: eventHandlers,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to add pod event handler: %w", err)
+	}
+
+	_, err = l.gkeInstallerInformer.AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj any) bool {
+			pod, ok := obj.(*v1.Pod)
+			if !ok {
+				return false
+			}
+
+			return pod.Spec.NodeName != ""
+		},
+		Handler: eventHandlers,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add GKE installer event handler: %w", err)
 	}
 
 	return nil
@@ -238,6 +300,7 @@ func (l *Labeler) Run(ctx context.Context) error {
 	l.ctx = ctx
 
 	go l.podInformer.Run(ctx.Done())
+	go l.gkeInstallerInformer.Run(ctx.Done())
 	go l.nodeInformer.Run(ctx.Done())
 
 	slog.Info("Waiting for Labeler caches to sync...")
@@ -279,6 +342,27 @@ func (l *Labeler) getDCGMVersionForNode(nodeName string) (string, error) {
 	return "", nil
 }
 
+// hasReadyDriverPod checks if any pod in the list is ready, optionally excluding a specific pod
+func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
+	for _, obj := range objs {
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			continue
+		}
+
+		// Skip the pod we're excluding (used for delete events)
+		if excludePod != nil && pod.UID == excludePod.UID {
+			continue
+		}
+
+		if podutil.IsPodReady(pod) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // getDriverLabelForNode returns the expected driver label value for a specific node
 func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
@@ -286,15 +370,18 @@ func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
 	}
 
-	for _, obj := range objs {
-		pod, ok := obj.(*v1.Pod)
-		if !ok {
-			continue
-		}
+	if hasReadyDriverPod(objs, nil) {
+		return LabelValueTrue, nil
+	}
 
-		if podutil.IsPodReady(pod) {
-			return LabelValueTrue, nil
-		}
+	// fallback mechanism for GKE pre-installed driver where nvidia-driver-daemonset is not present
+	objs, err = l.gkeInstallerInformer.GetIndexer().ByIndex(NodeGKEDriverInstallerIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get GKE driver installer pods by node index for node %s: %w", nodeName, err)
+	}
+
+	if hasReadyDriverPod(objs, nil) {
+		return LabelValueTrue, nil
 	}
 
 	return "", nil
@@ -371,20 +458,18 @@ func (l *Labeler) getDriverLabelForNodeExcluding(nodeName string, excludePod *v1
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
 	}
 
-	for _, obj := range objs {
-		pod, ok := obj.(*v1.Pod)
-		if !ok {
-			continue
-		}
+	if hasReadyDriverPod(objs, excludePod) {
+		return LabelValueTrue, nil
+	}
 
-		// Skip the pod we're excluding (the one being deleted)
-		if pod.UID == excludePod.UID {
-			continue
-		}
+	// fallback mechanism for GKE pre-installed driver where nvidia-driver-daemonset is not present
+	objs, err = l.gkeInstallerInformer.GetIndexer().ByIndex(NodeGKEDriverInstallerIndex, nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get GKE driver installer pods by node index for node %s: %w", nodeName, err)
+	}
 
-		if podutil.IsPodReady(pod) {
-			return LabelValueTrue, nil
-		}
+	if hasReadyDriverPod(objs, excludePod) {
+		return LabelValueTrue, nil
 	}
 
 	return "", nil

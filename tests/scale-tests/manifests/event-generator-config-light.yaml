@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: light
+data:
+  # Light Load: Conservative baseline for 1500 nodes (3-4× production peak)
+  # For a 1500-node cluster: 0.02 events/sec/node = 30 events/sec total
+  EVENT_RATE: "0.02"
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+  
+  # Retry and stats configuration
+  RETRY_ATTEMPTS: "3"
+  STATS_INTERVAL: "100"

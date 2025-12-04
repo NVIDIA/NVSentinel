@@ -105,11 +105,19 @@ logCollector:
   uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
   # Comma-separated list of namespaces where GPU operator components run (for collecting GPU operator logs)
   gpuOperatorNamespaces: "gpu-operator"
+  # Enable GPU Operator must-gather collection (disabled by default)
+  # WARNING: must-gather collects logs from ALL nodes in the cluster, which can be very
+  # time-consuming for large clusters (e.g., GB200 clusters with 100+ nodes).
+  # If enabling this, you MUST increase the timeout accordingly.
+  # Recommended timeout: ~2-3 minutes per node (e.g., 100 nodes = 200-300 minutes)
+  enableGpuOperatorMustGather: false
   # Enable GCP-specific SOS report collection
   enableGcpSosCollection: false
   # Enable AWS-specific SOS report collection
   enableAwsSosCollection: false
   # Timeout for waiting for log collection job to complete
+  # Default: 10m (sufficient for nvidia-bug-report only)
+  # If enableGpuOperatorMustGather is true, increase to: ~2-3 min per node in cluster
   timeout: "10m"
   # Additional environment variables to pass to the log-collector container
   # Example:

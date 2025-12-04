@@ -220,20 +220,42 @@ elif [ "${ENABLE_AWS_SOS_COLLECTION}" = "true" ]; then
   echo "[INFO] AWS SOS collection enabled but not on AWS - skipping"
 fi
 
-# 4) GPU Operator must-gather (for all clusters)
+# 4) GPU Operator must-gather (optional - disabled by default)
+ENABLE_GPU_OPERATOR_MUST_GATHER="${ENABLE_GPU_OPERATOR_MUST_GATHER:-false}"
+GPU_MG_TARBALL=""
+
+if [ "${ENABLE_GPU_OPERATOR_MUST_GATHER}" = "true" ]; then
 GPU_MG_DIR="${ARTIFACTS_DIR}/gpu-operator-must-gather"
 mkdir -p "${GPU_MG_DIR}"
-echo "[INFO] Running GPU Operator must-gather..."
-curl -fsSL "${MUST_GATHER_SCRIPT_URL}" -o "${GPU_MG_DIR}/must-gather.sh"
+  echo "[INFO] Running GPU Operator must-gather (this may take a while for large clusters)..."
+  
+  MUST_GATHER_SUCCESS=true
+
+  # Download must-gather script with error handling
+  if curl -fsSL "${MUST_GATHER_SCRIPT_URL}" -o "${GPU_MG_DIR}/must-gather.sh"; then
 chmod +x "${GPU_MG_DIR}/must-gather.sh"
-bash "${GPU_MG_DIR}/must-gather.sh"
+    # Run must-gather with error handling to allow partial artifact collection
+    # If must-gather fails (timeout, network issues, etc.), continue with available artifacts
+    bash "${GPU_MG_DIR}/must-gather.sh" || {
+      echo "[WARN] GPU Operator must-gather failed - continuing with available artifacts" >&2
+      MUST_GATHER_SUCCESS=false
+    }
+  else
+    echo "[WARN] Failed to download GPU Operator must-gather script - continuing without must-gather data" >&2
+    MUST_GATHER_SUCCESS=false
+  fi
 
 GPU_MG_TARBALL="${ARTIFACTS_DIR}/gpu-operator-must-gather-${NODE_NAME}-${TIMESTAMP}.tar.gz"
-if [ -d "${GPU_MG_DIR}" ] && [ "$(ls -A "${GPU_MG_DIR}" 2>/dev/null)" ]; then
+  if [ "${MUST_GATHER_SUCCESS}" = "true" ] && [ -d "${GPU_MG_DIR}" ] && [ "$(ls -A "${GPU_MG_DIR}" 2>/dev/null)" ]; then
   tar -C "${GPU_MG_DIR}" -czf "${GPU_MG_TARBALL}" .
   echo "[INFO] GPU Operator must-gather tarball created: ${GPU_MG_TARBALL}"
 else
   echo "[INFO] No GPU Operator must-gather data to archive"
+    GPU_MG_TARBALL=""
+  fi
+else
+  echo "[INFO] GPU Operator must-gather is disabled (ENABLE_GPU_OPERATOR_MUST_GATHER=${ENABLE_GPU_OPERATOR_MUST_GATHER})"
+  echo "[INFO] To enable, set ENABLE_GPU_OPERATOR_MUST_GATHER=true and increase timeout for large clusters"
 fi
 
 # Optional upload to in-cluster file server
@@ -249,7 +271,7 @@ if [ -n "${UPLOAD_URL_BASE:-}" ]; then
     fi
   fi
   
-  if [ -f "${GPU_MG_TARBALL}" ]; then
+  if [ -n "${GPU_MG_TARBALL}" ] && [ -f "${GPU_MG_TARBALL}" ]; then
     if curl -fsS -X PUT --upload-file "${GPU_MG_TARBALL}" \
       "${UPLOAD_URL_BASE}/${NODE_NAME}/${TIMESTAMP}/$(basename "${GPU_MG_TARBALL}")"; then
       echo "[UPLOAD_SUCCESS] gpu-operator must-gather uploaded: $(basename "${GPU_MG_TARBALL}")"

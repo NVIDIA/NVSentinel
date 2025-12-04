@@ -283,7 +283,7 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 
 	// No need to clone here - Publisher.Publish already clones the event
 	// The EventProcessor creates a fresh stack variable for each event, so no mutation risk
-	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal), rule.Name)
+	err := r.config.Publisher.Publish(ctx, event.HealthEvent, protos.RecommendedAction(actionVal), rule.Name, rule.Message)
 	if err != nil {
 		slog.Error("Error in publishing the new fatal event", "error", err)
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
@@ -356,14 +356,14 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		// Check for explicit ruleMatched field (used in tests and by SequenceFacet pipelines)
 		if matched, ok := result[0]["ruleMatched"].(bool); ok {
 			if matched {
-				slog.Info("✓ Rule matched via ruleMatched field",
+				slog.Info("Rule matched via ruleMatched field",
 					"rule_name", rule.Name,
 					"node", healthEventWithStatus.HealthEvent.NodeName)
 
 				return true, nil
 			}
 
-			slog.Info("✗ Rule did not match (ruleMatched=false)",
+			slog.Info("Rule did not match (ruleMatched=false)",
 				"rule_name", rule.Name,
 				"node", healthEventWithStatus.HealthEvent.NodeName,
 				"result", result[0])
@@ -371,16 +371,10 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 			return false, nil
 		}
 
-		// For Stage-based pipelines, presence of results indicates a match
-		slog.Info("✓ Rule matched via results existence",
-			"rule_name", rule.Name,
-			"node", healthEventWithStatus.HealthEvent.NodeName,
-			"result_count", len(result))
-
 		return true, nil
 	}
 
-	slog.Info("✗ Rule did not match (no results)",
+	slog.Info("Rule did not match (no results)",
 		"rule_name", rule.Name,
 		"node", healthEventWithStatus.HealthEvent.NodeName)
 
@@ -464,7 +458,8 @@ func (r *Reconciler) processXidBurstDetection(ctx context.Context, event *protos
 
 	// Use the publisher to create and publish the RepeatedXidError event
 	// The publisher will set agent, checkName, isHealthy, isFatal, and recommendedAction
-	err := r.config.Publisher.Publish(ctx, event, protos.RecommendedAction_CONTACT_SUPPORT, "RepeatedXidError")
+	err := r.config.Publisher.Publish(ctx, event, protos.RecommendedAction_CONTACT_SUPPORT, "RepeatedXidError",
+		event.Message)
 	if err != nil {
 		slog.Error("Failed to publish RepeatedXidError event",
 			"error", err,

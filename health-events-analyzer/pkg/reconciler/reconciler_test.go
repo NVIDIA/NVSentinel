@@ -174,6 +174,7 @@ var (
 				`{"$match": {"count": {"$gte": 3}}}`,
 			},
 			RecommendedAction: "CONTACT_SUPPORT",
+			Message:           "XID error occurred",
 		},
 		{
 			Name:        "rule3",
@@ -198,32 +199,6 @@ var (
 			IsHealthy:      false,
 			Message:        "XID error occurred",
 			ErrorCode:      []string{"13"},
-			EntitiesImpacted: []*protos.Entity{{
-				EntityType:  "GPU",
-				EntityValue: "1",
-			}},
-			Metadata: map[string]string{
-				"SerialNumber": "1655322004581",
-			},
-			GeneratedTimestamp: &timestamppb.Timestamp{
-				Seconds: time.Now().Unix(),
-				Nanos:   0,
-			},
-			NodeName: "node1",
-		},
-		HealthEventStatus: datamodels.HealthEventStatus{},
-	}
-	healthEvent_48 = datamodels.HealthEventWithStatus{
-		CreatedAt: time.Now(),
-		HealthEvent: &protos.HealthEvent{
-			Version:        1,
-			Agent:          "gpu-health-monitor",
-			ComponentClass: "GPU",
-			CheckName:      "GpuXidError",
-			IsFatal:        true,
-			IsHealthy:      false,
-			Message:        "XID error occurred",
-			ErrorCode:      []string{"48"},
 			EntitiesImpacted: []*protos.Entity{{
 				EntityType:  "GPU",
 				EntityValue: "1",
@@ -312,7 +287,7 @@ func TestHandleEvent(t *testing.T) {
 			Agent:              "health-events-analyzer", // Publisher sets this
 			CheckName:          "rule2",                  // Publisher sets this to ruleName
 			ComponentClass:     healthEvent_13.HealthEvent.ComponentClass,
-			Message:            healthEvent_13.HealthEvent.Message,
+			Message:            "XID error occurred",                     // From rule2.Message
 			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT, // From rule2
 			ErrorCode:          healthEvent_13.HealthEvent.ErrorCode,
 			IsHealthy:          false, // Publisher sets this
@@ -686,11 +661,11 @@ func TestGetPipelineStages_ReturnTypeCompatibility(t *testing.T) {
 	// by checking it matches the signature that store-client expects
 	mockDB := &mockDatabaseClient{}
 	mockCursor := &mockCursor{}
-	
+
 	// The Aggregate method expects interface{} but should work with []map[string]interface{}
 	// This ensures backward compatibility with MongoDB driver
 	mockDB.On("Aggregate", mock.Anything, pipeline).Return(mockCursor, nil)
-	
+
 	cursor, err := mockDB.Aggregate(context.Background(), pipeline)
 	assert.NoError(t, err)
 	assert.NotNil(t, cursor)

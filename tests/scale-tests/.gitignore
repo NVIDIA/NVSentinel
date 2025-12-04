@@ -1,0 +1,4 @@
+.local/
+
+# Compiled binaries
+event-generator/event-generator

@@ -620,6 +620,17 @@ fault-remediation:
     # Can be multiple namespaces separated by commas
     gpuOperatorNamespaces: "gpu-operator"
     
+    # Enable GPU Operator must-gather collection (disabled by default)
+    # WARNING: must-gather collects logs from ALL nodes in the cluster, which can be very
+    # time-consuming for large clusters
+    # If enabling this, you MUST increase the timeout accordingly.
+    # Recommended timeout: ~2-3 minutes per node 
+    enableGpuOperatorMustGather: false
+    
+    # Timeout for log collection job (default: 10m)
+    # If enableGpuOperatorMustGather is true, increase to: ~2-3 min per node in cluster
+    timeout: "10m"
+    
     # Enable GCP-specific SOS report collection
     # Requires running on GCP and appropriate permissions
     enableGcpSosCollection: false

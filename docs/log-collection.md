@@ -19,13 +19,15 @@ Without log collection, you'd need to manually SSH to failed nodes, locate the r
 
 ## How It Works
 
-When log collection is enabled, NVSentinel automatically collects diagnostics after a node is drained:
+When log collection is enabled, NVSentinel automatically collects diagnostics when a fault with a **supported remediation action** is detected:
 
-1. Fault Remediation module detects a drained node
-2. Creates a Kubernetes Job on the target node
-3. Job runs with privileged access to collect diagnostics
+1. Fault Remediation module receives a health event with a supported action
+2. Creates a Kubernetes Job on the target node to collect diagnostics
+3. Job runs with privileged access to gather logs (in parallel with node drain/remediation)
 4. Logs are uploaded to the in-cluster file server
 5. Job completes and is automatically cleaned up after 1 hour
+
+> **Note**: Log collection is **skipped** for unsupported remediation actions since no automated remediation is performed and the node remains accessible for manual log collection.
 
 The file server stores logs organized by node name and timestamp, accessible via web browser through port-forwarding.
 
@@ -39,13 +41,18 @@ Comprehensive NVIDIA driver and GPU diagnostic report:
 - PCIe information
 - DCGM diagnostics
 
-### GPU Operator Must-Gather
-Kubernetes resources and logs for GPU operator components:
+### GPU Operator Must-Gather (Optional)
+
+> **Warning**: Must-gather is **disabled by default** because it collects logs from **ALL nodes** in the cluster, which can be very time-consuming for large clusters (e.g., GB200 clusters with 100+ nodes).
+
+When enabled, collects Kubernetes resources and logs for GPU operator components:
 - GPU operator pod logs
 - DCGM exporter logs
 - Device plugin logs
 - GPU feature discovery logs
 - Operator configuration
+
+**To enable must-gather**, set `enableGpuOperatorMustGather: true` and **increase the timeout** accordingly (see [Timeout Configuration](#timeout-configuration) below).
 
 ### Cloud Provider SOS Reports (Optional)
 System logs and configuration from GCP or AWS instances when enabled.
@@ -62,9 +69,39 @@ fault-remediation:
     gpuOperatorNamespaces: "gpu-operator"
     timeout: "10m"
     
+    # GPU Operator must-gather (disabled by default - see warning below)
+    enableGpuOperatorMustGather: false
+    
     # Cloud-specific SOS collection
     enableGcpSosCollection: false
     enableAwsSosCollection: false
+```
+
+### Timeout Configuration
+
+The default timeout of `10m` is sufficient when collecting only the nvidia-bug-report (must-gather disabled).
+
+> **Important**: If you enable `enableGpuOperatorMustGather`, you **MUST** increase the timeout!
+>
+> Must-gather collects logs from **all nodes** in the cluster, taking approximately **2-3 minutes per node**.
+>
+> **Recommended timeout formula**: `(number of nodes) × 2-3 minutes`
+>
+> | Cluster Size | Recommended Timeout |
+> |--------------|---------------------|
+> | 10 nodes     | 30m                 |
+> | 50 nodes     | 2h                  |
+> | 100 nodes    | 4h                  |
+> | 200+ nodes   | 8h+                 |
+
+Example configuration for a 100-node cluster with must-gather enabled:
+
+```yaml
+fault-remediation:
+  logCollector:
+    enabled: true
+    enableGpuOperatorMustGather: true
+    timeout: "4h"  # Increased for 100-node cluster
 ```
 
 ### File Server Configuration
@@ -91,13 +128,14 @@ incluster-file-server:
 - **Enable/Disable**: Turn log collection on or off per deployment
 - **Storage Size**: Configure persistent volume size based on expected log volume
 - **Log Retention**: Automatically clean up old logs after configurable retention period
-- **Timeout**: Set maximum time for log collection job
+- **Timeout**: Set maximum time for log collection job (increase when enabling must-gather)
+- **Enable Must-Gather**: Enable GPU Operator must-gather collection (disabled by default due to performance impact on large clusters)
 - **Cloud-Specific SOS**: Enable additional cloud provider diagnostics
 
 ## Key Features
 
 ### Automatic Collection
-Logs are gathered automatically after node drain completes - no manual intervention required.
+Logs are gathered automatically when a supported remediation action is triggered - no manual intervention required.
 
 ### Privileged Access
 Collection job runs with necessary privileges to access all diagnostic sources on the node.

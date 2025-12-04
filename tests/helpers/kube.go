@@ -345,7 +345,8 @@ func WaitForNodeLabelNotEqual(
 		"expected node %s label %s to not equal %s", nodeName, labelKey, notExpectedValue)
 }
 
-func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string, expectedEvent v1.Event) {
+func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
+	expectedEvent v1.Event) {
 	require.Eventually(t, func() bool {
 		fieldSelector := resources.WithFieldSelector(fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName))
 
@@ -359,7 +360,19 @@ func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeNa
 
 		for _, event := range eventsForNode.Items {
 			if event.Type == expectedEvent.Type && event.Reason == expectedEvent.Reason {
+				if expectedEvent.Message != "" {
+					t.Logf("Matching message for event %v", expectedEvent.Type)
+					t.Logf("Event message: %s", event.Message)
+					t.Logf("Expected message: %s", expectedEvent.Message)
+
+					if event.Message != expectedEvent.Message {
+						t.Logf("Event message does not match expected message: %s != %s", event.Message, expectedEvent.Message)
+						continue
+					}
+				}
+
 				t.Logf("Matching event for node %s: %v", nodeName, event)
+
 				return true
 			}
 		}
@@ -1926,6 +1939,27 @@ func WaitForLogCollectorJobStatus(
 		"log-collector job for node %s should reach status %s", nodeName, expectedStatus)
 
 	return foundJob
+}
+
+// VerifyNoLogCollectorJobExists verifies that no log-collector job exists for the node.
+func VerifyNoLogCollectorJobExists(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
+	t.Helper()
+
+	t.Logf("Waiting %v to verify no log-collector job exists for node %s", NeverWaitTimeout, nodeName)
+
+	time.Sleep(NeverWaitTimeout)
+
+	var jobList batchv1.JobList
+
+	err := c.Resources(NVSentinelNamespace).List(ctx, &jobList, resources.WithLabelSelector("app=log-collector"))
+	require.NoError(t, err, "failed to list log-collector jobs")
+
+	for _, job := range jobList.Items {
+		if job.Spec.Template.Spec.NodeName == nodeName {
+			t.Fatalf("Found log-collector job %s for node %s - log-collector should NOT run for unsupported events",
+				job.Name, nodeName)
+		}
+	}
 }
 
 // VerifyNodeLabelNotEqual verifies that a node's label is NOT equal to the specified value.

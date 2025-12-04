@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: high-burst
+data:
+  # High Burst Test: Major multi-node health event (3,000 events/sec)
+  # For a 1500-node cluster: 2.0 events/sec/node = 3,000 events/sec total
+  EVENT_RATE: "2.0"
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+  
+  # Retry and stats configuration
+  RETRY_ATTEMPTS: "5"
+  STATS_INTERVAL: "30"

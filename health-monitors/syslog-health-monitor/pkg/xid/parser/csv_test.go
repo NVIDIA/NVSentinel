@@ -47,6 +47,7 @@ func TestCSVParser_Parse(t *testing.T) {
 		expectedAction    pb.RecommendedAction
 		expectedMnemonic  string
 		expectedErrorCode string
+		expectedMetadata  map[string]string
 	}{
 		{
 			name:              "NL5 XID",
@@ -59,6 +60,28 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedErrorCode: "149.NETIR_LINK_EVT",
 		},
 		{
+			name:              "Parse metadata from XID-13",
+			message:           "NVRM: Xid (PCI:0000:b5:00): 13, pid='<unknown>', name=<unknown>, Graphics SM Warp Exception on (GPC 1, TPC 3, SM 0): Out Of Range Address",
+			expectedSuccess:   true,
+			expectedXIDCode:   13,
+			expectedPCIAddr:   "0000:b5:00",
+			expectedAction:    pb.RecommendedAction_RESTART_VM,
+			expectedMnemonic:  "XID 13",
+			expectedErrorCode: "13",
+			expectedMetadata:  map[string]string{"GPC": "1", "TPC": "3", "SM": "0"},
+		},
+		{
+			name:              "XID 13 with no GPC, TPC, or SM values",
+			message:           "NVRM: Xid (PCI:0000:b5:00): 13, pid='<unknown>', name=<unknown>, Graphics Exception: ESR 0x50df30=0x107000e 0x50df34=0x20 0x50df28=0xf81eb60 0x50df2c=0x1174",
+			expectedSuccess:   true,
+			expectedXIDCode:   13,
+			expectedPCIAddr:   "0000:b5:00",
+			expectedAction:    pb.RecommendedAction_RESTART_VM,
+			expectedMnemonic:  "XID 13",
+			expectedErrorCode: "13",
+			expectedMetadata:  map[string]string{},
+		},
+		{
 			name:              "Complex XID format with all fields",
 			message:           "NVRM: Xid (PCI:0000:66:00): 32, pid=2280636, name=train.3, Channel ID 0000000d intr0 00040000",
 			expectedSuccess:   true,
@@ -67,6 +90,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 32",
 			expectedErrorCode: "32",
+			expectedMetadata:  map[string]string{},
 		},
 		{
 			name:              "Minimal XID format",
@@ -77,6 +101,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
 			expectedMnemonic:  "XID 46",
 			expectedErrorCode: "46",
+			expectedMetadata:  map[string]string{},
 		},
 		{
 			name:              "Different PCI address format",
@@ -87,6 +112,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 69",
 			expectedErrorCode: "69",
+			expectedMetadata:  map[string]string{},
 		},
 		{
 			name:              "Different XID code",
@@ -97,6 +123,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_NONE,
 			expectedMnemonic:  "XID 8",
 			expectedErrorCode: "8",
+			expectedMetadata:  map[string]string{},
 		},
 		{
 			name:              "Unknown XID defaults to CONTACT_SUPPORT",
@@ -107,6 +134,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_CONTACT_SUPPORT,
 			expectedMnemonic:  "XID 999",
 			expectedErrorCode: "999",
+			expectedMetadata:  map[string]string{},
 		},
 		{
 			name:            "Non-XID NVRM message",
@@ -142,6 +170,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			expectedAction:    pb.RecommendedAction_COMPONENT_RESET,
 			expectedMnemonic:  "XID 154",
 			expectedErrorCode: "154",
+			expectedMetadata:  map[string]string{},
 		},
 	}
 
@@ -163,6 +192,7 @@ func TestCSVParser_Parse(t *testing.T) {
 			assert.Equal(t, tc.expectedMnemonic, result.Result.Mnemonic, "Mnemonic should match")
 			assert.Equal(t, tc.expectedErrorCode, result.Result.DecodedXIDStr, "Decoded XID string should match")
 			assert.Equal(t, tc.expectedErrorCode, result.Result.Name, "Name should match")
+			assert.Equal(t, tc.expectedMetadata, result.Result.Metadata, "Metadata should match")
 
 			if tc.expectedXIDCode != 999 {
 				assert.NotEqual(t, pb.RecommendedAction_CONTACT_SUPPORT.String(), result.Result.Resolution,

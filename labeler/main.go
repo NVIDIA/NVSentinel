@@ -49,7 +49,7 @@ func main() {
 }
 
 func run() error {
-	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, kataLabel := parseFlags()
+	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, gkeInstallerAppLabel, kataLabel := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -66,10 +66,11 @@ func run() error {
 	)
 
 	params := initializer.InitializationParams{
-		KubeconfigPath: *kubeconfig,
-		DCGMAppLabel:   *dcgmAppLabel,
-		DriverAppLabel: *driverAppLabel,
-		KataLabel:      *kataLabel,
+		KubeconfigPath:       *kubeconfig,
+		DCGMAppLabel:         *dcgmAppLabel,
+		DriverAppLabel:       *driverAppLabel,
+		GKEInstallerAppLabel: *gkeInstallerAppLabel,
+		KataLabel:            *kataLabel,
 	}
 
 	components, err := initializer.InitializeAll(params)
@@ -96,11 +97,13 @@ func run() error {
 	return g.Wait()
 }
 
-func parseFlags() (kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, kataLabel *string) {
+func parseFlags() (kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, gkeInstallerAppLabel, kataLabel *string) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 	dcgmAppLabel = flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
 	driverAppLabel = flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
+	gkeInstallerAppLabel = flag.String("gke-installer-app-label",
+		"nvidia-driver-installer", "App label value for GKE driver installer pods")
 	kataLabel = flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))

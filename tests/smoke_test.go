@@ -293,7 +293,13 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 	feature.Assess("Can send fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/unsupported-health-event.json")
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Delete any existing log-collector jobs for this node before sending event
+		helpers.DeleteAllLogCollectorJobs(ctx, t, client)
+
+		err = helpers.SendHealthEventsToNodes([]string{nodeName}, "data/unsupported-health-event.json")
 		assert.NoError(t, err, "failed to send health event")
 
 		return ctx
@@ -355,19 +361,15 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Log-collector job completes successfully", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("No log-collector job created for unsupported event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		// Verify log-collector job completed successfully on real node
-		t.Logf("Waiting for log-collector job to complete on node %s", nodeName)
-		job := helpers.WaitForLogCollectorJobStatus(ctx, t, client, nodeName, "Complete")
-
-		// Verify log files were uploaded to file server
-		t.Logf("Verifying log files were uploaded to file server for node %s", nodeName)
-		helpers.VerifyLogFilesUploaded(ctx, t, client, job)
+		// For unsupported events, log-collector should NOT be triggered
+		// since shouldSkipEvent returns true and we return early before runLogCollector
+		helpers.VerifyNoLogCollectorJobExists(ctx, t, client, nodeName)
 
 		return ctx
 	})
