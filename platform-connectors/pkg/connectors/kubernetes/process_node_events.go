@@ -552,10 +552,6 @@ func isKubernetesStringError(errStr string) bool {
 // truncateNodeConditionMessage builds the node condition message while respecting the max node condition
 // message length. It preserves complete error entries and adds a truncation indicator if needed.
 func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
-	if len(messages) == 0 {
-		return NoHealthFailureMsg
-	}
-
 	truncationSuffix := "..."
 	maxLen := int(r.maxNodeConditionMessageLength) - len(truncationSuffix)
 

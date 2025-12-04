@@ -507,7 +507,6 @@ func TestSyslogHealthMonitorNodeConditionTruncation(t *testing.T) {
 			messageLen := len(condition.Message)
 			t.Logf("Node condition message length: %d characters", messageLen)
 
-			// Verify message length is within the 1KB limit
 			if messageLen > maxConditionMessageLength {
 				t.Logf("FAIL: Message length %d exceeds max %d", messageLen, maxConditionMessageLength)
 				return false
