@@ -556,6 +556,7 @@ func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
 	maxLen := int(r.maxNodeConditionMessageLength) - len(truncationSuffix)
 
 	var result strings.Builder
+
 	truncated := false
 
 	for i, msg := range messages {

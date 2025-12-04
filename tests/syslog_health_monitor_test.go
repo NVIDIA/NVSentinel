@@ -179,6 +179,170 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
+// TestSyslogHealthMonitorXIDFloodWithDuplicates tests burst XID injection
+func TestSyslogHealthMonitorXIDFloodWithDuplicates(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - XID Flood With Duplicates").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "xid-flood-duplicates")
+
+	var testNodeName string
+	var syslogPod *v1.Pod
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// Wait for pod to be available and ready (handles race condition from previous test teardown)
+		t.Log("Waiting for syslog-health-monitor pod to be ready...")
+		require.Eventually(t, func() bool {
+			var podErr error
+			syslogPod, podErr = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "syslog-health-monitor")
+			if podErr != nil {
+				t.Logf("Waiting for pod: %v", podErr)
+				return false
+			}
+			// Verify pod is ready with all containers running
+			for _, containerStatus := range syslogPod.Status.ContainerStatuses {
+				if !containerStatus.Ready {
+					t.Logf("Container %s not ready yet", containerStatus.Name)
+					return false
+				}
+			}
+			return syslogPod != nil
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "syslog-health-monitor pod should be ready")
+
+		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
+
+		testNodeName = syslogPod.Spec.NodeName
+		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
+
+		metadata := helpers.CreateTestMetadata(testNodeName)
+		helpers.InjectMetadata(t, ctx, client, syslogPod.Namespace, testNodeName, metadata)
+
+		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
+		stopChan, readyChan := helpers.PortForwardPod(
+			ctx,
+			client.RESTConfig(),
+			syslogPod.Namespace,
+			syslogPod.Name,
+			stubJournalHTTPPort,
+			stubJournalHTTPPort,
+		)
+		<-readyChan
+		t.Log("Port-forward ready")
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		return ctx
+	})
+
+	feature.Assess("Inject flood of duplicate XID errors and verify aggregation within 1KB", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		xidMessages := []string{
+			// Fatal XIDs that go to node condition
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000b",
+			"kernel: [16450076.436857] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000c",
+			"kernel: [16450076.449750] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000d",
+			"kernel: [16450076.463693] NVRM: Xid (PCI:0000:19:00): 45, pid=2864945, name=kit, Ch 0000000e",
+		}
+
+		// Expected patterns for all fatal XIDs in node condition (including XID 45 duplicates)
+		expectedSequencePatterns := []string{
+			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Ch 0000000b.*?Recommended Action=CONTACT_SUPPORT`,
+			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Ch 0000000c.*?Recommended Action=CONTACT_SUPPORT`,
+			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Ch 0000000d.*?Recommended Action=CONTACT_SUPPORT`,
+			`ErrorCode:45 PCI:0000:19:00 GPU_UUID:GPU-[0-9a-fA-F-]+ kernel:.*?NVRM: Xid \(PCI:0000:19:00\): 45.*?Ch 0000000e.*?Recommended Action=CONTACT_SUPPORT`,
+		}
+
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, xidMessages)
+
+		t.Log("Verifying node condition contains all XID patterns including duplicate XID 45s")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy", expectedSequencePatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain all XIDs including duplicates")
+
+		// Verify node condition message is within 1KB and NOT truncated
+		t.Log("Verifying node condition message is within 1KB limit and NOT truncated")
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil || condition == nil {
+				return false
+			}
+			// Check that message is NOT truncated and within 1KB limit
+			isNotTruncated := !strings.HasSuffix(condition.Message, "...")
+			isWithinLimit := len(condition.Message) <= 1024
+			t.Logf("Message length: %d bytes, not truncated: %v, within 1KB limit: %v", len(condition.Message), isNotTruncated, isWithinLimit)
+			return isNotTruncated && isWithinLimit
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition message should be within 1KB and NOT truncated")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		podNameVal := ctx.Value(keySyslogPodName)
+		if podNameVal != nil {
+			podName := podNameVal.(string)
+			t.Logf("Restarting syslog-health-monitor pod %s to clear conditions", podName)
+			err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, podName)
+			if err != nil {
+				t.Logf("Warning: failed to delete pod: %v", err)
+			} else {
+				t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
+				require.Eventually(t, func() bool {
+					condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+						"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
+					if err != nil {
+						return false
+					}
+					return condition != nil && condition.Status == v1.ConditionFalse
+				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
+			}
+		}
+
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Warning: failed to remove ManagedByNVSentinel label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
 // TestSyslogHealthMonitorXIDWithoutMetadata tests XID detection works without metadata file
 func TestSyslogHealthMonitorXIDWithoutMetadata(t *testing.T) {
 	feature := features.New("Syslog Health Monitor - XID Without Metadata").
