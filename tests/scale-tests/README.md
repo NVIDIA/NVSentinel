@@ -109,6 +109,23 @@ See [results/](results/) for detailed test reports.
 
 📊 **[Full Results](results/API_and_MongoDB_Results.md)**
 
+### 2. FQM Latency & Queue Depth
+
+**Objective:** Measure end-to-end latency from fatal event to node cordon at scale
+
+**Test Scenarios (1500-node cluster):**
+- 10% cluster failure (150 nodes)
+- 25% cluster failure (375 nodes)
+- 50% cluster failure (750 nodes)
+
+**Key Findings:**
+- 100% cordoning success rate at all scales
+- FQM processes ~2-3 nodes/sec under load
+- Event handling latency consistent: P50 ~0.37s, P90 ~0.48s
+- Bottleneck identified: FQM processing (~90% of total time)
+
+📊 **[Full Results](results/FQM_Latency_and_Queue_Depth_Results.md)**
+
 ### Additional Tests
 
 *(More test results will be added here as testing continues)*
@@ -150,6 +167,7 @@ The test configuration enables MongoDB metrics for Prometheus. If using `kube-pr
 ## Detailed Results
 
 - 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
+- 📊 [FQM Latency & Queue Depth](results/FQM_Latency_and_Queue_Depth_Results.md) - End-to-end cordoning latency at 10-50% cluster failure
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
 
 ## Directory Structure
@@ -164,6 +182,7 @@ tests/scale-tests/
 │   └── event-generator-config-heavy.yaml
 ├── results/                         # Test results
 │   ├── API_and_MongoDB_Results.md
+│   ├── FQM_Latency_and_Queue_Depth_Results.md
 │   └── PRODUCTION_BASELINE.md
 ├── event-generator/                 # Event generator source code
 │   ├── main.go

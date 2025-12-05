@@ -105,14 +105,14 @@ max_over_time(sum(platform_connector_workqueue_depth_databaseStore)[5m])
 
 ### MongoDB Insert+Update Benchmark `[D]`
 
-Direct MongoDB performance, isolated from other components.
+Direct MongoDB performance, isolated from other components. We use 1000 operations (more than our largest 750-node test) to demonstrate that MongoDB can handle sustained write load. If MongoDB completes 1000 insert+update pairs faster than FQM processes 750 events, this confirms MongoDB is not the bottleneck.
 
 | Benchmark | Duration | Rate |
 |-----------|----------|------|
-| 1000 insert+update pairs | - | - |
+| 1000 insert+update pairs | **140.2s** | **140ms/op** |
 
 ```javascript
-// Run in mongosh via: scripts/mongodb-shell.sh
+// Run in mongosh via: scripts/mongodb-shell.sh in the root of the repo
 const start = new Date();
 for (let i = 0; i < 1000; i++) {
   const id = ObjectId();
@@ -128,6 +128,23 @@ for (let i = 0; i < 1000; i++) {
 }
 print(`Duration: ${new Date() - start}ms for 1000 insert+update pairs`);
 ```
+
+---
+
+## Microbenchmark Summary
+
+The component-level measurements help explain where time is spent in the pipeline:
+
+| Component | Measured Latency | Contribution to Total |
+|-----------|------------------|----------------------|
+| Signal sending [A]→[B] | ~20s for 750 nodes | Parallel (masked by worker pool) |
+| Platform Connector [C]→[D] | ~5ms async | Parallel (1500 pods, masked) |
+| MongoDB writes [D] | ~143ms sync | Parallel (hidden by concurrent writes) |
+| **FQM processing [D]→[E]** | **~370ms per event** | **Sequential (dominates total time)** |
+
+**Key Insight:** While MongoDB sync writes take ~143ms each, the 1500 Platform Connector pods write in parallel, completing all 750 events within the ~20s Phase 1 window. FQM then processes events sequentially from the change stream at ~370ms each, accounting for ~90% of the total end-to-end time.
+
+**Verification:** 750 events × 370ms = 277s, plus ~20s Phase 1 = ~297s. Actual measured: 307s. The ~10s difference is attributed to change stream latency and measurement overhead.
 
 ---
 
