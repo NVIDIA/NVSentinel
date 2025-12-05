@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,11 +31,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
 
 const (
@@ -74,7 +75,7 @@ type RebootNodeReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Config    *config.RebootNodeControllerConfig
-	CSPClient model.CSPClient
+	CSPClient cspv1alpha1.CSPProviderServiceClient
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=get;list;watch;create;update;patch;delete
@@ -190,7 +191,10 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
 			defer cancel()
 
-			cspReady, nodeReadyErr = r.CSPClient.IsNodeReady(cspCtx, node, rebootNode.GetCSPReqRef())
+			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(cspCtx, &cspv1alpha1.IsNodeReadyRequest{
+				NodeName: node.Name,
+			})
+			cspReady = rsp.IsReady
 
 			// Check for timeout specifically
 			if errors.Is(nodeReadyErr, context.DeadlineExceeded) {
@@ -339,7 +343,9 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
 				defer cancel()
 
-				reqRef, rebootErr := r.CSPClient.SendRebootSignal(cspCtx, node)
+				rsp, rebootErr := r.CSPClient.SendRebootSignal(cspCtx, &cspv1alpha1.SendRebootSignalRequest{
+					NodeName: node.Name,
+				})
 
 				// Check for timeout
 				if errors.Is(rebootErr, context.DeadlineExceeded) {
@@ -367,7 +373,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 						Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
 						Status:             metav1.ConditionTrue,
 						Reason:             "Succeeded",
-						Message:            string(reqRef),
+						Message:            rsp.RequestId,
 						LastTransitionTime: metav1.Now(),
 					}
 					// Continue monitoring if signal was sent successfully
@@ -401,16 +407,11 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Use background context for client initialization during controller setup
-	// This is synchronous and happens before the controller starts processing events
-	ctx := context.Background()
-
-	var err error
-
-	r.CSPClient, err = csp.New(ctx)
+	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to create CSP client: %w", err)
 	}
+	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(conn)
 
 	// Note: We use RequeueAfter in the reconcile loop rather than the controller's
 	// rate limiter because we need per-resource (per-node) backoff based on each

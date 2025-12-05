@@ -317,6 +317,8 @@ health-events-analyzer:
           topologyKey: kubernetes.io/hostname
 
 janitor:
+  config:
+    cspProviderHost: "janitor-provider-kwok.nvsentinel.svc.cluster.local:50051"
   webhook:
     certIssuer: "janitor-selfsigned-issuer"
 

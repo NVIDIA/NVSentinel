@@ -32,6 +32,7 @@ type kwokProviderServer struct {
 }
 
 func (s *kwokProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
+	slog.Info("Sending reboot signal", "node", req.NodeName)
 	return nil, status.Errorf(codes.Unimplemented, "method SendRebootSignal not implemented")
 }
 
