@@ -53,7 +53,7 @@
 - ✅ **~2.3 nodes/sec** at 50% load (750 nodes)
 - ✅ **Event handling latency** stays consistent: P50 ~0.37s, P90 ~0.48s
 - ✅ **Peak backlog scales linearly** with load: 104 → 256 → 534
-- ✅ **Bottleneck is FQM** — Platform Connector writes to MongoDB in ~5ms with zero queue backlog
+- ✅ **FQM processes events sequentially** (one at a time from change stream queue) — Platform Connector writes in parallel (~5ms each, zero backlog)
 
 ---
 
@@ -89,7 +89,7 @@ Measures time events spend in Platform Connector's queue before writing to Mongo
 | Peak Queue Depth | **0** |
 | Total Events Received | 4733 |
 
-**Finding:** Platform Connector has **zero queue backlog** — events are written to MongoDB as fast as they arrive. MongoDB writes complete in ~5ms. The bottleneck is downstream in FQM.
+**Finding:** Platform Connector has **zero queue backlog** — events are written to MongoDB as fast as they arrive. MongoDB writes complete in ~5ms. FQM then processes events sequentially from the change stream.
 
 **How we verified:** Queried Prometheus during the 750-node test:
 ```promql

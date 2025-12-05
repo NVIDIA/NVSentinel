@@ -1,3 +1,17 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // FQM Scale Test - Lightweight End-to-End Latency Measurement
 //
 // Measures: SIGUSR1 → Event Generator → Platform Connector → MongoDB → FQM → Node Cordoned
@@ -12,27 +26,31 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
-	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
 const (
 	EventGeneratorLabel = "app=event-generator"
 )
 
-// QueueSnapshot tracks queue state at a point in time
+// QueueSnapshot represents the FQM queue state at a specific point in time,
+// including cordoned node count, queue depth, and processing rate.
 type QueueSnapshot struct {
 	Timestamp      time.Time
 	ElapsedSeconds float64
@@ -67,7 +85,7 @@ func main() {
 	log.Printf("")
 
 	// Create Kubernetes client
-	clientset, err := createK8sClient(*kubeconfig, *k8sContext)
+	clientset, config, err := createK8sClient(*kubeconfig, *k8sContext)
 	if err != nil {
 		log.Fatalf("Failed to create K8s client: %v", err)
 	}
@@ -89,7 +107,7 @@ func main() {
 
 	// Run test
 	startTime := time.Now()
-	snapshots := runTest(ctx, clientset, nodes, *namespace, *timeout, *maxStagger, *pollInterval, *workers)
+	snapshots := runTest(ctx, clientset, config, nodes, *namespace, *timeout, *maxStagger, *pollInterval, *workers)
 
 	// Calculate and display results
 	displayResults(snapshots, len(nodes), startTime)
@@ -102,7 +120,7 @@ func main() {
 	log.Printf("✅ Test complete!")
 }
 
-func createK8sClient(kubeconfig, k8sContext string) (*kubernetes.Clientset, error) {
+func createK8sClient(kubeconfig, k8sContext string) (*kubernetes.Clientset, *rest.Config, error) {
 	if kubeconfig == "" {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
@@ -112,16 +130,21 @@ func createK8sClient(kubeconfig, k8sContext string) (*kubernetes.Clientset, erro
 		&clientcmd.ConfigOverrides{CurrentContext: k8sContext},
 	).ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
+		return nil, nil, fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
 
-	return kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create clientset: %w", err)
+	}
+
+	return clientset, config, nil
 }
 
 func getSchedulableNodes(ctx context.Context, clientset *kubernetes.Clientset, limit int) ([]string, error) {
 	nodeList, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
 	var schedulableNodes []string
@@ -152,35 +175,54 @@ func getSchedulableNodes(ctx context.Context, clientset *kubernetes.Clientset, l
 	return schedulableNodes, nil
 }
 
-func sendFatalEvent(nodeName, namespace string) error {
-	// Get event generator pod on this node
-	cmd := exec.Command("kubectl", "get", "pods", "-n", namespace,
-		"-l", EventGeneratorLabel,
-		"--field-selector", fmt.Sprintf("spec.nodeName=%s", nodeName),
-		"-o", "jsonpath={.items[0].metadata.name}")
-
-	output, err := cmd.Output()
+func sendFatalEvent(ctx context.Context, clientset *kubernetes.Clientset, config *rest.Config, nodeName, namespace string) error {
+	// Get event generator pod on this node using the Kubernetes client
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: EventGeneratorLabel,
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
+	})
 	if err != nil {
-		return fmt.Errorf("failed to find pod: %w", err)
+		return fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)
 	}
 
-	podName := strings.TrimSpace(string(output))
-	if podName == "" {
-		return fmt.Errorf("no pod on node %s", nodeName)
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no event-generator pod on node %s", nodeName)
 	}
 
-	// Send SIGUSR1
-	cmd = exec.Command("kubectl", "exec", "-n", namespace, podName, "--",
-		"sh", "-c", "kill -USR1 1")
+	podName := pods.Items[0].Name
 
-	return cmd.Run()
+	// Send SIGUSR1 using remotecommand exec
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Command: []string{"sh", "-c", "kill -USR1 1"},
+			Stdout:  true,
+			Stderr:  true,
+		}, scheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor for pod %s: %w", podName, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}); err != nil {
+		return fmt.Errorf("failed to send signal to pod %s: %w (stderr: %s)", podName, err, stderr.String())
+	}
+
+	return nil
 }
 
-func runTest(ctx context.Context, clientset *kubernetes.Clientset, nodes []string, namespace string, timeout int, maxStagger int, pollInterval int, numWorkers int) []QueueSnapshot {
+func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.Config, nodes []string, namespace string, timeout int, maxStagger int, pollInterval int, numWorkers int) []QueueSnapshot {
 	log.Printf("🚀 Starting test with %d workers...", numWorkers)
 
 	startTime := time.Now()
-	rand.Seed(startTime.UnixNano())
 
 	// PHASE 1: Send ALL signals first (before any cordoning can evict pods)
 	log.Printf("🔀 Phase 1: Sending signals to %d nodes with %d workers (stagger 0-%ds)...", len(nodes), numWorkers, maxStagger)
@@ -219,7 +261,7 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, nodes []strin
 					time.Sleep(stagger)
 				}
 
-				if err := sendFatalEvent(nodeName, namespace); err != nil {
+				if err := sendFatalEvent(ctx, clientset, config, nodeName, namespace); err != nil {
 					mu.Lock()
 					errorCount++
 					mu.Unlock()
@@ -338,7 +380,10 @@ func displayResults(snapshots []QueueSnapshot, totalNodes int, startTime time.Ti
 		}
 	}
 
-	avgRate := totalRate / float64(rateCount)
+	var avgRate float64
+	if rateCount > 0 {
+		avgRate = totalRate / float64(rateCount)
+	}
 	finalCordoned := snapshots[len(snapshots)-1].CordonedCount
 
 	log.Printf("")
