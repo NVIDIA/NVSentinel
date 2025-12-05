@@ -110,6 +110,23 @@ See [results/](results/) for detailed test reports.
 
 📊 **[Full Results](results/FQM_Latency_and_Queue_Depth_Results.md)**
 
+### 3. Concurrent Drain Operations
+
+**Objective:** Validate Node Drainer Manager's ability to handle concurrent drain operations at scale
+
+**Test Scenario (1500-node cluster):**
+- Cordon 300 nodes simultaneously
+- Each node running 10-20 user pods (not in system namespace)
+- Total: ~4,500 pod evictions
+
+**Key Areas:**
+- Node Drainer queue depth and processing rate
+- Kubernetes Eviction API throttling behavior
+- Drain timeout handling
+- PodDisruptionBudget interactions
+
+📊 **[Full Results](results/Concurrent_Drain_Results.md)**
+
 ### Additional Tests
 
 *(More test results will be added here as testing continues)*
@@ -152,6 +169,7 @@ The test configuration enables MongoDB metrics for Prometheus. If using `kube-pr
 
 - 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
 - 📊 [FQM Latency & Queue Depth](results/FQM_Latency_and_Queue_Depth_Results.md) - End-to-end cordoning latency at 10-50% cluster failure
+- 📊 [Concurrent Drain Operations](results/Concurrent_Drain_Results.md) - Node Drainer scaling with 300 concurrent drains
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
 
 ## Directory Structure

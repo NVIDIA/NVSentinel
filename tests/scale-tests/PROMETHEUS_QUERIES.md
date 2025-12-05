@@ -77,3 +77,30 @@ curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(platform_connector_wo
 # Queue Depth (should be 0 if not backlogged)
 curl -s 'http://localhost:9090/api/v1/query?query=platform_connector_workqueue_depth_databaseStore' | jq -r '.data.result[0].value[1]'
 ```
+
+### Node Drainer Metrics
+
+```bash
+# Total events received
+curl -s 'http://localhost:9090/api/v1/query?query=node_drainer_events_received_total' | jq -r '.data.result[0].value[1]'
+
+# Events processed by outcome (drained/cancelled/skipped)
+curl -s 'http://localhost:9090/api/v1/query?query=sum(node_drainer_events_processed_total)by(drain_status)' | jq -r '.data.result[] | "\(.metric.drain_status): \(.value[1])"'
+
+# Event Handling Duration - P50/P90/P99 (seconds)
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.50,sum(rate(node_drainer_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.90,sum(rate(node_drainer_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,sum(rate(node_drainer_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+
+# Current queue depth (pending events)
+curl -s 'http://localhost:9090/api/v1/query?query=node_drainer_queue_depth' | jq -r '.data.result[0].value[1]'
+
+# Peak queue depth over time range
+curl -s 'http://localhost:9090/api/v1/query?query=max_over_time(node_drainer_queue_depth[10m])' | jq -r '.data.result[0].value[1]'
+
+# Processing errors by type
+curl -s 'http://localhost:9090/api/v1/query?query=sum(node_drainer_processing_errors_total)by(error_type)' | jq -r '.data.result[] | "\(.metric.error_type): \(.value[1])"'
+
+# Force-deleted pods after timeout (by namespace)
+curl -s 'http://localhost:9090/api/v1/query?query=sum(node_drainer_force_delete_pods_after_timeout)by(namespace)' | jq -r '.data.result[] | "\(.metric.namespace): \(.value[1])"'
+```
