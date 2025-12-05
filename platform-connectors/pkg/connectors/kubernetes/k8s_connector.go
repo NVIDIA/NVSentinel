@@ -36,26 +36,33 @@ type K8sConnector struct {
 	// clientset is the Kubernetes client
 	clientset kubernetes.Interface
 	// ringBuffer are client for pushing data to the resource count sink
-	ringBuffer *ringbuffer.RingBuffer
-	stopCh     <-chan struct{}
-	ctx        context.Context
+	ringBuffer                    *ringbuffer.RingBuffer
+	stopCh                        <-chan struct{}
+	ctx                           context.Context
+	maxNodeConditionMessageLength int64
 }
 
 func NewK8sConnector(
 	client kubernetes.Interface,
 	ringBuffer *ringbuffer.RingBuffer,
-	stopCh <-chan struct{}, ctx context.Context) *K8sConnector {
+	stopCh <-chan struct{}, ctx context.Context, maxNodeConditionMessageLength int64) *K8sConnector {
 	return &K8sConnector{
-		clientset:  client,
-		ringBuffer: ringBuffer,
-		stopCh:     stopCh,
-		ctx:        ctx,
+		clientset:                     client,
+		ringBuffer:                    ringBuffer,
+		stopCh:                        stopCh,
+		ctx:                           ctx,
+		maxNodeConditionMessageLength: maxNodeConditionMessageLength,
 	}
 }
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	qps float32, burst int, stopCh <-chan struct{},
+	qps float32, burst int, stopCh <-chan struct{}, maxNodeConditionMessageLength int64,
 ) (*K8sConnector, kubernetes.Interface, error) {
+	if maxNodeConditionMessageLength <= 0 {
+		return nil, nil, fmt.Errorf("maxNodeConditionMessageLength must be greater than 0, got %d",
+			maxNodeConditionMessageLength)
+	}
+
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -70,7 +77,7 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 		return nil, nil, fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
-	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx)
+	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx, maxNodeConditionMessageLength)
 
 	return kubernetesConnector, clientSet, nil
 }

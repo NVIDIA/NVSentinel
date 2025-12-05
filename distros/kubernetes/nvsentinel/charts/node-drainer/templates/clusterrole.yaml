@@ -57,3 +57,17 @@ rules:
   - create
   - update
   - watch
+{{- if .Values.customDrain.enabled }}
+- apiGroups:
+  - {{ .Values.customDrain.apiGroup | quote }}
+  resources:
+  - {{ .Values.customDrain.resource | quote }}
+  - {{ printf "%s/status" .Values.customDrain.resource | quote }}
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+{{- end }}

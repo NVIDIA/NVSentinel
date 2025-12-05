@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
@@ -38,8 +41,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -52,7 +63,22 @@ type mockDatabaseConfig struct {
 }
 
 // mockDataStore is a mock implementation of queue.DataStore for testing
-type mockDataStore struct{}
+type mockDataStore struct {
+	documents map[string]map[string]any
+	mu        sync.RWMutex
+}
+
+func newMockDataStore() *mockDataStore {
+	return &mockDataStore{
+		documents: make(map[string]map[string]any),
+	}
+}
+
+func (m *mockDataStore) storeEvent(nodeName string, event map[string]any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.documents[nodeName] = event
+}
 
 func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update interface{}) (*sdkclient.UpdateResult, error) {
 	// Mock implementation - just return success
@@ -63,15 +89,31 @@ func (m *mockDataStore) UpdateDocument(ctx context.Context, filter, update inter
 }
 
 func (m *mockDataStore) FindDocument(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
-	// Mock implementation - return nil for now
-	return nil, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	filterMap, ok := filter.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid filter type")
+	}
+
+	nodeName, ok := filterMap["healthevent.nodename"].(string)
+	if !ok {
+		return nil, fmt.Errorf("nodename not found in filter")
+	}
+
+	event, exists := m.documents[nodeName]
+	if !exists {
+		return nil, fmt.Errorf("document not found for node: %s", nodeName)
+	}
+
+	return &mockSingleResult{document: event}, nil
 }
 
 func (m *mockDataStore) FindDocuments(ctx context.Context, filter interface{}, options *sdkclient.FindOptions) (sdkclient.Cursor, error) {
 	// Mock implementation - return nil for now
 	return nil, nil
 }
-
 
 func (m *mockDatabaseConfig) GetConnectionURI() string {
 	return m.connectionURI
@@ -642,12 +684,22 @@ func (m *mockSingleResult) Decode(v interface{}) error {
 	if m.err != nil {
 		return m.err
 	}
-	// Simple JSON marshal/unmarshal to simulate document decoding
-	jsonBytes, err := json.Marshal(m.document)
-	if err != nil {
-		return err
+
+	resultMap, ok := v.(*map[string]any)
+	if !ok {
+		jsonBytes, err := json.Marshal(m.document)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(jsonBytes, v)
 	}
-	return json.Unmarshal(jsonBytes, v)
+
+	if *resultMap == nil {
+		*resultMap = make(map[string]any)
+	}
+
+	maps.Copy(*resultMap, m.document)
+	return nil
 }
 
 func (m *mockSingleResult) Err() error {
@@ -751,6 +803,9 @@ type testSetup struct {
 	reconciler        *reconciler.Reconciler
 	mockCollection    *MockMongoCollection
 	informersInstance *informers.Informers
+	restConfig        *rest.Config
+	dynamicClient     dynamic.Interface
+	mockDB            *mockDataStore
 }
 
 func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun bool) *testSetup {
@@ -799,7 +854,8 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 
 	// Create a mock database client for the test
 	mockDB := &mockDataStore{}
-	r := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB)
+	r, err := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB, nil, nil)
+	require.NoError(t, err)
 
 	return &testSetup{
 		ctx:               ctx,
@@ -824,6 +880,86 @@ func setupRequeueTest(t *testing.T, userNamespaces []config.UserNamespace) *requ
 	}
 }
 
+func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConfig) *testSetup {
+	t.Helper()
+	ctx := t.Context()
+
+	testEnv := envtest.Environment{
+		CRDDirectoryPaths: []string{"testdata/crds"},
+	}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = testEnv.Stop() })
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
+	require.NoError(t, err)
+
+	cachedClient := memory.NewMemCacheClient(discoveryClient)
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
+
+	gvk := schema.GroupVersionKind{
+		Group:   customDrainConfig.ApiGroup,
+		Version: customDrainConfig.Version,
+		Kind:    customDrainConfig.Kind,
+	}
+	require.Eventually(t, func() bool {
+		_, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		return err == nil
+	}, 10*time.Second, 500*time.Millisecond, "CRD should be registered")
+
+	tomlConfig := config.TomlConfig{
+		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
+		SystemNamespaces:          "kube-*",
+		DeleteAfterTimeoutMinutes: 5,
+		NotReadyTimeoutMinutes:    2,
+		CustomDrain:               customDrainConfig,
+	}
+
+	mockDatabaseConfig := &mockDatabaseConfig{
+		connectionURI:  "mongodb://localhost:27017",
+		databaseName:   "test_db",
+		collectionName: "test_collection",
+	}
+
+	reconcilerConfig := config.ReconcilerConfig{
+		TomlConfig:     tomlConfig,
+		DatabaseConfig: mockDatabaseConfig,
+		TokenConfig: sdkclient.TokenConfig{
+			ClientName:      "test-client",
+			TokenDatabase:   "test_db",
+			TokenCollection: "tokens",
+		},
+		StateManager: statemanager.NewStateManager(client),
+	}
+
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false)
+	require.NoError(t, err)
+
+	go func() { _ = informersInstance.Run(ctx) }()
+	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
+
+	mockDB := newMockDataStore()
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	require.NoError(t, err)
+
+	return &testSetup{
+		ctx:               ctx,
+		client:            client,
+		reconciler:        r,
+		mockCollection:    &MockMongoCollection{},
+		informersInstance: informersInstance,
+		restConfig:        cfg,
+		dynamicClient:     dynamicClient,
+		mockDB:            mockDB,
+	}
+}
+
 func createNode(ctx context.Context, t *testing.T, client kubernetes.Interface, nodeName string) {
 	t.Helper()
 	createNodeWithLabels(ctx, t, client, nodeName, map[string]string{"test": "true"})
@@ -843,7 +979,9 @@ func createNamespace(ctx context.Context, t *testing.T, client kubernetes.Interf
 	t.Helper()
 	ns := &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	_, err := client.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
-	require.NoError(t, err)
+	if err != nil && !errors.IsAlreadyExists(err) {
+		require.NoError(t, err)
+	}
 }
 
 func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, namespace, name, nodeName string, phase v1.PodPhase) {
@@ -1226,3 +1364,166 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	assert.Nil(t, pod2.DeletionTimestamp, "pod-2 should not be deleted")
 }
 
+func TestReconciler_CustomDrainHappyPath(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+		Timeout:               config.Duration{Duration: 30 * time.Minute},
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	nodeName := "custom-drain-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "default")
+	createNamespace(setup.ctx, t, setup.client, "app-ns")
+
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning)
+
+	gvr := schema.GroupVersionResource{
+		Group:    "drain.example.com",
+		Version:  "v1alpha1",
+		Resource: "drainrequests",
+	}
+
+	event := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		nodeQuarantined: model.Quarantined,
+	})
+	setup.mockDB.storeEvent(nodeName, event)
+
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	require.NoError(t, err, "First call should succeed and create the CR")
+
+	eventID := nodeName + "-event"
+	crName := customdrain.GenerateCRName(nodeName, eventID)
+
+	var retrievedCR *unstructured.Unstructured
+	require.Eventually(t, func() bool {
+		cr, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		if err == nil {
+			retrievedCR = cr
+			return true
+		}
+		return false
+	}, 10*time.Second, 500*time.Millisecond, "DrainRequest CR should be created")
+
+	spec, found, err := unstructured.NestedMap(retrievedCR.Object, "spec")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, nodeName, spec["nodeName"])
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay")
+
+	retrievedCR, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+	require.NoError(t, err)
+
+	err = unstructured.SetNestedField(retrievedCR.Object, []any{
+		map[string]any{
+			"type":               "Complete",
+			"status":             "True",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+			"reason":             "DrainSucceeded",
+			"message":            "All pods drained",
+		},
+	}, "status", "conditions")
+	require.NoError(t, err)
+
+	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(setup.ctx, retrievedCR, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 500*time.Millisecond, "CR should be deleted after drain completes")
+}
+
+func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "nonexistent.example.com",
+		Version:               "v1",
+		Kind:                  "FakeResource",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+		Timeout:               config.Duration{Duration: 30 * time.Minute},
+	}
+
+	ctx := context.Background()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	defer func() { _ = testEnv.Stop() }()
+
+	client, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
+	require.NoError(t, err)
+
+	cachedClient := memory.NewMemCacheClient(discoveryClient)
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
+
+	tomlConfig := config.TomlConfig{
+		EvictionTimeoutInSeconds:  config.Duration{Duration: 30 * time.Second},
+		SystemNamespaces:          "kube-*",
+		DeleteAfterTimeoutMinutes: 5,
+		NotReadyTimeoutMinutes:    2,
+		CustomDrain:               customDrainCfg,
+		UserNamespaces: []config.UserNamespace{
+			{Name: "*", Mode: config.ModeImmediateEvict},
+		},
+	}
+
+	mockDatabaseConfig := &mockDatabaseConfig{
+		connectionURI:  "mongodb://localhost:27017",
+		databaseName:   "test_db",
+		collectionName: "test_collection",
+	}
+
+	reconcilerConfig := config.ReconcilerConfig{
+		TomlConfig:     tomlConfig,
+		DatabaseConfig: mockDatabaseConfig,
+		TokenConfig: sdkclient.TokenConfig{
+			ClientName:      "test-client",
+			TokenDatabase:   "test_db",
+			TokenCollection: "tokens",
+		},
+		StateManager: statemanager.NewStateManager(client),
+	}
+
+	informersInstance, err := informers.NewInformers(client, 1*time.Minute, ptr.To(2), false)
+	require.NoError(t, err)
+
+	go func() { _ = informersInstance.Run(ctx) }()
+	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
+
+	mockDB := newMockDataStore()
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+
+	// Verify that reconciler creation failed when CRD doesn't exist
+	require.Error(t, err, "Reconciler initialization should fail when custom drain CRD doesn't exist")
+	require.Nil(t, r, "Reconciler should be nil when initialization fails")
+	assert.Contains(t, err.Error(), "failed to initialize custom drain client", "Error should indicate custom drain client initialization failure")
+	assert.Contains(t, err.Error(), "failed to find rest mapping for custom drain CRD", "Error should indicate CRD validation failure")
+}

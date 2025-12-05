@@ -25,10 +25,11 @@ import (
 )
 
 type InitializationParams struct {
-	KubeconfigPath string
-	DCGMAppLabel   string
-	DriverAppLabel string
-	KataLabel      string
+	KubeconfigPath       string
+	DCGMAppLabel         string
+	DriverAppLabel       string
+	GKEInstallerAppLabel string
+	KataLabel            string
 }
 
 type Components struct {
@@ -50,6 +51,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		30*time.Second,
 		params.DCGMAppLabel,
 		params.DriverAppLabel,
+		params.GKEInstallerAppLabel,
 		params.KataLabel,
 	)
 	if err != nil {

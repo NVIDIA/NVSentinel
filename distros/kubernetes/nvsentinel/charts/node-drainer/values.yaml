@@ -66,3 +66,47 @@ userNamespaces:
     # - "AllowCompletion": Wait for pod to complete gracefully (respects terminationGracePeriodSeconds)
     # - "DeleteAfterTimeout": Wait for deleteAfterTimeoutMinutes, then force delete if still running
     mode: "AllowCompletion"
+
+# Custom drain configuration for extensible drain handling
+# When enabled, node-drainer creates a customer-defined CR from a template instead of evicting pods directly
+# The customer controller is responsible for draining pods and updating the CR status
+# Mutually exclusive with userNamespaces (only one can be enabled)
+customDrain:
+  # Enable custom drain mechanism
+  enabled: false
+
+  # Name of the ConfigMap containing the drain template
+  # Customer must create this ConfigMap with the drain template file
+  templateConfigMapName: "drain-template"
+
+  # Path where the drain template ConfigMap is mounted
+  templateMountPath: "/etc/drain-template"
+
+  # Name of the template file to use for rendering custom drain CRs
+  templateFileName: "drain-template.yaml"
+
+  # Namespace where custom drain CRs will be created
+  namespace: "nvsentinel"
+
+  # API group of the custom drain CRD (e.g., "drain.example.com")
+  apiGroup: ""
+
+  # API version of the custom drain CRD (e.g., "v1alpha1")
+  version: ""
+
+  # Kind of the custom drain CRD (e.g., "DrainRequest")
+  kind: ""
+
+  # Plural resource name for the custom drain CRD (e.g., "drainrequests")
+  # Must match the CRD's spec.names.plural field exactly
+  resource: ""
+
+  # Condition type to check in CR status.conditions for completion (e.g., "Complete")
+  statusConditionType: ""
+
+  # Expected condition status value indicating completion (e.g., "True")
+  statusConditionStatus: ""
+
+  # Timeout duration for waiting for CR completion (e.g., "30m")
+  # After this timeout, the drain is considered failed
+  timeout: "30m"

@@ -31,6 +31,8 @@ import (
 	"cloud.google.com/go/logging/logadmin"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -146,6 +148,18 @@ func NewClient(
 	}
 
 	opts := []option.ClientOption{option.WithScopes(logging.ReadScope)}
+
+	if cfg.EndpointOverride != "" {
+		slog.Info("GCP Client: Using endpoint override", "endpoint", cfg.EndpointOverride)
+
+		// When using endpoint override (e.g., for mock services),
+		// disable GCP authentication and use insecure (non-TLS) transport.
+		opts = append(opts,
+			option.WithEndpoint(cfg.EndpointOverride),
+			option.WithoutAuthentication(),
+			option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		)
+	}
 
 	adminClient, err := logadmin.NewClient(ctx, cfg.TargetProjectID, opts...)
 	if err != nil {

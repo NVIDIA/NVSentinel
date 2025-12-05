@@ -32,8 +32,9 @@ type DrainEvaluator interface {
 }
 
 type NodeDrainEvaluator struct {
-	config    config.TomlConfig
-	informers InformersInterface
+	config            config.TomlConfig
+	informers         InformersInterface
+	customDrainClient CustomDrainClientInterface
 }
 
 type InformersInterface interface {
@@ -42,11 +43,17 @@ type InformersInterface interface {
 	FindEvictablePodsInNamespaceAndNode(namespace, nodeName string) ([]*v1.Pod, error)
 }
 
+type CustomDrainClientInterface interface {
+	Exists(ctx context.Context, crName string) (bool, error)
+	GetCRStatus(ctx context.Context, crName string) (bool, error)
+}
+
 type DrainAction int
 
 const (
 	ActionSkip DrainAction = iota
 	ActionWait
+	ActionCreateCR
 	ActionEvictImmediate
 	ActionEvictWithTimeout
 	ActionCheckCompletion
@@ -68,6 +75,8 @@ func (a DrainAction) String() string {
 		return "Skip"
 	case ActionWait:
 		return "Wait"
+	case ActionCreateCR:
+		return "CreateCR"
 	case ActionEvictImmediate:
 		return "EvictImmediate"
 	case ActionEvictWithTimeout:

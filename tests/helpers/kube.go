@@ -411,6 +411,33 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 	return nodeName
 }
 
+// SelectTestNodeWithEmptyProviderID selects a test node with empty providerID.
+// This is required for CSP monitor tests because Kubernetes doesn't allow changing providerID once set.
+func SelectTestNodeWithEmptyProviderID(ctx context.Context, t *testing.T, client klient.Client) string {
+	t.Log("Selecting an available uncordoned test node with empty providerID")
+
+	nodes, err := GetAllNodesNames(ctx, client)
+	require.NoError(t, err)
+	require.NotEmpty(t, nodes, "no nodes found in cluster")
+
+	for _, name := range nodes {
+		node, err := GetNodeByName(ctx, client, name)
+		if err != nil {
+			continue
+		}
+
+		if !node.Spec.Unschedulable && node.Spec.ProviderID == "" {
+			t.Logf("Selected uncordoned node with empty providerID: %s", name)
+			return name
+		}
+	}
+
+	require.Fail(t,
+		"no uncordoned node with empty providerID found - CSP monitor tests require nodes without providerID set")
+
+	return ""
+}
+
 func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.Node, error) {
 	var node v1.Node
 
@@ -1093,6 +1120,120 @@ func RestartDeployment(
 	WaitForDeploymentRollout(ctx, t, c, name, namespace)
 
 	return nil
+}
+
+// SetDeploymentEnvVars sets or updates environment variables for containers in a deployment.
+// If containerName is empty, applies to all containers. Otherwise, applies only to the named container.
+// Uses retry.RetryOnConflict for automatic retry handling.
+func SetDeploymentEnvVars(
+	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVars map[string]string,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
+			return err
+		}
+
+		if len(deployment.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("deployment %s/%s has no containers", namespace, deploymentName)
+		}
+
+		found := false
+
+		for i := range deployment.Spec.Template.Spec.Containers {
+			container := &deployment.Spec.Template.Spec.Containers[i]
+
+			if containerName != "" && container.Name != containerName {
+				continue
+			}
+
+			found = true
+
+			setEnvVarsOnContainer(container, envVars)
+		}
+
+		if containerName != "" && !found {
+			return fmt.Errorf("container %q not found in deployment %s/%s", containerName, namespace, deploymentName)
+		}
+
+		return c.Resources().Update(ctx, deployment)
+	})
+}
+
+func setEnvVarsOnContainer(container *v1.Container, envVars map[string]string) {
+	for key, value := range envVars {
+		exists := false
+
+		for i := range container.Env {
+			if container.Env[i].Name == key {
+				container.Env[i].Value = value
+				exists = true
+
+				break
+			}
+		}
+
+		if !exists {
+			container.Env = append(container.Env, v1.EnvVar{
+				Name:  key,
+				Value: value,
+			})
+		}
+	}
+}
+
+// RemoveDeploymentEnvVars removes environment variables from containers in a deployment.
+// If containerName is empty, removes from all containers. Otherwise, removes only from the named container.
+// Uses retry.RetryOnConflict for automatic retry handling.
+func RemoveDeploymentEnvVars(
+	ctx context.Context, c klient.Client, deploymentName, namespace, containerName string, envVarNames []string,
+) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
+			return err
+		}
+
+		if len(deployment.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("deployment %s/%s has no containers", namespace, deploymentName)
+		}
+
+		toRemove := make(map[string]bool, len(envVarNames))
+		for _, name := range envVarNames {
+			toRemove[name] = true
+		}
+
+		found := false
+
+		for i := range deployment.Spec.Template.Spec.Containers {
+			container := &deployment.Spec.Template.Spec.Containers[i]
+
+			if containerName != "" && container.Name != containerName {
+				continue
+			}
+
+			found = true
+
+			removeEnvVarsFromContainer(container, toRemove)
+		}
+
+		if containerName != "" && !found {
+			return fmt.Errorf("container %q not found in deployment %s/%s", containerName, namespace, deploymentName)
+		}
+
+		return c.Resources().Update(ctx, deployment)
+	})
+}
+
+func removeEnvVarsFromContainer(container *v1.Container, toRemove map[string]bool) {
+	newEnv := make([]v1.EnvVar, 0, len(container.Env))
+	for _, env := range container.Env {
+		if !toRemove[env.Name] {
+			newEnv = append(newEnv, env)
+		}
+	}
+
+	container.Env = newEnv
 }
 
 // CheckNodeConditionExists checks if a node has a specific condition type and reason.

@@ -112,6 +112,11 @@ spec:
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
           {{- end }}
+          {{- if .Values.customDrain.enabled }}
+          - name: drain-template
+            mountPath: {{ .Values.customDrain.templateMountPath }}
+            readOnly: true
+          {{- end }}
           env:
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
@@ -145,6 +150,11 @@ spec:
         secret:
           secretName: mongo-app-client-cert-secret
           optional: true
+      {{- end }}
+      {{- if .Values.customDrain.enabled }}
+      - name: drain-template
+        configMap:
+          name: {{ .Values.customDrain.templateConfigMapName | default "drain-template" }}
       {{- end }}
       restartPolicy: Always
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}

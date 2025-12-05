@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: nvsentinel
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+
+labels:
+- includeSelectors: true
+  pairs:
+    app.kubernetes.io/name: slinky-drainer
+    app.kubernetes.io/managed-by: kustomize
+
+images:
+- name: slinky-drainer
+  newName: slinky-drainer
+  newTag: latest
+

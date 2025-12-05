@@ -259,6 +259,11 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
+    # Maximum length of the node condition message
+    # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
+    # If the node condition message is longer than this value, it will be truncated
+    # This is to prevent the node condition message from being too long and causing the Kubernetes node status to be too large
+    maxNodeConditionMessageLength: 1024
     # Enable Kubernetes status updates
     enabled: true
     # Rate limiting for Kubernetes API calls

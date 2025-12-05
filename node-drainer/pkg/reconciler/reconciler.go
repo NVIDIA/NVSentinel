@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -28,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/evaluator"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
@@ -36,7 +38,10 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/restmapper"
 )
 
 type eventStatusMap map[string]model.Status
@@ -50,16 +55,35 @@ type Reconciler struct {
 	evaluator           evaluator.DrainEvaluator
 	kubernetesClient    kubernetes.Interface
 	databaseClient      queue.DataStore
-	nodeEventsMap       map[string]eventStatusMap // nodeName → eventStatusMap
-	cancelledNodes      map[string]struct{}       // Node-level cancellation flags
+	customDrainClient   *customdrain.Client
+	nodeEventsMap       map[string]eventStatusMap
+	cancelledNodes      map[string]struct{}
 	nodeEventsMapMu     sync.Mutex
 }
 
-func NewReconciler(cfg config.ReconcilerConfig,
-	dryRunEnabled bool, kubeClient kubernetes.Interface, informersInstance *informers.Informers,
-	databaseClient queue.DataStore) *Reconciler {
+func NewReconciler(
+	cfg config.ReconcilerConfig,
+	dryRunEnabled bool,
+	kubeClient kubernetes.Interface,
+	informersInstance *informers.Informers,
+	databaseClient queue.DataStore,
+	dynamicClient dynamic.Interface,
+	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+) (*Reconciler, error) {
 	queueManager := queue.NewEventQueueManager()
-	drainEvaluator := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance)
+
+	var customDrainClient *customdrain.Client
+
+	if cfg.TomlConfig.CustomDrain.Enabled {
+		var err error
+
+		customDrainClient, err = customdrain.NewClient(cfg.TomlConfig.CustomDrain, dynamicClient, restMapper)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize custom drain client: %w", err)
+		}
+	}
+
+	drainEvaluator := evaluator.NewNodeDrainEvaluator(cfg.TomlConfig, informersInstance, customDrainClient)
 
 	reconciler := &Reconciler{
 		Config:              cfg,
@@ -70,17 +94,22 @@ func NewReconciler(cfg config.ReconcilerConfig,
 		evaluator:           drainEvaluator,
 		kubernetesClient:    kubeClient,
 		databaseClient:      databaseClient,
+		customDrainClient:   customDrainClient,
 		nodeEventsMap:       make(map[string]eventStatusMap),
 		cancelledNodes:      make(map[string]struct{}),
 	}
 
 	queueManager.SetDataStoreEventProcessor(reconciler)
 
-	return reconciler
+	return reconciler, nil
 }
 
 func (r *Reconciler) GetQueueManager() queue.EventQueueManager {
 	return r.queueManager
+}
+
+func (r *Reconciler) GetCustomDrainClient() *customdrain.Client {
+	return r.customDrainClient
 }
 
 func (r *Reconciler) Shutdown() {
@@ -97,7 +126,7 @@ func (r *Reconciler) Shutdown() {
 // This matches the behavior of the main branch's mongodb/event_watcher.go:preprocessAndEnqueueEvent
 func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client.Event) error {
 	// Unmarshal the full document
-	var document map[string]interface{}
+	var document map[string]any
 	if err := event.UnmarshalDocument(&document); err != nil {
 		return fmt.Errorf("failed to unmarshal event document: %w", err)
 	}
@@ -176,18 +205,18 @@ func (r *Reconciler) handleEventCancellation(
 }
 
 // setInitialStatusAndEnqueue sets the initial status to InProgress and enqueues the event
-func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document map[string]interface{},
-	documentID interface{}, nodeName string) error {
+func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document map[string]any,
+	documentID any, nodeName string) error {
 	// Set initial status to StatusInProgress (idempotent - only updates if not already set)
-	filter := map[string]interface{}{
+	filter := map[string]any{
 		"_id": documentID,
-		"healtheventstatus.userpodsevictionstatus.status": map[string]interface{}{
+		"healtheventstatus.userpodsevictionstatus.status": map[string]any{
 			"$ne": string(model.StatusInProgress),
 		},
 	}
 
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
+	update := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus.userpodsevictionstatus.status": string(model.StatusInProgress),
 		},
 	}
@@ -204,7 +233,7 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 }
 
 // logStatusUpdateResult logs the result of the status update
-func (r *Reconciler) logStatusUpdateResult(result *client.UpdateResult, nodeName string, documentID interface{}) {
+func (r *Reconciler) logStatusUpdateResult(result *client.UpdateResult, nodeName string, documentID any) {
 	switch {
 	case result.ModifiedCount > 0:
 		slog.Info("Set initial eviction status to InProgress", "node", nodeName)
@@ -224,7 +253,7 @@ func isTerminalStatus(status model.Status) bool {
 }
 
 // unmarshalGenericEvent converts a generic map to a specific struct using JSON marshaling
-func unmarshalGenericEvent(event map[string]interface{}, target interface{}) error {
+func unmarshalGenericEvent(event map[string]any, target any) error {
 	jsonBytes, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event to JSON: %w", err)
@@ -280,6 +309,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 	return r.executeAction(ctx, actionResult, healthEventWithStatus, event, database, eventID)
 }
 
+//nolint:cyclop // executeAction is a clean dispatcher - complexity comes from number of actions, not nesting
 func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainActionResult,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, eventID string) error {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -295,6 +325,9 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 			"delay", action.WaitDelay)
 
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
+
+	case evaluator.ActionCreateCR:
+		return r.executeCustomDrain(ctx, action, healthEvent, event, database)
 
 	case evaluator.ActionEvictImmediate:
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
@@ -312,7 +345,13 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 	case evaluator.ActionMarkAlreadyDrained:
 		r.clearEventStatus(eventID, nodeName)
-		return r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
+
+		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
+		if err == nil {
+			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, eventID)
+		}
+
+		return err
 
 	case evaluator.ActionUpdateStatus:
 		r.clearEventStatus(eventID, nodeName)
@@ -529,9 +568,9 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
-	filter := map[string]interface{}{"_id": documentID}
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
+	filter := map[string]any{"_id": documentID}
+	update := map[string]any{
+		"$set": map[string]any{
 			"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
 		},
 	}
@@ -717,6 +756,150 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 
 	metrics.CancelledEvent.WithLabelValues(nodeName, healthEvent.HealthEvent.CheckName).Inc()
 	slog.Info("Successfully cleaned up cancelled event", "node", nodeName, "eventID", eventID)
+
+	return nil
+}
+
+func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore) error {
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	eventID, err := utils.ExtractDocumentID(event)
+	if err != nil {
+		return fmt.Errorf("failed to extract document ID for custom drain: %w", err)
+	}
+
+	podsToDrain := make(map[string][]string)
+
+	for _, ns := range action.Namespaces {
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ns, nodeName)
+		if err != nil {
+			slog.Warn("Failed to find evictable pods",
+				"namespace", ns,
+				"node", nodeName,
+				"error", err)
+
+			continue
+		}
+
+		if len(pods) > 0 {
+			podNames := make([]string, 0, len(pods))
+
+			for _, pod := range pods {
+				podNames = append(podNames, pod.Name)
+			}
+
+			podsToDrain[ns] = podNames
+		}
+	}
+
+	templateData := customdrain.TemplateData{
+		HealthEvent: healthEvent.HealthEvent,
+		EventID:     eventID,
+		PodsToDrain: podsToDrain,
+	}
+
+	crName, err := r.customDrainClient.CreateDrainCR(ctx, templateData)
+	if err != nil {
+		return r.handleCustomDrainCRCreationError(ctx, err, nodeName, healthEvent, event, database)
+	}
+
+	slog.Info("Created custom drain CR",
+		"node", nodeName,
+		"crName", crName)
+
+	return nil
+}
+
+func (r *Reconciler) deleteCustomDrainCRIfEnabled(ctx context.Context, nodeName, eventID string) {
+	if !r.Config.TomlConfig.CustomDrain.Enabled {
+		return
+	}
+
+	crName := customdrain.GenerateCRName(nodeName, eventID)
+	if err := r.customDrainClient.DeleteDrainCR(ctx, crName); err != nil {
+		slog.Warn("Failed to delete custom drain CR",
+			"node", nodeName,
+			"crName", crName,
+			"error", err)
+	} else {
+		slog.Info("Deleted custom drain CR",
+			"node", nodeName,
+			"crName", crName)
+	}
+}
+
+func (r *Reconciler) handleCustomDrainCRCreationError(
+	ctx context.Context,
+	err error,
+	nodeName string,
+	healthEvent model.HealthEventWithStatus,
+	event datastore.Event,
+	database queue.DataStore,
+) error {
+	var noMatchErr *meta.NoKindMatchError
+	if !errors.As(err, &noMatchErr) {
+		return fmt.Errorf("failed to create custom drain CR for node %s: %w", nodeName, err)
+	}
+
+	slog.Error("Custom drain CRD not found - marking drain as failed",
+		"node", nodeName,
+		"apiGroup", r.Config.TomlConfig.CustomDrain.ApiGroup,
+		"kind", r.Config.TomlConfig.CustomDrain.Kind,
+		"error", err)
+
+	metrics.CustomDrainCRDNotFound.WithLabelValues(nodeName).Inc()
+
+	if err := r.setDrainFailedStatus(ctx, healthEvent, event, database,
+		fmt.Sprintf("Custom drain CRD not found: %v", err)); err != nil {
+		slog.Error("Failed to update drain failed status",
+			"node", nodeName,
+			"error", err)
+
+		return fmt.Errorf("failed to update drain failed status: %w", err)
+	}
+
+	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
+		nodeName, statemanager.DrainFailedLabelValue, false); err != nil {
+		slog.Error("Failed to update node label to drain-failed",
+			"node", nodeName,
+			"error", err)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) setDrainFailedStatus(
+	ctx context.Context,
+	healthEvent model.HealthEventWithStatus,
+	event datastore.Event,
+	database queue.DataStore,
+	reason string,
+) error {
+	documentID, err := utils.ExtractDocumentIDNative(event)
+	if err != nil {
+		return fmt.Errorf("failed to extract document ID: %w", err)
+	}
+
+	filter := map[string]any{"_id": documentID}
+
+	update := map[string]any{
+		"$set": map[string]any{
+			"healtheventstatus.userpodsevictionstatus": model.OperationStatus{
+				Status:  model.StatusFailed,
+				Message: reason,
+			},
+		},
+	}
+
+	_, err = database.UpdateDocument(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("failed to update MongoDB drain failed status: %w", err)
+	}
+
+	slog.Info("Updated drain status to failed",
+		"node", healthEvent.HealthEvent.NodeName,
+		"reason", reason)
 
 	return nil
 }

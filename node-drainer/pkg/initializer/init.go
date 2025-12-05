@@ -31,7 +31,12 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -82,12 +87,25 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Running in dry-run mode")
 	}
 
-	clientSet, err := initializeKubernetesClient(params.KubeconfigPath)
+	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
 	slog.Info("Successfully initialized kubernetes client")
+
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create discovery client: %w", err)
+	}
+
+	cachedClient := memory.NewMemCacheClient(discoveryClient)
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 
 	informersInstance, err := initializeInformers(clientSet, &tomlCfg.NotReadyTimeoutMinutes, params.DryRun)
 	if err != nil {
@@ -128,7 +146,14 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	databaseClient := datastoreAdapter.GetDatabaseClient()
 
 	// Reconciler creates its own queue manager and needs the database client
-	reconciler := initializeReconciler(reconcilerCfg, params.DryRun, clientSet, informersInstance, databaseClient)
+	reconciler, err := initializeReconciler(
+		reconcilerCfg, params.DryRun, clientSet, informersInstance,
+		databaseClient, dynamicClient, restMapper,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize reconciler: %w", err)
+	}
+
 	queueManager := reconciler.GetQueueManager()
 
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
@@ -161,18 +186,18 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, error) {
+func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build config: %w", err)
+		return nil, nil, fmt.Errorf("failed to build config: %w", err)
 	}
 
 	clientSet, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
+		return nil, nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
 
-	return clientSet, nil
+	return clientSet, restConfig, nil
 }
 
 func initializeInformers(clientset kubernetes.Interface,
@@ -205,10 +230,12 @@ func initializeReconciler(
 	kubeClient kubernetes.Interface,
 	informersInstance *informers.Informers,
 	databaseClient client.DatabaseClient,
-) *reconciler.Reconciler {
+	dynamicClient dynamic.Interface,
+	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+) (*reconciler.Reconciler, error) {
 	// Create adapter to convert client.DatabaseClient to queue.DataStore interface
 	dbAdapter := &databaseClientAdapter{client: databaseClient}
-	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter)
+	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter, dynamicClient, restMapper)
 }
 
 // databaseClientAdapter adapts client.DatabaseClient to queue.DataStore interface

@@ -155,6 +155,39 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			expectedDriverLabel: "true",
 		},
 		{
+			name: "ready GKE driver installer pod adds driver label",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "driver-installer-pod",
+					Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName: "test-node",
+					Containers: []corev1.Container{
+						{
+							Name:  "dcgm",
+							Image: "nvcr.io/nvidia/driver:550.x",
+						},
+					},
+				},
+				Status: corev1.PodStatus{
+					Phase: corev1.PodRunning,
+					Conditions: []corev1.PodCondition{
+						{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+					},
+				},
+			},
+			existingPods: []*corev1.Pod{},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "test-node",
+					Labels: map[string]string{},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "true",
+		},
+		{
 			name: "not ready driver pod new deployment does not add label",
 			pod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -521,6 +554,43 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 			expectedDCGMLabel:   "",
 			expectedDriverLabel: "",
 		},
+		{
+			name: "driver installer pod deletion removes driver label",
+			pod:  nil,
+			existingPods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "driver-installer-pod",
+						Labels: map[string]string{"k8s-app": "nvidia-driver-installer"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+						Containers: []corev1.Container{
+							{
+								Name:  "dcgm",
+								Image: "nvcr.io/nvidia/driver:550.x",
+							},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+					},
+				},
+			},
+			expectedDCGMLabel:   "",
+			expectedDriverLabel: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -553,7 +623,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "")
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "")
 			require.NoError(t, err)
 			go func() {
 				require.NoError(t, labeler.Run(ctx), "failed to run labeler")
@@ -673,6 +743,7 @@ func TestKataLabelOverride(t *testing.T) {
 				time.Minute,
 				"nvidia-dcgm",
 				"nvidia-driver-daemonset",
+				"nvidia-driver-installer",
 				tt.override,
 			)
 
@@ -709,6 +780,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		time.Minute,
 		"nvidia-dcgm",
 		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
 		"first.io/kata",
 	)
 	if err != nil {
@@ -721,6 +793,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		time.Minute,
 		"nvidia-dcgm",
 		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
 		"second.io/kata",
 	)
 	if err != nil {
@@ -733,6 +806,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		time.Minute,
 		"nvidia-dcgm",
 		"nvidia-driver-daemonset",
+		"nvidia-driver-installer",
 		"",
 	)
 	if err != nil {
@@ -859,7 +933,7 @@ func TestKataLabelDetection(t *testing.T) {
 			require.NoError(t, err, "failed to create node")
 
 			// Create labeler with kata override if specified
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", tt.kataOverride)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride)
 			require.NoError(t, err, "failed to create labeler")
 
 			// Start labeler

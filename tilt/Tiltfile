@@ -116,9 +116,11 @@ include('../node-drainer/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
 include('./event-exporter-mock/Tiltfile')
+include('./csp-api-mock/Tiltfile')
 include('../health-events-analyzer/Tiltfile')
 include('../event-exporter/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
+include('../health-monitors/csp-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
@@ -310,6 +312,11 @@ k8s_resource(
 k8s_resource(
     'fault-remediation',
     resource_deps=[datastore_resource]
+)
+
+k8s_resource(
+    'csp-health-monitor',
+    resource_deps=[datastore_resource, 'csp-api-mock']
 )
 
 k8s_resource(

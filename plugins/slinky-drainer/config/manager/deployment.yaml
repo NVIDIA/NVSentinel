@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slinky-drainer
+  namespace: nvsentinel
+  labels:
+    app: slinky-drainer
+    app.kubernetes.io/name: slinky-drainer
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slinky-drainer
+  template:
+    metadata:
+      labels:
+        app: slinky-drainer
+        app.kubernetes.io/name: slinky-drainer
+        app.kubernetes.io/component: controller
+      annotations:
+        kubectl.kubernetes.io/default-container: controller
+    spec:
+      serviceAccountName: slinky-drainer
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: controller
+        image: slinky-drainer:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --pod-check-interval=5s
+        - --drain-timeout=30m
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        - --zap-encoder=json
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+      terminationGracePeriodSeconds: 10
+

@@ -140,7 +140,7 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 			}
 
 			if len(messages) > 0 {
-				matchedCondition.Message = fmt.Sprintf("%s;", strings.Join(messages, ";"))
+				matchedCondition.Message = r.truncateNodeConditionMessage(messages)
 				matchedCondition.Status = corev1.ConditionTrue
 				matchedCondition.Reason = r.updateHealthEventReason(events[len(events)-1].CheckName, false)
 			} else {
@@ -547,4 +547,40 @@ func isKubernetesStringError(errStr string) bool {
 	}
 
 	return false
+}
+
+// truncateNodeConditionMessage builds the node condition message while respecting the max node condition
+// message length. It preserves complete error entries and adds a truncation indicator if needed.
+func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
+	truncationSuffix := "..."
+	maxLen := int(r.maxNodeConditionMessageLength) - len(truncationSuffix)
+
+	var result strings.Builder
+
+	truncated := false
+
+	for i, msg := range messages {
+		var newEntry string
+		if i == 0 {
+			newEntry = msg
+		} else {
+			newEntry = ";" + msg
+		}
+
+		// Check if adding this entry would exceed the limit (+1 for trailing semicolon)
+		if result.Len()+len(newEntry)+1 > maxLen {
+			truncated = true
+			break
+		}
+
+		result.WriteString(newEntry)
+	}
+
+	result.WriteString(";")
+
+	if truncated {
+		result.WriteString(truncationSuffix)
+	}
+
+	return result.String()
 }

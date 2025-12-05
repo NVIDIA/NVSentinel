@@ -100,11 +100,7 @@ spec:
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
-          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
-          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          {{- else }}
-          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          {{- end }}
+          - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -143,11 +139,7 @@ spec:
             {{- end }}
           args:
           - "--config=/etc/config/config.toml"
-          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
-          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          {{- else }}
-          - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          {{- end }}
+          - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
           - "--metrics-port=2113"
           resources:

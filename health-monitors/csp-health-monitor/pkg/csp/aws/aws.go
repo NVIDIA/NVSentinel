@@ -119,10 +119,7 @@ func NewClient(
 	kubeconfigPath string,
 	store datastore.Store,
 ) (*AWSClient, error) {
-	// default: max attempts = 3, back off delay = 20s
-	awsSDKConfig, err := awsConfig.LoadDefaultConfig(ctx,
-		awsConfig.WithRegion(cfg.Region),
-	)
+	awsSDKConfig, err := awsConfig.LoadDefaultConfig(ctx, awsConfig.WithRegion(cfg.Region))
 	if err != nil {
 		metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "aws_sdk_config_error").Inc()
 
@@ -130,7 +127,17 @@ func NewClient(
 			cfg.Region, err)
 	}
 
-	healthAPIClient := health.NewFromConfig(awsSDKConfig)
+	var healthAPIClient healthClientInterface
+
+	if cfg.EndpointOverride != "" {
+		slog.Info("AWS Client: Using endpoint override", "endpoint", cfg.EndpointOverride)
+
+		healthAPIClient = health.NewFromConfig(awsSDKConfig, func(o *health.Options) {
+			o.BaseEndpoint = aws.String(cfg.EndpointOverride)
+		})
+	} else {
+		healthAPIClient = health.NewFromConfig(awsSDKConfig)
+	}
 
 	slog.Info("Successfully initialized AWS Health client", "region", cfg.Region)
 

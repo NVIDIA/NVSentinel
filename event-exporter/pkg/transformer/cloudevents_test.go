@@ -98,8 +98,8 @@ func TestToCloudEvent(t *testing.T) {
 				if healthEvent["nodeName"] != "gpu-node-42" {
 					t.Errorf("nodeName = %v, want gpu-node-42", healthEvent["nodeName"])
 				}
-				if healthEvent["recommendedAction"] != int32(pb.RecommendedAction_RESTART_VM) {
-					t.Errorf("recommendedAction = %v, want %v", healthEvent["recommendedAction"], int32(pb.RecommendedAction_RESTART_VM))
+				if healthEvent["recommendedAction"] != "RESTART_VM" {
+					t.Errorf("recommendedAction = %v, want %v", healthEvent["recommendedAction"], "RESTART_VM")
 				}
 
 				entities := healthEvent["entitiesImpacted"].([]map[string]any)

@@ -68,7 +68,7 @@ jobs:
 
     name: "E2E Tests (${{ matrix.arch_name }} + ${{ matrix.datastore_name }})"
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
 

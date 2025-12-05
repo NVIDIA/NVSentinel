@@ -108,4 +108,13 @@ var (
 			Help: "Total number of pending events in the queue.",
 		},
 	)
+
+	// CustomDrainCRDNotFound tracks failures when custom drain CRD is not found
+	CustomDrainCRDNotFound = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "node_drainer_custom_drain_crd_not_found_total",
+			Help: "Total number of custom drain operations that failed because the CRD was not found in the cluster.",
+		},
+		[]string{"node"},
+	)
 )

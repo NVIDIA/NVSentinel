@@ -57,7 +57,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		"isFatal":            event.IsFatal,
 		"isHealthy":          event.IsHealthy,
 		"message":            event.Message,
-		"recommendedAction":  int32(event.RecommendedAction),
+		"recommendedAction":  event.RecommendedAction.String(),
 		"errorCode":          errorCodes,
 		"entitiesImpacted":   entities,
 		"generatedTimestamp": timestamp,
