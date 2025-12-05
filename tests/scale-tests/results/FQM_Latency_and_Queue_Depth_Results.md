@@ -11,6 +11,12 @@
 **MongoDB:** 3 replicas, 6Gi memory per replica  
 **Test Date:** December 4, 2025
 
+### Test Approach
+
+**Phase 1: End-to-End Tests** measure the complete pipeline latency from signal to cordon. This captures real-world performance including all component interactions.
+
+**Phase 2: Microbenchmarks** isolate individual pipeline stages using Prometheus metrics and direct MongoDB benchmarks to identify bottlenecks.
+
 ### Pipeline Measured
 
 ```
@@ -19,9 +25,10 @@
 │  (T0)       │    │ (gRPC/UDS)        │    │Connector│    │  (insert)   │    │ (change   │
 └─────────────┘    └───────────────────┘    └─────────┘    └─────────────┘    │  stream)  │
                                                                               └───────────┘
+     [A]                  [B]                   [C]              [D]              [E]
 ```
 
-**Latency = T(cordon) - T(SIGUSR1)**
+**End-to-End Latency** = T(cordon) - T(SIGUSR1) — measures [A] through [E]
 
 ---
 
@@ -39,45 +46,88 @@
 
 ---
 
-## Queue Depth Results (10% = 150 nodes)
+## Key Findings
+
+- ✅ **100% cordoning success rate** at all scales (10%, 25%, 50%)
+- ✅ **~3 nodes/sec** cordoning rate at 10-25% load
+- ✅ **~2.3 nodes/sec** at 50% load (750 nodes)
+- ✅ **Event handling latency** stays consistent: P50 ~0.37s, P90 ~0.48s
+- ✅ **Peak backlog scales linearly** with load: 104 → 256 → 534
+- ✅ **Bottleneck is FQM** — Platform Connector writes to MongoDB in ~5ms with zero queue backlog
+
+---
+
+## Event Backlog Over Time
+
+![FQM Event Backlog](graphs/fqm_backlog_overlay.png)
+
+The graph shows event backlog (pending events waiting to be processed by FQM) during each test. All three tests show the same pattern: backlog spikes when events arrive, then drains at ~2-3 nodes/sec as FQM processes them.
+
+---
+
+## Prometheus Metrics — FQM Event Handling `[D]→[E]`
+
+Measures FQM processing time from receiving MongoDB change stream event to cordoning node.
+
+| Scale | Nodes | Event Handling P50 | Event Handling P90 | Event Handling P99 | Peak Backlog |
+|-------|-------|-------------------|-------------------|-------------------|--------------|
+| 10% | 150 | 0.37s | 0.47s | 0.50s | 104 |
+| 25% | 375 | 0.37s | 0.48s | 0.50s | 256 |
+| 50% | 750 | 0.38s | 0.48s | 0.50s | 534 |
+
+---
+
+## Phase 2: Microbenchmarks
+
+### Platform Connector Workqueue Latency `[C]→[D]`
+
+Measures time events spend in Platform Connector's queue before writing to MongoDB.
 
 | Metric | Value |
 |--------|-------|
-| **Peak Queue Depth** | 138 nodes |
-| **Average Queue Depth** | 63.8 nodes |
-| **Time to Clear** | 149.1 seconds |
-| **Processing Rate** | ~1 node/sec |
+| Avg Work Duration (MongoDB write) | **~5ms** |
+| Peak Queue Depth | **0** |
+| Total Events Received | 4733 |
 
-### Queue Progression
+**Finding:** Platform Connector has **zero queue backlog** — events are written to MongoDB as fast as they arrive. MongoDB writes complete in ~5ms. The bottleneck is downstream in FQM.
 
-| Time | Cordoned | Queue | Rate |
-|------|----------|-------|------|
-| T+29s | 12/150 | 138 | ~0.4/sec |
-| T+59s | 51/150 | 99 | ~1.3/sec |
-| T+89s | 91/150 | 59 | ~1.3/sec |
-| T+119s | 127/150 | 23 | ~1.2/sec |
-| T+149s | 150/150 | 0 | Complete |
+**How we verified:** Queried Prometheus during the 750-node test:
+```promql
+# Average time to write to MongoDB
+sum(rate(platform_connector_workqueue_work_duration_seconds_databaseStore_sum[5m])) 
+  / sum(rate(platform_connector_workqueue_work_duration_seconds_databaseStore_count[5m]))
+# Result: 0.0047s (~5ms)
 
-**Test Parameters:** 0-10s random stagger, 30s polling interval
+# Peak queue depth during test
+max_over_time(sum(platform_connector_workqueue_depth_databaseStore)[5m])
+# Result: 0 (no backlog)
+```
 
----
+### MongoDB Insert+Update Benchmark `[D]`
 
-## Key Findings
+Direct MongoDB performance, isolated from other components.
 
-- ✅ P90 latency scales with load: 28s (10%) → 163s (25%)
-- ✅ FQM processes ~1 node/sec under load
-- ✅ 100% success rate up to 25% cluster failure
-- ✅ Peak queue of 138 nodes clears in ~149 seconds
+| Benchmark | Duration | Rate |
+|-----------|----------|------|
+| 1000 insert+update pairs | - | - |
 
----
-
-## Test Timestamps (for Prometheus)
-
-| Test | Time Range (UTC) |
-|------|------------------|
-| Latency 10% (150 nodes) | 2025-12-04T11:29:00Z to 2025-12-04T11:31:00Z |
-| Latency 25% (375 nodes) | 2025-12-04T21:43:50Z to 2025-12-04T21:47:30Z |
-| Queue Depth (150 nodes) | 2025-12-04T20:04:00Z to 2025-12-04T20:07:00Z |
+```javascript
+// Run in mongosh via: scripts/mongodb-shell.sh
+const start = new Date();
+for (let i = 0; i < 1000; i++) {
+  const id = ObjectId();
+  db.HealthEvents.insertOne({
+    _id: id,
+    healthevent: {agent: 'benchmark', isfatal: true, nodename: 'test-'+i},
+    healtheventstatus: {nodequarantined: null}
+  });
+  db.HealthEvents.updateOne(
+    {_id: id},
+    {$set: {'healtheventstatus.nodequarantined': 'Quarantined'}}
+  );
+}
+print(`Duration: ${new Date() - start}ms for 1000 insert+update pairs`);
+```
 
 ---
 
@@ -93,14 +143,4 @@ fault_quarantine_event_backlog_count
 # Platform Connector Write Queue Latency
 histogram_quantile(0.90, sum(rate(platform_connector_workqueue_latency_seconds_bucket{queue="databaseStore"}[5m])) by (le))
 ```
-
----
-
-## Raw Data
-
-| File | Description |
-|------|-------------|
-| `fqm-latency-150nodes.csv` | Per-node latency data from 10% test |
-| `fqm-latency-375nodes.csv` | Per-node latency data from 25% test |
-| `queue-depth-snapshots.csv` | Queue depth snapshots over time |
 

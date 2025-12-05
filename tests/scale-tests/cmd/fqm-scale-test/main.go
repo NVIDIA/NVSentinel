@@ -184,7 +184,7 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, nodes []strin
 
 	// PHASE 1: Send ALL signals first (before any cordoning can evict pods)
 	log.Printf("🔀 Phase 1: Sending signals to %d nodes with %d workers (stagger 0-%ds)...", len(nodes), numWorkers, maxStagger)
-	
+
 	workCh := make(chan string, len(nodes))
 	var sentCount, errorCount int64
 	var mu sync.Mutex
@@ -246,7 +246,7 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, nodes []strin
 
 	// PHASE 2: Poll until all cordoned
 	log.Printf("📊 Phase 2: Polling cordoned count every %ds...", pollInterval)
-	
+
 	var snapshots []QueueSnapshot
 	pollDone := make(chan struct{})
 
