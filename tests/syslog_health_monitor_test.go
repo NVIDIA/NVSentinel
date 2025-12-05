@@ -188,6 +188,8 @@ func TestSyslogHealthMonitorXIDFloodAndTruncation(t *testing.T) {
 		WithLabel("component", "xid-flood-truncation")
 
 	const (
+		// maxConditionMessageLength must match the default value in Helm values.yaml
+		// and the system's ConfigMap configuration for accurate truncation testing
 		maxConditionMessageLength = 1024
 		truncationSuffix          = "..."
 	)
@@ -215,7 +217,7 @@ func TestSyslogHealthMonitorXIDFloodAndTruncation(t *testing.T) {
 					return false
 				}
 			}
-			return syslogPod != nil
+			return true
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "syslog-health-monitor pod should be ready")
 
 		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
