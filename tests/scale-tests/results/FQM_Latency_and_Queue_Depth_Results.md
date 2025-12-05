@@ -34,13 +34,13 @@
 
 ## FQM Latency Results
 
-| Scale | Nodes | Time to Complete | Peak Queue | Avg Rate | Success |
-|-------|-------|------------------|------------|----------|---------|
-| 10% | 150 | **64.5s** | 99 | 3.33/sec | 100% |
-| 25% | 375 | **156.8s** | 258 | 3.41/sec | 100% |
-| 50% | 750 | **418.6s** | 575 | 2.31/sec | 100% |
+| Scale | Nodes | Time to Complete | Peak Queue | Avg Rate |
+|-------|-------|------------------|------------|----------|
+| 10% | 150 | **64.5s** | 99 | 3.33/sec |
+| 25% | 375 | **156.8s** | 258 | 3.41/sec |
+| 50% | 750 | **418.6s** | 575 | 2.31/sec |
 
-**Test Methodology:** All SIGUSR1 signals are sent as fast as possible using a 50-worker pool (Phase 1), then we poll every 5 seconds to count cordoned nodes until all are complete (Phase 2). "Time to Complete" measures from first signal sent until last node cordoned.
+**Test Methodology:** All SIGUSR1 signals are sent as fast as possible using a 50-worker pool, then we poll every 5 seconds to count cordoned nodes until all are complete. "Time to Complete" measures from first signal sent until last node cordoned.
 
 **Test Parameters:** Lightweight mode (worker pool), no stagger, Circuit breaker DISABLED, Node drainer DISABLED
 
