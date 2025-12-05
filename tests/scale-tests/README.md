@@ -8,7 +8,7 @@ This test suite validates NVSentinel's performance and scalability under realist
 
 1. **Does NVSentinel affect the API server load and cause slowdown at scale of 1000+ nodes?**
 2. **Does MongoDB function at scale in our use case?**
-3. *(Additional test objectives will be added as testing continues)*
+3. **What is the end-to-end latency of cordoning nodes during mass failure events?**
 
 **Testing Version:** NVSentinel v0.4.0  
 **Cluster Scale:** 1500 nodes
@@ -55,10 +55,11 @@ docker build -t YOUR_REGISTRY/event-generator:v1 .
 docker push YOUR_REGISTRY/event-generator:v1
 
 # Update all manifests to use your registry (one command!)
-# Note: Replace ghcr.io/nvidia/nvsentinel with your actual container registry
 cd ../manifests
 sed -i 's|ghcr.io/nvidia/nvsentinel|YOUR_REGISTRY|g' event-generator-daemonset.yaml
 ```
+
+**⚠️ Important:** The placeholder URL `ghcr.io/nvidia/nvsentinel/event-generator` **does not exist** — this is test code only. You must build and push to your own registry.
 
 **Configure test scenarios by changing the ConfigMap:**
 - Light load: `kubectl apply -f event-generator-config-light.yaml`
@@ -66,23 +67,6 @@ sed -i 's|ghcr.io/nvidia/nvsentinel|YOUR_REGISTRY|g' event-generator-daemonset.y
 - Heavy load: `kubectl apply -f event-generator-config-heavy.yaml`
 
 See [event-generator/BUILD.md](event-generator/BUILD.md) for detailed instructions.
-
-## Test Architecture
-
-### Event Generation
-
-To simulate production-scale load, we deploy a DaemonSet of event generators (one pod per node) that inject synthetic health events directly into the platform connector via gRPC. This approach simulates production-style loads without requiring actual hardware failures or DCGM instrumentation.
-
-**Event Distribution (Random Selection):**
-- 64% - Healthy GPU events (IsFatal: false, IsHealthy: true)
-- 24% - System info events (IsFatal: false, IsHealthy: true)
-- 8% - Fatal GPU errors (IsFatal: true, IsHealthy: false)
-- 4% - NVSwitch warnings (IsFatal: false, IsHealthy: false)
-
-**Key capabilities:**
-- **Communication:** Direct gRPC via Unix socket to platform connector
-- **Deployment:** DaemonSet (one pod per worker node)
-- **Modes:** Continuous generation with configurable event rates
 
 ## Test Results Summary
 

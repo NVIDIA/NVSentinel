@@ -10,6 +10,21 @@ This document covers two phases of testing:
 
 *See [PRODUCTION_BASELINE.md](PRODUCTION_BASELINE.md) for production event rate analysis (sustained: 5-373 events/sec, peak bursts: up to 2,033 events/sec)*
 
+### Event Generation
+
+To simulate production-scale load, we deploy a DaemonSet of event generators (one pod per node) that inject synthetic health events directly into the platform connector via gRPC. This approach simulates production-style loads without requiring actual hardware failures or DCGM instrumentation.
+
+**Event Distribution (Random Selection):**
+- 64% - Healthy GPU events (IsFatal: false, IsHealthy: true)
+- 24% - System info events (IsFatal: false, IsHealthy: true)
+- 8% - Fatal GPU errors (IsFatal: true, IsHealthy: false)
+- 4% - NVSwitch warnings (IsFatal: false, IsHealthy: false)
+
+**Key capabilities:**
+- **Communication:** Direct gRPC via Unix socket to platform connector
+- **Deployment:** DaemonSet (one pod per worker node)
+- **Modes:** Continuous generation with configurable event rates
+
 ---
 
 ## Phase 1: Sustained Production Load Testing
