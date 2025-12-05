@@ -115,6 +115,7 @@ k8s_yaml('./nvidia-dcgm-daemonset.yaml')
 include('../fault-quarantine/Tiltfile')
 include('../fault-remediation/Tiltfile')
 include('../janitor/Tiltfile')
+include('../providers/kwok/Tiltfile')
 include('../node-drainer/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
@@ -239,6 +240,11 @@ local_resource(
 k8s_resource(
     'janitor',
     resource_deps=['wait-for-janitor-cert'],
+)
+
+k8s_resource(
+    'janitor-provider-kwok',
+    resource_deps=['janitor'],
 )
 
 if use_percona:
