@@ -30,6 +30,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"os"
@@ -43,6 +44,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -60,6 +62,9 @@ type QueueSnapshot struct {
 }
 
 func main() {
+	// Suppress client-go's verbose logging
+	klog.SetOutput(io.Discard)
+
 	// Parse flags
 	numNodes := flag.Int("nodes", 150, "Number of nodes to test")
 	namespace := flag.String("namespace", "nvsentinel", "NVSentinel namespace")
@@ -132,6 +137,10 @@ func createK8sClient(kubeconfig, k8sContext string) (*kubernetes.Clientset, *res
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
+
+	// Increase rate limits for high-concurrency testing (default is 5 QPS, 10 burst)
+	config.QPS = 100
+	config.Burst = 200
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -224,6 +233,11 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 
 	startTime := time.Now()
 
+	// Baseline the number of nodes already cordoned by NVSentinel so progress
+	// and completion are measured only for this test run.
+	baselineCordoned := countCordonedNodes(ctx, clientset)
+	log.Printf("📊 Baseline NVSentinel-cordoned nodes: %d", baselineCordoned)
+
 	// PHASE 1: Send ALL signals first (before any cordoning can evict pods)
 	log.Printf("🔀 Phase 1: Sending signals to %d nodes with %d workers (stagger 0-%ds)...", len(nodes), numWorkers, maxStagger)
 
@@ -287,6 +301,10 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 	log.Printf("✅ Phase 1 complete: %d sent, %d errors in %.1fs", sentCount, errorCount, signalsDone.Sub(startTime).Seconds())
 
 	// PHASE 2: Poll until all cordoned
+	// Guard against invalid poll intervals (e.g. -poll=0)
+	if pollInterval <= 0 {
+		pollInterval = 1
+	}
 	log.Printf("📊 Phase 2: Polling cordoned count every %ds...", pollInterval)
 
 	var snapshots []QueueSnapshot
@@ -305,22 +323,33 @@ func runTest(ctx context.Context, clientset *kubernetes.Clientset, config *rest.
 				close(pollDone)
 				return
 			case <-ticker.C:
-				cordoned := countCordonedNodes(ctx, clientset)
+				rawCordoned := countCordonedNodes(ctx, clientset)
+				// Measure only new cordons from this run
+				cordoned := rawCordoned - baselineCordoned
+				if cordoned < 0 {
+					cordoned = 0
+				}
+
 				elapsed := time.Since(startTime).Seconds()
 				rate := float64(cordoned-lastCordoned) / float64(pollInterval)
 				lastCordoned = cordoned
+
+				queueDepth := int(sentCount) - cordoned
+				if queueDepth < 0 {
+					queueDepth = 0
+				}
 
 				snapshot := QueueSnapshot{
 					Timestamp:      time.Now(),
 					ElapsedSeconds: elapsed,
 					CordonedCount:  cordoned,
-					QueueDepth:     int(sentCount) - cordoned,
+					QueueDepth:     queueDepth,
 					ProcessingRate: rate,
 				}
 				snapshots = append(snapshots, snapshot)
 
-				log.Printf("[T+%.0fs] Cordoned: %d/%d | Queue: %d | Rate: %.1f/sec",
-					elapsed, cordoned, sentCount, int(sentCount)-cordoned, rate)
+				log.Printf("[T+%.0fs] Cordoned (this run): %d/%d | Queue: %d | Rate: %.1f/sec",
+					elapsed, cordoned, sentCount, queueDepth, rate)
 
 				if cordoned >= int(sentCount) {
 					log.Printf("✅ All %d nodes cordoned!", sentCount)

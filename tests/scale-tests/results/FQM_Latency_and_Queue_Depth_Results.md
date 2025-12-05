@@ -32,13 +32,51 @@
 
 ---
 
+## Test Setup & Execution
+
+### Build the Test Tool
+
+```bash
+cd tests/scale-tests/cmd/fqm-scale-test
+go build -o fqm-scale-test .
+```
+
+### Reset Cluster Between Tests
+
+```bash
+# Run the reset script
+cd tests/scale-tests/scripts
+./reset-cordoned-nodes.sh
+
+# Clear MongoDB state (via mongodb-shell.sh in repo root)
+db.HealthEvents.deleteMany({})
+db.ResumeTokens.deleteMany({})
+
+# Disable node-drainer during tests
+kubectl scale deployment/node-drainer -n nvsentinel --replicas=0
+```
+
+### Run Tests
+
+```bash
+cd tests/scale-tests/cmd/fqm-scale-test
+
+./fqm-scale-test                # 10% cluster (150 nodes, default)
+./fqm-scale-test -nodes=375     # 25% cluster
+./fqm-scale-test -nodes=750     # 50% cluster
+```
+
+**Options:** `-workers=50` (default), `-timeout=600` (seconds), `-stagger=0` (0=blast mode)
+
+---
+
 ## FQM Latency Results
 
 | Scale | Nodes | Time to Complete | Peak Queue | Avg Rate |
 |-------|-------|------------------|------------|----------|
-| 10% | 150 | **64.5s** | 99 | 3.33/sec |
-| 25% | 375 | **156.8s** | 258 | 3.41/sec |
-| 50% | 750 | **418.6s** | 575 | 2.31/sec |
+| 10% | 150 | **62.2s** | 130 | 2.50/sec |
+| 25% | 375 | **154.6s** | 350 | 2.50/sec |
+| 50% | 750 | **303.7s** | 715 | 2.54/sec |
 
 **Test Methodology:** All SIGUSR1 signals are sent as fast as possible using a 50-worker pool, then we poll every 5 seconds to count cordoned nodes until all are complete. "Time to Complete" measures from first signal sent until last node cordoned.
 
@@ -49,10 +87,9 @@
 ## Key Findings
 
 - ✅ **100% cordoning success rate** at all scales (10%, 25%, 50%)
-- ✅ **~3 nodes/sec** cordoning rate at 10-25% load
-- ✅ **~2.3 nodes/sec** at 50% load (750 nodes)
+- ✅ **~2.5 nodes/sec** consistent cordoning rate across all scales
 - ✅ **Event handling latency** stays consistent: P50 ~0.37s, P90 ~0.48s
-- ✅ **Peak backlog scales linearly** with load: 104 → 256 → 534
+- ✅ **Peak backlog scales linearly** with load: 130 → 350 → 715
 - ✅ **FQM processes events sequentially** (one at a time from change stream queue) — Platform Connector writes in parallel (~5ms each, zero backlog)
 
 ---
@@ -61,7 +98,7 @@
 
 ![FQM Event Backlog](graphs/fqm_backlog_overlay.png)
 
-The graph shows event backlog (pending events waiting to be processed by FQM) during each test. All three tests show the same pattern: backlog spikes when events arrive, then drains at ~2-3 nodes/sec as FQM processes them.
+The graph shows event backlog (pending events waiting to be processed by FQM) during each test. All three tests show the same pattern: backlog spikes when events arrive, then drains at ~2.5 nodes/sec as FQM processes them. Minor fluctuations reflect Prometheus scrape timing (15-30s intervals) relative to FQM's continuous event processing.
 
 ---
 
@@ -71,9 +108,9 @@ Measures FQM processing time from receiving MongoDB change stream event to cordo
 
 | Scale | Nodes | Event Handling P50 | Event Handling P90 | Event Handling P99 | Peak Backlog |
 |-------|-------|-------------------|-------------------|-------------------|--------------|
-| 10% | 150 | 0.37s | 0.47s | 0.50s | 104 |
-| 25% | 375 | 0.37s | 0.48s | 0.50s | 256 |
-| 50% | 750 | 0.38s | 0.48s | 0.50s | 534 |
+| 10% | 150 | 0.37s | 0.47s | 0.50s | 130 |
+| 25% | 375 | 0.37s | 0.48s | 0.50s | 350 |
+| 50% | 750 | 0.38s | 0.48s | 0.50s | 715 |
 
 ---
 

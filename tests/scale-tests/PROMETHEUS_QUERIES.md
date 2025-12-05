@@ -46,3 +46,34 @@ curl -s 'http://localhost:9090/api/v1/query?query=mongodb_ss_connections{instanc
 ```
 
 **Note:** Replace timestamps with your actual test times. Use `mongodb-0`, `mongodb-1`, or `mongodb-2` depending on which is the primary during your test.
+
+### FQM Metrics (Fault Quarantine Module)
+
+```bash
+# Event Handling Duration - P50/P90/P99 (seconds)
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.50,sum(rate(fault_quarantine_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.90,sum(rate(fault_quarantine_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,sum(rate(fault_quarantine_event_handling_duration_seconds_bucket[5m]))by(le))' | jq -r '.data.result[0].value[1]'
+
+# Current Event Backlog (pending events)
+curl -s 'http://localhost:9090/api/v1/query?query=fault_quarantine_event_backlog_count' | jq -r '.data.result[0].value[1]'
+
+# Peak Backlog over time range
+curl -s 'http://localhost:9090/api/v1/query?query=max_over_time(fault_quarantine_event_backlog_count[10m])' | jq -r '.data.result[0].value[1]'
+
+# Total events processed
+curl -s 'http://localhost:9090/api/v1/query?query=fault_quarantine_events_successfully_processed_total' | jq -r '.data.result[0].value[1]'
+
+# Cordons applied
+curl -s 'http://localhost:9090/api/v1/query?query=fault_quarantine_cordons_applied_total' | jq -r '.data.result[0].value[1]'
+```
+
+### Platform Connector Metrics
+
+```bash
+# MongoDB Write Duration (avg seconds)
+curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(platform_connector_workqueue_work_duration_seconds_databaseStore_sum[5m]))/sum(rate(platform_connector_workqueue_work_duration_seconds_databaseStore_count[5m]))' | jq -r '.data.result[0].value[1]'
+
+# Queue Depth (should be 0 if not backlogged)
+curl -s 'http://localhost:9090/api/v1/query?query=platform_connector_workqueue_depth_databaseStore' | jq -r '.data.result[0].value[1]'
+```
