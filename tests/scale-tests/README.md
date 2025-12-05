@@ -9,6 +9,7 @@ This test suite validates NVSentinel's performance and scalability under realist
 1. **Does NVSentinel affect the API server load and cause slowdown at scale of 1000+ nodes?**
 2. **Does MongoDB function at scale in our use case?**
 3. **What is the end-to-end latency of cordoning nodes during mass failure events?**
+4. **How does Node Drainer handle concurrent drain operations at scale?**
 
 **Testing Version:** NVSentinel v0.4.0  
 **Cluster Scale:** 1500 nodes

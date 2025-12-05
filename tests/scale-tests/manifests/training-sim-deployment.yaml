@@ -1,0 +1,75 @@
+# Training Simulator Workload
+# Simulates GPU training jobs with few large pods
+# Used for Concurrent Drain Tests B1 and B2
+#
+# Pattern: 3 pods per node across 1500 nodes = ~4,500 pods
+# Resources: Large (2 CPU, 4Gi memory per pod - simulates GPU job patterns)
+# Termination: 60 seconds (training jobs need time to checkpoint)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-workload
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-sim
+  namespace: test-workload
+  labels:
+    app: training-sim
+    workload-type: training
+spec:
+  # 1500 nodes × 3 pods/node = 4,500 replicas
+  replicas: 4500
+  selector:
+    matchLabels:
+      app: training-sim
+  template:
+    metadata:
+      labels:
+        app: training-sim
+        workload-type: training
+    spec:
+      # 60 seconds - training jobs need time to save checkpoints
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: training
+        # Lightweight Python image - handles SIGTERM gracefully
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, saving checkpoint...")
+              # Simulate checkpoint save (5 seconds)
+              time.sleep(5)
+              print("Checkpoint saved, shutting down.")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Training simulator started, running epoch...")
+          while True:
+              time.sleep(3600)
+        resources:
+          # Large resources to simulate GPU training pod patterns
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+      # Spread pods evenly across nodes
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: training-sim
+
