@@ -353,7 +353,7 @@ func TestSyslogHealthMonitorXIDFloodAndTruncation(t *testing.T) {
 				return false
 			}
 
-			t.Logf("Phase 2 - Message length: %d chars (exactly at or near 1KB limit), truncated with suffix '%s'",
+			t.Logf("Phase 2 - Message length: %d bytes (exactly at or near 1KB limit), truncated with suffix '%s'",
 				messageLen, truncationSuffix)
 			return true
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,

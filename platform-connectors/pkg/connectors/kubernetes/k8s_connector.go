@@ -58,6 +58,11 @@ func NewK8sConnector(
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
 	qps float32, burst int, stopCh <-chan struct{}, maxNodeConditionMessageLength int64,
 ) (*K8sConnector, kubernetes.Interface, error) {
+	if maxNodeConditionMessageLength <= 0 {
+		return nil, nil, fmt.Errorf("maxNodeConditionMessageLength must be greater than 0, got %d",
+			maxNodeConditionMessageLength)
+	}
+
 	// Create the in-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
