@@ -33,7 +33,21 @@ type kwokProviderServer struct {
 
 func (s *kwokProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	slog.Info("Sending reboot signal", "node", req.NodeName)
-	return nil, status.Errorf(codes.Unimplemented, "method SendRebootSignal not implemented")
+	return &cspv1alpha1.SendRebootSignalResponse{
+		RequestId: "1234567890",
+	}, nil
+}
+
+func (s *kwokProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+	slog.Info("Checking if node is ready", "node", req.NodeName)
+	return &cspv1alpha1.IsNodeReadyResponse{
+		IsReady: true,
+	}, nil
+}
+
+func (s *kwokProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+	slog.Info("Sending terminate signal", "node", req.NodeName)
+	return nil, status.Errorf(codes.Unimplemented, "method SendTerminateSignal not implemented")
 }
 
 func main() {
