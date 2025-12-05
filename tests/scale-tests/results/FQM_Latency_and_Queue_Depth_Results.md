@@ -9,7 +9,7 @@
 **Cluster:** 1503 nodes (3 system + 1500 customer aws-cpu-m7i.xlarge nodes)  
 **NVSentinel Version:** v0.4.0  
 **MongoDB:** 3 replicas, 6Gi memory per replica  
-**Test Date:** December 4, 2025
+**Test Date:** December 5, 2025
 
 ### Test Approach
 
@@ -74,9 +74,9 @@ cd tests/scale-tests/cmd/fqm-scale-test
 
 | Scale | Nodes | Time to Complete | Peak Queue | Avg Rate |
 |-------|-------|------------------|------------|----------|
-| 10% | 150 | **62.2s** | 130 | 2.50/sec |
-| 25% | 375 | **154.6s** | 350 | 2.50/sec |
-| 50% | 750 | **303.7s** | 715 | 2.54/sec |
+| 10% | 150 | **62.2s** | 142 | 2.50/sec |
+| 25% | 375 | **154.6s** | 371 | 2.50/sec |
+| 50% | 750 | **303.7s** | 688 | 2.54/sec |
 
 **Test Methodology:** All SIGUSR1 signals are sent as fast as possible using a 50-worker pool, then we poll every 5 seconds to count cordoned nodes until all are complete. "Time to Complete" measures from first signal sent until last node cordoned.
 
@@ -89,7 +89,7 @@ cd tests/scale-tests/cmd/fqm-scale-test
 - ✅ **100% cordoning success rate** at all scales (10%, 25%, 50%)
 - ✅ **~2.5 nodes/sec** consistent cordoning rate across all scales
 - ✅ **Event handling latency** stays consistent: P50 ~0.37s, P90 ~0.48s
-- ✅ **Peak backlog scales linearly** with load: 130 → 350 → 715
+- ✅ **Peak backlog scales linearly** with load: 142 → 371 → 688
 - ✅ **FQM processes events sequentially** (one at a time from change stream queue) — Platform Connector writes in parallel (~5ms each, zero backlog)
 
 ---
@@ -108,9 +108,9 @@ Measures FQM processing time from receiving MongoDB change stream event to cordo
 
 | Scale | Nodes | Event Handling P50 | Event Handling P90 | Event Handling P99 | Peak Backlog |
 |-------|-------|-------------------|-------------------|-------------------|--------------|
-| 10% | 150 | 0.37s | 0.47s | 0.50s | 130 |
-| 25% | 375 | 0.37s | 0.48s | 0.50s | 350 |
-| 50% | 750 | 0.38s | 0.48s | 0.50s | 715 |
+| 10% | 150 | 0.37s | 0.47s | 0.50s | 142 |
+| 25% | 375 | 0.37s | 0.48s | 0.50s | 371 |
+| 50% | 750 | 0.38s | 0.48s | 0.50s | 688 |
 
 ---
 

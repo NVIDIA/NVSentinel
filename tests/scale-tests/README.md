@@ -104,9 +104,9 @@ See [results/](results/) for detailed test reports.
 
 **Key Findings:**
 - 100% cordoning success rate at all scales
-- FQM processes ~2-3 nodes/sec under load
+- FQM processes ~2.5 nodes/sec consistently across all scales
 - Event handling latency consistent: P50 ~0.37s, P90 ~0.48s
-- Bottleneck identified: FQM processing (~90% of total time)
+- FQM processes events sequentially (one at a time from change stream queue)
 
 📊 **[Full Results](results/FQM_Latency_and_Queue_Depth_Results.md)**
 
@@ -196,4 +196,4 @@ Additional testing in progress.
 
 ---
 
-**Last Updated:** December 1, 2025
+**Last Updated:** December 5, 2025
