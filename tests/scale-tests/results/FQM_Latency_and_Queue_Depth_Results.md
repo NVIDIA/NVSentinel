@@ -27,13 +27,15 @@
 
 ## FQM Latency Results
 
-| Scale | Nodes | Min | P50 | P90 | P95 | P99 | Max | Mean | Success |
-|-------|-------|-----|-----|-----|-----|-----|-----|------|---------|
-| 10% | 150 | 1.79s | 16.75s | **28.15s** | 29.75s | 31.35s | 31.75s | 16.26s | 100% |
-| 25% | 375 | 2.34s | 91.06s | **163.44s** | 171.86s | 181.06s | 184.05s | 90.63s | 100% |
-| 50% | 750 | - | - | **418.6s** | - | - | - | 2.31/sec | 100% |
+| Scale | Nodes | Time to Complete | Peak Queue | Avg Rate | Success |
+|-------|-------|------------------|------------|----------|---------|
+| 10% | 150 | **64.5s** | 99 | 3.33/sec | 100% |
+| 25% | 375 | **156.8s** | 258 | 3.41/sec | 100% |
+| 50% | 750 | **418.6s** | 575 | 2.31/sec | 100% |
 
-**Test Parameters:** Concurrent mode, 0-30s random stagger, Fatal GPU XID error, Circuit breaker DISABLED for 25%+
+**Test Methodology:** All SIGUSR1 signals are sent as fast as possible using a 50-worker pool (Phase 1), then we poll every 5 seconds to count cordoned nodes until all are complete (Phase 2). "Time to Complete" measures from first signal sent until last node cordoned.
+
+**Test Parameters:** Lightweight mode (worker pool), no stagger, Circuit breaker DISABLED, Node drainer DISABLED
 
 ---
 
