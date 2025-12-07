@@ -37,6 +37,14 @@ updates:
       interval: "weekly"
     labels: ["dependencies"]
 
+  # API
+  - package-ecosystem: "gomod"
+    directory: "/api"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
   # Core Services
   - package-ecosystem: "gomod"
     directory: "/health-events-analyzer"
