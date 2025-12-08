@@ -35,7 +35,10 @@ func NewAWSHandler(eventStore *store.EventStore) *AWSHandler {
 func (h *AWSHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/aws/health", h.handleHealth)
 	mux.HandleFunc("/aws/inject", h.handleInject)
+	mux.HandleFunc("/aws/events", h.handleListEvents)
 	mux.HandleFunc("/aws/events/clear", h.handleClear)
+	mux.HandleFunc("/aws/stats", h.handleStats)
+	mux.HandleFunc("/aws/stats/reset", h.handleResetStats)
 }
 
 func (h *AWSHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +61,8 @@ func (h *AWSHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AWSHandler) describeEvents(w http.ResponseWriter) {
+	h.store.IncrementPollCount(store.CSPAWS)
+
 	events := h.store.ListByCSP(store.CSPAWS)
 	awsEvents := make([]map[string]interface{}, 0, len(events))
 
@@ -227,8 +232,25 @@ func (h *AWSHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AWSHandler) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	events := h.store.ListByCSP(store.CSPAWS)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(events)
+}
+
 func (h *AWSHandler) handleClear(w http.ResponseWriter, r *http.Request) {
 	h.store.ClearByCSP(store.CSPAWS)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+}
+
+func (h *AWSHandler) handleStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int64{"pollCount": h.store.GetPollCount(store.CSPAWS)})
+}
+
+func (h *AWSHandler) handleResetStats(w http.ResponseWriter, r *http.Request) {
+	h.store.ResetPollCount(store.CSPAWS)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
 }

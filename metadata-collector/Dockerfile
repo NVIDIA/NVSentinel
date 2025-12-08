@@ -14,6 +14,10 @@
 
 FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS builder
 
+ARG VERSION="dev"
+ARG GIT_COMMIT="none"
+ARG BUILD_DATE=$(date -u +%FT%TZ)
+
 WORKDIR /workspace
 
 COPY commons/ commons/
@@ -25,7 +29,7 @@ RUN go mod download
 
 COPY metadata-collector/ .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w" -o metadata-collector main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o metadata-collector main.go
 
 FROM nvcr.io/nvidia/cuda:12.3.0-base-ubuntu22.04
 

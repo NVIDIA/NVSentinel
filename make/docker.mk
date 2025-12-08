@@ -31,6 +31,9 @@ docker-build: setup-buildx ## Build Docker image (multi-platform with cache)
 		$(CACHE_FROM_ARG) \
 		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		--annotation "index:org.opencontainers.image.source=https://github.com/nvidia/nvsentinel" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--annotation "index:org.opencontainers.image.title=NVSentinel $(MODULE_NAME)" \
@@ -55,6 +58,9 @@ docker-build-local: setup-buildx ## Build Docker image without remote cache (fas
 		--platform $(PLATFORMS) \
 		--network=host \
 		$(DOCKER_EXTRA_ARGS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		$(DOCKER_LOAD_ARG) \
 		-t $(MODULE_NAME):local \
 		-f $(MODULE_PATH)/Dockerfile \
@@ -71,6 +77,9 @@ docker-publish: setup-buildx ## Build and publish Docker image to registry
 		$(CACHE_FROM_ARG) \
 		$(CACHE_TO_ARG) \
 		$(DOCKER_EXTRA_ARGS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		$(if $(DOCKER_METADATA_FILE),--metadata-file $(DOCKER_METADATA_FILE)) \
 		--annotation "index:org.opencontainers.image.source=https://github.com/nvidia/nvsentinel" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
