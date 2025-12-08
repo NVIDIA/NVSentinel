@@ -36,7 +36,7 @@ spec:
       containers:
       - name: training
         # Lightweight Python image - handles SIGTERM gracefully
-        image: python:3.11-slim
+        image: public.ecr.aws/docker/library/python:3.11-slim
         command:
         - python
         - -c
