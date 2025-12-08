@@ -101,15 +101,15 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
+              port: {{ ternary "health" "metrics" (default false (.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path:  {{ ternary "/readyz" "/healthz" ((.Values.global).ctrlRuntimeEnabled) }}
-              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
+              path:  {{ ternary "/readyz" "/healthz"  (default false (.Values.global).ctrlRuntimeEnabled) }}
+              port: {{ ternary "health" "metrics"  (default false (.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
