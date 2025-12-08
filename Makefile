@@ -42,6 +42,7 @@ GO_MODULES := \
 	api \
 	health-monitors/syslog-health-monitor \
 	health-monitors/csp-health-monitor \
+	health-monitors/kubernetes-object-monitor \
 	platform-connectors \
 	health-events-analyzer \
 	fault-quarantine \

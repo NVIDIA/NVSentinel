@@ -188,3 +188,20 @@ builds:
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
+  - id: kubernetes-object-monitor
+    dir: health-monitors/kubernetes-object-monitor
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "Kubernetes object monitor for detecting unhealthy resources in GPU-accelerated Kubernetes environments"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel Kubernetes Object Monitor"
+      org.opencontainers.image.description: "Kubernetes object monitor for detecting unhealthy resources in GPU-accelerated Kubernetes environments"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
