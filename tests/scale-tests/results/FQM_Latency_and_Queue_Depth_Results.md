@@ -68,6 +68,23 @@ cd tests/scale-tests/cmd/fqm-scale-test
 
 **Options:** `-workers=50` (default), `-timeout=600` (seconds), `-stagger=0` (0=blast mode)
 
+### Troubleshooting: FQM Not Cordoning
+
+If FQM shows 0 nodes being cordoned despite events being sent, the change stream may be stale from prior runs. Fix by resetting FQM state:
+
+```bash
+# 1. Scale FQM to 0
+kubectl scale deployment/fault-quarantine -n nvsentinel --replicas=0
+
+# 2. Clear MongoDB state (connect via scripts/mongodb-shell.sh in repo root)
+db.HealthEvents.deleteMany({})
+db.ResumeTokens.deleteMany({})
+
+# 3. Scale FQM back to 1
+kubectl scale deployment/fault-quarantine -n nvsentinel --replicas=1
+kubectl rollout status deployment/fault-quarantine -n nvsentinel --timeout=60s
+```
+
 ---
 
 ## FQM Latency Results
