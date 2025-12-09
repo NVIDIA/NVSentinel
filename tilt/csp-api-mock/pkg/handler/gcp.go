@@ -36,7 +36,10 @@ func NewGCPHandler(eventStore *store.EventStore) *GCPHandler {
 
 func (h *GCPHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/gcp/inject", h.handleInject)
+	mux.HandleFunc("/gcp/events", h.handleListEvents)
 	mux.HandleFunc("/gcp/events/clear", h.handleClear)
+	mux.HandleFunc("/gcp/stats", h.handleStats)
+	mux.HandleFunc("/gcp/stats/reset", h.handleResetStats)
 }
 
 func (h *GCPHandler) handleInject(w http.ResponseWriter, r *http.Request) {
@@ -75,10 +78,27 @@ func (h *GCPHandler) handleInject(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"eventId": req.ID})
 }
 
+func (h *GCPHandler) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	events := h.store.ListByCSP(store.CSPGCP)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(events)
+}
+
 func (h *GCPHandler) handleClear(w http.ResponseWriter, r *http.Request) {
 	h.store.ClearByCSP(store.CSPGCP)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
+}
+
+func (h *GCPHandler) handleStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int64{"pollCount": h.store.GetPollCount(store.CSPGCP)})
+}
+
+func (h *GCPHandler) handleResetStats(w http.ResponseWriter, r *http.Request) {
+	h.store.ResetPollCount(store.CSPGCP)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
 }
 
 func setDefaults(e *store.MaintenanceEvent) {

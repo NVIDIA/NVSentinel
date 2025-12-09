@@ -11,7 +11,7 @@ require (
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.18.0
+	golang.org/x/sync v0.19.0
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
 	k8s.io/api v0.34.2
@@ -28,6 +28,7 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	golang.org/x/mod v0.30.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
 
 require (

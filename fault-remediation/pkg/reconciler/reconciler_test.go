@@ -216,9 +216,9 @@ func TestNewReconciler(t *testing.T) {
 				},
 			}
 
-			r := NewReconciler(cfg, tt.dryRun)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, tt.dryRun)
 			assert.NotNil(t, r)
-			assert.Equal(t, tt.dryRun, r.DryRun)
+			assert.Equal(t, tt.dryRun, r.dryRun)
 		})
 	}
 }
@@ -260,7 +260,7 @@ func TestHandleEvent(t *testing.T) {
 				RemediationClient: k8sClient,
 			}
 
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 			healthEventData := &HealthEventData{
 				ID: uuid.New().String(),
 				HealthEventWithStatus: model.HealthEventWithStatus{
@@ -270,7 +270,7 @@ func TestHandleEvent(t *testing.T) {
 					},
 				},
 			}
-			result, _ := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
+			result, _ := r.config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
@@ -317,7 +317,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	// shouldSkipEvent should return true for UNKNOWN action
 	assert.True(t, r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus))
@@ -368,13 +368,14 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-success", crName)
 }
@@ -424,13 +425,14 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.False(t, success)
 	assert.Empty(t, crName)
 }
@@ -469,14 +471,15 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
 	// Even with label update errors, remediation should still succeed
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-label-error", crName)
 }
@@ -494,7 +497,8 @@ func TestShouldSkipEvent(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(ReconcilerConfig{RemediationClient: mockK8sClient, StateManager: stateManager}, false)
+	cfg := ReconcilerConfig{RemediationClient: mockK8sClient, StateManager: stateManager}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	tests := []struct {
 		name              string
@@ -575,14 +579,14 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 		EnableLogCollector: true,
 		StateManager:       stateManager,
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	he := &protos.HealthEvent{NodeName: "test-node-none", RecommendedAction: protos.RecommendedAction_NONE}
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector run before skipping
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
-		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
+		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
 	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
@@ -654,9 +658,9 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 				RemediationClient:  k8sClient,
 				EnableLogCollector: true,
 			}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
-			result := r.Config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName)
+			result := r.config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName)
 			if tt.expectedResult {
 				assert.NoError(t, result, tt.description)
 			} else {
@@ -685,9 +689,9 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 		RemediationClient:  k8sClient,
 		EnableLogCollector: true,
 	}
-	r := NewReconciler(cfg, true) // Enable dry run
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, true)
 
-	result := r.Config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run")
+	result := r.config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run")
 	assert.NoError(t, result, "Dry run should return no error")
 	assert.True(t, called, "Function should be called even in dry run mode")
 }
@@ -717,14 +721,14 @@ func TestLogCollectorDisabled(t *testing.T) {
 		EnableLogCollector: false, // Disabled
 		StateManager:       stateManager,
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	he := &protos.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: protos.RecommendedAction_NONE}
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector should NOT run when disabled
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
-		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
+		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
 	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
@@ -777,12 +781,12 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 					return true, "test-cr"
 				},
 			}
-
-			r := NewReconciler(ReconcilerConfig{
+			cfg := ReconcilerConfig{
 				RemediationClient: mockK8sClient,
 				UpdateMaxRetries:  1,
 				UpdateRetryDelay:  0,
-			}, false)
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 			// Create mock health event store
 			mockHealthStore := &MockHealthEventStore{
 				UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
@@ -857,7 +861,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
@@ -930,7 +934,7 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
@@ -988,7 +992,7 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 				RemediationClient:  mockK8sClient,
 				EnableLogCollector: true,
 			}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",

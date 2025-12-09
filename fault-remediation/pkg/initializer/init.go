@@ -28,6 +28,7 @@ import (
 	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
+	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
 )
 
 type InitializationParams struct {
@@ -38,9 +39,10 @@ type InitializationParams struct {
 }
 
 type Components struct {
-	Reconciler *reconciler.Reconciler
+	FaultRemediationReconciler reconciler.FaultRemediationReconciler
 }
 
+// nolint: cyclop // todo
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
 	slog.Info("Starting fault remediation module initialization")
 
@@ -65,6 +67,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Log collector enabled")
 	}
 
+	//TODO: replace this with manager client
 	k8sClient, clientSet, err := reconciler.NewK8sClient(
 		params.KubeconfigPath,
 		params.DryRun,
@@ -93,6 +96,25 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		TokenCollection: tokenConfig.TokenCollection,
 	}
 
+	ds, err := datastore.NewDataStore(ctx, *datastoreConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing datastore: %w", err)
+	}
+
+	// Create watcher using the factory pattern
+	watcherConfig := watcher.WatcherConfig{
+		Pipeline:       pipeline,
+		CollectionName: "HealthEvents",
+	}
+
+	watcherInstance, err := watcher.CreateChangeStreamWatcher(ctx, ds, watcherConfig)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing change stream watcher: %w", err)
+	}
+
+	// Get the HealthEventStore for document operations
+	healthEventStore := ds.HealthEventStore()
+
 	reconcilerCfg := reconciler.ReconcilerConfig{
 		DataStoreConfig:    *datastoreConfig,
 		TokenConfig:        clientTokenConfig,
@@ -104,11 +126,10 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		UpdateRetryDelay:   time.Duration(tomlConfig.UpdateRetry.RetryDelaySeconds) * time.Second,
 	}
 
-	reconcilerInstance := reconciler.NewReconciler(reconcilerCfg, params.DryRun)
-
 	slog.Info("Initialization completed successfully")
 
 	return &Components{
-		Reconciler: reconcilerInstance,
+		FaultRemediationReconciler: reconciler.NewFaultRemediationReconciler(
+			ds, watcherInstance, healthEventStore, reconcilerCfg, params.DryRun),
 	}, nil
 }

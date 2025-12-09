@@ -24,11 +24,6 @@ type CSPType string
 const (
 	CSPGCP CSPType = "gcp"
 	CSPAWS CSPType = "aws"
-
-	// timestampOffset ensures newly created events have timestamps slightly in the future.
-	// This prevents race conditions where GCP's timestamp filtering (using strict ">")
-	// might miss events created at nearly the same instant as a poll window boundary.
-	timestampOffset = 1 * time.Second
 )
 
 type MaintenanceEvent struct {
@@ -55,21 +50,41 @@ type MaintenanceEvent struct {
 }
 
 type EventStore struct {
-	mu     sync.RWMutex
-	events map[string]*MaintenanceEvent
+	mu         sync.RWMutex
+	events     map[string]*MaintenanceEvent
+	pollCounts map[CSPType]int64
 }
 
 func NewEventStore() *EventStore {
 	return &EventStore{
-		events: make(map[string]*MaintenanceEvent),
+		events:     make(map[string]*MaintenanceEvent),
+		pollCounts: make(map[CSPType]int64),
 	}
+}
+
+func (s *EventStore) IncrementPollCount(csp CSPType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pollCounts[csp]++
+}
+
+func (s *EventStore) GetPollCount(csp CSPType) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pollCounts[csp]
+}
+
+func (s *EventStore) ResetPollCount(csp CSPType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pollCounts[csp] = 0
 }
 
 func (s *EventStore) Add(event *MaintenanceEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	event.CreatedAt = time.Now().UTC().Add(timestampOffset)
+	event.CreatedAt = time.Now().UTC()
 	event.UpdatedAt = event.CreatedAt
 	s.events[event.ID] = event
 }
@@ -82,7 +97,7 @@ func (s *EventStore) Update(event *MaintenanceEvent) bool {
 		return false
 	}
 
-	event.UpdatedAt = time.Now().UTC().Add(timestampOffset)
+	event.UpdatedAt = time.Now().UTC()
 	s.events[event.ID] = event
 	return true
 }

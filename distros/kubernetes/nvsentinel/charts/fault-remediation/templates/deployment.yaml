@@ -36,8 +36,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "fault-remediation.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
       initContainers:
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+        {{- end }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
           imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
@@ -64,6 +72,7 @@ spec:
             - name: client-certs-fixed
               mountPath: /etc/ssl/client-certs-fixed
       {{- end }}
+      {{- end }}
       containers:
         - name: fault-remediation
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -78,21 +87,29 @@ spec:
           args:
           - "--dry-run={{ ((.Values.global).dryRun) | default false }}"
           - "--enable-log-collector={{ .Values.logCollector.enabled }}"
+          {{- if  (.Values.global).ctrlRuntimeEnabled }}
+          - "--controller-runtime=true"
+          - "--leader-elect=true"
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
+            {{- if  (.Values.global).ctrlRuntimeEnabled }}
+            - name: health
+              containerPort: {{ ((.Values.global).healthPort) | default 9440 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: metrics
+              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
-              port: metrics
+              path:  {{ ternary "/readyz" "/healthz" ((.Values.global).ctrlRuntimeEnabled) }}
+              port: {{ ternary "health" "metrics" ((.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -109,9 +126,19 @@ spec:
           {{- end }}
           - name: config-volume
             mountPath: /etc/config
+          {{- if .Values.global.auditLogging.enabled }}
+          {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 10 }}
+          {{- end }}
           env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
           - name: LOG_LEVEL
             value: "{{ .Values.logLevel }}"
+          {{- if .Values.global.auditLogging.enabled }}
+          {{- include "nvsentinel.auditLogging.envVars" . | nindent 10 }}
+          {{- end }}
           - name: LOG_COLLECTOR_MANIFEST_PATH
             value: /etc/config/log-collector-job.yaml
           - name: LOG_COLLECTOR_TIMEOUT
@@ -148,6 +175,9 @@ spec:
       - name: config-volume
         configMap:
           name: {{ include "fault-remediation.fullname" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      {{- include "nvsentinel.auditLogging.volume" . | nindent 6 }}
+      {{- end }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:

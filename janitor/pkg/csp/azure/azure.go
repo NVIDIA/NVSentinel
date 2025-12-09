@@ -23,9 +23,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute"
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -199,14 +202,19 @@ func createDefaultVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 		return nil, err
 	}
 
-	// Create an Azure client
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
 		logger.Error(err, "Failed to create Azure credential")
 		return nil, err
 	}
 
-	vmssClient, err := armcompute.NewVirtualMachineScaleSetVMsClient(subscriptionID, cred, nil)
+	transport := auditlogger.NewAuditingRoundTripper(http.DefaultTransport)
+
+	vmssClient, err := armcompute.NewVirtualMachineScaleSetVMsClient(subscriptionID, cred, &arm.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Transport: &http.Client{Transport: transport},
+		},
+	})
 	if err != nil {
 		logger.Error(err, "Failed to create Azure client")
 		return nil, err

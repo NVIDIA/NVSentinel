@@ -167,6 +167,16 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("Audit logs are generated for API calls", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		components := []string{"fault-quarantine", "fault-remediation", "janitor"}
+		helpers.VerifyAuditLogsExist(ctx, t, client, components)
+
+		return ctx
+	})
+
 	feature.Assess("Log-collector job completes successfully", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 

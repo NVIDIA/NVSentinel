@@ -59,8 +59,6 @@ jobs:
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
-          - component: kubernetes-object-monitor
-            make_command: 'make -C health-monitors/kubernetes-object-monitor docker-build'
           # Log Collection (Docker-based)
           - component: log-collector
             make_command: 'make -C log-collector docker-build-log-collector'
@@ -122,6 +120,8 @@ jobs:
             path: ./cmd/csp-health-monitor
           - module: health-monitors/csp-health-monitor
             path: ./cmd/maintenance-notifier
+          - module: health-monitors/kubernetes-object-monitor
+            path: .
           - module: event-exporter
             path: .
     steps:

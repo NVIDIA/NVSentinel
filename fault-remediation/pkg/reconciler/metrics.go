@@ -17,6 +17,7 @@ package reconciler
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // CR Status constants for event processing metrics
@@ -26,28 +27,30 @@ const (
 )
 
 var (
+	//TODO: evaluate and remove redundant metrics with ctrl-runtime defaults
+
 	// Event Processing Metrics
-	totalEventsReceived = promauto.NewCounter(
+	totalEventsReceived = promauto.With(crmetrics.Registry).NewCounter(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_events_received_total",
-			Help: "Total number of events received from the watcher.",
+			Help: "Total number of events received from the Watcher.",
 		},
 	)
-	eventsProcessed = promauto.NewCounterVec(
+	eventsProcessed = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_events_processed_total",
 			Help: "Total number of remediation events processed by CR creation status.",
 		},
 		[]string{"cr_status", "node_name"},
 	)
-	processingErrors = promauto.NewCounterVec(
+	processingErrors = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_processing_errors_total",
 			Help: "Total number of errors encountered during event processing.",
 		},
 		[]string{"error_type", "node_name"},
 	)
-	totalUnsupportedRemediationActions = promauto.NewCounterVec(
+	totalUnsupportedRemediationActions = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_unsupported_actions_total",
 			Help: "Total number of health events with currently unsupported remediation actions.",
@@ -56,7 +59,7 @@ var (
 	)
 
 	// Performance Metrics
-	eventHandlingDuration = promauto.NewHistogram(
+	eventHandlingDuration = promauto.With(crmetrics.Registry).NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "fault_remediation_event_handling_duration_seconds",
 			Help:    "Histogram of event handling durations.",
@@ -65,14 +68,14 @@ var (
 	)
 
 	// Log Collection Job Metrics
-	logCollectorJobs = promauto.NewCounterVec(
+	logCollectorJobs = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_log_collector_jobs_total",
 			Help: "Total number of log collector jobs.",
 		},
 		[]string{"node_name", "status"},
 	)
-	logCollectorJobDuration = promauto.NewHistogramVec(
+	logCollectorJobDuration = promauto.With(crmetrics.Registry).NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "fault_remediation_log_collector_job_duration_seconds",
 			Help:    "Duration of log collector jobs in seconds.",
@@ -80,7 +83,7 @@ var (
 		},
 		[]string{"node_name", "status"},
 	)
-	logCollectorErrors = promauto.NewCounterVec(
+	logCollectorErrors = promauto.With(crmetrics.Registry).NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_remediation_log_collector_errors_total",
 			Help: "Total number of errors encountered in log collector operations.",

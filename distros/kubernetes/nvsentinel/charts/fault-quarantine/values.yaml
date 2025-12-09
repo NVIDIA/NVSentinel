@@ -128,3 +128,15 @@ ruleSets:
             !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
     cordon:
       shouldCordon: true
+
+  - version: "1"
+    name: "Kubernetes object monitor fatal error ruleset"
+    match:
+      all:
+        - kind: "HealthEvent"
+          expression: "event.agent == 'kubernetes-object-monitor' && event.isFatal == true"
+        - kind: "Node"
+          expression: |
+            !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+    cordon:
+      shouldCordon: true

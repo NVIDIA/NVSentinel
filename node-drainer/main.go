@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
@@ -61,9 +62,22 @@ func main() {
 	logger.SetDefaultStructuredLogger("node-drainer", version)
 	slog.Info("Starting node-drainer", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("node-drainer"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
 	if err := run(); err != nil {
 		slog.Error("Node drainer module exited with error", "error", err)
+
+		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+			slog.Warn("Failed to close audit logger", "error", closeErr)
+		}
+
 		os.Exit(1)
+	}
+
+	if err := auditlogger.CloseAuditLogger(); err != nil {
+		slog.Warn("Failed to close audit logger", "error", err)
 	}
 }
 

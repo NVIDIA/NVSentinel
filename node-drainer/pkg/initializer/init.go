@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -191,6 +193,10 @@ func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *r
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to build config: %w", err)
 	}
+
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientSet, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {

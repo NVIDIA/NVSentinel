@@ -46,6 +46,7 @@ if [ ! -f go.work ]; then
     ./fault-remediation \
     ./health-events-analyzer \
     ./health-monitors/csp-health-monitor \
+    ./health-monitors/kubernetes-object-monitor \
     ./janitor \
     ./labeler \
     ./node-drainer \
@@ -59,6 +60,7 @@ ko build "${KO_FLAGS[@]}" \
   ./health-events-analyzer \
   ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+  ./health-monitors/kubernetes-object-monitor \
   ./janitor \
   ./labeler \
   ./node-drainer \

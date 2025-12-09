@@ -139,7 +139,7 @@ install_custom_drain_crd() {
 install_nvsentinel() {
     section "Phase 5: Installing NVSentinel"
     
-    local nvsentinel_version="${NVSENTINEL_VERSION:-v0.4.1}"
+    local nvsentinel_version="${NVSENTINEL_VERSION:-v0.5.0}"
     
     log "Installing Prometheus Operator CRDs (for PodMonitor)..."
     kubectl apply --server-side -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.68.0/example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml

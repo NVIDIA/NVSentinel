@@ -10,9 +10,9 @@ click = "^8.3.1"
 prometheus-client = "^0.23.1"
 
 [tool.poetry.group.dev.dependencies]
-black = "^25.11.0"
-coverage = "^7.12.0"
-pytest = "^9.0.1"
+black = "^25.12.0"
+coverage = "^7.13.0"
+pytest = "^9.0.2"
 
 [build-system]
 requires = ["poetry-core"]

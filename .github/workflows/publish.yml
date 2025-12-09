@@ -106,9 +106,6 @@ jobs:
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
             container_name: 'nvsentinel/syslog-health-monitor'
-          - component: kubernetes-object-monitor
-            make_command: 'make -C health-monitors/kubernetes-object-monitor docker-publish'
-            container_name: 'nvsentinel/kubernetes-object-monitor'
           - component: metadata-collector
             make_command: 'make -C metadata-collector docker-publish'
             container_name: 'nvsentinel/metadata-collector'

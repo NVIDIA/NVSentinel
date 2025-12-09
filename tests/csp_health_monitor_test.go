@@ -30,7 +30,6 @@ import (
 
 const (
 	cspPollingInterval = 30 * time.Second
-	processingBuffer   = 5 * time.Second
 )
 
 // TestCSPHealthMonitorGCPMaintenanceEvent verifies the complete GCP maintenance event lifecycle:
@@ -59,8 +58,17 @@ func TestCSPHealthMonitorGCPMaintenanceEvent(t *testing.T) {
 		t.Logf("Adding GCP instance annotation to node %s (instance_id=%s, zone=us-central1-a)", testCtx.NodeName, testInstanceID)
 		require.NoError(t, helpers.AddGCPInstanceIDAnnotation(ctx, client, testCtx.NodeName, testInstanceID, "us-central1-a"))
 
-		t.Log("Restarting csp-health-monitor to reset poll checkpoint")
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		require.Equal(t, testInstanceID, node.Annotations["container.googleapis.com/instance_id"], "GCP instance_id annotation not set")
+		require.Equal(t, "us-central1-a", node.Labels["topology.kubernetes.io/zone"], "zone label not set")
+		t.Log("Verified: node annotations and labels are set correctly")
+
+		t.Log("Restarting csp-health-monitor to reset poll checkpoint and sync node informer")
 		require.NoError(t, helpers.RestartDeployment(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace))
+
+		// Wait for the monitor to complete at least one poll cycle
+		helpers.WaitForCSPHealthMonitorPoll(t, testCtx.CSPClient, helpers.CSPGCP)
 
 		return newCtx
 	})
@@ -87,7 +95,13 @@ func TestCSPHealthMonitorGCPMaintenanceEvent(t *testing.T) {
 		var err error
 		injectedEventID, _, err = testCtx.CSPClient.InjectEvent(event)
 		require.NoError(t, err)
-		t.Logf("Event injected: ID=%s, scheduledStart=%s", injectedEventID, scheduledStart.Format(time.RFC3339))
+		t.Logf("Event injected: ID=%s, instanceID=%s, scheduledStart=%s", injectedEventID, testInstanceID, scheduledStart.Format(time.RFC3339))
+
+		// Verify event was stored in mock
+		eventCount, err := testCtx.CSPClient.GetEventCount(helpers.CSPGCP)
+		require.NoError(t, err, "failed to get event count from mock")
+		require.Equal(t, 1, eventCount, "expected 1 event in mock store after injection")
+		t.Logf("Verified: mock store has %d GCP event(s)", eventCount)
 
 		return ctx
 	})
@@ -108,8 +122,8 @@ func TestCSPHealthMonitorGCPMaintenanceEvent(t *testing.T) {
 		t.Log("Updating event status to ONGOING (maintenance in progress)")
 		require.NoError(t, testCtx.CSPClient.UpdateEventStatus(helpers.CSPGCP, injectedEventID, "ONGOING"))
 
-		t.Logf("Waiting %v for status change to propagate", cspPollingInterval+processingBuffer)
-		time.Sleep(cspPollingInterval + processingBuffer)
+		t.Log("Waiting for monitor to poll and process status change")
+		helpers.WaitForNextPoll(t, testCtx.CSPClient, helpers.CSPGCP)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
@@ -169,8 +183,17 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 		t.Logf("Adding AWS providerID to node %s (instance=%s, zone=us-east-1a)", testCtx.NodeName, testInstanceID)
 		require.NoError(t, helpers.AddAWSProviderID(ctx, client, testCtx.NodeName, testInstanceID, "us-east-1a"))
 
+		// Verify providerID was applied
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		expectedProviderID := fmt.Sprintf("aws:///us-east-1a/%s", testInstanceID)
+		require.Equal(t, expectedProviderID, node.Spec.ProviderID, "AWS providerID not set correctly")
+		t.Log("Verified: node providerID is set correctly")
+
 		t.Log("Restarting csp-health-monitor to sync AWS node informer (uses AddFunc on initial cache sync)")
 		require.NoError(t, helpers.RestartDeployment(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace))
+
+		helpers.WaitForCSPHealthMonitorPoll(t, testCtx.CSPClient, helpers.CSPAWS)
 
 		return newCtx
 	})
@@ -198,7 +221,12 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 		var eventARN string
 		injectedEventID, eventARN, err = testCtx.CSPClient.InjectEvent(event)
 		require.NoError(t, err)
-		t.Logf("Event injected: ID=%s, ARN=%s, scheduledStart=%s", injectedEventID, eventARN, scheduledStart.Format(time.RFC3339))
+		t.Logf("Event injected: ID=%s, ARN=%s, instanceID=%s, scheduledStart=%s", injectedEventID, eventARN, testInstanceID, scheduledStart.Format(time.RFC3339))
+
+		eventCount, err := testCtx.CSPClient.GetEventCount(helpers.CSPAWS)
+		require.NoError(t, err, "failed to get event count from mock")
+		require.Equal(t, 1, eventCount, "expected 1 event in mock store after injection")
+		t.Logf("Verified: mock store has %d AWS event(s)", eventCount)
 
 		return ctx
 	})
@@ -219,8 +247,8 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 		t.Log("Updating event status to 'open' (maintenance in progress)")
 		require.NoError(t, testCtx.CSPClient.UpdateEventStatus(helpers.CSPAWS, injectedEventID, "open"))
 
-		t.Logf("Waiting %v for status change to propagate", cspPollingInterval+processingBuffer)
-		time.Sleep(cspPollingInterval + processingBuffer)
+		t.Log("Waiting for monitor to poll and process status change")
+		helpers.WaitForNextPoll(t, testCtx.CSPClient, helpers.CSPAWS)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
@@ -237,8 +265,8 @@ func TestCSPHealthMonitorAWSMaintenanceEvent(t *testing.T) {
 		t.Log("Updating event status to 'closed' (maintenance finished)")
 		require.NoError(t, testCtx.CSPClient.UpdateEventStatus(helpers.CSPAWS, injectedEventID, "closed"))
 
-		t.Logf("Waiting %v for status change to propagate", cspPollingInterval+processingBuffer)
-		time.Sleep(cspPollingInterval + processingBuffer)
+		t.Log("Waiting for monitor to poll and process status change")
+		helpers.WaitForNextPoll(t, testCtx.CSPClient, helpers.CSPAWS)
 
 		t.Log("Clearing mock API events to stop re-polling (re-polls would reset actualEndTime, blocking recovery)")
 		require.NoError(t, testCtx.CSPClient.ClearEvents(helpers.CSPAWS))
@@ -285,11 +313,19 @@ func TestCSPHealthMonitorQuarantineThreshold(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Logf("Adding GCP instance annotation to node %s (instance_id=%s)", testCtx.NodeName, testInstanceID)
+		t.Logf("Adding GCP instance annotation to node %s (instance_id=%s, zone=us-central1-a)", testCtx.NodeName, testInstanceID)
 		require.NoError(t, helpers.AddGCPInstanceIDAnnotation(ctx, client, testCtx.NodeName, testInstanceID, "us-central1-a"))
 
-		t.Log("Restarting csp-health-monitor to reset poll checkpoint")
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		require.Equal(t, testInstanceID, node.Annotations["container.googleapis.com/instance_id"], "GCP instance_id annotation not set")
+		require.Equal(t, "us-central1-a", node.Labels["topology.kubernetes.io/zone"], "zone label not set")
+		t.Log("Verified: node annotations and labels are set correctly")
+
+		t.Log("Restarting csp-health-monitor to reset poll checkpoint and sync node informer")
 		require.NoError(t, helpers.RestartDeployment(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace))
+
+		helpers.WaitForCSPHealthMonitorPoll(t, testCtx.CSPClient, helpers.CSPGCP)
 
 		return newCtx
 	})
@@ -316,10 +352,15 @@ func TestCSPHealthMonitorQuarantineThreshold(t *testing.T) {
 		var err error
 		injectedEventID, _, err = testCtx.CSPClient.InjectEvent(event)
 		require.NoError(t, err)
-		t.Logf("Event injected: ID=%s, scheduledStart=%s", injectedEventID, scheduledStart.Format(time.RFC3339))
+		t.Logf("Event injected: ID=%s, instanceID=%s, scheduledStart=%s", injectedEventID, testInstanceID, scheduledStart.Format(time.RFC3339))
 
-		t.Logf("Waiting %v to verify quarantine does NOT occur", cspPollingInterval+processingBuffer)
-		time.Sleep(cspPollingInterval + processingBuffer)
+		eventCount, err := testCtx.CSPClient.GetEventCount(helpers.CSPGCP)
+		require.NoError(t, err, "failed to get event count from mock")
+		require.Equal(t, 1, eventCount, "expected 1 event in mock store after injection")
+		t.Logf("Verified: mock store has %d GCP event(s)", eventCount)
+
+		t.Log("Waiting for monitor to poll and process event (should NOT trigger quarantine)")
+		helpers.WaitForNextPoll(t, testCtx.CSPClient, helpers.CSPGCP)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)

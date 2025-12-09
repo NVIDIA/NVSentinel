@@ -21,7 +21,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
@@ -29,6 +32,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/klient"
 )
+
+// portAllocator tracks used ports to avoid conflicts between tests
+var portAllocator = struct {
+	sync.Mutex
+	nextPort int
+}{nextPort: 18081}
 
 type CSPType string
 
@@ -60,9 +69,17 @@ type CSPAPIMockClient struct {
 	baseURL    string
 	httpClient *http.Client
 	stopChan   chan struct{}
+	localPort  int
+	closed     bool
+	closeMu    sync.Mutex
 }
 
-func NewCSPAPIMockClient(client klient.Client) (*CSPAPIMockClient, error) {
+// NewCSPAPIMockClient creates a new client for the CSP API Mock service.
+// It sets up port-forwarding and registers cleanup with t.Cleanup() to ensure
+// the port-forward is closed even if the test fails.
+func NewCSPAPIMockClient(t *testing.T, client klient.Client) (*CSPAPIMockClient, error) {
+	t.Helper()
+
 	pods := &v1.PodList{}
 
 	err := client.Resources(NVSentinelNamespace).List(context.Background(), pods, func(o *metav1.ListOptions) {
@@ -72,12 +89,15 @@ func NewCSPAPIMockClient(client klient.Client) (*CSPAPIMockClient, error) {
 		return nil, fmt.Errorf("failed to find csp-api-mock pod: %w", err)
 	}
 
+	// Get a unique local port to avoid conflicts between tests
+	localPort := getNextAvailablePort()
+
 	stopChan, readyChan := PortForwardPod(
 		context.Background(),
 		client.RESTConfig(),
 		NVSentinelNamespace,
 		pods.Items[0].Name,
-		18081,
+		localPort,
 		8080,
 	)
 
@@ -95,14 +115,61 @@ func NewCSPAPIMockClient(client klient.Client) (*CSPAPIMockClient, error) {
 	retryClient.Logger = log.Default()
 	retryClient.HTTPClient.Timeout = 30 * time.Second
 
-	return &CSPAPIMockClient{
-		baseURL:    "http://localhost:18081",
+	mockClient := &CSPAPIMockClient{
+		baseURL:    fmt.Sprintf("http://localhost:%d", localPort),
 		httpClient: retryClient.StandardClient(),
 		stopChan:   stopChan,
-	}, nil
+		localPort:  localPort,
+	}
+
+	// Register cleanup with t.Cleanup() to ensure port-forward is closed
+	// even if the test fails at any point
+	t.Cleanup(func() {
+		mockClient.Close()
+	})
+
+	return mockClient, nil
+}
+
+// getNextAvailablePort finds an available port for port-forwarding.
+// It tries ports starting from the last used port to avoid conflicts.
+func getNextAvailablePort() int {
+	portAllocator.Lock()
+	defer portAllocator.Unlock()
+
+	lc := &net.ListenConfig{}
+
+	// Try up to 100 ports to find an available one
+	for i := 0; i < 100; i++ {
+		port := portAllocator.nextPort
+		portAllocator.nextPort++
+
+		if portAllocator.nextPort > 19000 {
+			portAllocator.nextPort = 18081
+		}
+
+		// Check if port is available
+		listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", port))
+		if err == nil {
+			listener.Close()
+			return port
+		}
+	}
+
+	// Fallback to the base port if all else fails
+	return portAllocator.nextPort
 }
 
 func (c *CSPAPIMockClient) Close() {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+
+	if c.closed {
+		return
+	}
+
+	c.closed = true
+
 	if c.stopChan != nil {
 		close(c.stopChan)
 	}
@@ -141,6 +208,67 @@ func (c *CSPAPIMockClient) UpdateGCPEventScheduledTime(eventID string, scheduled
 
 func (c *CSPAPIMockClient) ClearEvents(csp CSPType) error {
 	return c.postEmpty(fmt.Sprintf("/%s/events/clear", csp))
+}
+
+// GetEventCount returns the number of events in the mock store for the given CSP.
+func (c *CSPAPIMockClient) GetEventCount(csp CSPType) (int, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		c.baseURL+fmt.Sprintf("/%s/events", csp), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("request failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var events []interface{}
+	if err := json.Unmarshal(respBody, &events); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return len(events), nil
+}
+
+// GetPollCount returns the number of times the CSP health monitor has polled the mock.
+func (c *CSPAPIMockClient) GetPollCount(csp CSPType) (int64, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		c.baseURL+fmt.Sprintf("/%s/stats", csp), nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("request failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var stats struct {
+		PollCount int64 `json:"pollCount"`
+	}
+	if err := json.Unmarshal(respBody, &stats); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return stats.PollCount, nil
+}
+
+// ResetPollCount resets the poll counter for the given CSP.
+func (c *CSPAPIMockClient) ResetPollCount(csp CSPType) error {
+	return c.postEmpty(fmt.Sprintf("/%s/stats/reset", csp))
 }
 
 func (c *CSPAPIMockClient) post(endpoint string, payload interface{}) ([]byte, error) {

@@ -51,6 +51,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 const (
@@ -211,6 +212,24 @@ func WithHandler(pattern string, handler http.Handler) Option {
 func WithPrometheusMetrics() Option {
 	return func(s *server) {
 		s.mux.Handle("/metrics", promhttp.Handler())
+	}
+}
+
+// WithPrometheusMetricsCtrlRuntime registers the Prometheus metrics handler at /metrics.
+// This uses the controller runtime Prometheus registry.
+//
+// Example:
+//
+//	srv := NewServer(
+//	    WithPort(2112),
+//	    WithPrometheusMetrics(),
+//	)
+func WithPrometheusMetricsCtrlRuntime() Option {
+	return func(s *server) {
+		s.mux.Handle("/metrics", promhttp.HandlerFor(
+			crmetrics.Registry,
+			promhttp.HandlerOpts{},
+		))
 	}
 }
 

@@ -24,6 +24,9 @@ global:
   # Keep legacy resource naming for Tilt compatibility
   useLegacyResourceNames: true
 
+  # Use ctrl runtime in mongo and leave postgres with legacy so both get test coverage
+  ctrlRuntimeEnabled: true
+
   # Configure MongoDB as the datastore provider
   datastore:
     provider: "mongodb"

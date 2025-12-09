@@ -36,8 +36,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "fault-quarantine.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
       initContainers:
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+        {{- end }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
           imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
@@ -63,6 +71,7 @@ spec:
               readOnly: true
             - name: client-certs-fixed
               mountPath: /etc/ssl/client-certs-fixed
+      {{- end }}
       {{- end }}
       containers:
         - name: fault-quarantine
@@ -112,13 +121,23 @@ spec:
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
           {{- end }}
+          {{- if .Values.global.auditLogging.enabled }}
+          {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 10 }}
+          {{- end }}
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
             - name: LOG_LEVEL
               value: "{{ .Values.logLevel }}"
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: {{ .Values.clientCertMountPath }}
@@ -149,6 +168,9 @@ spec:
         secret:
           secretName: mongo-app-client-cert-secret
           optional: true
+      {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      {{- include "nvsentinel.auditLogging.volume" . | nindent 6 }}
       {{- end }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
