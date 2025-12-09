@@ -115,16 +115,16 @@ See [results/](results/) for detailed test reports.
 
 **Objective:** Validate Node Drainer Manager's ability to handle concurrent drain operations at scale
 
-**Test Scenario (1500-node cluster):**
-- Cordon 300 nodes simultaneously
-- Each node running 10-20 user pods (not in system namespace)
-- Total: ~4,500 pod evictions
+**Test Scenarios (1500-node cluster):**
+- **Training workload:** 2 large pods/node (3,000 total), 60s terminationGracePeriodSeconds
+- **Inference workload:** 15 small pods/node (22,500 total), 30s terminationGracePeriodSeconds
+- Scale tests at 10%, 25%, and 50% cluster failure (150, 375, 750 nodes)
 
-**Key Areas:**
-- Node Drainer queue depth and processing rate
-- Kubernetes Eviction API throttling behavior
-- Drain timeout handling
-- PodDisruptionBudget interactions
+**Key Findings:**
+- All tests completed with 0 processing errors
+- **Training workloads** draining completes quickly (~2-10 min) — not rate limited
+- **Inference workloads** hit Kubernetes client 5/sec rate limit (~8-44 min)
+- Drain time scales linearly with pod count when rate limited
 
 📊 **[Full Results](results/Concurrent_Drain_Results.md)**
 
@@ -186,7 +186,9 @@ tests/scale-tests/
 ├── results/                         # Test results
 │   ├── API_and_MongoDB_Results.md
 │   ├── FQM_Latency_and_Queue_Depth_Results.md
-│   └── PRODUCTION_BASELINE.md
+│   ├── Concurrent_Drain_Results.md
+│   ├── PRODUCTION_BASELINE.md
+│   └── graphs/                      # Generated graphs
 ├── event-generator/                 # Event generator source code
 │   ├── main.go
 │   ├── Dockerfile
@@ -206,13 +208,13 @@ tests/scale-tests/
 
 ## Summary
 
-Initial scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
+Scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
 
 - **API Server:** Minimal latency impact with P75 stable at ~20ms even at 500 events/sec sustained load
 - **MongoDB:** Successfully handles sustained loads from 30-500 events/sec with default configuration
-
-Additional testing in progress.
+- **FQM Cordoning:** 100% success rate at all scales, ~2.5 nodes/sec processing rate
+- **Node Drainer:** Successfully evicted 11,000+ pods at 50% cluster failure with 0 errors; bottleneck is Kubernetes client rate limit (5 evictions/sec)
 
 ---
 
-**Last Updated:** December 5, 2025
+**Last Updated:** December 8, 2025

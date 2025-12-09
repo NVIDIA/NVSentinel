@@ -1,9 +1,10 @@
 # Training Simulator Workload
 # Simulates GPU training jobs with few large pods
-# Used for Concurrent Drain Tests B1 and B2
+# Used for Concurrent Drain Tests Trn1, Trn2, Trn3
 #
-# Pattern: 3 pods per node across 1500 nodes = ~4,500 pods
-# Resources: Large (2 CPU, 4Gi memory per pod - simulates GPU job patterns)
+# Pattern: 2 pods per node across 1500 nodes = 3,000 pods
+# Test cluster nodes (aws-cpu-m7i.xlarge) have 4 vCPU, 16Gi memory
+# Resources: Large (1.5 CPU, 3Gi memory per pod)
 # Termination: 60 seconds (training jobs need time to checkpoint)
 ---
 apiVersion: v1
@@ -20,8 +21,8 @@ metadata:
     app: training-sim
     workload-type: training
 spec:
-  # 1500 nodes × 3 pods/node = 4,500 replicas
-  replicas: 4500
+  # 1500 nodes × 2 pods/node = 3,000 replicas
+  replicas: 3000
   selector:
     matchLabels:
       app: training-sim
@@ -58,12 +59,14 @@ spec:
               time.sleep(3600)
         resources:
           # Large resources to simulate GPU training pod patterns
+          # Test cluster nodes (aws-cpu-m7i.xlarge) have 4 vCPU, 16Gi memory
+          # Using 1.5 CPU allows 2 pods/node with headroom
           requests:
-            cpu: "2"
-            memory: "4Gi"
+            cpu: "1500m"
+            memory: "3Gi"
           limits:
-            cpu: "2"
-            memory: "4Gi"
+            cpu: "1500m"
+            memory: "3Gi"
       # Spread pods evenly across nodes
       topologySpreadConstraints:
       - maxSkew: 1
