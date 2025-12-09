@@ -200,9 +200,9 @@ Because the Kubernetes client limits evictions to ~5/sec, drain time scales line
 
 | Test | Evictions | Expected at 5/sec | Actual Drain Time |
 |------|-----------|-------------------|-------------------|
-| Inf1 | ~2,250 | 450s = 7.5min | **~7.5min** ✓ |
-| Inf2 | ~5,625 | 1,125s = 18.75min | **~19min** ✓ |
-| Inf3 | ~11,250 | 2,250s = 37.5min | **~39min** ✓ |
+| Inf1 | ~2,250 | 450s = 7.5min | **~7.5min**  |
+| Inf2 | ~5,625 | 1,125s = 18.75min | **~19min** |
+| Inf3 | ~11,250 | 2,250s = 37.5min | **~39min** |
 
 The actual drain times closely match the expected times based on the 5/sec rate limit.
 
