@@ -15,10 +15,10 @@
 
 ### Workloads Tested
 
-Two workload patterns simulate different customer use cases:
+Two **simulated** workload patterns mimic the resource characteristics of real customer use cases. These are not actual inference or training workloads — they are simple Python containers configured to match typical pod density, resource requests, and termination behavior:
 
-- **Inference workload:** 15 pods per node, 22,500 total pods across 1,500 nodes. Simulates inference serving with many small, short-lived pods. (pod `terminationGracePeriodSeconds=30`)
-- **Training workload:** 2 pods per node, 3,000 total pods across 1,500 nodes. Simulates training jobs with fewer, larger, longer-running pods. (pod `terminationGracePeriodSeconds=60`)
+- **Inference-sim workload:** 15 small pods per node, 22,500 total pods across 1,500 nodes. Mimics inference serving patterns with many lightweight pods and fast shutdown. (pod `terminationGracePeriodSeconds=30`, ~100m CPU each)
+- **Training-sim workload:** 2 large pods per node, 3,000 total pods across 1,500 nodes. Mimics training job patterns with fewer resource-intensive pods and longer graceful shutdown. (pod `terminationGracePeriodSeconds=60`, 1.5 CPU each)
 
 *Note: Effective grace period = min(evictionTimeoutInSeconds, terminationGracePeriodSeconds). Since Node Drainer uses evictionTimeoutInSeconds=60, the pod's terminationGracePeriodSeconds is the effective limit.*
 

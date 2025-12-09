@@ -116,9 +116,11 @@ See [results/](results/) for detailed test reports.
 **Objective:** Validate Node Drainer Manager's ability to handle concurrent drain operations at scale
 
 **Test Scenarios (1500-node cluster):**
-- **Training workload:** 2 large pods/node (3,000 total), 60s terminationGracePeriodSeconds
-- **Inference workload:** 15 small pods/node (22,500 total), 30s terminationGracePeriodSeconds
+- **Training-sim:** Simulated training workload — 2 large pods/node (3,000 total), 60s terminationGracePeriodSeconds
+- **Inference-sim:** Simulated inference workload — 15 small pods/node (22,500 total), 30s terminationGracePeriodSeconds
 - Scale tests at 10%, 25%, and 50% cluster failure (150, 375, 750 nodes)
+
+*Note: These are not real ML workloads — they are simple containers configured to mimic typical pod density and resource characteristics.*
 
 **Key Findings:**
 - All tests completed with 0 processing errors
