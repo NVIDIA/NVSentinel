@@ -46,8 +46,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.16 h1:1jtGzuV7c82xnqOVfx
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.16/go.mod h1:M2E5OQf+XLe+SZGmmpaI2yy+J326aFf6/+54PoxSANc=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4 h1:WKuaxf++XKWlHWu9ECbMlha8WOEGm0OUEZqm4K/Gcfk=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4/go.mod h1:ZWy7j6v1vWGmPReu0iSGvRiise4YI5SkR3OHKTZ6Wuc=
-github.com/aws/aws-sdk-go-v2/service/health v1.35.3 h1:gbypryTdGIMeB0bOjmHQ3RwmDh4eJ7Z2rUvRJTx1Wy8=
-github.com/aws/aws-sdk-go-v2/service/health v1.35.3/go.mod h1:/qFCSwv1YkCSVPnypRSqFXzl/5S62FsaYiiuuRs1Hrk=
+github.com/aws/aws-sdk-go-v2/service/health v1.35.4 h1:Y3QeMmtmGnXYiGcSJi7H0zbL5/93kq7JV6Vh+GuBJHc=
+github.com/aws/aws-sdk-go-v2/service/health v1.35.4/go.mod h1:AObcHeSFMWL3yRqt1rtaxN8t2DbuxO/aQYy3XxO8mKo=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.4 h1:0ryTNEdJbzUCEWkVXEXoqlXV72J5keC1GvILMOuD00E=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.4/go.mod h1:HQ4qwNZh32C3CBeO6iJLQlgtMzqeG17ziAA/3KDJFow=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.16 h1:oHjJHeUy0ImIV0bsrX0X91GkV5nJAyv1l1CC9lnO0TI=
