@@ -297,6 +297,8 @@ mode = "AllowCompletion"
 - **AllowCompletion**: Waits for pods to terminate on their own (respects terminationGracePeriodSeconds). Does NOT actively evict.
 - **DeleteAfterTimeout**: Waits up to `deleteAfterTimeoutMinutes` from health event time, then force deletes remaining pods.
 
+**AllowCompletion Mode and Throttling:** We also tested AllowCompletion mode at 10% and 25% scale with the inference workload. Result: **0 throttle events** in both cases. This is expected because AllowCompletion doesn't call the Eviction API — it only monitors pod status and waits for natural completion, so the client-go rate limiter is never triggered.
+
 **Note:** The default node-drainer configuration uses `AllowCompletion` mode for all user namespaces. For drain tests to actively evict pods, you must configure `Immediate` mode for the test namespace.
 
 
