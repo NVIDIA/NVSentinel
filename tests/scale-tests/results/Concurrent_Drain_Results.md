@@ -107,6 +107,14 @@ kubectl logs deployment/node-drainer -n nvsentinel | grep "Pod eviction initiate
 
 *Total Time reflects overlap between FQM and NDM (see [Measurement Methodology](#measurement-methodology))
 
+### Pod Count vs Drain Time
+
+![Pods vs Drain Time](graphs/pods_vs_drain_time.png)
+
+**Inference (red squares):** Follow the theoretical 5 evictions/sec line because the Kubernetes client rate limit is the bottleneck.
+
+**Training (green circles):** Above the line because they have fewer pods and don't hit the rate limit. Instead, drain time is dominated by the 60s `terminationGracePeriodSeconds` — evictions complete quickly, but we wait for graceful termination.
+
 ---
 
 ## Node Drainer Metrics
@@ -120,80 +128,6 @@ kubectl logs deployment/node-drainer -n nvsentinel | grep "Pod eviction initiate
 | API throttle events | 0 | 0 | 0 | 44 | 110 | 226 |
 
 *Events received includes requeues for status verification. Inf3 shows 1097 events (lower than expected 1500) likely due to Prometheus scrape timing or pod restart during long test.
-
----
-
-
-## Detailed Observations
-
-### Training Workload on Cluster
-
-**Test Trn1 (150 nodes, ~300 pods):**
-- FQM cordoned 150 nodes at ~2.4 nodes/sec (62.5s total)
-- Node Drainer wall-clock: **~2 minutes** (first eviction to last eviction)
-- ~300 events received (150 nodes + 150 requeues for status verification)
-- 299 total pod evictions
-- **0 API throttle events** — with only 299 pods, 5/sec rate limit is not hit
-- Pod eviction rate: ~2.5 pods/sec (below rate limit)
-
-**Test Trn2 (375 nodes, ~750 pods):**
-- FQM cordoned 375 nodes at ~2.5 nodes/sec (150.5s total)
-- Node Drainer wall-clock: **~5 minutes** (first eviction to last eviction)
-- ~750 events received (375 nodes + 375 requeues for status verification)
-- 750 total pod evictions
-- **0 API throttle events** — evictions spread over FQM cordon time, never exceeding 5/sec burst
-- Longer than Trn1 due to 60s terminationGracePeriodSeconds
-
-**Test Trn3 (750 nodes, ~1,500 pods):**
-- FQM cordoned 750 nodes at ~2.5 nodes/sec (299.9s total)
-- Node Drainer wall-clock: **~10 minutes** (first eviction to last eviction)
-- ~1,500 events received (750 nodes + 750 requeues for status verification)
-- 1,500 total pod evictions
-- **0 API throttle events** — evictions spread over 5min FQM cordon time, never exceeding 5/sec burst
-- Drain time dominated by 60s terminationGracePeriodSeconds, not rate limiting
-
-**Training vs Inference Comparison (same node counts):**
-- Inference has 7.5× more pods per node than training (15 vs 2)
-- At 150 nodes: Training ~2min vs Inference ~7.5min (training 3.75× faster)
-- Training workloads do not hit the 5/sec rate limit, so drain time is dominated by 60s terminationGracePeriodSeconds
-
-### Inference Workload on Cluster
-
-**Test Inf1 (150 nodes, ~2,250 pods):**
-- FQM cordoned 150 nodes at ~2.5 nodes/sec (62.6s total)
-- Node Drainer wall-clock: **~7.5 minutes** (first eviction to last eviction)
-- 300 events received (150 nodes + 150 requeues for status verification)
-- 2,264 total pod evictions
-- **44 API throttle events** — confirms 5/sec rate limit
-- Pod eviction rate: ~5 pods/sec (limited by Kubernetes client QPS)
-
-**Test Inf2 (375 nodes, ~5,625 pods):**
-- FQM cordoned 375 nodes at ~2.6 nodes/sec (150.4s total)
-- Node Drainer wall-clock: **~19 minutes** (first eviction to last eviction)
-- 750 events received (375 nodes + 375 requeues for status verification)
-- 5,700 total pod evictions
-- Total handling time: 1267.6s
-- **110 API throttle events** — confirms 5/sec rate limit
-- Pod eviction rate: ~5 pods/sec (limited by Kubernetes client QPS)
-
-**Test Inf3 (750 nodes, ~11,250 pods):**
-- FQM cordoned 750 nodes at ~2.5 nodes/sec (304.7s total)
-- Node Drainer wall-clock: **~39 minutes** (first eviction to last eviction)
-- **Bottleneck: Kubernetes client rate limiter** — 226 throttle events, 439s total delay
-- Kubernetes client logged: `"client-side throttling, not priority and fairness"`
-- 11,683 total pod evictions, 0 failures, 0 processing errors
-- Total handling time: 2432.6s
-- 347 requeue events for status verification (pods have 30s terminationGracePeriodSeconds)
-
-**Inference Scaling Analysis:**
-- Scale increase: 2× (375 → 750 nodes)
-- FQM cordon time: 2× (150.4s → 304.7s) — **scales linearly**
-- NDM drain time: 2× (~19min → ~39min) — **also scales linearly due to rate limiting**
-- All inference tests hit 5 evictions/sec limit, explaining linear scaling
-
-**Rate limit math (Inf3):**
-- 11,683 evictions at 5/sec = 2,337 seconds = **38.9 minutes**
-- This matches the observed ~39 minute drain time ✓
 
 ---
 
@@ -298,17 +232,6 @@ kubectl logs deployment/node-drainer -n nvsentinel | grep -c "Pod eviction initi
 
 ---
 
-## Graphs
-
-### Pod Count vs Drain Time
-![Pods vs Drain Time](graphs/pods_vs_drain_time.png)
-
-**Inference (red squares):** Follow the theoretical 5 evictions/sec line because the Kubernetes client rate limit is the bottleneck.
-
-**Training (green circles):** Above the line because they have fewer pods and don't hit the rate limit. Instead, drain time is dominated by the 60s `terminationGracePeriodSeconds` — evictions complete quickly, but we wait for graceful termination.
-
----
-
 ## Cluster Capacity and Pod Rescheduling
 
 When nodes are cordoned, evicted pods attempt to reschedule on remaining healthy nodes. Whether they succeed depends on available cluster capacity.
@@ -330,13 +253,7 @@ When nodes are cordoned, evicted pods attempt to reschedule on remaining healthy
 
 This does not affect drain performance — Node Drainer measures eviction completion, not pod rescheduling.
 
----
 
-## Conclusions
-
-*(Conclusions to be added after analysis)*
-
----
 
 ## Test Environment
 
