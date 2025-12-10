@@ -60,8 +60,12 @@ type FaultRemediationClient struct {
 	kubeClient        kubernetes.Interface
 	restMapper        *restmapper.DeferredDiscoveryRESTMapper
 	dryRunMode        []string
-	template          *template.Template
-	templateData      TemplateData
+	
+	// Multi-template support
+	remediationConfig    config.TomlConfig
+	templates            map[string]*template.Template // map from template file name to parsed template
+	templateMountPath    string
+	
 	annotationManager NodeAnnotationManagerInterface
 	statusChecker     *crstatus.CRStatusChecker
 	// nodeExistsFunc allows tests to override node existence checking.
@@ -71,16 +75,26 @@ type FaultRemediationClient struct {
 
 // TemplateData holds the data to be inserted into the template
 type TemplateData struct {
-	NodeName          string
-	HealthEventID     string
-	RecommendedAction protos.RecommendedAction
-	TemplateMountPath string
-	TemplateFileName  string
-	config.MaintenanceResource
+	// Node and event data
+	NodeName               string
+	HealthEventID          string
+	RecommendedAction      protos.RecommendedAction
+	RecommendedActionName  string
+	
+	// CRD routing metadata (populated from MaintenanceResource)
+	ApiGroup              string
+	Version               string
+	Kind                  string
+	Namespace             string
+	
+	// Generic metadata hooks for extensibility
+	ExtraLabels           map[string]string
+	ExtraAnnotations      map[string]string
 }
 
+// NewK8sClient creates a new FaultRemediationClient with multi-template support
 // nolint: cyclop // todo
-func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient,
+func NewK8sClient(kubeconfig string, dryRun bool, remediationConfig config.TomlConfig) (*FaultRemediationClient,
 	kubernetes.Interface, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -120,33 +134,33 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	cachedClient := memory.NewMemCacheClient(discoveryClient)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 
-	// Construct full template path
-	templatePath := filepath.Join(templateData.TemplateMountPath, templateData.TemplateFileName)
-
-	// Check if the template file exists
-	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
-		return nil, nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	// Determine template mount path
+	templateMountPath := remediationConfig.Template.MountPath
+	if templateMountPath == "" {
+		return nil, nil, fmt.Errorf("template mount path is not configured")
 	}
 
-	// Read and parse the template
-	templateContent, err := os.ReadFile(templatePath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("error reading template file: %w", err)
-	}
-
-	tmpl := template.New("maintenance")
-
-	tmpl, err = tmpl.Parse(string(templateContent))
-	if err != nil {
-		return nil, nil, fmt.Errorf("error parsing template: %w", err)
+	// Pre-load and parse all templates
+	templates := make(map[string]*template.Template)
+	
+	// Load templates for multi-template actions
+	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
+		if maintenanceResource.TemplateFile != "" {
+			tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFile, actionName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
+			}
+			templates[actionName] = tmpl
+		}
 	}
 
 	client := &FaultRemediationClient{
-		clientset:    clientset,
-		kubeClient:   kubeClient,
-		restMapper:   mapper,
-		template:     tmpl,
-		templateData: templateData,
+		clientset:         clientset,
+		kubeClient:        kubeClient,
+		restMapper:        mapper,
+		remediationConfig: remediationConfig,
+		templates:         templates,
+		templateMountPath: templateMountPath,
 	}
 
 	if dryRun {
@@ -161,11 +175,36 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	client.statusChecker = crstatus.NewCRStatusChecker(
 		clientset,
 		mapper,
-		&templateData.MaintenanceResource,
+		nil,
 		dryRun,
 	)
 
 	return client, kubeClient, nil
+}
+
+
+// loadAndParseTemplate loads and parses a template file
+func loadAndParseTemplate(mountPath, fileName, templateName string) (*template.Template, error) {
+	templatePath := filepath.Join(mountPath, fileName)
+	
+	// Check if the template file exists
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	}
+
+	// Read and parse the template
+	templateContent, err := os.ReadFile(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading template file: %w", err)
+	}
+
+	tmpl := template.New(templateName)
+	tmpl, err = tmpl.Parse(string(templateContent))
+	if err != nil {
+		return nil, fmt.Errorf("error parsing template: %w", err)
+	}
+
+	return tmpl, nil
 }
 
 func (c *FaultRemediationClient) GetAnnotationManager() NodeAnnotationManagerInterface {
@@ -176,6 +215,7 @@ func (c *FaultRemediationClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return c.statusChecker
 }
 
+
 func (c *FaultRemediationClient) CreateMaintenanceResource(
 	ctx context.Context,
 	healthEventData *HealthEventData,
@@ -183,39 +223,90 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
+	// Convert RecommendedAction to string for lookup
+	recommendedActionName := healthEvent.RecommendedAction.String()
+	
+	// Select appropriate maintenance resource configuration and template
+	var maintenanceResource config.MaintenanceResource
+	var selectedTemplate *template.Template
+	var actionKey string
+	
+	// Select appropriate maintenance resource configuration and template
+	if resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]; exists {
+		maintenanceResource = resource
+		selectedTemplate = c.templates[recommendedActionName]
+		actionKey = recommendedActionName
+	} else {
+		slog.Error("No remediation configuration found for action", 
+			"action", recommendedActionName, 
+			"node", healthEvent.NodeName,
+			"availableActions", func() []string {
+				actions := make([]string, 0, len(c.remediationConfig.RemediationActions))
+				for action := range c.remediationConfig.RemediationActions {
+					actions = append(actions, action)
+				}
+				return actions
+			}())
+		return false, ""
+	}
+	
+	if selectedTemplate == nil {
+		slog.Error("No template available for remediation action", 
+			"action", recommendedActionName, 
+			"node", healthEvent.NodeName)
+		return false, ""
+	}
+
 	// Generate CR name
 	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)
 
 	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
-		log.Printf("DRY-RUN: Skipping custom resource creation for node %s", healthEvent.NodeName)
+		log.Printf("DRY-RUN: Skipping custom resource creation for node %s using template %s", 
+			healthEvent.NodeName, actionKey)
 		return true, crName
 	}
 
 	// Get the node object to extract UID for owner reference
-	// This also verifies the node exists before creating CR
 	node, err := c.getNodeForOwnerReference(ctx, healthEvent.NodeName)
 	if err != nil {
 		slog.Warn("Failed to get node for owner reference, skipping CR creation",
 			"node", healthEvent.NodeName,
 			"error", err)
-
 		return false, ""
 	}
 
-	log.Printf("Creating RebootNode CR for node: %s (UID: %s)", healthEvent.NodeName, node.UID)
-	c.templateData.NodeName = healthEvent.NodeName
-	c.templateData.RecommendedAction = healthEvent.RecommendedAction
-	c.templateData.HealthEventID = healthEventID
+	log.Printf("Creating maintenance CR for node: %s using template %s (UID: %s)", 
+		healthEvent.NodeName, actionKey, node.UID)
 
-	// Execute the template
+	// Build template data with generic metadata hooks
+	templateData := TemplateData{
+		NodeName:              healthEvent.NodeName,
+		HealthEventID:         healthEventID,
+		RecommendedAction:     healthEvent.RecommendedAction,
+		RecommendedActionName: recommendedActionName,
+		
+		// CRD routing metadata from selected MaintenanceResource
+		ApiGroup:     maintenanceResource.ApiGroup,
+		Version:      maintenanceResource.Version,
+		Kind:         maintenanceResource.Kind,
+		Namespace:    maintenanceResource.Namespace,
+		
+		// Generic metadata hooks (empty for now - will be populated by Helm values)
+		ExtraLabels:      make(map[string]string),
+		ExtraAnnotations: make(map[string]string),
+	}
+
+	// Execute the selected template
 	var buf bytes.Buffer
-	if err := c.template.Execute(&buf, c.templateData); err != nil {
-		slog.Error("Failed to execute maintenance template", "error", err)
+	if err := selectedTemplate.Execute(&buf, templateData); err != nil {
+		slog.Error("Failed to execute maintenance template", 
+			"template", actionKey,
+			"error", err)
 		return false, ""
 	}
 
-	log.Printf("Generated YAML: %s", buf.String())
+	log.Printf("Generated YAML using template %s: %s", actionKey, buf.String())
 
 	// Convert YAML to unstructured
 	var obj map[string]any
@@ -240,7 +331,8 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	slog.Info("Added owner reference to CR for automatic garbage collection",
 		"node", healthEvent.NodeName,
 		"nodeUID", node.UID,
-		"crName", crName)
+		"crName", crName,
+		"template", actionKey)
 
 	// Get GVK from the unstructured object
 	gvk := maintenance.GroupVersionKind()
@@ -252,16 +344,26 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return false, ""
 	}
 
-	// Create the maintenance resource at cluster level
-	createdCR, err := c.clientset.Resource(mapping.Resource).
-		Create(ctx, maintenance, metav1.CreateOptions{})
+	// Create the maintenance resource (cluster or namespaced based on scope)
+	var createdCR *unstructured.Unstructured
+	if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace != "" {
+		createdCR, err = c.clientset.Resource(mapping.Resource).
+			Namespace(maintenanceResource.Namespace).
+			Create(ctx, maintenance, metav1.CreateOptions{})
+	} else {
+		// Default to cluster scope
+		createdCR, err = c.clientset.Resource(mapping.Resource).
+			Create(ctx, maintenance, metav1.CreateOptions{})
+	}
+	
 	if err != nil {
 		return c.handleCreateCRError(ctx, err, crName, healthEvent)
 	}
 
 	// Get the actual name of the created CR
 	actualCRName := createdCR.GetName()
-	log.Printf("Created Maintenance CR %s successfully for node %s", actualCRName, healthEvent.NodeName)
+	log.Printf("Created Maintenance CR %s successfully for node %s using template %s", 
+		actualCRName, healthEvent.NodeName, actionKey)
 
 	// Update node annotation with CR reference
 	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
@@ -345,7 +447,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	// Read Job manifest
 	manifestPath := os.Getenv(LogCollectorManifestPathEnv)
 	if manifestPath == "" {
-		manifestPath = filepath.Join(c.templateData.TemplateMountPath, "log-collector-job.yaml")
+		manifestPath = filepath.Join(c.templateMountPath, "log-collector-job.yaml")
 	}
 
 	content, err := os.ReadFile(manifestPath)

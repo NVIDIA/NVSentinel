@@ -14,16 +14,22 @@
 
 package config
 
-// MaintenanceResource holds configuration for the maintenance custom resource
+// MaintenanceResource holds configuration for maintenance custom resources
 type MaintenanceResource struct {
 	Namespace             string `toml:"namespace"`
 	Version               string `toml:"version"`
 	ApiGroup              string `toml:"apiGroup"`
 	Kind                  string `toml:"kind"`
 	CompleteConditionType string `toml:"completeConditionType"`
+	
+	// Scope determines if the resource is cluster-scoped or namespaced
+	Scope string `toml:"scope"` // "Cluster" or "Namespaced"
+	
+	// Template file path relative to the mount path
+	TemplateFile string `toml:"templateFile"`
 }
 
-// Template holds configuration for template files
+// Template holds configuration for template files mount
 type Template struct {
 	MountPath string `toml:"mountPath"`
 	FileName  string `toml:"fileName"`
@@ -37,7 +43,12 @@ type UpdateRetry struct {
 
 // TomlConfig holds the complete TOML configuration for fault remediation
 type TomlConfig struct {
-	MaintenanceResource MaintenanceResource `toml:"maintenanceResource"`
+	// Template mount configuration
 	Template            Template            `toml:"template"`
+	
+	// Multi-template configuration - map from RecommendedAction string to MaintenanceResource
+	RemediationActions   map[string]MaintenanceResource `toml:"remediationActions"`
+	
+	// Common configuration
 	UpdateRetry         UpdateRetry         `toml:"updateRetry"`
 }
