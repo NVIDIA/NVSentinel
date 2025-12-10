@@ -21,12 +21,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
-	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-
 	"cloud.google.com/go/logging"
 	"cloud.google.com/go/logging/logadmin"
 	"google.golang.org/api/iterator"
@@ -37,6 +31,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
+	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
 const (

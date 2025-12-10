@@ -18,13 +18,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-
 	"tests/helpers"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
 // TestLogCollectorFailure validates that remediation proceeds even when log-collector fails.

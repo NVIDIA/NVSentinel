@@ -23,13 +23,14 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 var (

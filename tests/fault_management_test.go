@@ -17,16 +17,17 @@ package tests
 import (
 	"context"
 	"testing"
-	"tests/helpers"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+	"tests/helpers"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
 func TestDryRunMode(t *testing.T) {

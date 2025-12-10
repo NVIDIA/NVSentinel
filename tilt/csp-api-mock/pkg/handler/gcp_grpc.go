@@ -21,9 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"csp-api-mock/pkg/store"
-
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
+	"csp-api-mock/pkg/store"
 	"google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/genproto/googleapis/cloud/audit"
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"

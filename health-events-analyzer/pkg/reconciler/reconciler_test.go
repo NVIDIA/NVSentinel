@@ -20,16 +20,17 @@ import (
 	"testing"
 	"time"
 
-	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
-	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 // Mock Publisher

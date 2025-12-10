@@ -231,4 +231,3 @@ func Test_postgresqlEvent_GetResumeToken(t *testing.T) {
 		t.Errorf("GetResumeToken() not int-parseable: %v, error: %v", tokenStr, err)
 	}
 }
-

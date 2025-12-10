@@ -321,8 +321,8 @@ func TestMatchesEvent_QuarantinedAndDrainedPipeline(t *testing.T) {
 					"operationType": "insert",
 					"fullDocument": map[string]interface{}{
 						"healthevent": map[string]interface{}{
-							"agent":            "health-events-analyzer",
-							"checkName":        "MultipleRemediations",
+							"agent":             "health-events-analyzer",
+							"checkName":         "MultipleRemediations",
 							"recommendedAction": 5,
 						},
 						"healtheventstatus": map[string]interface{}{
@@ -639,9 +639,9 @@ func TestMatchesEvent_RealWorldFailingScenario(t *testing.T) {
 			"operationType": "insert",
 			"fullDocument": map[string]interface{}{
 				"healthevent": map[string]interface{}{
-					"agent":            "health-events-analyzer",
-					"checkName":        "MultipleRemediations",
-					"componentClass":   "GPU",
+					"agent":             "health-events-analyzer",
+					"checkName":         "MultipleRemediations",
+					"componentClass":    "GPU",
 					"recommendedAction": 5, // CONTACT_SUPPORT
 					"isFatal":           true,
 					"nodeName":          "kwok-node-29",
@@ -665,11 +665,10 @@ func TestMatchesEvent_RealWorldFailingScenario(t *testing.T) {
 
 	result := filter.MatchesEvent(failingEvent)
 	if result {
-		t.Errorf("MatchesEvent() = true, expected false\n"+
-			"This event should have been FILTERED OUT because:\n"+
-			"- nodequarantined is NULL (not in [Quarantined, AlreadyQuarantined])\n"+
-			"- userpodsevictionstatus.status is empty string (not in [Succeeded, AlreadyDrained])\n"+
+		t.Errorf("MatchesEvent() = true, expected false\n" +
+			"This event should have been FILTERED OUT because:\n" +
+			"- nodequarantined is NULL (not in [Quarantined, AlreadyQuarantined])\n" +
+			"- userpodsevictionstatus.status is empty string (not in [Succeeded, AlreadyDrained])\n" +
 			"- This is the exact event that was causing TestFatalUnsupportedHealthEvent to fail")
 	}
 }
-

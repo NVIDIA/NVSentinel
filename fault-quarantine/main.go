@@ -24,12 +24,13 @@ import (
 	"strconv"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/initializer"
-	"golang.org/x/sync/errgroup"
 )
 
 var (

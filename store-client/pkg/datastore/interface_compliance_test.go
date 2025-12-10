@@ -19,11 +19,12 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/postgresql"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestDataStoreInterfaceCompliance verifies that all provider implementations

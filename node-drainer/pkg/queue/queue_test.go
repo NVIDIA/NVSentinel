@@ -18,10 +18,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // TestWorkqueueDeduplication_WithoutEventID tests the CURRENT behavior (without EventID)
@@ -139,16 +140,16 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 
 	// Event with status NotStarted
 	event1 := datastore.Event{
-		"_id":                     "507f1f77bcf86cd799439011",
-		"nodeName":                "node-1",
-		"userPodsEvictionStatus":  "NotStarted",
+		"_id":                    "507f1f77bcf86cd799439011",
+		"nodeName":               "node-1",
+		"userPodsEvictionStatus": "NotStarted",
 	}
 
 	// Same event, status updated to Succeeded
 	event2 := datastore.Event{
-		"_id":                     "507f1f77bcf86cd799439011", // SAME _id!
-		"nodeName":                "node-1",
-		"userPodsEvictionStatus":  "Succeeded",
+		"_id":                    "507f1f77bcf86cd799439011", // SAME _id!
+		"nodeName":               "node-1",
+		"userPodsEvictionStatus": "Succeeded",
 	}
 
 	// Enqueue first event
@@ -384,4 +385,3 @@ func (m mockCursor) All(ctx context.Context, results interface{}) error {
 func (m mockCursor) Err() error {
 	return nil
 }
-

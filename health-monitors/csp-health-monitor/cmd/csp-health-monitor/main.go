@@ -27,10 +27,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/logger"
-	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
 	awsclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"

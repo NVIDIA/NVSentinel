@@ -17,7 +17,6 @@ package tests
 import (
 	"context"
 	"testing"
-	"tests/helpers"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -27,6 +26,7 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+	"tests/helpers"
 )
 
 func TestEventExporterChangeStream(t *testing.T) {

@@ -21,13 +21,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
 	corev1 "k8s.io/api/core/v1"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
 
 var (

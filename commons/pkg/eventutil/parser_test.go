@@ -17,10 +17,11 @@ package eventutil
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestParseHealthEventFromEvent(t *testing.T) {
@@ -41,8 +42,8 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 						"nodequarantined": "Quarantined",
 					},
 					"healthevent": map[string]interface{}{
-						"nodename":      "test-node",
-						"checkname":     "GpuXidError",
+						"nodename":       "test-node",
+						"checkname":      "GpuXidError",
 						"componentclass": "GPU",
 					},
 				},

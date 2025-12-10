@@ -267,7 +267,7 @@ func TestBuildEventDocument(t *testing.T) {
 	var emptyOld, emptyNew sql.NullString
 
 	event := watcher.buildEventDocument(
-		136,                                      // changelog ID
+		136,                                    // changelog ID
 		"6d4e36e4-b9d2-473b-a290-3ed7fb99073e", // record UUID
 		"INSERT",
 		emptyOld,
@@ -559,8 +559,8 @@ func TestTimestampBasedResume_TieBreaking(t *testing.T) {
 
 	// Mock: Query should return only events with id > 141 (when timestamps are equal)
 	rows := sqlmock.NewRows([]string{"id", "record_id", "operation", "old_values", "new_values", "changed_at"}).
-		AddRow(142, "uuid-142", "INSERT", nil, `{"document":{}}`, sameTime). // ✅ id > 141
-		AddRow(143, "uuid-143", "INSERT", nil, `{"document":{}}`, sameTime). // ✅ id > 141
+		AddRow(142, "uuid-142", "INSERT", nil, `{"document":{}}`, sameTime).                                              // ✅ id > 141
+		AddRow(143, "uuid-143", "INSERT", nil, `{"document":{}}`, sameTime).                                              // ✅ id > 141
 		AddRow(144, "uuid-144", "INSERT", nil, `{"document":{}}`, time.Date(2024, 11, 24, 10, 0, 0, 124000000, time.UTC)) // ✅ ts > sameTime
 
 	mock.ExpectQuery("SELECT id, record_id, operation, old_values, new_values, changed_at").
@@ -634,4 +634,3 @@ func TestTimestampBasedResume_MongoDBEquivalence(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
-

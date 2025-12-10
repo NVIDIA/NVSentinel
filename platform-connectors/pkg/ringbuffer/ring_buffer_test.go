@@ -20,9 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 var (

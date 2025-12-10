@@ -22,9 +22,10 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // TestResumeTokenAdvancedOnSend verifies that lastEventID IS updated
@@ -755,7 +756,7 @@ func TestFilteredEventsDoNotBlockChannel(t *testing.T) {
 	// Verify we can receive the 2 passed events
 	event1 := <-watcher.events
 	event2 := <-watcher.events
-	assert.Equal(t, []byte("51"), event1.ResumeToken) // Event 51 (index 50)
+	assert.Equal(t, []byte("51"), event1.ResumeToken)  // Event 51 (index 50)
 	assert.Equal(t, []byte("100"), event2.ResumeToken) // Event 100 (index 99)
 
 	// lastEventID should be 100 (last event processed, regardless of filtering)

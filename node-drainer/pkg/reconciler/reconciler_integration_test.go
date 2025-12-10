@@ -23,19 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
-	sdkclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
-	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
-	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
-
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -53,6 +40,19 @@ import (
 	"k8s.io/client-go/restmapper"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
+	sdkclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
+	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
 // mockDatabaseConfig is a simple mock implementation for testing

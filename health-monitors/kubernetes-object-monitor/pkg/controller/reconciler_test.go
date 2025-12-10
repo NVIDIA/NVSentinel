@@ -20,12 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
-	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -39,6 +33,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
+	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
 )
 
 // To run these tests, you need to install and setup envtest:

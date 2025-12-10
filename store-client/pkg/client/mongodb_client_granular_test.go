@@ -18,9 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestBuildDirectFieldUpdate(t *testing.T) {

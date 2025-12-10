@@ -20,8 +20,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 func TestWriterAtomicWrite(t *testing.T) {

@@ -20,9 +20,6 @@ import (
 	"text/template"
 
 	"github.com/google/uuid"
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
@@ -35,6 +32,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 // MockDynamicClient implements necessary methods from dynamic.Interface

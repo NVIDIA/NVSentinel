@@ -20,9 +20,10 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
 	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 type Evaluator struct {

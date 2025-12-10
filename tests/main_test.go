@@ -22,11 +22,10 @@ import (
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
-
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 )
 
 var testEnv env.Environment

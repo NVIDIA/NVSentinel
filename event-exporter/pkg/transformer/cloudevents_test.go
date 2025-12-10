@@ -18,8 +18,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestToCloudEvent(t *testing.T) {

@@ -21,13 +21,13 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
-
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
 const (

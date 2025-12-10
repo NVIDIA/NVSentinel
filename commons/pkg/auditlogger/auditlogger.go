@@ -27,8 +27,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/envutil"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/envutil"
 )
 
 const (

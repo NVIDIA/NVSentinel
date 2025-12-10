@@ -21,9 +21,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
-	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
-
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,6 +29,9 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/stringutil"
+	"github.com/nvidia/nvsentinel/labeler/pkg/metrics"
 )
 
 const (

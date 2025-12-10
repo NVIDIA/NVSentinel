@@ -19,6 +19,7 @@ import (
 	"log/slog"
 
 	multierror "github.com/hashicorp/go-multierror"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 )

@@ -18,13 +18,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
 type RemediationTestContextKey int

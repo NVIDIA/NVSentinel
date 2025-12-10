@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 

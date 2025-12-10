@@ -21,13 +21,13 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/common"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/metrics"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
-
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,

@@ -20,13 +20,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
 type NodeDrainerTestContextKey int

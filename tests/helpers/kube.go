@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v2"
 	appsv1 "k8s.io/api/apps/v1"
@@ -54,6 +53,8 @@ import (
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
 const (

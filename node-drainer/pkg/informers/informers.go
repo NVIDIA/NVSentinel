@@ -24,9 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
-
 	"github.com/hashicorp/go-multierror"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -36,6 +33,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 )
 
 const (

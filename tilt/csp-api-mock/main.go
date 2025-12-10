@@ -19,10 +19,9 @@ import (
 	"net"
 	"net/http"
 
+	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"csp-api-mock/pkg/handler"
 	"csp-api-mock/pkg/store"
-
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"google.golang.org/grpc"
 )
 

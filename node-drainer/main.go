@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
@@ -33,7 +35,6 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/initializer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
-	"golang.org/x/sync/errgroup"
 )
 
 var (

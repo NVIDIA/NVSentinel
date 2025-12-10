@@ -35,9 +35,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	mongoOptions "go.mongodb.org/mongo-driver/mongo/options"
-
 	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
+	mongoOptions "go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func TestConfirmConnectivityWithDBAndCollection(t *testing.T) {

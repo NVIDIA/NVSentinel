@@ -20,11 +20,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
-
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 )
 
 /*

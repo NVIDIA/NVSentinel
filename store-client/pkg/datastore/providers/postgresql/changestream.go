@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )

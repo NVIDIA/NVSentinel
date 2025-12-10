@@ -16,16 +16,14 @@ package breaker
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"testing"
 	"time"
 
-	"crypto/rand"
-	"math/big"
-
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -37,6 +35,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
 var (

@@ -28,8 +28,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"golang.org/x/exp/maps"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 )
 
 const (

@@ -20,11 +20,11 @@ import (
 	"log/slog"
 	"time"
 
+	"k8s.io/client-go/util/workqueue"
+
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
-
-	"k8s.io/client-go/util/workqueue"
 )
 
 func NewEventQueueManager() EventQueueManager {

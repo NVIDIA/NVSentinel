@@ -21,14 +21,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
-	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
 const (

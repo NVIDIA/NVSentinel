@@ -24,7 +24,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,6 +31,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/yaml"
+
+	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 )
 
 type Client struct {

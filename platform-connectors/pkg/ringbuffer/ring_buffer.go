@@ -19,9 +19,9 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-
 	"k8s.io/client-go/util/workqueue"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type RingBuffer struct {

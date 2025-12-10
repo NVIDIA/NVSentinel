@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
+
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )

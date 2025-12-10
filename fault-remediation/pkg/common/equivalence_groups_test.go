@@ -17,8 +17,9 @@ package common
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestGetRemediationGroupForAction(t *testing.T) {

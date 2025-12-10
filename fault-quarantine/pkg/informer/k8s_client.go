@@ -22,10 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +29,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
 
 var customBackoff = wait.Backoff{

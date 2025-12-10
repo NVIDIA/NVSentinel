@@ -20,13 +20,14 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
 const (

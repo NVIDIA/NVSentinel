@@ -24,7 +24,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-
 	"tests/helpers"
 )
 

@@ -21,9 +21,10 @@ import (
 	"sync"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type NodeMetadata struct {

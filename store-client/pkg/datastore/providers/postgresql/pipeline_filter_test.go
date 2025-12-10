@@ -155,8 +155,8 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 			pipeline: []interface{}{
 				map[string]interface{}{
 					"$match": map[string]interface{}{
-						"operationType":                    "insert",
-						"fullDocument.healthevent.agent":   map[string]interface{}{"$ne": "health-events-analyzer"},
+						"operationType":                      "insert",
+						"fullDocument.healthevent.agent":     map[string]interface{}{"$ne": "health-events-analyzer"},
 						"fullDocument.healthevent.ishealthy": false,
 					},
 				},
@@ -180,7 +180,7 @@ func TestMatchesEvent_CaseInsensitive(t *testing.T) {
 			pipeline: []interface{}{
 				map[string]interface{}{
 					"$match": map[string]interface{}{
-						"operationType":                    "insert",
+						"operationType":                      "insert",
 						"fullDocument.healthevent.ishealthy": false,
 					},
 				},

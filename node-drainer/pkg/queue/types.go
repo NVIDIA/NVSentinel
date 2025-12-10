@@ -17,9 +17,10 @@ package queue
 import (
 	"context"
 
+	"k8s.io/client-go/util/workqueue"
+
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
-	"k8s.io/client-go/util/workqueue"
 )
 
 type NodeEvent struct {

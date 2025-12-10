@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 

@@ -21,12 +21,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 // Mock DatabaseClient

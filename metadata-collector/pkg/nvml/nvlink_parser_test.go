@@ -17,8 +17,9 @@ package nvml
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 )
 
 func TestParseNVLinkOutput_A100(t *testing.T) {

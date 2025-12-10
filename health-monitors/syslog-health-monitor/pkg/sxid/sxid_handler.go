@@ -20,11 +20,11 @@ import (
 	"strconv"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
-
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func NewSXIDHandler(nodeName, defaultAgentName,

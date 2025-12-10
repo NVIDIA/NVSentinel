@@ -24,6 +24,12 @@ import (
 	"strconv"
 	"syscall"
 
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -31,12 +37,6 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
 	trigger "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/triggerengine"
-
-	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 const (

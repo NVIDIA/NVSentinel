@@ -18,9 +18,10 @@ import (
 	"testing"
 	"time"
 
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // Helper function to create test XID events
@@ -124,8 +125,8 @@ func TestXidBurstDetector_StickyXid_ExtendsBurst(t *testing.T) {
 	// Sticky XIDs (74, 79, 95, 109, 119) within 3 hours of each other extend bursts
 	// Create events with 2-hour gaps - sticky XIDs should keep them in same burst
 	events := []*protos.HealthEvent{
-		createXidEvent(nodeName, "79", baseTime),                       // Sticky
-		createXidEvent(nodeName, "79", baseTime.Add(2*time.Hour)),      // Sticky, within 3h
+		createXidEvent(nodeName, "79", baseTime),                                  // Sticky
+		createXidEvent(nodeName, "79", baseTime.Add(2*time.Hour)),                 // Sticky, within 3h
 		createXidEvent(nodeName, "120", baseTime.Add(2*time.Hour+30*time.Second)), // Non-sticky, continues burst
 	}
 

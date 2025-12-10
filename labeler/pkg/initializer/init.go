@@ -20,10 +20,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 )
 
 type InitializationParams struct {

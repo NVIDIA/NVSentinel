@@ -20,11 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/model"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // MockMaintenanceEventStore is a mock implementation for testing

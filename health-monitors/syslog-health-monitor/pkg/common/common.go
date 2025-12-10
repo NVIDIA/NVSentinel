@@ -22,11 +22,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/thedatashed/xlsxreader"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/patterns"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
-
-	"github.com/thedatashed/xlsxreader"
 )
 
 // XIDPattern is the canonical pattern for detecting XID errors.

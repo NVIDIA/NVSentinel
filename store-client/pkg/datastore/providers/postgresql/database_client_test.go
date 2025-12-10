@@ -27,11 +27,11 @@ import (
 func TestFindOneFilterGeneration(t *testing.T) {
 	//nolint:goconst // Test operator strings are clear as literals
 	tests := []struct {
-		name           string
-		filter         map[string]interface{}
-		expectedSQL    string
-		expectedArgs   []interface{}
-		expectError    bool
+		name         string
+		filter       map[string]interface{}
+		expectedSQL  string
+		expectedArgs []interface{}
+		expectError  bool
 	}{
 		{
 			name: "simple equality",
@@ -229,4 +229,3 @@ func TestFindOneFilterGeneration(t *testing.T) {
 		})
 	}
 }
-

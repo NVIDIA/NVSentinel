@@ -20,10 +20,11 @@ import (
 	"math/big"
 	"testing"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 const (

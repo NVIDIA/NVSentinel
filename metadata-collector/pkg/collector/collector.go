@@ -22,6 +22,7 @@ import (
 	"time"
 
 	gonvml "github.com/NVIDIA/go-nvml/pkg/nvml"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 )

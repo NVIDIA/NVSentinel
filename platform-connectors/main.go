@@ -26,6 +26,11 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/util/json"
+	k8s "k8s.io/client-go/kubernetes"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"

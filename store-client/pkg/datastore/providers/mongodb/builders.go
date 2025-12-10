@@ -15,8 +15,9 @@
 package mongodb
 
 import (
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"go.mongodb.org/mongo-driver/bson"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 )
 
 // mongoFilterBuilder provides MongoDB-specific filter building capabilities

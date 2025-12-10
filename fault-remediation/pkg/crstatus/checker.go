@@ -18,12 +18,13 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
+
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 type CRStatusChecker struct {

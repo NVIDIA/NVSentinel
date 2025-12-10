@@ -24,13 +24,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
-	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/publisher"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -41,6 +34,14 @@ import (
 	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
+	celenv "github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/cel"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/controller"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/publisher"
 )
 
 type Params struct {

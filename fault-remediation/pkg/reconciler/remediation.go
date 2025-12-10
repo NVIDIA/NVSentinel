@@ -26,12 +26,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
-
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +42,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
 
 const (

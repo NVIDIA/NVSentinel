@@ -21,6 +21,7 @@ import (
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
+
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/analyzer"

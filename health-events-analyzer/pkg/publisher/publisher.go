@@ -20,12 +20,12 @@ import (
 	"log/slog"
 	"time"
 
-	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/util/wait"
+
+	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 const (

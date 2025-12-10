@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -40,7 +42,6 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
-	corev1 "k8s.io/api/core/v1"
 )
 
 type ReconcilerConfig struct {

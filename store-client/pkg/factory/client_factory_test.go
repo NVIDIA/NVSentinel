@@ -17,10 +17,11 @@ package factory
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestConvertToMongoPipeline(t *testing.T) {

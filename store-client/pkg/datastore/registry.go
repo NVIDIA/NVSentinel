@@ -17,9 +17,8 @@ package datastore
 import (
 	"context"
 	"fmt"
-	"sync"
-
 	"log/slog"
+	"sync"
 )
 
 // ProviderFactory is a function that creates a datastore instance

@@ -36,7 +36,7 @@ func TestExtractDocumentID(t *testing.T) {
 				},
 				"operationType": "update",
 				"fullDocument": map[string]interface{}{
-					"id":         "79e4bbe9-1fb4-43d3-be8a-0e40c197c332",
+					"id": "79e4bbe9-1fb4-43d3-be8a-0e40c197c332",
 					"healthevent": map[string]interface{}{
 						"nodeName": "test-node",
 					},
@@ -155,12 +155,12 @@ func TestExtractDocumentID_PostgreSQLResumeTokenRegression(t *testing.T) {
 			"RawEvent":  nil,
 			"createdAt": "2025-11-22T04:22:13.299021864Z",
 			"healthevent": map[string]interface{}{
-				"agent":       "gpu-health-monitor",
-				"checkName":   "GpuXidError",
-				"nodeName":    "kwok-kata-test-node-0",
-				"isFatal":     true,
-				"message":     "XID 79 fatal error",
-				"errorCode":   []interface{}{"79"},
+				"agent":          "gpu-health-monitor",
+				"checkName":      "GpuXidError",
+				"nodeName":       "kwok-kata-test-node-0",
+				"isFatal":        true,
+				"message":        "XID 79 fatal error",
+				"errorCode":      []interface{}{"79"},
 				"componentClass": "GPU",
 			},
 			"healtheventstatus": map[string]interface{}{
@@ -197,8 +197,8 @@ func TestExtractDocumentID_MongoDBBackwardsCompatibility(t *testing.T) {
 		},
 		"operationType": "insert",
 		"fullDocument": map[string]interface{}{
-			"_id":     "507f1f77bcf86cd799439011",
-			"field1":  "value1",
+			"_id":    "507f1f77bcf86cd799439011",
+			"field1": "value1",
 		},
 	}
 

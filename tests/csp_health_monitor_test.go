@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-
 	"tests/helpers"
 )
 

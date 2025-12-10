@@ -21,15 +21,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
-
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
 )
 
 type DatabaseStoreConnector struct {

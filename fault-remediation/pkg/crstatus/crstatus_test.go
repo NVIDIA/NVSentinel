@@ -17,9 +17,10 @@ package crstatus
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 func TestCheckCondition(t *testing.T) {

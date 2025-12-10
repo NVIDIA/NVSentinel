@@ -17,7 +17,6 @@ package tests
 import (
 	"context"
 	"testing"
-	"tests/helpers"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +24,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+	"tests/helpers"
 )
 
 func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {

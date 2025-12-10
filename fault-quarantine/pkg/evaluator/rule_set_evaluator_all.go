@@ -16,6 +16,7 @@ package evaluator
 
 import (
 	multierror "github.com/hashicorp/go-multierror"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"

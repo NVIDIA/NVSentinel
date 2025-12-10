@@ -17,9 +17,10 @@ package informer
 import (
 	"context"
 
+	v1 "k8s.io/api/core/v1"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
-	v1 "k8s.io/api/core/v1"
 )
 
 // K8sClientInterface defines the methods used by Reconciler from k8sClient

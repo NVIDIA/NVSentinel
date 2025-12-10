@@ -20,6 +20,8 @@ import (
 	"log/slog"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/wait"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/config"
@@ -27,7 +29,6 @@ import (
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/sink"
 	"github.com/nvidia/nvsentinel/event-exporter/pkg/transformer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 type HealthEventsExporter struct {

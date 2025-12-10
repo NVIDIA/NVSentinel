@@ -17,11 +17,12 @@ package reconciler
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestGetPipelineStages_AlwaysIncludesAgentFilter verifies that the agent filter
@@ -161,8 +162,8 @@ func TestGetPipelineStages_AgentFilterPreventsInfiniteLoop(t *testing.T) {
 	// would match its own rules if the agent filter is not present
 	eventFromAnalyzer := datamodels.HealthEventWithStatus{
 		HealthEvent: &protos.HealthEvent{
-			NodeName: "test-node",
-			Agent:    "health-events-analyzer", // This is the critical field
+			NodeName:  "test-node",
+			Agent:     "health-events-analyzer", // This is the critical field
 			CheckName: "RepeatedXidError",
 			IsFatal:   true,
 		},

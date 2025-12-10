@@ -18,8 +18,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestProviderRegistration(t *testing.T) {

@@ -20,12 +20,13 @@ import (
 	"time"
 
 	"cloud.google.com/go/logging"
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/genproto/googleapis/cloud/audit"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
 const (

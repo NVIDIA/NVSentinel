@@ -27,16 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	ctrl "sigs.k8s.io/controller-runtime"
-
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
 )
 

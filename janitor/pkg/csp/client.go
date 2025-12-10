@@ -20,13 +20,14 @@ import (
 	"os"
 	"strings"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/aws"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/azure"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/kind"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (

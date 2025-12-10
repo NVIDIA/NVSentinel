@@ -28,8 +28,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nvidia/nvsentinel/event-exporter/pkg/metrics"
 	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/nvidia/nvsentinel/event-exporter/pkg/metrics"
 )
 
 type TokenProvider struct {

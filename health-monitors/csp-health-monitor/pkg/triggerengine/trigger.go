@@ -22,12 +22,6 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -35,6 +29,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/model"
 )
 
 const (

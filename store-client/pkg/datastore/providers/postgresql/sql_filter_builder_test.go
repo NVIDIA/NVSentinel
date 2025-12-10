@@ -17,9 +17,10 @@ package postgresql
 import (
 	"testing"
 
-	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 func TestSQLFilterBuilder_FieldToJSONBPath(t *testing.T) {
@@ -581,5 +582,3 @@ func TestSQLFilterBuilder_ArgIndexing(t *testing.T) {
 	assert.NotContains(t, clause, "$2")
 	assert.NotContains(t, clause, "$3")
 }
-
-

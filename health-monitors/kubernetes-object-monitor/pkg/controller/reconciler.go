@@ -20,14 +20,15 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/annotations"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/metrics"
+	"github.com/nvidia/nvsentinel/health-monitors/kubernetes-object-monitor/pkg/policy"
 )
 
 type HealthEventPublisher interface {
