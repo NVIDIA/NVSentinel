@@ -17,9 +17,10 @@ package overrides
 import (
 	"testing"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestCompiledRuleEvaluate(t *testing.T) {

@@ -20,9 +20,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 )
 
 func init() {

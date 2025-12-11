@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"testing"
 
-	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 type mockTransformer struct {

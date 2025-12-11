@@ -43,10 +43,6 @@ import (
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/metadata"
 	_ "github.com/nvidia/nvsentinel/platform-connectors/pkg/transformers/overrides"
-	"golang.org/x/sync/errgroup"
-
-	"google.golang.org/grpc"
-	"k8s.io/apimachinery/pkg/util/json"
 )
 
 const (

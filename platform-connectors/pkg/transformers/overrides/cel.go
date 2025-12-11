@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
