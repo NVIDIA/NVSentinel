@@ -18,10 +18,9 @@ set -euox pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common.sh"
 
-CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-uat}"
+CLUSTER_NAME="${CLUSTER_NAME:-nvs}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
-    
 # Get stacks in reverse dependency order
 log "Deleting CloudFormation stacks for $CLUSTER_NAME ..."
 stacks=$(aws cloudformation list-stacks \
@@ -37,7 +36,7 @@ fi
 
 # Delete stacks
 for stack in $stacks; do
-    log "Deleting stack: $stack (force delete)"
+    log "Deleting stack: $stack"
     aws cloudformation delete-stack \
         --region "$AWS_REGION" \
         --stack-name "$stack" || log "WARNING: Failed to initiate deletion of $stack"
