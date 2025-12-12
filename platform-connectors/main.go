@@ -29,7 +29,6 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"k8s.io/apimachinery/pkg/util/json"
-	k8s "k8s.io/client-go/kubernetes"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
@@ -211,7 +210,7 @@ func startGRPCServer(
 	}
 
 	// Set socket permissions to allow other processes to connect (0666 = rw-rw-rw-)
-	if err := os.Chmod(socket, 0666); err != nil {
+	if err := os.Chmod(socket, 0o666); err != nil {
 		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
