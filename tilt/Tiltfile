@@ -15,10 +15,21 @@
 load('ext://helm_resource', 'helm_resource', 'helm_repo')
 load('ext://namespace', 'namespace_create', 'namespace_inject')
 
-update_settings(k8s_upsert_timeout_secs=600)
+# Suppress unused image warning for log-collector because it's used in dynamically-created
+# jobs by the fault-remediation controller (not deployed via Helm templates).
+update_settings(
+    k8s_upsert_timeout_secs=600,
+    suppress_unused_image_warnings=['localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest']
+)
 
 num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
+use_postgresql = os.getenv('USE_POSTGRESQL', '0') == '1'
+
+if use_postgresql:
+    print("Using PostgreSQL as datastore (USE_POSTGRESQL=1)")
+else:
+    print("Using MongoDB as datastore (default). Set USE_POSTGRESQL=1 to use PostgreSQL.")
 
 helm_repo('jetstack', 'https://charts.jetstack.io')
 helm_resource(
@@ -66,13 +77,23 @@ helm_resource(
 namespace_create('gpu-operator')
 namespace_create('nvsentinel')
 
+# Detect architecture early for KWOK node creation
+arch = str(local('uname -m')).strip()
+# Normalize architecture names for Kubernetes
+if arch in ['arm64', 'aarch64']:
+    k8s_arch = 'arm64'
+elif arch in ['x86_64', 'amd64']:
+    k8s_arch = 'amd64'
+else:
+    k8s_arch = 'amd64'  # Default to amd64 for unknown architectures
+
 skip_kwok_nodes = os.getenv('SKIP_KWOK_NODES_IN_TILT', '0') == '1'
 
 if not skip_kwok_nodes:
     # Create regular GPU nodes (all NUM_GPU_NODES are regular nodes)
     kwok_node_template = str(read_file('./kwok-node-template.yaml'))
     for i in range(num_gpu_nodes):
-        node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i))
+        node_yaml = kwok_node_template.replace('PLACEHOLDER', str(i)).replace('amd64', k8s_arch)
         k8s_yaml(blob(node_yaml))
 
     # Create separate Kata test nodes (in addition to regular nodes)
@@ -80,7 +101,7 @@ if not skip_kwok_nodes:
     # Set NUM_KATA_TEST_NODES=0 to disable kata testing
     kwok_kata_test_node_template = str(read_file('./kwok-kata-test-node-template.yaml'))
     for i in range(num_kata_test_nodes):
-        node_yaml = kwok_kata_test_node_template.replace('PLACEHOLDER', str(i))
+        node_yaml = kwok_kata_test_node_template.replace('PLACEHOLDER', str(i)).replace('amd64', k8s_arch)
         k8s_yaml(blob(node_yaml))
 else:
     print("Skipping KWOK node creation in Tilt (SKIP_KWOK_NODES_IN_TILT=1)")
@@ -94,20 +115,30 @@ include('../janitor/Tiltfile')
 include('../node-drainer/Tiltfile')
 include('../platform-connectors/Tiltfile')
 include('./simple-health-client/Tiltfile')
+include('./event-exporter-mock/Tiltfile')
+include('./csp-api-mock/Tiltfile')
 include('../health-events-analyzer/Tiltfile')
+include('../event-exporter/Tiltfile')
 include('../health-monitors/gpu-health-monitor/Tiltfile')
+include('../health-monitors/csp-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
-
+include('../log-collector/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt-socket.yaml'  # Ensures /var/run exists for socket
 ]
 
-arch = str(local('uname -m')).strip()
-if arch in ['arm64', 'aarch64']:
+# Add datastore-specific values
+if use_postgresql:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml')
+else:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb.yaml')
+
+# Add ARM64-specific values if on ARM64 (arch already detected earlier)
+if k8s_arch == 'arm64':
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-arm64.yaml')
 
 yaml = helm(
@@ -122,10 +153,10 @@ local_resource(
     cmd='''
         echo "Waiting for cert-manager webhook to be ready..."
         kubectl rollout status deployment/cert-manager-webhook -n cert-manager --timeout=300s
-        
+
         echo "Verifying CRDs..."
         kubectl wait --for=condition=established --timeout=60s crd/certificates.cert-manager.io crd/issuers.cert-manager.io
-        
+
         echo "cert-manager is ready"
     ''',
     resource_deps=['cert-manager'],
@@ -133,29 +164,44 @@ local_resource(
 
 k8s_yaml(yaml)
 
+# Check if using Percona operator (only relevant when using MongoDB)
 tilt_values = read_yaml('../distros/kubernetes/nvsentinel/values-tilt.yaml')
-use_percona = tilt_values.get('mongodb-store', {}).get('usePerconaOperator', False)
+use_percona = tilt_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
 
-mongodb_dep = 'mongodb' if not use_percona else 'create-mongodb-database'
-cert_objects = [
-    'janitor-selfsigned-issuer:issuer',
-    'janitor-webhook-cert:certificate',
-]
-
-if use_percona:
-    cert_objects.append('mongo-app-client-cert:certificate')
+# Determine datastore resource name
+if use_postgresql:
+    datastore_resource = 'nvsentinel-postgresql'
 else:
-    cert_objects.extend([
-        'mongo-root-ca:certificate',
-        'mongo-ca-issuer:issuer', 
+    datastore_resource = 'mongodb' if not use_percona else 'create-mongodb-database'
+
+# Cert-manager resources vary based on datastore
+cert_manager_objects = [
+    'janitor-webhook-cert:certificate',
+    'janitor-selfsigned-issuer:issuer'
+]
+if use_postgresql:
+    cert_manager_objects.extend([
+        'postgresql-root-ca:certificate',
+        'postgresql-ca-issuer:issuer',
         'selfsigned-ca-issuer:issuer',
-        'mongo-server-cert-0:certificate',
-        'mongo-app-client-cert:certificate',
+        'postgresql-server-cert:certificate',
+        'postgresql-client-cert:certificate'
     ])
+else:
+    if use_percona:
+        cert_manager_objects.append('mongo-app-client-cert:certificate')
+    else:
+        cert_manager_objects.extend([
+            'mongo-root-ca:certificate',
+            'mongo-ca-issuer:issuer',
+            'selfsigned-ca-issuer:issuer',
+            'mongo-server-cert-0:certificate',
+            'mongo-app-client-cert:certificate'
+        ])
 
 k8s_resource(
     new_name='cert-manager-resources',
-    objects=cert_objects,
+    objects=cert_manager_objects,
     resource_deps=['wait-for-cert-manager-crds'],
 )
 
@@ -176,16 +222,18 @@ if use_percona:
         resource_deps=['wait-for-cert-manager-crds'],
     )
 
-k8s_resource(
-    'create-mongodb-database',
-    resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
-)
-
-if not use_percona:
+# MongoDB database creation (only for MongoDB, not PostgreSQL)
+if not use_postgresql:
     k8s_resource(
-        'mongodb',
-        resource_deps=['wait-for-cert-manager-crds'],
+        'create-mongodb-database',
+        resource_deps=['wait-for-cert-manager-crds', 'nvsentinel-psmdb-operator'] if use_percona else ['wait-for-cert-manager-crds'],
     )
+
+    if not use_percona:
+        k8s_resource(
+            'mongodb',
+            resource_deps=['wait-for-cert-manager-crds'],
+        )
 
 k8s_resource(
     new_name='prometheus-resources',
@@ -197,6 +245,14 @@ k8s_resource(
     port_forwards='9090:9090',
 )
 
+# Configure datastore StatefulSet with optional port forwarding
+if use_postgresql:
+    k8s_resource(
+        workload='nvsentinel-postgresql',
+        port_forwards=['5432:5432'],  # Port-forward PostgreSQL for debugging
+        resource_deps=['cert-manager-resources'],
+    )
+
 # Group all KWOK nodes (regular GPU nodes + separate kata test nodes) for resource management
 if not skip_kwok_nodes:
     kwok_regular_node_names = ['kwok-node-' + str(i) + ':node' for i in range(num_gpu_nodes)]
@@ -206,9 +262,9 @@ if not skip_kwok_nodes:
     k8s_resource(
         new_name='kwok-fake-nodes',
         objects=kwok_all_node_names,
-        resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation', 
-            'labeler', 'node-drainer', mongodb_dep, 'simple-health-client'
-        ], 
+        resource_deps=['kwok', 'platform-connectors', 'fault-quarantine', 'fault-remediation',
+            'labeler', 'node-drainer', datastore_resource, 'simple-health-client'
+        ],
     )
 
 k8s_resource(
@@ -232,23 +288,35 @@ k8s_resource(
 )
 
 k8s_resource(
+    'event-exporter',
+    port_forwards='2112:2112',
+    labels=['event-exporter'],
+    resource_deps=['event-exporter-mock', datastore_resource]
+)
+
+k8s_resource(
     'platform-connectors',
-    resource_deps=[mongodb_dep]
+    resource_deps=[datastore_resource]
 )
 
 k8s_resource(
     'fault-quarantine',
-    resource_deps=[mongodb_dep]
+    resource_deps=[datastore_resource]
 )
 
 k8s_resource(
     'node-drainer',
-    resource_deps=[mongodb_dep]
+    resource_deps=[datastore_resource]
 )
 
 k8s_resource(
     'fault-remediation',
-    resource_deps=[mongodb_dep]
+    resource_deps=[datastore_resource]
+)
+
+k8s_resource(
+    'csp-health-monitor',
+    resource_deps=[datastore_resource, 'csp-api-mock']
 )
 
 k8s_resource(

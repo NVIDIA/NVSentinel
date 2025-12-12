@@ -48,9 +48,40 @@ global:
             operator: NotIn
             values: ["kwok"]
 
+# Enable debug logging for all components
+platformConnector:
+  logLevel: debug
+
+gpu-health-monitor:
+  verbose: "True"
+
+syslog-health-monitor:
+  logLevel: debug
+
 fault-quarantine:
+  logLevel: debug
   circuitBreaker:
     enabled: false
+
+fault-remediation:
+  logLevel: debug
+
+node-drainer:
+  logLevel: debug
+
+health-events-analyzer:
+  logLevel: debug
+
+labeler:
+  logLevel: debug
+
+csp-health-monitor:
+  logLevel: debug
+  quarantineTriggerEngine:
+    logLevel: debug
+
+kubernetes-object-monitor:
+  logLevel: debug
 
 janitor:
   csp:

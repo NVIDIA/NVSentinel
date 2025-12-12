@@ -24,13 +24,46 @@ data:
       "enableK8sPlatformConnector": "{{ .Values.platformConnector.k8sConnector.enabled }}",
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
-      "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}"
-      {{- if .Values.platformConnector.nodeMetadata }}
-      ,"nodeMetadataAugmentationEnabled": "{{ .Values.platformConnector.nodeMetadata.enabled }}"
-      ,"nodeMetadataCacheSize": {{ .Values.platformConnector.nodeMetadata.cacheSize }}
-      ,"nodeMetadataCacheTTLSeconds": {{ .Values.platformConnector.nodeMetadata.cacheTTLSeconds }}
-      {{- with .Values.platformConnector.nodeMetadata.allowedLabels }}
-      ,"nodeMetadataAllowedLabels": {{ . | toJson }}
-      {{- end }}
+      "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
+      "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}",
+      "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
+      {{- with .Values.platformConnector.pipeline }}
+      ,"pipeline": {{ . | toJson }}
       {{- end }}
     }
+  {{- if .Values.platformConnector.transformers.MetadataAugmentor }}
+  metadata.toml: |
+    cacheSize = {{ .Values.platformConnector.transformers.MetadataAugmentor.cacheSize }}
+    cacheTTL = "{{ .Values.platformConnector.transformers.MetadataAugmentor.cacheTTLSeconds }}s"
+    {{- with .Values.platformConnector.transformers.MetadataAugmentor.allowedLabels }}
+    allowedLabels = {{ . | toJson }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.platformConnector.transformers.OverrideTransformer }}
+  overrides.toml: |
+    {{- $overrideEnabled := false }}
+    {{- range .Values.platformConnector.pipeline }}
+      {{- if eq .name "OverrideTransformer" }}
+        {{- $overrideEnabled = .enabled }}
+      {{- end }}
+    {{- end }}
+    enabled = {{ $overrideEnabled }}
+    {{- range .Values.platformConnector.transformers.OverrideTransformer.rules }}
+
+    [[rules]]
+    name = {{ .name | quote }}
+    when = {{ .when | quote }}
+    override = { {{- $pairs := list -}}
+      {{- if hasKey .override "isFatal" -}}
+        {{- $pairs = append $pairs (printf "isFatal = %v" .override.isFatal) -}}
+      {{- end -}}
+      {{- if hasKey .override "isHealthy" -}}
+        {{- $pairs = append $pairs (printf "isHealthy = %v" .override.isHealthy) -}}
+      {{- end -}}
+      {{- if .override.recommendedAction -}}
+        {{- $pairs = append $pairs (printf "recommendedAction = %q" .override.recommendedAction) -}}
+      {{- end -}}
+      {{- $pairs | join ", " -}}
+    }
+    {{- end }}
+  {{- end }}

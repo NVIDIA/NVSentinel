@@ -17,6 +17,9 @@ kind: ConfigMap
 metadata:
   name: mongodb-config
 data:
+  # Datastore provider configuration for new abstraction layer
+  DATASTORE_PROVIDER: "mongodb"
+  # Legacy MongoDB configuration (maintained for backward compatibility)
 {{- if .Values.usePerconaOperator }}
   MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
 {{- else }}

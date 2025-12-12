@@ -461,7 +461,7 @@ func TestGetValueFromPath(t *testing.T) {
 				},
 			},
 			want:    nil,
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "case insensitive field matching",

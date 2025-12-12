@@ -41,10 +41,12 @@ fi
 if [ ! -f go.work ]; then
   go work init
   go work use \
+    ./event-exporter \
     ./fault-quarantine \
     ./fault-remediation \
     ./health-events-analyzer \
     ./health-monitors/csp-health-monitor \
+    ./health-monitors/kubernetes-object-monitor \
     ./janitor \
     ./labeler \
     ./node-drainer \
@@ -52,11 +54,13 @@ if [ ! -f go.work ]; then
 fi
 
 ko build "${KO_FLAGS[@]}" \
+  ./event-exporter \
   ./fault-quarantine \
   ./fault-remediation \
   ./health-events-analyzer \
   ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
+  ./health-monitors/kubernetes-object-monitor \
   ./janitor \
   ./labeler \
   ./node-drainer \

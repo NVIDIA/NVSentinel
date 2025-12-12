@@ -30,10 +30,29 @@ MUST_GATHER_SCRIPT_URL="${MUST_GATHER_SCRIPT_URL:-https://raw.githubusercontent.
 ENABLE_GCP_SOS_COLLECTION="${ENABLE_GCP_SOS_COLLECTION:-false}"
 ENABLE_AWS_SOS_COLLECTION="${ENABLE_AWS_SOS_COLLECTION:-false}"
 
+# Mock mode for testing - prepends mock scripts to PATH
+MOCK_MODE="${MOCK_MODE:-false}"
+
+if [ "${MOCK_MODE}" = "true" ]; then
+  echo "[MOCK] Enabling mock mode - using mock nvidia-bug-report.sh and must-gather.sh"
+  MOCK_SCRIPTS_DIR="/opt/log-collector"
+
+  cp "${MOCK_SCRIPTS_DIR}/mock-nvidia-bug-report.sh" "${MOCK_SCRIPTS_DIR}/nvidia-bug-report.sh"
+  cp "${MOCK_SCRIPTS_DIR}/mock-must-gather.sh" "${MOCK_SCRIPTS_DIR}/must-gather.sh"
+  chmod +x "${MOCK_SCRIPTS_DIR}/nvidia-bug-report.sh" "${MOCK_SCRIPTS_DIR}/must-gather.sh"
+
+  # Prepend to PATH so mocks are used instead of real tools
+  export PATH="${MOCK_SCRIPTS_DIR}:${PATH}"
+
+  # Override to use local mock instead of downloading
+  MUST_GATHER_SCRIPT_URL="file://${MOCK_SCRIPTS_DIR}/must-gather.sh"
+
+  echo "[MOCK] Mock mode enabled. nvidia-bug-report.sh and must-gather.sh will use mock versions."
+fi
+
 mkdir -p "${ARTIFACTS_DIR}"
 echo "[INFO] Target node: ${NODE_NAME} | GPU Operator namespace: ${GPU_OPERATOR_NAMESPACE} | Driver container: ${DRIVER_CONTAINER_NAME}"
 
-# Function to detect if running on GCP using IMDS 
 is_running_on_gcp() {
   local timeout=5
   if curl -s -m "${timeout}" -H "Metadata-Flavor: Google" \
@@ -77,8 +96,16 @@ AWS_SOS_REPORT=""
 GCP_NVIDIA_BUG_REPORT="/host/home/kubernetes/bin/nvidia/bin/nvidia-bug-report.sh"
 
 # 1) Collect nvidia-bug-report - auto-detect approach
+# In mock mode, use the local mock script directly
+if [ "${MOCK_MODE}" = "true" ]; then
+  echo "[MOCK] Using local mock nvidia-bug-report.sh"
+  BUG_REPORT_LOCAL_BASE="${ARTIFACTS_DIR}/nvidia-bug-report-${NODE_NAME}-${TIMESTAMP}"
+  BUG_REPORT_LOCAL="${BUG_REPORT_LOCAL_BASE}.log.gz"
+  nvidia-bug-report.sh --output-file "${BUG_REPORT_LOCAL_BASE}.log"
+  echo "[MOCK] Bug report saved to ${BUG_REPORT_LOCAL}"
+
 # Check if GCP COS nvidia-bug-report exists on the host filesystem (accessed via privileged container)
-if [ -f "${GCP_NVIDIA_BUG_REPORT}" ]; then
+elif [ -f "${GCP_NVIDIA_BUG_REPORT}" ]; then
   echo "[INFO] Found nvidia-bug-report at GCP COS location: ${GCP_NVIDIA_BUG_REPORT}"
   
   # Use GCP COS approach - write directly to container filesystem
@@ -193,20 +220,42 @@ elif [ "${ENABLE_AWS_SOS_COLLECTION}" = "true" ]; then
   echo "[INFO] AWS SOS collection enabled but not on AWS - skipping"
 fi
 
-# 4) GPU Operator must-gather (for all clusters)
+# 4) GPU Operator must-gather (optional - disabled by default)
+ENABLE_GPU_OPERATOR_MUST_GATHER="${ENABLE_GPU_OPERATOR_MUST_GATHER:-false}"
+GPU_MG_TARBALL=""
+
+if [ "${ENABLE_GPU_OPERATOR_MUST_GATHER}" = "true" ]; then
 GPU_MG_DIR="${ARTIFACTS_DIR}/gpu-operator-must-gather"
 mkdir -p "${GPU_MG_DIR}"
-echo "[INFO] Running GPU Operator must-gather..."
-curl -fsSL "${MUST_GATHER_SCRIPT_URL}" -o "${GPU_MG_DIR}/must-gather.sh"
+  echo "[INFO] Running GPU Operator must-gather (this may take a while for large clusters)..."
+  
+  MUST_GATHER_SUCCESS=true
+
+  # Download must-gather script with error handling
+  if curl -fsSL "${MUST_GATHER_SCRIPT_URL}" -o "${GPU_MG_DIR}/must-gather.sh"; then
 chmod +x "${GPU_MG_DIR}/must-gather.sh"
-bash "${GPU_MG_DIR}/must-gather.sh"
+    # Run must-gather with error handling to allow partial artifact collection
+    # If must-gather fails (timeout, network issues, etc.), continue with available artifacts
+    bash "${GPU_MG_DIR}/must-gather.sh" || {
+      echo "[WARN] GPU Operator must-gather failed - continuing with available artifacts" >&2
+      MUST_GATHER_SUCCESS=false
+    }
+  else
+    echo "[WARN] Failed to download GPU Operator must-gather script - continuing without must-gather data" >&2
+    MUST_GATHER_SUCCESS=false
+  fi
 
 GPU_MG_TARBALL="${ARTIFACTS_DIR}/gpu-operator-must-gather-${NODE_NAME}-${TIMESTAMP}.tar.gz"
-if [ -d "${GPU_MG_DIR}" ] && [ "$(ls -A "${GPU_MG_DIR}" 2>/dev/null)" ]; then
+  if [ "${MUST_GATHER_SUCCESS}" = "true" ] && [ -d "${GPU_MG_DIR}" ] && [ "$(ls -A "${GPU_MG_DIR}" 2>/dev/null)" ]; then
   tar -C "${GPU_MG_DIR}" -czf "${GPU_MG_TARBALL}" .
   echo "[INFO] GPU Operator must-gather tarball created: ${GPU_MG_TARBALL}"
 else
   echo "[INFO] No GPU Operator must-gather data to archive"
+    GPU_MG_TARBALL=""
+  fi
+else
+  echo "[INFO] GPU Operator must-gather is disabled (ENABLE_GPU_OPERATOR_MUST_GATHER=${ENABLE_GPU_OPERATOR_MUST_GATHER})"
+  echo "[INFO] To enable, set ENABLE_GPU_OPERATOR_MUST_GATHER=true and increase timeout for large clusters"
 fi
 
 # Optional upload to in-cluster file server
@@ -222,7 +271,7 @@ if [ -n "${UPLOAD_URL_BASE:-}" ]; then
     fi
   fi
   
-  if [ -f "${GPU_MG_TARBALL}" ]; then
+  if [ -n "${GPU_MG_TARBALL}" ] && [ -f "${GPU_MG_TARBALL}" ]; then
     if curl -fsS -X PUT --upload-file "${GPU_MG_TARBALL}" \
       "${UPLOAD_URL_BASE}/${NODE_NAME}/${TIMESTAMP}/$(basename "${GPU_MG_TARBALL}")"; then
       echo "[UPLOAD_SUCCESS] gpu-operator must-gather uploaded: $(basename "${GPU_MG_TARBALL}")"
@@ -248,6 +297,8 @@ if [ -n "${UPLOAD_URL_BASE:-}" ]; then
       echo "[UPLOAD_FAILED] Failed to upload AWS SOS report: $(basename "${AWS_SOS_REPORT}")" >&2
     fi
   fi
+else
+  echo "[INFO] No UPLOAD_URL_BASE configured - artifacts created locally at ${ARTIFACTS_DIR}"
 fi
 
 echo "[INFO] Done. Artifacts under ${ARTIFACTS_DIR}"

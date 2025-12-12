@@ -62,7 +62,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to load datastore configuration: %w", err)
 	}
 
-	pipeline := client.BuildAllHealthEventInsertsPipeline()
+	builder := client.GetPipelineBuilder()
+	pipeline := builder.BuildAllHealthEventInsertsPipeline()
 
 	var tomlCfg config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlCfg); err != nil {

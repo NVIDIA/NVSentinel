@@ -46,9 +46,19 @@ global:
     tag: "main"
 
   # Metrics port for Prometheus scraping
-  # All components expose health and metrics endpoints on this port
+  # All components expose health and metrics endpoints on this port unless using ctrl-runtime mgmt
   # Prometheus should scrape these endpoints to monitor NVSentinel
   metricsPort: 2112
+
+  # Health Check port for healthz and readyz scraping
+  # This port is only used when using ctrl-runtime
+  # components expose health and metrics endpoints on this port
+  # Prometheus should scrape these endpoints to monitor NVSentinel
+  healthPort: 9440
+
+  # Whether or not to run applicable controllers using ctrl-runtime
+  # this is still experimental
+  ctrlRuntimeEnabled: false
   
   # Dry-run mode - when enabled, all actions are logged but not executed
   # Useful for:
@@ -210,6 +220,11 @@ global:
   mongodbStore:
     enabled: false
 
+  # Event Exporter - exports health events to a remote endpoint
+  # Requires: MongoDB store enabled
+  eventExporter:
+    enabled: false
+
 ################################################################################
 # PLATFORM CONNECTOR CONFIGURATION
 #
@@ -254,6 +269,11 @@ platformConnector:
   # Kubernetes connector configuration
   # Handles updating Kubernetes node status and conditions
   k8sConnector:
+    # Maximum length of the node condition message
+    # This is the maximum length of the node condition message that will be stored in the Kubernetes node status
+    # If the node condition message is longer than this value, it will be truncated
+    # This is to prevent the node condition message from being too long and causing the Kubernetes node status to be too large
+    maxNodeConditionMessageLength: 1024
     # Enable Kubernetes status updates
     enabled: true
     # Rate limiting for Kubernetes API calls
@@ -261,6 +281,77 @@ platformConnector:
     qps: 5.0
     # Burst: Maximum burst size above QPS
     burst: 10
+
+  # Health event transformers pipeline
+  # Transformers process health events before storage and propagation
+  # They execute in the order specified in the pipeline
+  pipeline:
+    # Metadata augmentor - enriches events with node labels and provider info
+    - name: MetadataAugmentor
+      enabled: false  # Disabled by default
+      config: /etc/config/metadata.toml
+    
+    # Property overrides - uses CEL expressions to override event properties
+    - name: OverrideTransformer
+      enabled: false  # Disabled by default
+      config: /etc/config/overrides.toml
+  
+  # Transformer-specific configurations
+  transformers:
+    # Metadata augmentor configuration
+    # Adds node labels and provider information to health events
+    MetadataAugmentor:
+      # LRU cache size for node metadata
+      # Higher values use more memory but reduce API calls
+      cacheSize: 50
+      # Cache TTL in seconds (supports duration strings like "1h", "30m")
+      # How long to cache node metadata before refreshing
+      cacheTTLSeconds: 3600
+      # Node labels to include in health event metadata
+      # Only these labels will be copied from nodes to events
+      # This allows CEL rules to match on topology, instance type, etc.
+      allowedLabels:
+        - "topology.kubernetes.io/zone"
+        - "topology.kubernetes.io/region"
+        - "node.kubernetes.io/instance-type"
+        - "nvidia.com/cuda.driver-version.major"
+        - "nvidia.com/cuda.driver-version.minor"
+        - "nvidia.com/cuda.driver-version.revision"
+        - "nvidia.com/cuda.driver-version.full"
+        - "nvidia.com/cuda.runtime-version.major"
+        - "nvidia.com/cuda.runtime-version.minor"
+        - "nvidia.com/cuda.runtime-version.full"
+        - "topology.k8s.aws/capacity-block-id"
+        - "topology.k8s.aws/network-node-layer-1"
+        - "topology.k8s.aws/network-node-layer-2"
+        - "topology.k8s.aws/network-node-layer-3"
+        - "oci.oraclecloud.com/host.id"
+        - "oci.oraclecloud.com/host.network_block_id"
+        - "oci.oraclecloud.com/host.rack_id"
+        - "oci.oraclecloud.com/host.serial_number"
+        - "cloud.google.com/gce-topology-block"
+        - "cloud.google.com/gce-topology-host"
+        - "cloud.google.com/gce-topology-subblock"
+    
+    # Property overrides configuration
+    # Uses CEL expressions to modify health event properties
+    # Allows operators to suppress errors or change recommended actions
+    OverrideTransformer:
+      # List of override rules (evaluated in order, first match wins)
+      rules: []
+      # Example rule - suppress XID 109 errors:
+      # - name: "suppress-xid-109"
+      #   when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
+      #   override:
+      #     isFatal: false
+      #     recommendedAction: "NONE"
+      #
+      # Example rule - zone-specific override:
+      # - name: "zone-specific-override"
+      #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
+      #   override:
+      #     isFatal: false
+      #     recommendedAction: "CONTACT_SUPPORT"
 
 # Unix socket path for inter-process communication
 # Health monitors connect to platform-connectors via this socket
@@ -614,6 +705,17 @@ fault-remediation:
     # Log collector will gather logs from these namespaces
     # Can be multiple namespaces separated by commas
     gpuOperatorNamespaces: "gpu-operator"
+    
+    # Enable GPU Operator must-gather collection (disabled by default)
+    # WARNING: must-gather collects logs from ALL nodes in the cluster, which can be very
+    # time-consuming for large clusters
+    # If enabling this, you MUST increase the timeout accordingly.
+    # Recommended timeout: ~2-3 minutes per node 
+    enableGpuOperatorMustGather: false
+    
+    # Timeout for log collection job (default: 10m)
+    # If enableGpuOperatorMustGather is true, increase to: ~2-3 min per node in cluster
+    timeout: "10m"
     
     # Enable GCP-specific SOS report collection
     # Requires running on GCP and appropriate permissions
@@ -1147,6 +1249,166 @@ mongodb-store:
         registry: docker.io
         repository: bitnamilegacy/mongodb-exporter
         tag: 0.41.2-debian-12-r1
+
+################################################################################
+# EVENT-EXPORTER CONFIGURATION
+#
+# Exports health events from MongoDB to external endpoints in CloudEvents format.
+# Streams events in real-time with automatic backfill and resume capability.
+# Supports OIDC authentication for secure communication.
+#
+# Requires: MongoDB store enabled
+################################################################################
+event-exporter:
+  # Number of pod replicas (recommend 1 for ordered event delivery)
+  replicaCount: 1
+
+  # Container image configuration
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/event-exporter
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  # Pod annotations
+  # Example - for Istio service mesh:
+  # podAnnotations:
+  #   sidecar.istio.io/inject: "false"
+  podAnnotations: {}
+
+  # Pod resource limits and requests
+  # Adjust based on event volume
+  resources:
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+
+  # OIDC secret configuration
+  # The secret must contain a key named 'oidc-client-secret' with the OAuth2 client secret
+  # Create the secret before deploying:
+  # kubectl create secret generic event-exporter-oidc-secret \
+  #   --from-literal=oidc-client-secret='YOUR_CLIENT_SECRET' \
+  #   -n nvsentinel
+  oidcSecretName: "event-exporter-oidc-secret"
+
+  # Event exporter configuration
+  # Structured YAML configuration that gets converted to TOML format in the ConfigMap
+  exporter:
+    # Metadata configuration
+    # Custom fields included in every CloudEvent's data.metadata section
+    metadata:
+      cluster: "my-cluster"
+      environment: "production"
+      # Add any custom metadata fields here - they will be included in CloudEvents data.metadata
+      # Examples:
+      # region: "us-west-2"
+      # datacenter: "dc01"
+      # tenant: "acme-corp"
+      # zone: "zone-a"
+
+    # Sink configuration - where events are sent
+    sink:
+      # HTTP endpoint URL that accepts CloudEvents 1.0 format
+      # Must support POST requests with Content-Type: application/cloudevents+json
+      endpoint: "https://events.example.com/api/v1/events"
+      
+      # Timeout for HTTP requests to sink
+      # Format: duration string like "30s", "1m", "5m"
+      timeout: "30s"
+      
+      # Skip TLS certificate verification (dev/testing only)
+      # Set to true to skip verification of the sink's TLS certificate
+      # WARNING: Only use in development/testing environments
+      # Default: false
+      insecureSkipVerify: false
+
+    # OIDC authentication configuration
+    oidc:
+      # OAuth2 token endpoint URL
+      # Used to obtain bearer tokens for authenticating with the sink
+      tokenUrl: "https://auth.example.com/oauth2/token"
+      
+      # OAuth2 client ID
+      # The client secret is loaded from the Kubernetes secret specified by oidcSecretName
+      clientId: "nvsentinel-exporter"
+      
+      # OAuth2 scope
+      # Requested scopes for the access token
+      # Example: "events:write events:read"
+      scope: "events:write"
+      
+      # Skip TLS certificate verification for OIDC endpoint (dev/testing only)
+      # WARNING: Only use in development/testing environments
+      # Default: false
+      insecureSkipVerify: false
+
+    # Backfill configuration - export historical events on startup
+    backfill:
+      # Enable backfill of historical events
+      # When true, exports existing events from MongoDB on startup
+      # When false, only exports new events from current time
+      enabled: true
+      
+      # Maximum age of events to backfill
+      # Only events newer than this duration are exported
+      # Format: duration string like "24h", "168h" (7 days), "720h" (30 days)
+      # Example: "720h" = export events from last 30 days
+      maxAge: "720h"
+      
+      # Maximum number of events to backfill
+      # Limits the total number of historical events exported
+      # Useful to prevent overwhelming the sink on first startup
+      maxEvents: 1000000
+      
+      # Batch size for backfill operations
+      # Number of events to fetch from MongoDB in each query
+      # Higher values = more memory, fewer queries
+      # Lower values = less memory, more queries
+      # Recommended: 100-1000
+      batchSize: 500
+      
+      # Rate limit for backfill operations (events per second)
+      # Controls how fast historical events are sent to sink
+      # Prevents overwhelming the sink endpoint
+      # Example: 1000 = send up to 1000 events per second
+      rateLimit: 1000
+
+    # Resume token configuration - enables resuming from last position
+    resumeToken:
+      # MongoDB database name for storing resume tokens
+      # Resume tokens track the last processed MongoDB change stream position
+      # Enables the exporter to resume from where it left off after restart
+      database: "nvsentinel"
+      
+      # MongoDB collection name for storing resume tokens
+      # Only one resume token is stored (upserted on updates)
+      collection: "resumetokens"
+
+    # Failure handling configuration - retry and backoff behavior
+    failureHandling:
+      # Maximum retry attempts for failed event publishing
+      # After this many failures, the event is logged and skipped
+      # Recommended: 17 retries = ~30 minutes with exponential backoff
+      maxRetries: 17
+      
+      # Initial backoff duration before first retry
+      # Format: duration string like "1s", "5s", "10s"
+      initialBackoff: "1s"
+      
+      # Maximum backoff duration between retries
+      # Backoff increases exponentially but caps at this value
+      # Format: duration string like "1m", "5m", "10m"
+      # Example: "5m" = wait at most 5 minutes between retries
+      maxBackoff: "5m"
+      
+      # Backoff multiplier for exponential backoff
+      # Each retry waits: previous_wait * backoff_multiplier
+      # Example with multiplier=2.0:
+      #   Retry 1: 1s, Retry 2: 2s, Retry 3: 4s, Retry 4: 8s, etc.
+      # Recommended: 2.0 for standard exponential backoff
+      backoffMultiplier: 2.0
 
 ################################################################################
 # END OF CONFIGURATION

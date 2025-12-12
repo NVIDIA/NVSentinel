@@ -4,7 +4,7 @@
 
 The Store Client SDK provides database-agnostic abstractions for interacting with health and maintenance event data in NVSentinel. This guide covers how to use the SDK for common development scenarios.
 
-The SDK abstracts away database-specific details, allowing you to write code once and run it against different database backends (currently MongoDB, with PostgreSQL support planned). This is particularly useful for testing, deployment flexibility, and future migrations.
+The SDK abstracts away database-specific details, allowing you to write code once and run it against different database backends (**MongoDB and PostgreSQL are both fully supported**). This is particularly useful for testing, deployment flexibility, and migrations.
 
 ## Core Architecture
 
@@ -72,23 +72,47 @@ These are your everyday CRUD operations. Use the high-level DataStore for busine
 #### Reading Events
 
 ```go
-// Using the high-level DataStore interface
-dataStore, err := helper.CreateDataStore(ctx, config)
+import (
+    "github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+    "github.com/nvidia/nvsentinel/store-client/pkg/query"
+)
+
+// Using high-level DataStore interface (recommended)
+config, err := datastore.LoadDatastoreConfig()
+if err != nil {
+    return err
+}
+
+ds, err := datastore.NewDataStore(ctx, *config)
 if err != nil {
     return err
 }
 
 // Get latest health event for a node
-event, err := dataStore.HealthEventStore().GetLatestEventForNode(ctx, "node-1")
+healthStore := ds.HealthEventStore()
+event, err := healthStore.GetLatestEventForNode(ctx, "node-1")
 if err != nil {
     return err
 }
 
-// Using low-level DatabaseClient for custom queries
-filter := client.NewFilterBuilder().
-    Eq("nodeName", "node-1").
-    Eq("status", "active").
-    Build()
+// Using database-agnostic query builder (recommended for custom queries)
+q := query.New().Build(
+    query.And(
+        query.Eq("nodeName", "node-1"),
+        query.Eq("status", "active"),
+    ),
+)
+
+events, err := healthStore.FindHealthEventsByQuery(ctx, q)
+if err != nil {
+    return err
+}
+
+// Using low-level DatabaseClient with MongoDB-style filters (legacy)
+filter := map[string]interface{}{
+    "nodeName": "node-1",
+    "status":   "active",
+}
 
 result, err := dbClient.FindOne(ctx, filter, nil)
 if err != nil {
@@ -125,22 +149,43 @@ _, err = dbClient.InsertOne(ctx, doc)
 #### Updating Events
 
 ```go
-// Update a single document using builder pattern
-filter := client.NewFilterBuilder().Eq("_id", eventID).Build()
-update := client.NewUpdateBuilder().
+import "github.com/nvidia/nvsentinel/store-client/pkg/query"
+
+// Database-agnostic update using query builder (recommended)
+q := query.New().Build(query.Eq("_id", eventID))
+u := query.NewUpdate().
     Set("status", "resolved").
-    Set("resolvedAt", time.Now()).
-    Build()
+    Set("resolvedAt", time.Now())
 
-_, err := dbClient.UpdateDocument(ctx, filter, update)
+healthStore := ds.HealthEventStore()
+err := healthStore.UpdateHealthEventsByQuery(ctx, q, u)
+if err != nil {
+    return err
+}
 
-// Update multiple documents matching criteria
-multiFilter := client.NewFilterBuilder().
-    Eq("nodeName", "node-1").
-    In("status", []string{"quarantined", "alreadyQuarantined"}).
-    Build()
+// Update multiple documents matching criteria (database-agnostic)
+multiQuery := query.New().Build(
+    query.And(
+        query.Eq("nodeName", "node-1"),
+        query.In("status", []interface{}{"quarantined", "alreadyQuarantined"}),
+    ),
+)
 
-result, err := dbClient.UpdateManyDocuments(ctx, multiFilter, update)
+err = healthStore.UpdateHealthEventsByQuery(ctx, multiQuery, u)
+if err != nil {
+    return err
+}
+
+// Legacy approach using DatabaseClient with MongoDB-style maps
+filter := map[string]interface{}{"_id": eventID}
+update := map[string]interface{}{
+    "$set": map[string]interface{}{
+        "status":     "resolved",
+        "resolvedAt": time.Now(),
+    },
+}
+
+result, err := dbClient.UpdateDocument(ctx, filter, update)
 if err != nil {
     return err
 }
@@ -326,11 +371,23 @@ func NewAnalyzer(config *Config) (*Analyzer, error) {
         return nil, err
     }
 
-    // Create change stream watcher
+    // Create change stream watcher with pipeline
     factory := dataStore.GetFactory()
+
+    // Build pipeline using MongoDB pipeline syntax
+    pipeline := []interface{}{
+        map[string]interface{}{
+            "$match": map[string]interface{}{
+                "operationType": map[string]interface{}{
+                    "$in": []interface{}{"insert", "update"},
+                },
+            },
+        },
+    }
+
     watcher, err := factory.CreateChangeStreamWatcher(ctx, &client.ChangeStreamConfig{
         Collection: "health_events",
-        Pipeline:   buildAnalysisPipeline(),
+        Pipeline:   pipeline,
     })
     if err != nil {
         return nil, err
@@ -389,13 +446,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) handleHealthEvent(ctx context.Context, event *model.HealthEventWithStatus) error {
-    // Update database status
-    filter := client.NewFilterBuilder().Eq("_id", event.ID).Build()
-    update := client.NewUpdateBuilder().
-        Set("healtheventstatus.lastProcessed", time.Now()).
-        Build()
+    // Update database status using query builder (recommended)
+    q := query.New().Build(query.Eq("_id", event.ID))
+    u := query.NewUpdate().Set("healtheventstatus.lastProcessed", time.Now())
 
-    _, err := r.dataStore.GetDatabaseClient().UpdateOne(ctx, filter, update, nil)
+    healthStore := r.dataStore.HealthEventStore()
+    err := healthStore.UpdateHealthEventsByQuery(ctx, q, u)
     return err
 }
 ```
@@ -419,13 +475,19 @@ func NewStoreConnector(config *Config) (*StoreConnector, error) {
 
     // Watch for specific event types
     factory := dataStore.GetFactory()
+
+    // Build pipeline to filter critical events
+    pipeline := []interface{}{
+        map[string]interface{}{
+            "$match": map[string]interface{}{
+                "healthevent.severity": map[string]interface{}{"$gte": "critical"},
+            },
+        },
+    }
+
     watcher, err := factory.CreateChangeStreamWatcher(ctx, &client.ChangeStreamConfig{
         Collection: "health_events",
-        Pipeline: client.NewPipelineBuilder().
-            Match(map[string]interface{}{
-                "healthevent.severity": map[string]interface{}{"$gte": "critical"},
-            }).
-            Build(),
+        Pipeline:   pipeline,
     })
     if err != nil {
         return nil, err
@@ -628,6 +690,45 @@ This pattern demonstrates:
 - Using UpdateManyDocuments to atomically update all related events
 - Proper error handling for edge cases (no documents, already unquarantined)
 
+### Unwrap Pattern for Legacy Compatibility
+
+When migrating to the datastore abstraction while preserving existing `EventWatcher` code, use the `Unwrap()` method to convert the new `datastore.ChangeStreamWatcher` interface back to the legacy `client.ChangeStreamWatcher` interface:
+
+```go
+import (
+    "github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+    "github.com/nvidia/nvsentinel/fault-quarantine/pkg/eventwatcher"
+)
+
+// Create datastore using the new abstraction
+ds, err := datastore.NewDataStore(ctx, *config)
+if err != nil {
+    return err
+}
+
+// Create change stream watcher (returns datastore.ChangeStreamWatcher)
+dsWatcher, err := ds.CreateChangeStreamWatcher(ctx, pipeline)
+if err != nil {
+    return err
+}
+
+// Unwrap to legacy client.ChangeStreamWatcher for EventWatcher compatibility
+legacyWatcher := dsWatcher.Unwrap()
+
+// Use with existing EventWatcher code - NO CHANGES NEEDED!
+eventWatcher := eventwatcher.NewEventWatcher(legacyWatcher, databaseClient, config)
+eventWatcher.Start(ctx)
+```
+
+**When to use Unwrap()**:
+- Migrating services incrementally to the new datastore abstraction
+- Preserving existing `EventWatcher` integration code
+- Both MongoDB and PostgreSQL providers support `Unwrap()`
+
+**Implementation locations**:
+- MongoDB: `pkg/datastore/providers/mongodb/adapter.go` → `AdaptedChangeStreamWatcher.Unwrap()`
+- PostgreSQL: `pkg/datastore/providers/postgresql/changestream.go` → `PostgreSQLChangeStreamWatcherWithUnwrap.Unwrap()`
+
 ### Custom Event Processing
 
 When the built-in EventProcessor doesn't fit your needs (e.g., custom retry logic, specialized error handling, or integration with external systems), you can implement your own processing loop:
@@ -682,6 +783,161 @@ func init() {
 }
 ```
 
+## API Selection Guide
+
+Choose the right API for your use case to maximize code quality and database compatibility:
+
+### When to Use Each API
+
+| API | Use When | Benefits | Database Support |
+|-----|----------|----------|------------------|
+| **DataStore + Query Builder** | Writing new code, need database flexibility | Type-safe, readable, works with MongoDB and PostgreSQL | ✅ Both |
+| **HealthEventStore domain methods** | Simple CRUD operations (get latest, create, update) | High-level, business logic focused | ✅ Both |
+| **DatabaseClient + maps** | Legacy code, complex MongoDB aggregations | Backward compatible, full MongoDB features | ✅ MongoDB, ⚠️ PostgreSQL (limited) |
+| **ChangeStreamWatcher** | Real-time event processing | Built-in resume token support, compatible API | ✅ Both (PostgreSQL uses polling) |
+| **EventProcessor** | Processing change stream events with retry logic | Automatic retries, metrics, error handling | ✅ Both |
+
+### API Migration Path
+
+```go
+// ❌ Old approach (MongoDB-only)
+filter := map[string]interface{}{
+    "$or": []interface{}{
+        map[string]interface{}{"status": "InProgress"},
+        map[string]interface{}{
+            "priority": map[string]interface{}{"$gte": 5},
+        },
+    },
+}
+cursor, err := dbClient.Find(ctx, filter, nil)
+
+// ✅ New approach (MongoDB and PostgreSQL)
+q := query.New().Build(
+    query.Or(
+        query.Eq("status", "InProgress"),
+        query.Gte("priority", 5),
+    ),
+)
+
+healthStore := dataStore.HealthEventStore()
+events, err := healthStore.FindHealthEventsByQuery(ctx, q)
+```
+
+### Query Builder Benefits
+
+**Type Safety**:
+```go
+// ❌ Runtime error - malformed map
+filter := map[string]interface{}{
+    "$or": "should be array",  // BUG: will fail at runtime
+}
+
+// ✅ Compile-time safety
+q := query.New().Build(
+    query.Or(
+        query.Eq("status", "active"),  // Compiler enforces correct types
+    ),
+)
+```
+
+**Readability**:
+```go
+// ❌ Nested maps are hard to read
+filter := map[string]interface{}{
+    "$or": []interface{}{
+        map[string]interface{}{
+            "$and": []interface{}{
+                map[string]interface{}{"status": "active"},
+                map[string]interface{}{"priority": map[string]interface{}{"$gte": 5}},
+            },
+        },
+        map[string]interface{}{"urgent": true},
+    },
+}
+
+// ✅ Clear, fluent API
+q := query.New().Build(
+    query.Or(
+        query.And(
+            query.Eq("status", "active"),
+            query.Gte("priority", 5),
+        ),
+        query.Eq("urgent", true),
+    ),
+)
+```
+
+**Database Portability**:
+```go
+// ❌ MongoDB-only - PostgreSQL requires SQL rewrite
+filter := map[string]interface{}{"status": "active"}
+cursor, err := mongoClient.Find(ctx, filter, nil)
+
+// ✅ Works with both MongoDB and PostgreSQL
+q := query.New().Build(query.Eq("status", "active"))
+events, err := healthStore.FindHealthEventsByQuery(ctx, q)
+// MongoDB: uses existing code
+// PostgreSQL: generates SQL automatically
+```
+
+### Configuration Patterns
+
+#### Modern Configuration (Recommended)
+
+```go
+import "github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+
+// Load from environment - automatically detects MongoDB or PostgreSQL
+config, err := datastore.LoadDatastoreConfig()
+if err != nil {
+    return err
+}
+
+// Create datastore - works with both databases
+ds, err := datastore.NewDataStore(ctx, *config)
+if err != nil {
+    return err
+}
+defer ds.Close(ctx)
+```
+
+#### Legacy Configuration (Backward Compatible)
+
+```go
+import "github.com/nvidia/nvsentinel/store-client/pkg/helper"
+
+// Helper packages automatically load configuration
+dbClient, err := helper.NewDatabaseClientOnly(ctx, "my-module")
+if err != nil {
+    return err
+}
+defer dbClient.Close(ctx)
+```
+
+## Summary and Recommendations
+
 This guide provides the foundation for working with the Store Client SDK. The patterns shown here are proven in production and will help you build robust, maintainable components that integrate seamlessly with the NVSentinel ecosystem.
 
-For specific implementation details and real-world examples, refer to the existing module code in `fault-quarantine-module`, `health-events-analyzer`, `node-drainer-module`, and `platform-connectors`.
+### Key Recommendations
+
+1. **For new code**: Use `DataStore` + `query.Builder` for database-agnostic operations
+2. **For simple CRUD**: Use `HealthEventStore` domain methods
+3. **For complex queries**: Use `query.Builder` with comparison and logical operators
+4. **For legacy code**: Continue using `DatabaseClient` with maps for backward compatibility
+5. **For change streams**: Use `ChangeStreamWatcher` and `EventProcessor`
+
+### Database Support Status
+
+- **MongoDB**: ✅ Fully supported with all features
+- **PostgreSQL**: ✅ Fully supported via query builders
+  - ✅ All CRUD operations
+  - ✅ Complex queries (`$or`, `$and`, `$in`, `$gt`, `$lt`, etc.)
+  - ✅ Change streams (polling-based, 1-second latency)
+  - ⚠️ Complex aggregations require SQL rewrites
+
+### Further Reading
+
+- **[POSTGRESQL_IMPLEMENTATION.md](POSTGRESQL_IMPLEMENTATION.md)** - Complete PostgreSQL implementation guide, architecture, and migration examples
+- **[README.md](README.md)** - Quick start guide and API overview
+
+For specific implementation details and real-world examples, refer to the existing module code in `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and `platform-connectors`.

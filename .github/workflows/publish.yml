@@ -41,12 +41,13 @@ permissions:
 
 jobs:
   build-image-list:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
     outputs:
       versions: ${{ steps.build-list.outputs.versions }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -85,6 +86,7 @@ jobs:
           retention-days: 90
 
   build-images-docker:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
     permissions:
@@ -106,9 +108,6 @@ jobs:
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-publish'
             container_name: 'nvsentinel/syslog-health-monitor'
-          - component: kubernetes-object-monitor
-            make_command: 'make -C health-monitors/kubernetes-object-monitor docker-publish'
-            container_name: 'nvsentinel/kubernetes-object-monitor'
           - component: metadata-collector
             make_command: 'make -C metadata-collector docker-publish'
             container_name: 'nvsentinel/metadata-collector'
@@ -119,7 +118,7 @@ jobs:
             make_command: 'make -C log-collector docker-publish-file-server-cleanup'
             container_name: 'nvsentinel/file-server-cleanup'
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -153,6 +152,7 @@ jobs:
 
   # Build images using ko and attest provenance
   build-images-ko:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
     permissions:
@@ -168,7 +168,7 @@ jobs:
       images: ${{ steps.ko-build.outputs.images }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -202,6 +202,7 @@ jobs:
         run: scripts/buildko.sh
 
   attest-and-sbom-ko:
+    if: github.repository == 'nvidia/nvsentinel'
     needs: build-images-ko
     runs-on: linux-amd64-cpu32
     permissions:
@@ -214,7 +215,7 @@ jobs:
         image: ${{ fromJson(needs.build-images-ko.outputs.images) }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -226,6 +227,7 @@ jobs:
           registry_password: ${{ secrets.GITHUB_TOKEN }}
 
   e2e-test:
+    if: github.repository == 'nvidia/nvsentinel'
     name: "E2E Test Published Images"
     runs-on: linux-amd64-cpu32
     timeout-minutes: 60
@@ -239,7 +241,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 

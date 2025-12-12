@@ -33,9 +33,11 @@ enum RecommendedAction {
   NONE = 0;
   COMPONENT_RESET = 2;
   CONTACT_SUPPORT = 5;
+  RUN_FIELDDIAG = 6;
   RESTART_VM = 15;
   RESTART_BM = 24;
   REPLACE_VM = 25;
+  RUN_DCGMEUD = 26;
 
   UNKNOWN = 99;
 }

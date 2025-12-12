@@ -26,7 +26,7 @@ get_boot_id() {
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
-    local timeout=600
+    local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
 
 

@@ -17,28 +17,63 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
-// ExtractDocumentID extracts the document ID from a raw event
-func ExtractDocumentID(event map[string]interface{}) (string, error) {
-	// Try MongoDB ObjectId format first
+// tryExtractIDFromEventID attempts to extract a valid document ID from event["_id"].
+// Returns the ID and true if valid, or empty string and false if it's a resume token.
+func tryExtractIDFromEventID(id interface{}) (string, bool) {
+	idMap, isMap := id.(map[string]interface{})
+	if isMap {
+		if _, hasData := idMap["_data"]; hasData {
+			// Skip PostgreSQL changestream resume tokens
+			slog.Debug("Skipping _id with _data field (resume token)", "_id", id)
+
+			return "", false
+		}
+
+		return convertIDToString(id), true
+	}
+
+	return convertIDToString(id), true
+}
+
+// ExtractEventID extracts the event ID from an event map (supports _id and id formats).
+func ExtractEventID(event datastore.Event) string {
 	if id, exists := event["_id"]; exists {
-		return convertIDToString(id), nil
+		return fmt.Sprintf("%v", id)
 	}
 
-	// Try PostgreSQL uuid format
 	if id, exists := event["id"]; exists {
-		return convertIDToString(id), nil
+		return fmt.Sprintf("%v", id)
 	}
 
-	// Try in fullDocument for change stream events
+	return ""
+}
+
+// ExtractDocumentID extracts the document ID from a raw event.
+// For changestream events, fullDocument is checked first since event["_id"] may contain resume tokens.
+func ExtractDocumentID(event map[string]interface{}) (string, error) {
+	// Try fullDocument first (for changestream events)
 	if fullDoc, exists := event["fullDocument"]; exists {
 		if id, err := extractIDFromFullDocument(fullDoc); err == nil {
 			return id, nil
 		}
+	}
+
+	// Try _id field
+	if id, exists := event["_id"]; exists {
+		if docID, ok := tryExtractIDFromEventID(id); ok {
+			return docID, nil
+		}
+	}
+
+	// Try id field (PostgreSQL format)
+	if id, exists := event["id"]; exists {
+		return convertIDToString(id), nil
 	}
 
 	return "", datastore.NewValidationError(
@@ -48,19 +83,17 @@ func ExtractDocumentID(event map[string]interface{}) (string, error) {
 	).WithMetadata("event", event)
 }
 
-// extractIDFromDocument extracts ID from a document interface, trying both MongoDB and PostgreSQL formats
+// extractIDFromDocument extracts ID from a document (supports _id and id formats).
 func extractIDFromDocument(doc interface{}) interface{} {
 	docMap, ok := doc.(map[string]interface{})
 	if !ok {
 		return nil
 	}
 
-	// Try MongoDB _id format first
 	if id, exists := docMap["_id"]; exists {
 		return id
 	}
 
-	// Try PostgreSQL id format
 	if id, exists := docMap["id"]; exists {
 		return id
 	}
@@ -68,21 +101,22 @@ func extractIDFromDocument(doc interface{}) interface{} {
 	return nil
 }
 
-// ExtractDocumentIDNative extracts the document ID from a raw event while preserving its native type.
-// This is useful for database operations that require the native ID type (e.g., MongoDB ObjectID).
-// Unlike ExtractDocumentID which converts to string, this preserves the original type for queries.
+// ExtractDocumentIDNative extracts the document ID preserving its native type (e.g., MongoDB ObjectID).
 func ExtractDocumentIDNative(event map[string]interface{}) (interface{}, error) {
-	// Try MongoDB _id format first (preserves ObjectID type)
 	if id, exists := event["_id"]; exists {
 		return id, nil
 	}
 
-	// Try PostgreSQL id/uuid format
 	if id, exists := event["id"]; exists {
 		return id, nil
 	}
 
-	// Try in fullDocument for change stream events
+	if rawEvent, exists := event["RawEvent"]; exists {
+		if id := extractIDFromDocument(rawEvent); id != nil {
+			return id, nil
+		}
+	}
+
 	if fullDoc, exists := event["fullDocument"]; exists {
 		if id := extractIDFromDocument(fullDoc); id != nil {
 			return id, nil
@@ -96,20 +130,17 @@ func ExtractDocumentIDNative(event map[string]interface{}) (interface{}, error) 
 	).WithMetadata("event", event)
 }
 
-// extractIDFromFullDocument extracts document ID from fullDocument field
-// This helper function reduces complexity in ExtractDocumentID
+// extractIDFromFullDocument extracts document ID from fullDocument field.
 func extractIDFromFullDocument(fullDoc interface{}) (string, error) {
 	doc, ok := fullDoc.(map[string]interface{})
 	if !ok {
 		return "", fmt.Errorf("fullDocument is not a map")
 	}
 
-	// Try MongoDB _id format first
 	if id, exists := doc["_id"]; exists {
 		return convertIDToString(id), nil
 	}
 
-	// Try PostgreSQL id format
 	if id, exists := doc["id"]; exists {
 		return convertIDToString(id), nil
 	}
@@ -117,15 +148,12 @@ func extractIDFromFullDocument(fullDoc interface{}) (string, error) {
 	return "", fmt.Errorf("no ID found in fullDocument")
 }
 
-// convertIDToString converts various ID types to their string representation
-// Handles MongoDB ObjectID, PostgreSQL UUID, and other formats
+// convertIDToString converts various ID types to string (handles MongoDB ObjectID, UUID, etc).
 func convertIDToString(id interface{}) string {
-	// Check if it's a MongoDB ObjectID (has Hex() method)
 	if objectID, ok := id.(interface{ Hex() string }); ok {
 		return objectID.Hex()
 	}
 
-	// Fall back to standard string conversion for other types
 	return fmt.Sprintf("%v", id)
 }
 

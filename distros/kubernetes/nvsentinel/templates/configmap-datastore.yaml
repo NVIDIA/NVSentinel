@@ -1,0 +1,102 @@
+{{/*
+Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{- if .Values.global.datastore }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-datastore-config
+  labels:
+    {{- include "nvsentinel.labels" . | nindent 4 }}
+data:
+  datastore.yaml: |
+    provider: {{ .Values.global.datastore.provider | quote }}
+    connection:
+      host: {{ .Values.global.datastore.connection.host | quote }}
+      port: {{ .Values.global.datastore.connection.port | default 5432 }}
+      database: {{ .Values.global.datastore.connection.database | quote }}
+      {{- if .Values.global.datastore.connection.username }}
+      username: {{ .Values.global.datastore.connection.username | quote }}
+      {{- end }}
+      {{- if .Values.global.datastore.connection.sslmode }}
+      sslmode: {{ .Values.global.datastore.connection.sslmode | quote }}
+      {{- end }}
+      {{- if .Values.global.datastore.connection.sslcert }}
+      sslcert: {{ .Values.global.datastore.connection.sslcert | quote }}
+      {{- end }}
+      {{- if .Values.global.datastore.connection.sslkey }}
+      sslkey: {{ .Values.global.datastore.connection.sslkey | quote }}
+      {{- end }}
+      {{- if .Values.global.datastore.connection.sslrootcert }}
+      sslrootcert: {{ .Values.global.datastore.connection.sslrootcert | quote }}
+      {{- end }}
+      {{- if .Values.global.datastore.connection.extraParams }}
+      extraParams:
+        {{- toYaml .Values.global.datastore.connection.extraParams | nindent 8 }}
+      {{- end }}
+    {{- if .Values.global.datastore.options }}
+    options:
+      {{- toYaml .Values.global.datastore.options | nindent 6 }}
+    {{- end }}
+
+  # Environment variables for components
+  DATASTORE_PROVIDER: {{ .Values.global.datastore.provider | quote }}
+  DATASTORE_HOST: {{ .Values.global.datastore.connection.host | quote }}
+  DATASTORE_PORT: {{ .Values.global.datastore.connection.port | default 5432 | quote }}
+  DATASTORE_DATABASE: {{ .Values.global.datastore.connection.database | quote }}
+  {{- if .Values.global.datastore.connection.username }}
+  DATASTORE_USERNAME: {{ .Values.global.datastore.connection.username | quote }}
+  {{- end }}
+  {{- if .Values.global.datastore.connection.sslmode }}
+  DATASTORE_SSLMODE: {{ .Values.global.datastore.connection.sslmode | quote }}
+  {{- end }}
+  {{- if .Values.global.datastore.connection.sslcert }}
+  DATASTORE_SSLCERT: {{ .Values.global.datastore.connection.sslcert | quote }}
+  {{- end }}
+  {{- if .Values.global.datastore.connection.sslkey }}
+  DATASTORE_SSLKEY: {{ .Values.global.datastore.connection.sslkey | quote }}
+  {{- end }}
+  {{- if .Values.global.datastore.connection.sslrootcert }}
+  DATASTORE_SSLROOTCERT: {{ .Values.global.datastore.connection.sslrootcert | quote }}
+  {{- end }}
+
+  # Legacy MongoDB environment variables for backward compatibility
+  # These are set for all providers to support legacy code paths that still use the old config system
+  {{- if eq .Values.global.datastore.provider "mongodb" }}
+  {{- $mongodbURI := printf "mongodb://%s:%d/" .Values.global.datastore.connection.host (int (.Values.global.datastore.connection.port | default 27017)) }}
+  {{- if .Values.global.datastore.connection.extraParams }}
+  {{- $params := list }}
+  {{- range $key, $value := .Values.global.datastore.connection.extraParams }}
+  {{- $params = append $params (printf "%s=%s" $key $value) }}
+  {{- end }}
+  {{- $mongodbURI = printf "%s?%s" $mongodbURI (join "&" $params) }}
+  {{- end }}
+  MONGODB_URI: {{ $mongodbURI | quote }}
+  {{- else }}
+  # For non-MongoDB datastores, set empty MongoDB URI
+  MONGODB_URI: ""
+  {{- end }}
+  MONGODB_DATABASE_NAME: {{ .Values.global.datastore.connection.database | quote }}
+  {{- if .Values.global.datastore.connection.collection }}
+  MONGODB_COLLECTION_NAME: {{ .Values.global.datastore.connection.collection | quote }}
+  {{- else }}
+  MONGODB_COLLECTION_NAME: "health_events"
+  {{- end }}
+  {{- if .Values.global.datastore.connection.tokenCollection }}
+  MONGODB_TOKEN_COLLECTION_NAME: {{ .Values.global.datastore.connection.tokenCollection | quote }}
+  {{- else }}
+  MONGODB_TOKEN_COLLECTION_NAME: "ResumeTokens"
+  {{- end }}
+{{- end }}

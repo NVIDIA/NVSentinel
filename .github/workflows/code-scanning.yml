@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   codeql-pr-analysis:
-    if: startsWith(github.ref, 'refs/heads/pull-request/')
+    if: github.repository == 'nvidia/nvsentinel' && startsWith(github.ref, 'refs/heads/pull-request/')
     name: CodeQL PR Analysis
     runs-on: linux-amd64-cpu32
     timeout-minutes: 360
@@ -40,7 +40,7 @@ jobs:
       pull-requests: write   # Required for posting comments
     steps:
     - name: Checkout repository
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
     - name: Setup build environment
       uses: ./.github/actions/setup-ci-env
@@ -81,7 +81,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   codeql-baseline-analysis:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     name: CodeQL Baseline Analysis
     runs-on: linux-amd64-cpu4
     timeout-minutes: 360
@@ -90,7 +90,7 @@ jobs:
       packages: read
     steps:
     - name: Checkout repository
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
     - name: Setup build environment
       uses: ./.github/actions/setup-ci-env

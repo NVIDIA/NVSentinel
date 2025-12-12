@@ -36,10 +36,11 @@ permissions:
 
 jobs:
   build-image-list:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -74,11 +75,12 @@ jobs:
           retention-days: 90
 
   helm-publish:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu4
     timeout-minutes: 45
     needs: build-image-list
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -119,9 +121,11 @@ jobs:
           HELM_REGISTRY_TYPE: oci
           HELM_OCI_REGISTRY: ghcr.io
           HELM_OCI_REPOSITORY: nvidia
+          SAFE_REF: ${{ steps.ref-name.outputs.value }}
         run: make -C distros/kubernetes helm-publish
 
   create-github-release:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu4
     timeout-minutes: 15
     needs:
@@ -130,7 +134,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
@@ -141,7 +145,7 @@ jobs:
           path: .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe  # v2.4.2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b  # v2.5.0
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}

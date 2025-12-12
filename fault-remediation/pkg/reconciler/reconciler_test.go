@@ -173,6 +173,10 @@ func (m *MockDatabaseClient) Close(ctx context.Context) error {
 	return nil
 }
 
+func (m *MockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig client.TokenConfig) error {
+	return nil
+}
+
 func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenConfig client.TokenConfig, filter interface{}) (client.ChangeStreamWatcher, error) {
 	return nil, nil // Simple mock implementation
 }
@@ -216,9 +220,9 @@ func TestNewReconciler(t *testing.T) {
 				},
 			}
 
-			r := NewReconciler(cfg, tt.dryRun)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, tt.dryRun)
 			assert.NotNil(t, r)
-			assert.Equal(t, tt.dryRun, r.DryRun)
+			assert.Equal(t, tt.dryRun, r.dryRun)
 		})
 	}
 }
@@ -260,7 +264,7 @@ func TestHandleEvent(t *testing.T) {
 				RemediationClient: k8sClient,
 			}
 
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 			healthEventData := &HealthEventData{
 				ID: uuid.New().String(),
 				HealthEventWithStatus: model.HealthEventWithStatus{
@@ -270,7 +274,7 @@ func TestHandleEvent(t *testing.T) {
 					},
 				},
 			}
-			result, _ := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
+			result, _ := r.config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
 			assert.Equal(t, tt.shouldSucceed, result)
 		})
 	}
@@ -317,7 +321,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	// shouldSkipEvent should return true for UNKNOWN action
 	assert.True(t, r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus))
@@ -368,13 +372,14 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-success", crName)
 }
@@ -424,13 +429,14 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.False(t, success)
 	assert.Empty(t, crName)
 }
@@ -469,14 +475,15 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 			},
 		},
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
 	healthEventDoc := &HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
 	// Even with label update errors, remediation should still succeed
-	success, crName := r.performRemediation(ctx, healthEventDoc)
+	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	assert.NoError(t, err)
 	assert.True(t, success)
 	assert.Equal(t, "test-cr-label-error", crName)
 }
@@ -494,7 +501,8 @@ func TestShouldSkipEvent(t *testing.T) {
 		},
 	}
 
-	r := NewReconciler(ReconcilerConfig{RemediationClient: mockK8sClient, StateManager: stateManager}, false)
+	cfg := ReconcilerConfig{RemediationClient: mockK8sClient, StateManager: stateManager}
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	tests := []struct {
 		name              string
@@ -575,14 +583,14 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 		EnableLogCollector: true,
 		StateManager:       stateManager,
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	he := &protos.HealthEvent{NodeName: "test-node-none", RecommendedAction: protos.RecommendedAction_NONE}
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector run before skipping
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
-		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
+		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
 	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
@@ -654,9 +662,9 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 				RemediationClient:  k8sClient,
 				EnableLogCollector: true,
 			}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
-			result := r.Config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName)
+			result := r.config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName)
 			if tt.expectedResult {
 				assert.NoError(t, result, tt.description)
 			} else {
@@ -685,9 +693,9 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 		RemediationClient:  k8sClient,
 		EnableLogCollector: true,
 	}
-	r := NewReconciler(cfg, true) // Enable dry run
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, true)
 
-	result := r.Config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run")
+	result := r.config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run")
 	assert.NoError(t, result, "Dry run should return no error")
 	assert.True(t, called, "Function should be called even in dry run mode")
 }
@@ -717,14 +725,14 @@ func TestLogCollectorDisabled(t *testing.T) {
 		EnableLogCollector: false, // Disabled
 		StateManager:       stateManager,
 	}
-	r := NewReconciler(cfg, false)
+	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	he := &protos.HealthEvent{NodeName: "test-node-disabled", RecommendedAction: protos.RecommendedAction_NONE}
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector should NOT run when disabled
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
-		_ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
+		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
 	}
 	assert.True(t, r.shouldSkipEvent(t.Context(), event))
 	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
@@ -777,12 +785,12 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 					return true, "test-cr"
 				},
 			}
-
-			r := NewReconciler(ReconcilerConfig{
+			cfg := ReconcilerConfig{
 				RemediationClient: mockK8sClient,
 				UpdateMaxRetries:  1,
 				UpdateRetryDelay:  0,
-			}, false)
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 			// Create mock health event store
 			mockHealthStore := &MockHealthEventStore{
 				UpdateHealthEventStatusFn: func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
@@ -857,7 +865,7 @@ func TestCRBasedDeduplication(t *testing.T) {
 			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
@@ -930,7 +938,7 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
-			r := NewReconciler(cfg, false)
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
 				NodeName:          "test-node",
@@ -940,6 +948,71 @@ func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
 			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent)
 			assert.NoError(t, err, tt.description)
 			assert.True(t, shouldCreateCR, "Should always allow retry when no status checker")
+		})
+	}
+}
+
+// TestLogCollectorOnlyCalledWhenShouldCreateCR verifies that log collector is only called
+// when shouldCreateCR is true (Issue #441 - prevent duplicate log-collector jobs)
+// This tests the logic that log collector runs AFTER checkExistingCRStatus, not before
+func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name                   string
+		shouldCreateCR         bool
+		expectLogCollectorCall bool
+		description            string
+	}{
+		{
+			name:                   "ShouldCreateCR_True_LogCollectorCalled",
+			shouldCreateCR:         true,
+			expectLogCollectorCall: true,
+			description:            "Log collector should be called when shouldCreateCR is true",
+		},
+		{
+			name:                   "ShouldCreateCR_False_LogCollectorSkipped",
+			shouldCreateCR:         false,
+			expectLogCollectorCall: false,
+			description:            "Log collector should NOT be called when shouldCreateCR is false (prevents duplicate jobs)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logCollectorCalled := false
+
+			mockK8sClient := &MockK8sClient{
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
+					return true, "test-cr"
+				},
+				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+					logCollectorCalled = true
+					return nil
+				},
+			}
+
+			cfg := ReconcilerConfig{
+				RemediationClient:  mockK8sClient,
+				EnableLogCollector: true,
+			}
+			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
+
+			healthEvent := &protos.HealthEvent{
+				NodeName:          "test-node",
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			}
+
+			// Simulate the behavior in handleRemediationEvent:
+			// Log collector is only called when shouldCreateCR is true
+			// This is the key fix for Issue #441 - log collector moved after CR check
+			shouldCreateCR := tt.shouldCreateCR
+
+			if shouldCreateCR {
+				r.runLogCollector(ctx, healthEvent)
+			}
+
+			assert.Equal(t, tt.expectLogCollectorCall, logCollectorCalled, tt.description)
 		})
 	}
 }

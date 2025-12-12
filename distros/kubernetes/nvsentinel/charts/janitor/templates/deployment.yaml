@@ -42,6 +42,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "janitor.serviceAccountName" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      initContainers:
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: janitor
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -60,6 +68,13 @@ spec:
             - "--metrics-cert-key=tls.key"
             {{- end }}
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
             # Cloud Service Provider configuration
             - name: CSP
               value: {{ .Values.csp.provider | default "kind" | quote }}
@@ -136,6 +151,9 @@ spec:
               mountPath: {{ .Values.metrics.tls.certDir }}
               readOnly: true
             {{- end }}
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
       restartPolicy: Always
       volumes:
         - name: config
@@ -157,6 +175,9 @@ spec:
               - key: tls.key
                 path: tls.key
             defaultMode: 420
+        {{- end }}
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
         {{- end }}
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:

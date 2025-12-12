@@ -73,7 +73,11 @@ func MapActionStringToProto(s string) pb.RecommendedAction {
 	}
 
 	switch s {
-	case "RESTART_APP", "IGNORE":
+	// XID_154_EVAL: the guidance is that if an XID 154 is seen along with this error, take that action.
+	// If no XID 154 present, RESTART_APP. Since each XID is acted on, the recommendation for XID 154 will be
+	// applied as a part of the XID 154 cycle therefore we don't need lookback/lookforward for the XID. Hence
+	// XID_154_EVAL is considered equivalent to RESTART_APP.
+	case "RESTART_APP", "IGNORE", "XID_154_EVAL":
 		return pb.RecommendedAction_NONE
 	case "WORKFLOW_XID_48", "RESET_GPU", "RESET_FABRIC":
 		return pb.RecommendedAction_COMPONENT_RESET

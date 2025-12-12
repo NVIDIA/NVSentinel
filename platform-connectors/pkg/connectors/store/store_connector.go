@@ -92,8 +92,14 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 			slog.Info("Context canceled, exiting health metric processing loop")
 			return
 		default:
-			healthEvents := r.ringBuffer.Dequeue()
+			healthEvents, quit := r.ringBuffer.Dequeue()
+			if quit {
+				slog.Info("Queue signaled shutdown, exiting processing loop")
+				return
+			}
+
 			if healthEvents == nil || len(healthEvents.GetEvents()) == 0 {
+				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
 				continue
 			}
 
@@ -105,6 +111,14 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
 			}
 		}
+	}
+}
+
+func (r *DatabaseStoreConnector) ShutdownRingBuffer() {
+	if r.ringBuffer != nil {
+		slog.Info("Shutting down database store connector ring buffer with drain")
+		r.ringBuffer.ShutDownHealthMetricQueue()
+		slog.Info("Database store connector ring buffer drained successfully")
 	}
 }
 
@@ -136,12 +150,14 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	// Prepare all documents for batch insertion
 	healthEventWithStatusList := make([]interface{}, 0, len(healthEvents.GetEvents()))
 
-	for _, healthEvent := range healthEvents.GetEvents() {
+	for i, healthEvent := range healthEvents.GetEvents() {
 		// CRITICAL FIX: Clone the HealthEvent to avoid pointer reuse issues with gRPC buffers
 		// Without this clone, the healthEvent pointer may point to reused gRPC buffer memory
 		// that gets overwritten by subsequent requests, causing data corruption in MongoDB.
 		// This manifests as events having wrong isfatal/ishealthy/message values.
 		clonedHealthEvent := proto.Clone(healthEvent).(*protos.HealthEvent)
+
+		slog.Debug("Processing health event for insertion", "index", i, "nodeName", clonedHealthEvent.NodeName)
 
 		healthEventWithStatusObj := model.HealthEventWithStatus{
 			CreatedAt:   time.Now().UTC(),
@@ -150,13 +166,19 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 		healthEventWithStatusList = append(healthEventWithStatusList, healthEventWithStatusObj)
 	}
 
+	slog.Debug("Inserting health events batch", "documentCount", len(healthEventWithStatusList))
+
 	// Insert all documents in a single batch operation
 	// This ensures MongoDB generates INSERT operations (not UPDATE) for change streams
 	// Note: InsertMany is already atomic - either all documents are inserted or none are
 	_, err := r.databaseClient.InsertMany(ctx, healthEventWithStatusList)
 	if err != nil {
+		slog.Error("InsertMany failed", "error", err)
+
 		return fmt.Errorf("insertMany failed: %w", err)
 	}
+
+	slog.Debug("InsertMany completed successfully")
 
 	return nil
 }

@@ -147,6 +147,40 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 
 	pciAddr := m[1]
 
+	recommendedAction := p.getRecommendedActionForXid(xidCode, message)
+
+	metadata := make(map[string]string)
+
+	if xidCode == 13 {
+		gpc, tpc, sm := fetchXID13MetadataFromMessage(message)
+		if gpc != "" && tpc != "" && sm != "" {
+			metadata = map[string]string{
+				"GPC": gpc,
+				"TPC": tpc,
+				"SM":  sm,
+			}
+		}
+	}
+
+	xidDetails := XIDDetails{
+		DecodedXIDStr: fmt.Sprintf("%d", xidCode),
+		Driver:        "",
+		Mnemonic:      fmt.Sprintf("XID %d", xidCode),
+		Name:          fmt.Sprintf("%d", xidCode),
+		Number:        xidCode,
+		PCIE:          pciAddr,
+		Resolution:    recommendedAction.String(),
+		Metadata:      metadata,
+	}
+
+	return &Response{
+		Success: true,
+		Result:  xidDetails,
+		Error:   "",
+	}, nil
+}
+
+func (p *CSVParser) getRecommendedActionForXid(xidCode int, message string) pb.RecommendedAction {
 	var recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
 	if errRes, found := p.errorResolutionMap[xidCode]; found {
 		recommendedAction = errRes.RecommendedAction
@@ -158,21 +192,33 @@ func (p *CSVParser) parseStandardXID(message string) (*Response, error) {
 			"xidCode", xidCode)
 	}
 
-	xidDetails := XIDDetails{
-		DecodedXIDStr: fmt.Sprintf("%d", xidCode),
-		Driver:        "",
-		Mnemonic:      fmt.Sprintf("XID %d", xidCode),
-		Name:          fmt.Sprintf("%d", xidCode),
-		Number:        xidCode,
-		PCIE:          pciAddr,
-		Resolution:    recommendedAction.String(),
+	if xidCode == 154 {
+		// format is NVRM: Xid (PCI:0008:01:00): 154, GPU recovery action changed from 0x0 (None) to 0x1 (GPU Reset Required)
+		lastOpenParan := strings.LastIndex(message, "(")
+		lastCloseParan := strings.LastIndex(message, ")")
+
+		if lastOpenParan != -1 && lastCloseParan != -1 {
+			// recommendations should be "GPU Reset Required", i.e., the string inside the last ()
+			recommendation := message[lastOpenParan+1 : lastCloseParan]
+
+			slog.Debug("recommendation from log", "recommendation", recommendation)
+
+			switch recommendation {
+			case "GPU Reset Required", "Drain and Reset":
+				recommendedAction = pb.RecommendedAction_COMPONENT_RESET
+			case "Node Reboot Required":
+				recommendedAction = pb.RecommendedAction_RESTART_BM
+			case "None":
+				recommendedAction = pb.RecommendedAction_NONE
+			default:
+				recommendedAction = pb.RecommendedAction_CONTACT_SUPPORT
+			}
+		} else {
+			slog.Warn("xid 154 did not have expected format", "msg", message)
+		}
 	}
 
-	return &Response{
-		Success: true,
-		Result:  xidDetails,
-		Error:   "",
-	}, nil
+	return recommendedAction
 }
 
 func (p *CSVParser) matchesNVL5Rule(rule common.NVL5DecodingRule, intrInfo int64, errorStatusStr string) bool {
@@ -223,4 +269,15 @@ func (p *CSVParser) doesXIDIntrInfoMatchRule(intrinfoBinaryPattern string, intrI
 	}
 
 	return true
+}
+
+func fetchXID13MetadataFromMessage(message string) (string, string, string) {
+	re := regexp.MustCompile(`\(GPC\s+(\d+),\s*TPC\s+(\d+),\s*SM\s+(\d+)\)`)
+	matches := re.FindStringSubmatch(message)
+
+	if len(matches) != 4 {
+		return "", "", ""
+	}
+
+	return matches[1], matches[2], matches[3]
 }

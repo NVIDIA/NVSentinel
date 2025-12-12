@@ -16,6 +16,22 @@ global:
   dryRun: false
   kubeVersion: 1.31.0
 
+  # NOTE: Datastore configuration is provided by:
+  # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
+  # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
+  # This ensures proper configuration for both database backends
+
+  # Audit logging enabled for Tilt development
+  auditLogging:
+    enabled: true
+    logRequestBody: false
+    maxSizeMB: 100
+    maxBackups: 3
+    maxAgeDays: 7
+    compress: true
+
+  ctrlRuntimeEnabled: true
+
   nodeSelector: {}
   
   tolerations: 
@@ -48,7 +64,7 @@ global:
     enabled: false
 
   cspHealthMonitor:
-    enabled: false
+    enabled: true
 
   syslogHealthMonitor:
     enabled: true
@@ -56,7 +72,7 @@ global:
       enabled: false
 
   inclusterFileServer:
-    enabled: false
+    enabled: true
   
   janitor:
     enabled: true
@@ -70,6 +86,11 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  eventExporter:
+    enabled: true
+  
+  metricsPort: 2112
+
 mongodb-store:
   useBitnami: true
   usePerconaOperator: false
@@ -79,7 +100,7 @@ mongodb-store:
       node-role.kubernetes.io/control-plane: ""
     tolerations:
       - operator: Exists
-  
+
   psmdb-operator:
     nodeSelector:
       node-role.kubernetes.io/control-plane: ""
@@ -147,7 +168,7 @@ mongodb-store:
         tag: "2.5.2"
         pullPolicy: IfNotPresent
   
-  # Bitnami configuration
+  # Bitnami MongoDB configuration
   mongodb:
     replicaCount: 1
     nodeSelector:
@@ -183,6 +204,12 @@ mongodb-store:
         repository: bitnamilegacy/mongodb-exporter
         tag: 0.41.2-debian-12-r1
 
+# Subchart-specific configuration for incluster-file-server
+incluster-file-server:
+  # Disable log cleanup in Tilt - the cleanup image may not be available
+  logCleanup:
+    enabled: false
+
 # Override log levels for all modules during testing
 fault-quarantine:
   logLevel: debug
@@ -199,8 +226,19 @@ fault-quarantine:
         topologyKey: kubernetes.io/hostname
 
 fault-remediation:
+  replicaCount: 1
+
   logLevel: debug
 
+  logCollector:
+    enabled: true
+    image:
+      repository: localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector
+      tag: latest  
+      pullPolicy: Always 
+    timeout: "10s"  # Short timeout for faster testing (production default: "10m")
+    env:
+      MOCK_MODE: "true"  
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -254,14 +292,66 @@ labeler:
 
 csp-health-monitor:
   logLevel: debug
+  cspName: "gcp" # this will be updated to aws as well dynamically during tests 
   quarantineTriggerEngine:
     logLevel: debug
+  configToml:
+    clusterName: "nvsentinel"
+    maintenanceEventPollIntervalSeconds: 30
+    postMaintenanceHealthyDelayMinutes: 1
+    gcp:
+      endpointOverride: "csp-api-mock.nvsentinel.svc.cluster.local:50051"
+    aws:
+      endpointOverride: "http://csp-api-mock.nvsentinel.svc.cluster.local:8080/aws/health"
+  
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
 # Enable node metadata enrichment for testing
 platformConnector:
-  nodeMetadata:
+  k8sConnector:
     enabled: true
-
+    maxNodeConditionMessageLength: 1024
+    qps: 5.0
+    burst: 10
+  
+  pipeline:
+    - name: MetadataAugmentor
+      enabled: true
+      config: /etc/config/metadata.toml
+    
+    - name: OverrideTransformer
+      enabled: true
+      config: /etc/config/overrides.toml
+  
+  transformers:
+    MetadataAugmentor:
+      cacheSize: 50
+      cacheTTLSeconds: 3600
+      allowedLabels:
+        - "topology.kubernetes.io/zone"
+        - "topology.kubernetes.io/region"
+    
+    OverrideTransformer:
+      rules:
+      - name: "escalate-xid-94"
+        when: 'event.agent == "syslog-health-monitor" && "94" in event.errorCode'
+        override:
+          isFatal: true
+          recommendedAction: "CONTACT_SUPPORT"
+    
+    # - name: "zone-specific-override"
+    #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
+    #   override:
+    #     isFatal: false
 kubernetes-object-monitor:
   logLevel: debug
 
@@ -293,3 +383,67 @@ kubernetes-object-monitor:
           matchLabels:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
+
+event-exporter:
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/event-exporter
+    pullPolicy: IfNotPresent
+
+  podAnnotations: {}
+
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+
+  oidcSecretName: "event-exporter-oidc-secret"
+
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
+
+  exporter:
+    metadata:
+      cluster: "tilt-test-cluster"
+      environment: "development"
+      tilt_test: "true"
+
+    sink:
+      endpoint: "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/events"
+      timeout: "30s"
+      insecureSkipVerify: true
+
+    oidc:
+      tokenUrl: "http://event-exporter-mock.nvsentinel.svc.cluster.local:8443/token"
+      clientId: "tilt-test-client"
+      scope: "test-scope"
+      insecureSkipVerify: true
+
+    backfill:
+      enabled: true
+      maxAge: "1h"
+      maxEvents: 10000
+      batchSize: 100
+      rateLimit: 100
+
+    resumeToken:
+      database: "nvsentinel"
+      collection: "resumetokens"
+
+    failureHandling:
+      maxRetries: 3
+      initialBackoff: "1s"
+      maxBackoff: "10s"
+      backoffMultiplier: 2.0

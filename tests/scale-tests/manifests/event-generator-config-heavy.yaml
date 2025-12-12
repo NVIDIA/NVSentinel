@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: event-generator-config
+  namespace: nvsentinel
+  labels:
+    app: event-generator
+    load-type: heavy
+data:
+  # Heavy Load: Elevated sustained load test
+  # For a 1500-node cluster: 0.333 events/sec/node = 500 events/sec total
+  EVENT_RATE: "0.333"
+  
+  # Logging configuration
+  LOG_LEVEL: "INFO"
+  
+  # Retry and stats configuration
+  RETRY_ATTEMPTS: "5"
+  STATS_INTERVAL: "50"

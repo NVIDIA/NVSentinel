@@ -52,6 +52,7 @@ type GCPConfig struct {
 	TargetProjectID           string `toml:"targetProjectId"`
 	APIPollingIntervalSeconds int    `toml:"apiPollingIntervalSeconds"`
 	LogFilter                 string `toml:"logFilter"`
+	EndpointOverride          string `toml:"endpointOverride"`
 }
 
 // AWSConfig holds AWS specific configuration.
@@ -60,6 +61,7 @@ type AWSConfig struct {
 	AccountID              string `toml:"accountId"`
 	PollingIntervalSeconds int    `toml:"pollingIntervalSeconds"`
 	Region                 string `toml:"region"`
+	EndpointOverride       string `toml:"endpointOverride"`
 }
 
 // LoadConfig reads the configuration from a TOML file.

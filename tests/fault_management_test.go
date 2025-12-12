@@ -240,6 +240,12 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
+		// Delete any existing RebootNode CRs before deleting the node
+		// This allows us to test that no NEW CRs are created after node deletion
+		t.Log("Cleaning up any existing RebootNode CRs before deleting node")
+		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		require.NoError(t, err)
+
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
 		require.NoError(t, err)
 
@@ -255,10 +261,16 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 			return err != nil
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "node should be deleted")
 
+		// Wait for node deletion to propagate and for the node existence check
+		// to prevent any in-flight events from creating RebootNode CRs
+		t.Log("Waiting for node deletion to propagate (2 seconds)")
+		time.Sleep(2 * time.Second)
+
 		return ctx
 	})
 
 	feature.Assess("verify no RebootNode CR created after timeout", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		// Owner references ensure RebootNode CRs are garbage collected when the node is deleted.
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
@@ -571,10 +583,21 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 
 		t.Log("Verifying remediation state annotation exists")
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-		_, exists := node.Annotations["latestFaultRemediationState"]
-		assert.True(t, exists, "Remediation state annotation should exist")
+		// Use Eventually because there's a race condition: the annotation is set when the CR is created,
+		// but may be cleared quickly when the unquarantine event is processed. We need to catch it
+		// in the window between CR creation and unquarantine processing.
+		require.Eventually(t, func() bool {
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("Failed to get node: %v", err)
+				return false
+			}
+			_, exists := node.Annotations["latestFaultRemediationState"]
+			if !exists {
+				t.Log("Remediation state annotation not yet present")
+			}
+			return exists
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Remediation state annotation should exist")
 
 		return ctx
 	})

@@ -52,6 +52,9 @@ podAnnotations: {}
 # Log verbosity level for the main CSP health monitor container (e.g. "debug", "info", "warn", "error")
 logLevel: info
 
+# Client certificate mount path for database connections
+clientCertMountPath: /etc/ssl/client-certs
+
 # cspName specifies the active cloud service provider. Can be "gcp" or "aws".
 cspName: ""
 

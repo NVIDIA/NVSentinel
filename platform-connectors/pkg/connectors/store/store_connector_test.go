@@ -52,6 +52,11 @@ func (m *mockDatabaseClient) Close(ctx context.Context) error {
 	return args.Error(0)
 }
 
+func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig client.TokenConfig) error {
+	args := m.Called(ctx, tokenConfig)
+	return args.Error(0)
+}
+
 // Additional methods to satisfy the DatabaseClient interface
 func (m *mockDatabaseClient) UpdateDocumentStatus(ctx context.Context, documentID string, statusPath string, status interface{}) error {
 	args := m.Called(ctx, documentID, statusPath, status)

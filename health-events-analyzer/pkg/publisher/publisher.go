@@ -94,14 +94,20 @@ func NewPublisher(platformConnectorClient protos.PlatformConnectorClient) *Publi
 }
 
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
-	recommendedAction protos.RecommendedAction, ruleName string) error {
+	recommendedAction protos.RecommendedAction, ruleName string, message string) error {
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
 	newEvent.Agent = "health-events-analyzer"
 	newEvent.CheckName = ruleName
 	newEvent.RecommendedAction = recommendedAction
 	newEvent.IsHealthy = false
-	newEvent.IsFatal = true
+	newEvent.Message = message
+
+	if recommendedAction == protos.RecommendedAction_NONE {
+		newEvent.IsFatal = false
+	} else {
+		newEvent.IsFatal = true
+	}
 
 	req := &protos.HealthEvents{
 		Version: 1,

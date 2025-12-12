@@ -20,7 +20,7 @@ import (
 
 	"github.com/golang/protobuf/ptypes/empty"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/platform-connectors/pkg/nodemetadata"
+	"github.com/nvidia/nvsentinel/platform-connectors/pkg/pipeline"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -45,7 +45,7 @@ var (
 
 type PlatformConnectorServer struct {
 	pb.UnimplementedPlatformConnectorServer
-	Processor nodemetadata.Processor
+	Pipeline *pipeline.Pipeline
 }
 
 func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
@@ -54,13 +54,9 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 
-	if p.Processor != nil {
+	if p.Pipeline != nil {
 		for i := range he.Events {
-			if err := p.Processor.AugmentHealthEvent(ctx, he.Events[i]); err != nil {
-				slog.Warn("Failed to augment health event",
-					"nodeName", he.Events[i].NodeName,
-					"error", err)
-			}
+			p.Pipeline.Process(ctx, he.Events[i])
 		}
 	}
 

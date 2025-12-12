@@ -96,8 +96,14 @@ func (p *DefaultEventProcessor) Start(ctx context.Context) error {
 
 	slog.Info("Starting unified event processor")
 
-	// Start the change stream watcher
-	p.changeStreamWatcher.Start(ctx)
+	if p.changeStreamWatcher != nil {
+		p.changeStreamWatcher.Start(ctx)
+	} else {
+		slog.Info("No change stream watcher available")
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
 
 	// Process events in main loop
 	return p.processEvents(ctx)
@@ -108,7 +114,11 @@ func (p *DefaultEventProcessor) Stop(ctx context.Context) error {
 	slog.Info("Stopping unified event processor")
 	close(p.stopCh)
 
-	return p.changeStreamWatcher.Close(ctx)
+	if p.changeStreamWatcher != nil {
+		return p.changeStreamWatcher.Close(ctx)
+	}
+
+	return nil
 }
 
 // processEvents handles the main event processing loop
@@ -142,6 +152,8 @@ func (p *DefaultEventProcessor) processEvents(ctx context.Context) error {
 // handleSingleEvent processes a single event
 // IMPORTANT: Does NOT retry internally - handler is responsible for its own retries if needed
 // This prevents retry-induced blocking of the event stream
+//
+//nolint:nestif,cyclop // Complex error handling and event processing logic
 func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Event) error {
 	startTime := time.Now()
 
@@ -150,8 +162,10 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 	if err := event.UnmarshalDocument(&healthEventWithStatus); err != nil {
 		p.updateMetrics("unmarshal_error", "", time.Since(startTime), false)
 		// Unmarshal errors are non-recoverable, mark as processed to skip bad data
-		if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-			slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
+		if p.changeStreamWatcher != nil {
+			if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
+				slog.Error("Failed to mark processed after unmarshal error", "error", markErr)
+			}
 		}
 
 		return fmt.Errorf("failed to unmarshal event: %w", err)
@@ -161,8 +175,10 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 	if err != nil {
 		p.updateMetrics("document_id_error", "", time.Since(startTime), false)
 		// Document ID errors are non-recoverable, mark as processed
-		if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-			slog.Error("Failed to mark processed after document ID error", "error", markErr)
+		if p.changeStreamWatcher != nil {
+			if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
+				slog.Error("Failed to mark processed after document ID error", "error", markErr)
+			}
 		}
 
 		return fmt.Errorf("failed to get document ID: %w", err)
@@ -172,6 +188,8 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 
 	// Process event - NO internal retries
 	// Handler is responsible for any retries it needs
+	//nolint:nestif // Error handling requires nested conditionals for proper cleanup
+	//nolint:nestif // Error handling requires nested conditionals for proper cleanup
 	processErr := p.eventHandler.ProcessEvent(ctx, &healthEventWithStatus)
 	if processErr != nil {
 		p.updateMetrics("processing_failed", eventID, time.Since(startTime), false)
@@ -182,9 +200,11 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 			slog.Warn("Marking failed event as processed due to MarkProcessedOnError=true",
 				"eventID", eventID, "error", processErr)
 
-			if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
-				slog.Error("Failed to mark processed after error", "error", markErr)
-				return fmt.Errorf("failed to mark event as processed: %w", markErr)
+			if p.changeStreamWatcher != nil {
+				if markErr := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); markErr != nil {
+					slog.Error("Failed to mark processed after error", "error", markErr)
+					return fmt.Errorf("failed to mark event as processed: %w", markErr)
+				}
 			}
 		} else {
 			// Do NOT mark as processed - event will be retried on next restart
@@ -200,9 +220,11 @@ func (p *DefaultEventProcessor) handleSingleEvent(ctx context.Context, event Eve
 	// Success - mark as processed
 	p.updateMetrics("processing_success", eventID, time.Since(startTime), true)
 
-	if err := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); err != nil {
-		p.updateMetrics("mark_processed_error", eventID, time.Since(startTime), false)
-		return fmt.Errorf("failed to mark event as processed: %w", err)
+	if p.changeStreamWatcher != nil {
+		if err := p.changeStreamWatcher.MarkProcessed(ctx, []byte{}); err != nil {
+			p.updateMetrics("mark_processed_error", eventID, time.Since(startTime), false)
+			return fmt.Errorf("failed to mark event as processed: %w", err)
+		}
 	}
 
 	return nil

@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -30,9 +32,13 @@ import (
 	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
-	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -50,8 +56,10 @@ type Components struct {
 	QueueManager   queue.EventQueueManager
 	Reconciler     *reconciler.Reconciler
 	DatabaseClient client.DatabaseClient
+	DataStore      datastore.DataStore
 }
 
+//nolint:cyclop // Complexity slightly over limit (11 vs 10) but function is clear and linear
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
 	slog.Info("Starting node drainer initialization")
 
@@ -81,12 +89,25 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Running in dry-run mode")
 	}
 
-	clientSet, err := initializeKubernetesClient(params.KubeconfigPath)
+	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
 	slog.Info("Successfully initialized kubernetes client")
+
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create discovery client: %w", err)
+	}
+
+	cachedClient := memory.NewMemCacheClient(discoveryClient)
+	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 
 	informersInstance, err := initializeInformers(clientSet, &tomlCfg.NotReadyTimeoutMinutes, params.DryRun)
 	if err != nil {
@@ -105,27 +126,55 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	reconcilerCfg := createReconcilerConfig(*tomlCfg, databaseConfig, clientTokenConfig, pipeline, stateManager)
 
-	// Create client factory and database client
-	clientFactory := factory.NewClientFactory(databaseConfig)
-
-	// Create the database client for the reconciler to use for preprocessing
-	databaseClient, err := clientFactory.CreateDatabaseClient(ctx)
+	// Create NEW database-agnostic datastore
+	ds, err := datastore.NewDataStore(ctx, *dsConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create database client: %w", err)
+		return nil, fmt.Errorf("failed to create datastore: %w", err)
 	}
 
+	slog.Debug("Created datastore", "provider", dsConfig.Provider)
+
+	// Get database client and change stream watcher from datastore
+	datastoreAdapter, ok := ds.(interface {
+		GetDatabaseClient() client.DatabaseClient
+		CreateChangeStreamWatcher(
+			ctx context.Context, clientName string, pipeline interface{},
+		) (datastore.ChangeStreamWatcher, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("datastore does not support required operations")
+	}
+
+	databaseClient := datastoreAdapter.GetDatabaseClient()
+
 	// Reconciler creates its own queue manager and needs the database client
-	reconciler := initializeReconciler(reconcilerCfg, params.DryRun, clientSet, informersInstance, databaseClient)
+	reconciler, err := initializeReconciler(
+		reconcilerCfg, params.DryRun, clientSet, informersInstance,
+		databaseClient, dynamicClient, restMapper,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize reconciler: %w", err)
+	}
+
 	queueManager := reconciler.GetQueueManager()
 
-	// CRITICAL: Pass the existing databaseClient to avoid creating duplicate clients
-	changeStreamWatcher, err := clientFactory.CreateChangeStreamWatcher(ctx, databaseClient, "node-drainer", pipeline)
+	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
+		ctx, "node-drainer", pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
-	// Use the change stream watcher directly
-	eventWatcher := changeStreamWatcher
+	// Unwrap for EventWatcher compatibility
+	type unwrapper interface {
+		Unwrap() client.ChangeStreamWatcher
+	}
+
+	unwrapable, ok := changeStreamWatcher.(unwrapper)
+	if !ok {
+		return nil, fmt.Errorf("watcher does not support unwrapping to client.ChangeStreamWatcher")
+	}
+
+	eventWatcher := unwrapable.Unwrap()
 
 	slog.Info("Initialization completed successfully")
 
@@ -135,21 +184,26 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		QueueManager:   queueManager,
 		Reconciler:     reconciler,
 		DatabaseClient: databaseClient,
+		DataStore:      ds,
 	}, nil
 }
 
-func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, error) {
+func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, *rest.Config, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build config: %w", err)
+		return nil, nil, fmt.Errorf("failed to build config: %w", err)
 	}
+
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientSet, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
+		return nil, nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
 
-	return clientSet, nil
+	return clientSet, restConfig, nil
 }
 
 func initializeInformers(clientset kubernetes.Interface,
@@ -182,10 +236,12 @@ func initializeReconciler(
 	kubeClient kubernetes.Interface,
 	informersInstance *informers.Informers,
 	databaseClient client.DatabaseClient,
-) *reconciler.Reconciler {
+	dynamicClient dynamic.Interface,
+	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+) (*reconciler.Reconciler, error) {
 	// Create adapter to convert client.DatabaseClient to queue.DataStore interface
 	dbAdapter := &databaseClientAdapter{client: databaseClient}
-	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter)
+	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter, dynamicClient, restMapper)
 }
 
 // databaseClientAdapter adapts client.DatabaseClient to queue.DataStore interface

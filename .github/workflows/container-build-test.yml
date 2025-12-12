@@ -46,6 +46,7 @@ permissions:
 
 jobs:
   container-build-test:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 45
     strategy:
@@ -59,15 +60,13 @@ jobs:
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
-          - component: kubernetes-object-monitor
-            make_command: 'make -C health-monitors/kubernetes-object-monitor docker-build'
           # Log Collection (Docker-based)
           - component: log-collector
             make_command: 'make -C log-collector docker-build-log-collector'
           - component: file-server-cleanup
             make_command: 'make -C log-collector docker-build-file-server-cleanup'
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -98,6 +97,7 @@ jobs:
 
   # Test ko-based builds (Go modules)
   ko-build-test:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu32
     timeout-minutes: 30
     strategy:
@@ -122,10 +122,12 @@ jobs:
             path: ./cmd/csp-health-monitor
           - module: health-monitors/csp-health-monitor
             path: ./cmd/maintenance-notifier
+          - module: health-monitors/kubernetes-object-monitor
+            path: .
           - module: event-exporter
             path: .
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -140,7 +142,7 @@ jobs:
   container-build-summary:
     runs-on: linux-amd64-cpu32
     needs: [container-build-test, ko-build-test]
-    if: always()
+    if: always() && github.repository == 'nvidia/nvsentinel'
     steps:
       - name: Check build results
         run: |

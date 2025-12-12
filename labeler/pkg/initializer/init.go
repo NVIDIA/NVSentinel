@@ -17,18 +17,21 @@ package initializer
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/labeler/pkg/labeler"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 type InitializationParams struct {
-	KubeconfigPath string
-	DCGMAppLabel   string
-	DriverAppLabel string
-	KataLabel      string
+	KubeconfigPath       string
+	DCGMAppLabel         string
+	DriverAppLabel       string
+	GKEInstallerAppLabel string
+	KataLabel            string
 }
 
 type Components struct {
@@ -50,6 +53,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		30*time.Second,
 		params.DCGMAppLabel,
 		params.DriverAppLabel,
+		params.GKEInstallerAppLabel,
 		params.KataLabel,
 	)
 	if err != nil {
@@ -68,6 +72,10 @@ func initializeKubernetesClient(kubeconfigPath string) (kubernetes.Interface, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to build config: %w", err)
 	}
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {

@@ -18,4 +18,4 @@ metadata:
   name: {{ include "health-events-analyzer.fullname" . }}-config
 data:
   config.toml: |
-    {{ .Values.config | nindent 6 }}
+    {{ tpl .Values.config . | nindent 6 }}

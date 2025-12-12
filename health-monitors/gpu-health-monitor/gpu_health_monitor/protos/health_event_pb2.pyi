@@ -16,17 +16,21 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     NONE: _ClassVar[RecommendedAction]
     COMPONENT_RESET: _ClassVar[RecommendedAction]
     CONTACT_SUPPORT: _ClassVar[RecommendedAction]
+    RUN_FIELDDIAG: _ClassVar[RecommendedAction]
     RESTART_VM: _ClassVar[RecommendedAction]
     RESTART_BM: _ClassVar[RecommendedAction]
     REPLACE_VM: _ClassVar[RecommendedAction]
+    RUN_DCGMEUD: _ClassVar[RecommendedAction]
     UNKNOWN: _ClassVar[RecommendedAction]
 
 NONE: RecommendedAction
 COMPONENT_RESET: RecommendedAction
 CONTACT_SUPPORT: RecommendedAction
+RUN_FIELDDIAG: RecommendedAction
 RESTART_VM: RecommendedAction
 RESTART_BM: RecommendedAction
 REPLACE_VM: RecommendedAction
+RUN_DCGMEUD: RecommendedAction
 UNKNOWN: RecommendedAction
 
 class HealthEvents(_message.Message):

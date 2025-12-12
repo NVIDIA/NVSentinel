@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -42,9 +43,22 @@ func main() {
 	logger.SetDefaultStructuredLogger("fault-quarantine", version)
 	slog.Info("Starting fault-quarantine", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("fault-quarantine"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
 	if err := run(); err != nil {
 		slog.Error("Application encountered a fatal error", "error", err)
+
+		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+			slog.Warn("Failed to close audit logger", "error", closeErr)
+		}
+
 		os.Exit(1)
+	}
+
+	if err := auditlogger.CloseAuditLogger(); err != nil {
+		slog.Warn("Failed to close audit logger", "error", err)
 	}
 }
 

@@ -12,8 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
-    "ghcr.io/nvidia/nvsentinel/log-collector",
-    context=".",
-    dockerfile="./Dockerfile"
+# Build docker image and push to local registry with fixed tag
+# Using local_resource since the image is used in dynamically created jobs
+# Build from repo root since Dockerfile expects that context
+local_resource(
+    "log-collector",
+    "cd .. && docker build -t localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest -f log-collector/Dockerfile . && docker push localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest",
+    deps=["./"],
+    ignore=["./Tiltfile"],
+    labels=["images"]
 )

@@ -39,6 +39,7 @@ env:
 
 jobs:
   simple-lint:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -67,11 +68,14 @@ jobs:
           - component: helm-charts
             make_command: 'make helm-lint'
             step_name: 'Validate Helm charts'
+          - component: postgres-schema
+            make_command: 'make validate-postgres-schema'
+            step_name: 'Validate PostgreSQL schema consistency'
           - component: scripts
             make_command: 'make -C scripts lint'
             step_name: 'Run shellcheck on scripts'
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -97,6 +101,7 @@ jobs:
         run: make helm-lint
 
   health-monitors-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -110,7 +115,7 @@ jobs:
             python_required: 'true'
             replace_imports: 'false'
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -129,6 +134,7 @@ jobs:
 
 
   modules-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -148,7 +154,7 @@ jobs:
           - janitor
           - tests
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -166,6 +172,7 @@ jobs:
             ${{ matrix.component }}/report.xml
 
   tilt-modules-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     strategy:
@@ -173,7 +180,7 @@ jobs:
         component:
           - tilt/simple-health-client
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -191,15 +198,15 @@ jobs:
             ${{ matrix.component }}/report.xml
 
   consolidated-coverage-report:
-    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/')
+    if: github.repository == 'nvidia/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
     needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c  # v6.1.0
         with:
           go-version: 'stable'
 
@@ -388,12 +395,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   consolidated-coverage-baseline:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
     needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
 
       - name: Download all coverage artifacts
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0

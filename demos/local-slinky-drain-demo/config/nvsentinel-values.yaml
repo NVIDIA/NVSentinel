@@ -1,0 +1,121 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# NVSentinel configuration for custom drain demo
+
+global:
+  # Disable dry-run mode
+  dryRun: false
+  
+  # Component toggles - only enable what we need
+  platformConnectors:
+    enabled: true
+  
+  faultQuarantine:
+    enabled: true
+  
+  nodeDrainer:
+    enabled: true
+  
+  mongodbStore:
+    enabled: true
+  
+  # Disable all health monitors
+  gpuHealthMonitor:
+    enabled: false
+  
+  kubernetesObjectMonitor:
+    enabled: false
+  
+  cspHealthMonitor:
+    enabled: false
+  
+  # Disable remediation and janitor
+  faultRemediation:
+    enabled: false
+  
+  janitor:
+    enabled: false
+  
+  labeler:
+    enabled: false
+
+# MongoDB sub-chart configuration
+mongodb-store:
+  useBitnami: true
+  usePerconaOperator: false
+  
+  mongodb:
+    replicaCount: 1
+    
+    tls:
+      replicaset:
+        existingSecrets:
+          - "mongo-server-cert-0"
+    
+    persistence:
+      enabled: false
+    
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# Platform Connectors configuration
+platform-connectors:
+  clientCertMountPath: /etc/ssl/mongo-client
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Fault Quarantine configuration
+fault-quarantine:
+  clientCertMountPath: /etc/ssl/mongo-client
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Node Drainer with custom drain enabled
+node-drainer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  
+  # Disable user namespaces (using custom drain instead)
+  userNamespaces: []
+  
+  # Enable custom drain for slinky-drainer integration
+  customDrain:
+    enabled: true
+    
+    # Template configuration
+    templateConfigMapName: "slinky-drain-template"
+    templateMountPath: "/etc/drain-template"
+    templateFileName: "drain-template.yaml"
+    
+    # Custom drain CR configuration
+    namespace: "nvsentinel"
+    apiGroup: "nvsentinel.nvidia.com"
+    version: "v1alpha1"
+    kind: "DrainRequest"
+    resource: "drainrequests"
+    
+    # Status checking configuration
+    statusConditionType: "DrainComplete"
+    statusConditionStatus: "True"
+    timeout: "1800"
+

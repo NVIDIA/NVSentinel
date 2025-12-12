@@ -1,0 +1,71 @@
+# Inference Simulator Workload
+# Simulates AI inference services with many small pods
+# Used for Concurrent Drain Tests A1 and A2
+#
+# Pattern: 15 pods per node across 1500 nodes = ~22,500 pods
+# Resources: Small (10m CPU, 32Mi memory per pod)
+# Termination: 30 seconds (realistic for inference services)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-workload
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-sim
+  namespace: test-workload
+  labels:
+    app: inference-sim
+    workload-type: inference
+spec:
+  # 1500 nodes × 15 pods/node = 22,500 replicas
+  replicas: 22500
+  selector:
+    matchLabels:
+      app: inference-sim
+  template:
+    metadata:
+      labels:
+        app: inference-sim
+        workload-type: inference
+    spec:
+      # 30 seconds - realistic for inference services to gracefully shutdown
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: inference
+        # Lightweight Python image - handles SIGTERM gracefully
+        image: public.ecr.aws/docker/library/python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, shutting down gracefully...")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Inference simulator started, waiting for requests...")
+          while True:
+              time.sleep(3600)
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "50m"
+            memory: "64Mi"
+      # Spread pods evenly across nodes
+      topologySpreadConstraints:
+      - maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: inference-sim
+

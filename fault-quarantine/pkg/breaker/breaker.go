@@ -269,6 +269,14 @@ func (b *slidingWindowBreaker) CurrentState() State {
 	return b.state
 }
 
+func (b *slidingWindowBreaker) GetCursorMode(ctx context.Context) (CursorMode, error) {
+	return b.cfg.K8sClient.ReadCursorMode(ctx, b.cfg.ConfigMapName, b.cfg.ConfigMapNamespace)
+}
+
+func (b *slidingWindowBreaker) SetCursorMode(ctx context.Context, mode CursorMode) error {
+	return b.cfg.K8sClient.WriteCursorMode(ctx, b.cfg.ConfigMapName, b.cfg.ConfigMapNamespace, mode)
+}
+
 // getTotalNodesWithRetry gets the total number of nodes with retry logic and exponential backoff.
 // This handles NodeInformer cache sync delays that can cause GetTotalNodes to temporarily return 0.
 func (b *slidingWindowBreaker) getTotalNodesWithRetry(ctx context.Context) (int, error) {

@@ -127,6 +127,8 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            - name: LOG_LEVEL
+              value: "{{ $root.Values.logLevel }}"
           volumeMounts:
             - name: var-run-vol
               mountPath: /var/run/

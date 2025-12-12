@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"syscall"
@@ -28,6 +29,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
@@ -49,7 +51,8 @@ func TestMain(m *testing.M) {
 	ctx = context.Background()
 	stopCh := make(chan struct{})
 	ringBuffer := ringbuffer.NewRingBuffer("k8sRingBuffer", ctx)
-	k8sConnector = NewK8sConnector(clientSet, ringBuffer, stopCh, ctx)
+	maxNodeConditionMessageLength := int64(1024)
+	k8sConnector = NewK8sConnector(clientSet, ringBuffer, stopCh, ctx, maxNodeConditionMessageLength)
 	exitVal := m.Run()
 	os.Exit(exitVal)
 }
@@ -1357,7 +1360,8 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 			defer close(stopCh)
 
 			ringBuffer := ringbuffer.NewRingBuffer(fmt.Sprintf("testRingBuffer-%d", i), localCtx)
-			connector := NewK8sConnector(localClientSet, ringBuffer, stopCh, localCtx)
+			maxNodeConditionMessageLength := int64(1024)
+			connector := NewK8sConnector(localClientSet, ringBuffer, stopCh, localCtx, maxNodeConditionMessageLength)
 
 			if tt.setupNode {
 				node := &corev1.Node{
@@ -1379,6 +1383,96 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
+			}
+		})
+	}
+}
+func TestTruncateConditionMessage(t *testing.T) {
+	const truncationSuffix = "..."
+
+	// Generate test messages that would exceed 1KB when combined
+	generateLongMessages := func(count int) []string {
+		var msgs []string
+		for i := 0; i < count; i++ {
+			msgs = append(msgs, "ErrorCode:45 PCI:0000:29:00 GPU:GPU-8614c5d9-371d-1d8a-9bab-78d0434427ec ROBUST_CHANNEL Resolution: WORKFLOW_XID_45 Recommended Action=CONTACT_SUPPORT")
+		}
+		return msgs
+	}
+
+	tests := []struct {
+		name                          string
+		maxNodeConditionMessageLength int64
+		messages                      []string
+		shouldTruncate                bool
+		description                   string
+	}{
+		{
+			name:                          "Empty NodeConditionMessage  with 1KB limit",
+			maxNodeConditionMessageLength: 1024,
+			messages:                      []string{},
+			shouldTruncate:                false,
+			description:                   "Empty NodeConditionMessage should return NoHealthFailureMsg",
+		},
+		{
+			name:                          "Single short NodeConditionMessage with 1KB limit",
+			maxNodeConditionMessageLength: 1024,
+			messages:                      []string{"ErrorCode:45 PCI:0000:29:00 GPU:GPU-xxx Recommended Action=CONTACT_SUPPORT"},
+			shouldTruncate:                false,
+			description:                   "Single short NodeConditionMessage should not be truncated",
+		},
+		{
+			name:                          "Multiple NodeConditionMessages exceeding 1KB limit - should truncate",
+			maxNodeConditionMessageLength: 1024,
+			messages:                      generateLongMessages(7), // ~1050 chars total
+			shouldTruncate:                true,
+			description:                   "NodeConditionMessages exceeding 1KB should be truncated",
+		},
+		{
+			name:                          "Many NodeConditionMessages with INFINITE limit - should NOT truncate",
+			maxNodeConditionMessageLength: math.MaxInt64,
+			messages:                      generateLongMessages(100), // ~15000 chars total
+			shouldTruncate:                false,
+			description:                   "Even 100 NodeConditionMessages should not be truncated with infinite limit",
+		},
+		{
+			name:                          "Multiple NodeConditionMessages with small limit (256 bytes) - should truncate",
+			maxNodeConditionMessageLength: 256,
+			messages:                      generateLongMessages(3),
+			shouldTruncate:                true,
+			description:                   "With 256 byte limit, even 3 NodeConditionMessages should be truncated",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create connector with configurable maxNodeConditionMessageLength
+			connector := &K8sConnector{
+				maxNodeConditionMessageLength: tc.maxNodeConditionMessageLength,
+			}
+
+			result := connector.truncateNodeConditionMessage(tc.messages)
+
+			t.Logf("Test: %s", tc.description)
+			t.Logf("Max limit: %d, Result length: %d", tc.maxNodeConditionMessageLength, len(result))
+
+			if tc.shouldTruncate {
+				// When truncation is expected
+				assert.LessOrEqual(t, len(result), int(tc.maxNodeConditionMessageLength),
+					"NodeConditionMessage length should not exceed configured max")
+				assert.Contains(t, result, truncationSuffix,
+					"truncated NodeConditionMessage should contain truncation suffix '...'")
+			} else {
+				// When no truncation is expected
+				assert.NotContains(t, result, truncationSuffix,
+					"non-truncated NodeConditionMessage should NOT contain truncation suffix '...'")
+
+				// For non-empty messages, verify all content is preserved
+				if len(tc.messages) > 0 {
+					for _, msg := range tc.messages {
+						assert.Contains(t, result, msg,
+							"all NodeConditionMessages should be preserved when not truncating")
+					}
+				}
 			}
 		})
 	}

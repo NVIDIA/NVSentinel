@@ -110,6 +110,11 @@ func (m *mockDatabaseClient) Close(ctx context.Context) error {
 	return args.Error(0)
 }
 
+func (m *mockDatabaseClient) DeleteResumeToken(ctx context.Context, tokenConfig client.TokenConfig) error {
+	args := m.Called(ctx, tokenConfig)
+	return args.Error(0)
+}
+
 // Mock cursor for tests
 type mockCursor struct {
 	mock.Mock
@@ -163,6 +168,7 @@ var (
 				`{"$match": {"count": {"$gte": 5}}}`,
 			},
 			RecommendedAction: "CONTACT_SUPPORT",
+			EvaluateRule:      true,
 		},
 		{
 			Name:        "rule2",
@@ -174,6 +180,8 @@ var (
 				`{"$match": {"count": {"$gte": 3}}}`,
 			},
 			RecommendedAction: "CONTACT_SUPPORT",
+			Message:           "XID error occurred",
+			EvaluateRule:      true,
 		},
 		{
 			Name:        "rule3",
@@ -185,6 +193,7 @@ var (
 				`{"$match": {"count": {"$gte": 1}}}`,
 			},
 			RecommendedAction: "CONTACT_SUPPORT",
+			EvaluateRule:      true,
 		},
 	}
 	healthEvent_13 = datamodels.HealthEventWithStatus{
@@ -198,32 +207,6 @@ var (
 			IsHealthy:      false,
 			Message:        "XID error occurred",
 			ErrorCode:      []string{"13"},
-			EntitiesImpacted: []*protos.Entity{{
-				EntityType:  "GPU",
-				EntityValue: "1",
-			}},
-			Metadata: map[string]string{
-				"SerialNumber": "1655322004581",
-			},
-			GeneratedTimestamp: &timestamppb.Timestamp{
-				Seconds: time.Now().Unix(),
-				Nanos:   0,
-			},
-			NodeName: "node1",
-		},
-		HealthEventStatus: datamodels.HealthEventStatus{},
-	}
-	healthEvent_48 = datamodels.HealthEventWithStatus{
-		CreatedAt: time.Now(),
-		HealthEvent: &protos.HealthEvent{
-			Version:        1,
-			Agent:          "gpu-health-monitor",
-			ComponentClass: "GPU",
-			CheckName:      "GpuXidError",
-			IsFatal:        true,
-			IsHealthy:      false,
-			Message:        "XID error occurred",
-			ErrorCode:      []string{"48"},
 			EntitiesImpacted: []*protos.Entity{{
 				EntityType:  "GPU",
 				EntityValue: "1",
@@ -312,7 +295,7 @@ func TestHandleEvent(t *testing.T) {
 			Agent:              "health-events-analyzer", // Publisher sets this
 			CheckName:          "rule2",                  // Publisher sets this to ruleName
 			ComponentClass:     healthEvent_13.HealthEvent.ComponentClass,
-			Message:            healthEvent_13.HealthEvent.Message,
+			Message:            "XID error occurred",                     // From rule2.Message
 			RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT, // From rule2
 			ErrorCode:          healthEvent_13.HealthEvent.ErrorCode,
 			IsHealthy:          false, // Publisher sets this
@@ -424,6 +407,33 @@ func TestHandleEvent(t *testing.T) {
 		published, err := reconciler.handleEvent(ctx, &healthEvent_13)
 		assert.NoError(t, err)
 		assert.False(t, published)
+		mockClient.AssertNotCalled(t, "Aggregate")
+		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
+	})
+	t.Run("rule with EvaluateRule false is skipped", func(t *testing.T) {
+		mockClient := new(mockDatabaseClient)
+		mockPublisher := &mockPublisher{}
+
+		disabledRule := config.HealthEventsAnalyzerRule{
+			Name:              "disabled-rule",
+			Description:       "rule evaluation should be skipped",
+			Stage:             []string{`{"$match": {"healthevent.nodename": "this.healthevent.nodename"}}`},
+			RecommendedAction: "CONTACT_SUPPORT",
+			EvaluateRule:      false,
+		}
+
+		reconciler := &Reconciler{
+			config: HealthEventsAnalyzerReconcilerConfig{
+				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{disabledRule}},
+				Publisher:                 publisher.NewPublisher(mockPublisher),
+			},
+			databaseClient: mockClient,
+		}
+
+		published, err := reconciler.handleEvent(ctx, &healthEvent_13)
+		assert.NoError(t, err)
+		assert.False(t, published)
+
 		mockClient.AssertNotCalled(t, "Aggregate")
 		mockPublisher.AssertNotCalled(t, "HealthEventOccurredV1")
 	})
@@ -686,11 +696,11 @@ func TestGetPipelineStages_ReturnTypeCompatibility(t *testing.T) {
 	// by checking it matches the signature that store-client expects
 	mockDB := &mockDatabaseClient{}
 	mockCursor := &mockCursor{}
-	
+
 	// The Aggregate method expects interface{} but should work with []map[string]interface{}
 	// This ensures backward compatibility with MongoDB driver
 	mockDB.On("Aggregate", mock.Anything, pipeline).Return(mockCursor, nil)
-	
+
 	cursor, err := mockDB.Aggregate(context.Background(), pipeline)
 	assert.NoError(t, err)
 	assert.NotNil(t, cursor)

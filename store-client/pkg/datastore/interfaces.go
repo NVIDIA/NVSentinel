@@ -70,6 +70,12 @@ type HealthEventStore interface {
 	FindHealthEventsByFilter(ctx context.Context, filter map[string]interface{}) ([]HealthEventWithStatus, error)
 	FindHealthEventsByStatus(ctx context.Context, status Status) ([]HealthEventWithStatus, error)
 
+	// Query builder operations (database-agnostic)
+	// MongoDB: converts builder to map and uses existing code
+	// PostgreSQL: converts builder to SQL and uses native queries
+	FindHealthEventsByQuery(ctx context.Context, builder QueryBuilder) ([]HealthEventWithStatus, error)
+	UpdateHealthEventsByQuery(ctx context.Context, queryBuilder QueryBuilder, updateBuilder UpdateBuilder) error
+
 	// Convenience methods for common operations
 	UpdateNodeQuarantineStatus(ctx context.Context, eventID string, status Status) error
 	UpdatePodEvictionStatus(ctx context.Context, eventID string, status OperationStatus) error
@@ -78,6 +84,18 @@ type HealthEventStore interface {
 	// Node drain specific operations
 	CheckIfNodeAlreadyDrained(ctx context.Context, nodeName string) (bool, error)
 	FindLatestEventForNode(ctx context.Context, nodeName string) (*HealthEventWithStatus, error)
+}
+
+// QueryBuilder interface for database-agnostic queries
+type QueryBuilder interface {
+	ToMongo() map[string]interface{}
+	ToSQL() (string, []interface{})
+}
+
+// UpdateBuilder interface for database-agnostic updates
+type UpdateBuilder interface {
+	ToMongo() map[string]interface{}
+	ToSQL() (string, []interface{})
 }
 
 // ChangeStreamWatcher provides change stream functionality

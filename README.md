@@ -25,12 +25,12 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 ```bash
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v0.3.0 \
+  --version v0.5.0 \
   --namespace nvsentinel \
   --create-namespace
 
 # View chart information
-helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.3.0
+helm show chart oci://ghcr.io/nvidia/nvsentinel --version v0.5.0
 ```
 
 ## ✨ Key Features
@@ -75,7 +75,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v0.3.0
+NVSENTINEL_VERSION=v0.5.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
@@ -91,24 +91,39 @@ kubectl get pods -n nvsentinel
 kubectl get nodes  # Verify GPU nodes are visible
 
 # Run comprehensive validation
-./scripts/validate-nvsentinel.sh --version v0.3.0 --verbose
+./scripts/validate-nvsentinel.sh --version v0.5.0 --verbose
 ```
 
 > **Testing**: The example above uses default settings. For production, customize values for your environment.
 
 > **Production**: By default, only health monitoring is enabled. Enable fault quarantine and remediation modules via Helm values. See [Configuration](#-configuration) below.
 
+## 🎮 Try the Demo
+
+Want to see NVSentinel in action without GPU hardware? Try our **[Local Fault Injection Demo](demos/local-fault-injection-demo/README.md)**:
+
+- 🚀 **5-minute setup** - runs entirely in a local KIND cluster
+- 🔍 **Real pipeline** - see fault detection → quarantine → node cordon
+- 🎯 **No GPU required** - uses simulated DCGM for testing
+
+```bash
+cd demos/local-fault-injection-demo
+make demo  # Automated: creates cluster, installs NVSentinel, injects fault, verifies cordon
+```
+
+Perfect for learning, presentations, or CI/CD testing!
 
 ## 🏗️ Architecture
 
 NVSentinel follows a microservices architecture with modular health monitors and core processing modules:
 
 ```mermaid
-graph TB
+graph LR
     subgraph "Health Monitors"
         GPU["GPU Health Monitor<br/>(DCGM Integration)"]
         SYS["Syslog Health Monitor<br/>(Journalctl)"]
         CSP["CSP Health Monitor<br/>(CSP APIs)"]
+        K8SOM["Kubernetes Object Monitor<br/>(CEL Policies)"]
     end
     
     subgraph "Core Processing"
@@ -128,7 +143,8 @@ graph TB
     GPU -->|gRPC| PC
     SYS -->|gRPC| PC
     CSP -->|gRPC| PC
-    
+    K8SOM -->|gRPC| PC
+
     PC -->|persist| STORE
     PC <-->|update status| K8S
     
@@ -144,6 +160,8 @@ graph TB
     HEA -.->|watch changes| STORE
     
     LBL -->|update labels| K8S
+
+    K8SOM -.->|watch changes| K8S
 ```
 
 **Data Flow**:
@@ -189,70 +207,30 @@ global:
 - **[values-full.yaml](distros/kubernetes/nvsentinel/values-full.yaml)**: Detailed reference with all options
 - **[values.yaml](distros/kubernetes/nvsentinel/values.yaml)**: Default values
 
-### Node Metadata Enrichment
-
-Platform Connectors can automatically augment health events with node metadata from Kubernetes, providing additional context for troubleshooting and analytics across clusters.
-
-**Configuration**:
-```yaml
-platformConnector:
-  nodeMetadata:
-    enabled: true 
-    cacheSize: 50 
-    cacheTTLSeconds: 3600 
-    allowedLabels:
-      - "topology.kubernetes.io/zone"
-      - "topology.kubernetes.io/region"
-      - "node.kubernetes.io/instance-type"
-      - "nvidia.com/cuda.driver-version.major"
-      - "nvidia.com/cuda.driver-version.minor"
-      - "nvidia.com/cuda.driver-version.revision"
-      - "nvidia.com/cuda.driver-version.full"
-      - "nvidia.com/cuda.runtime-version.major"
-      - "nvidia.com/cuda.runtime-version.minor"
-      - "nvidia.com/cuda.runtime-version.full"
-      - "topology.k8s.aws/capacity-block-id"
-      - "topology.k8s.aws/network-node-layer-1"
-      - "topology.k8s.aws/network-node-layer-2"
-      - "topology.k8s.aws/network-node-layer-3"
-      - "oci.oraclecloud.com/host.id"
-      - "oci.oraclecloud.com/host.network_block_id"
-      - "oci.oraclecloud.com/host.rack_id"
-      - "oci.oraclecloud.com/host.serial_number"
-      - "cloud.google.com/gce-topology-block"
-      - "cloud.google.com/gce-topology-host"
-      - "cloud.google.com/gce-topology-subblock"
-```
-
-**Metadata Added to Events**:
-- Cloud provider ID (e.g., `aws:///us-west-2a/i-1234567890abcdef0`)
-- Topology labels (zone, region, cloud-specific topology)
-- Instance type information
-- CUDA driver and runtime versions
-- Custom labels as configured
-
-This feature works seamlessly with AWS (EKS), GCP (GKE), Azure (AKS), and OCI (OKE).
-
 ## 📦 Module Details
 
 For detailed module configuration, see the **[Helm Chart Configuration Guide](distros/kubernetes/README.md#module-specific-configuration)**.
 
 ### 🔍 Health Monitors
 
-- **GPU Health Monitor**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
-- **Syslog Health Monitor**: Analyzes system logs for hardware and software fault patterns via journalctl
+- **[GPU Health Monitor](docs/gpu-health-monitor.md)**: Monitors GPU hardware health via DCGM - detects thermal issues, ECC errors, and XID events
+- **[Syslog Health Monitor](docs/syslog-health-monitor.md)**: Analyzes system logs for hardware and software fault patterns via journalctl
 - **CSP Health Monitor**: Integrates with cloud provider APIs (GCP/AWS) for maintenance events
+- **[Kubernetes Object Monitor](docs/kubernetes-object-monitor.md)**: Policy-based monitoring for any Kubernetes resource using CEL expressions
 
 ### 🏗️ Core Modules
 
-- **Platform Connectors**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
-- **Fault Quarantine**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
-- **Node Drainer**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
-- **Fault Remediation**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
+- **[Platform Connectors](docs/platform-connectors.md)**: Receives health events from monitors via gRPC, persists to MongoDB, and updates Kubernetes node status
+- **[Fault Quarantine](docs/fault-quarantine.md)**: Watches MongoDB for health events and cordons nodes based on configurable CEL rules
+- **[Node Drainer](docs/node-drainer.md)**: Gracefully evicts workloads from cordoned nodes with per-namespace eviction strategies
+- **[Fault Remediation](docs/fault-remediation.md)**: Triggers external break-fix systems by creating maintenance CRDs after drain completion
 - **Janitor**: Executes node reboots and terminations via cloud provider APIs
 - **Health Events Analyzer**: Analyzes event patterns and generates recommended actions
+- **[Event Exporter](docs/event-exporter.md)**: Streams health events to external systems in CloudEvents format
 - **MongoDB Store**: Persistent storage for health events with real-time change streams
-- **Labeler**: Automatically labels nodes with DCGM and driver versions
+- **[Labeler](docs/labeler.md)**: Automatically labels nodes with DCGM and driver versions for self-configuration
+- **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
+- **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
 
 ## 📋 Requirements
 

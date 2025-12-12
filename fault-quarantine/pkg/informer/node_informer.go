@@ -213,21 +213,28 @@ func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node)
 		return false
 	}
 
+	slog.Debug("Node transitioned from cordoned to uncordoned", "node", newNode.Name)
+
 	// Check if node has FQ quarantine annotations
 	_, hasCordonAnnotation := newNode.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
 	if !hasCordonAnnotation {
+		slog.Debug("Node was uncordoned but has no FQ quarantine annotation", "node", newNode.Name)
+
 		return false
 	}
 
 	slog.Info("Detected manual uncordon of FQ-quarantined node", "node", newNode.Name)
 
 	if ni.onManualUncordon != nil {
+		slog.Debug("Invoking manual uncordon callback", "node", newNode.Name)
+
 		if err := ni.onManualUncordon(newNode.Name); err != nil {
-			slog.Error("Failed to handle manual uncordon for node", "node", newNode.Name, "error", err)
+			slog.Error("Manual uncordon callback failed", "node", newNode.Name, "error", err)
+		} else {
+			slog.Debug("Manual uncordon callback completed successfully", "node", newNode.Name)
 		}
 	} else {
-		slog.Warn("Manual uncordon callback not registered for node - manual uncordon will not be handled",
-			"node", newNode.Name)
+		slog.Warn("Manual uncordon callback is NOT REGISTERED - manual uncordon will NOT be handled!", "node", newNode.Name)
 	}
 
 	return true

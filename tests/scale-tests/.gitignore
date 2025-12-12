@@ -1,0 +1,5 @@
+.local/
+
+# Compiled binaries
+event-generator/event-generator
+cmd/fqm-scale-test/fqm-scale-test

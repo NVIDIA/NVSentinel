@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"crypto/rand"
+	"math/big"
+
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -34,7 +36,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
-	"math/big"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -106,7 +107,10 @@ func (c *testK8sClient) EnsureCircuitBreakerConfigMap(ctx context.Context, name,
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Data:       map[string]string{"status": string(initialStatus)},
+		Data: map[string]string{
+			"status": string(initialStatus),
+			"cursor": string(CursorModeResume),
+		},
 	}
 
 	_, err = cmClient.Create(ctx, cm, metav1.CreateOptions{})
@@ -141,6 +145,40 @@ func (c *testK8sClient) WriteCircuitBreakerState(ctx context.Context, name, name
 	}
 
 	cm.Data["status"] = string(state)
+
+	_, err = c.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
+	return err
+}
+
+func (c *testK8sClient) ReadCursorMode(ctx context.Context, name, namespace string) (CursorMode, error) {
+	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return CursorModeResume, fmt.Errorf("failed to get config map %s in namespace %s: %w", name, namespace, err)
+	}
+
+	if cm.Data == nil {
+		return CursorModeResume, nil
+	}
+
+	cursor := cm.Data["cursor"]
+	if cursor == "" {
+		return CursorModeResume, nil
+	}
+
+	return CursorMode(cursor), nil
+}
+
+func (c *testK8sClient) WriteCursorMode(ctx context.Context, name, namespace string, mode CursorMode) error {
+	cm, err := c.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+
+	cm.Data["cursor"] = string(mode)
 
 	_, err = c.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
 	return err

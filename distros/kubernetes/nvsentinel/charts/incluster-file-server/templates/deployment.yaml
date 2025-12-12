@@ -59,7 +59,7 @@ spec:
         - name: init-perms
           image: "{{ .Values.initImage.repository }}:{{ .Values.initImage.tag }}"
           imagePullPolicy: {{ .Values.initImage.pullPolicy }}
-          command: ["sh", "-lc", "mkdir -p /usr/share/nginx/html/upload /var/cache/nginx /var/run /opt/bitnami/nginx/tmp/client_body /opt/bitnami/nginx/tmp/proxy /opt/bitnami/nginx/tmp/fastcgi /opt/bitnami/nginx/tmp/uwsgi /opt/bitnami/nginx/tmp/scgi && chmod -R g+rwX /usr/share/nginx/html /var/cache/nginx /opt/bitnami/nginx/tmp || true"]
+          command: ["sh", "-lc", "mkdir -p /usr/share/nginx/html/upload /var/cache/nginx /var/run /opt/bitnami/nginx/tmp/client_body /opt/bitnami/nginx/tmp/proxy /opt/bitnami/nginx/tmp/fastcgi /opt/bitnami/nginx/tmp/uwsgi /opt/bitnami/nginx/tmp/scgi && chmod -R 777 /usr/share/nginx/html/upload && chmod -R g+rwX /var/cache/nginx /opt/bitnami/nginx/tmp || true"]
           volumeMounts:
             - name: artifacts
               mountPath: /usr/share/nginx/html

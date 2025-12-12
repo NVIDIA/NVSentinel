@@ -34,14 +34,15 @@ type Response struct {
 
 // XIDDetails contains the parsed XID information
 type XIDDetails struct {
-	Context             string `json:"context"`
-	DecodedXIDStr       string `json:"decoded_xid_string"`
-	Driver              string `json:"driver"`
-	InvestigatoryAction string `json:"investigatory_action"`
-	Machine             string `json:"machine"`
-	Mnemonic            string `json:"mnemonic"`
-	Name                string `json:"name"`
-	Number              int    `json:"number"`
-	PCIE                string `json:"pcie_bdf"`
-	Resolution          string `json:"resolution"`
+	Context             string            `json:"context"`
+	DecodedXIDStr       string            `json:"decoded_xid_string"`
+	Driver              string            `json:"driver"`
+	InvestigatoryAction string            `json:"investigatory_action"`
+	Machine             string            `json:"machine"`
+	Mnemonic            string            `json:"mnemonic"`
+	Name                string            `json:"name"`
+	Number              int               `json:"number"`
+	PCIE                string            `json:"pcie_bdf"`
+	Resolution          string            `json:"resolution"`
+	Metadata            map[string]string `json:"metadata"`
 }

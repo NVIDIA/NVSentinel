@@ -41,8 +41,51 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "nvsentinel.serviceAccountName" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
+      initContainers:
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+        {{- end }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+        - name: fix-cert-permissions
+          image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
+          imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying PostgreSQL client certificates with correct permissions..."
+              cp /etc/ssl/client-certs-original/tls.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/ca.crt /etc/ssl/client-certs-fixed/
+              cp /etc/ssl/client-certs-original/tls.key /etc/ssl/client-certs-fixed/
+              chmod 644 /etc/ssl/client-certs-fixed/tls.crt
+              chmod 644 /etc/ssl/client-certs-fixed/ca.crt
+              chmod 600 /etc/ssl/client-certs-fixed/tls.key
+              echo "Certificate permissions fixed:"
+              ls -la /etc/ssl/client-certs-fixed/
+          volumeMounts:
+            - name: postgresql-client-cert-original
+              mountPath: /etc/ssl/client-certs-original
+              readOnly: true
+            - name: client-certs-fixed
+              mountPath: /etc/ssl/client-certs-fixed
+      {{- end }}
+      {{- end }}
       containers:
         - name: platform-connector
+          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.platformConnector.image.tag | default .Values.global.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              drop:
+              - ALL
           ports:
             - name: metrics
               containerPort: {{ .Values.global.metricsPort }}
@@ -62,17 +105,14 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          securityContext:
-            runAsUser: 0
-            capabilities:
-              drop:
-              - ALL
-          image: "{{ .Values.platformConnector.image.repository }}:{{ .Values.platformConnector.image.tag | default .Values.global.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.platformConnector.image.pullPolicy }}
           args:
           - "--config=/etc/config/config.json"
           - "--metrics-port={{ .Values.global.metricsPort }}"
-          - "--mongo-client-cert-mount-path=/etc/ssl/mongo-client"
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          - "--database-client-cert-mount-path={{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}"
+          {{- else }}
+          - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
+          {{- end }}
           - "--socket={{ .Values.socketPath }}"
           resources:
             {{- toYaml .Values.platformConnector.resources | nindent 12 }}
@@ -81,18 +121,43 @@ spec:
               mountPath: /var/run
             - name: platform-connector-configmap
               mountPath: /etc/config/
-            - name: mongo-app-client-cert
-              mountPath: /etc/ssl/mongo-client
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            - name: client-certs-fixed
+              mountPath: {{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}
               readOnly: true
-          env: 
+            {{- else }}
+            - name: mongo-app-client-cert
+              mountPath: {{ .Values.platformConnector.mongodbStore.clientCertMountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
+          env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LOG_LEVEL
+              value: "{{ .Values.platformConnector.logLevel }}"
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
+            {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
+              value: {{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}
+            {{- else }}
+            - name: MONGODB_CLIENT_CERT_MOUNT_PATH
+              value: {{ .Values.platformConnector.mongodbStore.clientCertMountPath }}
+            {{- end }}
           envFrom:
             - configMapRef:
-                name: mongodb-config
+                name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
       volumes:
         - name: var-run-vol
@@ -102,10 +167,22 @@ spec:
         - name: platform-connector-configmap
           configMap:
             name: {{ include "nvsentinel.fullname" . }}
+        {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+        - name: postgresql-client-cert-original
+          secret:
+            secretName: postgresql-client-cert
+            optional: false
+        - name: client-certs-fixed
+          emptyDir: {}
+        {{- else }}
         - name: mongo-app-client-cert
           secret:
             secretName: mongo-app-client-cert-secret
             optional: true
+        {{- end }}
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+        {{- end }}
       {{- with (.Values.global.tolerations | default .Values.platformConnector.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}

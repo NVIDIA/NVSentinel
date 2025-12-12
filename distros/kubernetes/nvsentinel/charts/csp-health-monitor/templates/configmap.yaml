@@ -35,9 +35,11 @@ data:
     apiPollingIntervalSeconds = {{ .Values.configToml.gcp.apiPollingIntervalSeconds }}
     gcpServiceAccountName = {{ .Values.configToml.gcp.gcpServiceAccountName | quote }}
     logFilter = {{ .Values.configToml.gcp.logFilter | quote }}
+    endpointOverride = {{ .Values.configToml.gcp.endpointOverride | default "" | quote }}
 
     [aws]
     enabled = {{ eq .Values.cspName "aws" }}
     accountId = {{ .Values.configToml.aws.accountId | quote }}
     pollingIntervalSeconds = {{ .Values.configToml.aws.pollingIntervalSeconds }}
     region = {{ .Values.configToml.aws.region | quote }}
+    endpointOverride = {{ .Values.configToml.aws.endpointOverride | default "" | quote }}

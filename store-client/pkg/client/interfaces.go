@@ -42,6 +42,9 @@ type DatabaseClient interface {
 	// Change streams (delegated to existing ChangeStreamWatcher)
 	NewChangeStreamWatcher(ctx context.Context, tokenConfig TokenConfig, pipeline interface{}) (ChangeStreamWatcher, error)
 
+	// Resume token operations
+	DeleteResumeToken(ctx context.Context, tokenConfig TokenConfig) error
+
 	// Close the client
 	Close(ctx context.Context) error
 }
@@ -59,6 +62,7 @@ type CollectionClient interface {
 // Event represents a database change event in a generic way
 type Event interface {
 	GetDocumentID() (string, error)
+	GetRecordUUID() (string, error)
 	GetNodeName() (string, error)
 	GetResumeToken() []byte
 	UnmarshalDocument(v interface{}) error

@@ -116,6 +116,7 @@ type QuarantineSetupOptions struct {
 	CircuitBreakerPercentage int
 	CircuitBreakerDuration   string
 	CircuitBreakerState      string
+	CircuitBreakerCursorMode string
 	DryRun                   *bool
 	SkipRestart              bool
 }
@@ -159,7 +160,7 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 		}
 
 		if opts.CircuitBreakerState != "" {
-			updateCircuitBreakerStateConfigMap(ctx, t, client, opts.CircuitBreakerState)
+			updateCircuitBreakerStateConfigMap(ctx, t, client, opts.CircuitBreakerState, opts.CircuitBreakerCursorMode)
 		}
 	}
 
@@ -380,14 +381,14 @@ func AssertQuarantineState( //nolint:cyclop,gocognit // Test helper with complex
 	t.Logf("Assertion passed for node %s", nodeName)
 }
 
-func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config, state string) {
+func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config, state, cursorMode string) {
 	t.Helper()
-	t.Logf("Setting circuit breaker state to: %s", state)
+	t.Logf("Setting circuit breaker state to: %s, cursor mode: %s", state, cursorMode)
 
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	updateCircuitBreakerStateConfigMap(ctx, t, client, state)
+	updateCircuitBreakerStateConfigMap(ctx, t, client, state, cursorMode)
 
 	t.Log("Restarting fault-quarantine deployment to pick up CB state")
 	err = RestartDeployment(ctx, t, client, "fault-quarantine", NVSentinelNamespace)
@@ -495,9 +496,10 @@ func modifyFaultQuarantineDeploymentArgs(ctx context.Context, t *testing.T, clie
 }
 
 // updateCircuitBreakerStateConfigMap updates the CB state configmap (without restarting deployment).
-func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, client klient.Client, state string) {
+func updateCircuitBreakerStateConfigMap(ctx context.Context,
+	t *testing.T, client klient.Client, state, cursorMode string) {
 	t.Helper()
-	t.Logf("Updating circuit breaker state configmap to: %s", state)
+	t.Logf("Updating circuit breaker state configmap to: %s, cursor mode: %s", state, cursorMode)
 
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -506,6 +508,7 @@ func updateCircuitBreakerStateConfigMap(ctx context.Context, t *testing.T, clien
 		},
 		Data: map[string]string{
 			"status": state,
+			"cursor": cursorMode,
 		},
 	}
 

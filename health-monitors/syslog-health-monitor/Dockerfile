@@ -15,6 +15,9 @@
 FROM public.ecr.aws/docker/library/golang:1.25-trixie AS builder
 
 ARG BUILD_TAGS="systemd"
+ARG VERSION="dev"
+ARG GIT_COMMIT="none"
+ARG BUILD_DATE=$(date -u +%FT%TZ)
 
 WORKDIR /go/src/nvsentinel
 
@@ -43,7 +46,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cd health-monitors/syslog-health-monitor && \
-    CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w" -o syslog-health-monitor main.go
+    CGO_ENABLED=1 go build -tags "${BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" -o syslog-health-monitor main.go
 
 # Runtime stage - using Debian slim for systemd journal support
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime

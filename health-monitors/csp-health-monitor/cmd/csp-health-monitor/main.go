@@ -132,36 +132,14 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := datastore.NewStore(ctx, databaseClientCertMountPath)
-	if err != nil {
-		return fmt.Errorf("failed to initialize datastore: %w", err)
-	}
-
-	slog.Info("Datastore initialized successfully.")
-
-	eventChan := make(chan model.MaintenanceEvent, eventChannelSize)
-	// Processor is lightweight; it already encapsulates required dependencies.
-	eventProcessor, err := eventpkg.NewProcessor(cfg, store)
-	if err != nil {
-		return fmt.Errorf("failed to initialize event processor: %w", err)
-	}
-
-	slog.Info("Event processor initialized successfully.")
-
-	activeMonitor := initActiveMonitor(
-		ctx,
-		cfg,
-		effectiveKubeconfigPath,
-		store,
-	) // Pass kubeconfigPath for clients to init their own k8s clients
-
 	// Parse the metrics port
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
 		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	// Create common HTTP server with metrics and health endpoints
+	// Create and start HTTP server with metrics and health endpoints immediately.
+	// This allows Kubernetes probes to pass while database connection is established.
 	server := srv.NewServer(
 		srv.WithPort(portInt),
 		srv.WithPrometheusMetrics(),
@@ -171,7 +149,6 @@ func run() error {
 	// Use errgroup to manage concurrent goroutines with proper cancellation
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Start the metrics/health server.
 	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
@@ -183,21 +160,47 @@ func run() error {
 		return nil
 	})
 
-	// Start the CSP monitor
 	g.Go(func() error {
+		slog.Info("Initializing datastore connection...")
+
+		store, err := datastore.NewStore(gCtx, databaseClientCertMountPath)
+		if err != nil {
+			return fmt.Errorf("failed to initialize datastore: %w", err)
+		}
+
+		slog.Info("Datastore initialized successfully.")
+
+		eventChan := make(chan model.MaintenanceEvent, eventChannelSize)
+
+		eventProcessor, err := eventpkg.NewProcessor(cfg, store)
+		if err != nil {
+			return fmt.Errorf("failed to initialize event processor: %w", err)
+		}
+
+		slog.Info("Event processor initialized successfully.")
+
+		activeMonitor := initActiveMonitor(
+			gCtx,
+			cfg,
+			effectiveKubeconfigPath,
+			store,
+		)
+
 		var wg sync.WaitGroup
 
 		startActiveMonitorAndLog(gCtx, &wg, activeMonitor, eventChan)
+
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			runEventProcessorLoop(gCtx, eventChan, eventProcessor)
+			slog.Info("Event processing loop stopped.")
+		}()
+
 		wg.Wait()
-		slog.Info("Active monitor stopped.")
-
-		return nil
-	})
-
-	// Start the event processor
-	g.Go(func() error {
-		runEventProcessorLoop(gCtx, eventChan, eventProcessor)
-		slog.Info("Event processing loop stopped.")
+		slog.Info("CSP monitor and event processor stopped.")
 
 		return nil
 	})

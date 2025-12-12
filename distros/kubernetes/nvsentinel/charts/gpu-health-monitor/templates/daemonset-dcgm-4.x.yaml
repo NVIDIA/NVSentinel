@@ -51,7 +51,7 @@ spec:
             - --port
             - "{{ .Values.global.metricsPort }}"
             - --verbose
-            - "False"
+            - {{ .Values.verbose | quote }}
             - --state-file
             - "/var/run/statefile"
             - --dcgm-k8s-service-enabled

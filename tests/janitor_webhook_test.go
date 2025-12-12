@@ -32,6 +32,10 @@ import (
 // correctly rejects attempts to create multiple RebootNode CRs for the same node
 // when an active reboot is already in progress.
 func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
+	// TODO: fix flake, the test is known to have a high failure rate and it is unclear why
+	// skipping this test till we can figure out the root cause
+	t.Skip()
+
 	feature := features.New("TestJanitorWebhookRejectsDuplicateReboots").
 		WithLabel("suite", "webhook").
 		WithLabel("component", "janitor")

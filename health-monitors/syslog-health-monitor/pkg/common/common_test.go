@@ -42,6 +42,12 @@ func TestActionMapping(t *testing.T) {
 			expectedCode:  int(pb.RecommendedAction_CONTACT_SUPPORT),
 			expectMapping: false,
 		},
+		{
+			name:          "XID 154",
+			actionStr:     "XID_154_EVAL",
+			expectedCode:  int(pb.RecommendedAction_NONE),
+			expectMapping: true,
+		},
 	}
 
 	for _, tc := range testCases {

@@ -27,15 +27,6 @@ resources:
     cpu: 100m
     memory: 128Mi
 
-driverWatcher:
-  resources:
-    limits:
-      cpu: 100m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
-
 enabledChecks: 
   - SysLogsXIDError
   - SysLogsSXIDError
@@ -54,3 +45,5 @@ xidSideCar:
 nodeSelector: {}
 affinity: {}
 tolerations: []
+
+logLevel: info

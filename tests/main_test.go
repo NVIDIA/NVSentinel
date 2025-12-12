@@ -22,6 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
 
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/e2e-framework/pkg/env"
@@ -37,6 +38,11 @@ func TestMain(m *testing.M) {
 	cfg, err := envconf.NewFromFlags()
 	if err != nil {
 		panic(fmt.Sprintf("failed to create environment config: %v", err))
+	}
+
+	// Register KWOK types with the scheme for typed client support
+	if err := kwokv1alpha1.AddToScheme(cfg.Client().Resources().GetScheme()); err != nil {
+		panic(fmt.Sprintf("failed to register KWOK types: %v", err))
 	}
 
 	testEnv = env.NewWithConfig(cfg)

@@ -15,6 +15,7 @@
 package adapter
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -63,6 +64,19 @@ func NewLegacyDatabaseConfigAdapterWithCertPath(
 }
 
 func (l *LegacyDatabaseConfigAdapter) GetConnectionURI() string {
+	// For PostgreSQL, build a proper connection string with key=value pairs
+	if l.dsConfig.Provider == datastore.ProviderPostgreSQL {
+		return l.buildPostgreSQLConnectionString()
+	}
+
+	// For MongoDB, prefer MONGODB_URI from environment (for backward compatibility)
+	// This matches the behavior of config.NewDatabaseConfigFromEnvWithDefaults()
+	// which is used by services that go through the new datastore abstraction
+	if mongoURI := os.Getenv("MONGODB_URI"); mongoURI != "" {
+		return mongoURI
+	}
+
+	// Fall back to host field (which may be a full URI if loaded from YAML)
 	return l.dsConfig.Connection.Host
 }
 
@@ -73,6 +87,64 @@ func (l *LegacyDatabaseConfigAdapter) GetDatabaseName() string {
 func (l *LegacyDatabaseConfigAdapter) GetCollectionName() string {
 	// Default collection name for health events
 	return "HealthEvents"
+}
+
+// buildPostgreSQLConnectionString builds a PostgreSQL connection string from DataStoreConfig
+//
+//nolint:cyclop // Complex but clear connection string building logic
+func (l *LegacyDatabaseConfigAdapter) buildPostgreSQLConnectionString() string {
+	conn := l.dsConfig.Connection
+	params := []string{}
+
+	if conn.Host != "" {
+		params = append(params, "host="+conn.Host)
+	}
+
+	if conn.Port > 0 {
+		params = append(params, fmt.Sprintf("port=%d", conn.Port))
+	}
+
+	if conn.Database != "" {
+		params = append(params, "dbname="+conn.Database)
+	}
+
+	if conn.Username != "" {
+		params = append(params, "user="+conn.Username)
+	}
+
+	if conn.Password != "" {
+		params = append(params, "password="+conn.Password)
+	}
+
+	if conn.SSLMode != "" {
+		params = append(params, "sslmode="+conn.SSLMode)
+	}
+
+	if conn.SSLCert != "" {
+		params = append(params, "sslcert="+conn.SSLCert)
+	}
+
+	if conn.SSLKey != "" {
+		params = append(params, "sslkey="+conn.SSLKey)
+	}
+
+	if conn.SSLRootCert != "" {
+		params = append(params, "sslrootcert="+conn.SSLRootCert)
+	}
+
+	// Join all parameters with spaces
+
+	result := ""
+
+	for i, param := range params {
+		if i > 0 {
+			result += " "
+		}
+
+		result += param
+	}
+
+	return result
 }
 
 func (l *LegacyDatabaseConfigAdapter) GetCertConfig() config.CertificateConfig {

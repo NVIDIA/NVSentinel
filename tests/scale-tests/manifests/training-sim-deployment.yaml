@@ -1,0 +1,78 @@
+# Training Simulator Workload
+# Simulates GPU training jobs with few large pods
+# Used for Concurrent Drain Tests Trn1, Trn2, Trn3
+#
+# Pattern: 2 pods per node across 1500 nodes = 3,000 pods
+# Test cluster nodes (aws-cpu-m7i.xlarge) have 4 vCPU, 16Gi memory
+# Resources: Large (1.5 CPU, 3Gi memory per pod)
+# Termination: 60 seconds (training jobs need time to checkpoint)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-workload
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: training-sim
+  namespace: test-workload
+  labels:
+    app: training-sim
+    workload-type: training
+spec:
+  # 1500 nodes × 2 pods/node = 3,000 replicas
+  replicas: 3000
+  selector:
+    matchLabels:
+      app: training-sim
+  template:
+    metadata:
+      labels:
+        app: training-sim
+        workload-type: training
+    spec:
+      # 60 seconds - training jobs need time to save checkpoints
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: training
+        # Lightweight Python image - handles SIGTERM gracefully
+        image: public.ecr.aws/docker/library/python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, saving checkpoint...")
+              # Simulate checkpoint save (5 seconds)
+              time.sleep(5)
+              print("Checkpoint saved, shutting down.")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Training simulator started, running epoch...")
+          while True:
+              time.sleep(3600)
+        resources:
+          # Large resources to simulate GPU training pod patterns
+          # Test cluster nodes (aws-cpu-m7i.xlarge) have 4 vCPU, 16Gi memory
+          # Using 1.5 CPU allows 2 pods/node with headroom
+          requests:
+            cpu: "1500m"
+            memory: "3Gi"
+          limits:
+            cpu: "1500m"
+            memory: "3Gi"
+      # Spread pods evenly across nodes
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: training-sim
+

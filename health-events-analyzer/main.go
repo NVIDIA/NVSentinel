@@ -90,7 +90,8 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 }
 
 func createPipeline() interface{} {
-	return client.BuildNonFatalUnhealthyInsertsPipeline()
+	builder := client.GetPipelineBuilder()
+	return builder.BuildNonFatalUnhealthyInsertsPipeline()
 }
 
 func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {

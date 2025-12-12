@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-func TestNewCRsAreCreatedAfterFaultsAreReemdiated(t *testing.T) {
+func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 	feature := features.New("TestExistingCRPreventsNewCreation").
 		WithLabel("suite", "fault-remediation-advanced")
 

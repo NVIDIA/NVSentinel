@@ -20,17 +20,20 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"text/template"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,6 +64,9 @@ type FaultRemediationClient struct {
 	templateData      TemplateData
 	annotationManager NodeAnnotationManagerInterface
 	statusChecker     *crstatus.CRStatusChecker
+	// nodeExistsFunc allows tests to override node existence checking.
+	// If nil, uses the default implementation that checks with kubeClient.
+	nodeExistsFunc func(ctx context.Context, nodeName string) (*corev1.Node, error)
 }
 
 // TemplateData holds the data to be inserted into the template
@@ -88,6 +94,10 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 			return nil, nil, fmt.Errorf("error creating Kubernetes config from kubeconfig: %w", err)
 		}
 	}
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientset, err := dynamic.NewForConfig(config)
 	if err != nil {
@@ -182,7 +192,18 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return true, crName
 	}
 
-	log.Printf("Creating RebootNode CR for node: %s", healthEvent.NodeName)
+	// Get the node object to extract UID for owner reference
+	// This also verifies the node exists before creating CR
+	node, err := c.getNodeForOwnerReference(ctx, healthEvent.NodeName)
+	if err != nil {
+		slog.Warn("Failed to get node for owner reference, skipping CR creation",
+			"node", healthEvent.NodeName,
+			"error", err)
+
+		return false, ""
+	}
+
+	log.Printf("Creating RebootNode CR for node: %s (UID: %s)", healthEvent.NodeName, node.UID)
 	c.templateData.NodeName = healthEvent.NodeName
 	c.templateData.RecommendedAction = healthEvent.RecommendedAction
 	c.templateData.HealthEventID = healthEventID
@@ -204,6 +225,22 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	}
 
 	maintenance := &unstructured.Unstructured{Object: obj}
+
+	// Owner reference enables automatic CR cleanup when Node is deleted
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         "v1",
+		Kind:               "Node",
+		Name:               node.Name,
+		UID:                node.UID,
+		Controller:         boolPtr(false),
+		BlockOwnerDeletion: boolPtr(false),
+	}
+	maintenance.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
+
+	slog.Info("Added owner reference to CR for automatic garbage collection",
+		"node", healthEvent.NodeName,
+		"nodeUID", node.UID,
+		"crName", crName)
 
 	// Get GVK from the unstructured object
 	gvk := maintenance.GroupVersionKind()
@@ -237,6 +274,33 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	}
 
 	return true, actualCRName
+}
+
+// getNodeForOwnerReference retrieves the node for setting owner reference on the CR.
+func (c *FaultRemediationClient) getNodeForOwnerReference(ctx context.Context, nodeName string) (*corev1.Node, error) {
+	// Use override function if provided (for testing)
+	if c.nodeExistsFunc != nil {
+		return c.nodeExistsFunc(ctx, nodeName)
+	}
+
+	node, err := c.kubeClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			slog.Debug("Node no longer exists, skipping CR creation", "node", nodeName)
+
+			return nil, fmt.Errorf("node not found: %w", err)
+		}
+
+		slog.Error("Failed to get node", "node", nodeName, "error", err)
+
+		return nil, fmt.Errorf("failed to get node: %w", err)
+	}
+
+	return node, nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // handleCreateCRError handles errors from CR creation
@@ -311,7 +375,18 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	log.Printf("Waiting for log collector job %s to complete", created.Name)
 
 	// Use a context with timeout for the watch
-	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	timeout := 10 * time.Minute // Default timeout: 10 minutes
+
+	if timeoutEnv := os.Getenv("LOG_COLLECTOR_TIMEOUT"); timeoutEnv != "" {
+		if parsed, err := time.ParseDuration(timeoutEnv); err == nil {
+			timeout = parsed
+		} else {
+			log.Printf("Warning: Invalid LOG_COLLECTOR_TIMEOUT value '%s', using default 10m: %v", timeoutEnv, err)
+		}
+	}
+
+	watchCtx, cancel := context.WithTimeout(ctx, timeout)
+
 	defer cancel()
 
 	// Use SharedInformerFactory for efficient job status monitoring with filtering

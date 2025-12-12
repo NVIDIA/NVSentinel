@@ -1,0 +1,161 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Values file for PostgreSQL deployment
+# Use this file to deploy NVSentinel with PostgreSQL as the datastore
+# Example: helm install nvsentinel . -f values-postgresql.yaml
+
+global:
+  # Datastore configuration for PostgreSQL
+  datastore:
+    provider: "postgresql"
+    connection:
+      host: "nvsentinel-postgresql"
+      port: 5432
+      database: "nvsentinel"
+      username: "postgres"
+      # SSL/TLS configuration
+      sslmode: "verify-full"
+      sslcert: "/etc/ssl/client-certs/tls.crt"
+      sslkey: "/etc/ssl/client-certs/tls.key"
+      sslrootcert: "/etc/ssl/client-certs/ca.crt"
+
+# PostgreSQL subchart configuration (from Bitnami)
+postgresql:
+  enabled: true
+  auth:
+    # PostgreSQL superuser password
+    # In production, use a secure password or enable existingSecret
+    postgresPassword: "changeme"
+    database: "nvsentinel"
+  primary:
+    # Enable TLS for PostgreSQL server
+    tls:
+      enabled: true
+      certificatesSecret: "postgresql-server-cert"
+      certFilename: "tls.crt"
+      certKeyFilename: "tls.key"
+      certCAFilename: "ca.crt"
+    # Require client certificates
+    pgHbaConfiguration: |-
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+      hostssl all             all             0.0.0.0/0               cert
+      hostssl all             all             ::/0                    cert
+      local   all             all                                     trust
+      host    all             all             127.0.0.1/32            trust
+      host    all             all             ::1/128                 trust
+    # Initialize the database with required tables and schema
+    initdb:
+      scripts:
+        00-init.sql: |
+          -- Create maintenance_events table
+          CREATE TABLE IF NOT EXISTS maintenance_events (
+              id SERIAL PRIMARY KEY,
+              document JSONB NOT NULL,
+              node_name VARCHAR(255),
+              csp VARCHAR(50),
+              event_timestamp BIGINT,
+              status VARCHAR(50),
+              INDEX idx_node_name (node_name),
+              INDEX idx_status (status),
+              INDEX idx_event_timestamp (event_timestamp),
+              INDEX idx_csp (csp)
+          );
+
+          -- Create health_events table
+          CREATE TABLE IF NOT EXISTS health_events (
+              id SERIAL PRIMARY KEY,
+              document JSONB NOT NULL,
+              node_name VARCHAR(255),
+              status VARCHAR(50),
+              is_fatal BOOLEAN,
+              agent VARCHAR(100),
+              created_at BIGINT,
+              INDEX idx_node_name (node_name),
+              INDEX idx_status (status),
+              INDEX idx_is_fatal (is_fatal),
+              INDEX idx_agent (agent),
+              INDEX idx_created_at (created_at)
+          );
+
+          -- Create datastore_changelog table for change stream tracking
+          CREATE TABLE IF NOT EXISTS datastore_changelog (
+              id SERIAL PRIMARY KEY,
+              table_name VARCHAR(255) NOT NULL,
+              operation VARCHAR(10) NOT NULL,
+              document JSONB NOT NULL,
+              timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_table_name (table_name),
+              INDEX idx_timestamp (timestamp)
+          );
+
+          -- Create resume_tokens table for change stream resume capability
+          CREATE TABLE IF NOT EXISTS resume_tokens (
+              client_name VARCHAR(255) PRIMARY KEY,
+              table_name VARCHAR(255) NOT NULL,
+              last_event_id BIGINT NOT NULL,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+
+          -- Create triggers for change tracking on maintenance_events
+          CREATE OR REPLACE FUNCTION maintenance_events_change_trigger()
+          RETURNS TRIGGER AS $$
+          BEGIN
+              IF (TG_OP = 'INSERT') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('maintenance_events', 'insert', row_to_json(NEW)::jsonb);
+                  RETURN NEW;
+              ELSIF (TG_OP = 'UPDATE') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('maintenance_events', 'update', row_to_json(NEW)::jsonb);
+                  RETURN NEW;
+              ELSIF (TG_OP = 'DELETE') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('maintenance_events', 'delete', row_to_json(OLD)::jsonb);
+                  RETURN OLD;
+              END IF;
+              RETURN NULL;
+          END;
+          $$ LANGUAGE plpgsql;
+
+          DROP TRIGGER IF EXISTS maintenance_events_change ON maintenance_events;
+          CREATE TRIGGER maintenance_events_change
+          AFTER INSERT OR UPDATE OR DELETE ON maintenance_events
+          FOR EACH ROW EXECUTE FUNCTION maintenance_events_change_trigger();
+
+          -- Create triggers for change tracking on health_events
+          CREATE OR REPLACE FUNCTION health_events_change_trigger()
+          RETURNS TRIGGER AS $$
+          BEGIN
+              IF (TG_OP = 'INSERT') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('health_events', 'insert', row_to_json(NEW)::jsonb);
+                  RETURN NEW;
+              ELSIF (TG_OP = 'UPDATE') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('health_events', 'update', row_to_json(NEW)::jsonb);
+                  RETURN NEW;
+              ELSIF (TG_OP = 'DELETE') THEN
+                  INSERT INTO datastore_changelog (table_name, operation, document)
+                  VALUES ('health_events', 'delete', row_to_json(OLD)::jsonb);
+                  RETURN OLD;
+              END IF;
+              RETURN NULL;
+          END;
+          $$ LANGUAGE plpgsql;
+
+          DROP TRIGGER IF EXISTS health_events_change ON health_events;
+          CREATE TRIGGER health_events_change
+          AFTER INSERT OR UPDATE OR DELETE ON health_events
+          FOR EACH ROW EXECUTE FUNCTION health_events_change_trigger();

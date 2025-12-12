@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
@@ -55,6 +57,10 @@ func NewFaultQuarantineClient(kubeconfig string, dryRun bool,
 	if err != nil {
 		return nil, fmt.Errorf("error creating Kubernetes config: %w", err)
 	}
+
+	config.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -95,7 +101,10 @@ func (c *FaultQuarantineClient) EnsureCircuitBreakerConfigMap(ctx context.Contex
 
 	cm := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Data:       map[string]string{"status": string(initialStatus)},
+		Data: map[string]string{
+			"status": string(initialStatus),
+			"cursor": string(breaker.CursorModeResume),
+		},
 	}
 
 	_, err = cmClient.Create(ctx, cm, metav1.CreateOptions{})
@@ -195,6 +204,53 @@ func (c *FaultQuarantineClient) WriteCircuitBreakerState(
 	})
 }
 
+func (c *FaultQuarantineClient) ReadCursorMode(
+	ctx context.Context, name, namespace string,
+) (breaker.CursorMode, error) {
+	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return breaker.CursorModeResume, fmt.Errorf("failed to get config map %s in namespace %s: %w", name, namespace, err)
+	}
+
+	if cm.Data == nil {
+		return breaker.CursorModeResume, nil
+	}
+
+	cursor := cm.Data["cursor"]
+	if cursor == "" {
+		return breaker.CursorModeResume, nil
+	}
+
+	return breaker.CursorMode(cursor), nil
+}
+
+func (c *FaultQuarantineClient) WriteCursorMode(
+	ctx context.Context, name, namespace string, mode breaker.CursorMode,
+) error {
+	cmClient := c.Clientset.CoreV1().ConfigMaps(namespace)
+
+	return retry.OnError(customBackoff, errors.IsConflict, func() error {
+		cm, err := cmClient.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			slog.Error("Error getting circuit breaker config map", "name", name, "namespace", namespace, "error", err)
+			return err
+		}
+
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+
+		cm.Data["cursor"] = string(mode)
+
+		_, err = cmClient.Update(ctx, cm, metav1.UpdateOptions{})
+		if err != nil {
+			slog.Error("Error updating circuit breaker config map cursor", "name", name, "namespace", namespace, "error", err)
+		}
+
+		return err
+	})
+}
+
 func (c *FaultQuarantineClient) QuarantineNodeAndSetAnnotations(
 	ctx context.Context,
 	nodename string,
@@ -264,6 +320,7 @@ func (c *FaultQuarantineClient) applyTaints(node *v1.Node, taints []config.Taint
 
 func (c *FaultQuarantineClient) handleCordon(node *v1.Node, nodename string) bool {
 	_, exist := node.Annotations[common.QuarantineHealthEventAnnotationKey]
+
 	if node.Spec.Unschedulable {
 		if exist {
 			slog.Info("Node already cordoned by FQM; skipping taint/annotation updates", "node", nodename)

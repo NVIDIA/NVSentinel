@@ -14,12 +14,36 @@
 
 global:
   dryRun: false
+  ctrlRuntimeEnabled: false
   image:
     tag: "main"
+  initContainerImage:
+    repository: docker.io/bitnamilegacy/os-shell
+    tag: "12-debian-12-r30"
+    pullPolicy: IfNotPresent
   metricsPort: 2112
+
+  # Datastore configuration
+  # By default, datastore is not configured (use mongodb-config ConfigMap directly)
+  # To use the centralized datastore configuration, uncomment and configure below
+  # datastore:
+  #   provider: "mongodb"  # or "postgresql"
+  #   connection:
+  #     host: "mongodb"
+  #     port: 27017
+  #     database: "nvsentinel"
 
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
+
+  # Audit logging configuration
+  auditLogging:
+    enabled: false  # Enable/disable audit logging for all components
+    logRequestBody: false  # Log request body in audit logs (may contain sensitive data)
+    maxSizeMB: 100  # Maximum size of each audit log file in MB
+    maxBackups: 7  # Maximum number of rotated log files to keep
+    maxAgeDays: 30  # Maximum age of rotated log files in days
+    compress: true  # Compress rotated log files
 
   nodeSelector: {}
   tolerations: []
@@ -56,6 +80,8 @@ global:
     enabled: false
   kubernetesObjectMonitor:
     enabled: false
+  eventExporter:
+    enabled: false
 
 platformConnector:
   image:
@@ -75,38 +101,71 @@ platformConnector:
 
   tolerations: []
 
+  logLevel: info
+
+  mongodbStore:
+    enabled: false
+    clientCertMountPath: "/etc/ssl/mongo-client"
+
+  postgresqlStore:
+    clientCertMountPath: "/etc/ssl/client-certs"
+
   k8sConnector:
     enabled: true
+    maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
 
   # Node metadata enrichment configuration
-  nodeMetadata:
-    enabled: false
-    cacheSize: 50
-    cacheTTLSeconds: 3600
-    allowedLabels:
-      - "topology.kubernetes.io/zone"
-      - "topology.kubernetes.io/region"
-      - "node.kubernetes.io/instance-type"
-      - "nvidia.com/cuda.driver-version.major"
-      - "nvidia.com/cuda.driver-version.minor"
-      - "nvidia.com/cuda.driver-version.revision"
-      - "nvidia.com/cuda.driver-version.full"
-      - "nvidia.com/cuda.runtime-version.major"
-      - "nvidia.com/cuda.runtime-version.minor"
-      - "nvidia.com/cuda.runtime-version.full"
-      - "topology.k8s.aws/capacity-block-id"
-      - "topology.k8s.aws/network-node-layer-1"
-      - "topology.k8s.aws/network-node-layer-2"
-      - "topology.k8s.aws/network-node-layer-3"
-      - "oci.oraclecloud.com/host.id"
-      - "oci.oraclecloud.com/host.network_block_id"
-      - "oci.oraclecloud.com/host.rack_id"
-      - "oci.oraclecloud.com/host.serial_number"
-      - "cloud.google.com/gce-topology-block"
-      - "cloud.google.com/gce-topology-host"
-      - "cloud.google.com/gce-topology-subblock"
+  # Health event transformers pipeline
+  pipeline:
+    # List of transformers to execute (in order)
+    - name: MetadataAugmentor
+      enabled: false
+      config: /etc/config/metadata.toml
+    
+    - name: OverrideTransformer
+      enabled: false
+      config: /etc/config/overrides.toml
+  
+  # Transformer-specific configurations
+  transformers:
+    # Metadata augmentor - enriches events with node labels and provider info
+    MetadataAugmentor:
+      cacheSize: 50
+      cacheTTLSeconds: 3600
+      allowedLabels:
+        - "topology.kubernetes.io/zone"
+        - "topology.kubernetes.io/region"
+        - "node.kubernetes.io/instance-type"
+        - "nvidia.com/cuda.driver-version.major"
+        - "nvidia.com/cuda.driver-version.minor"
+        - "nvidia.com/cuda.driver-version.revision"
+        - "nvidia.com/cuda.driver-version.full"
+        - "nvidia.com/cuda.runtime-version.major"
+        - "nvidia.com/cuda.runtime-version.minor"
+        - "nvidia.com/cuda.runtime-version.full"
+        - "topology.k8s.aws/capacity-block-id"
+        - "topology.k8s.aws/network-node-layer-1"
+        - "topology.k8s.aws/network-node-layer-2"
+        - "topology.k8s.aws/network-node-layer-3"
+        - "oci.oraclecloud.com/host.id"
+        - "oci.oraclecloud.com/host.network_block_id"
+        - "oci.oraclecloud.com/host.rack_id"
+        - "oci.oraclecloud.com/host.serial_number"
+        - "cloud.google.com/gce-topology-block"
+        - "cloud.google.com/gce-topology-host"
+        - "cloud.google.com/gce-topology-subblock"
+    
+    # Property overrides - uses CEL expressions to override event properties
+    OverrideTransformer:
+      rules: []
+      # Example:
+      # - name: "suppress-xid-109"
+      #   when: 'event.agent == "syslog-health-monitor" && "109" in event.errorCode'
+      #   override:
+      #     isFatal: false
+      #     recommendedAction: "NONE"
 
 socketPath: "/var/run/nvsentinel.sock"
 
@@ -127,3 +186,9 @@ nodeConditionCleanup:
     requests:
       cpu: 50m
       memory: 64Mi
+
+# PostgreSQL subchart configuration
+# Only enabled when using PostgreSQL as the datastore
+# See values-postgresql.yaml for a complete PostgreSQL configuration example
+postgresql:
+  enabled: false

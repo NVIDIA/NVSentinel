@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/labeler/pkg/initializer"
@@ -42,14 +43,27 @@ func main() {
 	logger.SetDefaultStructuredLogger("labeler", version)
 	slog.Info("Starting labeler", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("labeler"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+
 	if err := run(); err != nil {
 		slog.Error("Application encountered a fatal error", "error", err)
+
+		if closeErr := auditlogger.CloseAuditLogger(); closeErr != nil {
+			slog.Warn("Failed to close audit logger", "error", closeErr)
+		}
+
 		os.Exit(1)
+	}
+
+	if err := auditlogger.CloseAuditLogger(); err != nil {
+		slog.Warn("Failed to close audit logger", "error", err)
 	}
 }
 
 func run() error {
-	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, kataLabel := parseFlags()
+	kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, gkeInstallerAppLabel, kataLabel := parseFlags()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -66,10 +80,11 @@ func run() error {
 	)
 
 	params := initializer.InitializationParams{
-		KubeconfigPath: *kubeconfig,
-		DCGMAppLabel:   *dcgmAppLabel,
-		DriverAppLabel: *driverAppLabel,
-		KataLabel:      *kataLabel,
+		KubeconfigPath:       *kubeconfig,
+		DCGMAppLabel:         *dcgmAppLabel,
+		DriverAppLabel:       *driverAppLabel,
+		GKEInstallerAppLabel: *gkeInstallerAppLabel,
+		KataLabel:            *kataLabel,
 	}
 
 	components, err := initializer.InitializeAll(params)
@@ -96,11 +111,13 @@ func run() error {
 	return g.Wait()
 }
 
-func parseFlags() (kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, kataLabel *string) {
+func parseFlags() (kubeconfig, metricsPort, dcgmAppLabel, driverAppLabel, gkeInstallerAppLabel, kataLabel *string) {
 	kubeconfig = flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	metricsPort = flag.String("metrics-port", "2112", "Port to expose Prometheus metrics on")
 	dcgmAppLabel = flag.String("dcgm-app-label", "nvidia-dcgm", "App label value for DCGM pods")
 	driverAppLabel = flag.String("driver-app-label", "nvidia-driver-daemonset", "App label value for driver pods")
+	gkeInstallerAppLabel = flag.String("gke-installer-app-label",
+		"nvidia-driver-installer", "App label value for GKE driver installer pods")
 	kataLabel = flag.String("kata-label", "",
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))

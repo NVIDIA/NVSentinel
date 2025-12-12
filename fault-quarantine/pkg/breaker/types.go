@@ -21,12 +21,21 @@ import (
 	"time"
 )
 
+type CursorMode string
+
+const (
+	CursorModeResume CursorMode = "RESUME"
+	CursorModeCreate CursorMode = "CREATE"
+)
+
 // K8sClientOperations defines the minimal interface needed by the circuit breaker
 type K8sClientOperations interface {
 	GetTotalNodes(ctx context.Context) (int, error)
 	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus State) error
 	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (State, error)
 	WriteCircuitBreakerState(ctx context.Context, name, namespace string, status State) error
+	ReadCursorMode(ctx context.Context, name, namespace string) (CursorMode, error)
+	WriteCursorMode(ctx context.Context, name, namespace string, mode CursorMode) error
 }
 
 // CircuitBreakerConfig holds the Kubernetes-specific configuration for the circuit breaker
@@ -56,6 +65,9 @@ type CircuitBreaker interface {
 	ForceState(ctx context.Context, s State) error
 	// CurrentState returns the current breaker state
 	CurrentState() State
+
+	GetCursorMode(ctx context.Context) (CursorMode, error)
+	SetCursorMode(ctx context.Context, mode CursorMode) error
 }
 
 // Config holds the configuration parameters for the sliding window circuit breaker.

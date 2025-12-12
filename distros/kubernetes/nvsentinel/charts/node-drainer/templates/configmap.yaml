@@ -29,3 +29,17 @@ data:
     name = {{ .name | quote }}
     mode = {{ .mode | quote }}
     {{- end }}
+    
+    {{- if .Values.customDrain.enabled }}
+    [customDrain]
+      enabled = true
+      templateMountPath = {{ .Values.customDrain.templateMountPath | quote }}
+      templateFileName = {{ .Values.customDrain.templateFileName | quote }}
+      namespace = {{ .Values.customDrain.namespace | quote }}
+      apiGroup = {{ .Values.customDrain.apiGroup | quote }}
+      version = {{ .Values.customDrain.version | quote }}
+      kind = {{ .Values.customDrain.kind | quote }}
+      statusConditionType = {{ .Values.customDrain.statusConditionType | quote }}
+      statusConditionStatus = {{ .Values.customDrain.statusConditionStatus | quote }}
+      timeout = {{ .Values.customDrain.timeout | quote }}
+    {{- end }}

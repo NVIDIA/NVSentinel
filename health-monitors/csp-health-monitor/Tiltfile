@@ -12,10 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build and deploy
+# Build and deploy csp-health-monitor
 custom_build(
     'ghcr.io/nvidia/nvsentinel/csp-health-monitor',
-    '../../scripts/ko-tilt-build.sh . $EXPECTED_REF',
-    deps=['./'],
+    '../../scripts/ko-tilt-build.sh ./cmd/csp-health-monitor $EXPECTED_REF',
+    deps=['./', '../../store-client'],
+    skips_local_docker=True
+)
+
+# Build and deploy maintenance-notifier sidecar
+custom_build(
+    'ghcr.io/nvidia/nvsentinel/maintenance-notifier',
+    '../../scripts/ko-tilt-build.sh ./cmd/maintenance-notifier $EXPECTED_REF',
+    deps=['./', '../../store-client'],
     skips_local_docker=True
 )
