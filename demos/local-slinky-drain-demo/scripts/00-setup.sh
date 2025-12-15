@@ -44,6 +44,7 @@ check_prerequisites() {
     command -v docker &>/dev/null || missing+=("docker")
     command -v helm &>/dev/null || missing+=("helm")
     command -v ko &>/dev/null || missing+=("ko")
+    command -v go &>/dev/null || missing+=("go")
     
     if [ ${#missing[@]} -gt 0 ]; then
         log "❌ Missing required tools: ${missing[*]}"
@@ -130,8 +131,20 @@ EOF
 install_custom_drain_crd() {
     section "Phase 4: Installing Custom Drain CRD"
     
+    local crd_file="$PROJECT_ROOT/plugins/slinky-drainer/config/crd/nvsentinel.nvidia.com_drainrequests.yaml"
+    
+    # Generate CRD if it doesn't exist
+    if [ ! -f "$crd_file" ]; then
+        log "CRD file not found, generating it..."
+        cd "$PROJECT_ROOT/plugins/slinky-drainer"
+        make generate
+        log "✓ CRD generated"
+    else
+        log "CRD file already exists, skipping generation"
+    fi
+    
     log "Installing DrainRequest CRD (required by node-drainer)..."
-    kubectl apply -f "$PROJECT_ROOT/plugins/slinky-drainer/config/crd/nvsentinel.nvidia.com_drainrequests.yaml"
+    kubectl apply -f "$crd_file"
     
     log "✓ DrainRequest CRD installed"
 }
@@ -146,7 +159,6 @@ install_nvsentinel() {
     
     log "Installing NVSentinel Helm chart from local directory..."
     log "Using image tag: ${nvsentinel_version}"
-    log "(node-drainer will be patched with locally built image for custom drain support)"
     
     helm upgrade --install nvsentinel \
         "$PROJECT_ROOT/distros/kubernetes/nvsentinel" \
@@ -170,13 +182,7 @@ build_and_load_plugin_images() {
     section "Phase 6: Building Custom Plugin Images"
     
     check_ko
-    
-    log "Building node-drainer..."
-    cd "$PROJECT_ROOT/node-drainer"
-    KO_DOCKER_REPO=ko.local ko build --bare --local . --tags demo
-    docker tag ko.local:demo node-drainer:demo
-    kind load docker-image node-drainer:demo --name "$CLUSTER_NAME"
-    
+      
     log "Building slinky-drainer..."
     cd "$PROJECT_ROOT/plugins/slinky-drainer"
     KO_DOCKER_REPO=ko.local ko build --bare --local . --tags demo
@@ -190,25 +196,6 @@ build_and_load_plugin_images() {
     kind load docker-image mock-slurm-operator:demo --name "$CLUSTER_NAME"
     
     log "✓ All plugin images built and loaded"
-}
-
-patch_node_drainer() {
-    section "Phase 7: Patching Node Drainer with Local Image"
-    
-    log "Patching node-drainer to use locally built image..."
-    kubectl set image deployment/node-drainer \
-        node-drainer=node-drainer:demo \
-        -n "$NAMESPACE"
-    
-    kubectl patch deployment node-drainer \
-        -n "$NAMESPACE" \
-        --type=json \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "Never"}]'
-    
-    log "Waiting for node-drainer to restart with new image..."
-    kubectl rollout status deployment/node-drainer -n "$NAMESPACE" --timeout=120s
-    
-    log "✓ Node drainer patched with local image"
 }
 
 create_slinky_namespace() {
@@ -356,7 +343,7 @@ show_summary() {
      - MongoDB
      - Platform Connectors
      - Fault Quarantine
-     - Node Drainer (patched with local image)
+     - Node Drainer
    ✓ Custom Plugins:
      - Slinky Drainer Plugin
      - Mock Slurm Operator
@@ -389,7 +376,6 @@ main() {
     install_custom_drain_crd
     install_nvsentinel
     build_and_load_plugin_images
-    patch_node_drainer
     create_slinky_namespace
     deploy_slinky_drainer
     deploy_mock_slurm
