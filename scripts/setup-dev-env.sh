@@ -552,7 +552,12 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
             if [[ "${OS}" == "darwin" ]]; then
                 brew install tilt
             elif [[ "${OS}" == "linux" ]]; then
+                # Install to /tmp to avoid conflicts with tilt/ directory in repo
+                TILT_INSTALL_DIR=$(mktemp -d)
+                pushd "${TILT_INSTALL_DIR}" > /dev/null
                 curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+                popd > /dev/null
+                rm -rf "${TILT_INSTALL_DIR}"
             fi
             log_success "Tilt installed"
         fi
