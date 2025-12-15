@@ -1,0 +1,71 @@
+# Mixed Eviction Test - DeleteAfterTimeout Mode Namespace
+# Used for Mixed Eviction Tests (Issue #386)
+#
+# Pattern: 1500 pods (~1 per node) with DeleteAfterTimeout eviction mode
+# Resources: Small (10m CPU, 32Mi memory per pod)
+# Termination: 30 seconds
+# Eviction Mode: DeleteAfterTimeout - waits for deleteAfterTimeoutMinutes then force deletes
+#
+# Key Metrics to Watch:
+#   - node_drainer_force_delete_pods_after_timeout (should increment for this namespace)
+#   - node_drainer_waiting_for_timeout (should appear for this namespace)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-delete-timeout
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-sim
+  namespace: test-delete-timeout
+  labels:
+    app: inference-sim
+    eviction-mode: delete-timeout
+spec:
+  replicas: 1500
+  selector:
+    matchLabels:
+      app: inference-sim
+  template:
+    metadata:
+      labels:
+        app: inference-sim
+        eviction-mode: delete-timeout
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: inference
+        image: public.ecr.aws/docker/library/python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, shutting down gracefully...")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Inference simulator started (delete-timeout mode)")
+          while True:
+              time.sleep(3600)
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "50m"
+            memory: "64Mi"
+      topologySpreadConstraints:
+      - maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: inference-sim
+

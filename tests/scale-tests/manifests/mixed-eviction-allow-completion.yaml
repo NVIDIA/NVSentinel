@@ -1,0 +1,67 @@
+# Mixed Eviction Test - AllowCompletion Mode Namespace
+# Used for Mixed Eviction Tests (Issue #386)
+#
+# Pattern: 1500 pods (~1 per node) with AllowCompletion eviction mode
+# Resources: Small (10m CPU, 32Mi memory per pod)
+# Termination: 30 seconds
+# Eviction Mode: AllowCompletion - waits for pods to finish on their own (no active eviction)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-allow-completion
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-sim
+  namespace: test-allow-completion
+  labels:
+    app: inference-sim
+    eviction-mode: allow-completion
+spec:
+  replicas: 1500
+  selector:
+    matchLabels:
+      app: inference-sim
+  template:
+    metadata:
+      labels:
+        app: inference-sim
+        eviction-mode: allow-completion
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: inference
+        image: public.ecr.aws/docker/library/python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, shutting down gracefully...")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Inference simulator started (allow-completion mode)")
+          while True:
+              time.sleep(3600)
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "50m"
+            memory: "64Mi"
+      topologySpreadConstraints:
+      - maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: inference-sim
+

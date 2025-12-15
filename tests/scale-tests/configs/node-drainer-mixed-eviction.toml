@@ -1,0 +1,35 @@
+# Node Drainer Configuration for Mixed Eviction Mode Tests (Issue #386)
+#
+# This config sets up three test namespaces with different eviction modes:
+#   - test-immediate: Immediate mode (evicts pods immediately)
+#   - test-allow-completion: AllowCompletion mode (waits for pods to finish)
+#   - test-delete-timeout: DeleteAfterTimeout mode (waits 2 min, then force deletes)
+#
+# Apply with:
+#   kubectl patch configmap node-drainer -n nvsentinel --type='json' \
+#     -p="[{\"op\": \"replace\", \"path\": \"/data/config.toml\", \"value\": \"$(cat configs/node-drainer-mixed-eviction.toml | sed 's/"/\\"/g' | tr '\n' '\\n' | sed 's/\\n/\\n/g')\"}]"
+#
+# Or manually copy contents to the configmap and restart node-drainer:
+#   kubectl rollout restart deployment/node-drainer -n nvsentinel
+
+evictionTimeoutInSeconds = "60"
+systemNamespaces = "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
+deleteAfterTimeoutMinutes = 2
+notReadyTimeoutMinutes = 5
+
+[[userNamespaces]]
+name = "test-immediate"
+mode = "Immediate"
+
+[[userNamespaces]]
+name = "test-allow-completion"
+mode = "AllowCompletion"
+
+[[userNamespaces]]
+name = "test-delete-timeout"
+mode = "DeleteAfterTimeout"
+
+[[userNamespaces]]
+name = "*"
+mode = "AllowCompletion"
+
