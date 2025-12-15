@@ -227,12 +227,19 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 	GO_URL="https://go.dev/dl/$$GO_TARBALL"; \
 	echo "Downloading $$GO_URL..."; \
 	\
-	if command -v wget >/dev/null 2>&1; then \
-		wget -q "$$GO_URL" || (echo "Failed to download Go tarball" && exit 1); \
-	elif command -v curl >/dev/null 2>&1; then \
-		curl -sSL "$$GO_URL" -o "$$GO_TARBALL" || (echo "Failed to download Go tarball" && exit 1); \
+	if command -v curl >/dev/null 2>&1; then \
+		if ! curl -fsSL "$$GO_URL" -o "$$GO_TARBALL"; then \
+			echo "Failed to download Go tarball from $$GO_URL"; \
+			exit 1; \
+		fi; \
+	elif command -v wget >/dev/null 2>&1; then \
+		if ! wget --show-progress "$$GO_URL"; then \
+			echo "Failed to download Go tarball from $$GO_URL"; \
+			exit 1; \
+		fi; \
 	else \
-		echo "Neither wget nor curl found. Please install one of them." && exit 1; \
+		echo "Neither curl nor wget found. Please install one of them."; \
+		exit 1; \
 	fi; \
 	\
 	echo "Extracting Go $(GO_VERSION)..."; \
