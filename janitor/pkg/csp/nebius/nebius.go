@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package nebius implements the Nebius Cloud (MK8s) CSP client for NVSentinel Janitor node operations.
+// It provides node reboot functionality using the Nebius Compute API via the official Nebius Go SDK.
+// Authentication is supported via IAM token (NEBIUS_IAM_TOKEN), service account key file (NEBIUS_SA_KEY_FILE),
+// or workload identity (automatic discovery by the SDK).
+//
+// Nebius does not provide a direct reboot API, so this implementation uses a stop/start pattern:
+// 1. Stop the instance
+// 2. Wait for the stop operation to complete
+// 3. Start the instance after a cooldown period
+// 4. Poll until the instance reaches RUNNING state
 package nebius
 
 import (
@@ -51,6 +61,7 @@ type Client struct {
 	instanceService InstanceService
 }
 
+// nebiusNodeFields contains the extracted fields from a Nebius node's provider ID.
 type nebiusNodeFields struct {
 	instanceID string
 }
