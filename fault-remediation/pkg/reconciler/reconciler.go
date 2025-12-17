@@ -447,7 +447,9 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 		return true, "", nil
 	}
 
-	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.MaintenanceCR)
+	// Convert RecommendedAction to string for action lookup
+	actionName := healthEvent.RecommendedAction.String()
+	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, actionName, groupState.MaintenanceCR)
 	if shouldSkip {
 		slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
 		return false, groupState.MaintenanceCR, nil
