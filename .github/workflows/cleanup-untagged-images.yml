@@ -1,0 +1,107 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Cleanup Untagged Container Images
+
+on:
+  # Run daily at midnight UTC
+  schedule:
+    - cron: '0 0 * * *'
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run mode (true = only show what would be deleted)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      cut_off:
+        description: 'Delete images older than this (e.g., 1h, 1d, 7d, 30d)'
+        required: true
+        default: '30d'
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  cleanup-untagged-images:
+    name: Cleanup Untagged Images
+    runs-on: linux-amd64-cpu32
+    if: github.repository == 'NVIDIA/NVSentinel'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Excludes: nvsentinel-buildcache
+        package:
+          - nvsentinel
+          - nvsentinel/platform-connectors
+          - nvsentinel-platform-connectors
+          - nvsentinel/gpu-health-monitor
+          - nvsentinel/syslog-health-monitor
+          - nvsentinel/csp-health-monitor
+          - nvsentinel-gpu-health-monitor
+          - nvsentinel-syslog-health-monitor
+          - nvsentinel-csp-health-monitor
+          - nvsentinel/fault-quarantine
+          - nvsentinel/fault-remediation
+          - nvsentinel/node-drainer
+          - nvsentinel/labeler
+          - nvsentinel/fault-quarantine-module
+          - nvsentinel/fault-remediation-module
+          - nvsentinel/node-drainer-module
+          - nvsentinel/labeler-module
+          - nvsentinel-fault-quarantine-module
+          - nvsentinel-fault-remediation-module
+          - nvsentinel-node-drainer-module
+          - nvsentinel-labeler-module
+          - nvsentinel/metadata-collector
+          - nvsentinel/log-collector
+          - nvsentinel/file-server-cleanup
+          - nvsentinel/janitor
+          - nvsentinel/health-events-analyzer
+          - nvsentinel/maintenance-notifier
+          - nvsentinel/event-exporter
+          - nvsentinel/kubernetes-object-monitor
+          - nvsentinel-log-collector
+          - nvsentinel-file-server-cleanup
+          - nvsentinel-health-events-analyzer
+          - nvsentinel-janitor
+          - nvsentinel-fake-dcgm
+
+    steps:
+      - name: Delete untagged images for ${{ matrix.package }}
+        uses: snok/container-retention-policy@3b0972b2276b171b212f8c4efbca59ebba26eceb  # v3.0.1
+        with:
+          account: NVIDIA
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: ${{ matrix.package }}
+          cut-off: ${{ github.event.inputs.cut_off || '30d' }}
+          # Keep at least 5 most recent untagged versions as safety buffer
+          keep-n-most-recent: 5
+          dry-run: ${{ github.event.inputs.dry_run || 'true' }}
+          # Only target untagged images - preserve all tagged releases
+          tag-selection: untagged
+          # Use updated_at timestamp for age calculation
+          timestamp-to-use: updated_at
+
