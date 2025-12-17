@@ -129,13 +129,14 @@ config:
 # The janitor module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment
 csp:
-  # CSP provider type (kind, kwok, aws, gcp, azure, oci)
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius)
   # - kind: For local development with kind clusters (simulated reboots)
   # - kwok: For testing with kwok (simulated nodes)
   # - aws: For AWS EKS clusters
   # - gcp: For Google Cloud GKE clusters  
   # - azure: For Microsoft Azure AKS clusters
   # - oci: For Oracle Cloud Infrastructure OKE clusters
+  # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
   provider: "kind"
   
   # AWS-specific configuration (only required when provider=aws)
@@ -216,6 +217,24 @@ csp:
     #   Requires compartment and principalId to be set
     #   The principal must have manage instance-family permission in compartment
     #   Must create dynamic group with matching rule for the pod
+
+  # Nebius Managed Kubernetes (MK8s) specific configuration (only required when provider=nebius)
+  # Uses official Nebius Go SDK: github.com/nebius/gosdk
+  nebius:
+    # Path to service account key file (recommended for production)
+    # JSON format as documented at: https://github.com/nebius/gosdk#using-a-json-credentials-file
+    # Example: "/etc/nebius/sa-credentials.json"
+    # Set via NEBIUS_SA_KEY_FILE environment variable
+    serviceAccountKeyFile: ""
+    # Direct IAM token (for testing only)
+    # Tokens expire and require manual refresh - not recommended for production
+    # Set via NEBIUS_IAM_TOKEN environment variable
+    # Obtain token: nebius iam get-access-token
+    iamToken: ""
+    # Note: Nebius credentials are provided via environment variables:
+    # - NEBIUS_SA_KEY_FILE: Path to service account credentials JSON file (recommended)
+    #   The service account must have compute.instances.stop and compute.instances.start permissions
+    # - NEBIUS_IAM_TOKEN: Direct IAM token (for testing only)
 
 # Webhook Configuration
 webhook:
