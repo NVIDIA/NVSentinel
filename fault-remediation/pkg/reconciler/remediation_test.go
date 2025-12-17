@@ -36,6 +36,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
 
 // MockDynamicClient implements necessary methods from dynamic.Interface
@@ -221,17 +222,30 @@ func TestNewK8sClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, TemplateData{
-				TemplateMountPath: "templates",
-				TemplateFileName:  "rebootnode-template.yaml",
-				MaintenanceResource: config.MaintenanceResource{
-					Namespace:             "dgxc-janitor",
-					Version:               "v1alpha1",
-					ApiGroup:              "janitor.dgxc.nvidia.com",
-					Kind:                  "RebootNode",
-					CompleteConditionType: "NodeReady",
+			testConfig := config.TomlConfig{
+				Template: config.Template{
+					MountPath: "templates",
 				},
-			})
+				RemediationActions: map[string]config.MaintenanceResource{
+					"RESTART_BM": {
+						Namespace:             "dgxc-janitor",
+						Version:               "v1alpha1",
+						ApiGroup:              "janitor.dgxc.nvidia.com",
+						Kind:                  "RebootNode",
+						CompleteConditionType: "NodeReady",
+						TemplateFile:          "rebootnode-template.yaml",
+					},
+					"COMPONENT_RESET": {
+						Namespace:             "dgxc-janitor",
+						Version:               "v1alpha1",
+						ApiGroup:              "janitor.dgxc.nvidia.com",
+						Kind:                  "RebootNode",
+						CompleteConditionType: "NodeReady",
+						TemplateFile:          "gpu-reset-template.yaml",
+					},
+				},
+			}
+			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, testConfig)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, client)
@@ -316,18 +330,39 @@ spec:
 			mockDiscovery := &MockDiscoveryClient{}
 			cachedClient := memory.NewMemCacheClient(mockDiscovery)
 			mockMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
-			client := &FaultRemediationClient{
-				clientset:  mockClient,
-				kubeClient: nil,
-				restMapper: mockMapper,
-				dryRunMode: []string{},
-				template:   tmpl,
-				templateData: TemplateData{
-					MaintenanceResource: config.MaintenanceResource{
+			// Create remediation config for test
+			remediationConfig := config.TomlConfig{
+				RemediationActions: map[string]config.MaintenanceResource{
+					"RESTART_BM": {
 						Version:  "v1alpha1",
 						ApiGroup: "janitor.dgxc.nvidia.com",
+						Kind:     "RebootNode",
+						TemplateFile: "test.yaml",
+					},
+					"COMPONENT_RESET": {
+						Version:  "v1alpha1",
+						ApiGroup: "janitor.dgxc.nvidia.com",
+						Kind:     "RebootNode",
+						TemplateFile: "gpu-reset.yaml",
 					},
 				},
+			}
+			
+			// Create templates map
+			templates := map[string]*template.Template{
+				"RESTART_BM": tmpl,
+				"COMPONENT_RESET": tmpl, // Use same template for testing
+			}
+
+			client := &FaultRemediationClient{
+				clientset:         mockClient,
+				kubeClient:        nil,
+				restMapper:        mockMapper,
+				dryRunMode:        []string{},
+				remediationConfig: remediationConfig,
+				templates:         templates,
+				templateMountPath: "/tmp",
+				statusChecker:     crstatus.NewCRStatusChecker(mockClient, mockMapper, remediationConfig.RemediationActions, tt.dryRun),
 				// Mock nodeExistsFunc to return a fake node for unit tests
 				nodeExistsFunc: func(ctx context.Context, nodeName string) (*corev1.Node, error) {
 					return &corev1.Node{

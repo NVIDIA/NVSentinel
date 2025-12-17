@@ -24,8 +24,11 @@ import (
 )
 
 func TestCheckCondition(t *testing.T) {
-	cfg := &config.MaintenanceResource{
+	testResource := config.MaintenanceResource{
 		CompleteConditionType: "Completed",
+	}
+	cfg := map[string]config.MaintenanceResource{
+		"test": testResource,
 	}
 	checker := NewCRStatusChecker(nil, nil, cfg, false)
 
@@ -111,7 +114,7 @@ func TestCheckCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := checker.checkCondition(tt.cr)
+			result := checker.checkCondition(tt.cr, testResource)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
