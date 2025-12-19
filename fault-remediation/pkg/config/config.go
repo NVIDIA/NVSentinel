@@ -14,6 +14,10 @@
 
 package config
 
+import (
+	"fmt"
+)
+
 // MaintenanceResource holds configuration for maintenance custom resources
 type MaintenanceResource struct {
 	Namespace             string `toml:"namespace"`
@@ -49,6 +53,35 @@ type TomlConfig struct {
 	// Multi-template configuration - map from RecommendedAction string to MaintenanceResource
 	RemediationActions   map[string]MaintenanceResource `toml:"remediationActions"`
 	
+	// Templates contains the actual template content keyed by filename
+	Templates           map[string]string   `toml:"templates"`
+	
 	// Common configuration
 	UpdateRetry         UpdateRetry         `toml:"updateRetry"`
+}
+
+// Validate checks the configuration for consistency and completeness
+func (c *TomlConfig) Validate() error {
+	// Validate that all TemplateFile references exist in Templates map
+	for actionName, resource := range c.RemediationActions {
+		if resource.TemplateFile != "" {
+			if _, exists := c.Templates[resource.TemplateFile]; !exists {
+				return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFile)
+			}
+		}
+	}
+	
+	// Validate that Scope field has valid values
+	for actionName, resource := range c.RemediationActions {
+		if resource.Scope != "" && resource.Scope != "Cluster" && resource.Scope != "Namespaced" {
+			return fmt.Errorf("action '%s' has invalid scope '%s', must be 'Cluster' or 'Namespaced'", actionName, resource.Scope)
+		}
+		
+		// If scope is Namespaced, namespace should be specified
+		if resource.Scope == "Namespaced" && resource.Namespace == "" {
+			return fmt.Errorf("action '%s' is Namespaced but no namespace is specified", actionName)
+		}
+	}
+	
+	return nil
 }

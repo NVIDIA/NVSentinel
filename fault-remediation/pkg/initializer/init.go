@@ -59,6 +59,11 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("error while loading the toml config: %w", err)
 	}
 
+	// Validate the configuration for consistency
+	if err := tomlConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
 	if params.DryRun {
 		slog.Info("Running in dry-run mode")
 	}
