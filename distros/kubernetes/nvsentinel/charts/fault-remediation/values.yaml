@@ -17,13 +17,6 @@ replicaCount: 1
 
 logLevel: info
 
-# Global configuration (typically provided by parent chart)
-global:
-  auditLogging:
-    enabled: false
-  datastore:
-    provider: ""
-
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 
