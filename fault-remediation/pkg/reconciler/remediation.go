@@ -86,10 +86,6 @@ type TemplateData struct {
 	Version               string
 	Kind                  string
 	Namespace             string
-	
-	// Generic metadata hooks for extensibility
-	ExtraLabels           map[string]string
-	ExtraAnnotations      map[string]string
 }
 
 // NewK8sClient creates a new FaultRemediationClient with multi-template support
@@ -279,7 +275,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	log.Printf("Creating maintenance CR for node: %s using template %s (UID: %s)", 
 		healthEvent.NodeName, actionKey, node.UID)
 
-	// Build template data with generic metadata hooks
+	// Build template data
 	templateData := TemplateData{
 		NodeName:              healthEvent.NodeName,
 		HealthEventID:         healthEventID,
@@ -291,10 +287,6 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		Version:      maintenanceResource.Version,
 		Kind:         maintenanceResource.Kind,
 		Namespace:    maintenanceResource.Namespace,
-		
-		// Generic metadata hooks (empty for now - will be populated by Helm values)
-		ExtraLabels:      make(map[string]string),
-		ExtraAnnotations: make(map[string]string),
 	}
 
 	// Execute the selected template

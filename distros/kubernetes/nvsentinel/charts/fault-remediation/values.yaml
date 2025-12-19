@@ -77,9 +77,7 @@ maintenance:
     #   metadata:
     #     name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
     #     labels:
-    #       {{- range $key, $value := .ExtraLabels }}
-    #       {{ $key }}: {{ $value | quote }}
-    #       {{- end }}
+    #       # Add your custom labels here
     #   spec:
     #     nodeName: {{ .NodeName }}
     #     force: false
@@ -90,9 +88,7 @@ maintenance:
     #     name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
     #     namespace: remediation
     #     labels:
-    #       {{- range $key, $value := .ExtraLabels }}
-    #       {{ $key }}: {{ $value | quote }}
-    #       {{- end }}
+    #       # Add your custom labels here
     #   spec:
     #     nodeName: {{ .NodeName }}
     #     ttlSecondsAfterFinished: 60
