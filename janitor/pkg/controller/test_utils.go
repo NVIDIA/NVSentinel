@@ -15,48 +15,11 @@
 package controller
 
 import (
-	"context"
 	"regexp"
 
 	"github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
-
-// Test utilities for controller testing
-// Add test helper functions here as needed
-
-// MockCSPClient is a mock implementation of the CSP client interface for testing
-type MockCSPClient struct {
-	terminateSignalSent bool
-	terminateError      error
-}
-
-func (m *MockCSPClient) SendTerminateSignal(
-	ctx context.Context,
-	node corev1.Node,
-) (model.TerminateNodeRequestRef, error) {
-	m.terminateSignalSent = true
-
-	return model.TerminateNodeRequestRef(""), m.terminateError
-}
-
-func (m *MockCSPClient) IsNodeReady(
-	ctx context.Context,
-	node corev1.Node,
-	message string,
-) (bool, error) {
-	return true, nil
-}
-
-func (m *MockCSPClient) SendRebootSignal(
-	ctx context.Context,
-	node corev1.Node,
-) (model.ResetSignalRequestRef, error) {
-	return model.ResetSignalRequestRef(""), nil
-}
 
 // nolint:gochecknoglobals,lll,unused // test pattern
 var conditionReasonPattern = regexp.MustCompile("^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$")

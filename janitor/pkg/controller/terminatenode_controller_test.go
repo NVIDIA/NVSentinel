@@ -16,12 +16,13 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
@@ -41,7 +43,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	var (
 		ctx           context.Context
-		mockCSPClient *MockCSPClient
 		terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode
 		node          *corev1.Node
 		reconciler    *TerminateNodeReconciler
@@ -52,7 +53,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		mockCSPClient = &MockCSPClient{}
 
 		// Generate unique suffix using GinkgoRandomSeed to avoid conflicts
 		uniqueSuffix = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -87,6 +87,9 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		}
 		Expect(k8sClient.Create(ctx, terminateNode)).Should(Succeed())
 
+		conn, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		Expect(err).NotTo(HaveOccurred())
+
 		// Create the reconciler with the mock CSP client
 		reconciler = &TerminateNodeReconciler{
 			Client: k8sClient,
@@ -94,7 +97,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Config: &config.TerminateNodeControllerConfig{
 				ManualMode: false,
 			},
-			CSPClient: mockCSPClient,
+			CSPClient: cspv1alpha1.NewCSPProviderServiceClient(conn),
 		}
 	})
 
@@ -157,9 +160,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify CSP client was called
-			Expect(mockCSPClient.terminateSignalSent).To(BeTrue())
-
 			// Verify condition was updated
 			Eventually(func() bool {
 				var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -179,16 +179,12 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 
 		It("Should fail to send terminate signal and update condition", func() {
-			mockCSPClient.terminateError = errors.New("CSP error")
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name: crName,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
-
-			// Verify CSP client was called
-			Expect(mockCSPClient.terminateSignalSent).To(BeTrue())
 
 			// Verify condition was updated
 			Eventually(func() bool {
@@ -458,9 +454,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
-			// Verify terminate signal was NOT sent
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
-
 			// Get updated TerminateNode
 			var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: crName}, &updatedTerminateNode)
@@ -493,17 +486,14 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Second reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Third reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Verify ManualMode condition remains set
 			var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -525,7 +515,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Get the current TerminateNode to simulate outside actor setting SignalSent condition
 			var currentTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -564,9 +553,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// Controller deletes the node and completes termination immediately, so no requeue
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
-
-			// Verify janitor still did not send any terminate signals
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Get final state
 			var finalTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode

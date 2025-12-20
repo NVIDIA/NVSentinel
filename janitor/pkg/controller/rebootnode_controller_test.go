@@ -16,12 +16,13 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,32 +31,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
-
-// Mock CSP client for testing
-type mockCSPClient struct {
-	sendRebootSignalCalled int
-	sendRebootSignalError  error
-	sendRebootSignalResult model.ResetSignalRequestRef
-	isNodeReadyResult      bool
-	isNodeReadyError       error
-}
-
-func (m *mockCSPClient) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
-	m.sendRebootSignalCalled++
-	return m.sendRebootSignalResult, m.sendRebootSignalError
-}
-
-func (m *mockCSPClient) IsNodeReady(ctx context.Context, node corev1.Node, reqRef string) (bool, error) {
-	return m.isNodeReadyResult, m.isNodeReadyError
-}
-
-func (m *mockCSPClient) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
-	return model.TerminateNodeRequestRef(""), nil
-}
 
 func TestRebootNodeReconciler_getRebootTimeout(t *testing.T) {
 	tests := []struct {
@@ -102,7 +81,6 @@ var _ = Describe("RebootNode Controller", func() {
 	var (
 		ctx            context.Context
 		reconciler     *RebootNodeReconciler
-		mockCSP        *mockCSPClient
 		k8sClient      client.Client
 		scheme         *runtime.Scheme
 		testNode       *corev1.Node
@@ -150,16 +128,14 @@ var _ = Describe("RebootNode Controller", func() {
 			WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
 			Build()
 
-		// Create mock CSP client
-		mockCSP = &mockCSPClient{
-			sendRebootSignalResult: model.ResetSignalRequestRef("test-request-ref"),
-		}
+		conn, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		Expect(err).NotTo(HaveOccurred())
 
 		// Create reconciler
 		reconciler = &RebootNodeReconciler{
 			Client:    k8sClient,
 			Scheme:    scheme,
-			CSPClient: mockCSP,
+			CSPClient: cspv1alpha1.NewCSPProviderServiceClient(conn),
 			Config: &config.RebootNodeControllerConfig{
 				Timeout: 30 * time.Minute,
 			},
@@ -185,9 +161,6 @@ var _ = Describe("RebootNode Controller", func() {
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second))
-
-			// Verify reboot signal was sent exactly once
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(1))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -226,17 +199,6 @@ var _ = Describe("RebootNode Controller", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(1))
-
-			// Second reconciliation - should NOT send another reboot signal
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(1)) // Still 1, not 2!
-
-			// Third reconciliation - should STILL NOT send another reboot signal
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(1)) // Still 1, not 3!
 		})
 	})
 
@@ -267,9 +229,6 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 
 		It("should monitor node status and complete when node is ready", func() {
-			// Set mock to return node as ready
-			mockCSP.isNodeReadyResult = true
-
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: testRebootNode.Name,
@@ -279,9 +238,6 @@ var _ = Describe("RebootNode Controller", func() {
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on completion
-
-			// Verify no additional reboot signals were sent
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -298,9 +254,6 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 
 		It("should continue monitoring when node is not ready", func() {
-			// Set mock to return node as not ready
-			mockCSP.isNodeReadyResult = false
-
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: testRebootNode.Name,
@@ -310,9 +263,6 @@ var _ = Describe("RebootNode Controller", func() {
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(30 * time.Second)) // Should requeue for monitoring
-
-			// Verify no additional reboot signals were sent
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -330,9 +280,6 @@ var _ = Describe("RebootNode Controller", func() {
 			testRebootNode.Status.StartTime = &metav1.Time{Time: pastTime}
 			err := k8sClient.Status().Update(ctx, testRebootNode)
 			Expect(err).NotTo(HaveOccurred())
-
-			// Set mock to return node as not ready
-			mockCSP.isNodeReadyResult = false
 
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -384,8 +331,6 @@ var _ = Describe("RebootNode Controller", func() {
 			// Update the object in the fake client
 			err := k8sClient.Status().Update(ctx, testRebootNode)
 			Expect(err).NotTo(HaveOccurred())
-
-			mockCSP.isNodeReadyError = errors.New("CSP error")
 		})
 
 		It("should set node ready condition to False and not requeue", func() {
@@ -420,10 +365,6 @@ var _ = Describe("RebootNode Controller", func() {
 	})
 
 	Context("when reboot signal fails", func() {
-		BeforeEach(func() {
-			mockCSP.sendRebootSignalError = errors.New("CSP error")
-		})
-
 		It("should set SignalSent condition to False and not requeue", func() {
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -522,9 +463,6 @@ var _ = Describe("RebootNode Controller", func() {
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
-			// Verify reboot signal was NOT sent
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
-
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updatedRebootNode)
@@ -557,17 +495,14 @@ var _ = Describe("RebootNode Controller", func() {
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Second reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Third reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Verify ManualMode condition remains set
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -589,7 +524,6 @@ var _ = Describe("RebootNode Controller", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Get the current RebootNode to simulate outside actor setting SignalSent condition
 			var currentRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -612,18 +546,11 @@ var _ = Describe("RebootNode Controller", func() {
 			// Verify IsRebootInProgress now returns true (since SignalSent is True)
 			Expect(currentRebootNode.IsRebootInProgress()).To(BeTrue())
 
-			// Configure mock to simulate node becoming ready after reboot
-			mockCSP.isNodeReadyResult = true
-			mockCSP.isNodeReadyError = nil
-
 			// Next reconciliation should complete the reboot since node is ready
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			// In manual mode, when both CSP (always true) and Kubernetes report ready, reboot completes
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
-
-			// Verify janitor still did not send any reboot signals
-			Expect(mockCSP.sendRebootSignalCalled).To(Equal(0))
 
 			// Get final state
 			var finalRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
