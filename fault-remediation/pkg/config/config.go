@@ -62,12 +62,15 @@ type TomlConfig struct {
 
 // Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
-	// Validate that all TemplateFileName references exist in Templates map
+	// Validate that all TemplateFileName references are non-empty and exist in Templates map
 	for actionName, resource := range c.RemediationActions {
-		if resource.TemplateFileName != "" {
-			if _, exists := c.Templates[resource.TemplateFileName]; !exists {
-				return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFileName)
-			}
+		if resource.TemplateFileName == "" {
+			return fmt.Errorf("action '%s' must have a non-empty templateFileName", actionName)
+		}
+		
+		_, templateExists := c.Templates[resource.TemplateFileName]
+		if !templateExists {
+			return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFileName)
 		}
 	}
 

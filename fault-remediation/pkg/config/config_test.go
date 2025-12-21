@@ -97,11 +97,11 @@ func TestTomlConfig_Validate(t *testing.T) {
 			errorSubstr: "is Namespaced but no namespace is specified",
 		},
 		{
-			name: "empty template file reference should be allowed",
+			name: "empty template file reference should be rejected",
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"RESTART_BM": {
-						TemplateFileName: "", // Empty is OK
+						TemplateFileName: "", // Empty should fail
 						Scope:            "Cluster",
 					},
 				},
@@ -109,7 +109,8 @@ func TestTomlConfig_Validate(t *testing.T) {
 					"template.yaml": "apiVersion: ...",
 				},
 			},
-			expectError: false,
+			expectError: true,
+			errorSubstr: "must have a non-empty templateFileName",
 		},
 	}
 
