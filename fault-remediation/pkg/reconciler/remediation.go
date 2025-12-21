@@ -223,16 +223,15 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	recommendedActionName := healthEvent.RecommendedAction.String()
 	
 	// Select appropriate maintenance resource configuration and template
-	var maintenanceResource config.MaintenanceResource
-	var selectedTemplate *template.Template
-	var actionKey string
+	var (
+		maintenanceResource config.MaintenanceResource
+		selectedTemplate    *template.Template
+		actionKey           string
+	)
 	
 	// Select appropriate maintenance resource configuration and template
-	if resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]; exists {
-		maintenanceResource = resource
-		selectedTemplate = c.templates[recommendedActionName]
-		actionKey = recommendedActionName
-	} else {
+	resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]
+	if !exists {
 		slog.Error("No remediation configuration found for action", 
 			"action", recommendedActionName, 
 			"node", healthEvent.NodeName,
@@ -245,6 +244,10 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 			}())
 		return false, ""
 	}
+
+	maintenanceResource = resource
+	selectedTemplate = c.templates[recommendedActionName]
+	actionKey = recommendedActionName
 	
 	if selectedTemplate == nil {
 		slog.Error("No template available for remediation action", 
@@ -258,8 +261,9 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 
 	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
-		log.Printf("DRY-RUN: Skipping custom resource creation for node %s using template %s", 
-			healthEvent.NodeName, actionKey)
+		slog.Info("DRY-RUN: Skipping custom resource creation",
+			"node", healthEvent.NodeName,
+			"template", actionKey)
 		return true, crName
 	}
 
@@ -272,8 +276,10 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return false, ""
 	}
 
-	log.Printf("Creating maintenance CR for node: %s using template %s (UID: %s)", 
-		healthEvent.NodeName, actionKey, node.UID)
+	slog.Info("Creating maintenance CR",
+		"node", healthEvent.NodeName,
+		"template", actionKey,
+		"nodeUID", node.UID)
 
 	// Build template data
 	templateData := TemplateData{
@@ -298,7 +304,9 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return false, ""
 	}
 
-	log.Printf("Generated YAML using template %s: %s", actionKey, buf.String())
+	slog.Debug("Generated YAML from template",
+		"template", actionKey,
+		"yaml", buf.String())
 
 	// Convert YAML to unstructured
 	var obj map[string]any
@@ -354,8 +362,10 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 
 	// Get the actual name of the created CR
 	actualCRName := createdCR.GetName()
-	log.Printf("Created Maintenance CR %s successfully for node %s using template %s", 
-		actualCRName, healthEvent.NodeName, actionKey)
+	slog.Info("Created Maintenance CR successfully",
+		"crName", actualCRName,
+		"node", healthEvent.NodeName,
+		"template", actionKey)
 
 	// Update node annotation with CR reference
 	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
@@ -406,8 +416,9 @@ func (c *FaultRemediationClient) handleCreateCRError(
 ) (bool, string) {
 	// Check if the CR already exists
 	if apierrors.IsAlreadyExists(err) {
-		log.Printf("Maintenance CR %s already exists for node %s, treating as success",
-			crName, healthEvent.NodeName)
+		slog.Info("Maintenance CR already exists, treating as success",
+			"crName", crName,
+			"node", healthEvent.NodeName)
 
 		// Update node annotation with CR reference
 		group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
@@ -423,7 +434,8 @@ func (c *FaultRemediationClient) handleCreateCRError(
 	}
 
 	// For other errors, log and return failure (not fatal - allow retry)
-	log.Printf("Failed to create Maintenance CR: %v", err)
+	slog.Error("Failed to create Maintenance CR",
+		"error", err)
 
 	return false, ""
 }
