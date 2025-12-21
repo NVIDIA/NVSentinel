@@ -32,12 +32,12 @@ func TestBuilder_Eq(t *testing.T) {
 	}{
 		{
 			name:  "simple field equality",
-			field: "status",
+			field: "myField",
 			value: "active",
 			expectedMongo: map[string]interface{}{
-				"status": "active",
+				"myField": "active",
 			},
-			expectedSQL:  "document->>'status' = $1",
+			expectedSQL:  "document->>'myField' = $1",
 			expectedArgs: []interface{}{"active"},
 		},
 		{
@@ -97,12 +97,12 @@ func TestBuilder_Ne(t *testing.T) {
 }
 
 func TestBuilder_In(t *testing.T) {
-	builder := New().Build(In("status", []interface{}{"active", "pending"}))
+	builder := New().Build(In("myField", []interface{}{"active", "pending"}))
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
 	expectedMongo := map[string]interface{}{
-		"status": map[string]interface{}{
+		"myField": map[string]interface{}{
 			"$in": []interface{}{"active", "pending"},
 		},
 	}
@@ -110,7 +110,7 @@ func TestBuilder_In(t *testing.T) {
 
 	// Test SQL output
 	sql, args := builder.ToSQL()
-	assert.Equal(t, "document->>'status' IN ($1, $2)", sql)
+	assert.Equal(t, "document->>'myField' IN ($1, $2)", sql)
 	assert.Equal(t, []interface{}{"active", "pending"}, args)
 }
 
@@ -189,22 +189,22 @@ func TestBuilder_Lte(t *testing.T) {
 func TestBuilder_And(t *testing.T) {
 	builder := New().Build(
 		And(
-			Eq("status", "active"),
-			Eq("type", "critical"),
+			Eq("field1", "active"),
+			Eq("field2", "critical"),
 		),
 	)
 
 	// Test MongoDB output
 	mongoFilter := builder.ToMongo()
 	expectedMongo := map[string]interface{}{
-		"status": "active",
-		"type":   "critical",
+		"field1": "active",
+		"field2": "critical",
 	}
 	assert.Equal(t, expectedMongo, mongoFilter)
 
 	// Test SQL output
 	sql, args := builder.ToSQL()
-	assert.Equal(t, "(document->>'status' = $1) AND (document->>'type' = $2)", sql)
+	assert.Equal(t, "(document->>'field1' = $1) AND (document->>'field2' = $2)", sql)
 	assert.Equal(t, []interface{}{"active", "critical"}, args)
 }
 
@@ -240,8 +240,8 @@ func TestBuilder_And_WithConflictingFields(t *testing.T) {
 func TestBuilder_Or(t *testing.T) {
 	builder := New().Build(
 		Or(
-			Eq("status", "active"),
-			Eq("status", "pending"),
+			Eq("myField", "active"),
+			Eq("myField", "pending"),
 		),
 	)
 
@@ -249,15 +249,15 @@ func TestBuilder_Or(t *testing.T) {
 	mongoFilter := builder.ToMongo()
 	expectedMongo := map[string]interface{}{
 		"$or": []interface{}{
-			map[string]interface{}{"status": "active"},
-			map[string]interface{}{"status": "pending"},
+			map[string]interface{}{"myField": "active"},
+			map[string]interface{}{"myField": "pending"},
 		},
 	}
 	assert.Equal(t, expectedMongo, mongoFilter)
 
 	// Test SQL output
 	sql, args := builder.ToSQL()
-	assert.Equal(t, "(document->>'status' = $1) OR (document->>'status' = $2)", sql)
+	assert.Equal(t, "(document->>'myField' = $1) OR (document->>'myField' = $2)", sql)
 	assert.Equal(t, []interface{}{"active", "pending"}, args)
 }
 
@@ -302,8 +302,8 @@ func TestBuilder_NestedFieldPaths(t *testing.T) {
 	}{
 		{
 			name:         "single level",
-			field:        "status",
-			expectedPath: "document->>'status'",
+			field:        "myField",
+			expectedPath: "document->>'myField'",
 		},
 		{
 			name:         "two levels",
@@ -360,8 +360,13 @@ func TestMongoFieldToJSONB(t *testing.T) {
 	}{
 		{
 			name:         "simple field",
+			mongoField:   "myField",
+			expectedPath: "document->>'myField'",
+		},
+		{
+			name:         "column field (status)",
 			mongoField:   "status",
-			expectedPath: "document->>'status'",
+			expectedPath: "status",
 		},
 		{
 			name:         "column field (id)",

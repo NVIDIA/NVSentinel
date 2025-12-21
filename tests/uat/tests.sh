@@ -23,6 +23,54 @@ get_boot_id() {
     kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}'
 }
 
+wait_for_node_condition() {
+    local node=$1
+    local condition_type=$2
+    local timeout=${UAT_CONDITION_TIMEOUT:-60}
+    local elapsed=0
+
+    log "Waiting for node condition '$condition_type' to appear on node $node..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local condition_status
+        condition_status=$(kubectl get node "$node" -o json | jq -r ".status.conditions[] | select(.type == \"$condition_type\" and .status == \"True\") | .type")
+
+        if [[ -n "$condition_status" ]]; then
+            log "Node condition '$condition_type' found ✓"
+            kubectl get node "$node" -o json | jq -r ".status.conditions[] | select(.type == \"$condition_type\") | \"  Status=\(.status) Reason=\(.reason)\""
+            return 0
+        fi
+
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    error "Timeout waiting for node condition '$condition_type' on node $node"
+}
+
+wait_for_node_quarantine() {
+    local node=$1
+    local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
+    local elapsed=0
+
+    log "Waiting for node $node to be quarantined (cordoned)..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local is_cordoned
+        is_cordoned=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}')
+
+        if [[ "$is_cordoned" == "true" ]]; then
+            log "Node $node is quarantined (cordoned) ✓"
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for node $node to be quarantined"
+}
+
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
@@ -121,30 +169,11 @@ test_gpu_monitoring_dcgm() {
 
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
 
-    log "Waiting for node conditions to appear..."
-    local max_wait=30
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True")] | length')
-        if [[ "$conditions_count" -ge 1 ]]; then
-            log "Found $conditions_count node conditions"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
+    wait_for_node_condition "$gpu_node" "GpuInforomWatch"
 
-    log "Verifying node conditions are populated"
-    kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch") | "\(.type) Status=\(.status) Reason=\(.reason)"'
+    wait_for_node_quarantine "$gpu_node"
 
-    inforom_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "GpuInforomWatch" and .status == "True") | .type')
-
-    if [[ -z "$inforom_condition" ]]; then
-        error "Expected node conditions not found: GpuInforomWatch=$inforom_condition"
-    fi
-    log "Node conditions verified ✓"
-
-    log "Waiting for node to be quarantined and rebooted..."
+    log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
     log "Test 1 PASSED ✓"
@@ -178,7 +207,11 @@ test_xid_monitoring_syslog() {
     log "Injecting XID 119 message via logger on pod: $driver_pod"
     kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8)."
 
-    log "Waiting for node to be quarantined and rebooted..."
+    wait_for_node_condition "$gpu_node" "SysLogsXIDError"
+
+    wait_for_node_quarantine "$gpu_node"
+
+    log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
     log "Test 2 PASSED ✓"
@@ -267,28 +300,11 @@ test_sxid_monitoring_syslog() {
     log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
     kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up"
 
-    log "Waiting for node conditions to appear..."
-    local max_wait=30
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        conditions_count=$(kubectl get node "$gpu_node" -o json | jq '[.status.conditions[] | select(.type == "SysLogsSXIDError" and .status == "True")] | length')
-        if [[ "$conditions_count" -ge 1 ]]; then
-            log "Found $conditions_count node conditions"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
+    wait_for_node_condition "$gpu_node" "SysLogsSXIDError"
 
-    log "Verifying SXID node condition is populated (fatal SXID 20034)"
-    sxid_condition=$(kubectl get node "$gpu_node" -o json | jq -r '.status.conditions[] | select(.type == "SysLogsSXIDError" and .status == "True") | .type')
+    wait_for_node_quarantine "$gpu_node"
 
-    if [[ -z "$sxid_condition" ]]; then
-        error "SysLogsSXIDError condition not found (fatal SXID should create condition)"
-    fi
-    log "Node condition verified: SysLogsSXIDError ✓"
-
-    log "Waiting for node to be quarantined and rebooted..."
+    log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
     log "Test 3 PASSED ✓"
@@ -299,6 +315,11 @@ main() {
 
 
     test_gpu_monitoring_dcgm
+
+    # Wait for syslog-health-monitor to complete first initialization poll
+    log "Waiting for syslog-health-monitor to initialize (60s)..."
+    sleep 60
+
     test_xid_monitoring_syslog
     # test_sxid_monitoring_syslog
 

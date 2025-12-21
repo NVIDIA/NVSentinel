@@ -157,7 +157,7 @@ jobs:
           # Set USE_POSTGRESQL for PostgreSQL tests (our integrated Tiltfile approach)
           USE_POSTGRESQL: ${{ matrix.datastore == 'postgresql' && '1' || '0' }}
           # Set architecture-specific test tags
-          TEST_TAGS: ${{ matrix.arch }}_group
+          TEST_TAGS: ${{ matrix.arch }}_group${{ matrix.datastore == 'mongodb' && ',mongodb' || '' }}
         run: |
           make e2e-test-ci
 

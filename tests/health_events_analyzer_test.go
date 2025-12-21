@@ -1,5 +1,5 @@
-//go:build amd64_group
-// +build amd64_group
+//go:build amd64_group && mongodb
+// +build amd64_group,mongodb
 
 // Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
@@ -32,6 +32,10 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+// All tests in this file are not yet supported for PostgreSQL.
+// So we skip them for now using a build tag (mongodb) that excludes them from PostgreSQL tests.
+// Github Issue: https://github.com/NVIDIA/NVSentinel/issues/606
 
 func TestMultipleRemediationsCompleted(t *testing.T) {
 	feature := features.New("TestMultipleRemediationsCompleted").
