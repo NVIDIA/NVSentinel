@@ -25,12 +25,12 @@ type MaintenanceResource struct {
 	ApiGroup              string `toml:"apiGroup"`
 	Kind                  string `toml:"kind"`
 	CompleteConditionType string `toml:"completeConditionType"`
-	
+
 	// Scope determines if the resource is cluster-scoped or namespaced
 	Scope string `toml:"scope"` // "Cluster" or "Namespaced"
-	
+
 	// Template file path relative to the mount path
-	TemplateFile string `toml:"templateFile"`
+	TemplateFileName string `toml:"templateFileName"`
 }
 
 // Template holds configuration for template files mount
@@ -48,40 +48,40 @@ type UpdateRetry struct {
 // TomlConfig holds the complete TOML configuration for fault remediation
 type TomlConfig struct {
 	// Template mount configuration
-	Template            Template            `toml:"template"`
-	
+	Template Template `toml:"template"`
+
 	// Multi-template configuration - map from RecommendedAction string to MaintenanceResource
-	RemediationActions   map[string]MaintenanceResource `toml:"remediationActions"`
-	
+	RemediationActions map[string]MaintenanceResource `toml:"remediationActions"`
+
 	// Templates contains the actual template content keyed by filename
-	Templates           map[string]string   `toml:"templates"`
-	
+	Templates map[string]string `toml:"templates"`
+
 	// Common configuration
-	UpdateRetry         UpdateRetry         `toml:"updateRetry"`
+	UpdateRetry UpdateRetry `toml:"updateRetry"`
 }
 
 // Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
-	// Validate that all TemplateFile references exist in Templates map
+	// Validate that all TemplateFileName references exist in Templates map
 	for actionName, resource := range c.RemediationActions {
-		if resource.TemplateFile != "" {
-			if _, exists := c.Templates[resource.TemplateFile]; !exists {
-				return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFile)
+		if resource.TemplateFileName != "" {
+			if _, exists := c.Templates[resource.TemplateFileName]; !exists {
+				return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFileName)
 			}
 		}
 	}
-	
+
 	// Validate that Scope field has valid values
 	for actionName, resource := range c.RemediationActions {
 		if resource.Scope != "" && resource.Scope != "Cluster" && resource.Scope != "Namespaced" {
 			return fmt.Errorf("action '%s' has invalid scope '%s', must be 'Cluster' or 'Namespaced'", actionName, resource.Scope)
 		}
-		
+
 		// If scope is Namespaced, namespace should be specified
 		if resource.Scope == "Namespaced" && resource.Namespace == "" {
 			return fmt.Errorf("action '%s' is Namespaced but no namespace is specified", actionName)
 		}
 	}
-	
+
 	return nil
 }

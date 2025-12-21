@@ -56,7 +56,7 @@ maintenance:
     #   kind: "RebootNode"
     #   scope: "Cluster"  # "Cluster" or "Namespaced"
     #   completeConditionType: "NodeReady"
-    #   templateFile: "nvidia-reboot.yaml"
+    #   templateFileName: "nvidia-reboot.yaml"
     # RESTART_BM:
     #   apiGroup: "remediation.example.com"
     #   version: "v1alpha1"
@@ -64,11 +64,11 @@ maintenance:
     #   scope: "Namespaced"
     #   namespace: "remediation" 
     #   completeConditionType: "NodeReady"
-    #   templateFile: "namespaced-restart.yaml"
+    #   templateFileName: "namespaced-restart.yaml"
 
 
   # Template content for each remediation action
-  # Key matches the templateFile name from actions above
+  # Key matches the templateFileName name from actions above
   templates: {}
     # Example:
     # "nvidia-reboot.yaml": |

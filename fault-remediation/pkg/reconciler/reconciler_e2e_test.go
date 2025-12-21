@@ -323,22 +323,22 @@ func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 				ApiGroup:              "janitor.dgxc.nvidia.com",
 				Version:               "v1alpha1",
 				Kind:                  "RebootNode",
-				TemplateFile:          "test.yaml",
+				TemplateFileName:      "test.yaml",
 				CompleteConditionType: "NodeReady",
 			},
 			"COMPONENT_RESET": {
 				ApiGroup:              "janitor.dgxc.nvidia.com",
 				Version:               "v1alpha1",
 				Kind:                  "RebootNode",
-				TemplateFile:          "gpu-reset.yaml",
+				TemplateFileName:      "gpu-reset.yaml",
 				CompleteConditionType: "NodeReady",
 			},
 		},
 	}
-	
+
 	// Create templates map
 	templates := map[string]*template.Template{
-		"RESTART_BM": tmpl,
+		"RESTART_BM":      tmpl,
 		"COMPONENT_RESET": tmpl, // Use same template for testing
 	}
 

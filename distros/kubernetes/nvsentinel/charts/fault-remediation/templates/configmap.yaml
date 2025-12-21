@@ -34,7 +34,7 @@ data:
     namespace = {{ $config.namespace | quote }}
     {{- end }}
     completeConditionType = {{ $config.completeConditionType | default "NodeReady" | quote }}
-    templateFile = {{ $config.templateFile | quote }}
+    templateFileName = {{ $config.templateFileName | quote }}
     {{- end }}
     
     [updateRetry]

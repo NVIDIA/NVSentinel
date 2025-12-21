@@ -31,13 +31,13 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"RESTART_BM": {
-						TemplateFile: "atlas-reboot.yaml",
-						Scope:        "Cluster",
+						TemplateFileName: "atlas-reboot.yaml",
+						Scope:            "Cluster",
 					},
 					"COMPONENT_RESET": {
-						TemplateFile: "gpu-reset.yaml",
-						Scope:        "Namespaced",
-						Namespace:    "nvidia-gpu-operator",
+						TemplateFileName: "gpu-reset.yaml",
+						Scope:            "Namespaced",
+						Namespace:        "nvidia-gpu-operator",
 					},
 				},
 				Templates: map[string]string{
@@ -52,8 +52,8 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"RESTART_BM": {
-						TemplateFile: "missing-template.yaml",
-						Scope:        "Cluster",
+						TemplateFileName: "missing-template.yaml",
+						Scope:            "Cluster",
 					},
 				},
 				Templates: map[string]string{
@@ -68,8 +68,8 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"RESTART_BM": {
-						TemplateFile: "template.yaml",
-						Scope:        "Invalid",
+						TemplateFileName: "template.yaml",
+						Scope:            "Invalid",
 					},
 				},
 				Templates: map[string]string{
@@ -84,9 +84,9 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"COMPONENT_RESET": {
-						TemplateFile: "template.yaml",
-						Scope:        "Namespaced",
-						Namespace:    "", // Missing namespace
+						TemplateFileName: "template.yaml",
+						Scope:            "Namespaced",
+						Namespace:        "", // Missing namespace
 					},
 				},
 				Templates: map[string]string{
@@ -101,8 +101,8 @@ func TestTomlConfig_Validate(t *testing.T) {
 			config: TomlConfig{
 				RemediationActions: map[string]MaintenanceResource{
 					"RESTART_BM": {
-						TemplateFile: "", // Empty is OK
-						Scope:        "Cluster",
+						TemplateFileName: "", // Empty is OK
+						Scope:            "Cluster",
 					},
 				},
 				Templates: map[string]string{
@@ -116,7 +116,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
-			
+
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("Expected validation error but got none")

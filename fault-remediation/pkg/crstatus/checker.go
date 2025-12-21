@@ -28,10 +28,10 @@ import (
 )
 
 type CRStatusChecker struct {
-	dynamicClient       dynamic.Interface
-	restMapper          *restmapper.DeferredDiscoveryRESTMapper
-	remediationActions  map[string]config.MaintenanceResource
-	dryRun              bool
+	dynamicClient      dynamic.Interface
+	restMapper         *restmapper.DeferredDiscoveryRESTMapper
+	remediationActions map[string]config.MaintenanceResource
+	dryRun             bool
 }
 
 func NewCRStatusChecker(
@@ -41,10 +41,10 @@ func NewCRStatusChecker(
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		dynamicClient:       dynamicClient,
-		restMapper:          restMapper,
-		remediationActions:  remediationActions,
-		dryRun:              dryRun,
+		dynamicClient:      dynamicClient,
+		restMapper:         restMapper,
+		remediationActions: remediationActions,
+		dryRun:             dryRun,
 	}
 }
 

@@ -233,7 +233,7 @@ func TestNewK8sClient(t *testing.T) {
 						ApiGroup:              "janitor.dgxc.nvidia.com",
 						Kind:                  "RebootNode",
 						CompleteConditionType: "NodeReady",
-						TemplateFile:          "rebootnode-template.yaml",
+						TemplateFileName:      "rebootnode-template.yaml",
 					},
 					"COMPONENT_RESET": {
 						Namespace:             "dgxc-janitor",
@@ -241,7 +241,7 @@ func TestNewK8sClient(t *testing.T) {
 						ApiGroup:              "janitor.dgxc.nvidia.com",
 						Kind:                  "RebootNode",
 						CompleteConditionType: "NodeReady",
-						TemplateFile:          "gpu-reset-template.yaml",
+						TemplateFileName:      "gpu-reset-template.yaml",
 					},
 				},
 			}
@@ -334,23 +334,23 @@ spec:
 			remediationConfig := config.TomlConfig{
 				RemediationActions: map[string]config.MaintenanceResource{
 					"RESTART_BM": {
-						Version:  "v1alpha1",
-						ApiGroup: "janitor.dgxc.nvidia.com",
-						Kind:     "RebootNode",
-						TemplateFile: "test.yaml",
+						Version:          "v1alpha1",
+						ApiGroup:         "janitor.dgxc.nvidia.com",
+						Kind:             "RebootNode",
+						TemplateFileName: "test.yaml",
 					},
 					"COMPONENT_RESET": {
-						Version:  "v1alpha1",
-						ApiGroup: "janitor.dgxc.nvidia.com",
-						Kind:     "RebootNode",
-						TemplateFile: "gpu-reset.yaml",
+						Version:          "v1alpha1",
+						ApiGroup:         "janitor.dgxc.nvidia.com",
+						Kind:             "RebootNode",
+						TemplateFileName: "gpu-reset.yaml",
 					},
 				},
 			}
-			
+
 			// Create templates map
 			templates := map[string]*template.Template{
-				"RESTART_BM": tmpl,
+				"RESTART_BM":      tmpl,
 				"COMPONENT_RESET": tmpl, // Use same template for testing
 			}
 
