@@ -227,7 +227,7 @@ func TestNewK8sClient(t *testing.T) {
 					MountPath: "templates",
 				},
 				RemediationActions: map[string]config.MaintenanceResource{
-					"RESTART_BM": {
+					protos.RecommendedAction_RESTART_BM.String(): {
 						Namespace:             "dgxc-janitor",
 						Version:               "v1alpha1",
 						ApiGroup:              "janitor.dgxc.nvidia.com",
@@ -235,7 +235,7 @@ func TestNewK8sClient(t *testing.T) {
 						CompleteConditionType: "NodeReady",
 						TemplateFileName:      "rebootnode-template.yaml",
 					},
-					"COMPONENT_RESET": {
+					protos.RecommendedAction_COMPONENT_RESET.String(): {
 						Namespace:             "dgxc-janitor",
 						Version:               "v1alpha1",
 						ApiGroup:              "janitor.dgxc.nvidia.com",

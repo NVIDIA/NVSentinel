@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -442,7 +441,7 @@ func (c *FaultRemediationClient) handleCreateCRError(
 // nolint: cyclop // todo
 func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
 	if len(c.dryRunMode) > 0 {
-		log.Printf("DRY-RUN: Skipping log collector job for node %s", nodeName)
+		slog.Info("DRY-RUN: Skipping log collector job", "node", nodeName)
 		return nil
 	}
 
@@ -476,7 +475,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	}
 
 	// Wait for completion using typed client with proper watching
-	log.Printf("Waiting for log collector job %s to complete", created.Name)
+	slog.Info("Waiting for log collector job to complete", "job", created.Name)
 
 	// Use a context with timeout for the watch
 	timeout := 10 * time.Minute // Default timeout: 10 minutes
@@ -485,7 +484,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 		if parsed, err := time.ParseDuration(timeoutEnv); err == nil {
 			timeout = parsed
 		} else {
-			log.Printf("Warning: Invalid LOG_COLLECTOR_TIMEOUT value '%s', using default 10m: %v", timeoutEnv, err)
+			slog.Warn("Invalid LOG_COLLECTOR_TIMEOUT value, using default 10m", "value", timeoutEnv, "error", err)
 		}
 	}
 
@@ -531,7 +530,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 
 			completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete))
 			if completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
-				log.Printf("Log collector job %s completed successfully", created.Name)
+				slog.Info("Log collector job completed successfully", "job", created.Name)
 				// Use job's actual duration instead of custom tracking
 				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
 
@@ -545,7 +544,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 
 			failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed))
 			if failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
-				log.Printf("Log collector job %s failed", created.Name)
+				slog.Error("Log collector job failed", "job", created.Name)
 				// Use job's actual duration for failed jobs too
 				var duration float64
 				if job.Status.CompletionTime != nil {
