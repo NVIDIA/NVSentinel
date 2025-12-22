@@ -325,11 +325,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 				metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 
-				// Add timeout to CSP operation
-				cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
-				defer cancel()
-
-				_, terminateErr := r.CSPClient.SendTerminateSignal(cspCtx, &cspv1alpha1.SendTerminateSignalRequest{
+				_, terminateErr := r.CSPClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
 				})
 

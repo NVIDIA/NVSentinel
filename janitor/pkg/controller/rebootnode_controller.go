@@ -187,21 +187,13 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			cspReady = true
 			nodeReadyErr = nil
 		} else {
-			// Add timeout to CSP operation to prevent queue blocking
-			cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
-			defer cancel()
-
-			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(cspCtx, &cspv1alpha1.IsNodeReadyRequest{
+			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
 				NodeName: node.Name,
 			})
-			cspReady = rsp.IsReady
 
-			// Check for timeout specifically
-			if errors.Is(nodeReadyErr, context.DeadlineExceeded) {
-				logger.Info("CSP operation timed out, will retry",
-					"node", node.Name,
-					"operation", "IsNodeReady",
-					"timeout", CSPOperationTimeout)
+			if nodeReadyErr != nil {
+				logger.Error(nodeReadyErr, "failed to check if node is ready",
+					"node", node.Name)
 
 				rebootNode.Status.ConsecutiveFailures++
 				delay := getNextRequeueDelay(rebootNode.Status.ConsecutiveFailures)
@@ -210,6 +202,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				// Update status and return early
 				return r.updateRebootNodeStatus(ctx, req, originalRebootNode, &rebootNode, result)
 			}
+			cspReady = rsp.IsReady
 		}
 
 		// Check if kubernetes reports the node is ready.
@@ -339,11 +332,8 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				logger.Info("sending reboot signal to node",
 					"node", node.Name)
 
-				// Add timeout to CSP operation
-				cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
-				defer cancel()
-
-				rsp, rebootErr := r.CSPClient.SendRebootSignal(cspCtx, &cspv1alpha1.SendRebootSignalRequest{
+				fmt.Println("controller context", ctx)
+				rsp, rebootErr := r.CSPClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
 					NodeName: node.Name,
 				})
 

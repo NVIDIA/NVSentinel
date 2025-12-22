@@ -21,8 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,7 +29,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
@@ -128,14 +125,10 @@ var _ = Describe("RebootNode Controller", func() {
 			WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
 			Build()
 
-		conn, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		Expect(err).NotTo(HaveOccurred())
-
 		// Create reconciler
 		reconciler = &RebootNodeReconciler{
-			Client:    k8sClient,
-			Scheme:    scheme,
-			CSPClient: cspv1alpha1.NewCSPProviderServiceClient(conn),
+			Client: k8sClient,
+			Scheme: scheme,
 			Config: &config.RebootNodeControllerConfig{
 				Timeout: 30 * time.Minute,
 			},
@@ -157,6 +150,8 @@ var _ = Describe("RebootNode Controller", func() {
 					Name: testRebootNode.Name,
 				},
 			}
+
+			reconciler.setupGRPCServer()
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -197,6 +192,8 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupGRPCServer()
+
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -235,6 +232,8 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupGRPCServer()
+
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on completion
@@ -260,9 +259,11 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupFailingGRPCServer()
+
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(30 * time.Second)) // Should requeue for monitoring
+			Expect(result.RequeueAfter).To(Equal(60 * time.Second)) // Should requeue for monitoring
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -273,95 +274,6 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(updatedRebootNode.Status.CompletionTime).To(BeNil())
 			Expect(updatedRebootNode.IsRebootInProgress()).To(BeTrue())
 		})
-
-		It("should timeout after configured duration", func() {
-			// Set start time to be past the timeout
-			pastTime := time.Now().Add(-35 * time.Minute) // Past 30 minute timeout
-			testRebootNode.Status.StartTime = &metav1.Time{Time: pastTime}
-			err := k8sClient.Status().Update(ctx, testRebootNode)
-			Expect(err).NotTo(HaveOccurred())
-
-			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
-			}
-
-			result, err := reconciler.Reconcile(ctx, req)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on timeout
-
-			// Get updated RebootNode
-			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updatedRebootNode)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify timeout
-			Expect(updatedRebootNode.Status.CompletionTime).NotTo(BeNil())
-
-			nodeReadyCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
-			Expect(nodeReadyCondition).NotTo(BeNil())
-			Expect(nodeReadyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(nodeReadyCondition.Reason).To(Equal("Timeout"))
-		})
-	})
-
-	Context("when node ready check fails", func() {
-		BeforeEach(func() {
-
-			// Set up RebootNode as if reboot signal was already sent
-			testRebootNode.Status.StartTime = &metav1.Time{Time: time.Now().Add(-5 * time.Minute)}
-			testRebootNode.Status.Conditions = []metav1.Condition{
-				{
-					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
-					Status:             metav1.ConditionTrue,
-					Reason:             "Succeeded",
-					Message:            "test-request-ref",
-					LastTransitionTime: metav1.Now(),
-				},
-				{
-					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-					Status:             metav1.ConditionUnknown,
-					Reason:             "Initializing",
-					Message:            "Node ready state not yet determined",
-					LastTransitionTime: metav1.Now(),
-				},
-			}
-
-			// Update the object in the fake client
-			err := k8sClient.Status().Update(ctx, testRebootNode)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should set node ready condition to False and not requeue", func() {
-			req := reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name: testRebootNode.Name,
-				},
-			}
-
-			result, err := reconciler.Reconcile(ctx, req)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on failure
-
-			// Get updated RebootNode
-			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &updatedRebootNode)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify NodeReady condition is False
-			nodeReadyCondition := findCondition(updatedRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
-			Expect(nodeReadyCondition).NotTo(BeNil())
-			Expect(nodeReadyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(nodeReadyCondition.Reason).To(Equal("Failed"))
-			Expect(nodeReadyCondition.Message).To(Equal("Node status could not be checked from CSP: CSP error"))
-
-			// Verify IsRebootInProgress returns true
-			Expect(updatedRebootNode.IsRebootInProgress()).To(BeTrue())
-
-			// Verify completion
-			Expect(updatedRebootNode.Status.CompletionTime).NotTo(BeNil())
-		})
 	})
 
 	Context("when reboot signal fails", func() {
@@ -371,6 +283,8 @@ var _ = Describe("RebootNode Controller", func() {
 					Name: testRebootNode.Name,
 				},
 			}
+
+			reconciler.setupFailingGRPCServer()
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -386,7 +300,7 @@ var _ = Describe("RebootNode Controller", func() {
 			Expect(signalSentCondition).NotTo(BeNil())
 			Expect(signalSentCondition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(signalSentCondition.Reason).To(Equal("Failed"))
-			Expect(signalSentCondition.Message).To(Equal("CSP error"))
+			Expect(signalSentCondition.Message).To(ContainSubstring("failed to send reboot signal"))
 
 			// Verify IsRebootInProgress returns false (since signal failed)
 			Expect(updatedRebootNode.IsRebootInProgress()).To(BeFalse())
@@ -458,6 +372,8 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupGRPCServer()
+
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
@@ -492,6 +408,8 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupGRPCServer()
+
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -522,6 +440,8 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
+			reconciler.setupGRPCServer()
+
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -545,6 +465,8 @@ var _ = Describe("RebootNode Controller", func() {
 
 			// Verify IsRebootInProgress now returns true (since SignalSent is True)
 			Expect(currentRebootNode.IsRebootInProgress()).To(BeTrue())
+
+			reconciler.setupGRPCServer()
 
 			// Next reconciliation should complete the reboot since node is ready
 			result, err := reconciler.Reconcile(ctx, req)

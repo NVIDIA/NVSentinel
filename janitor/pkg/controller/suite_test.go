@@ -16,15 +16,12 @@ package controller
 
 import (
 	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/test/bufconn"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -33,7 +30,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 )
 
@@ -47,36 +43,6 @@ var (
 	cfg       *rest.Config
 	k8sClient client.Client
 )
-
-var (
-	lis *bufconn.Listener
-)
-
-func bufDialer(context.Context, string) (net.Conn, error) {
-	return lis.Dial()
-}
-
-type mockCSPProviderServer struct {
-	cspv1alpha1.UnimplementedCSPProviderServiceServer
-}
-
-func (s *mockCSPProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
-	return &cspv1alpha1.SendTerminateSignalResponse{
-		RequestId: "1234567890",
-	}, nil
-}
-
-func (s *mockCSPProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
-	return &cspv1alpha1.SendRebootSignalResponse{
-		RequestId: "test-request-ref",
-	}, nil
-}
-
-func (s *mockCSPProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
-	return &cspv1alpha1.IsNodeReadyResponse{
-		IsReady: true,
-	}, nil
-}
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -117,15 +83,6 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
-
-	lis = bufconn.Listen(1024 * 1024)
-	s := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(s, &mockCSPProviderServer{})
-	go func() {
-		if err := s.Serve(lis); err != nil {
-			logf.Log.Error(err, "Failed to serve")
-		}
-	}()
 })
 
 var _ = AfterSuite(func() {
