@@ -139,13 +139,15 @@ func NewK8sClient(kubeconfig string, dryRun bool, remediationConfig config.TomlC
 
 	// Load templates for multi-template actions
 	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
-		if maintenanceResource.TemplateFileName != "" {
-			tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
-			}
-			templates[actionName] = tmpl
+		if maintenanceResource.TemplateFileName == "" {
+			return nil, nil, fmt.Errorf("remediation action %s is missing template file configuration", actionName)
 		}
+		
+		tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
+		}
+		templates[actionName] = tmpl
 	}
 
 	client := &FaultRemediationClient{
