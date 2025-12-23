@@ -125,14 +125,18 @@ var _ = Describe("RebootNode Controller", func() {
 			WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
 			Build()
 
-		// Create reconciler
+		// Create reconciler using shared mock CSP client
 		reconciler = &RebootNodeReconciler{
 			Client: k8sClient,
 			Scheme: scheme,
 			Config: &config.RebootNodeControllerConfig{
 				Timeout: 30 * time.Minute,
 			},
+			CSPClient: mockCSP.Client,
 		}
+
+		// Default to success behavior - tests can override as needed
+		mockCSP.Server.SetSuccess()
 	})
 
 	AfterEach(func() {
@@ -150,8 +154,6 @@ var _ = Describe("RebootNode Controller", func() {
 					Name: testRebootNode.Name,
 				},
 			}
-
-			reconciler.setupGRPCServer()
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -192,8 +194,6 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -232,8 +232,6 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on completion
@@ -253,13 +251,14 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 
 		It("should continue monitoring when node is not ready", func() {
+			// Configure mock to fail the IsNodeReady check
+			mockCSP.Server.SetNodeReadyError(DefaultFailureBehavior().IsNodeReadyError)
+
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: testRebootNode.Name,
 				},
 			}
-
-			reconciler.setupFailingGRPCServer()
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -278,13 +277,14 @@ var _ = Describe("RebootNode Controller", func() {
 
 	Context("when reboot signal fails", func() {
 		It("should set SignalSent condition to False and not requeue", func() {
+			// Configure mock to fail
+			mockCSP.Server.SetFailure()
+
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name: testRebootNode.Name,
 				},
 			}
-
-			reconciler.setupFailingGRPCServer()
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -372,8 +372,6 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
@@ -408,8 +406,6 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -440,8 +436,6 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -465,8 +459,6 @@ var _ = Describe("RebootNode Controller", func() {
 
 			// Verify IsRebootInProgress now returns true (since SignalSent is True)
 			Expect(currentRebootNode.IsRebootInProgress()).To(BeTrue())
-
-			reconciler.setupGRPCServer()
 
 			// Next reconciliation should complete the reboot since node is ready
 			result, err := reconciler.Reconcile(ctx, req)

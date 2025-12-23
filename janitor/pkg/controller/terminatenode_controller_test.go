@@ -21,8 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,7 +28,6 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
@@ -87,18 +84,18 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		}
 		Expect(k8sClient.Create(ctx, terminateNode)).Should(Succeed())
 
-		conn, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		Expect(err).NotTo(HaveOccurred())
-
-		// Create the reconciler with the mock CSP client
+		// Create the reconciler with the shared mock CSP client
 		reconciler = &TerminateNodeReconciler{
 			Client: k8sClient,
 			Scheme: scheme.Scheme,
 			Config: &config.TerminateNodeControllerConfig{
 				ManualMode: false,
 			},
-			CSPClient: cspv1alpha1.NewCSPProviderServiceClient(conn),
+			CSPClient: mockCSP.Client,
 		}
+
+		// Default to success behavior - tests can override as needed
+		mockCSP.Server.SetSuccess()
 	})
 
 	AfterEach(func() {
@@ -110,8 +107,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	Context("When creating a new TerminateNode resource", func() {
 		It("Should set the start time", func() {
-			reconciler.setupGRPCServer()
-
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -135,8 +130,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	Context("When sending terminate signal", func() {
 		It("Should successfully send terminate signal and update condition", func() {
-			reconciler.setupGRPCServer()
-
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -155,8 +148,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				}
 				return updatedTerminateNode.Status.StartTime != nil
 			}, timeout, interval).Should(BeTrue())
-
-			reconciler.setupGRPCServer()
 
 			// Trigger reconciliation again to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
@@ -185,7 +176,8 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 
 		It("Should fail to send terminate signal and update condition", func() {
-			reconciler.setupFailingGRPCServer()
+			// Configure mock to fail
+			mockCSP.Server.SetFailure()
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -219,8 +211,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	Context("When node is not ready", func() {
 		It("Should delete the node", func() {
-			reconciler.setupGRPCServer()
-
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -239,8 +229,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				}
 				return updatedTerminateNode.Status.StartTime != nil
 			}, timeout, interval).Should(BeTrue())
-
-			reconciler.setupGRPCServer()
 
 			// Trigger reconciliation to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
@@ -270,8 +258,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			node.Status.Conditions[0].Status = corev1.ConditionFalse
 			Expect(k8sClient.Status().Update(ctx, node)).Should(Succeed())
 
-			reconciler.setupGRPCServer()
-
 			// Trigger reconciliation to delete node
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -285,8 +271,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, node)
 				return apierrors.IsNotFound(err)
 			}, timeout, interval).Should(BeTrue())
-
-			reconciler.setupGRPCServer()
 
 			// Trigger reconciliation again to mark as complete
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
@@ -320,8 +304,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	Context("When node is already deleted", func() {
 		It("Should mark termination as complete", func() {
-			reconciler.setupGRPCServer()
-
 			// Trigger initial reconciliation to set start time
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
@@ -341,11 +323,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				}
 				return updatedTerminateNode.Status.StartTime != nil
 			}, timeout, interval).Should(BeTrue())
-
-			ctx = context.WithValue(ctx, "requestId", "test-request-ref")
-			ctx = context.WithValue(ctx, "shouldFail", false)
-
-			reconciler.setupGRPCServer()
 
 			// Trigger reconciliation to send terminate signal
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
@@ -374,8 +351,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			// Delete the node
 			Expect(k8sClient.Delete(ctx, node)).Should(Succeed())
-
-			reconciler.setupGRPCServer()
 
 			// Trigger reconciliation to mark as complete
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{
@@ -421,8 +396,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
@@ -457,8 +430,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				},
 			}
 
-			reconciler.setupGRPCServer()
-
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -488,8 +459,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 					Name: crName,
 				},
 			}
-
-			reconciler.setupGRPCServer()
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
@@ -525,8 +494,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			}
 			err = k8sClient.Status().Update(ctx, node)
 			Expect(err).NotTo(HaveOccurred())
-
-			reconciler.setupGRPCServer()
 
 			// Next reconciliation should detect not ready node and delete it, completing termination immediately
 			result, err := reconciler.Reconcile(ctx, req)

@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"sync"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/onsi/gomega"
@@ -30,129 +31,203 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var (
-	lis *bufconn.Listener
-)
+// MockCSPBehavior defines how the mock CSP server should behave for each operation.
+// This allows tests to configure success/failure per operation type.
+type MockCSPBehavior struct {
+	// SendTerminateSignal behavior
+	TerminateError     error
+	TerminateRequestID string
 
-func bufDialer(context.Context, string) (net.Conn, error) {
-	return lis.Dial()
+	// SendRebootSignal behavior
+	RebootError     error
+	RebootRequestID string
+
+	// IsNodeReady behavior
+	IsNodeReadyError error
+	IsNodeReady      bool
 }
 
-type cspProviderServer struct {
+// DefaultSuccessBehavior returns a MockCSPBehavior configured for all operations to succeed.
+func DefaultSuccessBehavior() *MockCSPBehavior {
+	return &MockCSPBehavior{
+		TerminateRequestID: "test-terminate-request-ref",
+		RebootRequestID:    "test-request-ref",
+		IsNodeReady:        true,
+	}
+}
+
+// DefaultFailureBehavior returns a MockCSPBehavior configured for all operations to fail.
+func DefaultFailureBehavior() *MockCSPBehavior {
+	return &MockCSPBehavior{
+		TerminateError:   status.Errorf(codes.Internal, "failed to send terminate signal"),
+		RebootError:      status.Errorf(codes.Internal, "failed to send reboot signal"),
+		IsNodeReadyError: status.Errorf(codes.Internal, "failed to check if node is ready"),
+	}
+}
+
+// MockCSPServer is a configurable mock implementation of CSPProviderServiceServer.
+// Behavior can be changed at runtime via SetBehavior for per-test configuration.
+type MockCSPServer struct {
 	cspv1alpha1.UnimplementedCSPProviderServiceServer
+	mu       sync.RWMutex
+	behavior *MockCSPBehavior
 }
 
-func (s *cspProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+// NewMockCSPServer creates a new MockCSPServer with default success behavior.
+func NewMockCSPServer() *MockCSPServer {
+	return &MockCSPServer{
+		behavior: DefaultSuccessBehavior(),
+	}
+}
+
+// SetBehavior updates the mock server's behavior. This is thread-safe and can be called
+// from within tests to change behavior between reconciliations.
+func (s *MockCSPServer) SetBehavior(behavior *MockCSPBehavior) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior = behavior
+}
+
+// SetSuccess configures the server to succeed on all operations.
+func (s *MockCSPServer) SetSuccess() {
+	s.SetBehavior(DefaultSuccessBehavior())
+}
+
+// SetFailure configures the server to fail on all operations.
+func (s *MockCSPServer) SetFailure() {
+	s.SetBehavior(DefaultFailureBehavior())
+}
+
+// SetRebootSuccess configures only reboot operations to succeed.
+func (s *MockCSPServer) SetRebootSuccess(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.RebootError = nil
+	s.behavior.RebootRequestID = requestID
+}
+
+// SetRebootFailure configures only reboot operations to fail.
+func (s *MockCSPServer) SetRebootFailure(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.RebootError = err
+}
+
+// SetTerminateSuccess configures only terminate operations to succeed.
+func (s *MockCSPServer) SetTerminateSuccess(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.TerminateError = nil
+	s.behavior.TerminateRequestID = requestID
+}
+
+// SetTerminateFailure configures only terminate operations to fail.
+func (s *MockCSPServer) SetTerminateFailure(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.TerminateError = err
+}
+
+// SetNodeReady configures the IsNodeReady response.
+func (s *MockCSPServer) SetNodeReady(ready bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.IsNodeReadyError = nil
+	s.behavior.IsNodeReady = ready
+}
+
+// SetNodeReadyError configures IsNodeReady to return an error.
+func (s *MockCSPServer) SetNodeReadyError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.behavior.IsNodeReadyError = err
+}
+
+func (s *MockCSPServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.behavior.TerminateError != nil {
+		return nil, s.behavior.TerminateError
+	}
 	return &cspv1alpha1.SendTerminateSignalResponse{
-		RequestId: "value",
+		RequestId: s.behavior.TerminateRequestID,
 	}, nil
 }
 
-func (s *cspProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
+func (s *MockCSPServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.behavior.RebootError != nil {
+		return nil, s.behavior.RebootError
+	}
 	return &cspv1alpha1.SendRebootSignalResponse{
-		RequestId: "test-request-ref",
+		RequestId: s.behavior.RebootRequestID,
 	}, nil
 }
 
-func (s *cspProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+func (s *MockCSPServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.behavior.IsNodeReadyError != nil {
+		return nil, s.behavior.IsNodeReadyError
+	}
 	return &cspv1alpha1.IsNodeReadyResponse{
-		IsReady: true,
+		IsReady: s.behavior.IsNodeReady,
 	}, nil
 }
 
-func (r *RebootNodeReconciler) setupGRPCServer() {
+// MockCSPTestHelper manages the mock gRPC server lifecycle and provides a CSP client.
+// This should be created once per test suite and used across all tests.
+type MockCSPTestHelper struct {
+	Server     *MockCSPServer
+	Client     cspv1alpha1.CSPProviderServiceClient
+	grpcServer *grpc.Server
+	listener   *bufconn.Listener
+}
+
+// NewMockCSPTestHelper creates and starts a mock CSP gRPC server.
+// The server runs in the background and the returned helper provides a ready-to-use client.
+// Call Stop() when done (typically in AfterSuite).
+func NewMockCSPTestHelper() *MockCSPTestHelper {
 	lis := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(server, &cspProviderServer{})
+	mockServer := NewMockCSPServer()
+
+	cspv1alpha1.RegisterCSPProviderServiceServer(server, mockServer)
+
 	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Fatalf("Server exited with error: %v", err)
+		if err := server.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			log.Printf("Mock CSP server exited with error: %v", err)
 		}
 	}()
 
-	client, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Create client connection
+	conn, err := grpc.NewClient(
+		"passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Fatalf("Failed to create mock CSP client: %v", err)
 	}
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(client)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-}
 
-type cspProviderFailingServer struct {
-	cspv1alpha1.UnimplementedCSPProviderServiceServer
-}
-
-func (s *cspProviderFailingServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
-	return nil, status.Errorf(codes.Internal, "failed to send terminate signal")
-}
-
-func (s *cspProviderFailingServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
-	return nil, status.Errorf(codes.Internal, "failed to send reboot signal")
-}
-
-func (s *cspProviderFailingServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
-	return nil, status.Errorf(codes.Internal, "failed to check if node is ready")
-}
-
-func (r *RebootNodeReconciler) setupFailingGRPCServer() {
-	lis := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(server, &cspProviderFailingServer{})
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Fatalf("Server exited with error: %v", err)
-		}
-	}()
-
-	client, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(client)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+	return &MockCSPTestHelper{
+		Server:     mockServer,
+		Client:     cspv1alpha1.NewCSPProviderServiceClient(conn),
+		grpcServer: server,
+		listener:   lis,
 	}
 }
 
-func (r *TerminateNodeReconciler) setupFailingGRPCServer() {
-	lis := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(server, &cspProviderFailingServer{})
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Fatalf("Server exited with error: %v", err)
-		}
-	}()
-
-	client, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(client)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-}
-
-func (r *TerminateNodeReconciler) setupGRPCServer() {
-	lis := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(server, &cspProviderServer{})
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Fatalf("Server exited with error: %v", err)
-		}
-	}()
-
-	client, err := grpc.NewClient("passthrough://bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-	}
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(client)
-	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+// Stop gracefully shuts down the mock gRPC server.
+func (h *MockCSPTestHelper) Stop() {
+	if h.grpcServer != nil {
+		h.grpcServer.GracefulStop()
 	}
 }
 
