@@ -17,11 +17,13 @@
 // Authentication is supported via IAM token (NEBIUS_IAM_TOKEN) or service account key file (NEBIUS_SA_KEY_FILE).
 // Explicit credentials are required - the Nebius SDK does not support automatic credential discovery.
 //
-// Nebius does not provide a direct reboot API, so this implementation uses a stop/start pattern:
-// 1. Stop the instance
-// 2. Wait for the stop operation to complete
-// 3. Start the instance after a cooldown period
-// 4. Poll until the instance reaches RUNNING state
+// Nebius does not provide a direct reboot API, so this implementation uses an async stop/start pattern:
+// 1. SendRebootSignal initiates a stop and returns the instance ID
+// 2. IsNodeReady polls the instance state and handles the state machine:
+//   - STOPPING -> wait
+//   - STOPPED -> initiate start
+//   - STARTING -> wait
+//   - RUNNING -> done
 package nebius
 
 import (
@@ -29,7 +31,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"time"
 
 	"github.com/nebius/gosdk"
 	"github.com/nebius/gosdk/auth"
@@ -126,119 +127,96 @@ func (c *Client) getInstanceService(ctx context.Context) (InstanceService, func(
 
 // SendRebootSignal sends a reboot signal to Nebius for the given node.
 // Nebius doesn't have a direct reboot API, so we stop the instance first.
-// The instance will be started in IsNodeReady after a cooldown period.
+// The instance will be started in IsNodeReady after the stop completes.
+// This is async - we don't wait for the stop to complete, just initiate it.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	logger := log.FromContext(ctx)
 
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
-		err := fmt.Errorf("no provider ID found for node %s", node.Name)
-		logger.Error(err, "Failed to reboot node")
-		return "", err
+		return "", fmt.Errorf("no provider ID found for node %s", node.Name)
 	}
 
 	// Extract the instance ID from the provider ID
 	nodeFields, err := getNodeFields(node)
 	if err != nil {
-		logger.Error(err, "Failed to parse provider ID")
-		return "", err
+		return "", fmt.Errorf("failed to parse provider ID: %w", err)
 	}
 
 	logger.Info("Stopping Nebius instance for reboot", "instanceID", nodeFields.instanceID)
 
 	instanceService, cleanup, err := c.getInstanceService(ctx)
 	if err != nil {
-		logger.Error(err, "Failed to get Nebius instance service")
-		return "", err
+		return "", fmt.Errorf("failed to get Nebius instance service: %w", err)
 	}
 	defer cleanup()
 
-	op, err := instanceService.Stop(ctx, &compute.StopInstanceRequest{
+	_, err = instanceService.Stop(ctx, &compute.StopInstanceRequest{
 		Id: nodeFields.instanceID,
 	})
 	if err != nil {
-		logger.Error(err, "Failed to stop instance", "instanceID", nodeFields.instanceID)
-		return "", err
+		return "", fmt.Errorf("failed to stop instance %s: %w", nodeFields.instanceID, err)
 	}
 
-	// Wait for the stop operation to complete
-	if _, err := op.Wait(ctx); err != nil {
-		logger.Error(err, "Stop operation failed")
-		return "", err
-	}
-
-	logger.Info("Successfully stopped Nebius instance", "instanceID", nodeFields.instanceID)
-
-	return model.ResetSignalRequestRef(time.Now().Format(time.RFC3339)), nil
+	// Return instance ID - IsNodeReady will poll the instance state
+	return model.ResetSignalRequestRef(nodeFields.instanceID), nil
 }
 
 // IsNodeReady checks if the node is ready after a reboot operation.
-// For Nebius, this involves starting the instance after the stop has completed,
-// then checking if it's running.
+// For Nebius, this polls the instance state and handles the stop/start cycle:
+// - STOPPING -> wait for stop to complete
+// - STOPPED -> initiate start
+// - STARTING -> wait for start to complete
+// - RUNNING -> node is ready
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
 	logger := log.FromContext(ctx)
 
-	// Sending a stop request doesn't update statuses immediately.
-	// Wait five minutes before checking the status and starting.
-	storedTime, err := time.Parse(time.RFC3339, message)
-	if err != nil {
-		logger.Error(err, "error parsing time")
-		return false, err
-	}
-
-	if time.Since(storedTime) < 5*time.Minute {
-		return false, nil
-	}
-
-	nodeFields, err := getNodeFields(node)
-	if err != nil {
-		logger.Error(err, "Failed to parse provider ID")
-		return false, err
-	}
+	// message contains the instance ID from SendRebootSignal
+	instanceID := message
 
 	instanceService, cleanup, err := c.getInstanceService(ctx)
 	if err != nil {
-		logger.Error(err, "Failed to get Nebius instance service")
-		return false, err
+		return false, fmt.Errorf("failed to get Nebius instance service: %w", err)
 	}
 	defer cleanup()
 
 	// Get current instance status
 	instance, err := instanceService.Get(ctx, &compute.GetInstanceRequest{
-		Id: nodeFields.instanceID,
+		Id: instanceID,
 	})
 	if err != nil {
-		logger.Error(err, "Failed to get instance status")
-		return false, err
+		return false, fmt.Errorf("failed to get instance status: %w", err)
 	}
 
 	state := instance.GetStatus().GetState()
 
-	if state == compute.InstanceStatus_STOPPED {
-		logger.Info("Starting Nebius instance", "instanceID", nodeFields.instanceID)
-		op, err := instanceService.Start(ctx, &compute.StartInstanceRequest{
-			Id: nodeFields.instanceID,
+	switch state {
+	case compute.InstanceStatus_RUNNING:
+		logger.Info("Nebius instance is running", "instanceID", instanceID)
+		return true, nil
+
+	case compute.InstanceStatus_STOPPED:
+		logger.Info("Starting Nebius instance", "instanceID", instanceID)
+		_, err := instanceService.Start(ctx, &compute.StartInstanceRequest{
+			Id: instanceID,
 		})
 		if err != nil {
-			logger.Error(err, "Failed to start instance", "instanceID", nodeFields.instanceID)
-			return false, err
+			return false, fmt.Errorf("failed to start instance %s: %w", instanceID, err)
 		}
-		// Wait for start operation to complete
-		if _, err := op.Wait(ctx); err != nil {
-			logger.Error(err, "Start operation failed", "instanceID", nodeFields.instanceID)
-			return false, err
-		}
+		// Start initiated, will check again on next poll
+		return false, nil
+
+	case compute.InstanceStatus_STOPPING, compute.InstanceStatus_STARTING:
+		logger.Info("Nebius instance is in transitional state, waiting",
+			"instanceID", instanceID, "state", state.String())
+		return false, nil
+
+	default:
+		logger.Info("Nebius instance is in unexpected state",
+			"instanceID", instanceID, "state", state.String())
 		return false, nil
 	}
-
-	if state == compute.InstanceStatus_RUNNING {
-		logger.Info("Nebius instance is running", "instanceID", nodeFields.instanceID)
-		return true, nil
-	}
-
-	logger.Info("Nebius instance is in transitional state, waiting", "instanceID", nodeFields.instanceID, "state", state.String())
-	return false, nil
 }
 
 // SendTerminateSignal is not implemented for Nebius.
