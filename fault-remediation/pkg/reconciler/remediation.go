@@ -150,6 +150,13 @@ func NewK8sClient(kubeconfig string, dryRun bool, remediationConfig config.TomlC
 		templates[actionName] = tmpl
 	}
 
+	// Validate namespace configuration for namespaced resources
+	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
+		if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace == "" {
+			return nil, nil, fmt.Errorf("remediation action %s is namespaced but missing namespace configuration", actionName)
+		}
+	}
+
 	client := &FaultRemediationClient{
 		clientset:         clientset,
 		kubeClient:        kubeClient,
@@ -348,7 +355,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 
 	// Create the maintenance resource (cluster or namespaced based on scope)
 	var createdCR *unstructured.Unstructured
-	if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace != "" {
+	if maintenanceResource.Scope == "Namespaced" {
 		createdCR, err = c.clientset.Resource(mapping.Resource).
 			Namespace(maintenanceResource.Namespace).
 			Create(ctx, maintenance, metav1.CreateOptions{})
