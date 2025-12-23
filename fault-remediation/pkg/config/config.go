@@ -72,12 +72,17 @@ type TomlConfig struct {
 
 // Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
+	// Validate Template.MountPath is non-empty
+	if c.Template.MountPath == "" {
+		return fmt.Errorf("template mountPath must be non-empty")
+	}
+
 	// Validate that all TemplateFileName references are non-empty and exist as files
 	for actionName, resource := range c.RemediationActions {
 		if resource.TemplateFileName == "" {
 			return fmt.Errorf("action '%s' must have a non-empty templateFileName", actionName)
 		}
-		
+
 		templatePath := filepath.Join(c.Template.MountPath, resource.TemplateFileName)
 		_, err := os.Stat(templatePath)
 		if err != nil {
