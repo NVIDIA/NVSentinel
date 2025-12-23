@@ -76,8 +76,12 @@ func (c *TomlConfig) Validate() error {
 		}
 		
 		templatePath := filepath.Join(c.Template.MountPath, resource.TemplateFileName)
-		if _, err := os.Stat(templatePath); os.IsNotExist(err) {
-			return fmt.Errorf("action '%s' references template file '%s' which does not exist at path '%s'", actionName, resource.TemplateFileName, templatePath)
+		_, err := os.Stat(templatePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("action '%s' references template file '%s' which does not exist at path '%s'", actionName, resource.TemplateFileName, templatePath)
+			}
+			return fmt.Errorf("action '%s' cannot access template file '%s' at path '%s': %w", actionName, resource.TemplateFileName, templatePath, err)
 		}
 	}
 
