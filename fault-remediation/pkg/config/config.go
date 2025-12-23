@@ -16,6 +16,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 )
 
 // MaintenanceResource holds configuration for maintenance custom resources
@@ -31,6 +33,11 @@ type MaintenanceResource struct {
 
 	// Template file path relative to the mount path
 	TemplateFileName string `toml:"templateFileName"`
+
+	// EquivalenceGroup defines which actions are considered equivalent for deduplication
+	// Actions in the same group will deduplicate against each other regardless of CRD type
+	// Example: "restart" group may contain RESTART_BM (Atlas) and COMPONENT_RESET (NVIDIA)
+	EquivalenceGroup string `toml:"equivalenceGroup"`
 }
 
 // Template holds configuration for template files mount
@@ -62,15 +69,15 @@ type TomlConfig struct {
 
 // Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
-	// Validate that all TemplateFileName references are non-empty and exist in Templates map
+	// Validate that all TemplateFileName references are non-empty and exist as files
 	for actionName, resource := range c.RemediationActions {
 		if resource.TemplateFileName == "" {
 			return fmt.Errorf("action '%s' must have a non-empty templateFileName", actionName)
 		}
 		
-		_, templateExists := c.Templates[resource.TemplateFileName]
-		if !templateExists {
-			return fmt.Errorf("action '%s' references template file '%s' which does not exist in templates map", actionName, resource.TemplateFileName)
+		templatePath := filepath.Join(c.Template.MountPath, resource.TemplateFileName)
+		if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+			return fmt.Errorf("action '%s' references template file '%s' which does not exist at path '%s'", actionName, resource.TemplateFileName, templatePath)
 		}
 	}
 

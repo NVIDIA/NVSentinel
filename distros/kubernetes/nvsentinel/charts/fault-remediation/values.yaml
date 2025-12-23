@@ -57,6 +57,7 @@ maintenance:
     #   scope: "Cluster"  # "Cluster" or "Namespaced"
     #   completeConditionType: "NodeReady"
     #   templateFileName: "nvidia-reboot.yaml"
+    #   equivalenceGroup: "restart"  # Actions in same group deduplicate
     # RESTART_BM:
     #   apiGroup: "remediation.example.com"
     #   version: "v1alpha1"
@@ -65,6 +66,7 @@ maintenance:
     #   namespace: "remediation" 
     #   completeConditionType: "NodeReady"
     #   templateFileName: "namespaced-restart.yaml"
+    #   equivalenceGroup: "restart"  # Same group as COMPONENT_RESET
 
 
   # Template content for each remediation action

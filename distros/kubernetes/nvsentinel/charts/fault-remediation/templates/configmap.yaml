@@ -35,6 +35,9 @@ data:
     {{- end }}
     completeConditionType = {{ $config.completeConditionType | default "NodeReady" | quote }}
     templateFileName = {{ $config.templateFileName | quote }}
+    {{- if $config.equivalenceGroup }}
+    equivalenceGroup = {{ $config.equivalenceGroup | quote }}
+    {{- end }}
     {{- end }}
     
     [updateRetry]

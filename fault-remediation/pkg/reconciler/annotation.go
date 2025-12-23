@@ -37,7 +37,7 @@ const (
 // NodeAnnotationManagerInterface defines the interface for managing node annotations
 type NodeAnnotationManagerInterface interface {
 	GetRemediationState(ctx context.Context, nodeName string) (*RemediationStateAnnotation, error)
-	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string) error
+	UpdateRemediationState(ctx context.Context, nodeName string, group string, crName string, actionName string) error
 	ClearRemediationState(ctx context.Context, nodeName string) error
 	RemoveGroupFromState(ctx context.Context, nodeName string, group string) error
 }
@@ -51,6 +51,9 @@ type RemediationStateAnnotation struct {
 type EquivalenceGroupState struct {
 	MaintenanceCR string    `json:"maintenanceCR"`
 	CreatedAt     time.Time `json:"createdAt"`
+
+	// Action that created the CR (e.g., "RESTART_BM")
+	ActionName string `json:"actionName"`
 }
 
 // NodeAnnotationManager manages node annotations for tracking remediation state
@@ -150,7 +153,7 @@ func (m *NodeAnnotationManager) GetRemediationState(
 
 // UpdateRemediationState updates the node annotation with new remediation state
 func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
-	group string, crName string) error {
+	group string, crName string, actionName string) error {
 	// Get current state
 	state, err := m.GetRemediationState(ctx, nodeName)
 	if err != nil {
@@ -165,6 +168,7 @@ func (m *NodeAnnotationManager) UpdateRemediationState(ctx context.Context, node
 	// Update state for the group
 	state.EquivalenceGroups[group] = EquivalenceGroupState{
 		MaintenanceCR: crName,
+		ActionName:    actionName,
 		CreatedAt:     time.Now().UTC(),
 	}
 

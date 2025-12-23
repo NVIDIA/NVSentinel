@@ -44,7 +44,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
@@ -209,6 +208,10 @@ func (c *FaultRemediationClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return c.statusChecker
 }
 
+func (c *FaultRemediationClient) GetConfig() *config.TomlConfig {
+	return &c.remediationConfig
+}
+
 func (c *FaultRemediationClient) CreateMaintenanceResource(
 	ctx context.Context,
 	healthEventData *HealthEventData,
@@ -365,10 +368,10 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		"template", actionKey)
 
 	// Update node annotation with CR reference
-	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
+	group := maintenanceResource.EquivalenceGroup
 	if group != "" && c.annotationManager != nil {
 		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-			group, actualCRName); err != nil {
+			group, actualCRName, recommendedActionName); err != nil {
 			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
 				"error", err)
 		}
@@ -418,13 +421,25 @@ func (c *FaultRemediationClient) handleCreateCRError(
 			"node", healthEvent.NodeName)
 
 		// Update node annotation with CR reference
-		group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
-		if group != "" && c.annotationManager != nil {
-			if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-				group, crName); err != nil {
-				slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
-					"error", err)
-			}
+		actionName := healthEvent.RecommendedAction.String()
+		actionConfig, exists := c.remediationConfig.RemediationActions[actionName]
+		if !exists {
+			return true, crName
+		}
+		
+		group := actionConfig.EquivalenceGroup
+		if group == "" {
+			return true, crName
+		}
+		
+		if c.annotationManager == nil {
+			return true, crName
+		}
+		
+		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
+			group, crName, actionName); err != nil {
+			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
+				"error", err)
 		}
 
 		return true, crName

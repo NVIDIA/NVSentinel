@@ -325,6 +325,7 @@ func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 				Kind:                  "RebootNode",
 				TemplateFileName:      "test.yaml",
 				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "restart",
 			},
 			"COMPONENT_RESET": {
 				ApiGroup:              "janitor.dgxc.nvidia.com",
@@ -332,6 +333,7 @@ func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 				Kind:                  "RebootNode",
 				TemplateFileName:      "gpu-reset.yaml",
 				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "restart",
 			},
 		},
 	}
