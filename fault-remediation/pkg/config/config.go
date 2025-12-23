@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package config provides configuration structures and validation for fault remediation.
+// It defines the TOML configuration schema for multi-template support, maintenance resources,
+// and action-specific remediation settings.
 package config
 
 import (
