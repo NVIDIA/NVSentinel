@@ -219,14 +219,12 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
-	// Convert RecommendedAction to string for lookup
-	recommendedActionName := healthEvent.RecommendedAction.String()
-
-	// Select appropriate maintenance resource configuration and template
+	// Declare variables for maintenance resource selection and template processing
 	var (
-		maintenanceResource config.MaintenanceResource
-		selectedTemplate    *template.Template
-		actionKey           string
+		recommendedActionName = healthEvent.RecommendedAction.String()
+		maintenanceResource   config.MaintenanceResource
+		selectedTemplate      *template.Template
+		actionKey             string
 	)
 
 	// Select appropriate maintenance resource configuration and template
@@ -588,7 +586,8 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	informerFactory.Start(stopCh)
 
 	// Wait for cache to sync
-	if !cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced) {
+	synced := cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced)
+	if !synced {
 		close(stopCh) // Stop informer on sync failure
 		logCollectorErrors.WithLabelValues("cache_sync_error", nodeName).Inc()
 

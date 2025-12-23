@@ -333,13 +333,13 @@ spec:
 			// Create remediation config for test
 			remediationConfig := config.TomlConfig{
 				RemediationActions: map[string]config.MaintenanceResource{
-					"RESTART_BM": {
+					protos.RecommendedAction_RESTART_BM.String(): {
 						Version:          "v1alpha1",
 						ApiGroup:         "janitor.dgxc.nvidia.com",
 						Kind:             "RebootNode",
 						TemplateFileName: "test.yaml",
 					},
-					"COMPONENT_RESET": {
+					protos.RecommendedAction_COMPONENT_RESET.String(): {
 						Version:          "v1alpha1",
 						ApiGroup:         "janitor.dgxc.nvidia.com",
 						Kind:             "RebootNode",
@@ -350,8 +350,8 @@ spec:
 
 			// Create templates map
 			templates := map[string]*template.Template{
-				"RESTART_BM":      tmpl,
-				"COMPONENT_RESET": tmpl, // Use same template for testing
+				protos.RecommendedAction_RESTART_BM.String():      tmpl,
+				protos.RecommendedAction_COMPONENT_RESET.String(): tmpl,
 			}
 
 			client := &FaultRemediationClient{
