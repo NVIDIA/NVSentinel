@@ -210,6 +210,8 @@ func (c *FaultRemediationClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return c.statusChecker
 }
 
+// GetConfig returns the remediation configuration for this client.
+// This includes the multi-template actions and their associated maintenance resources.
 func (c *FaultRemediationClient) GetConfig() *config.TomlConfig {
 	return &c.remediationConfig
 }
