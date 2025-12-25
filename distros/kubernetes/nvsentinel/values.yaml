@@ -192,3 +192,12 @@ nodeConditionCleanup:
 # See values-postgresql.yaml for a complete PostgreSQL configuration example
 postgresql:
   enabled: false
+
+# PodMonitor configuration for Prometheus Operator
+# Disable this if using standard Prometheus with annotations instead
+podMonitor:
+  enabled: true
+  interval: 30s  # Scrape interval (defaults to 30s to maintain backward compatibility)
+  # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
+  # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
+  # labels: {}  # Additional labels for the PodMonitor resource
