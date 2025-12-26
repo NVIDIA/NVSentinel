@@ -149,9 +149,12 @@ spec:
               mountPath: /etc/machine-id
               readOnly: true
             {{- else }}
-            # Regular mode: Mount var/log directly
+            # Regular mode: Mount var/log and runtime journal
             - name: var-log-vol
               mountPath: /nvsentinel/var/log
+              readOnly: true
+            - name: run-log-journal-vol
+              mountPath: /nvsentinel/run/log/journal
               readOnly: true
             {{- end }}
             - name: proc-vol
@@ -207,10 +210,14 @@ spec:
             path: /etc/machine-id
             type: File
         {{- else }}
-        # Regular mode: Direct var/log mount
+        # Regular mode: Mount var/log and runtime journal
         - name: var-log-vol
           hostPath:
             path: /var/log
+            type: Directory
+        - name: run-log-journal-vol
+          hostPath:
+            path: /run/log/journal
             type: Directory
         {{- end }}
         - name: sys-vol
