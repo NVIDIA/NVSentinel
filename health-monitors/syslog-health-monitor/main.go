@@ -71,16 +71,11 @@ var (
 
 var checks []fd.CheckDefinition
 
-// getJournalPath returns the appropriate journal path based on the mode.
-// For kata mode, it always returns the persistent journal path.
-// For regular mode, it checks if persistent journal exists, and falls back
-// to runtime journal if persistent is unavailable.
-func getJournalPath(kataEnabled string) string {
-	if stringutil.IsTruthyValue(kataEnabled) {
-		return "/nvsentinel/var/log/journal/"
-	}
-
-	// Regular mode: check if persistent journal is available
+// getJournalPath returns the appropriate journal path.
+// It checks if persistent journal exists, and falls back to runtime journal
+// if persistent is unavailable.
+func getJournalPath() string {
+	// Check if persistent journal is available
 	if _, err := os.Stat("/nvsentinel/var/log/journal/"); err == nil {
 		return "/nvsentinel/var/log/journal/"
 	}
@@ -142,7 +137,7 @@ func run() error {
 	client := pb.NewPlatformConnectorClient(conn)
 
 	checks = make([]fd.CheckDefinition, 0)
-	journalPath := getJournalPath(*kataEnabled)
+	journalPath := getJournalPath()
 	for c := range strings.SplitSeq((*checksList), ",") {
 		checks = append(checks, fd.CheckDefinition{
 			Name:        c,
