@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: v2
-name: janitor-provider-kwok
-description: KWOK provider for NVSentinel Janitor
-type: application
-version: 0.1.0
+# Build and deploy
+custom_build(
+    'ghcr.io/nvidia/nvsentinel/janitor-provider',
+    '../scripts/ko-tilt-build.sh . $EXPECTED_REF',
+    deps=['./', '../store-client'],
+    skips_local_docker=True
+)

@@ -154,87 +154,19 @@ builds:
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
 
-  - id: janitor-provider-aws
-    dir: providers/aws
+  - id: janitor-provider
+    dir: janitor-provider
     main: .
     ldflags:
       - "-s -w"
       - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
     annotations:
-      org.opencontainers.image.description: "AWS provider for the NVSentinel Janitor"
+      org.opencontainers.image.description: "Example provider for NVSentinel Janitor"
     labels:
       org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
       org.opencontainers.image.licenses: "Apache-2.0"
-      org.opencontainers.image.title: "janitor-provider-aws"
-      org.opencontainers.image.description: "AWS implementation of the CSP provider interface for Janitor"
-      org.opencontainers.image.version: "{{.Env.VERSION}}"
-      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
-      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
-
-  - id: janitor-provider-azure
-    dir: providers/azure
-    main: .
-    ldflags:
-      - "-s -w"
-      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
-    annotations:
-      org.opencontainers.image.description: "Azure provider for the NVSentinel Janitor"
-    labels:
-      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
-      org.opencontainers.image.licenses: "Apache-2.0"
-      org.opencontainers.image.title: "janitor-provider-azure"
-      org.opencontainers.image.description: "Azure implementation of the CSP provider interface for Janitor"
-      org.opencontainers.image.version: "{{.Env.VERSION}}"
-      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
-      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
-
-  - id: janitor-provider-gcp
-    dir: providers/gcp
-    main: .
-    ldflags:
-      - "-s -w"
-      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
-    annotations:
-      org.opencontainers.image.description: "GCP provider for the NVSentinel Janitor"
-    labels:
-      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
-      org.opencontainers.image.licenses: "Apache-2.0"
-      org.opencontainers.image.title: "janitor-provider-gcp"
-      org.opencontainers.image.description: "GCP implementation of the CSP provider interface for Janitor"
-      org.opencontainers.image.version: "{{.Env.VERSION}}"
-      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
-      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
-
-  - id: janitor-provider-kwok
-    dir: providers/kwok
-    main: .
-    ldflags:
-      - "-s -w"
-      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
-    annotations:
-      org.opencontainers.image.description: "KWOK provider for the NVSentinel Janitor"
-    labels:
-      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
-      org.opencontainers.image.licenses: "Apache-2.0"
-      org.opencontainers.image.title: "janitor-provider-kwok"
-      org.opencontainers.image.description: "KWOK implementation of the CSP provider interface for Janitor"
-      org.opencontainers.image.version: "{{.Env.VERSION}}"
-      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
-      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
-
-  - id: janitor-provider-oci
-    dir: providers/oci
-    main: .
-    ldflags:
-      - "-s -w"
-      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
-    annotations:
-      org.opencontainers.image.description: "OCI provider for the NVSentinel Janitor"
-    labels:
-      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
-      org.opencontainers.image.licenses: "Apache-2.0"
-      org.opencontainers.image.title: "janitor-provider-oci"
-      org.opencontainers.image.description: "OCI implementation of the CSP provider interface for Janitor"
+      org.opencontainers.image.title: "NVSentinel Janitor-Provider"
+      org.opencontainers.image.description: "Example implementation of the CSP provider interface for Janitor"
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"

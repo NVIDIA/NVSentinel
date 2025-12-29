@@ -1,8 +1,6 @@
 module github.com/nvidia/nvsentinel/janitor-provider
 
-go 1.25.0
-
-toolchain go1.25.3
+go 1.25.5
 
 replace github.com/nvidia/nvsentinel/api => ../api
 

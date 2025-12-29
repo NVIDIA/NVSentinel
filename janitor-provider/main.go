@@ -1,4 +1,4 @@
-package janitorprovider
+package main
 
 import (
 	"context"

@@ -37,7 +37,7 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "provider.serviceAccountName" . }}
       containers:
-        - name: janitor-provider-kwok
+        - name: janitor-provider
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:

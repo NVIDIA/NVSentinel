@@ -16,12 +16,12 @@ replicaCount: 1
 
 # Image configuration
 image:
-  repository: ghcr.io/nvidia/nvsentinel/janitor-provider-kwok
+  repository: ghcr.io/nvidia/nvsentinel/janitor-provider
   pullPolicy: IfNotPresent
   tag: ""
 
 nameOverride: ""
-fullnameOverride: "janitor-provider-kwok"
+fullnameOverride: "janitor-provider"
 
 serviceAccount:
   # Specifies whether a service account should be created

@@ -48,6 +48,7 @@ if [ ! -f go.work ]; then
     ./health-monitors/csp-health-monitor \
     ./health-monitors/kubernetes-object-monitor \
     ./janitor \
+    ./janitor-provider \
     ./labeler \
     ./node-drainer \
     ./platform-connectors
@@ -62,6 +63,7 @@ ko build "${KO_FLAGS[@]}" \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
   ./health-monitors/kubernetes-object-monitor \
   ./janitor \
+  ./janitor-provider \
   ./labeler \
   ./node-drainer \
   ./platform-connectors 

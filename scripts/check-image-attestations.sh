@@ -66,6 +66,7 @@ KO_IMAGES=(
     "nvsentinel/labeler"
     "nvsentinel/node-drainer"
     "nvsentinel/janitor"
+    "nvsentinel/janitor-provider"
     "nvsentinel/platform-connectors"
 )
 

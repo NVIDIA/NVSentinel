@@ -55,9 +55,9 @@ dependencies:
   - name: janitor
     version: "0.1.0"
     condition: global.janitor.enabled
-  - name: janitor-provider-kwok
+  - name: janitor-provider
     version: "0.1.0"
-    condition: global.janitor.enabled && global.janitor.provider == "kwok"
+    condition: global.janitorProvider.enabled
   - name: metadata-collector
     version: "0.1.0"
     condition: global.metadataCollector.enabled
