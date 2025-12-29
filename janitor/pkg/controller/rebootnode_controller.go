@@ -190,7 +190,6 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
 				NodeName: node.Name,
 			})
-
 			if nodeReadyErr != nil {
 				logger.Error(nodeReadyErr, "failed to check if node is ready",
 					"node", node.Name)
@@ -202,6 +201,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				// Update status and return early
 				return r.updateRebootNodeStatus(ctx, req, originalRebootNode, &rebootNode, result)
 			}
+
 			cspReady = rsp.IsReady
 		}
 
@@ -401,6 +401,7 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err != nil {
 		return fmt.Errorf("failed to create CSP client: %w", err)
 	}
+
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(conn)
 
 	// Note: We use RequeueAfter in the reconcile loop rather than the controller's

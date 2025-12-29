@@ -414,6 +414,7 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err != nil {
 		return fmt.Errorf("failed to create CSP client: %w", err)
 	}
+
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(conn)
 
 	// Note: We use RequeueAfter in the reconcile loop rather than the controller's

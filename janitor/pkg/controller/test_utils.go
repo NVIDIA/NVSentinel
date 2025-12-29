@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 	"regexp"
@@ -85,6 +86,7 @@ func NewMockCSPServer() *MockCSPServer {
 func (s *MockCSPServer) SetBehavior(behavior *MockCSPBehavior) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior = behavior
 }
 
@@ -102,6 +104,7 @@ func (s *MockCSPServer) SetFailure() {
 func (s *MockCSPServer) SetRebootSuccess(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.RebootError = nil
 	s.behavior.RebootRequestID = requestID
 }
@@ -110,6 +113,7 @@ func (s *MockCSPServer) SetRebootSuccess(requestID string) {
 func (s *MockCSPServer) SetRebootFailure(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.RebootError = err
 }
 
@@ -117,6 +121,7 @@ func (s *MockCSPServer) SetRebootFailure(err error) {
 func (s *MockCSPServer) SetTerminateSuccess(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.TerminateError = nil
 	s.behavior.TerminateRequestID = requestID
 }
@@ -125,6 +130,7 @@ func (s *MockCSPServer) SetTerminateSuccess(requestID string) {
 func (s *MockCSPServer) SetTerminateFailure(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.TerminateError = err
 }
 
@@ -132,6 +138,7 @@ func (s *MockCSPServer) SetTerminateFailure(err error) {
 func (s *MockCSPServer) SetNodeReady(ready bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.IsNodeReadyError = nil
 	s.behavior.IsNodeReady = ready
 }
@@ -140,40 +147,53 @@ func (s *MockCSPServer) SetNodeReady(ready bool) {
 func (s *MockCSPServer) SetNodeReadyError(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.behavior.IsNodeReadyError = err
 }
 
-func (s *MockCSPServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+func (s *MockCSPServer) SendTerminateSignal(
+	ctx context.Context,
+	req *cspv1alpha1.SendTerminateSignalRequest,
+) (*cspv1alpha1.SendTerminateSignalResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.behavior.TerminateError != nil {
 		return nil, s.behavior.TerminateError
 	}
+
 	return &cspv1alpha1.SendTerminateSignalResponse{
 		RequestId: s.behavior.TerminateRequestID,
 	}, nil
 }
 
-func (s *MockCSPServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
+func (s *MockCSPServer) SendRebootSignal(
+	ctx context.Context,
+	req *cspv1alpha1.SendRebootSignalRequest,
+) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.behavior.RebootError != nil {
 		return nil, s.behavior.RebootError
 	}
+
 	return &cspv1alpha1.SendRebootSignalResponse{
 		RequestId: s.behavior.RebootRequestID,
 	}, nil
 }
 
-func (s *MockCSPServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+func (s *MockCSPServer) IsNodeReady(
+	ctx context.Context,
+	req *cspv1alpha1.IsNodeReadyRequest,
+) (*cspv1alpha1.IsNodeReadyResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.behavior.IsNodeReadyError != nil {
 		return nil, s.behavior.IsNodeReadyError
 	}
+
 	return &cspv1alpha1.IsNodeReadyResponse{
 		IsReady: s.behavior.IsNodeReady,
 	}, nil
@@ -199,7 +219,7 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 	cspv1alpha1.RegisterCSPProviderServiceServer(server, mockServer)
 
 	go func() {
-		if err := server.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+		if err := server.Serve(lis); err != nil && errors.Is(err, grpc.ErrServerStopped) {
 			log.Printf("Mock CSP server exited with error: %v", err)
 		}
 	}()

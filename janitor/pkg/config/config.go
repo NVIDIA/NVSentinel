@@ -103,10 +103,12 @@ func LoadConfig(configPath string) (*Config, error) {
 	config.RebootNode.NodeExclusions = config.Global.Nodes.Exclusions
 	config.TerminateNode.NodeExclusions = config.Global.Nodes.Exclusions
 
-	// If CSPProviderHost is not set, use the global CSPProviderHost
+	// If CSPProviderHost is not set for reboot node controller, use the global CSPProviderHost
 	if config.RebootNode.CSPProviderHost == "" {
 		config.RebootNode.CSPProviderHost = config.Global.CSPProviderHost
 	}
+
+	// If CSPProviderHost is not set for terminate node controller, use the global CSPProviderHost
 	if config.TerminateNode.CSPProviderHost == "" {
 		config.TerminateNode.CSPProviderHost = config.Global.CSPProviderHost
 	}
