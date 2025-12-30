@@ -68,7 +68,8 @@ build:
 protos-generate: $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_GRPC) protos-clean ## Generate Go code from Proto definitions.
 	@echo "Generating Proto code..."
 	@mkdir -p $(GEN_DIR)
-	cd proto && protoc \
+	cd proto && \
+	protoc \
 		-I . \
 		-I ../$(THIRD_PARTY_DIR) \
 		--plugin="protoc-gen-go=$(PROTOC_GEN_GO)" \
@@ -77,7 +78,17 @@ protos-generate: $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_GRPC) protos-clean ## Generate
 		--go_opt=paths=source_relative \
 		--go-grpc_out=../$(GEN_DIR) \
 		--go-grpc_opt=paths=source_relative \
-		device/v1alpha1/*.proto
+		device/v1alpha1/*.proto && \
+	protoc \
+		-I . \
+		-I ../$(THIRD_PARTY_DIR) \
+		--plugin="protoc-gen-go=$(PROTOC_GEN_GO)" \
+		--plugin="protoc-gen-go-grpc=$(PROTOC_GEN_GO_GRPC)" \
+		--go_out=../$(GEN_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=../$(GEN_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		csp/v1alpha1/*.proto
 	@echo "Cleaning up dependencies..."
 	go mod tidy
 	@echo "Done."
