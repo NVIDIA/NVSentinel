@@ -48,6 +48,9 @@ spec:
             - name: service
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+          env:
+            - name: CSP
+              value: {{ .Values.csp | default "kind" }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:

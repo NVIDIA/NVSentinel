@@ -487,3 +487,6 @@ event-exporter:
       initialBackoff: "1s"
       maxBackoff: "10s"
       backoffMultiplier: 2.0
+
+janitorProvider:
+  csp: kind

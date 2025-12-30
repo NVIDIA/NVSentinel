@@ -23,32 +23,65 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 // janitorProviderServer is the server implementation for the janitor provider.
 type janitorProviderServer struct {
 	cspv1alpha1.UnimplementedCSPProviderServiceServer
+	cspClient model.CSPClient
+	k8sClient kubernetes.Interface
 }
 
 func (s *janitorProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	slog.Info("Sending reboot signal", "node", req.NodeName)
+	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
+	}
+	requestID, err := s.cspClient.SendRebootSignal(ctx, *node)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
+	}
 	return &cspv1alpha1.SendRebootSignalResponse{
-		RequestId: "1234567890",
+		RequestId: string(requestID),
 	}, nil
 }
 
 func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
 	slog.Info("Checking if node is ready", "node", req.NodeName)
+	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
+	}
+	isReady, err := s.cspClient.IsNodeReady(ctx, *node, "Node is ready")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
+	}
 	return &cspv1alpha1.IsNodeReadyResponse{
-		IsReady: true,
+		IsReady: isReady,
 	}, nil
 }
 
 func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
 	slog.Info("Sending terminate signal", "node", req.NodeName)
-	return nil, status.Errorf(codes.Unimplemented, "method SendTerminateSignal not implemented")
+	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
+	}
+	requestID, err := s.cspClient.SendTerminateSignal(ctx, *node)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to send terminate signal: %v", err)
+	}
+	return &cspv1alpha1.SendTerminateSignalResponse{
+		RequestId: string(requestID),
+	}, nil
 }
 
 func main() {
@@ -60,8 +93,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	k8sRestConfig, err := rest.InClusterConfig()
+	if err != nil {
+		slog.Error("Failed to create kubernetes clientset", "error", err)
+		os.Exit(1)
+	}
+
+	k8sClient, err := kubernetes.NewForConfig(k8sRestConfig)
+	if err != nil {
+		slog.Error("Failed to create kubernetes client", "error", err)
+		os.Exit(1)
+	}
+
 	svr := grpc.NewServer()
-	cspv1alpha1.RegisterCSPProviderServiceServer(svr, &janitorProviderServer{})
+	cspClient, err := csp.New(context.Background())
+	if err != nil {
+		slog.Error("Failed to create csp client", "error", err)
+		os.Exit(1)
+	}
+	cspv1alpha1.RegisterCSPProviderServiceServer(svr, &janitorProviderServer{
+		cspClient: cspClient,
+		k8sClient: k8sClient,
+	})
 	if err := svr.Serve(lis); err != nil {
 		slog.Error("Failed to serve", "error", err)
 		os.Exit(1)
