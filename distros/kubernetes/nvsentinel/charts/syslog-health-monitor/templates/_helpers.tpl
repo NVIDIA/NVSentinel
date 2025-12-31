@@ -149,7 +149,7 @@ spec:
               mountPath: /etc/machine-id
               readOnly: true
             {{- else }}
-            # Regular mode: Mount based on journalType (persistent or runtime)
+            # Regular mode: Mount journal from user-defined host path
             - name: var-log-vol
               mountPath: /nvsentinel/var/log
               readOnly: true
@@ -207,18 +207,11 @@ spec:
             path: /etc/machine-id
             type: File
         {{- else }}
-        # Regular mode: Mount based on journalType configuration
-        {{- if eq $root.Values.journalType "runtime" }}
+        # Regular mode: Mount journal from user-defined host path
         - name: var-log-vol
           hostPath:
-            path: /run/log
+            path: {{ $root.Values.journalHostPath }}
             type: Directory
-        {{- else }}
-        - name: var-log-vol
-          hostPath:
-            path: /var/log
-            type: Directory
-        {{- end }}
         {{- end }}
         - name: sys-vol
           hostPath:

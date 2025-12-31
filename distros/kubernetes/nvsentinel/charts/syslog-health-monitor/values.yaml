@@ -46,9 +46,7 @@ nodeSelector: {}
 affinity: {}
 tolerations: []
 
-# Journal type: persistent or runtime
-# persistent: uses /var/log/journal (persistent storage)
-# runtime: uses /run/log/journal (in-memory, for systems without persistent journal)
-journalType: persistent
+# Customize this if your journal is stored in a non-standard location
+journalHostPath: /var/log
 
 logLevel: info
