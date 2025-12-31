@@ -101,7 +101,12 @@ data:
           containers:
             - name: log-collector
               image: localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest
-              imagePullPolicy: Always          
+              imagePullPolicy: Always
+              # Security Context: The log collector must run as a privileged pod to perform
+              # comprehensive diagnostic collection. Privileged access is required to execute
+              # chroot /host for SOS report collection and access host filesystem paths for
+              # nvidia-bug-report. readOnlyRootFilesystem: false is required for temporary
+              # file writes during artifact processing.
               securityContext:
                 privileged: true
                 allowPrivilegeEscalation: true
@@ -130,7 +135,7 @@ data:
                   mountPath: /artifacts
                 - name: host-root
                   mountPath: /host
-                  readOnly: false
+                  readOnly: true
           volumes:
             - name: artifacts
               emptyDir: {}
