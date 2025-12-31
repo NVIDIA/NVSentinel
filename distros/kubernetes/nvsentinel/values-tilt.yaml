@@ -230,6 +230,43 @@ fault-remediation:
 
   logLevel: debug
 
+  # Multi-template maintenance resource configuration for E2E tests
+  maintenance:
+    actions:
+      "COMPONENT_RESET":  # Action 2
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "RebootNode"
+        scope: "Cluster"
+        completeConditionType: "NodeReady"
+        templateFileName: "rebootnode-template.yaml"
+        equivalenceGroup: "restart"
+      "RESTART_VM":  # Action 15
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "RebootNode"
+        scope: "Cluster"
+        completeConditionType: "NodeReady"
+        templateFileName: "rebootnode-template.yaml"
+        equivalenceGroup: "restart"
+      "RESTART_BM":  # Action 24
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "RebootNode"
+        scope: "Cluster"
+        completeConditionType: "NodeReady"
+        templateFileName: "rebootnode-template.yaml"
+        equivalenceGroup: "restart"
+
+    templates:
+      "rebootnode-template.yaml": |
+        apiVersion: {{ .ApiGroup }}/{{ .Version }}
+        kind: RebootNode
+        metadata:
+          name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .NodeName }}
+
   logCollector:
     enabled: true
     image:

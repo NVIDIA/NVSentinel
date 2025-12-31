@@ -29,7 +29,7 @@ import (
 )
 
 func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
-	feature := features.New("TestExistingCRPreventsNewCreation").
+	feature := features.New("TestNewCRsAreCreatedAfterFaultsAreRemediated").
 		WithLabel("suite", "fault-remediation-advanced")
 
 	var testCtx *helpers.RemediationTestContext
@@ -63,7 +63,7 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 				return false
 			}
 			return len(crList) == 2
-		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "should have 2 completed CRs")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "should have 2 completed CRs")
 
 		return ctx
 	})
