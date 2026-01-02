@@ -33,17 +33,17 @@ global:
   ctrlRuntimeEnabled: true
 
   nodeSelector: {}
-
-  tolerations:
-    - operator: Exists
-
+  
+  tolerations: 
+  - operator: Exists
+  
   affinity: {}
-
+  
   systemNodeSelector:
     node-role.kubernetes.io/control-plane: ""
-
+  
   systemNodeTolerations:
-    - operator: Exists
+  - operator: Exists
 
   gpuHealthMonitor:
     enabled: true
@@ -73,7 +73,7 @@ global:
 
   inclusterFileServer:
     enabled: true
-
+  
   janitor:
     enabled: true
 
@@ -91,13 +91,13 @@ global:
 
   eventExporter:
     enabled: true
-
+  
   metricsPort: 2112
 
 mongodb-store:
   useBitnami: true
   usePerconaOperator: false
-
+  
   job:
     nodeSelector:
       node-role.kubernetes.io/control-plane: ""
@@ -138,26 +138,26 @@ mongodb-store:
           - operator: Exists
         podDisruptionBudget:
           maxUnavailable: 1
-
+    
     sharding:
       enabled: false
-
+      
     logcollector:
       enabled: false
-
+    
     tls:
       mode: requireTLS
 
     secrets:
       keyFile: mongodb-keyfile
       encryptionKey: mongodb-encryption-key
-
+    
     backup:
       enabled: false
       storages: {}
       tasks: []
       volumeMounts: []
-
+    
     finalizers: []
 
   psmdb:
@@ -170,18 +170,18 @@ mongodb-store:
         repository: ghcr.io/rtsp/docker-mongosh
         tag: "2.5.2"
         pullPolicy: IfNotPresent
-
+  
   # Bitnami MongoDB configuration
   mongodb:
     replicaCount: 1
     nodeSelector:
       node-role.kubernetes.io/control-plane: ""
-
+    
     tolerations:
-      - operator: Exists
+    - operator: Exists
 
     jobTolerations:
-      - operator: Exists
+    - operator: Exists
 
     image:
       registry: "docker.io"
@@ -193,7 +193,7 @@ mongodb-store:
       replicaset:
         existingSecrets:
           - "mongo-server-cert-0"
-
+      
       image:
         registry: "docker.io"
         repository: "bitnamilegacy/nginx"
@@ -220,13 +220,13 @@ fault-quarantine:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
 fault-remediation:
   replicaCount: 1
@@ -274,21 +274,22 @@ fault-remediation:
     enabled: true
     image:
       repository: localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector
-      tag: latest
-      pullPolicy: Always
-    timeout: "10s" # Short timeout for faster testing (production default: "10m")
+      tag: latest  
+      pullPolicy: Always 
+    timeout: "10s"  # Short timeout for faster testing (production default: "10m")
     env:
-      MOCK_MODE: "true"
+      MOCK_MODE: "true"  
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
+
 
 node-drainer:
   logLevel: debug
@@ -296,13 +297,14 @@ node-drainer:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
+
 
 health-events-analyzer:
   logLevel: debug
@@ -310,19 +312,22 @@ health-events-analyzer:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
 janitor:
   config:
     cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
   webhook:
     certIssuer: "janitor-selfsigned-issuer"
+
+janitorProvider:
+  csp: kind
 
 labeler:
   logLevel: debug
@@ -332,7 +337,7 @@ labeler:
 
 csp-health-monitor:
   logLevel: debug
-  cspName: "gcp" # this will be updated to aws as well dynamically during tests
+  cspName: "gcp" # this will be updated to aws as well dynamically during tests 
   quarantineTriggerEngine:
     logLevel: debug
   configToml:
@@ -343,17 +348,17 @@ csp-health-monitor:
       endpointOverride: "csp-api-mock.nvsentinel.svc.cluster.local:50051"
     aws:
       endpointOverride: "http://csp-api-mock.nvsentinel.svc.cluster.local:8080/aws/health"
-
+  
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
 # Enable node metadata enrichment for testing
 platformConnector:
@@ -362,16 +367,16 @@ platformConnector:
     maxNodeConditionMessageLength: 1024
     qps: 5.0
     burst: 10
-
+  
   pipeline:
     - name: MetadataAugmentor
       enabled: true
       config: /etc/config/metadata.toml
-
+    
     - name: OverrideTransformer
       enabled: true
       config: /etc/config/overrides.toml
-
+  
   transformers:
     MetadataAugmentor:
       cacheSize: 50
@@ -379,15 +384,15 @@ platformConnector:
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
-
+    
     OverrideTransformer:
       rules:
-        - name: "escalate-xid-94"
-          when: 'event.agent == "syslog-health-monitor" && "94" in event.errorCode'
-          override:
-            isFatal: true
-            recommendedAction: "CONTACT_SUPPORT"
-
+      - name: "escalate-xid-94"
+        when: 'event.agent == "syslog-health-monitor" && "94" in event.errorCode'
+        override:
+          isFatal: true
+          recommendedAction: "CONTACT_SUPPORT"
+    
     # - name: "zone-specific-override"
     #   when: 'event.metadata["topology.kubernetes.io/zone"] == "us-west1-a" && event.componentClass == "GPU"'
     #   override:
@@ -416,13 +421,13 @@ kubernetes-object-monitor:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
 event-exporter:
   replicaCount: 1
@@ -446,13 +451,13 @@ event-exporter:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: kwok
-          namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          topologyKey: kubernetes.io/hostname
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: kwok
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        topologyKey: kubernetes.io/hostname
 
   exporter:
     metadata:
@@ -487,6 +492,3 @@ event-exporter:
       initialBackoff: "1s"
       maxBackoff: "10s"
       backoffMultiplier: 2.0
-
-janitorProvider:
-  csp: kind
