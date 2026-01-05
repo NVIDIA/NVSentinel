@@ -41,7 +41,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 var (

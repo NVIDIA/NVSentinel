@@ -34,6 +34,7 @@ func TestProvider_String(t *testing.T) {
 		{"gcp provider", ProviderGCP, "gcp"},
 		{"azure provider", ProviderAzure, "azure"},
 		{"oci provider", ProviderOCI, "oci"},
+		{"nebius provider", ProviderNebius, "nebius"},
 	}
 
 	for _, tt := range tests {
@@ -64,6 +65,7 @@ func TestGetProviderFromEnv_Valid(t *testing.T) {
 		{"gcp", "gcp", ProviderGCP},
 		{"azure", "azure", ProviderAzure},
 		{"oci", "oci", ProviderOCI},
+		{"nebius", "nebius", ProviderNebius},
 	}
 
 	for _, tt := range tests {
@@ -188,6 +190,7 @@ func TestProviderConstants(t *testing.T) {
 	assert.Equal(t, Provider("gcp"), ProviderGCP)
 	assert.Equal(t, Provider("azure"), ProviderAzure)
 	assert.Equal(t, Provider("oci"), ProviderOCI)
+	assert.Equal(t, Provider("nebius"), ProviderNebius)
 }
 
 func TestNewWithProvider_AllProviders(t *testing.T) {
@@ -227,6 +230,11 @@ func TestNewWithProvider_AllProviders(t *testing.T) {
 			provider:      ProviderOCI,
 			shouldSucceed: false,
 			skipReason:    "OCI client requires credentials",
+		},
+		{
+			name:          "nebius provider",
+			provider:      ProviderNebius,
+			shouldSucceed: true,
 		},
 	}
 
@@ -288,10 +296,12 @@ func TestGetProviderFromString(t *testing.T) {
 		{"gcp lowercase", "gcp", ProviderGCP, false},
 		{"azure lowercase", "azure", ProviderAzure, false},
 		{"oci lowercase", "oci", ProviderOCI, false},
+		{"nebius lowercase", "nebius", ProviderNebius, false},
 		{"kind uppercase", "KIND", ProviderKind, false}, // case insensitive
 		{"aws uppercase", "AWS", ProviderAWS, false},
 		{"gcp mixed case", "GcP", ProviderGCP, false},
 		{"azure mixed case", "Azure", ProviderAzure, false},
+		{"nebius mixed case", "Nebius", ProviderNebius, false},
 		{"invalid", "invalid", "", true},
 		{"empty", "", "", true},
 	}

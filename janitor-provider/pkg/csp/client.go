@@ -17,24 +17,27 @@ package csp
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/aws"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/azure"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/nebius"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 const (
-	ProviderKind  Provider = "kind"
-	ProviderAWS   Provider = "aws"
-	ProviderGCP   Provider = "gcp"
-	ProviderAzure Provider = "azure"
-	ProviderOCI   Provider = "oci"
+	ProviderKind   Provider = "kind"
+	ProviderAWS    Provider = "aws"
+	ProviderGCP    Provider = "gcp"
+	ProviderAzure  Provider = "azure"
+	ProviderOCI    Provider = "oci"
+	ProviderNebius Provider = "nebius"
 )
 
 // Provider defines the supported cloud service providers.
@@ -42,11 +45,11 @@ type Provider string
 
 // New creates a new CSP client based on the provider type from environment variables
 func New(ctx context.Context) (model.CSPClient, error) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := log.FromContext(ctx)
 
 	provider, err := GetProviderFromEnv()
 	if err != nil {
-		logger.Error("failed to determine CSP provider from environment", "error", err)
+		logger.Error(err, "failed to determine CSP provider from environment")
 
 		return nil, err
 	}
@@ -56,7 +59,7 @@ func New(ctx context.Context) (model.CSPClient, error) {
 
 	client, err := NewWithProvider(ctx, provider)
 	if err != nil {
-		logger.Error("failed to create CSP client", "error", err,
+		logger.Error(err, "failed to create CSP client",
 			"provider", string(provider))
 
 		return nil, fmt.Errorf("creating %s client: %w", provider, err)
@@ -81,6 +84,8 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 		return azure.NewClient(ctx)
 	case ProviderOCI:
 		return oci.NewClientFromEnv(ctx)
+	case ProviderNebius:
+		return nebius.NewClientFromEnv(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported CSP provider: %s", provider)
 	}
@@ -110,6 +115,8 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 		return ProviderAzure, nil
 	case "oci":
 		return ProviderOCI, nil
+	case "nebius":
+		return ProviderNebius, nil
 	default:
 		return "", fmt.Errorf("unsupported CSP provider: %s", providerStr)
 	}
