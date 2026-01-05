@@ -72,6 +72,12 @@ data:
   DATASTORE_SSLROOTCERT: {{ .Values.global.datastore.connection.sslrootcert | quote }}
   {{- end }}
 
+  # Certificate rotation configuration (MongoDB only)
+  # When enabled, client certificates can be rotated without restarting pods
+  {{- if eq .Values.global.datastore.provider "mongodb" }}
+  MONGODB_ENABLE_CERT_ROTATION: {{ .Values.global.certificateRotationEnabled | default false | quote }}
+  {{- end }}
+
   # Legacy MongoDB environment variables for backward compatibility
   # These are set for all providers to support legacy code paths that still use the old config system
   {{- if eq .Values.global.datastore.provider "mongodb" }}

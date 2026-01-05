@@ -14,6 +14,7 @@
 
 load('ext://helm_resource', 'helm_resource', 'helm_repo')
 load('ext://namespace', 'namespace_create', 'namespace_inject')
+load('./helpers.star', 'merge_dicts')
 
 # Suppress unused image warning for log-collector because it's used in dynamically-created
 # jobs by the fault-remediation controller (not deployed via Helm templates).
@@ -25,6 +26,8 @@ update_settings(
 num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
 use_postgresql = os.getenv('USE_POSTGRESQL', '0') == '1'
+user_values_file = os.getenv('NVSENTINEL_VALUES_FILE', '')
+print_values = os.getenv('PRINT_HELM_VALUES', '0') == '1'
 
 if use_postgresql:
     print("Using PostgreSQL as datastore (USE_POSTGRESQL=1)")
@@ -141,6 +144,25 @@ else:
 if k8s_arch == 'arm64':
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-arm64.yaml')
 
+# Add user-specified values file if provided. It should be the last in the chain to override other settings.
+if user_values_file:
+    if os.path.exists(user_values_file):
+        print("Using user-specified values file: " + user_values_file)
+        values_files.append(user_values_file)
+    else:
+        warn("User-specified values file not found, ignoring: " + user_values_file)
+
+effective_values = {}
+for values_file in values_files:
+    file_values = read_yaml(values_file)
+    effective_values = merge_dicts(effective_values, file_values)
+
+if print_values:
+    print("Effective Helm values for NVSentinel:")
+    print("---")
+    print(encode_yaml(effective_values))
+    print("---")
+
 yaml = helm(
     '../distros/kubernetes/nvsentinel',
     name='nvsentinel',
@@ -165,8 +187,11 @@ local_resource(
 k8s_yaml(yaml)
 
 # Check if using Percona operator (only relevant when using MongoDB)
-tilt_values = read_yaml('../distros/kubernetes/nvsentinel/values-tilt.yaml')
-use_percona = tilt_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
+use_percona = effective_values.get('mongodb-store', {}).get('usePerconaOperator', False) if not use_postgresql else False
+if use_percona:
+    print("Using Percona MongoDB Operator for MongoDB installation.")
+else:
+    print("Using bitnami MongoDB installation.")
 
 # Determine datastore resource name
 if use_postgresql:
