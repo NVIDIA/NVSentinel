@@ -12,17 +12,16 @@ require (
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.11
-	k8s.io/api v0.34.3
+	k8s.io/api v0.35.0
 	k8s.io/apiextensions-apiserver v0.34.3
-	k8s.io/apimachinery v0.34.3
-	k8s.io/client-go v0.34.3
+	k8s.io/apimachinery v0.35.0
+	k8s.io/client-go v0.35.0
 	sigs.k8s.io/controller-runtime v0.22.4
 )
 
 require (
 	cel.dev/expr v0.25.1 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -59,7 +58,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
