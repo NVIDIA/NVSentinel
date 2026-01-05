@@ -226,6 +226,12 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 
 		return false, nil
 	}
+
+	// Fallback for any unhandled states (future-proofing)
+	logger.Info("Nebius instance is in unknown state",
+		"instanceID", instanceID, "state", state.String())
+
+	return false, nil
 }
 
 // SendTerminateSignal is not implemented for Nebius.
