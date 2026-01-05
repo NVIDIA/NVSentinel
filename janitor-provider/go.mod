@@ -16,7 +16,6 @@ require (
 	github.com/nebius/gosdk v0.0.0-20251223093836-10eca9c65821
 	github.com/nvidia/nvsentinel/api v0.0.0-00010101000000-000000000000
 	github.com/nvidia/nvsentinel/commons v0.0.0
-	github.com/nvidia/nvsentinel/janitor v0.0.0-20260105182204-fd4466e86fd7
 	github.com/oracle/oci-go-sdk/v65 v65.105.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/oauth2 v0.34.0

@@ -160,8 +160,6 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/nebius/gosdk v0.0.0-20251223093836-10eca9c65821 h1:t5+gjlDh2BmUQm9s+HFl+aawdW7XD53AylBYnfO1Qwc=
 github.com/nebius/gosdk v0.0.0-20251223093836-10eca9c65821/go.mod h1:8r4EhhGJ+RMUfdiVVpZ8pEb0b+O7hLG8JXDAgGyu89o=
-github.com/nvidia/nvsentinel/janitor v0.0.0-20260105182204-fd4466e86fd7 h1:pnyj0Ow+exQnA02AAHe00WKQNfYO8aR3vhJB/Oss/70=
-github.com/nvidia/nvsentinel/janitor v0.0.0-20260105182204-fd4466e86fd7/go.mod h1:bconFRJ8612UhKMRVeHwvKxKDhsFir68aijHoDS1C4s=
 github.com/onsi/ginkgo/v2 v2.27.2 h1:LzwLj0b89qtIy6SSASkzlNvX6WktqurSHwkk2ipF/Ns=
 github.com/onsi/ginkgo/v2 v2.27.2/go.mod h1:ArE1D/XhNXBXCBkKOLkbsb2c81dQHCRcF5zwn/ykDRo=
 github.com/onsi/gomega v1.38.2 h1:eZCjf2xjZAqe+LeWvKb5weQ+NcPwX84kqJ0cZNxok2A=
