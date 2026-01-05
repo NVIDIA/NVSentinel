@@ -1,10 +1,6 @@
 module github.com/nvidia/nvsentinel/janitor-provider
 
-go 1.25.5
-
-replace github.com/nvidia/nvsentinel/api => ../api
-
-replace github.com/nvidia/nvsentinel/commons => ../commons
+go 1.25.0
 
 require (
 	cloud.google.com/go/compute v1.52.0
@@ -24,7 +20,6 @@ require (
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
-	sigs.k8s.io/controller-runtime v0.22.4
 )
 
 require (
@@ -118,3 +113,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.1 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/nvidia/nvsentinel/api => ../api
+
+replace github.com/nvidia/nvsentinel/commons => ../commons
