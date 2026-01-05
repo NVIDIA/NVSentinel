@@ -1,6 +1,6 @@
 module github.com/nvidia/nvsentinel/fault-quarantine
 
-go 1.25
+go 1.25.0
 
 toolchain go1.25.3
 
@@ -16,15 +16,15 @@ require (
 	golang.org/x/exp v0.0.0-20251125195548-87e1e737ad39
 	golang.org/x/sync v0.19.0
 	google.golang.org/protobuf v1.36.11
-	k8s.io/api v0.34.3
-	k8s.io/apimachinery v0.34.3
-	k8s.io/client-go v0.34.3
+	k8s.io/api v0.35.0
+	k8s.io/apimachinery v0.35.0
+	k8s.io/client-go v0.35.0
 	sigs.k8s.io/controller-runtime v0.22.4
 )
 
 require (
 	cel.dev/expr v0.25.1 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -56,7 +56,6 @@ require (
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect

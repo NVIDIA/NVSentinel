@@ -33,6 +33,12 @@ global:
   #     port: 27017
   #     database: "nvsentinel"
 
+  # Certificate rotation (MongoDB only)
+  # When enabled, client certificates can be rotated without restarting pods.
+  # Uses controller-runtime's certwatcher to detect file changes and automatically
+  # provide updated certificates to new MongoDB connections.
+  certificateRotationEnabled: false
+
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
