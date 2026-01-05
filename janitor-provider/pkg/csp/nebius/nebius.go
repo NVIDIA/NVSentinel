@@ -29,6 +29,7 @@ package nebius
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 
@@ -39,7 +40,6 @@ import (
 	computev1 "github.com/nebius/gosdk/services/nebius/compute/v1"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
@@ -130,8 +130,6 @@ func (c *Client) getInstanceService(ctx context.Context) (InstanceService, func(
 // The instance will be started in IsNodeReady after the stop completes.
 // This is async - we don't wait for the stop to complete, just initiate it.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
-	logger := log.FromContext(ctx)
-
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
@@ -144,7 +142,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to parse provider ID: %w", err)
 	}
 
-	logger.Info("Stopping Nebius instance for reboot", "instanceID", nodeFields.instanceID)
+	slog.Info("Stopping Nebius instance for reboot", "instanceID", nodeFields.instanceID)
 
 	instanceService, cleanup, err := c.getInstanceService(ctx)
 	if err != nil {
@@ -170,8 +168,6 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 // - STARTING -> wait for start to complete
 // - RUNNING -> node is ready
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
-	logger := log.FromContext(ctx)
-
 	// message contains the instance ID from SendRebootSignal
 	instanceID := message
 
@@ -193,12 +189,12 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 
 	switch state {
 	case compute.InstanceStatus_RUNNING:
-		logger.Info("Nebius instance is running", "instanceID", instanceID)
+		slog.Info("Nebius instance is running", "instanceID", instanceID)
 
 		return true, nil
 
 	case compute.InstanceStatus_STOPPED:
-		logger.Info("Starting Nebius instance", "instanceID", instanceID)
+		slog.Info("Starting Nebius instance", "instanceID", instanceID)
 
 		_, err := instanceService.Start(ctx, &compute.StartInstanceRequest{
 			Id: instanceID,
@@ -211,7 +207,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 		return false, nil
 
 	case compute.InstanceStatus_STOPPING, compute.InstanceStatus_STARTING:
-		logger.Info("Nebius instance is in transitional state, waiting",
+		slog.Info("Nebius instance is in transitional state, waiting",
 			"instanceID", instanceID, "state", state.String())
 
 		return false, nil
@@ -221,14 +217,14 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 		compute.InstanceStatus_UPDATING,
 		compute.InstanceStatus_DELETING,
 		compute.InstanceStatus_ERROR:
-		logger.Info("Nebius instance is in unexpected state",
+		slog.Info("Nebius instance is in unexpected state",
 			"instanceID", instanceID, "state", state.String())
 
 		return false, nil
 	}
 
 	// Fallback for any unhandled states (future-proofing)
-	logger.Info("Nebius instance is in unknown state",
+	slog.Info("Nebius instance is in unknown state",
 		"instanceID", instanceID, "state", state.String())
 
 	return false, nil

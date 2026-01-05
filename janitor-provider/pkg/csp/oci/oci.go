@@ -17,6 +17,7 @@ package oci
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -25,7 +26,6 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
 	corev1 "k8s.io/api/core/v1"
-	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
@@ -133,14 +133,12 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 // IsNodeReady checks if the node is ready after a reboot operation.
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
-	logger := ctrllog.FromContext(ctx)
-
 	// Sending a reboot request to OCI doesn't update statuses immediately,
 	// the instance does not report that it isn't in a running state for some time
 	// and kubernetes still sees the node as ready. Wait five minutes before checking the status
 	storedTime, err := time.Parse(time.RFC3339, message)
 	if err != nil {
-		logger.Error(err, "error parsing time")
+		slog.Error("Failed to parse time", "error", err)
 		return false, err
 	}
 

@@ -17,10 +17,9 @@ package csp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
-
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/aws"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/azure"
@@ -45,27 +44,25 @@ type Provider string
 
 // New creates a new CSP client based on the provider type from environment variables
 func New(ctx context.Context) (model.CSPClient, error) {
-	logger := log.FromContext(ctx)
-
 	provider, err := GetProviderFromEnv()
 	if err != nil {
-		logger.Error(err, "failed to determine CSP provider from environment")
+		slog.Error("Failed to determine CSP provider from environment", "error", err)
 
 		return nil, err
 	}
 
-	logger.Info("initializing CSP client",
+	slog.Info("initializing CSP client",
 		"provider", string(provider))
 
 	client, err := NewWithProvider(ctx, provider)
 	if err != nil {
-		logger.Error(err, "failed to create CSP client",
+		slog.Error("Failed to create CSP client", "error", err,
 			"provider", string(provider))
 
 		return nil, fmt.Errorf("creating %s client: %w", provider, err)
 	}
 
-	logger.Info("CSP client initialized successfully",
+	slog.Info("CSP client initialized successfully",
 		"provider", string(provider))
 
 	return client, nil

@@ -28,8 +28,16 @@ import (
 	"k8s.io/client-go/rest"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
+)
+
+var (
+	// These variables will be populated during the build process
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 // janitorProviderServer is the server implementation for the janitor provider.
@@ -85,7 +93,8 @@ func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cs
 }
 
 func main() {
-	slog.Info("Starting janitor provider")
+	logger.SetDefaultStructuredLogger("janitor-provider", version)
+	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
