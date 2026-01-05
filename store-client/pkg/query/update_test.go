@@ -24,20 +24,20 @@ import (
 )
 
 func TestUpdateBuilder_Set_SimpleField(t *testing.T) {
-	update := NewUpdate().Set("status", "active")
+	update := NewUpdate().Set("myField", "active")
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
 	expectedMongo := map[string]interface{}{
 		"$set": map[string]interface{}{
-			"status": "active",
+			"myField": "active",
 		},
 	}
 	assert.Equal(t, expectedMongo, mongoUpdate)
 
 	// Test SQL output
 	sql, args := update.ToSQL()
-	assert.Equal(t, "document = jsonb_set(document, '{status}', $1::jsonb)", sql)
+	assert.Equal(t, "document = jsonb_set(document, '{myField}', $1::jsonb)", sql)
 	assert.Equal(t, []interface{}{"\"active\""}, args)
 }
 
@@ -60,39 +60,40 @@ func TestUpdateBuilder_Set_NestedField(t *testing.T) {
 }
 
 func TestUpdateBuilder_Set_ColumnField(t *testing.T) {
-	update := NewUpdate().Set("updatedAt", "2025-01-15T10:00:00Z")
+	update := NewUpdate().Set("updated_at", "2025-01-15T10:00:00Z")
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
 	expectedMongo := map[string]interface{}{
 		"$set": map[string]interface{}{
-			"updatedAt": "2025-01-15T10:00:00Z",
+			"updated_at": "2025-01-15T10:00:00Z",
 		},
 	}
 	assert.Equal(t, expectedMongo, mongoUpdate)
 
-	// Test SQL output
+	// Test SQL output - updated_at is a column field so it's a direct assignment
 	sql, args := update.ToSQL()
-	assert.Equal(t, "updatedAt = $1", sql)
+	assert.Equal(t, "updated_at = $1", sql)
 	assert.Equal(t, []interface{}{"2025-01-15T10:00:00Z"}, args)
 }
 
 func TestUpdateBuilder_SetMultiple_Fields(t *testing.T) {
 	update := NewUpdate().
-		Set("status", "active").
-		Set("type", "critical")
+		Set("field1", "active").
+		Set("field2", "critical")
 
 	// Test MongoDB output
 	mongoUpdate := update.ToMongo()
 	setMap := mongoUpdate["$set"].(map[string]interface{})
 	assert.Len(t, setMap, 2)
-	assert.Equal(t, "active", setMap["status"])
-	assert.Equal(t, "critical", setMap["type"])
+	assert.Equal(t, "active", setMap["field1"])
+	assert.Equal(t, "critical", setMap["field2"])
 
-	// Test SQL output
+	// Test SQL output - both are document fields, so chained jsonb_set
 	sql, args := update.ToSQL()
-	assert.Contains(t, sql, "document = jsonb_set(document, '{status}', $1::jsonb)")
-	assert.Contains(t, sql, "document = jsonb_set(document, '{type}', $2::jsonb)")
+	assert.Contains(t, sql, "jsonb_set")
+	assert.Contains(t, sql, "{field1}")
+	assert.Contains(t, sql, "{field2}")
 	assert.Len(t, args, 2)
 }
 

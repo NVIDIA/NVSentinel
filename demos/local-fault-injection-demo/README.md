@@ -223,7 +223,7 @@ After completing this demo, you'll understand:
 
 ### Using a Different NVSentinel Version
 
-By default, the demo uses NVSentinel v0.5.0 (the latest published release). To use a different version:
+By default, the demo uses NVSentinel v0.6.0 (the latest published release). To use a different version:
 
 ```bash
 # Use a specific version (replace vX.Y.Z with your desired version)

@@ -27,6 +27,9 @@ global:
   # Use ctrl runtime in mongo and leave postgres with legacy so both get test coverage
   ctrlRuntimeEnabled: true
 
+  # Enable certificate rotation for testing hot-reload functionality
+  certificateRotationEnabled: true
+
   # Configure MongoDB as the datastore provider
   datastore:
     provider: "mongodb"

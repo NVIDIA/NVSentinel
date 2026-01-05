@@ -22,7 +22,15 @@
 # E2E Tests module configuration
 IS_GO_MODULE := 1
 TEST_EXTRA_FLAGS := -timeout 35m -count 1 -failfast
-TEST_TAGS ?= amd64_group,arm64_group
+
+# Database-aware test tags:
+# - USE_POSTGRESQL=1: excludes mongodb-only tests (e.g., health_events_analyzer_test.go)
+# - Default (MongoDB): includes all tests
+ifeq ($(USE_POSTGRESQL),1)
+    TEST_TAGS ?= amd64_group,arm64_group
+else
+    TEST_TAGS ?= amd64_group,arm64_group,mongodb
+endif
 
 # =============================================================================
 # INCLUDE COMMON DEFINITIONS
@@ -58,7 +66,7 @@ test-ci:
 
 # Run end-to-end tests (override standard test to use gotestsum with custom format)
 .PHONY: test
-test: ## Run end-to-end tests
+test: ## Run end-to-end tests (USE_POSTGRESQL=1 excludes MongoDB-only tests)
 	@echo "Running end-to-end tests on $(MODULE_NAME) with tags: $(TEST_TAGS)..."
 	$(GOTESTSUM) --format standard-verbose -- -tags=$(TEST_TAGS) $(TEST_EXTRA_FLAGS) ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/$(MODULE_NAME)/...
 
@@ -77,6 +85,10 @@ help: ## Show help for available targets
 	@echo "  clean     - Clean build artifacts"
 	@echo ""
 	@echo "E2E-specific targets:"
-	@echo "  all       - Run test (default)"
-	@echo "  test-ci   - Run end-to-end tests in CI environment"
-	@echo "  help      - Show this help message"
+	@echo "  all     - Run test (default)"
+	@echo "  test-ci - Run end-to-end tests in CI environment"
+	@echo "  help    - Show this help message"
+	@echo ""
+	@echo "Database-specific behavior:"
+	@echo "  USE_POSTGRESQL=1 make test  - Excludes MongoDB-only tests (health_events_analyzer)"
+	@echo "  make test                   - Includes all tests (default, for MongoDB)"
