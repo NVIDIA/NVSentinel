@@ -37,8 +37,8 @@ import (
 	"github.com/nebius/gosdk/operations"
 	compute "github.com/nebius/gosdk/proto/nebius/compute/v1"
 	computev1 "github.com/nebius/gosdk/services/nebius/compute/v1"
-	corev1 "k8s.io/api/core/v1"
 	"google.golang.org/grpc"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
@@ -194,27 +194,36 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 	switch state {
 	case compute.InstanceStatus_RUNNING:
 		logger.Info("Nebius instance is running", "instanceID", instanceID)
+
 		return true, nil
 
 	case compute.InstanceStatus_STOPPED:
 		logger.Info("Starting Nebius instance", "instanceID", instanceID)
+
 		_, err := instanceService.Start(ctx, &compute.StartInstanceRequest{
 			Id: instanceID,
 		})
 		if err != nil {
 			return false, fmt.Errorf("failed to start instance %s: %w", instanceID, err)
 		}
+
 		// Start initiated, will check again on next poll
 		return false, nil
 
 	case compute.InstanceStatus_STOPPING, compute.InstanceStatus_STARTING:
 		logger.Info("Nebius instance is in transitional state, waiting",
 			"instanceID", instanceID, "state", state.String())
+
 		return false, nil
 
-	default:
+	case compute.InstanceStatus_UNSPECIFIED,
+		compute.InstanceStatus_CREATING,
+		compute.InstanceStatus_UPDATING,
+		compute.InstanceStatus_DELETING,
+		compute.InstanceStatus_ERROR:
 		logger.Info("Nebius instance is in unexpected state",
 			"instanceID", instanceID, "state", state.String())
+
 		return false, nil
 	}
 }
@@ -237,6 +246,7 @@ func getNodeFields(node corev1.Node) (*nebiusNodeFields, error) {
 	// Handles both nebius:// and nebius:/// prefixes
 	re := regexp.MustCompile(`^nebius:///?([a-zA-Z0-9-]+)$`)
 	match := re.FindStringSubmatch(providerID)
+
 	if len(match) > 1 {
 		return &nebiusNodeFields{
 			instanceID: match[1],
