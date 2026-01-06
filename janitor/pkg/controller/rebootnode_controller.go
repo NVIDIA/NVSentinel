@@ -332,7 +332,6 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				logger.Info("sending reboot signal to node",
 					"node", node.Name)
 
-				fmt.Println("controller context", ctx)
 				rsp, rebootErr := r.CSPClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
 					NodeName: node.Name,
 				})
