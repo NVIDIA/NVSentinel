@@ -46,11 +46,16 @@ spec:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
             - name: service
-              containerPort: {{ .Values.service.port }}
-              protocol: TCP
+              containerPort: {{ .Values.service.port | default 50051 }}
           env:
+            - name: JANITOR_PROVIDER_PORT
+              value: {{ .Values.service.port | default 50051 }}
+            - name: METRICS_PORT
+              value: {{ ((.Values.global).metricsPort) | default 2112 }}
             - name: CSP
               value: {{ .Values.csp | default "kind" }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:
@@ -64,4 +69,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-

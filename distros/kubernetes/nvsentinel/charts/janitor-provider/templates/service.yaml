@@ -23,5 +23,8 @@ spec:
     {{- include "provider.selectorLabels" . | nindent 4 }}
   ports:
     - name: service
-      port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.port }}
+      port: {{ .Values.service.port | default 50051 }}
+      targetPort: {{ .Values.service.port | default 50051 }}
+    - name: metrics
+      port: {{ ((.Values.global).metricsPort) | default 2112 }}
+      targetPort: {{ ((.Values.global).metricsPort) | default 2112 }}

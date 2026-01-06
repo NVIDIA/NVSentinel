@@ -16,9 +16,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -29,6 +31,7 @@ import (
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
@@ -40,7 +43,6 @@ var (
 	date    = "unknown"
 )
 
-// janitorProviderServer is the server implementation for the janitor provider.
 type janitorProviderServer struct {
 	cspv1alpha1.UnimplementedCSPProviderServiceServer
 	cspClient model.CSPClient
@@ -96,7 +98,7 @@ func main() {
 	logger.SetDefaultStructuredLogger("janitor-provider", version)
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
-	lis, err := net.Listen("tcp", ":50051")
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", os.Getenv("JANITOR_PROVIDER_PORT")))
 	if err != nil {
 		slog.Error("Failed to listen", "error", err)
 		os.Exit(1)
@@ -111,6 +113,22 @@ func main() {
 	k8sClient, err := kubernetes.NewForConfig(k8sRestConfig)
 	if err != nil {
 		slog.Error("Failed to create kubernetes client", "error", err)
+		os.Exit(1)
+	}
+
+	metricsPort, err := strconv.Atoi(os.Getenv("METRICS_PORT"))
+	if err != nil {
+		slog.Error("Failed to convert metrics port to int", "error", err)
+		os.Exit(1)
+	}
+
+	srv := server.NewServer(
+		server.WithPort(metricsPort),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
+	if err := srv.Serve(context.Background()); err != nil {
+		slog.Error("Failed to serve metrics server", "error", err)
 		os.Exit(1)
 	}
 
