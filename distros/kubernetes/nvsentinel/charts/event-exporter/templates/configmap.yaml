@@ -23,8 +23,9 @@ data:
     [exporter.metadata]
     cluster = "{{ .Values.exporter.metadata.cluster }}"
     environment = "{{ .Values.exporter.metadata.environment }}"
+    csp = "{{ .Values.exporter.metadata.csp }}"
     {{- range $key, $value := .Values.exporter.metadata }}
-    {{- if and (ne $key "cluster") (ne $key "environment") }}
+    {{- if and (ne $key "cluster") (ne $key "environment") (ne $key "csp") }}
     {{ $key }} = "{{ $value }}"
     {{- end }}
     {{- end }}

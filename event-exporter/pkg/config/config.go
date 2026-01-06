@@ -138,6 +138,14 @@ func (c *FailureHandlingConfig) GetMaxBackoff() time.Duration {
 }
 
 func (c *Config) Validate() error {
+	if c.Exporter.Metadata["cluster"] == "" {
+		return fmt.Errorf("metadata cluster is required")
+	}
+
+	if c.Exporter.Metadata["csp"] == "" {
+		return fmt.Errorf("metadata csp (cloud service provider) is required")
+	}
+
 	if c.Exporter.Sink.Endpoint == "" {
 		return fmt.Errorf("sink endpoint is required")
 	}

@@ -88,6 +88,11 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		return nil, fmt.Errorf("metadata must contain a non-empty 'cluster' key")
 	}
 
+	csp, ok := metadata["csp"]
+	if !ok || csp == "" {
+		return nil, fmt.Errorf("metadata must contain a non-empty 'csp' key")
+	}
+
 	return &CloudEvent{
 		SpecVersion: "1.0",
 		Type:        "com.nvidia.nvsentinel.health.v1",
@@ -95,6 +100,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		ID:          uuid.New().String(),
 		Time:        timestamp,
 		Data: map[string]any{
+			"csp":         csp,
 			"metadata":    metadata,
 			"healthEvent": healthEventData,
 		},

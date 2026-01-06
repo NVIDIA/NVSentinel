@@ -1301,6 +1301,7 @@ event-exporter:
     metadata:
       cluster: "my-cluster"
       environment: "production"
+      csp: ""
       # Add any custom metadata fields here - they will be included in CloudEvents data.metadata
       # Examples:
       # region: "us-west-2"

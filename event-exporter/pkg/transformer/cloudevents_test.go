@@ -70,6 +70,7 @@ func TestToCloudEvent(t *testing.T) {
 			metadata: map[string]string{
 				"cluster":     "prod-cluster-1",
 				"environment": "production",
+				"csp":         "aws",
 			},
 			wantErr: false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
@@ -87,6 +88,11 @@ func TestToCloudEvent(t *testing.T) {
 				}
 				if ce.Time != fixedTime.Format(time.RFC3339Nano) {
 					t.Errorf("Time = %v, want %v", ce.Time, fixedTime.Format(time.RFC3339Nano))
+				}
+
+				// Verify CSP is at top level of data
+				if ce.Data["csp"] != "aws" {
+					t.Errorf("data.csp = %v, want aws", ce.Data["csp"])
 				}
 
 				healthEvent := ce.Data["healthEvent"].(map[string]any)
@@ -122,6 +128,9 @@ func TestToCloudEvent(t *testing.T) {
 				if metadata["cluster"] != "prod-cluster-1" {
 					t.Errorf("metadata.cluster = %v, want prod-cluster-1", metadata["cluster"])
 				}
+				if metadata["csp"] != "aws" {
+					t.Errorf("metadata.csp = %v, want aws", metadata["csp"])
+				}
 			},
 		},
 		{
@@ -136,7 +145,7 @@ func TestToCloudEvent(t *testing.T) {
 				QuarantineOverrides: nil,
 				DrainOverrides:      nil,
 			},
-			metadata: map[string]string{"cluster": "test-cluster"},
+			metadata: map[string]string{"cluster": "test-cluster", "csp": "gcp"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
 				healthEvent := ce.Data["healthEvent"].(map[string]any)
@@ -159,7 +168,7 @@ func TestToCloudEvent(t *testing.T) {
 				GeneratedTimestamp: fixedTimestamp,
 				Metadata:           map[string]string{},
 			},
-			metadata: map[string]string{"cluster": "test-cluster"},
+			metadata: map[string]string{"cluster": "test-cluster", "csp": "azure"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
 				healthEvent := ce.Data["healthEvent"].(map[string]any)
@@ -184,7 +193,7 @@ func TestToCloudEvent(t *testing.T) {
 					{EntityType: "PCI", EntityValue: "0000:17:00.0"},
 				},
 			},
-			metadata: map[string]string{"cluster": "test-cluster"},
+			metadata: map[string]string{"cluster": "test-cluster", "csp": "oci"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
 				healthEvent := ce.Data["healthEvent"].(map[string]any)
@@ -207,7 +216,20 @@ func TestToCloudEvent(t *testing.T) {
 				NodeName:           "node-1",
 				GeneratedTimestamp: fixedTimestamp,
 			},
-			metadata: map[string]string{"environment": "test"},
+			metadata: map[string]string{"environment": "test", "csp": "aws"},
+			wantErr:  true,
+		},
+		{
+			name: "metadata with missing csp returns error",
+			event: &pb.HealthEvent{
+				Version:            1,
+				Agent:              "test-agent",
+				ComponentClass:     "GPU",
+				CheckName:          "Test",
+				NodeName:           "node-1",
+				GeneratedTimestamp: fixedTimestamp,
+			},
+			metadata: map[string]string{"cluster": "test-cluster", "environment": "test"},
 			wantErr:  true,
 		},
 		{
@@ -221,7 +243,7 @@ func TestToCloudEvent(t *testing.T) {
 				GeneratedTimestamp: fixedTimestamp,
 				ErrorCode:          []string{},
 			},
-			metadata: map[string]string{"cluster": "test-cluster"},
+			metadata: map[string]string{"cluster": "test-cluster", "csp": "aws"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
 				healthEvent := ce.Data["healthEvent"].(map[string]any)
@@ -242,7 +264,7 @@ func TestToCloudEvent(t *testing.T) {
 				GeneratedTimestamp: fixedTimestamp,
 				EntitiesImpacted:   nil,
 			},
-			metadata: map[string]string{"cluster": "test-cluster"},
+			metadata: map[string]string{"cluster": "test-cluster", "csp": "gcp"},
 			wantErr:  false,
 			validateFunc: func(t *testing.T, ce *CloudEvent) {
 				healthEvent := ce.Data["healthEvent"].(map[string]any)

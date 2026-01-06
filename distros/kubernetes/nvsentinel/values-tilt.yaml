@@ -418,6 +418,7 @@ event-exporter:
     metadata:
       cluster: "tilt-test-cluster"
       environment: "development"
+      csp: "local"
       tilt_test: "true"
 
     sink:

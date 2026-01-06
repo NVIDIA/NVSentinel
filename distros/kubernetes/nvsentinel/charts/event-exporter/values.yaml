@@ -41,6 +41,7 @@ exporter:
   metadata:
     cluster: "my-cluster"
     environment: "production"
+    csp: ""
     # Additional custom metadata fields (optional):
     # region: "us-west-2"
     # datacenter: "dc01"
