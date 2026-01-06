@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package main implements the janitor-provider gRPC service that provides
+// cloud service provider operations for node lifecycle management including
+// reboot signals, readiness checks, and termination signals.
 package main
 
 import (
