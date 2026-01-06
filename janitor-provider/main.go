@@ -20,8 +20,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -98,28 +101,34 @@ func main() {
 	logger.SetDefaultStructuredLogger("janitor-provider", version)
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
+	if err := run(); err != nil {
+		slog.Error("Failed to run", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", os.Getenv("JANITOR_PROVIDER_PORT")))
 	if err != nil {
-		slog.Error("Failed to listen", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	k8sRestConfig, err := rest.InClusterConfig()
 	if err != nil {
-		slog.Error("Failed to create kubernetes clientset", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
 
 	k8sClient, err := kubernetes.NewForConfig(k8sRestConfig)
 	if err != nil {
-		slog.Error("Failed to create kubernetes client", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
 	metricsPort, err := strconv.Atoi(os.Getenv("METRICS_PORT"))
 	if err != nil {
-		slog.Error("Failed to convert metrics port to int", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to convert metrics port to int: %w", err)
 	}
 
 	srv := server.NewServer(
@@ -127,23 +136,49 @@ func main() {
 		server.WithPrometheusMetrics(),
 		server.WithSimpleHealth(),
 	)
-	if err := srv.Serve(context.Background()); err != nil {
-		slog.Error("Failed to serve metrics server", "error", err)
-		os.Exit(1)
+
+	cspClient, err := csp.New(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create csp client: %w", err)
 	}
 
 	svr := grpc.NewServer()
-	cspClient, err := csp.New(context.Background())
-	if err != nil {
-		slog.Error("Failed to create csp client", "error", err)
-		os.Exit(1)
-	}
 	cspv1alpha1.RegisterCSPProviderServiceServer(svr, &janitorProviderServer{
 		cspClient: cspClient,
 		k8sClient: k8sClient,
 	})
-	if err := svr.Serve(lis); err != nil {
-		slog.Error("Failed to serve", "error", err)
-		os.Exit(1)
-	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Metrics server failures are logged but do NOT terminate the service
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", metricsPort)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		slog.Info("Starting gRPC server", "port", os.Getenv("JANITOR_PROVIDER_PORT"))
+
+		if err := svr.Serve(lis); err != nil {
+			return fmt.Errorf("failed to serve gRPC: %w", err)
+		}
+
+		return nil
+	})
+
+	// Graceful shutdown on context cancellation
+	g.Go(func() error {
+		<-gCtx.Done()
+		slog.Info("Shutting down gRPC server")
+		svr.GracefulStop()
+
+		return nil
+	})
+
+	return g.Wait()
 }
