@@ -423,6 +423,10 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 	// Get equivalence group from action configuration
 	actionConfig, exists := tomlConfig.RemediationActions[actionName]
 	if !exists {
+		slog.Warn("Action not found in remediation configuration, allowing creation",
+			"action", actionName,
+			"node", nodeName)
+
 		return true, "", nil
 	}
 
