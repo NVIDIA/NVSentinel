@@ -78,7 +78,6 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		params.DryRun,
 		tomlConfig,
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}

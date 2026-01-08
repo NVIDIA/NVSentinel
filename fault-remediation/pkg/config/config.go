@@ -72,38 +72,78 @@ type TomlConfig struct {
 
 // Validate checks the configuration for consistency and completeness
 func (c *TomlConfig) Validate() error {
-	// Validate Template.MountPath is non-empty
-	if c.Template.MountPath == "" {
-		return fmt.Errorf("template mountPath must be non-empty")
+	if err := c.validateTemplate(); err != nil {
+		return err
 	}
 
-	// Validate that all TemplateFileName references are non-empty and exist as files
 	for actionName, resource := range c.RemediationActions {
-		if resource.TemplateFileName == "" {
-			return fmt.Errorf("action '%s' must have a non-empty templateFileName", actionName)
-		}
-
-		templatePath := filepath.Join(c.Template.MountPath, resource.TemplateFileName)
-		_, err := os.Stat(templatePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("action '%s' references template file '%s' which does not exist at path '%s'", actionName, resource.TemplateFileName, templatePath)
-			}
-			return fmt.Errorf("action '%s' cannot access template file '%s' at path '%s': %w", actionName, resource.TemplateFileName, templatePath, err)
-		}
-	}
-
-	// Validate that Scope field has valid values
-	for actionName, resource := range c.RemediationActions {
-		if resource.Scope != "" && resource.Scope != "Cluster" && resource.Scope != "Namespaced" {
-			return fmt.Errorf("action '%s' has invalid scope '%s', must be 'Cluster' or 'Namespaced'", actionName, resource.Scope)
-		}
-
-		// If scope is Namespaced, namespace should be specified
-		if resource.Scope == "Namespaced" && resource.Namespace == "" {
-			return fmt.Errorf("action '%s' is Namespaced but no namespace is specified", actionName)
+		if err := c.validateRemediationAction(actionName, resource); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+func (c *TomlConfig) validateTemplate() error {
+	if c.Template.MountPath == "" {
+		return fmt.Errorf("template mountPath must be non-empty")
+	}
+
+	return nil
+}
+
+func (c *TomlConfig) validateRemediationAction(actionName string, resource MaintenanceResource) error {
+	if resource.TemplateFileName == "" {
+		return fmt.Errorf("action '%s' must have a non-empty templateFileName", actionName)
+	}
+
+	if err := c.validateTemplateFileExists(actionName, resource.TemplateFileName); err != nil {
+		return err
+	}
+
+	if err := validateScope(actionName, resource.Scope, resource.Namespace); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *TomlConfig) validateTemplateFileExists(actionName, templateFileName string) error {
+	templatePath := filepath.Join(c.Template.MountPath, templateFileName)
+
+	_, err := os.Stat(templatePath)
+	if err == nil {
+		return nil
+	}
+
+	if os.IsNotExist(err) {
+		return fmt.Errorf(
+			"action '%s' references template file '%s' which does not exist at path '%s'",
+			actionName, templateFileName, templatePath,
+		)
+	}
+
+	return fmt.Errorf(
+		"action '%s' cannot access template file '%s' at path '%s': %w",
+		actionName, templateFileName, templatePath, err,
+	)
+}
+
+func validateScope(actionName, scope, namespace string) error {
+	switch scope {
+	case "", "Cluster":
+		return nil
+	case "Namespaced":
+		if namespace == "" {
+			return fmt.Errorf("action '%s' is Namespaced but no namespace is specified", actionName)
+		}
+
+		return nil
+	default:
+		return fmt.Errorf(
+			"action '%s' has invalid scope '%s', must be 'Cluster' or 'Namespaced'",
+			actionName, scope,
+		)
+	}
 }

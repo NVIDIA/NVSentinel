@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -142,11 +143,12 @@ func NewK8sClient(kubeconfig string, dryRun bool, remediationConfig config.TomlC
 		if maintenanceResource.TemplateFileName == "" {
 			return nil, nil, fmt.Errorf("remediation action %s is missing template file configuration", actionName)
 		}
-		
+
 		tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
 		}
+
 		templates[actionName] = tmpl
 	}
 
@@ -201,6 +203,7 @@ func loadAndParseTemplate(mountPath, fileName, templateName string) (*template.T
 	}
 
 	tmpl := template.New(templateName)
+
 	tmpl, err = tmpl.Parse(string(templateContent))
 	if err != nil {
 		return nil, fmt.Errorf("error parsing template: %w", err)
@@ -230,58 +233,30 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
-	// Declare variables for maintenance resource selection and template processing
-	var (
-		recommendedActionName = healthEvent.RecommendedAction.String()
-		maintenanceResource   config.MaintenanceResource
-		selectedTemplate      *template.Template
-		actionKey             string
-	)
+	recommendedActionName := healthEvent.RecommendedAction.String()
 
-	// Select appropriate maintenance resource configuration and template
-	resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]
-	if !exists {
-		slog.Error("No remediation configuration found for action",
-			"action", recommendedActionName,
-			"node", healthEvent.NodeName,
-			"availableActions", func() []string {
-				actions := make([]string, 0, len(c.remediationConfig.RemediationActions))
-				for action := range c.remediationConfig.RemediationActions {
-					actions = append(actions, action)
-				}
-				return actions
-			}())
+	maintenanceResource, selectedTemplate, actionKey, ok :=
+		c.selectRemediationActionAndTemplate(recommendedActionName, healthEvent.NodeName)
+	if !ok {
 		return false, ""
 	}
 
-	maintenanceResource = resource
-	selectedTemplate = c.templates[recommendedActionName]
-	actionKey = recommendedActionName
-
-	if selectedTemplate == nil {
-		slog.Error("No template available for remediation action",
-			"action", recommendedActionName,
-			"node", healthEvent.NodeName)
-		return false, ""
-	}
-
-	// Generate CR name
 	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)
 
-	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
 		slog.Info("DRY-RUN: Skipping custom resource creation",
 			"node", healthEvent.NodeName,
 			"template", actionKey)
+
 		return true, crName
 	}
 
-	// Get the node object to extract UID for owner reference
 	node, err := c.getNodeForOwnerReference(ctx, healthEvent.NodeName)
 	if err != nil {
 		slog.Warn("Failed to get node for owner reference, skipping CR creation",
 			"node", healthEvent.NodeName,
 			"error", err)
+
 		return false, ""
 	}
 
@@ -290,43 +265,109 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		"template", actionKey,
 		"nodeUID", node.UID)
 
-	// Build template data
 	templateData := TemplateData{
 		NodeName:              healthEvent.NodeName,
 		HealthEventID:         healthEventID,
 		RecommendedAction:     healthEvent.RecommendedAction,
 		RecommendedActionName: recommendedActionName,
 
-		// CRD routing metadata from selected MaintenanceResource
 		ApiGroup:  maintenanceResource.ApiGroup,
 		Version:   maintenanceResource.Version,
 		Kind:      maintenanceResource.Kind,
 		Namespace: maintenanceResource.Namespace,
 	}
 
-	// Execute the selected template
-	var buf bytes.Buffer
-	if err := selectedTemplate.Execute(&buf, templateData); err != nil {
-		slog.Error("Failed to execute maintenance template",
+	maintenance, yamlStr, err := renderMaintenanceFromTemplate(selectedTemplate, templateData)
+	if err != nil {
+		slog.Error("Failed to render maintenance template",
 			"template", actionKey,
 			"error", err)
+
 		return false, ""
 	}
 
 	slog.Debug("Generated YAML from template",
 		"template", actionKey,
-		"yaml", buf.String())
+		"yaml", yamlStr)
 
-	// Convert YAML to unstructured
-	var obj map[string]any
-	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
-		slog.Error("Failed to unmarshal YAML", "error", err)
+	setNodeOwnerRef(maintenance, node)
+
+	gvk := maintenance.GroupVersionKind()
+
+	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		slog.Error("Failed to get REST mapping", "error", err, "gvk", gvk)
+
 		return false, ""
 	}
 
-	maintenance := &unstructured.Unstructured{Object: obj}
+	createdCR, err := c.createMaintenanceCR(ctx, mapping.Resource, maintenanceResource, maintenance)
+	if err != nil {
+		return c.handleCreateCRError(ctx, err, crName, healthEvent)
+	}
 
-	// Owner reference enables automatic CR cleanup when Node is deleted
+	actualCRName := createdCR.GetName()
+	slog.Info("Created Maintenance CR successfully",
+		"crName", actualCRName,
+		"node", healthEvent.NodeName,
+		"template", actionKey)
+
+	c.maybeUpdateRemediationAnnotation(ctx, healthEvent.NodeName, maintenanceResource, actualCRName, recommendedActionName)
+
+	return true, actualCRName
+}
+
+func (c *FaultRemediationClient) selectRemediationActionAndTemplate(
+	recommendedActionName string,
+	nodeName string,
+) (config.MaintenanceResource, *template.Template, string, bool) {
+	resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]
+	if !exists {
+		slog.Error("No remediation configuration found for action",
+			"action", recommendedActionName,
+			"node", nodeName,
+			"availableActions", func() []string {
+				actions := make([]string, 0, len(c.remediationConfig.RemediationActions))
+				for action := range c.remediationConfig.RemediationActions {
+					actions = append(actions, action)
+				}
+
+				return actions
+			}())
+
+		return config.MaintenanceResource{}, nil, "", false
+	}
+
+	tmpl := c.templates[recommendedActionName]
+	if tmpl == nil {
+		slog.Error("No template available for remediation action",
+			"action", recommendedActionName,
+			"node", nodeName)
+
+		return config.MaintenanceResource{}, nil, "", false
+	}
+
+	return resource, tmpl, recommendedActionName, true
+}
+
+func renderMaintenanceFromTemplate(
+	tmpl *template.Template,
+	data TemplateData,
+) (*unstructured.Unstructured, string, error) {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, "", err
+	}
+
+	var obj map[string]any
+	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
+		return nil, "", err
+	}
+
+	return &unstructured.Unstructured{Object: obj}, buf.String(), nil
+}
+
+func setNodeOwnerRef(maintenance *unstructured.Unstructured, node *corev1.Node) {
 	ownerRef := metav1.OwnerReference{
 		APIVersion:         "v1",
 		Kind:               "Node",
@@ -338,55 +379,46 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	maintenance.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
 
 	slog.Info("Added owner reference to CR for automatic garbage collection",
-		"node", healthEvent.NodeName,
+		"node", node.Name,
 		"nodeUID", node.UID,
-		"crName", crName,
-		"template", actionKey)
+		"crName", maintenance.GetName())
+}
 
-	// Get GVK from the unstructured object
-	gvk := maintenance.GroupVersionKind()
-
-	// Convert GVK to GVR using RESTMapper
-	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		slog.Error("Failed to get REST mapping", "error", err, "gvk", gvk)
-		return false, ""
-	}
-
-	// Create the maintenance resource (cluster or namespaced based on scope)
-	var createdCR *unstructured.Unstructured
-	if maintenanceResource.Scope == "Namespaced" {
-		createdCR, err = c.clientset.Resource(mapping.Resource).
-			Namespace(maintenanceResource.Namespace).
-			Create(ctx, maintenance, metav1.CreateOptions{})
-	} else {
-		// Default to cluster scope
-		createdCR, err = c.clientset.Resource(mapping.Resource).
+func (c *FaultRemediationClient) createMaintenanceCR(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	mr config.MaintenanceResource,
+	maintenance *unstructured.Unstructured,
+) (*unstructured.Unstructured, error) {
+	if mr.Scope == "Namespaced" {
+		return c.clientset.Resource(gvr).
+			Namespace(mr.Namespace).
 			Create(ctx, maintenance, metav1.CreateOptions{})
 	}
 
-	if err != nil {
-		return c.handleCreateCRError(ctx, err, crName, healthEvent)
+	return c.clientset.Resource(gvr).
+		Create(ctx, maintenance, metav1.CreateOptions{})
+}
+
+func (c *FaultRemediationClient) maybeUpdateRemediationAnnotation(
+	ctx context.Context,
+	nodeName string,
+	mr config.MaintenanceResource,
+	actualCRName string,
+	recommendedActionName string,
+) {
+	group := mr.EquivalenceGroup
+	if group == "" || c.annotationManager == nil {
+		return
 	}
 
-	// Get the actual name of the created CR
-	actualCRName := createdCR.GetName()
-	slog.Info("Created Maintenance CR successfully",
-		"crName", actualCRName,
-		"node", healthEvent.NodeName,
-		"template", actionKey)
-
-	// Update node annotation with CR reference
-	group := maintenanceResource.EquivalenceGroup
-	if group != "" && c.annotationManager != nil {
-		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-			group, actualCRName, recommendedActionName); err != nil {
-			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
-				"error", err)
-		}
+	if err := c.annotationManager.UpdateRemediationState(
+		ctx, nodeName, group, actualCRName, recommendedActionName,
+	); err != nil {
+		slog.Warn("Failed to update node annotation",
+			"node", nodeName,
+			"error", err)
 	}
-
-	return true, actualCRName
 }
 
 // getNodeForOwnerReference retrieves the node for setting owner reference on the CR.
@@ -432,19 +464,20 @@ func (c *FaultRemediationClient) handleCreateCRError(
 		// Update node annotation with CR reference
 		actionName := healthEvent.RecommendedAction.String()
 		actionConfig, exists := c.remediationConfig.RemediationActions[actionName]
+
 		if !exists {
 			return true, crName
 		}
-		
+
 		group := actionConfig.EquivalenceGroup
 		if group == "" {
 			return true, crName
 		}
-		
+
 		if c.annotationManager == nil {
 			return true, crName
 		}
-		
+
 		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
 			group, crName, actionName); err != nil {
 			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,

@@ -76,12 +76,16 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName s
 	// Use namespace if the resource is namespace-scoped
 	var cr *unstructured.Unstructured
 	if resource.Scope == "Namespaced" && resource.Namespace != "" {
-		cr, err = c.dynamicClient.Resource(mapping.Resource).Namespace(resource.Namespace).Get(ctx, crName, metav1.GetOptions{})
+		cr, err = c.dynamicClient.Resource(mapping.Resource).
+			Namespace(resource.Namespace).Get(ctx, crName, metav1.GetOptions{})
 	} else {
 		cr, err = c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
 	}
+
 	if err != nil {
-		slog.Warn("Failed to get CR, allowing create", "crName", crName, "namespace", resource.Namespace, "scope", resource.Scope, "error", err)
+		slog.Warn("Failed to get CR, allowing create",
+			"crName", crName, "namespace", resource.Namespace, "scope", resource.Scope, "error", err)
+
 		return false
 	}
 

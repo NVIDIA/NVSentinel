@@ -458,6 +458,7 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 	// Use the stored action name to determine the correct CRD type for status checking
 	storedActionName := groupState.ActionName
 	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, storedActionName, groupState.MaintenanceCR)
+
 	if shouldSkip {
 		slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
 		return false, groupState.MaintenanceCR, nil

@@ -15,11 +15,29 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestTomlConfig_Validate(t *testing.T) {
+	// Create temp directory for template files
+	tempDir, err := os.MkdirTemp("", "config-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	defer os.RemoveAll(tempDir)
+
+	// Create template files for valid test cases
+	templateFiles := []string{"template-a.yaml", "template-b.yaml", "template.yaml"}
+	for _, f := range templateFiles {
+		if err := os.WriteFile(filepath.Join(tempDir, f), []byte("apiVersion: v1"), 0644); err != nil {
+			t.Fatalf("Failed to create template file %s: %v", f, err)
+		}
+	}
+
 	tests := []struct {
 		name        string
 		config      TomlConfig
@@ -29,20 +47,17 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "valid config with matching templates",
 			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"RESTART_BM": {
-						TemplateFileName: "atlas-reboot.yaml",
+					"ACTION_A": {
+						TemplateFileName: "template-a.yaml",
 						Scope:            "Cluster",
 					},
-					"COMPONENT_RESET": {
-						TemplateFileName: "gpu-reset.yaml",
+					"ACTION_B": {
+						TemplateFileName: "template-b.yaml",
 						Scope:            "Namespaced",
-						Namespace:        "nvidia-gpu-operator",
+						Namespace:        "test-namespace",
 					},
-				},
-				Templates: map[string]string{
-					"atlas-reboot.yaml": "apiVersion: ...",
-					"gpu-reset.yaml":    "apiVersion: ...",
 				},
 			},
 			expectError: false,
@@ -50,14 +65,12 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "missing template file reference",
 			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"RESTART_BM": {
+					"ACTION_A": {
 						TemplateFileName: "missing-template.yaml",
 						Scope:            "Cluster",
 					},
-				},
-				Templates: map[string]string{
-					"existing-template.yaml": "apiVersion: ...",
 				},
 			},
 			expectError: true,
@@ -66,14 +79,12 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "invalid scope value",
 			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"RESTART_BM": {
+					"ACTION_A": {
 						TemplateFileName: "template.yaml",
 						Scope:            "Invalid",
 					},
-				},
-				Templates: map[string]string{
-					"template.yaml": "apiVersion: ...",
 				},
 			},
 			expectError: true,
@@ -82,15 +93,13 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "namespaced scope without namespace",
 			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"COMPONENT_RESET": {
+					"ACTION_A": {
 						TemplateFileName: "template.yaml",
 						Scope:            "Namespaced",
 						Namespace:        "", // Missing namespace
 					},
-				},
-				Templates: map[string]string{
-					"template.yaml": "apiVersion: ...",
 				},
 			},
 			expectError: true,
@@ -99,14 +108,12 @@ func TestTomlConfig_Validate(t *testing.T) {
 		{
 			name: "empty template file reference should be rejected",
 			config: TomlConfig{
+				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"RESTART_BM": {
+					"ACTION_A": {
 						TemplateFileName: "", // Empty should fail
 						Scope:            "Cluster",
 					},
-				},
-				Templates: map[string]string{
-					"template.yaml": "apiVersion: ...",
 				},
 			},
 			expectError: true,
@@ -123,6 +130,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 					t.Errorf("Expected validation error but got none")
 					return
 				}
+
 				if !strings.Contains(err.Error(), tt.errorSubstr) {
 					t.Errorf("Expected error to contain '%s' but got: %v", tt.errorSubstr, err)
 				}

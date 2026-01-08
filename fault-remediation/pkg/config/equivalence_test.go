@@ -15,31 +15,46 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 func TestEquivalenceGroupConfiguration(t *testing.T) {
+	// Create temp directory for template files
+	tempDir, err := os.MkdirTemp("", "equivalence-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+
+	defer os.RemoveAll(tempDir)
+
+	// Create template files
+	templateFiles := []string{"template-restart.yaml", "template-reset.yaml"}
+	for _, f := range templateFiles {
+		if err := os.WriteFile(filepath.Join(tempDir, f), []byte("apiVersion: v1"), 0644); err != nil {
+			t.Fatalf("Failed to create template file %s: %v", f, err)
+		}
+	}
+
 	// Test config with equivalence groups
 	config := TomlConfig{
+		Template: Template{MountPath: tempDir},
 		RemediationActions: map[string]MaintenanceResource{
 			protos.RecommendedAction_RESTART_BM.String(): {
-				ApiGroup:         "atlas.io",
-				Kind:             "RebootNode",
+				ApiGroup:         "example.io",
+				Kind:             "NodeRestart",
 				EquivalenceGroup: "restart",
-				TemplateFileName: "atlas-reboot.yaml",
+				TemplateFileName: "template-restart.yaml",
 			},
 			protos.RecommendedAction_COMPONENT_RESET.String(): {
-				ApiGroup:         "nvidia.com",
-				Kind:             "GPUReset",
+				ApiGroup:         "example.io",
+				Kind:             "ComponentReset",
 				EquivalenceGroup: "restart", // Same group
-				TemplateFileName: "nvidia-reset.yaml",
+				TemplateFileName: "template-reset.yaml",
 			},
-		},
-		Templates: map[string]string{
-			"atlas-reboot.yaml": "atlas template content",
-			"nvidia-reset.yaml": "nvidia template content",
 		},
 	}
 
@@ -95,7 +110,7 @@ func TestEquivalenceGroupLookup(t *testing.T) {
 		},
 		Templates: map[string]string{
 			"template1.yaml": "content1",
-			"template2.yaml": "content2", 
+			"template2.yaml": "content2",
 			"template3.yaml": "content3",
 		},
 	}
