@@ -32,6 +32,13 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 )
 
+const (
+	// MaxRetries defines the maximum number of retry attempts for MongoDB writes
+	// before dropping the event. This prevents unbounded memory growth while
+	// providing resilience against transient failures.
+	MaxRetries = 3
+)
+
 type DatabaseStoreConnector struct {
 	// databaseClient is the database-agnostic client
 	databaseClient client.DatabaseClient
@@ -105,8 +112,25 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 
 			err := r.insertHealthEvents(ctx, healthEvents)
 			if err != nil {
-				slog.Error("Error inserting health events", "error", err)
-				r.ringBuffer.HealthMetricEleProcessingFailed(healthEvents)
+				retryCount := r.ringBuffer.NumRequeues(healthEvents)
+				if retryCount < MaxRetries {
+					slog.Warn("Error inserting health events, will retry with exponential backoff",
+						"error", err,
+						"retryCount", retryCount,
+						"maxRetries", MaxRetries,
+						"eventCount", len(healthEvents.GetEvents()))
+
+					r.ringBuffer.AddRateLimited(healthEvents)
+				} else {
+					slog.Error("Max retries exceeded, dropping health events permanently",
+						"error", err,
+						"retryCount", retryCount,
+						"maxRetries", MaxRetries,
+						"eventCount", len(healthEvents.GetEvents()),
+						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
+						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
+					r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+				}
 			} else {
 				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
 			}

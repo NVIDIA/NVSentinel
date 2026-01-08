@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -301,4 +302,113 @@ func TestInitializeDatabaseStoreConnector(t *testing.T) {
 		require.Nil(t, connector)
 		require.Contains(t, err.Error(), "NODE_NAME is not set")
 	})
+}
+
+// TestMessageRetriedOnMongoDBFailure verifies that
+// messages are retried with exponential backoff when MongoDB write fails.
+func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRetryBehavior", ctx,
+		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
+	nodeName := "testNode"
+	mockClient := &mockDatabaseClient{}
+
+	var mu sync.Mutex
+	callCount := 0
+
+	// First 2 calls fail, 3rd call succeeds - using simple counter without mutex in return
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).
+		Return(nil, errors.New("MongoDB temporarily unavailable")).Times(2)
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).
+		Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil).Once()
+
+	connector := &DatabaseStoreConnector{
+		databaseClient: mockClient,
+		ringBuffer:     ringBuffer,
+		nodeName:       nodeName,
+	}
+
+	healthEvent := &protos.HealthEvent{
+		NodeName:           "gpu-node-1",
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		CheckName:          "GpuXidError",
+		ErrorCode:          []string{"79"}, // GPU fell off the bus
+		IsFatal:            true,
+		IsHealthy:          false,
+	}
+
+	healthEvents := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{healthEvent},
+	}
+
+	ringBuffer.Enqueue(healthEvents)
+	require.Equal(t, 1, ringBuffer.CurrentLength(), "Event should be in queue")
+	go connector.FetchAndProcessHealthMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount = len(mockClient.Calls)
+		return callCount >= 3
+	}, 500*time.Millisecond, 10*time.Millisecond, "Should retry and eventually succeed")
+	// Wait a bit more for final processing
+	time.Sleep(50 * time.Millisecond)
+
+	mockClient.AssertNumberOfCalls(t, "InsertMany", 3)
+	require.Equal(t, 0, ringBuffer.CurrentLength(), "Queue should be empty after success")
+	cancel()
+}
+
+// TestMessageDroppedAfterMaxRetries verifies that messages are eventually dropped
+// after exceeding the maximum retry count to prevent unbounded memory growth.
+func TestMessageDroppedAfterMaxRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testMaxRetries", ctx,
+		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
+	nodeName := "testNode"
+	mockClient := &mockDatabaseClient{}
+
+	// Always fail to simulate persistent MongoDB outage
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(
+		(*client.InsertManyResult)(nil),
+		errors.New("MongoDB permanently down"),
+	)
+
+	connector := &DatabaseStoreConnector{
+		databaseClient: mockClient,
+		ringBuffer:     ringBuffer,
+		nodeName:       nodeName,
+	}
+
+	healthEvent := &protos.HealthEvent{
+		NodeName:           "gpu-node-1",
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		CheckName:          "GpuXidError",
+		ErrorCode:          []string{"79"},
+		IsFatal:            true,
+		IsHealthy:          false,
+	}
+
+	healthEvents := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{healthEvent},
+	}
+
+	ringBuffer.Enqueue(healthEvents)
+	require.Equal(t, 1, ringBuffer.CurrentLength())
+
+	go connector.FetchAndProcessHealthMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		return len(mockClient.Calls) >= 4
+	}, 500*time.Millisecond, 10*time.Millisecond, "Should attempt initial call plus 3 retries")
+	// Give time for final processing
+	time.Sleep(50 * time.Millisecond)
+
+	require.Equal(t, 0, ringBuffer.CurrentLength(), "Event should be dropped after max retries")
+	mockClient.AssertNumberOfCalls(t, "InsertMany", 4)
+	cancel()
 }

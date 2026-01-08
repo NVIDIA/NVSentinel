@@ -18,10 +18,18 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+)
+
+const (
+	// Default retry configuration for production use
+	// Retry 1: 500ms, Retry 2: 1.5s, Retry 3: 3s (total ~5s to 4th attempt)
+	DefaultBaseDelay = 500 * time.Millisecond
+	DefaultMaxDelay  = 3 * time.Second
 )
 
 type RingBuffer struct {
@@ -30,11 +38,37 @@ type RingBuffer struct {
 	ctx                  context.Context
 }
 
-func NewRingBuffer(ringBufferName string, ctx context.Context) *RingBuffer {
+type Option func(*config)
+
+type config struct {
+	baseDelay time.Duration
+	maxDelay  time.Duration
+}
+
+func WithRetryConfig(baseDelay, maxDelay time.Duration) Option {
+	return func(c *config) {
+		c.baseDelay = baseDelay
+		c.maxDelay = maxDelay
+	}
+}
+
+func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *RingBuffer {
+	cfg := &config{
+		baseDelay: DefaultBaseDelay,
+		maxDelay:  DefaultMaxDelay,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	workqueue.SetProvider(prometheusMetricsProvider{})
+	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[*protos.HealthEvents](
+		cfg.baseDelay,
+		cfg.maxDelay,
+	)
 
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[*protos.HealthEvents](),
+		rateLimiter,
 		workqueue.TypedRateLimitingQueueConfig[*protos.HealthEvents]{
 			Name: ringBufferName,
 		},
@@ -72,12 +106,22 @@ func (rb *RingBuffer) Dequeue() (*protos.HealthEvents, bool) {
 }
 
 func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *protos.HealthEvents) {
+	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
 }
 
 func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *protos.HealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
+}
+
+func (rb *RingBuffer) AddRateLimited(data *protos.HealthEvents) {
+	rb.healthMetricQueue.AddRateLimited(data)
+	rb.healthMetricQueue.Done(data)
+}
+
+func (rb *RingBuffer) NumRequeues(data *protos.HealthEvents) int {
+	return rb.healthMetricQueue.NumRequeues(data)
 }
 
 func (rb *RingBuffer) ShutDownHealthMetricQueue() {
