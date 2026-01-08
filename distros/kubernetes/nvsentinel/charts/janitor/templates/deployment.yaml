@@ -130,6 +130,31 @@ spec:
               value: {{ .Values.csp.oci.profile | quote }}
             {{- end }}
             {{- end }}
+            {{- if eq (.Values.csp.provider | default "kind") "nebius" }}
+            # Nebius-specific environment variables
+            {{- if .Values.csp.nebius.serviceAccountKeySecret }}
+            # When using serviceAccountKeySecret, the key is mounted at /etc/nebius/sa-credentials.json
+            - name: NEBIUS_SA_KEY_FILE
+              value: "/etc/nebius/sa-credentials.json"
+            {{- else if .Values.csp.nebius.serviceAccountKeyFile }}
+            - name: NEBIUS_SA_KEY_FILE
+              value: {{ .Values.csp.nebius.serviceAccountKeyFile | quote }}
+            {{- end }}
+            {{- /* iamTokenSecretRef takes precedence over iamToken if both are set */}}
+            {{- if .Values.csp.nebius.iamTokenSecretRef }}
+            - name: NEBIUS_IAM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.csp.nebius.iamTokenSecretRef.name }}
+                  key: {{ .Values.csp.nebius.iamTokenSecretRef.key | default "token" }}
+            {{- else if .Values.csp.nebius.iamToken }}
+            - name: NEBIUS_IAM_TOKEN
+              value: {{ .Values.csp.nebius.iamToken | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -153,6 +178,11 @@ spec:
             {{- end }}
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
+            {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
+            - name: nebius-sa-key
+              mountPath: /etc/nebius
+              readOnly: true
             {{- end }}
       restartPolicy: Always
       volumes:
@@ -178,6 +208,12 @@ spec:
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+        {{- end }}
+        {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
+        - name: nebius-sa-key
+          secret:
+            secretName: {{ .Values.csp.nebius.serviceAccountKeySecret }}
+            defaultMode: 420
         {{- end }}
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:

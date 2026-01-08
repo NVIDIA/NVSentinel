@@ -46,4 +46,7 @@ nodeSelector: {}
 affinity: {}
 tolerations: []
 
+# Customize this if your journal is stored in a non-standard location
+journalHostPath: /var/log
+
 logLevel: info

@@ -314,7 +314,9 @@ func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEve
 	}
 
 	if healthEvent.Message != "" {
-		message += fmt.Sprintf("%s ", healthEvent.Message)
+		// Replace semicolons with dots in the message to prevent delimiter collision
+		sanitizedMessage := strings.ReplaceAll(healthEvent.Message, ";", ".")
+		message += fmt.Sprintf("%s ", sanitizedMessage)
 	}
 
 	message += fmt.Sprintf("Recommended Action=%s;", healthEvent.RecommendedAction.String())

@@ -26,16 +26,18 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/azure"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor/pkg/csp/nebius"
 	"github.com/nvidia/nvsentinel/janitor/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
 
 const (
-	ProviderKind  Provider = "kind"
-	ProviderAWS   Provider = "aws"
-	ProviderGCP   Provider = "gcp"
-	ProviderAzure Provider = "azure"
-	ProviderOCI   Provider = "oci"
+	ProviderKind   Provider = "kind"
+	ProviderAWS    Provider = "aws"
+	ProviderGCP    Provider = "gcp"
+	ProviderAzure  Provider = "azure"
+	ProviderOCI    Provider = "oci"
+	ProviderNebius Provider = "nebius"
 )
 
 // Provider defines the supported cloud service providers.
@@ -82,6 +84,8 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 		return azure.NewClient(ctx)
 	case ProviderOCI:
 		return oci.NewClientFromEnv(ctx)
+	case ProviderNebius:
+		return nebius.NewClientFromEnv(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported CSP provider: %s", provider)
 	}
@@ -111,6 +115,8 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 		return ProviderAzure, nil
 	case "oci":
 		return ProviderOCI, nil
+	case "nebius":
+		return ProviderNebius, nil
 	default:
 		return "", fmt.Errorf("unsupported CSP provider: %s", providerStr)
 	}

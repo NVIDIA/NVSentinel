@@ -21,11 +21,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-logr/logr"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
@@ -354,6 +356,9 @@ func NewMongoDBClient(ctx context.Context, dbConfig config.DatabaseConfig) (*Mon
 
 		certConfig := dbConfig.GetCertConfig()
 
+		// Set controller-runtime logger to use slog
+		ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
 		cw, err := certwatcher.New(certConfig.GetCertPath(), certConfig.GetKeyPath())
 		if err != nil {
 			cwCancel()
@@ -368,16 +373,14 @@ func NewMongoDBClient(ctx context.Context, dbConfig config.DatabaseConfig) (*Mon
 		cwCtx, cancel := context.WithCancel(context.Background())
 		cwCancel = cancel
 
-		// Start watching for certificate changes
-		if err := cw.Start(cwCtx); err != nil {
-			cwCancel()
-
-			return nil, datastore.NewConnectionError(
-				datastore.ProviderMongoDB,
-				"failed to start certificate watcher",
-				err,
-			)
-		}
+		// Start watching for certificate changes in a goroutine.
+		// cw.Start() blocks until the context is cancelled, so we must run it
+		// in the background to avoid blocking the client initialization.
+		go func() {
+			if err := cw.Start(cwCtx); err != nil {
+				slog.Error("Certificate watcher stopped with error", "error", err)
+			}
+		}()
 
 		certWatcher = cw
 		mongoConfig.CertWatcher = cw
