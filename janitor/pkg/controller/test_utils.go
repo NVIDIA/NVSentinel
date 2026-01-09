@@ -250,6 +250,7 @@ func (h *MockCSPTestHelper) Stop() {
 	if h.grpcServer != nil {
 		h.grpcServer.GracefulStop()
 	}
+
 	if h.grpcConn != nil {
 		h.grpcConn.Close()
 	}
