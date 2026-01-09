@@ -16,7 +16,7 @@ package controller
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"regexp"
 	"sync"
@@ -220,7 +220,7 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 
 	go func() {
 		if err := server.Serve(lis); err != nil {
-			log.Printf("Mock CSP server exited with error: %v", err)
+			slog.Error("Mock CSP server exited with error", "error", err)
 		}
 	}()
 
@@ -233,7 +233,7 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		log.Fatalf("Failed to create mock CSP client: %v", err)
+		slog.Error("Failed to create mock CSP client", "error", err)
 	}
 
 	return &MockCSPTestHelper{
