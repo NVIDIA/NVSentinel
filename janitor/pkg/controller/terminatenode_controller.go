@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -52,6 +53,7 @@ type TerminateNodeReconciler struct {
 	Scheme    *runtime.Scheme
 	Config    *config.TerminateNodeControllerConfig
 	CSPClient cspv1alpha1.CSPProviderServiceClient
+	grpcConn  *grpc.ClientConn
 }
 
 // updateTerminateNodeStatus is a helper function that handles status updates with proper error handling.
@@ -415,7 +417,15 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to create CSP client: %w", err)
 	}
 
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(conn)
+	r.grpcConn = conn
+	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return r.grpcConn.Close()
+	})); err != nil {
+		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
+	}
 
 	// Note: We use RequeueAfter in the reconcile loop rather than the controller's
 	// rate limiter because we need per-resource (per-node) backoff based on each

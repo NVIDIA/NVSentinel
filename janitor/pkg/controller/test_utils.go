@@ -206,6 +206,7 @@ type MockCSPTestHelper struct {
 	Client     cspv1alpha1.CSPProviderServiceClient
 	grpcServer *grpc.Server
 	listener   *bufconn.Listener
+	grpcConn   *grpc.ClientConn
 }
 
 // NewMockCSPTestHelper creates and starts a mock CSP gRPC server.
@@ -241,6 +242,7 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 		Client:     cspv1alpha1.NewCSPProviderServiceClient(conn),
 		grpcServer: server,
 		listener:   lis,
+		grpcConn:   conn,
 	}
 }
 
@@ -248,6 +250,9 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 func (h *MockCSPTestHelper) Stop() {
 	if h.grpcServer != nil {
 		h.grpcServer.GracefulStop()
+	}
+	if h.grpcConn != nil {
+		h.grpcConn.Close()
 	}
 }
 
