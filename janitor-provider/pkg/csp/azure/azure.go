@@ -255,7 +255,7 @@ func getSubscriptionID(ctx context.Context) (string, error) {
 
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			slog.Error("failed to close http client", "error", cerr)
+			slog.Error("failed to close IMDS response body", "error", cerr)
 		}
 	}()
 
