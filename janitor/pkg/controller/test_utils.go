@@ -16,7 +16,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net"
 	"regexp"
@@ -220,7 +219,7 @@ func NewMockCSPTestHelper() *MockCSPTestHelper {
 	cspv1alpha1.RegisterCSPProviderServiceServer(server, mockServer)
 
 	go func() {
-		if err := server.Serve(lis); err != nil && errors.Is(err, grpc.ErrServerStopped) {
+		if err := server.Serve(lis); err != nil {
 			log.Printf("Mock CSP server exited with error: %v", err)
 		}
 	}()
