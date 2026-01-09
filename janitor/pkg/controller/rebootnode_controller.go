@@ -183,11 +183,8 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Check if csp reports the node is ready
 		cspReady := false
 
-		var nodeReadyErr error
-
 		if r.Config.ManualMode {
 			cspReady = true
-			nodeReadyErr = nil
 		} else {
 			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
 				NodeName:  node.Name,
@@ -218,25 +215,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		// nolint:gocritic // Migrated business logic with if-else chain
-		if nodeReadyErr != nil {
-			logger.Error(nodeReadyErr, "node ready status check failed",
-				"node", node.Name)
-
-			rebootNode.Status.ConsecutiveFailures++
-
-			rebootNode.SetCompletionTime()
-			rebootNode.SetCondition(metav1.Condition{
-				Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
-				Status:             metav1.ConditionFalse,
-				Reason:             "Failed",
-				Message:            fmt.Sprintf("Node status could not be checked from CSP: %s", nodeReadyErr),
-				LastTransitionTime: metav1.Now(),
-			})
-
-			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusFailed, node.Name)
-
-			result = ctrl.Result{} // Don't requeue on failure
-		} else if cspReady && kubernetesReady {
+		if cspReady && kubernetesReady {
 			logger.Info("node reached ready state post-reboot",
 				"node", node.Name,
 				"duration", time.Since(rebootNode.Status.StartTime.Time))
