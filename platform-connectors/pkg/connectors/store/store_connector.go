@@ -32,35 +32,31 @@ import (
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
 )
 
-const (
-	// MaxRetries defines the maximum number of retry attempts for MongoDB writes
-	// before dropping the event. This prevents unbounded memory growth while
-	// providing resilience against transient failures.
-	MaxRetries = 3
-)
-
 type DatabaseStoreConnector struct {
 	// databaseClient is the database-agnostic client
 	databaseClient client.DatabaseClient
 	// resourceSinkClients are client for pushing data to the resource count sink
 	ringBuffer *ringbuffer.RingBuffer
 	nodeName   string
+	maxRetries int
 }
 
 func new(
 	databaseClient client.DatabaseClient,
 	ringBuffer *ringbuffer.RingBuffer,
 	nodeName string,
+	maxRetries int,
 ) *DatabaseStoreConnector {
 	return &DatabaseStoreConnector{
 		databaseClient: databaseClient,
 		ringBuffer:     ringBuffer,
 		nodeName:       nodeName,
+		maxRetries:     maxRetries,
 	}
 }
 
 func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	clientCertMountPath string) (*DatabaseStoreConnector, error) {
+	clientCertMountPath string, maxRetries int) (*DatabaseStoreConnector, error) {
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		return nil, fmt.Errorf("NODE_NAME is not set")
@@ -78,9 +74,9 @@ func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffe
 		return nil, fmt.Errorf("failed to create database client: %w", err)
 	}
 
-	slog.Info("Successfully initialized database store connector")
+	slog.Info("Successfully initialized database store connector", "maxRetries", maxRetries)
 
-	return new(databaseClient, ringbuffer, nodeName), nil
+	return new(databaseClient, ringbuffer, nodeName, maxRetries), nil
 }
 
 func createClientFactory(databaseClientCertMountPath string) (*factory.ClientFactory, error) {
@@ -113,11 +109,11 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 			err := r.insertHealthEvents(ctx, healthEvents)
 			if err != nil {
 				retryCount := r.ringBuffer.NumRequeues(healthEvents)
-				if retryCount < MaxRetries {
+				if retryCount < r.maxRetries {
 					slog.Warn("Error inserting health events, will retry with exponential backoff",
 						"error", err,
 						"retryCount", retryCount,
-						"maxRetries", MaxRetries,
+						"maxRetries", r.maxRetries,
 						"eventCount", len(healthEvents.GetEvents()))
 
 					r.ringBuffer.AddRateLimited(healthEvents)
@@ -125,7 +121,7 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 					slog.Error("Max retries exceeded, dropping health events permanently",
 						"error", err,
 						"retryCount", retryCount,
-						"maxRetries", MaxRetries,
+						"maxRetries", r.maxRetries,
 						"eventCount", len(healthEvents.GetEvents()),
 						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
 						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())

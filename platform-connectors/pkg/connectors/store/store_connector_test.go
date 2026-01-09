@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -296,7 +295,7 @@ func TestInitializeDatabaseStoreConnector(t *testing.T) {
 		}()
 
 		ringBuffer := ringbuffer.NewRingBuffer("test", context.Background())
-		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "")
+		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "", 3)
 
 		require.Error(t, err)
 		require.Nil(t, connector)
@@ -315,10 +314,7 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 	nodeName := "testNode"
 	mockClient := &mockDatabaseClient{}
 
-	var mu sync.Mutex
-	callCount := 0
-
-	// First 2 calls fail, 3rd call succeeds - using simple counter without mutex in return
+	// First 2 calls fail, 3rd call succeeds
 	mockClient.On("InsertMany", mock.Anything, mock.Anything).
 		Return(nil, errors.New("MongoDB temporarily unavailable")).Times(2)
 	mockClient.On("InsertMany", mock.Anything, mock.Anything).
@@ -328,6 +324,7 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 		databaseClient: mockClient,
 		ringBuffer:     ringBuffer,
 		nodeName:       nodeName,
+		maxRetries:     3,
 	}
 
 	healthEvent := &protos.HealthEvent{
@@ -348,16 +345,14 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 	go connector.FetchAndProcessHealthMetric(ctx)
 
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		callCount = len(mockClient.Calls)
-		return callCount >= 3
-	}, 500*time.Millisecond, 10*time.Millisecond, "Should retry and eventually succeed")
-	// Wait a bit more for final processing
-	time.Sleep(50 * time.Millisecond)
+		return ringBuffer.CurrentLength() == 0
+	}, 500*time.Millisecond, 10*time.Millisecond, "Queue should be empty after successful retry")
 
+	// Give a bit more time for all async operations to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify correct number of retry attempts
 	mockClient.AssertNumberOfCalls(t, "InsertMany", 3)
-	require.Equal(t, 0, ringBuffer.CurrentLength(), "Queue should be empty after success")
 	cancel()
 }
 
@@ -382,6 +377,7 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 		databaseClient: mockClient,
 		ringBuffer:     ringBuffer,
 		nodeName:       nodeName,
+		maxRetries:     3,
 	}
 
 	healthEvent := &protos.HealthEvent{
@@ -403,12 +399,13 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 	go connector.FetchAndProcessHealthMetric(ctx)
 
 	require.Eventually(t, func() bool {
-		return len(mockClient.Calls) >= 4
-	}, 500*time.Millisecond, 10*time.Millisecond, "Should attempt initial call plus 3 retries")
-	// Give time for final processing
-	time.Sleep(50 * time.Millisecond)
+		return ringBuffer.CurrentLength() == 0
+	}, 500*time.Millisecond, 10*time.Millisecond, "Event should be dropped after max retries")
 
-	require.Equal(t, 0, ringBuffer.CurrentLength(), "Event should be dropped after max retries")
+	// Give enough time for the final retry attempt to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify we attempted initial call plus 3 retries (4 total)
 	mockClient.AssertNumberOfCalls(t, "InsertMany", 4)
 	cancel()
 }
