@@ -28,7 +28,7 @@ iam:
   withOIDC: true
   serviceAccounts:
   - metadata:
-      name: janitor
+      name: janitor-provider
       namespace: nvsentinel
     attachPolicyARNs:
     - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
@@ -49,7 +49,7 @@ iam:
         - sts:GetCallerIdentity
         - sts:DecodeAuthorizationMessage
         Resource: "*"
-    roleName: ${CLUSTER_NAME}-janitor
+    roleName: ${CLUSTER_NAME}-janitor-provider
     roleOnly: true
 
 addons:
