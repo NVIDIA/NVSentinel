@@ -131,11 +131,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 // IsNodeReady checks if the node is ready after a reboot signal was sent.
 // AWS requires a 5-minute cooldown period before the node status is reliable.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	// Sending a reboot request to AWS doesn't update statuses immediately,
 	// the ec2 instance does not report that it isn't in a running state for some time
 	// and kubernetes still sees the node as ready. Wait five minutes before checking the status
-	storedTime, err := time.Parse(time.RFC3339, message)
+	storedTime, err := time.Parse(time.RFC3339, requestID)
 	if err != nil {
 		return false, err
 	}

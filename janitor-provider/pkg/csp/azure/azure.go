@@ -106,9 +106,9 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 }
 
 // IsNodeReady checks if the node is ready after a reboot operation.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	// don't check too early, wait like 5 minutes before checking, return not ready if too early
-	storedTime, err := time.Parse(time.RFC3339, message)
+	storedTime, err := time.Parse(time.RFC3339, requestID)
 	if err != nil {
 		return false, err
 	}

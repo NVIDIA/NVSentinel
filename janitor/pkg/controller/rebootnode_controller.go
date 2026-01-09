@@ -190,7 +190,8 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			nodeReadyErr = nil
 		} else {
 			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
-				NodeName: node.Name,
+				NodeName:  node.Name,
+				RequestId: rebootNode.GetCSPReqRef(),
 			})
 			if nodeReadyErr != nil {
 				logger.Error(nodeReadyErr, "failed to check if node is ready",

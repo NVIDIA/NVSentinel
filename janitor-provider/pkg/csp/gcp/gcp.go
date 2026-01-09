@@ -145,7 +145,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 }
 
 // IsNodeReady checks if the node is ready after a reboot operation.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	httpClient, err := getAuthenticatedHTTPClient(ctx)
 	if err != nil {
 		return false, err
@@ -168,7 +168,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 	}
 
 	req := &computepb.GetZoneOperationRequest{
-		Operation: message,
+		Operation: requestID,
 		Project:   nodeFields.project,
 		Zone:      nodeFields.zone,
 	}

@@ -167,9 +167,9 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 // - STOPPED -> initiate start
 // - STARTING -> wait for start to complete
 // - RUNNING -> node is ready
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
-	// message contains the instance ID from SendRebootSignal
-	instanceID := message
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
+	// requestID contains the instance ID from SendRebootSignal
+	instanceID := requestID
 
 	instanceService, cleanup, err := c.getInstanceService(ctx)
 	if err != nil {

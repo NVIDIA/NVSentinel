@@ -76,7 +76,7 @@ func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
-	isReady, err := s.cspClient.IsNodeReady(ctx, *node, "Node is ready")
+	isReady, err := s.cspClient.IsNodeReady(ctx, *node, req.RequestId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
 	}

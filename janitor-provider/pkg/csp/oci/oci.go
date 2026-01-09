@@ -132,11 +132,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 }
 
 // IsNodeReady checks if the node is ready after a reboot operation.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	// Sending a reboot request to OCI doesn't update statuses immediately,
 	// the instance does not report that it isn't in a running state for some time
 	// and kubernetes still sees the node as ready. Wait five minutes before checking the status
-	storedTime, err := time.Parse(time.RFC3339, message)
+	storedTime, err := time.Parse(time.RFC3339, requestID)
 	if err != nil {
 		slog.Error("Failed to parse time", "error", err)
 		return false, err

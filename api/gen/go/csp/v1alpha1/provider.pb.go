@@ -126,6 +126,7 @@ func (x *SendRebootSignalResponse) GetRequestId() string {
 type IsNodeReadyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeName      string                 `protobuf:"bytes,1,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	RequestId     string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -163,6 +164,13 @@ func (*IsNodeReadyRequest) Descriptor() ([]byte, []int) {
 func (x *IsNodeReadyRequest) GetNodeName() string {
 	if x != nil {
 		return x.NodeName
+	}
+	return ""
+}
+
+func (x *IsNodeReadyRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
 	}
 	return ""
 }
@@ -308,9 +316,11 @@ const file_csp_v1alpha1_provider_proto_rawDesc = "" +
 	"\tnode_name\x18\x01 \x01(\tR\bnodeName\"9\n" +
 	"\x18SendRebootSignalResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId\"1\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\"P\n" +
 	"\x12IsNodeReadyRequest\x12\x1b\n" +
-	"\tnode_name\x18\x01 \x01(\tR\bnodeName\"0\n" +
+	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tR\trequestId\"0\n" +
 	"\x13IsNodeReadyResponse\x12\x19\n" +
 	"\bis_ready\x18\x01 \x01(\bR\aisReady\"9\n" +
 	"\x1aSendTerminateSignalRequest\x12\x1b\n" +
