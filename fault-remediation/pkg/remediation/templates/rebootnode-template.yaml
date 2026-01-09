@@ -12,20 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-docker_build(
-    'csp-api-mock',
-    '.',
-    dockerfile='./Dockerfile'
-)
-
-k8s_yaml([
-    './deployment.yaml',
-    './networkpolicy.yaml',
-])
-
-k8s_resource(
-    'csp-api-mock',
-    port_forwards=['8081:8080', '50051:50051'],
-    labels=['mock-services'],
-)
-
+apiVersion: {{.ApiGroup}}/{{.Version}}
+kind: RebootNode
+metadata:
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+spec:
+  nodeName: {{.NodeName}}

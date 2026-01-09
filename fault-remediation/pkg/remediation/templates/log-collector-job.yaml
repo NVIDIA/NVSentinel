@@ -1,3 +1,4 @@
+##
 # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,21 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-docker_build(
-    'csp-api-mock',
-    '.',
-    dockerfile='./Dockerfile'
-)
-
-k8s_yaml([
-    './deployment.yaml',
-    './networkpolicy.yaml',
-])
-
-k8s_resource(
-    'csp-api-mock',
-    port_forwards=['8081:8080', '50051:50051'],
-    labels=['mock-services'],
-)
-
+##
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: log-collector-job-
+  namespace: test
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: log-collector
+    spec:
+      serviceAccountName: log-collector-job
+      restartPolicy: Never
+      containers:
+        - name: log-collector
+          image: test:test

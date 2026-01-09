@@ -30,8 +30,6 @@ global:
     maxAgeDays: 7
     compress: true
 
-  ctrlRuntimeEnabled: true
-
   nodeSelector: {}
   
   tolerations: 

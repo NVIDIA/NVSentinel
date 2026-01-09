@@ -24,9 +24,6 @@ global:
   # Keep legacy resource naming for Tilt compatibility
   useLegacyResourceNames: true
 
-  # Use ctrl runtime in mongo and leave postgres with legacy so both get test coverage
-  ctrlRuntimeEnabled: true
-
   # Enable certificate rotation for testing hot-reload functionality
   certificateRotationEnabled: true
 

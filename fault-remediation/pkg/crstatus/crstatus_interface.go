@@ -12,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package reconciler
+// Package crstatus provides interfaces and implementations for checking
+// the status of Custom Resources to determine whether new CRs should be created.
+package crstatus
 
 import (
 	"context"
-
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
 
-type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEventData *HealthEventData) (bool, string)
-	RunLogCollectorJob(ctx context.Context, nodeName string) error
-	GetAnnotationManager() NodeAnnotationManagerInterface
-	GetStatusChecker() *crstatus.CRStatusChecker
-	GetConfig() *config.TomlConfig
+type CRStatusCheckerInterface interface {
+	ShouldSkipCRCreation(context.Context, string, string) bool
 }

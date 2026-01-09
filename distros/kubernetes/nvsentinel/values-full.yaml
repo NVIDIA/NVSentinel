@@ -56,10 +56,6 @@ global:
   # Prometheus should scrape these endpoints to monitor NVSentinel
   healthPort: 9440
 
-  # Whether or not to run applicable controllers using ctrl-runtime
-  # this is still experimental
-  ctrlRuntimeEnabled: false
-  
   # Dry-run mode - when enabled, all actions are logged but not executed
   # Useful for:
   # - Testing configuration changes safely
