@@ -141,12 +141,12 @@ func initializeDatabaseStoreConnector(
 	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
-	maxRetriesFloat, ok := config["StoreConnectorMaxRetries"].(float64)
+	maxRetriesInt64, ok := config["StoreConnectorMaxRetries"].(int64)
 	if !ok {
-		return nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to float: %v", config["StoreConnectorMaxRetries"])
+		return nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to int: %v", config["StoreConnectorMaxRetries"])
 	}
 
-	maxRetries := int(maxRetriesFloat)
+	maxRetries := int(maxRetriesInt64)
 
 	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath, maxRetries)
 	if err != nil {
