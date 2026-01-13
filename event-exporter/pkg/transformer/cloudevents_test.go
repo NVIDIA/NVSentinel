@@ -66,6 +66,7 @@ func TestToCloudEvent(t *testing.T) {
 					Force: false,
 					Skip:  true,
 				},
+				ProcessingStrategy: pb.ProcessingStrategy_STORE_ONLY,
 			},
 			metadata: map[string]string{
 				"cluster":     "prod-cluster-1",
@@ -101,6 +102,9 @@ func TestToCloudEvent(t *testing.T) {
 				}
 				if healthEvent["recommendedAction"] != "RESTART_VM" {
 					t.Errorf("recommendedAction = %v, want %v", healthEvent["recommendedAction"], "RESTART_VM")
+				}
+				if healthEvent["processingStrategy"] != "STORE_ONLY" {
+					t.Errorf("processingStrategy = %v, want STORE_ONLY", healthEvent["processingStrategy"])
 				}
 
 				entities := healthEvent["entitiesImpacted"].([]map[string]any)

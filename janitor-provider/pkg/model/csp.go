@@ -32,7 +32,8 @@ type CSPClient interface {
 	SendRebootSignal(ctx context.Context, node corev1.Node) (ResetSignalRequestRef, error)
 
 	// IsNodeReady checks if the node is ready after a reboot operation
-	IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error)
+	// requestID is the reference returned by SendRebootSignal to track the operation
+	IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error)
 
 	// SendTerminateSignal sends a termination signal to the node via the CSP
 	SendTerminateSignal(ctx context.Context, node corev1.Node) (TerminateNodeRequestRef, error)

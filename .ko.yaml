@@ -18,7 +18,6 @@ platforms: [linux/amd64, linux/arm64]
 env: [CGO_ENABLED=0]
 
 builds:
-
   - id: fault-quarantine
     dir: fault-quarantine
     main: .
@@ -69,7 +68,7 @@ builds:
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
-    
+
   - id: csp-health-monitor
     dir: health-monitors/csp-health-monitor
     main: ./cmd/csp-health-monitor
@@ -151,6 +150,23 @@ builds:
       org.opencontainers.image.licenses: "Apache-2.0"
       org.opencontainers.image.title: "NVSentinel Janitor"
       org.opencontainers.image.description: "Fault remediation service for rapid node-level issue resolution in GPU-accelerated Kubernetes environments"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
+  - id: janitor-provider
+    dir: janitor-provider
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "Example provider for NVSentinel Janitor"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel Janitor-Provider"
+      org.opencontainers.image.description: "Example implementation of the CSP provider interface for Janitor"
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"

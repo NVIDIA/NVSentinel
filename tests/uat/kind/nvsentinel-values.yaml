@@ -31,6 +31,8 @@ global:
     enabled: true
   janitor:
     enabled: true
+  janitorProvider:
+    enabled: true
   mongodbStore:
     enabled: true
   
@@ -83,7 +85,7 @@ csp-health-monitor:
 kubernetes-object-monitor:
   logLevel: debug
 
-janitor:
+janitor-provider:
   csp:
     provider: kind
 

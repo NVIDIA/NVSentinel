@@ -280,18 +280,18 @@ install_nvsentinel() {
         local aws_account_id
         aws_account_id=$(aws sts get-caller-identity --query Account --output text)
         
-        local janitor_role_name="${CLUSTER_NAME}-janitor"
+        local janitor_provider_role_name="${CLUSTER_NAME}-janitor-provider"
         
         extra_set_args+=(
-            "--set" "janitor.csp.aws.region=$AWS_REGION"
-            "--set" "janitor.csp.aws.accountId=$aws_account_id"
-            "--set" "janitor.csp.aws.iamRoleName=$janitor_role_name"
+            "--set" "janitor-provider.csp.aws.region=$AWS_REGION"
+            "--set" "janitor-provider.csp.aws.accountId=$aws_account_id"
+            "--set" "janitor-provider.csp.aws.iamRoleName=$janitor_provider_role_name"
         )
     elif [[ "$CSP" == "gcp" ]]; then
         extra_set_args+=(
-            "--set" "janitor.csp.gcp.project=$GCP_PROJECT_ID"
-            "--set" "janitor.csp.gcp.zone=$GCP_ZONE"
-            "--set" "janitor.csp.gcp.serviceAccount=$GCP_SERVICE_ACCOUNT"
+            "--set" "janitor-provider.csp.gcp.project=$GCP_PROJECT_ID"
+            "--set" "janitor-provider.csp.gcp.zone=$GCP_ZONE"
+            "--set" "janitor-provider.csp.gcp.serviceAccount=$GCP_SERVICE_ACCOUNT"
         )
     else
         log "Janitor extra args not defined for: $CSP"

@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fault-remediation
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fault-remediation
+    app.kubernetes.io/instance: nvsentinel
+data:
+  config.toml: |
+    [template]
+    mountPath = "/etc/config"
+
+    # Multi-template remediation configuration
+    [remediationActions.COMPONENT_RESET]
+    apiGroup = "janitor.dgxc.nvidia.com"
+    version = "v1alpha1"
+    kind = "RebootNode"
+    scope = "Cluster"
+    completeConditionType = "NodeReady"
+    templateFileName = "rebootnode-template.yaml"
+    equivalenceGroup = "restart"
+
+    [remediationActions.RESTART_VM]
+    apiGroup = "janitor.dgxc.nvidia.com"
+    version = "v1alpha1"
+    kind = "RebootNode"
+    scope = "Cluster"
+    completeConditionType = "NodeReady"
+    templateFileName = "rebootnode-template.yaml"
+    equivalenceGroup = "restart"
+
+    [remediationActions.RESTART_BM]
+    apiGroup = "janitor.dgxc.nvidia.com"
+    version = "v1alpha1"
+    kind = "RebootNode"
+    scope = "Cluster"
+    completeConditionType = "NodeReady"
+    templateFileName = "rebootnode-template.yaml"
+    equivalenceGroup = "restart"
+
+    [updateRetry]
+    maxRetries = 5
+    retryDelaySeconds = 10
+  rebootnode-template.yaml: |
+    # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+    #
+    # Licensed under the Apache License, Version 2.0 (the "License");
+    # you may not use this file except in compliance with the License.
+    # You may obtain a copy of the License at
+    #
+    #     http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software
+    # distributed under the License is distributed on an "AS IS" BASIS,
+    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    # See the License for the specific language governing permissions and
+    # limitations under the License.
+
+    apiVersion: {{.ApiGroup}}/{{.Version}}
+    kind: RebootNode
+    metadata:
+      name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+    spec:
+      nodeName: {{.NodeName}}
+  log-collector-job.yaml: |
+    ##
+    # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+    #
+    # Licensed under the Apache License, Version 2.0 (the "License");
+    # you may not use this file except in compliance with the License.
+    # You may obtain a copy of the License at
+    #
+    #     http://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software
+    # distributed under the License is distributed on an "AS IS" BASIS,
+    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    # See the License for the specific language governing permissions and
+    # limitations under the License.
+    ##
+
+    # Source: manifests/log-collector-job.yaml
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      generateName: fault-remediation-log-collector-job-
+      namespace: nvsentinel
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: log-collector
+        spec:
+          serviceAccountName: log-collector-job
+
+          restartPolicy: Never
+          tolerations:
+            - operator: Exists
+          containers:
+            - name: log-collector
+              image: localhost:5001/ghcr.io_nvidia_nvsentinel_log-collector:latest
+              imagePullPolicy: Always
+              # Security Context: The log collector must run as a privileged pod to perform
+              # comprehensive diagnostic collection. Privileged access is required to execute
+              # chroot /host for SOS report collection and access host filesystem paths for
+              # nvidia-bug-report. readOnlyRootFilesystem: false is required for temporary
+              # file writes during artifact processing.
+              securityContext:
+                privileged: true
+                allowPrivilegeEscalation: true
+                readOnlyRootFilesystem: false
+              env:
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+                - name: KEEP_ALIVE
+                  value: "false"
+                - name: GPU_OPERATOR_NAMESPACE
+                  value: "gpu-operator"
+                - name: ENABLE_GPU_OPERATOR_MUST_GATHER
+                  value: "false"
+                - name: UPLOAD_URL_BASE
+                  value: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
+                - name: ENABLE_GCP_SOS_COLLECTION
+                  value: "false"
+                - name: ENABLE_AWS_SOS_COLLECTION
+                  value: "false"
+                - name: MOCK_MODE
+                  value: "true"
+              volumeMounts:
+                - name: artifacts
+                  mountPath: /artifacts
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+          volumes:
+            - name: artifacts
+              emptyDir: {}
+            - name: host-root
+              hostPath:
+                path: /

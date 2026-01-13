@@ -17,10 +17,6 @@ image:
   pullPolicy: IfNotPresent
   tag: ""
 
-pauseImage:
-  repository: registry.k8s.io/pause
-  tag: "3.10"
-
 podAnnotations: {}
 
 resources: 

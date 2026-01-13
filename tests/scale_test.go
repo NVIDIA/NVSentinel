@@ -19,6 +19,7 @@ package tests
 
 import (
 	"context"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -77,15 +78,15 @@ func TestScaleHealthEvents(t *testing.T) {
 		err = client.Resources().List(ctx, &allNodesList)
 		assert.NoError(t, err, "failed to get all nodes")
 
-		totalNodesInCluster := helpers.CountSchedulableNodes(allNodesList)
+		totalNodesInCluster := len(allNodesList.Items)
 
-		t.Logf("Found %d KWOK nodes, %d schedulable nodes in cluster", len(kwokNodes), totalNodesInCluster)
+		t.Logf("Found %d KWOK nodes, %d total nodes in cluster", len(kwokNodes), totalNodesInCluster)
 
 		cbThresholdPercentage := 40
-		nodesToCordon := min(int(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0), len(kwokNodes))
+		nodesToCordon := min(int(math.Ceil(float64(totalNodesInCluster)*float64(cbThresholdPercentage+3)/100.0)), len(kwokNodes))
 
 		healthCheckNodes := kwokNodes[:nodesToCordon]
-		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d schedulable nodes, exceeds 40%% CB threshold)",
+		t.Logf("Selected %d KWOK nodes to cordon (43%% of %d total nodes, exceeds 40%% CB threshold)",
 			len(healthCheckNodes), totalNodesInCluster)
 
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
@@ -136,11 +137,11 @@ func TestScaleHealthEvents(t *testing.T) {
 		err = client.Resources().List(ctx, &allNodesList)
 		require.NoError(t, err)
 
-		totalNodesInCluster := helpers.CountSchedulableNodes(allNodesList)
+		totalNodesInCluster := len(allNodesList.Items)
 
-		cbThreshold := int(float64(totalNodesInCluster) * 0.40)
+		cbThreshold := int(math.Ceil(float64(totalNodesInCluster) * 0.40))
 
-		t.Logf("Waiting for ~%d nodes (40%% of %d schedulable nodes) to be cordoned before CB trips", cbThreshold, totalNodesInCluster)
+		t.Logf("Waiting for ~%d nodes (40%% of %d total nodes) to be cordoned before CB trips", cbThreshold, totalNodesInCluster)
 		require.Eventually(t, func() bool {
 			cordonedCount := 0
 			for _, nodeName := range healthCheckNodes {
@@ -151,12 +152,12 @@ func TestScaleHealthEvents(t *testing.T) {
 			}
 			percentageOfTotal := float64(cordonedCount) / float64(totalNodesInCluster) * 100
 			if cordonedCount >= cbThreshold {
-				t.Logf("Circuit breaker should trip: %d cordoned = %.1f%% of %d schedulable nodes",
+				t.Logf("Circuit breaker should trip: %d cordoned = %.1f%% of %d total nodes",
 					cordonedCount, percentageOfTotal, totalNodesInCluster)
 				return true
 			}
 			if cordonedCount%5 == 0 && cordonedCount > 0 {
-				t.Logf("Progress: %d cordoned = %.1f%% of %d schedulable nodes",
+				t.Logf("Progress: %d cordoned = %.1f%% of %d total nodes",
 					cordonedCount, percentageOfTotal, totalNodesInCluster)
 			}
 			return false

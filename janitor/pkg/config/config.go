@@ -31,9 +31,10 @@ type Config struct {
 
 // GlobalConfig contains global janitor settings
 type GlobalConfig struct {
-	Timeout    time.Duration `mapstructure:"timeout" json:"timeout"`
-	ManualMode bool          `mapstructure:"manualMode" json:"manualMode"`
-	Nodes      NodeConfig    `mapstructure:"nodes" json:"nodes"`
+	Timeout         time.Duration `mapstructure:"timeout" json:"timeout"`
+	ManualMode      bool          `mapstructure:"manualMode" json:"manualMode"`
+	Nodes           NodeConfig    `mapstructure:"nodes" json:"nodes"`
+	CSPProviderHost string        `mapstructure:"cspProviderHost" json:"cspProviderHost"`
 }
 
 // NodeConfig contains configuration for nodes
@@ -52,6 +53,8 @@ type RebootNodeControllerConfig struct {
 	// NodeExclusions defines label selectors for nodes that should be excluded from reboot operations
 	// Nodes matching any of these label selectors will be rejected by the admission webhook
 	NodeExclusions []metav1.LabelSelector
+	// CSPProviderHost is the host of the CSP provider
+	CSPProviderHost string
 }
 
 // TerminateNodeControllerConfig contains configuration for terminate node controller
@@ -65,6 +68,8 @@ type TerminateNodeControllerConfig struct {
 	// NodeExclusions defines label selectors for nodes that should be excluded from terminate operations
 	// Nodes matching any of these label selectors will be rejected by the admission webhook
 	NodeExclusions []metav1.LabelSelector
+	// CSPProviderHost is the host of the CSP provider
+	CSPProviderHost string
 }
 
 // LoadConfig loads configuration from a YAML file using Viper
@@ -97,6 +102,16 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Apply node exclusions from global config to controller-specific configs
 	config.RebootNode.NodeExclusions = config.Global.Nodes.Exclusions
 	config.TerminateNode.NodeExclusions = config.Global.Nodes.Exclusions
+
+	// If CSPProviderHost is not set for reboot node controller, use the global CSPProviderHost
+	if config.RebootNode.CSPProviderHost == "" {
+		config.RebootNode.CSPProviderHost = config.Global.CSPProviderHost
+	}
+
+	// If CSPProviderHost is not set for terminate node controller, use the global CSPProviderHost
+	if config.TerminateNode.CSPProviderHost == "" {
+		config.TerminateNode.CSPProviderHost = config.Global.CSPProviderHost
+	}
 
 	return &config, nil
 }

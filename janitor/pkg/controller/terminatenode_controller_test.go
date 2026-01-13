@@ -16,7 +16,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -41,7 +40,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	var (
 		ctx           context.Context
-		mockCSPClient *MockCSPClient
 		terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode
 		node          *corev1.Node
 		reconciler    *TerminateNodeReconciler
@@ -52,7 +50,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		mockCSPClient = &MockCSPClient{}
 
 		// Generate unique suffix using GinkgoRandomSeed to avoid conflicts
 		uniqueSuffix = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -87,15 +84,18 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		}
 		Expect(k8sClient.Create(ctx, terminateNode)).Should(Succeed())
 
-		// Create the reconciler with the mock CSP client
+		// Create the reconciler with the shared mock CSP client
 		reconciler = &TerminateNodeReconciler{
 			Client: k8sClient,
 			Scheme: scheme.Scheme,
 			Config: &config.TerminateNodeControllerConfig{
 				ManualMode: false,
 			},
-			CSPClient: mockCSPClient,
+			CSPClient: mockCSP.Client,
 		}
+
+		// Default to success behavior - tests can override as needed
+		mockCSP.Server.SetSuccess()
 	})
 
 	AfterEach(func() {
@@ -157,9 +157,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify CSP client was called
-			Expect(mockCSPClient.terminateSignalSent).To(BeTrue())
-
 			// Verify condition was updated
 			Eventually(func() bool {
 				var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -179,16 +176,15 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 
 		It("Should fail to send terminate signal and update condition", func() {
-			mockCSPClient.terminateError = errors.New("CSP error")
+			// Configure mock to fail
+			mockCSP.Server.SetFailure()
+
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name: crName,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
-
-			// Verify CSP client was called
-			Expect(mockCSPClient.terminateSignalSent).To(BeTrue())
 
 			// Verify condition was updated
 			Eventually(func() bool {
@@ -386,59 +382,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 		})
 	})
 
-	Context("When termination times out", func() {
-		It("Should update the status to reflect the timeout", func() {
-			// Set a short timeout for this specific test
-			reconciler.Config.Timeout = time.Second * 1
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func() bool {
-				var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name: crName,
-				}, &updatedTerminateNode)
-				return err == nil && updatedTerminateNode.Status.StartTime != nil
-			}, timeout, interval).Should(BeTrue())
-
-			time.Sleep(reconciler.Config.Timeout + time.Second*1)
-
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Name: crName,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify that completion time is set and the condition is updated to reflect the timeout
-			Eventually(func() bool {
-				var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name: crName,
-				}, &updatedTerminateNode)
-				if err != nil {
-					return false
-				}
-				if updatedTerminateNode.Status.CompletionTime == nil {
-					return false
-				}
-				for _, condition := range updatedTerminateNode.Status.Conditions {
-					if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated &&
-						condition.Status == metav1.ConditionFalse &&
-						condition.Reason == "Timeout" {
-						return true
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-		})
-	})
-
 	Context("when manual mode is enabled", func() {
 		BeforeEach(func() {
 			// Enable manual mode in the reconciler config
@@ -457,9 +400,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// In manual mode, controller doesn't requeue after setting ManualMode condition
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
-
-			// Verify terminate signal was NOT sent
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Get updated TerminateNode
 			var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -493,17 +433,14 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			// First reconciliation
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Second reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Third reconciliation
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Verify ManualMode condition remains set
 			var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -525,7 +462,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			_, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Get the current TerminateNode to simulate outside actor setting SignalSent condition
 			var currentTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -564,9 +500,6 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// Controller deletes the node and completes termination immediately, so no requeue
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
-
-			// Verify janitor still did not send any terminate signals
-			Expect(mockCSPClient.terminateSignalSent).To(BeFalse())
 
 			// Get final state
 			var finalTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode

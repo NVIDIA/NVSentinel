@@ -17,6 +17,7 @@ package reconciler
 import (
 	"context"
 
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
 
@@ -25,4 +26,5 @@ type FaultRemediationClientInterface interface {
 	RunLogCollectorJob(ctx context.Context, nodeName string) error
 	GetAnnotationManager() NodeAnnotationManagerInterface
 	GetStatusChecker() *crstatus.CRStatusChecker
+	GetConfig() *config.TomlConfig
 }

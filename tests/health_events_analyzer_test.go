@@ -1,5 +1,5 @@
-//go:build amd64_group
-// +build amd64_group
+//go:build amd64_group && mongodb
+// +build amd64_group,mongodb
 
 // Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 //
@@ -32,6 +32,10 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+// All tests in this file are not yet supported for PostgreSQL.
+// So we skip them for now using a build tag (mongodb) that excludes them from PostgreSQL tests.
+// Github Issue: https://github.com/NVIDIA/NVSentinel/issues/606
 
 func TestMultipleRemediationsCompleted(t *testing.T) {
 	feature := features.New("TestMultipleRemediationsCompleted").
@@ -382,7 +386,7 @@ func TestRepeatedXID31OnSameGPU(t *testing.T) {
 		expectedEvent := v1.Event{
 			Type:    "RepeatedXID31OnDifferentGPU",
 			Reason:  "RepeatedXID31OnDifferentGPUIsNotHealthy",
-			Message: "ErrorCode:31 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
+			Message: "ErrorCode:31 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 App passing bad data or using incorrect GPU methods. check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
 		}
 
 		helpers.WaitForNodeEvent(ctx, t, client, testNodeName, expectedEvent)
@@ -579,7 +583,7 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 		expectedEvent := v1.Event{
 			Type:    "RepeatedXID13OnDifferentGPCAndTPC",
 			Reason:  "RepeatedXID13OnDifferentGPCAndTPCIsNotHealthy",
-			Message: "ErrorCode:13 PCI:0001:00:00 GPU_UUID:GPU-11111111-1111-1111-1111-111111111111 GPC:0 TPC:0 SM:1 App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
+			Message: "ErrorCode:13 PCI:0001:00:00 GPU_UUID:GPU-11111111-1111-1111-1111-111111111111 GPC:0 TPC:0 SM:1 App passing bad data or using incorrect GPU methods. check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
 		}
 
 		helpers.WaitForNodeEvent(ctx, t, client, testNodeName, expectedEvent)
@@ -620,7 +624,7 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 		expectedEvent = v1.Event{
 			Type:    "RepeatedXID13OnDifferentGPCAndTPC",
 			Reason:  "RepeatedXID13OnDifferentGPCAndTPCIsNotHealthy",
-			Message: "ErrorCode:13 PCI:0001:00:00 GPU_UUID:GPU-11111111-1111-1111-1111-111111111111 GPC:0 TPC:1 SM:1 App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
+			Message: "ErrorCode:13 PCI:0001:00:00 GPU_UUID:GPU-11111111-1111-1111-1111-111111111111 GPC:0 TPC:1 SM:1 App passing bad data or using incorrect GPU methods. check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
 		}
 
 		helpers.WaitForNodeEvent(ctx, t, client, testNodeName, expectedEvent)
@@ -751,7 +755,7 @@ func TestSoloNoBurstRule(t *testing.T) {
 		expectedEvent := v1.Event{
 			Type:    "XIDErrorSoloNoBurst",
 			Reason:  "XIDErrorSoloNoBurstIsNotHealthy",
-			Message: "ErrorCode:13 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 App passing bad data or using incorrect GPU methods; check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
+			Message: "ErrorCode:13 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 App passing bad data or using incorrect GPU methods. check error PID to identify source of the problem, if application is known good and problem persists, then contact support Recommended Action=NONE;",
 		}
 
 		helpers.WaitForNodeEvent(ctx, t, client, testNodeName, expectedEvent)

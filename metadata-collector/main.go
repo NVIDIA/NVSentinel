@@ -22,16 +22,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/collector"
+	"github.com/nvidia/nvsentinel/metadata-collector/pkg/mapper"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/nvml"
 	"github.com/nvidia/nvsentinel/metadata-collector/pkg/writer"
 )
 
 const (
-	defaultAgentName  = "metadata-collector"
-	defaultOutputPath = "/var/lib/nvsentinel/gpu_metadata.json"
+	defaultAgentName              = "metadata-collector"
+	defaultOutputPath             = "/var/lib/nvsentinel/gpu_metadata.json"
+	defaultPodDeviceMonitorPeriod = time.Second * 30
 )
 
 var (
@@ -50,17 +53,48 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	if err := run(ctx); err != nil {
+	if err := runCollector(ctx); err != nil {
 		slog.Error("Metadata collector failed", "error", err)
 		cancel()
 		os.Exit(1)
 	}
 
-	cancel()
-	slog.Info("Metadata collector completed successfully")
+	slog.Info("Metadata collector completed successfully, starting pod device mapper")
+
+	if err := runMapper(ctx); err != nil {
+		slog.Error("Pod device mapper failed", "error", err)
+		cancel()
+		os.Exit(1)
+	}
+
+	slog.Info("Pod device mapper completed successfully")
 }
 
-func run(ctx context.Context) error {
+func runMapper(ctx context.Context) error {
+	podDeviceMapper, err := mapper.NewPodDeviceMapper(ctx)
+	if err != nil {
+		return fmt.Errorf("could not create mapper: %w", err)
+	}
+
+	ticker := time.NewTicker(defaultPodDeviceMonitorPeriod)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			numUpdates, err := podDeviceMapper.UpdatePodDevicesAnnotations()
+			if err != nil {
+				return fmt.Errorf("could not update mapper pod devices annotations: %w", err)
+			}
+
+			slog.Info("Device mapper pod annotation updates", "podCount", numUpdates)
+		}
+	}
+}
+
+func runCollector(ctx context.Context) error {
 	slog.Info("Initializing NVML")
 
 	nvmlWrapper := &nvml.NVMLWrapper{}

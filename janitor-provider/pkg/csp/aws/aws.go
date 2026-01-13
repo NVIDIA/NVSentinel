@@ -17,6 +17,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -25,10 +26,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 var (
@@ -97,13 +97,11 @@ func WithEC2Client(ctx context.Context) ClientOptionFunc {
 
 // SendRebootSignal sends a reboot signal to AWS EC2 for the given node.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
-	logger := log.FromContext(ctx)
-
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		err := fmt.Errorf("no provider ID found for node %s", node.Name)
-		logger.Error(err, "Failed to reboot node")
+		slog.Error("Failed to reboot node", "error", err)
 
 		return "", err
 	}
@@ -111,19 +109,19 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	// Extract the instance ID from the provider ID
 	instanceID, err := parseAWSProviderID(providerID)
 	if err != nil {
-		logger.Error(err, "Failed to parse provider ID")
+		slog.Error("Failed to parse provider ID", "error", err)
 
 		return "", err
 	}
 
 	// Reboot the EC2 instance
-	logger.Info(fmt.Sprintf("Rebooting node %s (Instance ID: %s)", node.Name, instanceID))
+	slog.Info("Rebooting node", "node", node.Name, "instanceID", instanceID)
 
 	_, err = c.ec2.RebootInstances(ctx, &ec2.RebootInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
-		logger.Error(err, fmt.Sprintf("Failed to reboot instance %s: %s", instanceID, err))
+		slog.Error("Failed to reboot instance", "error", err, "instanceID", instanceID)
 
 		return "", err
 	}
@@ -133,11 +131,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 // IsNodeReady checks if the node is ready after a reboot signal was sent.
 // AWS requires a 5-minute cooldown period before the node status is reliable.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	// Sending a reboot request to AWS doesn't update statuses immediately,
 	// the ec2 instance does not report that it isn't in a running state for some time
 	// and kubernetes still sees the node as ready. Wait five minutes before checking the status
-	storedTime, err := time.Parse(time.RFC3339, message)
+	storedTime, err := time.Parse(time.RFC3339, requestID)
 	if err != nil {
 		return false, err
 	}

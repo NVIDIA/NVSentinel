@@ -417,8 +417,20 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 	healthEvent *protos.HealthEvent,
 ) (bool, string, error) {
 	nodeName := healthEvent.NodeName
-	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
+	actionName := healthEvent.RecommendedAction.String()
+	tomlConfig := r.config.RemediationClient.GetConfig()
 
+	// Get equivalence group from action configuration
+	actionConfig, exists := tomlConfig.RemediationActions[actionName]
+	if !exists {
+		slog.Warn("Action not found in remediation configuration, allowing creation",
+			"action", actionName,
+			"node", nodeName)
+
+		return true, "", nil
+	}
+
+	group := actionConfig.EquivalenceGroup
 	if group == "" {
 		return true, "", nil
 	}
@@ -447,7 +459,10 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 		return true, "", nil
 	}
 
-	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.MaintenanceCR)
+	// Use the stored action name to determine the correct CRD type for status checking
+	storedActionName := groupState.ActionName
+	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, storedActionName, groupState.MaintenanceCR)
+
 	if shouldSkip {
 		slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
 		return false, groupState.MaintenanceCR, nil

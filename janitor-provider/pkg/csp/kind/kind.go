@@ -17,15 +17,15 @@ package kind
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"os/exec"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 var (
@@ -51,9 +51,12 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 }
 
 // IsNodeReady checks if the node is ready (simulated with randomness for kind)
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// simulate some randomness if the node is ready or not (very high success rate for fast tests)
+	// requestID is unused in simulation mode
+	_ = requestID
+
 	return rand.IntN(100) > 5, nil
 }
 
@@ -63,8 +66,6 @@ func (c *Client) SendTerminateSignal(
 	ctx context.Context,
 	node corev1.Node,
 ) (model.TerminateNodeRequestRef, error) {
-	logger := log.FromContext(ctx)
-
 	// Check if provider ID has the correct prefix
 	if !strings.HasPrefix(node.Spec.ProviderID, "kind://") {
 		return "", fmt.Errorf("invalid provider ID format: %s", node.Spec.ProviderID)
@@ -79,7 +80,7 @@ func (c *Client) SendTerminateSignal(
 	containerName := parts[len(parts)-1]
 	clusterName := parts[3]
 
-	logger.Info("Attempting to terminate node", "node", node.Name, "container", containerName)
+	slog.Info("Attempting to terminate node", "node", node.Name, "container", containerName)
 
 	// Create a timeout context for docker operations
 	dockerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -110,7 +111,7 @@ func (c *Client) SendTerminateSignal(
 	// nolint:nestif // Complex docker interaction logic migrated from old code
 	// If container exists, delete it
 	if strings.Contains(string(output), containerName) {
-		logger.Info("Found container, attempting deletion", "container", containerName)
+		slog.Info("Found container, attempting deletion", "container", containerName)
 
 		// nolint:gosec // G204: Command args are derived from kubernetes API, not user input
 		cmd = exec.CommandContext(dockerCtx, "docker", "rm", "-f", containerName)
@@ -150,9 +151,9 @@ func (c *Client) SendTerminateSignal(
 				fmt.Errorf("container %s still exists after deletion attempt", containerName)
 		}
 
-		logger.Info("Successfully deleted container", "container", containerName)
+		slog.Info("Successfully deleted container", "container", containerName)
 	} else {
-		logger.Info("Container not found, assuming already deleted", "container", containerName)
+		slog.Info("Container not found, assuming already deleted", "container", containerName)
 	}
 
 	return model.TerminateNodeRequestRef(""), nil

@@ -63,7 +63,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	builder := client.GetPipelineBuilder()
-	pipeline := builder.BuildAllHealthEventInsertsPipeline()
+	pipeline := builder.BuildProcessableHealthEventInsertsPipeline()
 
 	var tomlCfg config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlCfg); err != nil {

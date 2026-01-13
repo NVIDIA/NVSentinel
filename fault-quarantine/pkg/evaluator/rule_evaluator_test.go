@@ -260,6 +260,7 @@ func TestRoundTrip(t *testing.T) {
 			"nanos":   float64(eventTime.GetNanos()),
 		},
 		"nodeName":            "test-node",
+		"processingStrategy":  float64(0),
 		"quarantineOverrides": nil,
 		"drainOverrides":      nil,
 	}

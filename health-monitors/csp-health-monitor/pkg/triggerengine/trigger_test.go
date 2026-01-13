@@ -240,8 +240,9 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "gce_instance", EntityValue: "instance-123"},
 				},
-				Metadata: map[string]string{"key": "value"},
-				NodeName: "node-a",
+				Metadata:           map[string]string{"key": "value"},
+				NodeName:           "node-a",
+				ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 			},
 		},
 		{
@@ -268,7 +269,8 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "EC2", EntityValue: "i-abcdef"},
 				},
-				NodeName: "node-b",
+				NodeName:           "node-b",
+				ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 			},
 		},
 		{
@@ -331,7 +333,8 @@ func TestMapMaintenanceEventToHealthEvent(t *testing.T) {
 				EntitiesImpacted: []*pb.Entity{
 					{EntityType: "gce_instance", EntityValue: "instance-789"},
 				},
-				NodeName: "node-e",
+				NodeName:           "node-e",
+				ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 			},
 		},
 	}

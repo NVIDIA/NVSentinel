@@ -35,13 +35,14 @@ spec:
       labels:
         {{- include "metadata-collector.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "metadata-collector.fullname" . }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       hostNetwork: true
       hostPID: true
-      initContainers:
+      containers:
         - name: metadata-collector
           securityContext:
             runAsUser: 0
@@ -65,10 +66,9 @@ spec:
             - name: sys
               mountPath: /sys
               readOnly: true
-      containers:
-        - name: pause
-          image: "{{ .Values.pauseImage.repository }}:{{ .Values.pauseImage.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+            - mountPath: /var/lib/kubelet/pod-resources
+              name: pod-gpu-resources
+              readOnly: true
       volumes:
         - name: output
           hostPath:
@@ -77,6 +77,10 @@ spec:
         - name: sys
           hostPath:
             path: /sys
+            type: Directory
+        - name: pod-gpu-resources
+          hostPath:
+            path: /var/lib/kubelet/pod-resources
             type: Directory
       nodeSelector:
         nvidia.com/gpu.present: "true"

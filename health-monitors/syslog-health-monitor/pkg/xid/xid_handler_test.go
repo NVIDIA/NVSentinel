@@ -16,6 +16,8 @@ package xid
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +25,64 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
+)
+
+const (
+	testMetadataJSON = `
+{
+  "version": "1.0",
+  "timestamp": "2025-12-10T18:12:55Z",
+  "node_name": "test-node",
+  "chassis_serial": null,
+  "gpus": [
+    {
+      "gpu_id": 0,
+      "uuid": "GPU-123",
+      "pci_address": "0000:00:08.0",
+      "serial_number": "1655322020697",
+      "device_name": "NVIDIA H100 80GB HBM3",
+      "nvlinks": [
+        {
+          "link_id": 0,
+          "remote_pci_address": "ffff:ff:ff.0",
+          "remote_link_id": 0
+        },
+        {
+          "link_id": 1,
+          "remote_pci_address": "ffff:ff:ff.0",
+          "remote_link_id": 0
+        }
+      ]
+    }
+  ]
+}`
+	testMetadataMissingPCIJSON = `
+{
+  "version": "1.0",
+  "timestamp": "2025-12-10T18:12:55Z",
+  "node_name": "test-node",
+  "chassis_serial": null,
+  "gpus": [
+    {
+      "gpu_id": 0,
+      "uuid": "GPU-123",
+      "serial_number": "1655322020697",
+      "device_name": "NVIDIA H100 80GB HBM3",
+      "nvlinks": [
+        {
+          "link_id": 0,
+          "remote_pci_address": "ffff:ff:ff.0",
+          "remote_link_id": 0
+        },
+        {
+          "link_id": 1,
+          "remote_pci_address": "ffff:ff:ff.0",
+          "remote_link_id": 0
+        }
+      ]
+    }
+  ]
+}`
 )
 
 func TestParseNVRMGPUMapLine(t *testing.T) {
@@ -52,6 +112,39 @@ func TestParseNVRMGPUMapLine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pciId, gpuId := xidHandler.parseNVRMGPUMapLine(tc.line)
 			assert.Equal(t, tc.pciId, pciId)
+			assert.Equal(t, tc.gpuId, gpuId)
+		})
+	}
+}
+
+func TestParseGPUResetLine(t *testing.T) {
+	xidHandler := &XIDHandler{}
+
+	testCases := []struct {
+		name  string
+		line  string
+		gpuId string
+	}{
+		{
+			name:  "Valid GPU Reset Line",
+			line:  "GPU reset executed: GPU-123",
+			gpuId: "GPU-123",
+		},
+		{
+			name:  "Invalid GPU Reset Line",
+			line:  "GPU reset executed:",
+			gpuId: "",
+		},
+		{
+			name:  "XID Log Line GPU",
+			line:  "NVRM: GPU at PCI:0000:00:08.0: GPU-123",
+			gpuId: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gpuId := xidHandler.parseGPUResetLine(tc.line)
 			assert.Equal(t, tc.gpuId, gpuId)
 		})
 	}
@@ -127,6 +220,12 @@ func (m *mockParser) Parse(message string) (*parser.Response, error) {
 }
 
 func TestProcessLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+	metadataFileMissingPCI := filepath.Join(tmpDir, "gpu_metadata_missing_pci.json")
+	require.NoError(t, os.WriteFile(metadataFileMissingPCI, []byte(testMetadataMissingPCIJSON), 0600))
+
 	testCases := []struct {
 		name          string
 		message       string
@@ -188,13 +287,82 @@ func TestProcessLine(t *testing.T) {
 				assert.Equal(t, "Xid 79", event.ErrorCode[0])
 				require.Len(t, event.EntitiesImpacted, 1)
 				assert.Equal(t, "PCI", event.EntitiesImpacted[0].EntityType)
-				assert.Equal(t, "0000:00:08.0", event.EntitiesImpacted[0].EntityValue)
+				assert.Equal(t, "0000:00:08", event.EntitiesImpacted[0].EntityValue)
 				// Issue #197: Message field stores full journal, no Metadata duplication
 				assert.Empty(t, event.Metadata)
 			},
 		},
 		{
-			name:    "Valid XID with GPU UUID",
+			name:    "Valid GPU Reset Message",
+			message: "GPU reset executed: GPU-123",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile)
+				return h
+			},
+			expectEvent: true,
+			expectError: false,
+			validateEvent: func(t *testing.T, events *pb.HealthEvents) {
+				require.NotNil(t, events)
+				require.Len(t, events.Events, 1)
+				event := events.Events[0]
+				expectedEvent := &pb.HealthEvent{
+					Version:        1,
+					Agent:          "test-agent",
+					CheckName:      "xid-check",
+					ComponentClass: "GPU",
+					EntitiesImpacted: []*pb.Entity{
+						{
+							EntityType:  "PCI",
+							EntityValue: "0000:00:08",
+						},
+						{
+							EntityType:  "GPU_UUID",
+							EntityValue: "GPU-123",
+						},
+					},
+					Message:           healthyHealthEventMessage,
+					IsFatal:           false,
+					IsHealthy:         true,
+					NodeName:          "test-node",
+					RecommendedAction: pb.RecommendedAction_NONE,
+				}
+				assert.NotNil(t, event.GeneratedTimestamp)
+				event.GeneratedTimestamp = nil
+				assert.Equal(t, expectedEvent, event)
+			},
+		},
+		{
+			name:    "Valid GPU Reset Message with Metadata Collector not Initialized",
+			message: "GPU reset executed: GPU-123",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
+				return h
+			},
+			expectEvent: false,
+			expectError: true,
+		},
+		{
+			name:    "Valid GPU Reset Message with Metadata Collector missing GPU UUID",
+			message: "GPU reset executed: GPU-456",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile)
+				return h
+			},
+			expectEvent: false,
+			expectError: true,
+		},
+		{
+			name:    "Valid GPU Reset Message with Metadata Collector not containing PCI",
+			message: "GPU reset executed: GPU-123",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFileMissingPCI)
+				return h
+			},
+			expectEvent: false,
+			expectError: true,
+		},
+		{
+			name:    "Valid XID with GPU UUID from NVRM: RESET_GPU overridden to RESTART_VM",
 			message: "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process",
 			setupHandler: func() *XIDHandler {
 				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", "/tmp/metadata.json")
@@ -206,7 +374,7 @@ func TestProcessLine(t *testing.T) {
 								DecodedXIDStr: "Xid 79",
 								PCIE:          "0000:00:08.0",
 								Mnemonic:      "GPU has fallen off the bus",
-								Resolution:    "CONTACT_SUPPORT",
+								Resolution:    "RESET_GPU",
 								Number:        79,
 							},
 						}, nil
@@ -226,6 +394,43 @@ func TestProcessLine(t *testing.T) {
 				assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[1].EntityType)
 				assert.Equal(t, "GPU-12345678-1234-1234-1234-123456789012", event.EntitiesImpacted[1].EntityValue)
 				assert.Equal(t, "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process", event.Message)
+				assert.Equal(t, pb.RecommendedAction_RESTART_VM, event.RecommendedAction)
+				assert.Empty(t, event.Metadata)
+			},
+		},
+		{
+			name:    "Valid XID with GPU UUID from Metadata Collector: RESET_GPU kept",
+			message: "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process",
+			setupHandler: func() *XIDHandler {
+				h, _ := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check", "", metadataFile)
+				h.parser = &mockParser{
+					parseFunc: func(msg string) (*parser.Response, error) {
+						return &parser.Response{
+							Success: true,
+							Result: parser.XIDDetails{
+								DecodedXIDStr: "Xid 79",
+								PCIE:          "0000:00:08.0",
+								Mnemonic:      "GPU has fallen off the bus",
+								Resolution:    "RESET_GPU",
+								Number:        79,
+							},
+						}, nil
+					},
+				}
+				return h
+			},
+			expectEvent: true,
+			expectError: false,
+			validateEvent: func(t *testing.T, events *pb.HealthEvents) {
+				require.NotNil(t, events)
+				require.Len(t, events.Events, 1)
+				event := events.Events[0]
+				require.Len(t, event.EntitiesImpacted, 2)
+				assert.Equal(t, "PCI", event.EntitiesImpacted[0].EntityType)
+				assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[1].EntityType)
+				assert.Equal(t, "GPU-123", event.EntitiesImpacted[1].EntityValue)
+				assert.Equal(t, "NVRM: Xid (PCI:0000:00:08.0): 79, pid=12345, name=test-process", event.Message)
+				assert.Equal(t, pb.RecommendedAction_COMPONENT_RESET, event.RecommendedAction)
 				assert.Empty(t, event.Metadata)
 			},
 		},
@@ -367,7 +572,7 @@ func TestCreateHealthEventFromResponse(t *testing.T) {
 				event := events.Events[0]
 				require.Len(t, event.EntitiesImpacted, 2)
 				assert.Equal(t, "PCI", event.EntitiesImpacted[0].EntityType)
-				assert.Equal(t, "0000:00:09.0", event.EntitiesImpacted[0].EntityValue)
+				assert.Equal(t, "0000:00:09", event.EntitiesImpacted[0].EntityValue)
 				assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[1].EntityType)
 				assert.Equal(t, "GPU-ABCDEF12-3456-7890-ABCD-EF1234567890", event.EntitiesImpacted[1].EntityValue)
 				assert.Equal(t, "Test XID message", event.Message)

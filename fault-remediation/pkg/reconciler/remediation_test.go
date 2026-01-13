@@ -16,11 +16,14 @@ package reconciler
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"text/template"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +39,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
 
 // MockDynamicClient implements necessary methods from dynamic.Interface
@@ -221,17 +225,30 @@ func TestNewK8sClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, TemplateData{
-				TemplateMountPath: "templates",
-				TemplateFileName:  "rebootnode-template.yaml",
-				MaintenanceResource: config.MaintenanceResource{
-					Namespace:             "dgxc-janitor",
-					Version:               "v1alpha1",
-					ApiGroup:              "janitor.dgxc.nvidia.com",
-					Kind:                  "RebootNode",
-					CompleteConditionType: "NodeReady",
+			testConfig := config.TomlConfig{
+				Template: config.Template{
+					MountPath: "templates",
 				},
-			})
+				RemediationActions: map[string]config.MaintenanceResource{
+					protos.RecommendedAction_RESTART_BM.String(): {
+						Namespace:             "dgxc-janitor",
+						Version:               "v1alpha1",
+						ApiGroup:              "janitor.dgxc.nvidia.com",
+						Kind:                  "RebootNode",
+						CompleteConditionType: "NodeReady",
+						TemplateFileName:      "rebootnode-template.yaml",
+					},
+					protos.RecommendedAction_COMPONENT_RESET.String(): {
+						Namespace:             "dgxc-janitor",
+						Version:               "v1alpha1",
+						ApiGroup:              "janitor.dgxc.nvidia.com",
+						Kind:                  "RebootNode",
+						CompleteConditionType: "NodeReady",
+						TemplateFileName:      "gpu-reset-template.yaml",
+					},
+				},
+			}
+			client, clientSet, err := NewK8sClient(tt.kubeconfig, tt.dryRun, testConfig)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, client)
@@ -248,6 +265,126 @@ func TestNewK8sClient(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewK8sClient_MissingTemplateFile_E2E(t *testing.T) {
+	// This test requires setting up a temporary kubeconfig to pass kubeconfig validation
+	// so we can reach the template validation logic
+
+	// Create a temporary directory for test files
+	tempDir := t.TempDir()
+
+	// Create a minimal kubeconfig file that will pass basic validation but fail later
+	kubeconfigContent := `
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://localhost:8080
+  name: test
+contexts:
+- context:
+    cluster: test
+    user: test
+  name: test
+current-context: test
+kind: Config
+users:
+- name: test
+  user:
+    token: fake-token
+`
+	kubeconfigPath := filepath.Join(tempDir, "kubeconfig")
+	require.NoError(t, os.WriteFile(kubeconfigPath, []byte(kubeconfigContent), 0600))
+
+	t.Run("MissingTemplateFileName", func(t *testing.T) {
+		// Create the template file for RESTART_BM so we can test COMPONENT_RESET missing template
+		templateContent := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: test-{{ .NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .NodeName }}
+  force: false`
+		require.NoError(t, os.WriteFile(filepath.Join(tempDir, "rebootnode-template.yaml"), []byte(templateContent), 0644))
+
+		testConfig := config.TomlConfig{
+			Template: config.Template{
+				MountPath: tempDir,
+			},
+			RemediationActions: map[string]config.MaintenanceResource{
+				protos.RecommendedAction_RESTART_BM.String(): {
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "RebootNode",
+					CompleteConditionType: "NodeReady",
+					TemplateFileName:      "rebootnode-template.yaml",
+				},
+				protos.RecommendedAction_COMPONENT_RESET.String(): {
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "RebootNode",
+					CompleteConditionType: "NodeReady",
+					// Missing TemplateFileName - this should cause initialization to fail
+				},
+			},
+		}
+
+		client, clientSet, err := NewK8sClient(kubeconfigPath, false, testConfig)
+
+		// Should fail with specific error about missing template file configuration
+		assert.Error(t, err)
+		assert.Nil(t, client)
+		assert.Nil(t, clientSet)
+		assert.Contains(t, err.Error(), "is missing template file configuration")
+		assert.Contains(t, err.Error(), protos.RecommendedAction_COMPONENT_RESET.String())
+	})
+
+	t.Run("EmptyTemplateFileName", func(t *testing.T) {
+		// Create the template file for RESTART_BM so we can test COMPONENT_RESET empty template
+		templateContent := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: test-{{ .NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .NodeName }}
+  force: false`
+		require.NoError(t, os.WriteFile(filepath.Join(tempDir, "rebootnode-template.yaml"), []byte(templateContent), 0644))
+
+		testConfig := config.TomlConfig{
+			Template: config.Template{
+				MountPath: tempDir,
+			},
+			RemediationActions: map[string]config.MaintenanceResource{
+				protos.RecommendedAction_RESTART_BM.String(): {
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "RebootNode",
+					CompleteConditionType: "NodeReady",
+					TemplateFileName:      "rebootnode-template.yaml",
+				},
+				protos.RecommendedAction_COMPONENT_RESET.String(): {
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "RebootNode",
+					CompleteConditionType: "NodeReady",
+					TemplateFileName:      "", // Empty TemplateFileName - should cause failure
+				},
+			},
+		}
+
+		client, clientSet, err := NewK8sClient(kubeconfigPath, false, testConfig)
+
+		// Should fail with specific error about missing template file configuration
+		assert.Error(t, err)
+		assert.Nil(t, client)
+		assert.Nil(t, clientSet)
+		assert.Contains(t, err.Error(), "is missing template file configuration")
+		assert.Contains(t, err.Error(), protos.RecommendedAction_COMPONENT_RESET.String())
+	})
 }
 
 func TestCreateRebootNodeResource(t *testing.T) {
@@ -316,18 +453,39 @@ spec:
 			mockDiscovery := &MockDiscoveryClient{}
 			cachedClient := memory.NewMemCacheClient(mockDiscovery)
 			mockMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
-			client := &FaultRemediationClient{
-				clientset:  mockClient,
-				kubeClient: nil,
-				restMapper: mockMapper,
-				dryRunMode: []string{},
-				template:   tmpl,
-				templateData: TemplateData{
-					MaintenanceResource: config.MaintenanceResource{
-						Version:  "v1alpha1",
-						ApiGroup: "janitor.dgxc.nvidia.com",
+			// Create remediation config for test
+			remediationConfig := config.TomlConfig{
+				RemediationActions: map[string]config.MaintenanceResource{
+					protos.RecommendedAction_RESTART_BM.String(): {
+						Version:          "v1alpha1",
+						ApiGroup:         "janitor.dgxc.nvidia.com",
+						Kind:             "RebootNode",
+						TemplateFileName: "test.yaml",
+					},
+					protos.RecommendedAction_COMPONENT_RESET.String(): {
+						Version:          "v1alpha1",
+						ApiGroup:         "janitor.dgxc.nvidia.com",
+						Kind:             "RebootNode",
+						TemplateFileName: "gpu-reset.yaml",
 					},
 				},
+			}
+
+			// Create templates map
+			templates := map[string]*template.Template{
+				protos.RecommendedAction_RESTART_BM.String():      tmpl,
+				protos.RecommendedAction_COMPONENT_RESET.String(): tmpl,
+			}
+
+			client := &FaultRemediationClient{
+				clientset:         mockClient,
+				kubeClient:        nil,
+				restMapper:        mockMapper,
+				dryRunMode:        []string{},
+				remediationConfig: remediationConfig,
+				templates:         templates,
+				templateMountPath: "/tmp",
+				statusChecker:     crstatus.NewCRStatusChecker(mockClient, mockMapper, remediationConfig.RemediationActions, tt.dryRun),
 				// Mock nodeExistsFunc to return a fake node for unit tests
 				nodeExistsFunc: func(ctx context.Context, nodeName string) (*corev1.Node, error) {
 					return &corev1.Node{

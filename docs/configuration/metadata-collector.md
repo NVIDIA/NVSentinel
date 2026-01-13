@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Metadata Collector module collects GPU metadata using NVIDIA NVML (Management Library) and writes it to a shared file. Other modules read this file to enrich health events with GPU serial numbers, UUIDs, and topology information. This document covers all Helm configuration options for system administrators.
+The Metadata Collector module collects GPU metadata using NVIDIA NVML (Management Library) and writes it to a shared file. Other modules read this file to enrich health events with GPU serial numbers, UUIDs, and topology information. This component will also expose the pod-to-GPU mapping as an annotation on each pod requesting GPUs. This document covers all Helm configuration options for system administrators.
 
 ## Configuration Reference
 
@@ -50,22 +50,3 @@ Runtime class name that provides GPU device access. Required for NVML to query G
 - `nvidia` - NVIDIA container runtime (default)
 - `nvidia-legacy` - Legacy NVIDIA runtime
 - Empty string - Uses default cluster runtime. Used for CRIO environments
-
-## Pause Image
-
-The metadata collector uses an init container pattern. After metadata collection completes, a pause container keeps the pod running.
-
-```yaml
-metadata-collector:
-  pauseImage:
-    repository: registry.k8s.io/pause
-    tag: "3.10"
-```
-
-### Parameters
-
-#### pauseImage.repository
-Container image for the pause container.
-
-#### pauseImage.tag
-Image tag for the pause container.

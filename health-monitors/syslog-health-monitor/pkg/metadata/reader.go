@@ -34,6 +34,7 @@ type Reader struct {
 	metadata *model.GPUMetadata
 
 	pciToGPU      map[string]*model.GPUInfo
+	uuidToInfo    map[string]*model.GPUInfo
 	nvswitchLinks map[string]map[int]*gpuLinkInfo
 }
 
@@ -80,12 +81,14 @@ func (r *Reader) load() error {
 
 func (r *Reader) buildMaps() {
 	r.pciToGPU = make(map[string]*model.GPUInfo)
+	r.uuidToInfo = make(map[string]*model.GPUInfo)
 	r.nvswitchLinks = make(map[string]map[int]*gpuLinkInfo)
 
 	for i := range r.metadata.GPUs {
 		gpu := &r.metadata.GPUs[i]
 		normPCI := normalizePCI(gpu.PCIAddress)
 		r.pciToGPU[normPCI] = gpu
+		r.uuidToInfo[gpu.UUID] = gpu
 
 		for _, link := range gpu.NVLinks {
 			remotePCI := normalizePCI(link.RemotePCIAddress)
@@ -100,6 +103,19 @@ func (r *Reader) buildMaps() {
 			}
 		}
 	}
+}
+
+func (r *Reader) GetInfoByUUID(uuid string) (*model.GPUInfo, error) {
+	if err := r.ensureLoaded(); err != nil {
+		return nil, fmt.Errorf("failed to load metadata for UUID lookup %s: %w", uuid, err)
+	}
+
+	gpu, ok := r.uuidToInfo[uuid]
+	if !ok {
+		return nil, fmt.Errorf("GPU not found for UUID: %s", uuid)
+	}
+
+	return gpu, nil
 }
 
 func (r *Reader) GetGPUByPCI(pci string) (*model.GPUInfo, error) {

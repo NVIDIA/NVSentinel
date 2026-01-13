@@ -63,6 +63,7 @@ func ToCloudEvent(event *pb.HealthEvent, metadata map[string]string) (*CloudEven
 		"entitiesImpacted":   entities,
 		"generatedTimestamp": timestamp,
 		"nodeName":           event.NodeName,
+		"processingStrategy": event.ProcessingStrategy.String(),
 	}
 
 	if len(event.Metadata) > 0 {

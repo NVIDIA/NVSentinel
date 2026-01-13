@@ -33,6 +33,12 @@ global:
   #     port: 27017
   #     database: "nvsentinel"
 
+  # Certificate rotation (MongoDB only)
+  # When enabled, client certificates can be rotated without restarting pods.
+  # Uses controller-runtime's certwatcher to detect file changes and automatically
+  # provide updated certificates to new MongoDB connections.
+  certificateRotationEnabled: false
+
   # Shared metadata path used by metadata-collector and syslog-health-monitor
   metadataPath: /var/lib/nvsentinel/gpu_metadata.json
 
@@ -63,6 +69,8 @@ global:
   faultRemediation:
     enabled: false
   janitor:
+    enabled: false
+  janitorProvider:
     enabled: false
   cspHealthMonitor:
     enabled: false
@@ -192,3 +200,12 @@ nodeConditionCleanup:
 # See values-postgresql.yaml for a complete PostgreSQL configuration example
 postgresql:
   enabled: false
+
+# PodMonitor configuration for Prometheus Operator
+# Disable this if using standard Prometheus with annotations instead
+podMonitor:
+  enabled: true
+  interval: 30s  # Scrape interval (defaults to 30s to maintain backward compatibility)
+  # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
+  # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
+  # labels: {}  # Additional labels for the PodMonitor resource

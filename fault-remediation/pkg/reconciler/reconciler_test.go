@@ -27,6 +27,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -58,6 +59,19 @@ func (m *MockK8sClient) GetAnnotationManager() NodeAnnotationManagerInterface {
 
 func (m *MockK8sClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return m.realStatusChecker
+}
+
+func (m *MockK8sClient) GetConfig() *config.TomlConfig {
+	return &config.TomlConfig{
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_RESTART_BM.String(): {
+				EquivalenceGroup: "restart",
+			},
+			protos.RecommendedAction_COMPONENT_RESET.String(): {
+				EquivalenceGroup: "restart",
+			},
+		},
+	}
 }
 
 // MockDatabaseClient is a mock implementation of DatabaseClient
@@ -116,7 +130,7 @@ func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nod
 }
 
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
-	group string, crName string) error {
+	group string, crName string, actionName string) error {
 	return nil
 }
 

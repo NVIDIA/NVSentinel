@@ -11,6 +11,12 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class ProcessingStrategy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    UNSPECIFIED: _ClassVar[ProcessingStrategy]
+    EXECUTE_REMEDIATION: _ClassVar[ProcessingStrategy]
+    STORE_ONLY: _ClassVar[ProcessingStrategy]
+
 class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     NONE: _ClassVar[RecommendedAction]
@@ -23,6 +29,9 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RUN_DCGMEUD: _ClassVar[RecommendedAction]
     UNKNOWN: _ClassVar[RecommendedAction]
 
+UNSPECIFIED: ProcessingStrategy
+EXECUTE_REMEDIATION: ProcessingStrategy
+STORE_ONLY: ProcessingStrategy
 NONE: RecommendedAction
 COMPONENT_RESET: RecommendedAction
 CONTACT_SUPPORT: RecommendedAction
@@ -68,6 +77,7 @@ class HealthEvent(_message.Message):
         "nodeName",
         "quarantineOverrides",
         "drainOverrides",
+        "processingStrategy",
     )
 
     class MetadataEntry(_message.Message):
@@ -93,6 +103,7 @@ class HealthEvent(_message.Message):
     NODENAME_FIELD_NUMBER: _ClassVar[int]
     QUARANTINEOVERRIDES_FIELD_NUMBER: _ClassVar[int]
     DRAINOVERRIDES_FIELD_NUMBER: _ClassVar[int]
+    PROCESSINGSTRATEGY_FIELD_NUMBER: _ClassVar[int]
     version: int
     agent: str
     componentClass: str
@@ -108,6 +119,7 @@ class HealthEvent(_message.Message):
     nodeName: str
     quarantineOverrides: BehaviourOverrides
     drainOverrides: BehaviourOverrides
+    processingStrategy: ProcessingStrategy
     def __init__(
         self,
         version: _Optional[int] = ...,
@@ -125,6 +137,7 @@ class HealthEvent(_message.Message):
         nodeName: _Optional[str] = ...,
         quarantineOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
         drainOverrides: _Optional[_Union[BehaviourOverrides, _Mapping]] = ...,
+        processingStrategy: _Optional[_Union[ProcessingStrategy, str]] = ...,
     ) -> None: ...
 
 class BehaviourOverrides(_message.Message):

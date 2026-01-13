@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 
@@ -26,10 +27,9 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
 
 var (
@@ -107,8 +107,6 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 // SendRebootSignal resets a GCE node by stopping and starting the instance.
 // nolint:dupl // Similar code pattern as SendTerminateSignal is expected for CSP operations
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
-	logger := log.FromContext(ctx)
-
 	httpClient, err := getAuthenticatedHTTPClient(ctx)
 	if err != nil {
 		return "", err
@@ -121,7 +119,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
-			logger.Error(cerr, "failed to close instances client")
+			slog.Error("failed to close instances client", "error", cerr)
 		}
 	}()
 
@@ -136,7 +134,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		Zone:     nodeFields.zone,
 	}
 
-	logger.Info(fmt.Sprintf("Sending reset signal to %s", nodeFields.instance))
+	slog.Info("Sending reset signal to", "node", nodeFields.instance)
 
 	op, err := instancesClient.Reset(ctx, resetReq)
 	if err != nil {
@@ -147,9 +145,7 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 }
 
 // IsNodeReady checks if the node is ready after a reboot operation.
-func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message string) (bool, error) {
-	logger := log.FromContext(ctx)
-
+func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
 	httpClient, err := getAuthenticatedHTTPClient(ctx)
 	if err != nil {
 		return false, err
@@ -162,7 +158,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 
 	defer func() {
 		if cerr := zoneOperationsClient.Close(); cerr != nil {
-			logger.Error(cerr, "failed to close zone operations client")
+			slog.Error("failed to close zone operations client", "error", cerr)
 		}
 	}()
 
@@ -172,7 +168,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 	}
 
 	req := &computepb.GetZoneOperationRequest{
-		Operation: message,
+		Operation: requestID,
 		Project:   nodeFields.project,
 		Zone:      nodeFields.zone,
 	}
@@ -192,8 +188,6 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, message stri
 // SendTerminateSignal deletes a GCE node.
 // nolint:dupl // Similar code pattern as SendRebootSignal is expected for CSP operations
 func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
-	logger := log.FromContext(ctx)
-
 	httpClient, err := getAuthenticatedHTTPClient(ctx)
 	if err != nil {
 		return "", err
@@ -206,7 +200,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 
 	defer func() {
 		if cerr := instancesClient.Close(); cerr != nil {
-			logger.Error(cerr, "failed to close instances client")
+			slog.Error("failed to close instances client", "error", cerr)
 		}
 	}()
 
@@ -221,7 +215,7 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 		Zone:     nodeFields.zone,
 	}
 
-	logger.Info(fmt.Sprintf("Sending delete signal to %s", nodeFields.instance))
+	slog.Info("Sending delete signal to", "node", nodeFields.instance)
 
 	op, err := instancesClient.Delete(ctx, deleteReq)
 	if err != nil {

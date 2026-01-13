@@ -24,6 +24,7 @@ import (
 
 // MongoDB operator constants for SQL filter building.
 const (
+	opAnd    = "$and"
 	opOr     = "$or"
 	opIn     = "$in"
 	opExists = "$exists"
@@ -33,6 +34,7 @@ const (
 	opLte    = "$lte"
 	opLt     = "$lt"
 	opMatch  = "$match"
+	opNe     = "$ne"
 
 	// operationColumn is the PostgreSQL column name for operation type.
 	// The column stores uppercase values (INSERT, UPDATE, DELETE).
@@ -399,6 +401,7 @@ var fieldNameMapping = map[string]string{
 	"faultremediated":        "faultremediated",
 	"status":                 "status",
 	"message":                "message",
+	"processingstrategy":     "processingStrategy",
 }
 
 // isOperationTypeField checks if the field is the operationType field.

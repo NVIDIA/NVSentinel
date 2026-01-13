@@ -314,7 +314,9 @@ func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEve
 	}
 
 	if healthEvent.Message != "" {
-		message += fmt.Sprintf("%s ", healthEvent.Message)
+		// Replace semicolons with dots in the message to prevent delimiter collision
+		sanitizedMessage := strings.ReplaceAll(healthEvent.Message, ";", ".")
+		message += fmt.Sprintf("%s ", sanitizedMessage)
 	}
 
 	message += fmt.Sprintf("Recommended Action=%s;", healthEvent.RecommendedAction.String())
@@ -322,31 +324,74 @@ func (r *K8sConnector) constructHealthEventMessage(healthEvent *protos.HealthEve
 	return message
 }
 
-func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
-	var nodeConditions []corev1.NodeCondition
+// filterProcessableEvents filters out STORE_ONLY events that should not create node conditions or K8s events.
+func filterProcessableEvents(healthEvents *protos.HealthEvents) []*protos.HealthEvent {
+	var processableEvents []*protos.HealthEvent
 
 	for _, healthEvent := range healthEvents.Events {
-		conditionType := corev1.NodeConditionType(string(healthEvent.CheckName))
-		message := r.fetchHealthEventMessage(healthEvent)
+		if healthEvent.ProcessingStrategy == protos.ProcessingStrategy_STORE_ONLY {
+			slog.Info("Skipping STORE_ONLY health event (no node conditions / node events)",
+				"node", healthEvent.NodeName,
+				"checkName", healthEvent.CheckName,
+				"agent", healthEvent.Agent)
 
+			continue
+		}
+
+		processableEvents = append(processableEvents, healthEvent)
+	}
+
+	return processableEvents
+}
+
+// createK8sEvent creates a Kubernetes event from a health event.
+func (r *K8sConnector) createK8sEvent(healthEvent *protos.HealthEvent) *corev1.Event {
+	return &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
+			Namespace: DefaultNamespace,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Node",
+			Name: healthEvent.NodeName,
+			UID:  types.UID(healthEvent.NodeName),
+		},
+		Reason:              r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy),
+		ReportingController: healthEvent.Agent,
+		ReportingInstance:   healthEvent.NodeName,
+		Message:             r.fetchHealthEventMessage(healthEvent),
+		Count:               1,
+		Source: corev1.EventSource{
+			Component: healthEvent.Agent,
+			Host:      healthEvent.NodeName,
+		},
+		FirstTimestamp: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
+		LastTimestamp:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
+		Type:           healthEvent.CheckName,
+	}
+}
+
+func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
+	processableEvents := filterProcessableEvents(healthEvents)
+
+	var nodeConditions []corev1.NodeCondition
+
+	for _, healthEvent := range processableEvents {
 		if healthEvent.IsHealthy || healthEvent.IsFatal {
-			newCondition := corev1.NodeCondition{
-				Type:               conditionType,
+			nodeConditions = append(nodeConditions, corev1.NodeCondition{
+				Type:               corev1.NodeConditionType(healthEvent.CheckName),
 				LastHeartbeatTime:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
 				LastTransitionTime: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-				Message:            message,
-			}
-
-			nodeConditions = append(nodeConditions, newCondition)
+				Message:            r.fetchHealthEventMessage(healthEvent),
+			})
 		}
 	}
 
 	if len(nodeConditions) > 0 {
 		start := time.Now()
-		err := r.updateNodeConditions(ctx, healthEvents.Events)
+		err := r.updateNodeConditions(ctx, processableEvents)
 
-		duration := float64(time.Since(start).Milliseconds())
-		nodeConditionUpdateDuration.Observe(duration)
+		nodeConditionUpdateDuration.Observe(float64(time.Since(start).Milliseconds()))
 
 		if err != nil {
 			nodeConditionUpdateCounter.WithLabelValues(StatusFailed).Inc()
@@ -356,36 +401,12 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 		nodeConditionUpdateCounter.WithLabelValues(StatusSuccess).Inc()
 	}
 
-	for _, healthEvent := range healthEvents.Events {
+	for _, healthEvent := range processableEvents {
 		if !healthEvent.IsHealthy && !healthEvent.IsFatal {
-			event := &corev1.Event{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
-					Namespace: DefaultNamespace,
-				},
-				InvolvedObject: corev1.ObjectReference{
-					Kind: "Node",
-					Name: healthEvent.NodeName,
-					UID:  types.UID(healthEvent.NodeName),
-				},
-				Reason:              r.updateHealthEventReason(healthEvent.CheckName, healthEvent.IsHealthy),
-				ReportingController: healthEvent.Agent,
-				ReportingInstance:   healthEvent.NodeName,
-				Message:             r.fetchHealthEventMessage(healthEvent),
-				Count:               1,
-				Source: corev1.EventSource{
-					Component: healthEvent.Agent,
-					Host:      healthEvent.NodeName,
-				},
-				FirstTimestamp: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-				LastTimestamp:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-				Type:           healthEvent.CheckName,
-			}
 			start := time.Now()
+			err := r.writeNodeEvent(ctx, r.createK8sEvent(healthEvent), healthEvent.NodeName)
 
-			err := r.writeNodeEvent(ctx, event, healthEvent.NodeName)
-			duration := float64(time.Since(start).Milliseconds())
-			nodeEventUpdateCreateDuration.Observe(duration)
+			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
 
 			if err != nil {
 				return fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)

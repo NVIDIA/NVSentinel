@@ -28,36 +28,43 @@ import (
 )
 
 type CRStatusChecker struct {
-	dynamicClient dynamic.Interface
-	restMapper    *restmapper.DeferredDiscoveryRESTMapper
-	config        *config.MaintenanceResource
-	dryRun        bool
+	dynamicClient      dynamic.Interface
+	restMapper         *restmapper.DeferredDiscoveryRESTMapper
+	remediationActions map[string]config.MaintenanceResource
+	dryRun             bool
 }
 
 func NewCRStatusChecker(
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
-	cfg *config.MaintenanceResource,
+	remediationActions map[string]config.MaintenanceResource,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		dynamicClient: dynamicClient,
-		restMapper:    restMapper,
-		config:        cfg,
-		dryRun:        dryRun,
+		dynamicClient:      dynamicClient,
+		restMapper:         restMapper,
+		remediationActions: remediationActions,
+		dryRun:             dryRun,
 	}
 }
 
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, crName string) bool {
+func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
+	// Look up the resource config for this action
+	resource, exists := c.remediationActions[actionName]
+	if !exists {
+		slog.Error("No remediation configuration found for action", "action", actionName)
+		return false
+	}
+
 	if c.dryRun {
-		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName)
+		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
 		return false
 	}
 
 	gvk := schema.GroupVersionKind{
-		Group:   c.config.ApiGroup,
-		Version: c.config.Version,
-		Kind:    c.config.Kind,
+		Group:   resource.ApiGroup,
+		Version: resource.Version,
+		Kind:    resource.Kind,
 	}
 
 	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
@@ -66,16 +73,26 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, crName strin
 		return false
 	}
 
-	resource, err := c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
+	// Use namespace if the resource is namespace-scoped
+	var cr *unstructured.Unstructured
+	if resource.Scope == "Namespaced" && resource.Namespace != "" {
+		cr, err = c.dynamicClient.Resource(mapping.Resource).
+			Namespace(resource.Namespace).Get(ctx, crName, metav1.GetOptions{})
+	} else {
+		cr, err = c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
+	}
+
 	if err != nil {
-		slog.Warn("Failed to get CR, allowing create", "crName", crName, "error", err)
+		slog.Warn("Failed to get CR, allowing create",
+			"crName", crName, "namespace", resource.Namespace, "scope", resource.Scope, "error", err)
+
 		return false
 	}
 
-	return c.checkCondition(resource)
+	return c.checkCondition(cr, resource)
 }
 
-func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured) bool {
+func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) bool {
 	status, found, err := unstructured.NestedMap(obj.Object, "status")
 	if err != nil || !found {
 		return true
@@ -86,12 +103,12 @@ func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured) bool {
 		return true
 	}
 
-	conditionStatus := c.findConditionStatus(conditions)
+	conditionStatus := c.findConditionStatus(conditions, resource.CompleteConditionType)
 
 	return !c.isTerminal(conditionStatus)
 }
 
-func (c *CRStatusChecker) findConditionStatus(conditions []any) string {
+func (c *CRStatusChecker) findConditionStatus(conditions []any, completeConditionType string) string {
 	for _, cond := range conditions {
 		condition, ok := cond.(map[string]interface{})
 		if !ok {
@@ -99,7 +116,7 @@ func (c *CRStatusChecker) findConditionStatus(conditions []any) string {
 		}
 
 		condType, _ := condition["type"].(string)
-		if condType == c.config.CompleteConditionType {
+		if condType == completeConditionType {
 			condStatus, _ := condition["status"].(string)
 			return condStatus
 		}

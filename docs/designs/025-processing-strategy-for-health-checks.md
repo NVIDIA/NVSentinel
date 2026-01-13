@@ -99,8 +99,9 @@ When a health monitor wants observability-only behavior, it publishes health eve
 
 ```protobuf
 enum ProcessingStrategy {
-  EXECUTE_REMEDIATION = 0;
-  STORE_ONLY = 1;
+  UNSPECIFIED = 0;
+  EXECUTE_REMEDIATION = 1;
+  STORE_ONLY = 2;
 }
 
 message HealthEvent {
@@ -338,18 +339,39 @@ For `processingStrategy=STORE_ONLY` events, the platform connector should:
 2. Not create node conditions
 3. Not create Kubernetes events
 
-File: `platform-connectors/pkg/connectors/kubernetes/process_node_events.go`
+**Normalization:** Platform connector normalizes `processingStrategy` in the gRPC server handler before any processing or enqueuing. If the field is missing or set to `UNSPECIFIED` (e.g., from custom monitors), it defaults to `EXECUTE_REMEDIATION`. This ensures all events in the database have an explicit strategy, providing consistent behavior across all modules.
 
-Add skip logic in `processHealthEvents()` method to skip adding node condition/event:
+File: `platform-connectors/pkg/server/platform_connector_server.go`
+
+Add normalization in `HealthEventOccurredV1()` method before enqueuing to ring buffers:
 
 ```go
-func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
-	var nodeConditions []corev1.NodeCondition
+func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
+	he *pb.HealthEvents) (*empty.Empty, error) {
+	slog.Info("Health events received", "events", he)
 
-	// NEW: Filter out STORE_ONLY events - they should not modify node conditions or create K8s events
+	healthEventsReceived.Add(float64(len(he.Events)))
+
+	// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
+	for _, event := range he.Events {
+		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
+			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+	}
+
+	// ... pipeline processing and enqueuing to ring buffers
+}
+```
+
+File: `platform-connectors/pkg/connectors/kubernetes/process_node_events.go`
+
+Add skip logic for `STORE_ONLY` events in `filterProcessableEvents()` method:
+
+```go
+func filterProcessableEvents(healthEvents *protos.HealthEvents) []*protos.HealthEvent {
 	var processableEvents []*protos.HealthEvent
 	for _, healthEvent := range healthEvents.Events {
-		if healthEvent.ProcessingStrategy == protos.STORE_ONLY {
+		if healthEvent.ProcessingStrategy == protos.ProcessingStrategy_STORE_ONLY {
 			slog.Info("Skipping STORE_ONLY event - no node conditions or K8s events will be created",
 				"node", healthEvent.NodeName,
 				"checkName", healthEvent.CheckName)
@@ -358,7 +380,7 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 		processableEvents = append(processableEvents, healthEvent)
 	}
 
-	// ... existing code
+	return processableEvents
 }
 ```
 ---
@@ -404,7 +426,12 @@ We need new methods in mongodb and postgres pipeline builder:
 File: `store-client/pkg/client/mongodb_pipeline_builder.go`
 
 ```go
-// BuildProcessableHealthEventInsertsPipeline creates a pipeline that watches for all processable health event inserts.
+// BuildProcessableHealthEventInsertsPipeline creates a pipeline that watches for
+// all EXECUTE_REMEDIATION health event inserts.
+//
+// Backward Compatibility: This pipeline uses $or to match events where processingstrategy is either:
+//   - EXECUTE_REMEDIATION (new events from NVSentinel health monitors)
+//   - Missing/null (old events created before update, custom monitors, or circuit breaker backlog)
 func (b *MongoDBPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -412,14 +439,20 @@ func (b *MongoDBPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() da
 				datastore.E("operationType", datastore.D(
 					datastore.E("$in", datastore.A("insert")),
 				)),
-				datastore.E("fullDocument.healthevent.processingstrategy", "EXECUTE_REMEDIATION"),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION))),
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", datastore.D(datastore.E("$exists", false)))),
+				)),
 			)),
 		),
 	)
 }
 
-// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal unhealthy events
-// excluding STORE_ONLY events.
+// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal, unhealthy event inserts
+// excluding STORE_ONLY events. This is used by health-events-analyzer for pattern analysis.
+//
+// Backward Compatibility: Uses $or to include EXECUTE_REMEDIATION and missing field.
 func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -427,12 +460,15 @@ func (b *MongoDBPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipelin
 				datastore.E("operationType", "insert"),
 				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
-				datastore.E("fullDocument.healthevent.processingstrategy", "EXECUTE_REMEDIATION"),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION))),
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", datastore.D(datastore.E("$exists", false)))),
+				)),
 			)),
 		),
 	)
 }
-
 ```
 
 Same method required in postgres builder
@@ -441,7 +477,9 @@ File: `store-client/pkg/client/postgresql_pipeline_builder.go`
 
 ```go
 // BuildProcessableHealthEventInsertsPipeline creates a pipeline that watches for health event inserts
-// excluding STORE_ONLY events.
+// with processingStrategy=EXECUTE_REMEDIATION
+//
+// Backward Compatibility: Uses $or to include EXECUTE_REMEDIATION and missing field.
 func (b *PostgreSQLPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -449,14 +487,20 @@ func (b *PostgreSQLPipelineBuilder) BuildProcessableHealthEventInsertsPipeline()
 				datastore.E("operationType", datastore.D(
 					datastore.E("$in", datastore.A("insert")),
 				)),
-				datastore.E("fullDocument.healthevent.processingstrategy", "EXECUTE_REMEDIATION"),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION))),
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", datastore.D(datastore.E("$exists", false)))),
+				)),
 			)),
 		),
 	)
 }
 
-// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal unhealthy events
-// excluding STORE_ONLY events.
+// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal, unhealthy event inserts
+// excluding STORE_ONLY events. For PostgreSQL, handles both INSERT and UPDATE operations.
+//
+// Backward Compatibility: Uses $or to include EXECUTE_REMEDIATION and missing field.
 func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
 	return datastore.ToPipeline(
 		datastore.D(
@@ -464,12 +508,15 @@ func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipe
 				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
 				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
-				datastore.E("fullDocument.healthevent.processingstrategy", "EXECUTE_REMEDIATION"),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION))),
+					datastore.D(datastore.E("fullDocument.healthevent.processingstrategy", datastore.D(datastore.E("$exists", false)))),
+				)),
 			)),
 		),
 	)
 }
-
 ``` 
 
 ---
@@ -532,6 +579,8 @@ func createPipeline() interface{} {
 
 Update the default pipeline query to exclude `processingStrategy=STORE_ONLY` events. We need this condition for every rule that's why we are adding it at code level instead of keeping it at config file level.
 
+**Backward Compatibility Note:** Historical events in the database (created before this feature) won't have the `processingstrategy` field. These old events should be treated as `EXECUTE_REMEDIATION` (they were meant to be processed). We use `$or` to explicitly match both `EXECUTE_REMEDIATION` and a missing field to ensure backward compatibility. Other modules and health monitors do not require changes since they only act on newly inserted events, which will already have the `processingStrategy` field set (all health monitors run in `EXECUTE_REMEDIATION` mode by default). 
+
 File: `health-events-analyzer/pkg/reconciler/reconciler.go`
 
 ```go
@@ -542,11 +591,18 @@ func (r *Reconciler) getPipelineStages(
 	// CRITICAL: Always start with agent filter to exclude events from health-events-analyzer itself
 	// This prevents the analyzer from matching its own generated events, which would cause
 	// infinite loops and incorrect rule evaluations
+	//
+	// Backward Compatibility: Use $or to include events where processingstrategy is either
+	// EXECUTE_REMEDIATION or missing (old events created before this feature was added).
+	// Old events without this field should be treated as EXECUTE_REMEDIATION.
 	pipeline := []map[string]interface{}{
 		{
 			"$match": map[string]interface{}{
-				"healthevent.agent":  map[string]interface{}{"$ne": "health-events-analyzer"},
-				"healthevent.processingstrategy": map[string]interface{}{"$eq": "EXECUTE_REMEDIATION"}, // Exclude STORE_ONLY by default
+				"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
+				"$or": []map[string]interface{}{
+					{"healthevent.processingstrategy": "EXECUTE_REMEDIATION"},
+					{"healthevent.processingstrategy": map[string]interface{}{"$exists": false}},
+				},
 			},
 		},
 	}

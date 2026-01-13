@@ -54,6 +54,13 @@ func (p *PlatformConnectorServer) HealthEventOccurredV1(ctx context.Context,
 
 	healthEventsReceived.Add(float64(len(he.Events)))
 
+	// Custom monitors that don't set processingStrategy will default to EXECUTE_REMEDIATION.
+	for _, event := range he.Events {
+		if event.ProcessingStrategy == pb.ProcessingStrategy_UNSPECIFIED {
+			event.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
+		}
+	}
+
 	if p.Pipeline != nil {
 		for i := range he.Events {
 			p.Pipeline.Process(ctx, he.Events[i])

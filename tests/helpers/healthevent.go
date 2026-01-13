@@ -45,6 +45,7 @@ type HealthEventTemplate struct {
 	Metadata            map[string]string    `json:"metadata,omitempty"`
 	QuarantineOverrides *QuarantineOverrides `json:"quarantineOverrides,omitempty"`
 	NodeName            string               `json:"nodeName"`
+	ProcessingStrategy  int                  `json:"processingStrategy,omitempty"`
 }
 
 type EntityImpacted struct {
@@ -146,6 +147,11 @@ func (h *HealthEventTemplate) WithMetadata(key, value string) *HealthEventTempla
 
 func (h *HealthEventTemplate) WithRecommendedAction(action int) *HealthEventTemplate {
 	h.RecommendedAction = action
+	return h
+}
+
+func (h *HealthEventTemplate) WithProcessingStrategy(strategy int) *HealthEventTemplate {
+	h.ProcessingStrategy = strategy
 	return h
 }
 

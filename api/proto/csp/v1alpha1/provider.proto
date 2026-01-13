@@ -1,0 +1,49 @@
+// Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package nvidia.nvsentinel.janitor.v1alpha1;
+
+option go_package = "github.com/nvidia/nvsentinel/janitor/api/csp/v1alpha1;cspv1alpha1";
+
+service CSPProviderService {
+  rpc SendRebootSignal(SendRebootSignalRequest) returns (SendRebootSignalResponse) {}
+  rpc IsNodeReady(IsNodeReadyRequest) returns (IsNodeReadyResponse) {}
+  rpc SendTerminateSignal(SendTerminateSignalRequest) returns (SendTerminateSignalResponse) {}
+}
+
+message SendRebootSignalRequest {
+  string node_name = 1;
+}
+
+message SendRebootSignalResponse {
+  string request_id = 1;
+}
+
+message IsNodeReadyRequest {
+  string node_name = 1;
+  string request_id = 2;
+}
+
+message IsNodeReadyResponse {
+  bool is_ready = 1;
+}
+
+message SendTerminateSignalRequest {
+  string node_name = 1;
+}
+
+message SendTerminateSignalResponse {
+  string request_id = 1;
+}

@@ -20,24 +20,39 @@ metadata:
     {{- include "fault-remediation.labels" . | nindent 4 }}
 data:
   config.toml: |
-    [maintenanceResource]
-    namespace = {{ .Values.maintenance.namespace | quote }}
-    version = {{ .Values.maintenance.version | quote }}
-    apiGroup = {{ .Values.maintenance.apiGroup | quote }}
-    kind = {{ .Values.maintenance.kind | quote }}
-    completeConditionType = {{ .Values.maintenance.completeConditionType | quote }}
-    
     [template]
     mountPath = "/etc/config"
-    fileName = "maintenance-template.yaml"
+    
+    # Multi-template remediation configuration
+    {{- range $actionName, $config := .Values.maintenance.actions }}
+    [remediationActions.{{ $actionName | quote }}]
+    apiGroup = {{ $config.apiGroup | quote }}
+    version = {{ $config.version | quote }}
+    kind = {{ $config.kind | quote }}
+    scope = {{ $config.scope | default "Cluster" | quote }}
+    {{- if $config.namespace }}
+    namespace = {{ $config.namespace | quote }}
+    {{- end }}
+    completeConditionType = {{ $config.completeConditionType | default "NodeReady" | quote }}
+    templateFileName = {{ $config.templateFileName | quote }}
+    {{- if $config.equivalenceGroup }}
+    equivalenceGroup = {{ $config.equivalenceGroup | quote }}
+    {{- end }}
+    {{- end }}
     
     [updateRetry]
     maxRetries = {{ .Values.updateRetry.maxRetries }}
     retryDelaySeconds = {{ .Values.updateRetry.retryDelaySeconds }}
     
-  maintenance-template.yaml: |
-{{- .Values.maintenance.template | nindent 4 }}
-  {{ if .Values.logCollector.enabled }}
+  {{- if .Values.maintenance.templates }}
+  # Multi-template files
+  {{- range $templateName, $templateContent := .Values.maintenance.templates }}
+  {{ $templateName }}: |
+{{- $templateContent | nindent 4 }}
+  {{- end }}
+  {{- end }}
+
+  {{- if .Values.logCollector.enabled }}
   log-collector-job.yaml: |
     {{- tpl (.Files.Get "files/log-collector-job.yaml") . | nindent 4 }}
-  {{ end }}
+  {{- end }}

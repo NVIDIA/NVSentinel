@@ -37,6 +37,59 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ProcessingStrategy defines how downstream modules should handle the event.
+// UNSPECIFIED: events without an explicit strategy use this default, which platform-connector normalizes to EXECUTE_REMEDIATION.
+// EXECUTE_REMEDIATION: normal behavior; downstream modules may update cluster state.
+// STORE_ONLY: observability-only behavior; event should be persisted/exported but should not modify cluster resources.
+type ProcessingStrategy int32
+
+const (
+	ProcessingStrategy_UNSPECIFIED         ProcessingStrategy = 0
+	ProcessingStrategy_EXECUTE_REMEDIATION ProcessingStrategy = 1
+	ProcessingStrategy_STORE_ONLY          ProcessingStrategy = 2
+)
+
+// Enum value maps for ProcessingStrategy.
+var (
+	ProcessingStrategy_name = map[int32]string{
+		0: "UNSPECIFIED",
+		1: "EXECUTE_REMEDIATION",
+		2: "STORE_ONLY",
+	}
+	ProcessingStrategy_value = map[string]int32{
+		"UNSPECIFIED":         0,
+		"EXECUTE_REMEDIATION": 1,
+		"STORE_ONLY":          2,
+	}
+)
+
+func (x ProcessingStrategy) Enum() *ProcessingStrategy {
+	p := new(ProcessingStrategy)
+	*p = x
+	return p
+}
+
+func (x ProcessingStrategy) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProcessingStrategy) Descriptor() protoreflect.EnumDescriptor {
+	return file_health_event_proto_enumTypes[0].Descriptor()
+}
+
+func (ProcessingStrategy) Type() protoreflect.EnumType {
+	return &file_health_event_proto_enumTypes[0]
+}
+
+func (x ProcessingStrategy) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProcessingStrategy.Descriptor instead.
+func (ProcessingStrategy) EnumDescriptor() ([]byte, []int) {
+	return file_health_event_proto_rawDescGZIP(), []int{0}
+}
+
 type RecommendedAction int32
 
 const (
@@ -88,11 +141,11 @@ func (x RecommendedAction) String() string {
 }
 
 func (RecommendedAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_health_event_proto_enumTypes[0].Descriptor()
+	return file_health_event_proto_enumTypes[1].Descriptor()
 }
 
 func (RecommendedAction) Type() protoreflect.EnumType {
-	return &file_health_event_proto_enumTypes[0]
+	return &file_health_event_proto_enumTypes[1]
 }
 
 func (x RecommendedAction) Number() protoreflect.EnumNumber {
@@ -101,7 +154,7 @@ func (x RecommendedAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use RecommendedAction.Descriptor instead.
 func (RecommendedAction) EnumDescriptor() ([]byte, []int) {
-	return file_health_event_proto_rawDescGZIP(), []int{0}
+	return file_health_event_proto_rawDescGZIP(), []int{1}
 }
 
 type HealthEvents struct {
@@ -225,6 +278,7 @@ type HealthEvent struct {
 	NodeName            string                 `protobuf:"bytes,13,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
 	QuarantineOverrides *BehaviourOverrides    `protobuf:"bytes,14,opt,name=quarantineOverrides,proto3" json:"quarantineOverrides,omitempty"`
 	DrainOverrides      *BehaviourOverrides    `protobuf:"bytes,15,opt,name=drainOverrides,proto3" json:"drainOverrides,omitempty"`
+	ProcessingStrategy  ProcessingStrategy     `protobuf:"varint,16,opt,name=processingStrategy,proto3,enum=datamodels.ProcessingStrategy" json:"processingStrategy,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -364,6 +418,13 @@ func (x *HealthEvent) GetDrainOverrides() *BehaviourOverrides {
 	return nil
 }
 
+func (x *HealthEvent) GetProcessingStrategy() ProcessingStrategy {
+	if x != nil {
+		return x.ProcessingStrategy
+	}
+	return ProcessingStrategy_UNSPECIFIED
+}
+
 type BehaviourOverrides struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Force         bool                   `protobuf:"varint,1,opt,name=force,proto3" json:"force,omitempty"`
@@ -429,7 +490,7 @@ const file_health_event_proto_rawDesc = "" +
 	"\n" +
 	"entityType\x18\x01 \x01(\tR\n" +
 	"entityType\x12 \n" +
-	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\x82\x06\n" +
+	"\ventityValue\x18\x02 \x01(\tR\ventityValue\"\xd2\x06\n" +
 	"\vHealthEvent\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x14\n" +
 	"\x05agent\x18\x02 \x01(\tR\x05agent\x12&\n" +
@@ -446,13 +507,19 @@ const file_health_event_proto_rawDesc = "" +
 	"\x12generatedTimestamp\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x12generatedTimestamp\x12\x1a\n" +
 	"\bnodeName\x18\r \x01(\tR\bnodeName\x12P\n" +
 	"\x13quarantineOverrides\x18\x0e \x01(\v2\x1e.datamodels.BehaviourOverridesR\x13quarantineOverrides\x12F\n" +
-	"\x0edrainOverrides\x18\x0f \x01(\v2\x1e.datamodels.BehaviourOverridesR\x0edrainOverrides\x1a;\n" +
+	"\x0edrainOverrides\x18\x0f \x01(\v2\x1e.datamodels.BehaviourOverridesR\x0edrainOverrides\x12N\n" +
+	"\x12processingStrategy\x18\x10 \x01(\x0e2\x1e.datamodels.ProcessingStrategyR\x12processingStrategy\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\">\n" +
 	"\x12BehaviourOverrides\x12\x14\n" +
 	"\x05force\x18\x01 \x01(\bR\x05force\x12\x12\n" +
-	"\x04skip\x18\x02 \x01(\bR\x04skip*\xa8\x01\n" +
+	"\x04skip\x18\x02 \x01(\bR\x04skip*N\n" +
+	"\x12ProcessingStrategy\x12\x0f\n" +
+	"\vUNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13EXECUTE_REMEDIATION\x10\x01\x12\x0e\n" +
+	"\n" +
+	"STORE_ONLY\x10\x02*\xa8\x01\n" +
 	"\x11RecommendedAction\x12\b\n" +
 	"\x04NONE\x10\x00\x12\x13\n" +
 	"\x0fCOMPONENT_RESET\x10\x02\x12\x13\n" +
@@ -481,33 +548,35 @@ func file_health_event_proto_rawDescGZIP() []byte {
 	return file_health_event_proto_rawDescData
 }
 
-var file_health_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_health_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_health_event_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_health_event_proto_goTypes = []any{
-	(RecommendedAction)(0),        // 0: datamodels.RecommendedAction
-	(*HealthEvents)(nil),          // 1: datamodels.HealthEvents
-	(*Entity)(nil),                // 2: datamodels.Entity
-	(*HealthEvent)(nil),           // 3: datamodels.HealthEvent
-	(*BehaviourOverrides)(nil),    // 4: datamodels.BehaviourOverrides
-	nil,                           // 5: datamodels.HealthEvent.MetadataEntry
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),         // 7: google.protobuf.Empty
+	(ProcessingStrategy)(0),       // 0: datamodels.ProcessingStrategy
+	(RecommendedAction)(0),        // 1: datamodels.RecommendedAction
+	(*HealthEvents)(nil),          // 2: datamodels.HealthEvents
+	(*Entity)(nil),                // 3: datamodels.Entity
+	(*HealthEvent)(nil),           // 4: datamodels.HealthEvent
+	(*BehaviourOverrides)(nil),    // 5: datamodels.BehaviourOverrides
+	nil,                           // 6: datamodels.HealthEvent.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),         // 8: google.protobuf.Empty
 }
 var file_health_event_proto_depIdxs = []int32{
-	3, // 0: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
-	0, // 1: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommendedAction
-	2, // 2: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
-	5, // 3: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
-	6, // 4: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
-	4, // 5: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
-	4, // 6: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
-	1, // 7: datamodels.PlatformConnector.HealthEventOccurredV1:input_type -> datamodels.HealthEvents
-	7, // 8: datamodels.PlatformConnector.HealthEventOccurredV1:output_type -> google.protobuf.Empty
-	8, // [8:9] is the sub-list for method output_type
-	7, // [7:8] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	4, // 0: datamodels.HealthEvents.events:type_name -> datamodels.HealthEvent
+	1, // 1: datamodels.HealthEvent.recommendedAction:type_name -> datamodels.RecommendedAction
+	3, // 2: datamodels.HealthEvent.entitiesImpacted:type_name -> datamodels.Entity
+	6, // 3: datamodels.HealthEvent.metadata:type_name -> datamodels.HealthEvent.MetadataEntry
+	7, // 4: datamodels.HealthEvent.generatedTimestamp:type_name -> google.protobuf.Timestamp
+	5, // 5: datamodels.HealthEvent.quarantineOverrides:type_name -> datamodels.BehaviourOverrides
+	5, // 6: datamodels.HealthEvent.drainOverrides:type_name -> datamodels.BehaviourOverrides
+	0, // 7: datamodels.HealthEvent.processingStrategy:type_name -> datamodels.ProcessingStrategy
+	2, // 8: datamodels.PlatformConnector.HealthEventOccurredV1:input_type -> datamodels.HealthEvents
+	8, // 9: datamodels.PlatformConnector.HealthEventOccurredV1:output_type -> google.protobuf.Empty
+	9, // [9:10] is the sub-list for method output_type
+	8, // [8:9] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_health_event_proto_init() }
@@ -520,7 +589,7 @@ func file_health_event_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_health_event_proto_rawDesc), len(file_health_event_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,

@@ -316,24 +316,43 @@ func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 		return nil, err
 	}
 
-	templateData := TemplateData{
-		TemplateMountPath: "/tmp",
-		TemplateFileName:  "test.yaml",
-		MaintenanceResource: config.MaintenanceResource{
-			ApiGroup:              "janitor.dgxc.nvidia.com",
-			Version:               "v1alpha1",
-			Kind:                  "RebootNode",
-			CompleteConditionType: "NodeReady",
+	// Create remediation config with the test template
+	remediationConfig := config.TomlConfig{
+		RemediationActions: map[string]config.MaintenanceResource{
+			"RESTART_BM": {
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				TemplateFileName:      "test.yaml",
+				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "restart",
+			},
+			"COMPONENT_RESET": {
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Version:               "v1alpha1",
+				Kind:                  "RebootNode",
+				TemplateFileName:      "gpu-reset.yaml",
+				CompleteConditionType: "NodeReady",
+				EquivalenceGroup:      "restart",
+			},
 		},
+	}
+
+	// Create templates map
+	templates := map[string]*template.Template{
+		"RESTART_BM":      tmpl,
+		"COMPONENT_RESET": tmpl, // Use same template for testing
 	}
 
 	client := &FaultRemediationClient{
 		clientset:         testDynamic,
 		kubeClient:        testClient,
 		restMapper:        mapper,
-		template:          tmpl,
-		templateData:      templateData,
+		remediationConfig: remediationConfig,
+		templates:         templates,
+		templateMountPath: "/tmp",
 		annotationManager: NewNodeAnnotationManager(testClient),
+		statusChecker:     crstatus.NewCRStatusChecker(testDynamic, mapper, remediationConfig.RemediationActions, dryRun),
 	}
 
 	if dryRun {
@@ -341,13 +360,6 @@ func createTestRemediationClient(dryRun bool) (*FaultRemediationClient, error) {
 	} else {
 		client.dryRunMode = []string{}
 	}
-
-	client.statusChecker = crstatus.NewCRStatusChecker(
-		testDynamic,
-		mapper,
-		&templateData.MaintenanceResource,
-		dryRun,
-	)
 
 	return client, nil
 }

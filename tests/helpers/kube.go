@@ -384,6 +384,30 @@ func WaitForNodeEvent(ctx context.Context, t *testing.T, c klient.Client, nodeNa
 	}, EventuallyWaitTimeout, WaitInterval, "node %s should have event %v", nodeName, expectedEvent)
 }
 
+func EnsureNodeEventNotPresent(ctx context.Context, t *testing.T,
+	c klient.Client, nodeName string, eventType, eventReason string) {
+	t.Helper()
+
+	require.Never(t, func() bool {
+		events, err := GetNodeEvents(ctx, c, nodeName, eventType)
+		if err != nil {
+			t.Logf("failed to get events for node %s: %v", nodeName, err)
+			return false
+		}
+
+		for _, event := range events.Items {
+			if event.Type == eventType && event.Reason == eventReason {
+				t.Logf("node %s has event %v", nodeName, event)
+				return true
+			}
+		}
+
+		t.Logf("node %s does not have event %v", nodeName, eventType)
+
+		return false
+	}, NeverWaitTimeout, WaitInterval, "node %s should not have event %v", nodeName, eventType)
+}
+
 // SelectTestNodeFromUnusedPool selects an available test node from the cluster.
 // Prefers uncordoned nodes but will fall back to the first node if none are available.
 func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klient.Client) string {
@@ -450,7 +474,8 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 	return &node, nil
 }
 
-func DeletePod(ctx context.Context, c klient.Client, namespace, podName string) error {
+func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, podName string,
+	waitForRemoval bool) error {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -461,6 +486,17 @@ func DeletePod(ctx context.Context, c klient.Client, namespace, podName string) 
 	err := c.Resources().Delete(ctx, pod)
 	if err != nil {
 		return fmt.Errorf("failed to delete pod %s: %w", podName, err)
+	}
+
+	if waitForRemoval {
+		require.Eventually(t, func() bool {
+			err = c.Resources().Get(ctx, podName, namespace, pod)
+			if err != nil {
+				return apierrors.IsNotFound(err)
+			}
+
+			return false
+		}, EventuallyWaitTimeout, WaitInterval, "pod %s should be removed from API", podName)
 	}
 
 	return nil
@@ -715,7 +751,7 @@ func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Cli
 
 			t.Logf("Found running pod: %s, deleting it", pod.Name)
 
-			err = DeletePod(ctx, c, namespace, pod.Name)
+			err = DeletePod(ctx, t, c, namespace, pod.Name, false)
 			if err != nil {
 				t.Errorf("Failed to delete pod %s: %v", pod.Name, err)
 			} else {

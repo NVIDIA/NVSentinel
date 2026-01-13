@@ -138,9 +138,11 @@ func SetupQuarantineTestWithOptions(ctx context.Context, t *testing.T, c *envcon
 
 	testCtx.ConfigMapBackup = backupData
 
-	t.Logf("Applying test configmap: %s", configMapPath)
-	err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine", NVSentinelNamespace)
-	require.NoError(t, err)
+	if configMapPath != "" {
+		t.Logf("Applying test configmap: %s", configMapPath)
+		err = createConfigMapFromFilePath(ctx, client, configMapPath, "fault-quarantine", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
 
 	if opts != nil {
 		if opts.CircuitBreakerPercentage > 0 {

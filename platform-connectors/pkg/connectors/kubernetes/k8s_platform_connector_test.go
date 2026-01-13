@@ -1388,6 +1388,248 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 		})
 	}
 }
+func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
+	testCases := []struct {
+		name                   string
+		healthEvents           []*protos.HealthEvent
+		expectNodeConditions   bool
+		expectKubernetesEvents bool
+		description            string
+		expectedConditionType  string
+		expectedEventType      string
+	}{
+		{
+			name: "STORE_ONLY event should not create node condition",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuXidError",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{"79"},
+					IsFatal:            true,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "XID 79: GPU has fallen off the bus",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_STORE_ONLY,
+				},
+			},
+			expectNodeConditions:   false,
+			expectKubernetesEvents: false,
+			description:            "STORE_ONLY fatal event should not create node condition",
+		},
+		{
+			name: "STORE_ONLY non-fatal event should not create Kubernetes event",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuPcieWatch",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{"DCGM_FR_PCI_REPLAY_RATE"},
+					IsFatal:            false, // Non-fatal creates K8s events, not conditions
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_NONE,
+					Message:            "PCI replay rate warning on GPU 0",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_STORE_ONLY,
+				},
+			},
+			expectNodeConditions:   false,
+			expectKubernetesEvents: false,
+			description:            "STORE_ONLY non-fatal event should not create Kubernetes event",
+		},
+		{
+			name: "EXECUTE_REMEDIATION event should create node condition",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuXidError",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{"79"},
+					IsFatal:            true,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "XID 79: GPU has fallen off the bus",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+				},
+			},
+			expectNodeConditions:   true,
+			expectKubernetesEvents: false,
+			description:            "EXECUTE_REMEDIATION fatal event should create node condition",
+			expectedConditionType:  "GpuXidError",
+			expectedEventType:      "",
+		},
+		{
+			name: "Mixed strategies - only EXECUTE_REMEDIATION should be processed",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuXidError",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{"79"},
+					IsFatal:            true,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "XID 79 on GPU 0",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_STORE_ONLY,
+				},
+				{
+					CheckName:          "GpuThermalWatch",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "1"}},
+					ErrorCode:          []string{"DCGM_FR_CLOCK_THROTTLE_THERMAL"},
+					IsFatal:            true,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "Thermal throttle on GPU 1",
+					NodeName:           "store-only-test-node",
+					ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+				},
+			},
+			expectNodeConditions:   true,
+			expectKubernetesEvents: false,
+			description:            "Only EXECUTE_REMEDIATION events should create conditions",
+			expectedConditionType:  "GpuThermalWatch",
+			expectedEventType:      "",
+		},
+		{
+			name: "STORE_ONLY non fatal event should not create Kubernetes event",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuPowerWatch",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{""},
+					IsFatal:            false,
+					ProcessingStrategy: protos.ProcessingStrategy_STORE_ONLY,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "Power warning on GPU 0",
+					NodeName:           "store-only-test-node",
+				},
+			},
+			expectNodeConditions:   false,
+			expectKubernetesEvents: false,
+			description:            "STORE_ONLY non fatal event should not create Kubernetes event",
+			expectedConditionType:  "",
+			expectedEventType:      "",
+		},
+		{
+			name: "EXECUTE_REMEDIATION non fatal event should create Kubernetes event",
+			healthEvents: []*protos.HealthEvent{
+				{
+					CheckName:          "GpuPowerWatch",
+					IsHealthy:          false,
+					EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
+					ErrorCode:          []string{""},
+					IsFatal:            false,
+					ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION,
+					GeneratedTimestamp: timestamppb.New(time.Now()),
+					ComponentClass:     "GPU",
+					RecommendedAction:  protos.RecommendedAction_CONTACT_SUPPORT,
+					Message:            "Power warning on GPU 0",
+					NodeName:           "store-only-test-node",
+				},
+			},
+			expectNodeConditions:   false,
+			expectKubernetesEvents: true,
+			description:            "EXECUTE_REMEDIATION non fatal event should create Kubernetes event",
+			expectedConditionType:  "",
+			expectedEventType:      "GpuPowerWatch",
+		},
+	}
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			localCtx := context.Background()
+			localClientSet := fake.NewSimpleClientset()
+			stopCh := make(chan struct{})
+			defer close(stopCh)
+
+			ringBuffer := ringbuffer.NewRingBuffer(fmt.Sprintf("storeOnlyTestBuffer-%d", i), localCtx)
+			maxNodeConditionMessageLength := int64(1024)
+			connector := NewK8sConnector(localClientSet, ringBuffer, stopCh, localCtx, maxNodeConditionMessageLength)
+
+			nodeName := "store-only-test-node"
+			fakeNode := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeName,
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:               corev1.NodeReady,
+							Status:             corev1.ConditionTrue,
+							LastHeartbeatTime:  metav1.Now(),
+							LastTransitionTime: metav1.Now(),
+							Reason:             "KubeletReady",
+							Message:            "kubelet is posting ready status",
+						},
+					},
+				},
+			}
+			_, err := localClientSet.CoreV1().Nodes().Create(localCtx, fakeNode, metav1.CreateOptions{})
+			require.NoError(t, err, "Failed to create test node")
+
+			healthEvents := &protos.HealthEvents{
+				Version: 1,
+				Events:  tc.healthEvents,
+			}
+			err = connector.processHealthEvents(localCtx, healthEvents)
+			require.NoError(t, err, "processHealthEvents should not return error")
+
+			node, err := localClientSet.CoreV1().Nodes().Get(localCtx, nodeName, metav1.GetOptions{})
+			require.NoError(t, err, "Failed to get test node")
+
+			// Count NVSentinel-related conditions (excluding standard K8s conditions like NodeReady)
+			var nvsentinelConditions []corev1.NodeCondition
+			for _, condition := range node.Status.Conditions {
+				condType := string(condition.Type)
+				if condType != string(corev1.NodeReady) &&
+					condType != string(corev1.NodeMemoryPressure) &&
+					condType != string(corev1.NodeDiskPressure) &&
+					condType != string(corev1.NodePIDPressure) &&
+					condType != string(corev1.NodeNetworkUnavailable) {
+					nvsentinelConditions = append(nvsentinelConditions, condition)
+					t.Logf("Found NVSentinel condition: %s", condType)
+				}
+			}
+
+			if tc.expectNodeConditions {
+				assert.Equal(t, tc.expectedConditionType, string(nvsentinelConditions[0].Type),
+					"Expected condition type %s, got %s", tc.expectedConditionType, nvsentinelConditions[0].Type)
+			} else {
+				assert.Equal(t, 0, len(nvsentinelConditions),
+					"Expected no NVSentinel node conditions for STORE_ONLY events, got %d", len(nvsentinelConditions))
+			}
+
+			// Verify Kubernetes events
+			events, err := localClientSet.CoreV1().Events("").List(localCtx, metav1.ListOptions{
+				FieldSelector: fmt.Sprintf("involvedObject.kind=Node,involvedObject.name=%s", nodeName),
+			})
+			require.NoError(t, err, "Failed to list events")
+
+			if tc.expectKubernetesEvents {
+				assert.Equal(t, tc.expectedEventType, events.Items[0].Type,
+					"Expected event type %s, got %s", tc.expectedEventType, events.Items[0].Type)
+			} else {
+				assert.Equal(t, 0, len(events.Items),
+					"Expected no Kubernetes events for STORE_ONLY events, got %d", len(events.Items))
+			}
+
+			t.Logf("Test passed: %s", tc.description)
+		})
+	}
+}
+
 func TestTruncateConditionMessage(t *testing.T) {
 	// Generate test messages that would exceed 1KB when combined
 	generateLongMessages := func(count int) []string {

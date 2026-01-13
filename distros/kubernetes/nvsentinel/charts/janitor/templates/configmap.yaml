@@ -47,13 +47,20 @@ data:
             {{- end }}
         {{- end }}
       {{- end }}
+      cspProviderHost: {{ .Values.config.cspProviderHost }}
     
     rebootNodeController:
       enabled: {{ if (hasKey .Values.config.controllers.rebootNode "enabled") }}{{ .Values.config.controllers.rebootNode.enabled }}{{ else }}true{{ end }}
       timeout: {{ .Values.config.controllers.rebootNode.timeout | default .Values.config.timeout | default "25m" }}
       manualMode: {{ .Values.config.manualMode | default false }}
-    
+      {{- if .Values.config.controllers.rebootNode.cspProviderHost }}
+      cspProviderHost: {{ .Values.config.controllers.rebootNode.cspProviderHost }}
+      {{- end }}
+
     terminateNodeController:
       enabled: {{ if (hasKey .Values.config.controllers.terminateNode "enabled") }}{{ .Values.config.controllers.terminateNode.enabled }}{{ else }}true{{ end }}
       timeout: {{ .Values.config.controllers.terminateNode.timeout | default .Values.config.timeout | default "25m" }}
       manualMode: {{ .Values.config.manualMode | default false }}
+      {{- if .Values.config.controllers.terminateNode.cspProviderHost }}
+      cspProviderHost: {{ .Values.config.controllers.terminateNode.cspProviderHost }}
+      {{- end }}

@@ -23,9 +23,11 @@ import (
 
 	"tests/helpers"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
+
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -222,6 +224,113 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 			node.Spec.Taints = newTaints
 			client.Resources().Update(ctx, node)
 		}
+
+		return helpers.TeardownQuarantineTest(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
+	feature := features.New("TestFaultQuarantineWithProcessingStrategy").
+		WithLabel("suite", "fault-quarantine-with-processing-strategy")
+
+	var testCtx *helpers.QuarantineTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "")
+		return newCtx
+	})
+
+	feature.Assess("Check that node is not quarantined for STORE_ONLY events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred").
+			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+			WithCheckName("SysLogsXIDError").
+			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_ONLY))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should not have condition SysLogsXIDError", testCtx.NodeName)
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "SysLogsXIDError")
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		event = helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("DCGM_FR_CLOCK_THROTTLE_POWER").
+			WithCheckName("GpuPowerWatch").
+			WithFatal(false).
+			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_ONLY))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should not have GpuPowerWatch node event", testCtx.NodeName)
+		helpers.EnsureNodeEventNotPresent(ctx, t, client, testCtx.NodeName, "GpuPowerWatch", "GpuPowerWatchIsNotHealthy")
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		return ctx
+	})
+
+	feature.Assess("Check that node is quarantined for EXECUTE_REMEDIATION events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("XID error occurred").
+			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+			WithCheckName("SysLogsXIDError").
+			WithProcessingStrategy(int(protos.ProcessingStrategy_EXECUTE_REMEDIATION))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should have condition SysLogsXIDError", testCtx.NodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testCtx.NodeName, "SysLogsXIDError", "", "SysLogsXIDErrorIsNotHealthy", v1.ConditionTrue)
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   true,
+			ExpectAnnotation: true,
+		})
+
+		event = helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("DCGM_FR_CLOCK_THROTTLE_POWER").
+			WithCheckName("GpuPowerWatch").
+			WithFatal(false).
+			WithProcessingStrategy(int(protos.ProcessingStrategy_EXECUTE_REMEDIATION))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Logf("Node %s should have node event GpuPowerWatch", testCtx.NodeName)
+		expectedEvent := v1.Event{
+			Type:    "GpuPowerWatch",
+			Reason:  "GpuPowerWatchIsNotHealthy",
+			Message: "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:0 Recommended Action=NONE;",
+		}
+		helpers.WaitForNodeEvent(ctx, t, client, testCtx.NodeName, expectedEvent)
+
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   true,
+			ExpectAnnotation: true,
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithHealthy(true).
+			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+			WithCheckName("SysLogsXIDError")
+		helpers.SendHealthEvent(ctx, t, event)
 
 		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})

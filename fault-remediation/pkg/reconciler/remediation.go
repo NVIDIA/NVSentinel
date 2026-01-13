@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -45,7 +45,6 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
-	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 )
@@ -56,12 +55,16 @@ const (
 )
 
 type FaultRemediationClient struct {
-	clientset         dynamic.Interface
-	kubeClient        kubernetes.Interface
-	restMapper        *restmapper.DeferredDiscoveryRESTMapper
-	dryRunMode        []string
-	template          *template.Template
-	templateData      TemplateData
+	clientset  dynamic.Interface
+	kubeClient kubernetes.Interface
+	restMapper *restmapper.DeferredDiscoveryRESTMapper
+	dryRunMode []string
+
+	// Multi-template support
+	remediationConfig config.TomlConfig
+	templates         map[string]*template.Template // map from template file name to parsed template
+	templateMountPath string
+
 	annotationManager NodeAnnotationManagerInterface
 	statusChecker     *crstatus.CRStatusChecker
 	// nodeExistsFunc allows tests to override node existence checking.
@@ -71,16 +74,22 @@ type FaultRemediationClient struct {
 
 // TemplateData holds the data to be inserted into the template
 type TemplateData struct {
-	NodeName          string
-	HealthEventID     string
-	RecommendedAction protos.RecommendedAction
-	TemplateMountPath string
-	TemplateFileName  string
-	config.MaintenanceResource
+	// Node and event data
+	NodeName              string
+	HealthEventID         string
+	RecommendedAction     protos.RecommendedAction
+	RecommendedActionName string
+
+	// CRD routing metadata (populated from MaintenanceResource)
+	ApiGroup  string
+	Version   string
+	Kind      string
+	Namespace string
 }
 
+// NewK8sClient creates a new FaultRemediationClient with multi-template support
 // nolint: cyclop // todo
-func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*FaultRemediationClient,
+func NewK8sClient(kubeconfig string, dryRun bool, remediationConfig config.TomlConfig) (*FaultRemediationClient,
 	kubernetes.Interface, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -120,33 +129,43 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	cachedClient := memory.NewMemCacheClient(discoveryClient)
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
 
-	// Construct full template path
-	templatePath := filepath.Join(templateData.TemplateMountPath, templateData.TemplateFileName)
-
-	// Check if the template file exists
-	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
-		return nil, nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	// Determine template mount path
+	templateMountPath := remediationConfig.Template.MountPath
+	if templateMountPath == "" {
+		return nil, nil, fmt.Errorf("template mount path is not configured")
 	}
 
-	// Read and parse the template
-	templateContent, err := os.ReadFile(templatePath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("error reading template file: %w", err)
+	// Pre-load and parse all templates
+	templates := make(map[string]*template.Template)
+
+	// Load templates for multi-template actions
+	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
+		if maintenanceResource.TemplateFileName == "" {
+			return nil, nil, fmt.Errorf("remediation action %s is missing template file configuration", actionName)
+		}
+
+		tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
+		}
+
+		templates[actionName] = tmpl
 	}
 
-	tmpl := template.New("maintenance")
-
-	tmpl, err = tmpl.Parse(string(templateContent))
-	if err != nil {
-		return nil, nil, fmt.Errorf("error parsing template: %w", err)
+	// Validate namespace configuration for namespaced resources
+	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
+		if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace == "" {
+			return nil, nil, fmt.Errorf("remediation action %s is namespaced but missing namespace configuration", actionName)
+		}
 	}
 
 	client := &FaultRemediationClient{
-		clientset:    clientset,
-		kubeClient:   kubeClient,
-		restMapper:   mapper,
-		template:     tmpl,
-		templateData: templateData,
+		clientset:         clientset,
+		kubeClient:        kubeClient,
+		restMapper:        mapper,
+		remediationConfig: remediationConfig,
+		templates:         templates,
+		templateMountPath: templateMountPath,
 	}
 
 	if dryRun {
@@ -161,11 +180,36 @@ func NewK8sClient(kubeconfig string, dryRun bool, templateData TemplateData) (*F
 	client.statusChecker = crstatus.NewCRStatusChecker(
 		clientset,
 		mapper,
-		&templateData.MaintenanceResource,
+		remediationConfig.RemediationActions,
 		dryRun,
 	)
 
 	return client, kubeClient, nil
+}
+
+// loadAndParseTemplate loads and parses a template file
+func loadAndParseTemplate(mountPath, fileName, templateName string) (*template.Template, error) {
+	templatePath := filepath.Join(mountPath, fileName)
+
+	// Check if the template file exists
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("template file does not exist: %s", templatePath)
+	}
+
+	// Read and parse the template
+	templateContent, err := os.ReadFile(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading template file: %w", err)
+	}
+
+	tmpl := template.New(templateName)
+
+	tmpl, err = tmpl.Parse(string(templateContent))
+	if err != nil {
+		return nil, fmt.Errorf("error parsing template: %w", err)
+	}
+
+	return tmpl, nil
 }
 
 func (c *FaultRemediationClient) GetAnnotationManager() NodeAnnotationManagerInterface {
@@ -176,6 +220,12 @@ func (c *FaultRemediationClient) GetStatusChecker() *crstatus.CRStatusChecker {
 	return c.statusChecker
 }
 
+// GetConfig returns the remediation configuration for this client.
+// This includes the multi-template actions and their associated maintenance resources.
+func (c *FaultRemediationClient) GetConfig() *config.TomlConfig {
+	return &c.remediationConfig
+}
+
 func (c *FaultRemediationClient) CreateMaintenanceResource(
 	ctx context.Context,
 	healthEventData *HealthEventData,
@@ -183,17 +233,24 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
-	// Generate CR name
+	recommendedActionName := healthEvent.RecommendedAction.String()
+
+	maintenanceResource, selectedTemplate, actionKey, ok :=
+		c.selectRemediationActionAndTemplate(recommendedActionName, healthEvent.NodeName)
+	if !ok {
+		return false, ""
+	}
+
 	crName := fmt.Sprintf("maintenance-%s-%s", healthEvent.NodeName, healthEventID)
 
-	// Skip custom resource creation if dry-run is enabled
 	if len(c.dryRunMode) > 0 {
-		log.Printf("DRY-RUN: Skipping custom resource creation for node %s", healthEvent.NodeName)
+		slog.Info("DRY-RUN: Skipping custom resource creation",
+			"node", healthEvent.NodeName,
+			"template", actionKey)
+
 		return true, crName
 	}
 
-	// Get the node object to extract UID for owner reference
-	// This also verifies the node exists before creating CR
 	node, err := c.getNodeForOwnerReference(ctx, healthEvent.NodeName)
 	if err != nil {
 		slog.Warn("Failed to get node for owner reference, skipping CR creation",
@@ -203,30 +260,114 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		return false, ""
 	}
 
-	log.Printf("Creating RebootNode CR for node: %s (UID: %s)", healthEvent.NodeName, node.UID)
-	c.templateData.NodeName = healthEvent.NodeName
-	c.templateData.RecommendedAction = healthEvent.RecommendedAction
-	c.templateData.HealthEventID = healthEventID
+	slog.Info("Creating maintenance CR",
+		"node", healthEvent.NodeName,
+		"template", actionKey,
+		"nodeUID", node.UID)
 
-	// Execute the template
-	var buf bytes.Buffer
-	if err := c.template.Execute(&buf, c.templateData); err != nil {
-		slog.Error("Failed to execute maintenance template", "error", err)
+	templateData := TemplateData{
+		NodeName:              healthEvent.NodeName,
+		HealthEventID:         healthEventID,
+		RecommendedAction:     healthEvent.RecommendedAction,
+		RecommendedActionName: recommendedActionName,
+
+		ApiGroup:  maintenanceResource.ApiGroup,
+		Version:   maintenanceResource.Version,
+		Kind:      maintenanceResource.Kind,
+		Namespace: maintenanceResource.Namespace,
+	}
+
+	maintenance, yamlStr, err := renderMaintenanceFromTemplate(selectedTemplate, templateData)
+	if err != nil {
+		slog.Error("Failed to render maintenance template",
+			"template", actionKey,
+			"error", err)
+
 		return false, ""
 	}
 
-	log.Printf("Generated YAML: %s", buf.String())
+	slog.Debug("Generated YAML from template",
+		"template", actionKey,
+		"yaml", yamlStr)
 
-	// Convert YAML to unstructured
+	setNodeOwnerRef(maintenance, node)
+
+	gvk := maintenance.GroupVersionKind()
+
+	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		slog.Error("Failed to get REST mapping", "error", err, "gvk", gvk)
+
+		return false, ""
+	}
+
+	createdCR, err := c.createMaintenanceCR(ctx, mapping.Resource, maintenanceResource, maintenance)
+	if err != nil {
+		return c.handleCreateCRError(ctx, err, crName, healthEvent)
+	}
+
+	actualCRName := createdCR.GetName()
+	slog.Info("Created Maintenance CR successfully",
+		"crName", actualCRName,
+		"node", healthEvent.NodeName,
+		"template", actionKey)
+
+	c.maybeUpdateRemediationAnnotation(ctx, healthEvent.NodeName, maintenanceResource, actualCRName, recommendedActionName)
+
+	return true, actualCRName
+}
+
+func (c *FaultRemediationClient) selectRemediationActionAndTemplate(
+	recommendedActionName string,
+	nodeName string,
+) (config.MaintenanceResource, *template.Template, string, bool) {
+	resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]
+	if !exists {
+		slog.Error("No remediation configuration found for action",
+			"action", recommendedActionName,
+			"node", nodeName,
+			"availableActions", func() []string {
+				actions := make([]string, 0, len(c.remediationConfig.RemediationActions))
+				for action := range c.remediationConfig.RemediationActions {
+					actions = append(actions, action)
+				}
+
+				return actions
+			}())
+
+		return config.MaintenanceResource{}, nil, "", false
+	}
+
+	tmpl := c.templates[recommendedActionName]
+	if tmpl == nil {
+		slog.Error("No template available for remediation action",
+			"action", recommendedActionName,
+			"node", nodeName)
+
+		return config.MaintenanceResource{}, nil, "", false
+	}
+
+	return resource, tmpl, recommendedActionName, true
+}
+
+func renderMaintenanceFromTemplate(
+	tmpl *template.Template,
+	data TemplateData,
+) (*unstructured.Unstructured, string, error) {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, "", err
+	}
+
 	var obj map[string]any
 	if err := yaml.Unmarshal(buf.Bytes(), &obj); err != nil {
-		slog.Error("Failed to unmarshal YAML", "error", err)
-		return false, ""
+		return nil, "", err
 	}
 
-	maintenance := &unstructured.Unstructured{Object: obj}
+	return &unstructured.Unstructured{Object: obj}, buf.String(), nil
+}
 
-	// Owner reference enables automatic CR cleanup when Node is deleted
+func setNodeOwnerRef(maintenance *unstructured.Unstructured, node *corev1.Node) {
 	ownerRef := metav1.OwnerReference{
 		APIVersion:         "v1",
 		Kind:               "Node",
@@ -238,42 +379,46 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 	maintenance.SetOwnerReferences([]metav1.OwnerReference{ownerRef})
 
 	slog.Info("Added owner reference to CR for automatic garbage collection",
-		"node", healthEvent.NodeName,
+		"node", node.Name,
 		"nodeUID", node.UID,
-		"crName", crName)
+		"crName", maintenance.GetName())
+}
 
-	// Get GVK from the unstructured object
-	gvk := maintenance.GroupVersionKind()
-
-	// Convert GVK to GVR using RESTMapper
-	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		slog.Error("Failed to get REST mapping", "error", err, "gvk", gvk)
-		return false, ""
+func (c *FaultRemediationClient) createMaintenanceCR(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	mr config.MaintenanceResource,
+	maintenance *unstructured.Unstructured,
+) (*unstructured.Unstructured, error) {
+	if mr.Scope == "Namespaced" {
+		return c.clientset.Resource(gvr).
+			Namespace(mr.Namespace).
+			Create(ctx, maintenance, metav1.CreateOptions{})
 	}
 
-	// Create the maintenance resource at cluster level
-	createdCR, err := c.clientset.Resource(mapping.Resource).
+	return c.clientset.Resource(gvr).
 		Create(ctx, maintenance, metav1.CreateOptions{})
-	if err != nil {
-		return c.handleCreateCRError(ctx, err, crName, healthEvent)
+}
+
+func (c *FaultRemediationClient) maybeUpdateRemediationAnnotation(
+	ctx context.Context,
+	nodeName string,
+	mr config.MaintenanceResource,
+	actualCRName string,
+	recommendedActionName string,
+) {
+	group := mr.EquivalenceGroup
+	if group == "" || c.annotationManager == nil {
+		return
 	}
 
-	// Get the actual name of the created CR
-	actualCRName := createdCR.GetName()
-	log.Printf("Created Maintenance CR %s successfully for node %s", actualCRName, healthEvent.NodeName)
-
-	// Update node annotation with CR reference
-	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
-	if group != "" && c.annotationManager != nil {
-		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-			group, actualCRName); err != nil {
-			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
-				"error", err)
-		}
+	if err := c.annotationManager.UpdateRemediationState(
+		ctx, nodeName, group, actualCRName, recommendedActionName,
+	); err != nil {
+		slog.Warn("Failed to update node annotation",
+			"node", nodeName,
+			"error", err)
 	}
-
-	return true, actualCRName
 }
 
 // getNodeForOwnerReference retrieves the node for setting owner reference on the CR.
@@ -312,24 +457,39 @@ func (c *FaultRemediationClient) handleCreateCRError(
 ) (bool, string) {
 	// Check if the CR already exists
 	if apierrors.IsAlreadyExists(err) {
-		log.Printf("Maintenance CR %s already exists for node %s, treating as success",
-			crName, healthEvent.NodeName)
+		slog.Info("Maintenance CR already exists, treating as success",
+			"crName", crName,
+			"node", healthEvent.NodeName)
 
 		// Update node annotation with CR reference
-		group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
-		if group != "" && c.annotationManager != nil {
-			if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-				group, crName); err != nil {
-				slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
-					"error", err)
-			}
+		actionName := healthEvent.RecommendedAction.String()
+		actionConfig, exists := c.remediationConfig.RemediationActions[actionName]
+
+		if !exists {
+			return true, crName
+		}
+
+		group := actionConfig.EquivalenceGroup
+		if group == "" {
+			return true, crName
+		}
+
+		if c.annotationManager == nil {
+			return true, crName
+		}
+
+		if err := c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
+			group, crName, actionName); err != nil {
+			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
+				"error", err)
 		}
 
 		return true, crName
 	}
 
 	// For other errors, log and return failure (not fatal - allow retry)
-	log.Printf("Failed to create Maintenance CR: %v", err)
+	slog.Error("Failed to create Maintenance CR",
+		"error", err)
 
 	return false, ""
 }
@@ -338,14 +498,14 @@ func (c *FaultRemediationClient) handleCreateCRError(
 // nolint: cyclop // todo
 func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
 	if len(c.dryRunMode) > 0 {
-		log.Printf("DRY-RUN: Skipping log collector job for node %s", nodeName)
+		slog.Info("DRY-RUN: Skipping log collector job", "node", nodeName)
 		return nil
 	}
 
 	// Read Job manifest
 	manifestPath := os.Getenv(LogCollectorManifestPathEnv)
 	if manifestPath == "" {
-		manifestPath = filepath.Join(c.templateData.TemplateMountPath, "log-collector-job.yaml")
+		manifestPath = filepath.Join(c.templateMountPath, "log-collector-job.yaml")
 	}
 
 	content, err := os.ReadFile(manifestPath)
@@ -372,7 +532,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	}
 
 	// Wait for completion using typed client with proper watching
-	log.Printf("Waiting for log collector job %s to complete", created.Name)
+	slog.Info("Waiting for log collector job to complete", "job", created.Name)
 
 	// Use a context with timeout for the watch
 	timeout := 10 * time.Minute // Default timeout: 10 minutes
@@ -381,7 +541,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 		if parsed, err := time.ParseDuration(timeoutEnv); err == nil {
 			timeout = parsed
 		} else {
-			log.Printf("Warning: Invalid LOG_COLLECTOR_TIMEOUT value '%s', using default 10m: %v", timeoutEnv, err)
+			slog.Warn("Invalid LOG_COLLECTOR_TIMEOUT value, using default 10m", "value", timeoutEnv, "error", err)
 		}
 	}
 
@@ -427,7 +587,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 
 			completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete))
 			if completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
-				log.Printf("Log collector job %s completed successfully", created.Name)
+				slog.Info("Log collector job completed successfully", "job", created.Name)
 				// Use job's actual duration instead of custom tracking
 				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
 
@@ -441,7 +601,7 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 
 			failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed))
 			if failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
-				log.Printf("Log collector job %s failed", created.Name)
+				slog.Error("Log collector job failed", "job", created.Name)
 				// Use job's actual duration for failed jobs too
 				var duration float64
 				if job.Status.CompletionTime != nil {
@@ -470,7 +630,8 @@ func (c *FaultRemediationClient) RunLogCollectorJob(ctx context.Context, nodeNam
 	informerFactory.Start(stopCh)
 
 	// Wait for cache to sync
-	if !cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced) {
+	synced := cache.WaitForCacheSync(watchCtx.Done(), jobInformer.Informer().HasSynced)
+	if !synced {
 		close(stopCh) // Stop informer on sync failure
 		logCollectorErrors.WithLabelValues("cache_sync_error", nodeName).Inc()
 

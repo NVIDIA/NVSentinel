@@ -16,6 +16,7 @@ package client
 
 import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
@@ -115,6 +116,35 @@ func (b *PostgreSQLPipelineBuilder) BuildAllHealthEventInsertsPipeline() datasto
 	)
 }
 
+// BuildProcessableHealthEventInsertsPipeline creates a pipeline that watches for health event inserts
+// with processingStrategy=EXECUTE_REMEDIATION
+//
+// Backward Compatibility: This pipeline uses $or to match events where processingstrategy is either:
+//   - EXECUTE_REMEDIATION (new events from NVSentinel health monitors)
+//   - Missing/null (old events created before upgrade, custom monitors, or circuit breaker backlog)
+func (b *PostgreSQLPipelineBuilder) BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline {
+	return datastore.ToPipeline(
+		datastore.D(
+			datastore.E("$match", datastore.D(
+				datastore.E("operationType", datastore.D(
+					datastore.E("$in", datastore.A("insert")),
+				)),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field (backward compat)
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
+			)),
+		),
+	)
+}
+
 // BuildNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal, unhealthy event inserts
 // For PostgreSQL, we need to handle both INSERT and UPDATE operations because platform-connectors
 // may insert a record and then immediately update it, causing the trigger to fire UPDATE events.
@@ -125,6 +155,37 @@ func (b *PostgreSQLPipelineBuilder) BuildNonFatalUnhealthyInsertsPipeline() data
 				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
 				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
 				datastore.E("fullDocument.healthevent.ishealthy", false),
+			)),
+		),
+	)
+}
+
+// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal, unhealthy event inserts
+// with processingStrategy=EXECUTE_REMEDIATION. This is used by health-events-analyzer for pattern analysis.
+// For PostgreSQL, we need to handle both INSERT and UPDATE operations because platform-connectors
+// may insert a record and then immediately update it, causing the trigger to fire UPDATE events.
+//
+// Backward Compatibility: This pipeline uses $or to match events where processingstrategy is either:
+//   - EXECUTE_REMEDIATION (new events from NVSentinel health monitors)
+//   - Missing/null (old events created before upgrade, custom monitors)
+func (b *PostgreSQLPipelineBuilder) BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline {
+	return datastore.ToPipeline(
+		datastore.D(
+			datastore.E("$match", datastore.D(
+				datastore.E("operationType", datastore.D(datastore.E("$in", datastore.A("insert", "update")))),
+				datastore.E("fullDocument.healthevent.agent", datastore.D(datastore.E("$ne", "health-events-analyzer"))),
+				datastore.E("fullDocument.healthevent.ishealthy", false),
+				// Exclude STORE_ONLY events, but include EXECUTE_REMEDIATION and missing field (backward compat)
+				datastore.E("$or", datastore.A(
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+					)),
+					datastore.D(datastore.E(
+						"fullDocument.healthevent.processingstrategy",
+						datastore.D(datastore.E("$exists", false)),
+					)),
+				)),
 			)),
 		),
 	)

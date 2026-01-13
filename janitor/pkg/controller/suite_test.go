@@ -42,6 +42,10 @@ var (
 	testEnv   *envtest.Environment
 	cfg       *rest.Config
 	k8sClient client.Client
+
+	// mockCSP is the shared mock CSP server helper for all tests.
+	// It is created once in BeforeSuite and can be configured per-test.
+	mockCSP *MockCSPTestHelper
 )
 
 func TestControllers(t *testing.T) {
@@ -83,11 +87,21 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	// Start the mock CSP server once for all tests
+	By("starting mock CSP gRPC server")
+	mockCSP = NewMockCSPTestHelper()
 })
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	cancel()
+
+	// Stop the mock CSP server
+	if mockCSP != nil {
+		mockCSP.Stop()
+	}
+
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })

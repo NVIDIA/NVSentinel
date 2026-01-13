@@ -94,7 +94,7 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 		helpers.AssertPodsNeverDeleted(ctx, t, client, "kube-system", kubeSystemPods)
 
 		t.Log("Phase 1: Finalizer pod stuck in Terminating")
-		err = helpers.DeletePod(ctx, client, "immediate-test", finalizerPod)
+		err = helpers.DeletePod(ctx, t, client, "immediate-test", finalizerPod, false)
 		require.NoError(t, err)
 
 		require.Eventually(t, func() bool {

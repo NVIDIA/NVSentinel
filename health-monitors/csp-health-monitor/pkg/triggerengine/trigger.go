@@ -359,6 +359,9 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 		Metadata:           event.Metadata, // Pass along metadata
 		NodeName:           event.NodeName, // K8s node name
 		GeneratedTimestamp: timestamppb.New(time.Now()),
+		// TODO: Remove hardcoded processing strategy and make it configurable via the config file.
+		// PR: https://github.com/NVIDIA/NVSentinel/pull/641
+		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	}
 
 	return healthEvent, nil

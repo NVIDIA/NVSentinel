@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,12 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
-	"github.com/nvidia/nvsentinel/janitor/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
-	"github.com/nvidia/nvsentinel/janitor/pkg/model"
 )
 
 const (
@@ -50,7 +52,8 @@ type TerminateNodeReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	Config    *config.TerminateNodeControllerConfig
-	CSPClient model.CSPClient
+	CSPClient cspv1alpha1.CSPProviderServiceClient
+	grpcConn  *grpc.ClientConn
 }
 
 // updateTerminateNodeStatus is a helper function that handles status updates with proper error handling.
@@ -324,11 +327,9 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 				metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 
-				// Add timeout to CSP operation
-				cspCtx, cancel := context.WithTimeout(ctx, CSPOperationTimeout)
-				defer cancel()
-
-				_, terminateErr := r.CSPClient.SendTerminateSignal(cspCtx, node)
+				_, terminateErr := r.CSPClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
+					NodeName: node.Name,
+				})
 
 				// Check for timeout
 				if errors.Is(terminateErr, context.DeadlineExceeded) {
@@ -411,15 +412,19 @@ func (r *TerminateNodeReconciler) getTerminateTimeout() time.Duration {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Use background context for client initialization during controller setup
-	// This is synchronous and happens before the controller starts processing events
-	ctx := context.Background()
-
-	var err error
-
-	r.CSPClient, err = csp.New(ctx)
+	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to create CSP client: %w", err)
+	}
+
+	r.grpcConn = conn
+	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return r.grpcConn.Close()
+	})); err != nil {
+		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
 	}
 
 	// Note: We use RequeueAfter in the reconcile loop rather than the controller's
