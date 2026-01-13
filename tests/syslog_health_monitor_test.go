@@ -83,6 +83,57 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		return ctx
 	})
 
+	// We require that the "Inject XID error requiring GPU reset" and "Inject GPU reset event" tests run first since
+	// these 2 tests will ensure that the SysLogsXIDError is added in response to an XID error and cleared in response
+	// to a GPU reset event. This ensures the remaining tests run against the same syslog-health-monitor pod and node,
+	// with no unhealthy node status conditions, without needing to recycle the pod during the test execution.
+	feature.Assess("Inject XID error requiring GPU reset", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		xidMessages := []string{
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+		}
+		expectedSequencePatterns := []string{
+			`ErrorCode:119 PCI:0002:00:00 GPU_UUID:GPU-22222222-2222-2222-2222-222222222222 kernel:.*?NVRM: Xid \(PCI:0002:00:00\): 119.*?Recommended Action=COMPONENT_RESET`,
+		}
+
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, xidMessages)
+
+		t.Log("Verifying node condition contains XID error with GPU UUID using regex pattern")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy", expectedSequencePatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain XID error with GPU UUID")
+
+		return ctx
+	})
+
+	feature.Assess("Inject GPU reset event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+		gpuResetMessages := []string{
+			"kernel: [16450076.435595] GPU reset executed: GPU-22222222-2222-2222-2222-222222222222",
+		}
+
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, gpuResetMessages)
+
+		t.Logf("Waiting for SysLogsXIDError condition to be cleared from node %s", nodeName)
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsHealthy")
+			if err != nil {
+				return false
+			}
+			return condition != nil && condition.Status == v1.ConditionFalse
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
+
+		return ctx
+	})
+
 	feature.Assess("Inject burst XID errors and verify aggregation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
@@ -201,11 +252,14 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 		}
 		nodeName := nodeNameVal.(string)
 
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
 		podNameVal := ctx.Value(keySyslogPodName)
 		if podNameVal != nil {
 			podName := podNameVal.(string)
 			t.Logf("Restarting syslog-health-monitor pod %s to clear conditions", podName)
-			err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, podName)
+			err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, podName, true)
 			if err != nil {
 				t.Logf("Warning: failed to delete pod: %v", err)
 			} else {
@@ -220,9 +274,6 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "SysLogsXIDError condition should be cleared")
 			}
 		}
-
-		t.Logf("Cleaning up metadata from node %s", nodeName)
-		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
@@ -452,11 +503,14 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 		}
 		nodeName := nodeNameVal.(string)
 
+		t.Logf("Cleaning up metadata from node %s", nodeName)
+		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
+
 		podNameVal := ctx.Value(keySyslogPodName)
 		if podNameVal != nil {
 			podName := podNameVal.(string)
 			t.Logf("Restarting syslog-health-monitor pod %s", podName)
-			err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, podName)
+			err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, podName, true)
 			if err != nil {
 				t.Logf("Warning: failed to delete pod: %v", err)
 			} else {
@@ -470,9 +524,6 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 				}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Condition should be cleared")
 			}
 		}
-
-		t.Logf("Cleaning up metadata from node %s", nodeName)
-		helpers.DeleteMetadata(t, ctx, client, helpers.NVSentinelNamespace, nodeName)
 
 		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)

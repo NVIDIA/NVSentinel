@@ -63,7 +63,7 @@ func TestGPUHealthMonitorMultipleErrors(t *testing.T) {
 		helpers.InjectMetadata(t, ctx, client, helpers.NVSentinelNamespace, testNodeName, metadata)
 
 		t.Logf("Restarting GPU health monitor pod %s to load metadata", gpuHealthMonitorPod.Name)
-		err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name)
+		err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, gpuHealthMonitorPod.Name, false)
 		require.NoError(t, err, "failed to restart GPU health monitor pod")
 		helpers.WaitForPodsDeleted(ctx, t, client, helpers.NVSentinelNamespace, []string{gpuHealthMonitorPod.Name})
 
@@ -300,7 +300,7 @@ func TestGPUHealthMonitorDCGMConnectionError(t *testing.T) {
 		require.NoError(t, err, "failed to patch DCGM service port")
 
 		t.Logf("Restarting GPU health monitor pod %s to trigger reconnection", gpuHealthMonitorPodName)
-		err = helpers.DeletePod(ctx, client, helpers.NVSentinelNamespace, gpuHealthMonitorPodName)
+		err = helpers.DeletePod(ctx, t, client, helpers.NVSentinelNamespace, gpuHealthMonitorPodName, false)
 		require.NoError(t, err, "failed to restart GPU health monitor pod")
 
 		t.Logf("Waiting for GpuDcgmConnectivityFailure condition on node %s", nodeName)

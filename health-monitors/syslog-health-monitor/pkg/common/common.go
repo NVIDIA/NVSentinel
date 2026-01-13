@@ -66,7 +66,7 @@ var embeddedXidCatalog []byte
 
 // MapActionStringToProto maps action strings to protobuf RecommendedAction values using generated protobuf map
 func MapActionStringToProto(s string) pb.RecommendedAction {
-	s = strings.TrimSpace(s)
+	s = strings.ToUpper(strings.TrimSpace(s))
 
 	if value, exists := pb.RecommendedAction_value[s]; exists {
 		return pb.RecommendedAction(value)

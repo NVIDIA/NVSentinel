@@ -22,7 +22,8 @@ import (
 )
 
 var (
-	reNvrmMap = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:.]+): (GPU-[0-9a-fA-F-]+)`)
+	reNvrmMap   = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:.]+): (GPU-[0-9a-fA-F-]+)`)
+	gpuResetMap = regexp.MustCompile(`GPU reset executed: (GPU-[0-9a-fA-F-]+)`)
 )
 
 type XIDHandler struct {

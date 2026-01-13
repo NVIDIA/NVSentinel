@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Syslog Health Monitor module watches system logs for GPU errors (XID/SXID) and GPU-fallen-off events by reading journald logs. This document covers all Helm configuration options for system administrators.
+The Syslog Health Monitor module watches system logs for GPU errors (XID/SXID), GPU-fallen-off, and GPU reset events by reading journald logs. This document covers all Helm configuration options for system administrators.
 
 ## Configuration Reference
 
@@ -55,7 +55,7 @@ syslog-health-monitor:
 ### Check Types
 
 #### SysLogsXIDError
-Monitors for XID (GPU error) messages in system logs. XIDs are NVIDIA GPU error codes that indicate hardware or software issues.
+Monitors for XID (GPU error) and GPU reset messages in system logs. XIDs are NVIDIA GPU error codes that indicate hardware or software issues.
 
 #### SysLogsSXIDError
 Monitors for SXID messages specific to NVSwitch errors in multi-GPU configurations.
