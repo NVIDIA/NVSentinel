@@ -210,8 +210,8 @@ mongodb-store:
 
     image:
       registry: "docker.io"
-      repository: "bitnamilegacy/mongodb"
-      tag: "8.0.3-debian-12-r1"
+      repository: "bitnami/mongodb"
+      tag: "latest"  # Required for ARM64/Apple Silicon support
       pullPolicy: "IfNotPresent"
 
     tls:
