@@ -142,8 +142,8 @@ install_nvsentinel() {
     local MONGODB_REPO="bitnamilegacy/mongodb"
     local MONGODB_TAG="8.0.3-debian-12-r1"
     if [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-        MONGODB_REPO="bitnami/mongodb"
-        MONGODB_TAG="latest"
+        MONGODB_REPO="dlavrenuek/bitnami-mongodb-arm"
+        MONGODB_TAG="8.0.4"
     fi
 
     # Create a minimal values file for this demo
