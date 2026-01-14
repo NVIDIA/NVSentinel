@@ -38,22 +38,25 @@ type DatabaseStoreConnector struct {
 	// resourceSinkClients are client for pushing data to the resource count sink
 	ringBuffer *ringbuffer.RingBuffer
 	nodeName   string
+	maxRetries int
 }
 
 func new(
 	databaseClient client.DatabaseClient,
 	ringBuffer *ringbuffer.RingBuffer,
 	nodeName string,
+	maxRetries int,
 ) *DatabaseStoreConnector {
 	return &DatabaseStoreConnector{
 		databaseClient: databaseClient,
 		ringBuffer:     ringBuffer,
 		nodeName:       nodeName,
+		maxRetries:     maxRetries,
 	}
 }
 
 func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	clientCertMountPath string) (*DatabaseStoreConnector, error) {
+	clientCertMountPath string, maxRetries int) (*DatabaseStoreConnector, error) {
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		return nil, fmt.Errorf("NODE_NAME is not set")
@@ -71,9 +74,9 @@ func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffe
 		return nil, fmt.Errorf("failed to create database client: %w", err)
 	}
 
-	slog.Info("Successfully initialized database store connector")
+	slog.Info("Successfully initialized database store connector", "maxRetries", maxRetries)
 
-	return new(databaseClient, ringbuffer, nodeName), nil
+	return new(databaseClient, ringbuffer, nodeName, maxRetries), nil
 }
 
 func createClientFactory(databaseClientCertMountPath string) (*factory.ClientFactory, error) {
@@ -105,8 +108,25 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 
 			err := r.insertHealthEvents(ctx, healthEvents)
 			if err != nil {
-				slog.Error("Error inserting health events", "error", err)
-				r.ringBuffer.HealthMetricEleProcessingFailed(healthEvents)
+				retryCount := r.ringBuffer.NumRequeues(healthEvents)
+				if retryCount < r.maxRetries {
+					slog.Warn("Error inserting health events, will retry with exponential backoff",
+						"error", err,
+						"retryCount", retryCount,
+						"maxRetries", r.maxRetries,
+						"eventCount", len(healthEvents.GetEvents()))
+
+					r.ringBuffer.AddRateLimited(healthEvents)
+				} else {
+					slog.Error("Max retries exceeded, dropping health events permanently",
+						"error", err,
+						"retryCount", retryCount,
+						"maxRetries", r.maxRetries,
+						"eventCount", len(healthEvents.GetEvents()),
+						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
+						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
+					r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+				}
 			} else {
 				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
 			}

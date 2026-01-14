@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"tests/helpers"
+
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +31,6 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-	"tests/helpers"
 )
 
 func TestEventExporterChangeStream(t *testing.T) {
@@ -81,7 +82,7 @@ func TestEventExporterChangeStream(t *testing.T) {
 
 		t.Log("Validating received CloudEvent")
 		require.NotNil(t, receivedEvent)
-		helpers.ValidateCloudEvent(t, receivedEvent, nodeName, testMessage, "GpuXidError", "79")
+		helpers.ValidateCloudEvent(t, receivedEvent, nodeName, testMessage, "GpuXidError", "79", "EXECUTE_REMEDIATION")
 
 		return ctx
 	})

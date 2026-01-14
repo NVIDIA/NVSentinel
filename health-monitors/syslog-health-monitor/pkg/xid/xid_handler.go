@@ -35,7 +35,9 @@ const (
 )
 
 func NewXIDHandler(nodeName, defaultAgentName,
-	defaultComponentClass, checkName, xidAnalyserEndpoint, metadataPath string) (*XIDHandler, error) {
+	defaultComponentClass, checkName, xidAnalyserEndpoint, metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) (*XIDHandler, error) {
 	config := parser.ParserConfig{
 		NodeName:            nodeName,
 		XidAnalyserEndpoint: xidAnalyserEndpoint,
@@ -52,6 +54,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
+		processingStrategy:    processingStrategy,
 		pciToGPUUUID:          make(map[string]string),
 		parser:                xidParser,
 		metadataReader:        metadata.NewReader(metadataPath),
@@ -243,6 +246,7 @@ func (xidHandler *XIDHandler) createHealthEventFromResponse(
 		RecommendedAction:  recommendedAction,
 		ErrorCode:          []string{xidResp.Result.DecodedXIDStr},
 		Metadata:           metadata,
+		ProcessingStrategy: xidHandler.processingStrategy,
 	}
 
 	return &pb.HealthEvents{

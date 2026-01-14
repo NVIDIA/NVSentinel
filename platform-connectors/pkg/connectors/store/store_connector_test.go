@@ -295,10 +295,117 @@ func TestInitializeDatabaseStoreConnector(t *testing.T) {
 		}()
 
 		ringBuffer := ringbuffer.NewRingBuffer("test", context.Background())
-		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "")
+		connector, err := InitializeDatabaseStoreConnector(context.Background(), ringBuffer, "", 3)
 
 		require.Error(t, err)
 		require.Nil(t, connector)
 		require.Contains(t, err.Error(), "NODE_NAME is not set")
 	})
+}
+
+// TestMessageRetriedOnMongoDBFailure verifies that
+// messages are retried with exponential backoff when MongoDB write fails.
+func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testRetryBehavior", ctx,
+		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
+	nodeName := "testNode"
+	mockClient := &mockDatabaseClient{}
+
+	// First 2 calls fail, 3rd call succeeds
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).
+		Return(nil, errors.New("MongoDB temporarily unavailable")).Times(2)
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).
+		Return(&client.InsertManyResult{InsertedIDs: []interface{}{"id1"}}, nil).Once()
+
+	connector := &DatabaseStoreConnector{
+		databaseClient: mockClient,
+		ringBuffer:     ringBuffer,
+		nodeName:       nodeName,
+		maxRetries:     3,
+	}
+
+	healthEvent := &protos.HealthEvent{
+		NodeName:           "gpu-node-1",
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		CheckName:          "GpuXidError",
+		ErrorCode:          []string{"79"}, // GPU fell off the bus
+		IsFatal:            true,
+		IsHealthy:          false,
+	}
+
+	healthEvents := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{healthEvent},
+	}
+
+	ringBuffer.Enqueue(healthEvents)
+	require.Equal(t, 1, ringBuffer.CurrentLength(), "Event should be in queue")
+	go connector.FetchAndProcessHealthMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		return ringBuffer.CurrentLength() == 0
+	}, 500*time.Millisecond, 10*time.Millisecond, "Queue should be empty after successful retry")
+
+	// Give a bit more time for all async operations to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify correct number of retry attempts
+	mockClient.AssertNumberOfCalls(t, "InsertMany", 3)
+	cancel()
+}
+
+// TestMessageDroppedAfterMaxRetries verifies that messages are eventually dropped
+// after exceeding the maximum retry count to prevent unbounded memory growth.
+func TestMessageDroppedAfterMaxRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ringBuffer := ringbuffer.NewRingBuffer("testMaxRetries", ctx,
+		ringbuffer.WithRetryConfig(10*time.Millisecond, 50*time.Millisecond))
+	nodeName := "testNode"
+	mockClient := &mockDatabaseClient{}
+
+	// Always fail to simulate persistent MongoDB outage
+	mockClient.On("InsertMany", mock.Anything, mock.Anything).Return(
+		(*client.InsertManyResult)(nil),
+		errors.New("MongoDB permanently down"),
+	)
+
+	connector := &DatabaseStoreConnector{
+		databaseClient: mockClient,
+		ringBuffer:     ringBuffer,
+		nodeName:       nodeName,
+		maxRetries:     3,
+	}
+
+	healthEvent := &protos.HealthEvent{
+		NodeName:           "gpu-node-1",
+		GeneratedTimestamp: timestamppb.New(time.Now()),
+		CheckName:          "GpuXidError",
+		ErrorCode:          []string{"79"},
+		IsFatal:            true,
+		IsHealthy:          false,
+	}
+
+	healthEvents := &protos.HealthEvents{
+		Events: []*protos.HealthEvent{healthEvent},
+	}
+
+	ringBuffer.Enqueue(healthEvents)
+	require.Equal(t, 1, ringBuffer.CurrentLength())
+
+	go connector.FetchAndProcessHealthMetric(ctx)
+
+	require.Eventually(t, func() bool {
+		return ringBuffer.CurrentLength() == 0
+	}, 500*time.Millisecond, 10*time.Millisecond, "Event should be dropped after max retries")
+
+	// Give enough time for the final retry attempt to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify we attempted initial call plus 3 retries (4 total)
+	mockClient.AssertNumberOfCalls(t, "InsertMany", 4)
+	cancel()
 }

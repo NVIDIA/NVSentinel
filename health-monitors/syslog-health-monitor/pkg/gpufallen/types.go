@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 var (
@@ -47,6 +49,7 @@ type GPUFallenHandler struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
+	processingStrategy    pb.ProcessingStrategy
 	mu                    sync.RWMutex
 	recentXIDs            map[string]xidRecord // pciAddr -> XID record
 	xidWindow             time.Duration        // how long to remember XID errors

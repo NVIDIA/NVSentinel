@@ -169,6 +169,7 @@ func TestProcessLine(t *testing.T) {
 				"test-agent",
 				"GPU",
 				"test-check",
+				pb.ProcessingStrategy_STORE_ONLY,
 			)
 			require.NoError(t, err)
 			defer handler.Close()
@@ -181,6 +182,7 @@ func TestProcessLine(t *testing.T) {
 				if tc.validateEvent != nil {
 					tc.validateEvent(t, events, tc.message)
 				}
+				assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, events.Events[0].ProcessingStrategy)
 			} else {
 				assert.Nil(t, events, "Expected no event to be generated")
 			}
@@ -196,6 +198,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler.Close() // Cleanup goroutine to prevent leaks
@@ -222,6 +225,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler2.Close()
@@ -234,6 +238,7 @@ func TestXIDTracking(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, events, "Should generate event when no recent XID")
 		require.Len(t, events.Events, 1)
+		assert.Equal(t, handler2.processingStrategy, events.Events[0].ProcessingStrategy)
 	})
 
 	t.Run("XID expires after time window", func(t *testing.T) {
@@ -243,6 +248,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler3.Close()
@@ -270,6 +276,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler4.Close()
@@ -298,6 +305,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler5.Close()
@@ -315,6 +323,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler6.Close()
@@ -340,6 +349,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler7.Close()
@@ -379,6 +389,7 @@ func TestXIDTracking(t *testing.T) {
 			"test-agent",
 			"GPU",
 			"test-check",
+			pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 		)
 		require.NoError(t, err)
 		defer handler8.Close()

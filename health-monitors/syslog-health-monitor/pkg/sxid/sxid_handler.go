@@ -28,12 +28,15 @@ import (
 )
 
 func NewSXIDHandler(nodeName, defaultAgentName,
-	defaultComponentClass, checkName, metadataPath string) (*SXIDHandler, error) {
+	defaultComponentClass, checkName, metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) (*SXIDHandler, error) {
 	return &SXIDHandler{
 		nodeName:              nodeName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
+		processingStrategy:    processingStrategy,
 		metadataReader:        metadata.NewReader(metadataPath),
 	}, nil
 }
@@ -103,6 +106,7 @@ func (sxidHandler *SXIDHandler) ProcessLine(message string) (*pb.HealthEvents, e
 		RecommendedAction:  errRes,
 		ErrorCode:          []string{fmt.Sprint(sxidErrorEvent.ErrorNum)},
 		Metadata:           metadata,
+		ProcessingStrategy: sxidHandler.processingStrategy,
 	}
 
 	return &pb.HealthEvents{

@@ -1604,10 +1604,12 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 			}
 
 			if tc.expectNodeConditions {
+				require.NotEmpty(t, nvsentinelConditions,
+					"Expected at least one NVSentinel node condition, but got none")
 				assert.Equal(t, tc.expectedConditionType, string(nvsentinelConditions[0].Type),
 					"Expected condition type %s, got %s", tc.expectedConditionType, nvsentinelConditions[0].Type)
 			} else {
-				assert.Equal(t, 0, len(nvsentinelConditions),
+				assert.Empty(t, nvsentinelConditions,
 					"Expected no NVSentinel node conditions for STORE_ONLY events, got %d", len(nvsentinelConditions))
 			}
 
@@ -1618,10 +1620,12 @@ func TestProcessHealthEvents_StoreOnlyStrategy(t *testing.T) {
 			require.NoError(t, err, "Failed to list events")
 
 			if tc.expectKubernetesEvents {
+				require.NotEmpty(t, events.Items,
+					"Expected at least one Kubernetes event, but got none")
 				assert.Equal(t, tc.expectedEventType, events.Items[0].Type,
 					"Expected event type %s, got %s", tc.expectedEventType, events.Items[0].Type)
 			} else {
-				assert.Equal(t, 0, len(events.Items),
+				assert.Empty(t, events.Items,
 					"Expected no Kubernetes events for STORE_ONLY events, got %d", len(events.Items))
 			}
 

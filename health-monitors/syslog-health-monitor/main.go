@@ -67,6 +67,8 @@ var (
 		"Indicates if this monitor is running in Kata Containers mode (set by DaemonSet variant).")
 	metadataPath = flag.String("metadata-path", "/var/lib/nvsentinel/gpu_metadata.json",
 		"Path to GPU metadata JSON file.")
+	processingStrategyFlag = flag.String("processing-strategy", "EXECUTE_REMEDIATION",
+		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
 )
 
 var checks []fd.CheckDefinition
@@ -159,6 +161,15 @@ func run() error {
 
 	slog.Info("Creating syslog monitor", "checksCount", len(checks))
 
+	value, ok := pb.ProcessingStrategy_value[*processingStrategyFlag]
+	if !ok {
+		return fmt.Errorf("unexpected processingStrategy value: %q", *processingStrategyFlag)
+	}
+
+	slog.Info("Event handling strategy configured", "processingStrategy", *processingStrategyFlag)
+
+	processingStrategy := pb.ProcessingStrategy(value)
+
 	fdHealthMonitor, err := fd.NewSyslogMonitor(
 		nodeName,
 		checks,
@@ -169,6 +180,7 @@ func run() error {
 		*stateFileFlag,
 		*xidAnalyserEndpoint,
 		*metadataPath,
+		processingStrategy,
 	)
 	if err != nil {
 		return fmt.Errorf("error creating syslog health monitor: %w", err)
