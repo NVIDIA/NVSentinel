@@ -16,6 +16,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,10 +24,8 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -78,24 +77,25 @@ var _ = Describe("RebootNode Controller", func() {
 	var (
 		ctx            context.Context
 		reconciler     *RebootNodeReconciler
-		k8sClient      client.Client
-		scheme         *runtime.Scheme
 		testNode       *corev1.Node
 		testRebootNode *janitordgxcnvidiacomv1alpha1.RebootNode
+		nodeName       string
+		crName         string
+		uniqueSuffix   string
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 
-		// Create scheme and add types
-		scheme = runtime.NewScheme()
-		Expect(corev1.AddToScheme(scheme)).To(Succeed())
-		Expect(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme)).To(Succeed())
+		// Generate unique suffix using GinkgoRandomSeed to avoid conflicts
+		uniqueSuffix = fmt.Sprintf("%d", time.Now().UnixNano())
+		nodeName = "test-node-" + uniqueSuffix
+		crName = "test-reboot-node-" + uniqueSuffix
 
 		// Create test node
 		testNode = &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-node",
+				Name: nodeName,
 			},
 			Status: corev1.NodeStatus{
 				Conditions: []corev1.NodeCondition{
@@ -106,29 +106,24 @@ var _ = Describe("RebootNode Controller", func() {
 				},
 			},
 		}
+		Expect(k8sClient.Create(ctx, testNode)).Should(Succeed())
 
 		// Create test RebootNode
 		testRebootNode = &janitordgxcnvidiacomv1alpha1.RebootNode{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-rebootnode",
+				Name: crName,
 			},
 			Spec: janitordgxcnvidiacomv1alpha1.RebootNodeSpec{
-				NodeName: "test-node",
+				NodeName: nodeName,
 				Force:    false,
 			},
 		}
-
-		// Create fake client with test objects
-		k8sClient = fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(testNode, testRebootNode).
-			WithStatusSubresource(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
-			Build()
+		Expect(k8sClient.Create(ctx, testRebootNode)).Should(Succeed())
 
 		// Create reconciler using shared mock CSP client
 		reconciler = &RebootNodeReconciler{
 			Client: k8sClient,
-			Scheme: scheme,
+			Scheme: scheme.Scheme,
 			Config: &config.RebootNodeControllerConfig{
 				Timeout: 30 * time.Minute,
 			},

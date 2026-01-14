@@ -94,7 +94,9 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if r.Config.ManualMode {
 			cspReady = true
 		} else {
-			rsp, nodeReadyErr := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
+			var rsp *cspv1alpha1.IsNodeReadyResponse
+
+			rsp, nodeReadyErr = r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
 				NodeName:  node.Name,
 				RequestId: rebootNode.GetCSPReqRef(),
 			})
@@ -298,10 +300,6 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
 	}
 
-	// Note: We use RequeueAfter in the reconcile loop rather than the controller's
-	// rate limiter because we need per-resource (per-node) backoff based on each
-	// node's individual failure count, not per-controller rate limiting.
-	// This allows nodes with consecutive failures to back off independently.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).
 		Named("rebootnode").
