@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"time"
 
+	"log/slog"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
@@ -29,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -55,8 +56,6 @@ type RebootNodeReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	// Get the RebootNode object
 	var rebootNode janitordgxcnvidiacomv1alpha1.RebootNode
 	if err := r.Get(ctx, req.NamespacedName, &rebootNode); err != nil {
@@ -64,7 +63,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if rebootNode.Status.CompletionTime != nil {
-		logger.V(1).Info("RebootNode has completion time set, skipping reconcile", "node", rebootNode.Spec.NodeName)
+		slog.Debug("RebootNode has completion time set, skipping reconcile", "node", rebootNode.Spec.NodeName)
 		return ctrl.Result{}, nil
 	}
 
@@ -118,7 +117,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// nolint:gocritic // the if/else chain is fine
 		if nodeReadyErr != nil {
-			logger.Error(nodeReadyErr, fmt.Sprintf("Node %s ready status check failed", node.Name))
+			slog.Error("Node ready status check failed", "node", node.Name, "error", nodeReadyErr)
 
 			rebootNode.SetCompletionTime()
 			rebootNode.SetCondition(metav1.Condition{
@@ -133,7 +132,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 			result = ctrl.Result{} // Don't requeue on failure
 		} else if cspReady && kubernetesReady {
-			logger.V(0).Info(fmt.Sprintf("Node reached ready state post-reboot: %s", node.Name))
+			slog.Info("Node reached ready state post-reboot", "node", node.Name)
 
 			// Update status
 			rebootNode.SetCompletionTime()
@@ -151,7 +150,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(rebootNode.Status.StartTime.Time) > r.getRebootTimeout() {
-			logger.Error(nil, fmt.Sprintf("Node %s reboot timed out after %s", node.Name, r.getRebootTimeout()))
+			slog.Error("Node reboot timed out", "node", node.Name, "timeout", r.getRebootTimeout())
 
 			// Update status
 			rebootNode.SetCompletionTime()
@@ -183,7 +182,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		if signalAlreadySent {
 			// Signal was already sent, just continue monitoring
-			logger.V(1).Info(fmt.Sprintf("Reboot signal already sent for node %s, continuing monitoring", node.Name))
+			slog.Debug("Reboot signal already sent for node, continuing monitoring", "node", node.Name)
 
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
@@ -209,13 +208,13 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusStarted, node.Name)
 				}
 
-				logger.V(0).Info(fmt.Sprintf("Manual mode enabled, janitor will not send reboot signal for node %s", node.Name))
+				slog.Info("Manual mode enabled, janitor will not send reboot signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
 			} else {
 				// Start the reboot process
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusStarted, node.Name)
-				logger.V(0).Info(fmt.Sprintf("Sending reboot signal to node %s", node.Name))
+				slog.Info("Sending reboot signal to node", "node", node.Name)
 				rsp, rebootErr := r.CSPClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
 					NodeName: node.Name,
 				})
@@ -260,11 +259,11 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
 		if err := r.Get(ctx, req.NamespacedName, &freshRebootNode); err != nil {
 			if apierrors.IsNotFound(err) {
-				logger.V(0).Info("Post-reconciliation status update:", rebootNode.Name, "not found, object assumed deleted")
+				slog.Info("Post-reconciliation status update: not found, object assumed deleted", "node", rebootNode.Name)
 				return ctrl.Result{}, nil
 			}
 
-			logger.Error(err, "failed to refresh RebootNode before status update")
+			slog.Error("failed to refresh RebootNode before status update", "error", err)
 
 			return ctrl.Result{}, err
 		}
@@ -273,11 +272,11 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		freshRebootNode.Status = rebootNode.Status
 
 		if err := r.Status().Update(ctx, &freshRebootNode); err != nil {
-			logger.Error(err, "failed to update RebootNode status")
+			slog.Error("failed to update RebootNode status", "error", err)
 			return ctrl.Result{}, err
 		}
 
-		logger.V(0).Info("RebootNode status updated", "node", rebootNode.Spec.NodeName)
+		slog.Info("RebootNode status updated", "node", rebootNode.Spec.NodeName)
 	}
 
 	return result, nil

@@ -22,6 +22,8 @@ import (
 	"reflect"
 	"time"
 
+	"log/slog"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
@@ -61,15 +62,13 @@ type TerminateNodeReconciler struct {
 // 5. If signal has not been sent, send it to the CSP instance.
 // 6. Write status updates to the TerminateNode CR.
 func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var terminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 	if err := r.Get(ctx, req.NamespacedName, &terminateNode); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if terminateNode.Status.CompletionTime != nil {
-		logger.V(1).Info("TerminateNode has completion time set, skipping reconcile", "node", terminateNode.Spec.NodeName)
+		slog.Debug("TerminateNode has completion time set, skipping reconcile", "node", terminateNode.Spec.NodeName)
 		return ctrl.Result{}, nil
 	}
 
@@ -113,7 +112,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if isNodeNotReady(node) {
-			logger.V(0).Info("Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
+			slog.Info("Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
 
 			if err := r.Delete(ctx, node); err != nil {
 				return ctrl.Result{}, err
@@ -135,7 +134,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 			result = ctrl.Result{} // Don't requeue on success
 		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
-			logger.Error(nil, fmt.Sprintf("Node %s terminate timed out after %s", node.Name, r.getTimeout()))
+			slog.Error("Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
 
 			// Update status
 			terminateNode.SetCompletionTime()
@@ -173,7 +172,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		if signalAlreadySent {
 			// Signal was already sent, just continue monitoring
-			logger.V(1).Info(fmt.Sprintf("Terminate signal already sent for node %s, continuing monitoring", node.Name))
+			slog.Debug("Terminate signal already sent for node, continuing monitoring", "node", node.Name)
 
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
@@ -199,11 +198,11 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				}
 
-				logger.V(0).Info(fmt.Sprintf("Manual mode enabled, janitor will not send terminate signal for node %s", node.Name))
+				slog.Info("Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
 			} else {
-				logger.V(0).Info("Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
+				slog.Info("Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				_, terminateErr := r.CSPClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
@@ -249,12 +248,12 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		var freshTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 		if err := r.Get(ctx, req.NamespacedName, &freshTerminateNode); err != nil {
 			if apierrors.IsNotFound(err) {
-				logger.V(1).Info("Post-reconciliation status update:", terminateNode.Name, "not found, object assumed deleted")
+				slog.Debug("Post-reconciliation status update: not found, object assumed deleted", "node", terminateNode.Name)
 
 				return ctrl.Result{}, nil
 			}
 
-			logger.Error(err, "failed to refresh TerminateNode before status update")
+			slog.Error("failed to refresh TerminateNode before status update", "error", err)
 
 			return ctrl.Result{}, err
 		}
@@ -263,11 +262,11 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		freshTerminateNode.Status = terminateNode.Status
 
 		if err := r.Status().Update(ctx, &freshTerminateNode); err != nil {
-			logger.Error(err, "failed to update TerminateNode status")
+			slog.Error("failed to update TerminateNode status", "error", err)
 			return ctrl.Result{}, err
 		}
 
-		logger.V(0).Info("TerminateNode status updated", "node", terminateNode.Spec.NodeName)
+		slog.Info("TerminateNode status updated", "node", terminateNode.Spec.NodeName)
 	}
 
 	return result, nil
