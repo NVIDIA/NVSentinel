@@ -114,6 +114,7 @@ platformConnector:
   mongodbStore:
     enabled: false
     clientCertMountPath: "/etc/ssl/mongo-client"
+    maxRetries: 3
 
   postgresqlStore:
     clientCertMountPath: "/etc/ssl/client-certs"

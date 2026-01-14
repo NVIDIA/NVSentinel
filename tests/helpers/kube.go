@@ -1662,6 +1662,8 @@ func PortForwardPod(
 
 		if err := fw.ForwardPorts(); err != nil {
 			slog.Error("Error forwarding ports", "error", err)
+			close(readyChan)
+
 			return
 		}
 	}()
@@ -2239,4 +2241,254 @@ func VerifyLogFilesUploaded(ctx context.Context, t *testing.T, c klient.Client, 
 	require.Contains(t, filesListing, ".log.gz", "no .log.gz files found")
 
 	t.Logf("✓ Log files verified for node %s", nodeName)
+}
+
+// WaitForDaemonSetRollout waits for a DaemonSet to complete its rollout.
+// It checks that all pods are updated and ready.
+func waitForDaemonSetRollout(ctx context.Context, t *testing.T, client klient.Client, name string) {
+	t.Helper()
+
+	t.Logf("Waiting for daemonset %s/%s rollout to complete", NVSentinelNamespace, name)
+
+	require.Eventually(t, func() bool {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := client.Resources().Get(ctx, name, NVSentinelNamespace, daemonSet); err != nil {
+			t.Logf("Failed to get daemonset: %v", err)
+			return false
+		}
+
+		// Check if the controller has observed the latest generation
+		// This prevents returning early when status reflects the old generation
+		if daemonSet.Status.ObservedGeneration < daemonSet.Generation {
+			t.Logf("DaemonSet controller hasn't observed latest generation yet: observed=%d, current=%d",
+				daemonSet.Status.ObservedGeneration, daemonSet.Generation)
+
+			return false
+		}
+
+		// Check if all desired pods are scheduled, updated, and ready
+		if daemonSet.Status.DesiredNumberScheduled == 0 {
+			t.Logf("DaemonSet has no desired pods scheduled yet")
+			return false
+		}
+
+		if daemonSet.Status.UpdatedNumberScheduled != daemonSet.Status.DesiredNumberScheduled {
+			t.Logf("DaemonSet rollout in progress: %d/%d pods updated",
+				daemonSet.Status.UpdatedNumberScheduled, daemonSet.Status.DesiredNumberScheduled)
+
+			return false
+		}
+
+		if daemonSet.Status.NumberReady != daemonSet.Status.DesiredNumberScheduled {
+			t.Logf("DaemonSet rollout in progress: %d/%d pods ready",
+				daemonSet.Status.NumberReady, daemonSet.Status.DesiredNumberScheduled)
+
+			return false
+		}
+
+		t.Logf("DaemonSet %s/%s rollout complete: %d/%d pods ready and updated",
+			NVSentinelNamespace, name, daemonSet.Status.NumberReady, daemonSet.Status.DesiredNumberScheduled)
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval, "daemonset %s/%s rollout should complete", NVSentinelNamespace, name)
+
+	t.Logf("DaemonSet %s/%s rollout completed successfully", NVSentinelNamespace, name)
+}
+
+// UpdateDaemonSetArgs updates the daemonset with the specified arguments and completes the rollout.
+// Returns the original args slice that can be used with RestoreDaemonSetArgs to rollback the changes.
+func UpdateDaemonSetArgs(ctx context.Context, t *testing.T,
+	client klient.Client, daemonsetName string, containerName string,
+	args map[string]string) ([]string, error) {
+	t.Helper()
+
+	t.Logf("Updating daemonset %s/%s with args %v", NVSentinelNamespace, daemonsetName, args)
+
+	var originalArgs []string
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
+			return err
+		}
+
+		containers := daemonSet.Spec.Template.Spec.Containers
+		containerFound := false
+
+		for i := range containers {
+			if containers[i].Name == containerName {
+				// Capture original args before modification
+				originalArgs = make([]string, len(containers[i].Args))
+				copy(originalArgs, containers[i].Args)
+
+				setArgsOnContainer(t, &containers[i], args)
+
+				containerFound = true
+
+				break
+			}
+		}
+
+		if !containerFound {
+			return fmt.Errorf("container %q not found in daemonset %s/%s", containerName, NVSentinelNamespace, daemonsetName)
+		}
+
+		return client.Resources().Update(ctx, daemonSet)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	t.Logf("Waiting for daemonset %s/%s rollout to complete", NVSentinelNamespace, daemonsetName)
+	waitForDaemonSetRollout(ctx, t, client, daemonsetName)
+
+	return originalArgs, nil
+}
+
+// RestoreDaemonSetArgs restores the daemonset container args to the original state.
+// Use the originalArgs returned by UpdateDaemonSetArgs to rollback the changes.
+func RestoreDaemonSetArgs(ctx context.Context, t *testing.T, client klient.Client,
+	daemonsetName string,
+	containerName string, originalArgs []string,
+) {
+	t.Helper()
+
+	t.Logf("Restoring args for daemonset %s/%s container %s to original state",
+		NVSentinelNamespace, daemonsetName, containerName)
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		daemonSet := &appsv1.DaemonSet{}
+		if err := client.Resources().Get(ctx, daemonsetName, NVSentinelNamespace, daemonSet); err != nil {
+			return err
+		}
+
+		containers := daemonSet.Spec.Template.Spec.Containers
+		containerFound := false
+
+		for i := range containers {
+			if containers[i].Name == containerName {
+				// Restore the original args
+				containers[i].Args = make([]string, len(originalArgs))
+				copy(containers[i].Args, originalArgs)
+
+				containerFound = true
+
+				break
+			}
+		}
+
+		if !containerFound {
+			return fmt.Errorf("container %q not found in daemonset %s/%s", containerName, NVSentinelNamespace, daemonsetName)
+		}
+
+		return client.Resources().Update(ctx, daemonSet)
+	})
+	require.NoError(t, err, "failed to restore args for daemonset %s/%s", NVSentinelNamespace, daemonsetName)
+
+	t.Logf("Waiting for daemonset %s/%s rollout to complete after restoration", NVSentinelNamespace, daemonsetName)
+	waitForDaemonSetRollout(ctx, t, client, daemonsetName)
+
+	t.Log("DaemonSet restored successfully")
+}
+
+// tryUpdateExistingArg attempts to update an existing argument at position j.
+// Returns true if the argument was found and updated.
+func tryUpdateExistingArg(container *v1.Container, j int, flag, value string) bool {
+	existingArg := container.Args[j]
+
+	// Match --flag=value style
+	if strings.HasPrefix(existingArg, flag+"=") {
+		if value != "" {
+			container.Args[j] = flag + "=" + value
+		} else {
+			container.Args[j] = flag
+		}
+
+		return true
+	}
+
+	// Match --flag or --flag value style
+	if existingArg == flag {
+		if value != "" {
+			if j+1 < len(container.Args) && !strings.HasPrefix(container.Args[j+1], "-") {
+				container.Args[j+1] = value
+			} else {
+				container.Args = append(container.Args[:j+1], append([]string{value}, container.Args[j+1:]...)...)
+			}
+		}
+
+		return true
+	}
+
+	return false
+}
+
+func setArgsOnContainer(t *testing.T, container *v1.Container, args map[string]string) {
+	t.Helper()
+	t.Logf("Setting args %v on container %s", args, container.Name)
+
+	for flag, value := range args {
+		found := false
+
+		for j := 0; j < len(container.Args); j++ {
+			if tryUpdateExistingArg(container, j, flag, value) {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			if value != "" {
+				container.Args = append(container.Args, flag+"="+value)
+			} else {
+				container.Args = append(container.Args, flag)
+			}
+		}
+	}
+}
+
+func GetDaemonSetPodOnWorkerNode(ctx context.Context, t *testing.T, client klient.Client,
+	daemonsetName string, podNamePattern string) (*v1.Pod, error) {
+	t.Helper()
+
+	var resultPod *v1.Pod
+
+	require.Eventually(t, func() bool {
+		// Get the pod
+		pod, err := GetPodOnWorkerNode(ctx, t, client, NVSentinelNamespace, podNamePattern)
+		if err != nil {
+			t.Logf("Failed to get pod: %v", err)
+			return false
+		}
+
+		// Verify pod is not being deleted
+		if pod.DeletionTimestamp != nil {
+			t.Logf("Pod %s is being deleted, waiting for replacement", pod.Name)
+			return false
+		}
+
+		// Verify pod is running and ready
+		if pod.Status.Phase != v1.PodRunning {
+			t.Logf("Pod %s is not in Running phase: %s", pod.Name, pod.Status.Phase)
+			return false
+		}
+
+		// Check all containers are ready
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == v1.PodReady && cond.Status != v1.ConditionTrue {
+				t.Logf("Pod %s is not ready yet", pod.Name)
+				return false
+			}
+		}
+
+		resultPod = pod
+
+		return true
+	}, EventuallyWaitTimeout, WaitInterval, "daemonset pod from current rollout should be running and ready")
+
+	if resultPod == nil {
+		return nil, fmt.Errorf("failed to get ready pod for daemonset %s", daemonsetName)
+	}
+
+	return resultPod, nil
 }

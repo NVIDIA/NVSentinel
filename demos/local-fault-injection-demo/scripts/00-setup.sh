@@ -138,6 +138,14 @@ install_nvsentinel() {
     # Create namespace
     kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - > /dev/null
     
+    local ARCH=$(uname -m)
+    local MONGODB_REPO="bitnamilegacy/mongodb"
+    local MONGODB_TAG="8.0.3-debian-12-r1"
+    if [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
+        MONGODB_REPO="dlavrenuek/bitnami-mongodb-arm"
+        MONGODB_TAG="8.0.4"
+    fi
+
     # Create a minimal values file for this demo
     cat > /tmp/nvsentinel-demo-values.yaml <<EOF
 # Minimal NVSentinel configuration for local demo
@@ -210,8 +218,8 @@ mongodb-store:
 
     image:
       registry: "docker.io"
-      repository: "bitnamilegacy/mongodb"
-      tag: "8.0.3-debian-12-r1"
+      repository: "${MONGODB_REPO}"
+      tag: "${MONGODB_TAG}"
       pullPolicy: "IfNotPresent"
 
     tls:
@@ -278,7 +286,7 @@ EOF
     
     log "Installing NVSentinel ${nvsentinel_version} from OCI registry..."
     log "(Set NVSENTINEL_VERSION env var to use a different version)"
-    log "This includes MongoDB pod (single-member replica set for change streams)..."
+    log "This includes MongoDB pod using ${MONGODB_REPO}:${MONGODB_TAG} (${ARCH})"
     log "This will take ~1-2 minutes for MongoDB to initialize"
     
     helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \

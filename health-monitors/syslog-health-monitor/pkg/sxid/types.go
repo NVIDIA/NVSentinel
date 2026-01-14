@@ -17,6 +17,7 @@ package sxid
 import (
 	"regexp"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 )
 
@@ -30,6 +31,7 @@ type SXIDHandler struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
+	processingStrategy    pb.ProcessingStrategy
 	metadataReader        *metadata.Reader
 }
 

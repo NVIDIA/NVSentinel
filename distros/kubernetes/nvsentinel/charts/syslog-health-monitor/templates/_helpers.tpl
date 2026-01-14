@@ -100,6 +100,8 @@ spec:
             - "{{ join "," $root.Values.enabledChecks }}"
             - "--metadata-path"
             - "{{ $root.Values.global.metadataPath }}"
+            - "--processing-strategy"
+            - "{{ $root.Values.processingStrategy }}"
           resources:
             {{- toYaml $root.Values.resources | nindent 12 }}
           ports:
