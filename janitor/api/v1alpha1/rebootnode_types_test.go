@@ -226,8 +226,6 @@ func TestRebootNode_StatusFields(t *testing.T) {
 		rn := &RebootNode{}
 
 		// Verify default zero values for status fields
-		assert.Equal(t, int32(0), rn.Status.RetryCount)
-		assert.Equal(t, int32(0), rn.Status.ConsecutiveFailures)
 		assert.Nil(t, rn.Status.StartTime)
 		assert.Nil(t, rn.Status.CompletionTime)
 		assert.Empty(t, rn.Status.Conditions)
@@ -240,14 +238,6 @@ func TestRebootNode_StatusFields(t *testing.T) {
 		rn.SetStartTime()
 		require.NotNil(t, rn.Status.StartTime)
 
-		// Increment retry count
-		rn.Status.RetryCount++
-		assert.Equal(t, int32(1), rn.Status.RetryCount)
-
-		// Increment consecutive failures
-		rn.Status.ConsecutiveFailures++
-		assert.Equal(t, int32(1), rn.Status.ConsecutiveFailures)
-
 		// Set conditions
 		rn.SetInitialConditions()
 		assert.NotEmpty(t, rn.Status.Conditions)
@@ -257,8 +247,6 @@ func TestRebootNode_StatusFields(t *testing.T) {
 		require.NotNil(t, rn.Status.CompletionTime)
 
 		// Verify all fields are set correctly
-		assert.Equal(t, int32(1), rn.Status.RetryCount)
-		assert.Equal(t, int32(1), rn.Status.ConsecutiveFailures)
 		assert.NotNil(t, rn.Status.StartTime)
 		assert.NotNil(t, rn.Status.CompletionTime)
 		assert.Len(t, rn.Status.Conditions, 2) // SignalSent and NodeReady

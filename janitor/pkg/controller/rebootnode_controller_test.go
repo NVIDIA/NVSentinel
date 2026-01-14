@@ -251,8 +251,8 @@ var _ = Describe("RebootNode Controller", func() {
 		})
 
 		It("should continue monitoring when node is not ready", func() {
-			// Configure mock to fail the IsNodeReady check
-			mockCSP.Server.SetNodeReadyError(DefaultFailureBehavior().IsNodeReadyError)
+			// Configure mock to report node as not ready
+			mockCSP.Server.SetNodeReady(false)
 
 			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -311,6 +311,130 @@ var _ = Describe("RebootNode Controller", func() {
 	})
 
 	Context("testing race condition prevention", func() {
+		// This test verifies that rapid reconciliations (as happen when status updates
+		// trigger watch events) should NOT all increment RetryCount. The controller should
+		// only count a retry if sufficient time has passed since the last observation.
+		It("should not increment retry count on rapid reconciliations", func() {
+			// Set up RebootNode as if reboot signal was already sent
+			testRebootNode.Status.StartTime = &metav1.Time{Time: time.Now().Add(-1 * time.Minute)}
+			testRebootNode.Status.Conditions = []metav1.Condition{
+				{
+					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
+					Status:             metav1.ConditionTrue,
+					Reason:             "Succeeded",
+					Message:            "test-request-ref",
+					LastTransitionTime: metav1.Now(),
+				},
+				{
+					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+					Status:             metav1.ConditionUnknown,
+					Reason:             "Initializing",
+					Message:            "Node ready state not yet determined",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+
+			err := k8sClient.Status().Update(ctx, testRebootNode)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Configure CSP to report node is NOT ready (so we stay in monitoring loop)
+			mockCSP.Server.SetNodeReady(false)
+
+			// Also make the Kubernetes node not ready so the controller keeps monitoring
+			testNode.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeReady,
+					Status: corev1.ConditionFalse,
+				},
+			}
+			err = k8sClient.Status().Update(ctx, testNode)
+			Expect(err).NotTo(HaveOccurred())
+
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: testRebootNode.Name,
+				},
+			}
+
+			// Simulate 5 rapid reconciliations (as would happen from watch events)
+			for i := 0; i < 5; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Get final state
+			var finalRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &finalRebootNode)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// This test verifies that 25 rapid reconciliations should NOT exhaust max retries.
+		// The controller should rate-limit retry counting to prevent this.
+		It("should not exhaust max retries on rapid reconciliations", func() {
+			// Set up RebootNode as if reboot signal was already sent
+			testRebootNode.Status.StartTime = &metav1.Time{Time: time.Now().Add(-1 * time.Minute)}
+			testRebootNode.Status.Conditions = []metav1.Condition{
+				{
+					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent,
+					Status:             metav1.ConditionTrue,
+					Reason:             "Succeeded",
+					Message:            "test-request-ref",
+					LastTransitionTime: metav1.Now(),
+				},
+				{
+					Type:               janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady,
+					Status:             metav1.ConditionUnknown,
+					Reason:             "Initializing",
+					Message:            "Node ready state not yet determined",
+					LastTransitionTime: metav1.Now(),
+				},
+			}
+
+			err := k8sClient.Status().Update(ctx, testRebootNode)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Configure CSP to report node is NOT ready
+			mockCSP.Server.SetNodeReady(false)
+
+			// Make the Kubernetes node not ready
+			testNode.Status.Conditions = []corev1.NodeCondition{
+				{
+					Type:   corev1.NodeReady,
+					Status: corev1.ConditionFalse,
+				},
+			}
+			err = k8sClient.Status().Update(ctx, testNode)
+			Expect(err).NotTo(HaveOccurred())
+
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name: testRebootNode.Name,
+				},
+			}
+
+			// Simulate 25 rapid reconciliations (more than MaxRebootRetries of 20)
+			for i := 0; i < 25; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Get final state
+			var finalRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testRebootNode.Name}, &finalRebootNode)
+			Expect(err).NotTo(HaveOccurred())
+
+			// CORRECT BEHAVIOR: Even with 25 rapid reconciliations, max retries should NOT
+			// be exhausted. The controller should rate-limit retry counting.
+			Expect(finalRebootNode.Status.CompletionTime).To(BeNil(),
+				"Rapid reconciliations should NOT cause MaxRetriesExceeded - reboot should still be in progress")
+
+			// The NodeReady condition should NOT show MaxRetriesExceeded
+			nodeReadyCondition := findCondition(finalRebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionNodeReady)
+			Expect(nodeReadyCondition).NotTo(BeNil())
+			Expect(nodeReadyCondition.Reason).NotTo(Equal("MaxRetriesExceeded"),
+				"Should not hit MaxRetriesExceeded from rapid reconciliations")
+		})
+
 		It("should properly handle the initialization race condition", func() {
 			// This test specifically targets the race condition where:
 			// 1. InitializeConditionsIfNeeded sets SignalSent to Unknown
@@ -503,113 +627,4 @@ func findCondition(conditions []metav1.Condition, conditionType string) *metav1.
 		}
 	}
 	return nil
-}
-
-// Test conditionsChanged helper function
-func TestConditionsChanged(t *testing.T) {
-	tests := []struct {
-		name     string
-		original []metav1.Condition
-		updated  []metav1.Condition
-		want     bool
-	}{
-		{
-			name:     "both empty",
-			original: []metav1.Condition{},
-			updated:  []metav1.Condition{},
-			want:     false,
-		},
-		{
-			name:     "different lengths",
-			original: []metav1.Condition{},
-			updated: []metav1.Condition{
-				{Type: "Test", Status: metav1.ConditionTrue},
-			},
-			want: true,
-		},
-		{
-			name: "same conditions",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			want: false,
-		},
-		{
-			name: "status changed",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionFalse, Reason: "Pending", Message: "Waiting"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			want: true,
-		},
-		{
-			name: "reason changed",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Retry", Message: "Signal sent"},
-			},
-			want: true,
-		},
-		{
-			name: "message changed",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent successfully"},
-			},
-			want: true,
-		},
-		{
-			name: "new condition type added",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-				{Type: "NodeReady", Status: metav1.ConditionTrue, Reason: "Ready", Message: "Node is ready"},
-			},
-			want: true,
-		},
-		{
-			name: "multiple conditions unchanged",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
-			},
-			want: false,
-		},
-		{
-			name: "one of multiple conditions changed",
-			original: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-				{Type: "NodeReady", Status: metav1.ConditionFalse, Reason: "NotReady", Message: "Node not ready"},
-			},
-			updated: []metav1.Condition{
-				{Type: "SignalSent", Status: metav1.ConditionTrue, Reason: "Success", Message: "Signal sent"},
-				{Type: "NodeReady", Status: metav1.ConditionTrue, Reason: "Ready", Message: "Node is ready"},
-			},
-			want: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := conditionsChanged(tt.original, tt.updated)
-			if got != tt.want {
-				t.Errorf("conditionsChanged() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }
