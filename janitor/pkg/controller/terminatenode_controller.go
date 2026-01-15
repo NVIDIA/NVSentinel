@@ -83,7 +83,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Set the start time if it is not already set
 	terminateNode.SetStartTime()
 
-	// Get the node to reboot
+	// Get the node to terminate
 	node := &corev1.Node{}
 	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -208,7 +208,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					NodeName: node.Name,
 				})
 
-				// Update status based on reboot result
+				// Update status based on terminate result
 				var signalSentCondition metav1.Condition
 				if terminateErr == nil {
 					signalSentCondition = metav1.Condition{
