@@ -179,23 +179,6 @@ func (t *TerminateNode) SetCompletionTime() {
 	}
 }
 
-// Interface implementation for generic status update handling
-
-// GetStartTime returns the start time
-func (s *TerminateNodeStatus) GetStartTime() *metav1.Time {
-	return s.StartTime
-}
-
-// GetCompletionTime returns the completion time
-func (s *TerminateNodeStatus) GetCompletionTime() *metav1.Time {
-	return s.CompletionTime
-}
-
-// GetConditions returns the conditions
-func (s *TerminateNodeStatus) GetConditions() []metav1.Condition {
-	return s.Conditions
-}
-
 func init() {
 	SchemeBuilder.Register(&TerminateNode{}, &TerminateNodeList{})
 }
