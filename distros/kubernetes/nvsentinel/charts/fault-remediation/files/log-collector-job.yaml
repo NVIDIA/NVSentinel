@@ -20,6 +20,8 @@ kind: Job
 metadata:
   generateName: {{ include "fault-remediation.fullname" . }}-log-collector-job-
   namespace: {{ .Release.Namespace }}
+  labels:
+    app: log-collector
 spec:
   ttlSecondsAfterFinished: 3600
   template:
