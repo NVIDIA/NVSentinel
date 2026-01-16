@@ -200,6 +200,7 @@ jobs:
           kubectl get all --all-namespaces > /tmp/debug-artifacts/all-resources.yaml || true
           kubectl get events --all-namespaces --sort-by='.lastTimestamp' > /tmp/debug-artifacts/all-events.yaml || true
           kubectl get pods --all-namespaces -o yaml > /tmp/debug-artifacts/all-pods.yaml || true
+          kubectl get jobs --all-namespaces -o yaml > /tmp/debug-artifacts/all-jobs.yaml || true
           kubectl logs --all-namespaces --all-containers=true --tail=500 > /tmp/debug-artifacts/all-logs.txt || true
           docker images > /tmp/debug-artifacts/docker-images.txt || true
           df -h > /tmp/debug-artifacts/disk-usage.txt || true
