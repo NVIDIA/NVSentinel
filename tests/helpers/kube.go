@@ -2104,6 +2104,7 @@ func WaitForLogCollectorJobStatus(
 			t.Logf("failed to list log-collector jobs: %v", err)
 			return false
 		}
+
 		t.Logf("Jobs found %v", jobList.Items)
 
 		for i := range jobList.Items {

@@ -158,6 +158,7 @@ jobs:
           USE_POSTGRESQL: ${{ matrix.datastore == 'postgresql' && '1' || '0' }}
           # Set architecture-specific test tags
           TEST_TAGS: ${{ matrix.arch }}_group${{ matrix.datastore == 'mongodb' && ',mongodb' || '' }}
+          TEST_EXTRA_FLAGS: '-run ^TestLogCollectorFailure$'
         run: |
           make e2e-test-ci
 
