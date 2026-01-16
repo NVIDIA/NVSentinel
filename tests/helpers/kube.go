@@ -2105,8 +2105,6 @@ func WaitForLogCollectorJobStatus(
 			return false
 		}
 
-		t.Logf("Jobs found %v", jobList.Items)
-
 		for i := range jobList.Items {
 			job := &jobList.Items[i]
 			if job.Spec.Template.Spec.NodeName != nodeName {
