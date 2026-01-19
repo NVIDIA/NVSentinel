@@ -177,6 +177,73 @@ func NewDatabaseConfigForCollectionType(certMountPath, collectionType string) (D
 	return NewDatabaseConfigWithCollection(certMountPath, envVar, defaultCollection)
 }
 
+// buildMongoDBConnectionConfig builds MongoDB connection configuration based on auth type
+// Returns connection URI, cert config, database name, and error
+func buildMongoDBConnectionConfig(certMountPath string) (string, *StandardCertificateConfig, string, error) {
+	password := os.Getenv("DATASTORE_PASSWORD")
+
+	if password != "" {
+		return buildMongoDBPasswordAuthConfig(password)
+	}
+
+	return buildMongoDBCertAuthConfig(certMountPath)
+}
+
+// buildMongoDBPasswordAuthConfig builds config for password authentication (non-TLS)
+func buildMongoDBPasswordAuthConfig(password string) (string, *StandardCertificateConfig, string, error) {
+	host := os.Getenv("DATASTORE_HOST")
+	if host == "" {
+		return "", nil, "", fmt.Errorf("required environment variable DATASTORE_HOST is not set when using DATASTORE_PASSWORD")
+	}
+
+	port := os.Getenv("DATASTORE_PORT")
+	if port == "" {
+		port = "27017" // Default MongoDB port
+	}
+
+	database := os.Getenv("DATASTORE_DATABASE")
+	if database == "" {
+		return "", nil, "", fmt.Errorf("required environment variable DATASTORE_DATABASE is not set when using DATASTORE_PASSWORD")
+	}
+
+	username := os.Getenv("DATASTORE_USERNAME")
+	if username == "" {
+		return "", nil, "", fmt.Errorf("required environment variable DATASTORE_USERNAME is not set when using DATASTORE_PASSWORD")
+	}
+
+	userInfo := url.UserPassword(username, password)
+	connectionURI := fmt.Sprintf("mongodb://%s@%s:%s/%s?tls=false",
+		userInfo.String(), host, port, database)
+	certConfig := &StandardCertificateConfig{
+		certPath:   "",
+		keyPath:    "",
+		caCertPath: "",
+	}
+
+	return connectionURI, certConfig, database, nil
+}
+
+// buildMongoDBCertAuthConfig builds config for certificate authentication (TLS)
+func buildMongoDBCertAuthConfig(certMountPath string) (string, *StandardCertificateConfig, string, error) {
+	connectionURI := os.Getenv(EnvMongoDBURI)
+	if connectionURI == "" {
+		return "", nil, "", fmt.Errorf("required environment variable %s is not set", EnvMongoDBURI)
+	}
+
+	databaseName := os.Getenv(EnvMongoDBDatabaseName)
+	if databaseName == "" {
+		return "", nil, "", fmt.Errorf("required environment variable %s is not set", EnvMongoDBDatabaseName)
+	}
+
+	certConfig := &StandardCertificateConfig{
+		certPath:   filepath.Join(certMountPath, "tls.crt"),
+		keyPath:    filepath.Join(certMountPath, "tls.key"),
+		caCertPath: filepath.Join(certMountPath, "ca.crt"),
+	}
+
+	return connectionURI, certConfig, databaseName, nil
+}
+
 // NewDatabaseConfigWithCollection allows custom certificate mount path and collection configuration
 // If collectionEnvVar is provided, it will be used instead of the default MONGODB_COLLECTION_NAME
 // If defaultCollection is provided, it will be used as fallback if the environment variable is not set
@@ -189,59 +256,9 @@ func NewDatabaseConfigWithCollection(
 	}
 
 	// Build MongoDB connection URI and certConfig
-	password := os.Getenv("DATASTORE_PASSWORD")
-	var connectionURI string
-	var certConfig *StandardCertificateConfig
-	var databaseName string
-
-	if password != "" {
-		// Password authentication (non-TLS)
-		host := os.Getenv("DATASTORE_HOST")
-		if host == "" {
-			return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set when using DATASTORE_PASSWORD")
-		}
-
-		port := os.Getenv("DATASTORE_PORT")
-		if port == "" {
-			port = "27017" // Default MongoDB port
-		}
-
-		database := os.Getenv("DATASTORE_DATABASE")
-		if database == "" {
-			return nil, fmt.Errorf("required environment variable DATASTORE_DATABASE is not set when using DATASTORE_PASSWORD")
-		}
-
-		username := os.Getenv("DATASTORE_USERNAME")
-		if username == "" {
-			return nil, fmt.Errorf("required environment variable DATASTORE_USERNAME is not set when using DATASTORE_PASSWORD")
-		}
-
-		userInfo := url.UserPassword(username, password)
-		connectionURI = fmt.Sprintf("mongodb://%s@%s:%s/%s?tls=false",
-			userInfo.String(), host, port, database)
-		databaseName = database
-		certConfig = &StandardCertificateConfig{
-			certPath:   "",
-			keyPath:    "",
-			caCertPath: "",
-		}
-	} else {
-		// Certificate authentication (TLS)
-		connectionURI = os.Getenv(EnvMongoDBURI)
-		if connectionURI == "" {
-			return nil, fmt.Errorf("required environment variable %s is not set", EnvMongoDBURI)
-		}
-
-		databaseName = os.Getenv(EnvMongoDBDatabaseName)
-		if databaseName == "" {
-			return nil, fmt.Errorf("required environment variable %s is not set", EnvMongoDBDatabaseName)
-		}
-
-		certConfig = &StandardCertificateConfig{
-			certPath:   filepath.Join(certMountPath, "tls.crt"),
-			keyPath:    filepath.Join(certMountPath, "tls.key"),
-			caCertPath: filepath.Join(certMountPath, "ca.crt"),
-		}
+	connectionURI, certConfig, databaseName, err := buildMongoDBConnectionConfig(certMountPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine which collection environment variable to use
@@ -274,6 +291,65 @@ func NewDatabaseConfigWithCollection(
 	}, nil
 }
 
+// buildPostgreSQLConnectionConfig builds PostgreSQL connection configuration based on auth type
+// Returns connection URI and cert config
+func buildPostgreSQLConnectionConfig(certMountPath, host, port, database, username string) (string, *StandardCertificateConfig) {
+	password := os.Getenv("DATASTORE_PASSWORD")
+
+	if password != "" {
+		return buildPostgreSQLPasswordAuthConfig(password, host, port, database, username)
+	}
+
+	return buildPostgreSQLCertAuthConfig(certMountPath, host, port, database, username)
+}
+
+// buildPostgreSQLPasswordAuthConfig builds config for password authentication (non-TLS)
+func buildPostgreSQLPasswordAuthConfig(password, host, port, database, username string) (string, *StandardCertificateConfig) {
+	userInfo := url.UserPassword(username, password)
+	connectionURI := fmt.Sprintf("postgresql://%s@%s:%s/%s?sslmode=disable",
+		userInfo.String(), host, port, database)
+	certConfig := &StandardCertificateConfig{
+		certPath:   "",
+		keyPath:    "",
+		caCertPath: "",
+	}
+
+	return connectionURI, certConfig
+}
+
+// buildPostgreSQLCertAuthConfig builds config for certificate authentication (TLS)
+func buildPostgreSQLCertAuthConfig(certMountPath, host, port, database, username string) (string, *StandardCertificateConfig) {
+	sslmode := os.Getenv("DATASTORE_SSLMODE")
+	if sslmode == "" {
+		sslmode = "require"
+	}
+
+	sslcert := os.Getenv("DATASTORE_SSLCERT")
+	if sslcert == "" {
+		sslcert = filepath.Join(certMountPath, "tls.crt")
+	}
+
+	sslkey := os.Getenv("DATASTORE_SSLKEY")
+	if sslkey == "" {
+		sslkey = filepath.Join(certMountPath, "tls.key")
+	}
+
+	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
+	if sslrootcert == "" {
+		sslrootcert = filepath.Join(certMountPath, "ca.crt")
+	}
+
+	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
+		host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
+	certConfig := &StandardCertificateConfig{
+		certPath:   sslcert,
+		keyPath:    sslkey,
+		caCertPath: sslrootcert,
+	}
+
+	return connectionURI, certConfig
+}
+
 // newPostgreSQLCompatibleConfig creates a PostgreSQL-compatible database config
 // using DATASTORE_* environment variables instead of MONGODB_* variables
 //
@@ -300,52 +376,7 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 	}
 
 	// Build PostgreSQL connection URI and certConfig
-	password := os.Getenv("DATASTORE_PASSWORD")
-
-	var connectionURI string
-	var certConfig *StandardCertificateConfig
-
-	if password != "" {
-		// Password authentication (non-TLS)
-		// Use URL format DSN with proper encoding for special characters
-		userInfo := url.UserPassword(username, password)
-		connectionURI = fmt.Sprintf("postgresql://%s@%s:%s/%s?sslmode=disable",
-			userInfo.String(), host, port, database)
-		certConfig = &StandardCertificateConfig{
-			certPath:   "",
-			keyPath:    "",
-			caCertPath: "",
-		}
-	} else {
-		// Certificate authentication (TLS)
-		sslmode := os.Getenv("DATASTORE_SSLMODE")
-		if sslmode == "" {
-			sslmode = "require"
-		}
-
-		sslcert := os.Getenv("DATASTORE_SSLCERT")
-		if sslcert == "" {
-			sslcert = filepath.Join(certMountPath, "tls.crt")
-		}
-
-		sslkey := os.Getenv("DATASTORE_SSLKEY")
-		if sslkey == "" {
-			sslkey = filepath.Join(certMountPath, "tls.key")
-		}
-
-		sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
-		if sslrootcert == "" {
-			sslrootcert = filepath.Join(certMountPath, "ca.crt")
-		}
-
-		connectionURI = fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
-			host, port, database, username, sslmode, sslcert, sslkey, sslrootcert)
-		certConfig = &StandardCertificateConfig{
-			certPath:   sslcert,
-			keyPath:    sslkey,
-			caCertPath: sslrootcert,
-		}
-	}
+	connectionURI, certConfig := buildPostgreSQLConnectionConfig(certMountPath, host, port, database, username)
 
 	// Determine table name using the provided parameters
 	// For PostgreSQL, this maps to the table name (converted to snake_case by the client)

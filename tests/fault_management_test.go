@@ -22,13 +22,14 @@ import (
 	"testing"
 	"time"
 
+	"tests/helpers"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-	"tests/helpers"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
@@ -655,3 +656,232 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
+
+// TestDatastorePasswordAuthentication verifies that password-based authentication
+// works correctly with MongoDB for fault-quarantine and fault-remediation components.
+func TestDatastorePasswordAuthentication(t *testing.T) {
+	feature := features.New("Datastore Password Authentication").
+		WithLabel("suite", "fault-management-password-auth")
+
+	var testCtx *helpers.QuarantineTestContext
+	var podNames []string
+	testNamespace := "password-auth-fault-test"
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Log("Setting up password authentication test for fault components")
+
+		var newCtx context.Context
+
+		// Create the ConfigMap with password auth
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Logf("Applying password auth ConfigMap for MongoDB")
+		err = createConfigMapFromFilePath(ctx, client,
+			"data/password-auth-fault-configmap.yaml", "fault-quarantine", "nvsentinel")
+		require.NoError(t, err)
+
+		// Select a test node
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+
+		// Store node name in context
+		ctx = context.WithValue(ctx, helpers.CELKeyNodeName, nodeName)
+
+		t.Logf("Restarting fault-quarantine to load password auth config")
+		err = helpers.RestartDeployment(ctx, t, client, "fault-quarantine", helpers.NVSentinelNamespace)
+		require.NoError(t, err)
+
+		// Restart fault-remediation to load password auth config
+		t.Logf("Restarting fault-remediation to load password auth config")
+		err = helpers.RestartDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
+		require.NoError(t, err)
+
+		// Create test namespace
+		testNamespace := "password-auth-fault-test"
+		t.Logf("Creating test namespace: %s", testNamespace)
+		err = helpers.CreateNamespace(newCtx, client, testNamespace)
+		require.NoError(t, err)
+
+		// Create test pods to verify connectivity
+		podNames = helpers.CreatePodsFromTemplate(newCtx, t, client,
+			"data/busybox-pods.yaml", testCtx.NodeName, testNamespace)
+		helpers.WaitForPodsRunning(newCtx, t, client, testNamespace, podNames)
+
+		return newCtx
+	})
+
+	feature.Assess("Step 1: Verify components have password auth config", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Verify ConfigMap exists
+		configMap := &v1.ConfigMap{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      "password-auth-fault-config",
+				Namespace: "nvsentinel",
+			},
+		}
+		err = client.Resources().Get(ctx, "password-auth-fault-config", "nvsentinel", configMap)
+		require.NoError(t, err, "password-auth ConfigMap should exist")
+		require.Contains(t, configMap.Data, "DATASTORE_PASSWORD", "DATASTORE_PASSWORD should be set")
+
+		// Verify fault-quarantine deployment is using password auth config
+		faultQuarantine, err := helpers.GetDeployment(ctx, client, "fault-quarantine", "nvsentinel")
+		require.NoError(t, err)
+
+		faultQuarantineEnvVars := faultQuarantine.Spec.Template.Spec.Containers[0].Env
+		var faultQuarantineEnvMap = make(map[string]string)
+		for _, env := range faultQuarantineEnvVars {
+			if env.Value != nil {
+				faultQuarantineEnvMap[env.Name] = *env.Value
+			}
+		}
+
+		require.Contains(t, faultQuarantineEnvMap, "DATASTORE_PASSWORD", "fault-quarantine should have DATASTORE_PASSWORD")
+		t.Logf("Verified: fault-quarantine has password auth environment variables")
+
+		// Verify fault-remediation deployment is using password auth config
+		faultRemediation, err := helpers.GetDeployment(ctx, client, "fault-remediation", "nvsentinel")
+		require.NoError(t, err)
+
+		faultRemediationEnvVars := faultRemediation.Spec.Template.Spec.Containers[0].Env
+		var faultRemediationEnvMap = make(map[string]string)
+		for _, env := range faultRemediationEnvVars {
+			if env.Value != nil {
+				faultRemediationEnvMap[env.Name] = *env.Value
+			}
+		}
+
+		require.Contains(t, faultRemediationEnvMap, "DATASTORE_PASSWORD", "fault-remediation should have DATASTORE_PASSWORD")
+		t.Logf("Verified: fault-remediation has password auth environment variables")
+
+		return ctx
+	})
+
+	feature.Assess("Step 2: Wait for components to be ready", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Wait for fault-quarantine to be ready
+		t.Log("Waiting for fault-quarantine to be ready")
+		require.Eventually(t, func() bool {
+			deployment, err := helpers.GetDeployment(ctx, client, "fault-quarantine", "nvsentinel")
+			if err != nil {
+				return false
+			}
+			return deployment.Status.ReadyReplicas >= 1
+		}, 3*time.Minute, 10*time.Second, "fault-quarantine should be ready")
+
+		// Wait for fault-remediation to be ready
+		t.Log("Waiting for fault-remediation to be ready")
+		require.Eventually(t, func() bool {
+			deployment, err := helpers.GetDeployment(ctx, client, "fault-remediation", "nvsentinel")
+			if err != nil {
+				return false
+			}
+			return deployment.Status.ReadyReplicas >= 1
+		}, 3*time.Minute, 10*time.Second, "fault-remediation should be ready")
+
+		// Wait a bit for the components to fully start and initialize
+		t.Log("Waiting for components to initialize")
+		time.Sleep(30 * time.Second)
+
+		// Verify pods are still running
+		t.Log("Verifying pods are still running after MongoDB connection")
+		for _, podName := range podNames {
+			pod := &v1.Pod{}
+			err := client.Resources().Get(ctx, podName, testNamespace, pod)
+			require.NoError(t, err, "pod should exist")
+			require.Equal(t, v1.PodRunning, pod.Status.Phase, "pod should be running")
+		}
+
+		t.Logf("Verified: All pods are running, MongoDB connection successful")
+
+		return ctx
+	})
+
+	feature.Assess("Step 3: Verify components process health events with password auth", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Send a health event to trigger component processing
+		t.Log("Sending test health event to verify password auth")
+		testEvent := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("Test health event for password auth verification").
+			WithHealthy(false).
+			WithFatal(false).
+			WithRecommendedAction(2)
+
+		helpers.SendHealthEvent(ctx, t, testEvent)
+		t.Log("Health event sent, waiting for component processing")
+
+		// Wait for the event to be processed by components
+		time.Sleep(10 * time.Second)
+
+		// Verify the event was processed by components
+		t.Log("Verifying health event was processed by components")
+		require.Eventually(t, func() bool {
+			found, _ := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName,
+				"NodeDraining", "WaitingBeforeForceDelete", time.Time{})
+
+			if !found {
+				t.Logf("Event not yet found, waiting...")
+				return false
+			}
+
+			// Check if components processed the event by looking for quarantine annotations
+			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+			if err != nil {
+				t.Logf("Failed to get node: %v", err)
+				return false
+			}
+
+			_, hasQuarantine := node.Annotations["quarantineHealthEvent"]
+			return hasQuarantine
+		}, 2*time.Minute, 10*time.Second, "health event should be processed by components")
+
+		t.Logf("Verified: Components successfully processed health event with password auth")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Log("Tearing down password authentication test environment")
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Delete ConfigMap
+		err = client.Resources().Delete(ctx, &v1.ConfigMap{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      "password-auth-fault-config",
+				Namespace: "nvsentinel",
+			},
+		})
+		if err != nil {
+			t.Logf("Warning: failed to delete ConfigMap: %v", err)
+		}
+
+		// Delete test namespace
+		err = client.Resources().Delete(ctx, &v1.Namespace{
+			ObjectMeta: v1.ObjectMeta{
+				Name:      testNamespace,
+			},
+		})
+		if err != nil {
+			t.Logf("Warning: failed to delete namespace: %v", err)
+		}
+
+		// Restore original deployments
+		t.Log("Restoring original fault-quarantine deployment")
+		err = helpers.RestoreDeployment(ctx, t, client, "fault-quarantine", helpers.NVSentinelNamespace)
+		require.NoError(t, err)
+
+		t.Log("Restoring original fault-remediation deployment")
+		err = helpers.RestoreDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
+		require.NoError(t, err)
+
+		return helpers.TeardownQuarantineTest(ctx, t, c, testCtx)
+	})
+
+testEnv.Test(t, feature.Feature())
