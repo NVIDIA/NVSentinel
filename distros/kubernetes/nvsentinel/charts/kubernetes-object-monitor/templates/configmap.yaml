@@ -48,6 +48,9 @@ data:
         {{- if .healthEvent.errorCode }}
         errorCode = [{{- range $index, $code := .healthEvent.errorCode }}{{- if $index }}, {{ end }}{{ $code | quote }}{{- end }}]
         {{- end }}
+        {{- if .healthEvent.processingStrategy }}
+        processingStrategy = {{ .healthEvent.processingStrategy | quote }}
+        {{- end }}
     
     {{- end }}
 

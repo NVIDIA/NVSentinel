@@ -46,6 +46,8 @@ type HealthEventSpec struct {
 	Message           string   `toml:"message"`
 	RecommendedAction string   `toml:"recommendedAction"`
 	ErrorCode         []string `toml:"errorCode"`
+	// override the processing strategy for the policy
+	ProcessingStrategy string `toml:"processingStrategy"`
 }
 
 func (r *ResourceSpec) GVK() string {

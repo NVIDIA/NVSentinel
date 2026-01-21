@@ -68,6 +68,11 @@ var (
 		"unix:///var/run/nvsentinel.sock",
 		"Platform Connector gRPC socket",
 	)
+	processingStrategyFlag = flag.String(
+		"processing-strategy",
+		"EXECUTE_REMEDIATION",
+		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
+	)
 )
 
 func main() {
@@ -93,6 +98,7 @@ func run() error {
 		ResyncPeriod:            *resyncPeriod,
 		MaxConcurrentReconciles: *maxConcurrentReconciles,
 		PlatformConnectorSocket: *platformConnectorSocket,
+		ProcessingStrategy:      *processingStrategyFlag,
 	}
 
 	components, err := initializer.InitializeAll(ctx, params)

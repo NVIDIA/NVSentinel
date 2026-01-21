@@ -16,9 +16,19 @@ data:
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 120]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 120]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }

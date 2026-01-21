@@ -34,17 +34,30 @@ const (
 )
 
 type Publisher struct {
-	pcClient pb.PlatformConnectorClient
+	pcClient           pb.PlatformConnectorClient
+	processingStrategy pb.ProcessingStrategy
 }
 
-func New(client pb.PlatformConnectorClient) *Publisher {
+func New(client pb.PlatformConnectorClient, processingStrategy pb.ProcessingStrategy) *Publisher {
 	return &Publisher{
-		pcClient: client,
+		pcClient:           client,
+		processingStrategy: processingStrategy,
 	}
 }
 
 func (p *Publisher) PublishHealthEvent(ctx context.Context,
 	policy *config.Policy, nodeName string, isHealthy bool) error {
+	strategy := p.processingStrategy
+
+	if policy.HealthEvent.ProcessingStrategy != "" {
+		value, ok := pb.ProcessingStrategy_value[policy.HealthEvent.ProcessingStrategy]
+		if !ok {
+			return fmt.Errorf("unexpected processingStrategy value: %q", policy.HealthEvent.ProcessingStrategy)
+		}
+
+		strategy = pb.ProcessingStrategy(value)
+	}
+
 	event := &pb.HealthEvent{
 		Version:            1,
 		Agent:              agentName,
@@ -57,6 +70,7 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		NodeName:           nodeName,
 		RecommendedAction:  mapRecommendedAction(policy.HealthEvent.RecommendedAction),
 		ErrorCode:          policy.HealthEvent.ErrorCode,
+		ProcessingStrategy: strategy,
 	}
 
 	healthEvents := &pb.HealthEvents{

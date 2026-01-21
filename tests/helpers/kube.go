@@ -2545,6 +2545,13 @@ func RestoreDeploymentArgs(
 	t *testing.T, ctx context.Context, c klient.Client,
 	deploymentName, namespace, containerName string, originalArgs []string,
 ) error {
+	if originalArgs == nil {
+		return nil
+	}
+
+	t.Helper()
+	t.Logf("Restoring args %v for deployment %s/%s container %s", originalArgs, namespace, deploymentName, containerName)
+
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deployment := &appsv1.Deployment{}
 		if err := c.Resources().Get(ctx, deploymentName, namespace, deployment); err != nil {
@@ -2572,4 +2579,40 @@ func RestoreDeploymentArgs(
 
 		return c.Resources().Update(ctx, deployment)
 	})
+}
+
+// DeleteExistingNodeEvents deletes Kubernetes node events for a given node name and event type and reason.
+// This is useful for cleaning up test events that might interfere with subsequent tests.
+func DeleteExistingNodeEvents(ctx context.Context, t *testing.T, c klient.Client,
+	nodeName, eventType, eventReason string) error {
+	t.Helper()
+	t.Logf("Deleting events for node %s with type=%s, reason=%s", nodeName, eventType, eventReason)
+
+	eventList, err := GetNodeEvents(ctx, c, nodeName, eventType)
+	if err != nil {
+		return fmt.Errorf("failed to get events for node %s: %w", nodeName, err)
+	}
+
+	deletedCount := 0
+
+	for _, event := range eventList.Items {
+		if eventReason != "" && event.Reason != eventReason {
+			continue
+		}
+
+		// Delete the event (events are in default namespace)
+		err := c.Resources().WithNamespace("default").Delete(ctx, &event)
+		if err != nil {
+			t.Logf("Warning: failed to delete event %s: %v", event.Name, err)
+			continue
+		}
+
+		deletedCount++
+
+		t.Logf("Deleted event: %s (type=%s, reason=%s)", event.Name, event.Type, event.Reason)
+	}
+
+	t.Logf("Deleted %d event(s) for node %s", deletedCount, nodeName)
+
+	return nil
 }

@@ -49,7 +49,7 @@ func TestMultipleRemediationsCompleted(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", "")
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", "")
 
 		t.Log("Triggering multiple remediations cycle")
 		client, err := c.NewClient()
@@ -97,7 +97,7 @@ func TestMultipleRemediationsNotTriggered(t *testing.T) {
 		testNodeName := helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		gpuNodeName := testCtx.NodeName
 
@@ -158,7 +158,7 @@ func TestRepeatedXIDOnSameGPU(t *testing.T) {
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		return newCtx
 	})
@@ -316,7 +316,7 @@ func TestRepeatedXID31OnSameGPU(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		t.Logf("Using node: %s", testNodeName)
 
@@ -456,7 +456,7 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
@@ -686,7 +686,7 @@ func TestSoloNoBurstRule(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		t.Logf("Using node: %s", testNodeName)
 
 		entities1 := []helpers.EntityImpacted{
@@ -800,7 +800,7 @@ func TestXID74Reg0SoloNVLinkError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -967,7 +967,7 @@ func TestXID74Reg0ECCParityError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1161,7 +1161,7 @@ func TestXID74Reg2Bit16Or19SetRule(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1347,7 +1347,7 @@ func TestXID74Reg4ECCError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1552,7 +1552,7 @@ func TestHealthEventsAnalyzerStoreOnlyStrategy(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1678,6 +1678,8 @@ func TestHealthEventsAnalyzerProcessingStrategyRuleOverride(t *testing.T) {
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
 		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
 	})
 

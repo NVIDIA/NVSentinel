@@ -77,9 +77,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 604800]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 604800]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -108,9 +118,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -351,9 +371,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -594,9 +624,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -683,9 +723,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -836,7 +886,7 @@ config: |
                     "then": 0,
                     "else": {
                       "$cond": {
-                        "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 180]},
+                        "if": {"$gt": [{"$subtract": ["$healthevent.generatedtimestamp.seconds", "$prevTimestamp"]}, 15]},
                         "then": 1,
                         "else": 0
                       }
@@ -981,9 +1031,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -1121,9 +1181,19 @@ config: |
     {
       "$match": {
         "$expr": {
-          "$gte": [
-            "$healthevent.generatedtimestamp.seconds",
-            {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+          "$and": [
+            {
+              "$gte": [
+                "$healthevent.generatedtimestamp.seconds",
+                {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+              ]
+            },
+            {
+              "$lte": [
+                "$healthevent.generatedtimestamp.seconds",
+                "this.healthevent.generatedtimestamp.seconds"
+              ]
+            }
           ]
         }
       }
@@ -1338,9 +1408,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -1516,9 +1596,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -1678,9 +1768,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -1806,9 +1906,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -1984,9 +2094,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2107,9 +2227,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2334,9 +2464,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2457,9 +2597,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2580,9 +2730,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2758,9 +2918,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -2931,9 +3101,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }
@@ -3099,9 +3279,19 @@ config: |
       {
         "$match": {
           "$expr": {
-            "$gte": [
-              "$healthevent.generatedtimestamp.seconds",
-              {"$subtract": [{"$divide": [{"$toLong": "$$NOW"}, 1000]}, 86400]}
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 86400]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
             ]
           }
         }

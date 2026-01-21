@@ -72,15 +72,22 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 
 	clearHealthEventsAnalyzerConditions(ctx, t, gpuNodeName)
 
-	t.Log("Backing up current health-events-analyzer configmap")
+	if configMapPath != "" {
+		t.Log("Backing up current health-events-analyzer configmap")
 
-	backupData, err := BackupConfigMap(ctx, client, "health-events-analyzer-config", NVSentinelNamespace)
-	require.NoError(t, err)
-	t.Log("Backup created in memory")
+		backupData, err := BackupConfigMap(ctx, client, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+		t.Log("Backup created in memory")
 
-	testCtx.ConfigMapBackup = backupData
+		testCtx.ConfigMapBackup = backupData
 
-	err = applyHealthEventsAnalyzerConfigAndRestart(ctx, t, client, configMapPath)
+		err = createConfigMapFromFilePath(ctx, client, configMapPath, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
+
+	t.Logf("Restarting %s deployment", HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME)
+
+	err = RestartDeployment(ctx, t, client, HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, NVSentinelNamespace)
 	require.NoError(t, err)
 
 	return ctx, testCtx
@@ -167,29 +174,6 @@ func clearHealthEventsAnalyzerConditions(ctx context.Context, t *testing.T, node
 	SendHealthEvent(ctx, t, event)
 }
 
-func applyHealthEventsAnalyzerConfigAndRestart(
-	ctx context.Context, t *testing.T, client klient.Client, configMapPath string,
-) error {
-	t.Helper()
-	t.Logf("Applying health-events-analyzer configmap: %s", configMapPath)
-
-	err := createConfigMapFromFilePath(ctx, client, configMapPath, "health-events-analyzer-config", NVSentinelNamespace)
-	if err != nil {
-		return err
-	}
-
-	t.Log("Restarting health-events-analyzer deployment")
-
-	err = RestartDeployment(ctx, t, client, "health-events-analyzer", NVSentinelNamespace)
-	if err != nil {
-		return err
-	}
-
-	WaitForDeploymentRollout(ctx, t, client, HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, NVSentinelNamespace)
-
-	return nil
-}
-
 func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
 	xidsToInject := []string{ERRORCODE_79, ERRORCODE_48}
 
@@ -248,7 +232,10 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 
 	clearHealthEventsAnalyzerConditions(ctx, t, nodeName)
 
-	restoreHealthEventsAnalyzerConfig(ctx, t, c, configMapBackup)
+	if configMapBackup != nil {
+		t.Log("Restoring health-events-analyzer configmap from memory")
+		restoreHealthEventsAnalyzerConfig(ctx, t, c, configMapBackup)
+	}
 
 	return ctx
 }
@@ -260,10 +247,12 @@ func restoreHealthEventsAnalyzerConfig(ctx context.Context, t *testing.T, c *env
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	t.Log("Restoring configmap from memory")
+	if configMapBackup != nil {
+		t.Log("Restoring configmap from memory")
 
-	err = createConfigMapFromBytes(ctx, client, configMapBackup, "health-events-analyzer-config", NVSentinelNamespace)
-	require.NoError(t, err)
+		err = createConfigMapFromBytes(ctx, client, configMapBackup, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
 
 	err = RestartDeployment(ctx, t, client, "health-events-analyzer", NVSentinelNamespace)
 	require.NoError(t, err)
