@@ -48,6 +48,7 @@ enum RecommendedAction {
   RESTART_BM = 24;
   REPLACE_VM = 25;
   RUN_DCGMEUD = 26;
+  RESTART_APP = 39;
 
   UNKNOWN = 99;
 }

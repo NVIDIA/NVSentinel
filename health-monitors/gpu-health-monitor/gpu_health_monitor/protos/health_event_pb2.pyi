@@ -27,6 +27,7 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESTART_BM: _ClassVar[RecommendedAction]
     REPLACE_VM: _ClassVar[RecommendedAction]
     RUN_DCGMEUD: _ClassVar[RecommendedAction]
+    RESTART_APP: _ClassVar[RecommendedAction]
     UNKNOWN: _ClassVar[RecommendedAction]
 
 UNSPECIFIED: ProcessingStrategy
@@ -40,6 +41,7 @@ RESTART_VM: RecommendedAction
 RESTART_BM: RecommendedAction
 REPLACE_VM: RecommendedAction
 RUN_DCGMEUD: RecommendedAction
+RESTART_APP: RecommendedAction
 UNKNOWN: RecommendedAction
 
 class HealthEvents(_message.Message):

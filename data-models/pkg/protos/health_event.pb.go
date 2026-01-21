@@ -101,6 +101,7 @@ const (
 	RecommendedAction_RESTART_BM      RecommendedAction = 24
 	RecommendedAction_REPLACE_VM      RecommendedAction = 25
 	RecommendedAction_RUN_DCGMEUD     RecommendedAction = 26
+	RecommendedAction_RESTART_APP     RecommendedAction = 39
 	RecommendedAction_UNKNOWN         RecommendedAction = 99
 )
 
@@ -115,6 +116,7 @@ var (
 		24: "RESTART_BM",
 		25: "REPLACE_VM",
 		26: "RUN_DCGMEUD",
+		39: "RESTART_APP",
 		99: "UNKNOWN",
 	}
 	RecommendedAction_value = map[string]int32{
@@ -126,6 +128,7 @@ var (
 		"RESTART_BM":      24,
 		"REPLACE_VM":      25,
 		"RUN_DCGMEUD":     26,
+		"RESTART_APP":     39,
 		"UNKNOWN":         99,
 	}
 )
@@ -519,7 +522,7 @@ const file_health_event_proto_rawDesc = "" +
 	"\vUNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13EXECUTE_REMEDIATION\x10\x01\x12\x0e\n" +
 	"\n" +
-	"STORE_ONLY\x10\x02*\xa8\x01\n" +
+	"STORE_ONLY\x10\x02*\xb9\x01\n" +
 	"\x11RecommendedAction\x12\b\n" +
 	"\x04NONE\x10\x00\x12\x13\n" +
 	"\x0fCOMPONENT_RESET\x10\x02\x12\x13\n" +
@@ -531,7 +534,8 @@ const file_health_event_proto_rawDesc = "" +
 	"RESTART_BM\x10\x18\x12\x0e\n" +
 	"\n" +
 	"REPLACE_VM\x10\x19\x12\x0f\n" +
-	"\vRUN_DCGMEUD\x10\x1a\x12\v\n" +
+	"\vRUN_DCGMEUD\x10\x1a\x12\x0f\n" +
+	"\vRESTART_APP\x10'\x12\v\n" +
 	"\aUNKNOWN\x10c2`\n" +
 	"\x11PlatformConnector\x12K\n" +
 	"\x15HealthEventOccurredV1\x12\x18.datamodels.HealthEvents\x1a\x16.google.protobuf.Empty\"\x00B5Z3github.com/nvidia/nvsentinel/data-models/pkg/protosb\x06proto3"

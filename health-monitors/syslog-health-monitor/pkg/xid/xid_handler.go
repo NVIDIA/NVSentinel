@@ -130,6 +130,7 @@ func (xidHandler *XIDHandler) normalizePCI(pci string) string {
 func (xidHandler *XIDHandler) determineFatality(recommendedAction pb.RecommendedAction) bool {
 	return !slices.Contains([]pb.RecommendedAction{
 		pb.RecommendedAction_NONE,
+		pb.RecommendedAction_RESTART_APP,
 	}, recommendedAction)
 }
 
