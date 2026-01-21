@@ -33,7 +33,7 @@ func TestActionMapping(t *testing.T) {
 		{
 			name:          "Valid Action",
 			actionStr:     "RESTART_APP",
-			expectedCode:  int(pb.RecommendedAction_NONE),
+			expectedCode:  int(pb.RecommendedAction_RESTART_APP),
 			expectMapping: true,
 		},
 		{
@@ -45,7 +45,7 @@ func TestActionMapping(t *testing.T) {
 		{
 			name:          "XID 154",
 			actionStr:     "XID_154_EVAL",
-			expectedCode:  int(pb.RecommendedAction_NONE),
+			expectedCode:  int(pb.RecommendedAction_RESTART_APP),
 			expectMapping: true,
 		},
 	}
@@ -68,7 +68,7 @@ func TestLoadErrorResolutionMap(t *testing.T) {
 	}
 
 	if res, found := errorMap[32]; found {
-		assert.Equal(t, pb.RecommendedAction_NONE, res.RecommendedAction)
+		assert.Equal(t, pb.RecommendedAction_RESTART_APP, res.RecommendedAction)
 	}
 }
 
@@ -83,7 +83,11 @@ func TestMapActionStringToProto(t *testing.T) {
 		},
 		{
 			input:          "RESTART_APP",
-			expectedOutput: pb.RecommendedAction_NONE,
+			expectedOutput: pb.RecommendedAction_RESTART_APP,
+		},
+		{
+			input:          "XID_154_EVAL",
+			expectedOutput: pb.RecommendedAction_RESTART_APP,
 		},
 		{
 			input:          "CONTACT_SUPPORT",
