@@ -30,6 +30,7 @@ import (
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 )
 
 var _ = Describe("TerminateNodeReconciler", func() {
@@ -92,6 +93,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 				ManualMode: false,
 			},
 			CSPClient: mockCSP.Client,
+			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
 		}
 
 		// Default to success behavior - tests can override as needed

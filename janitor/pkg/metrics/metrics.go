@@ -25,6 +25,8 @@ import (
 const (
 	ActionTypeReboot    = "reboot"
 	ActionTypeTerminate = "terminate"
+	ActionTypeLock      = "lock"
+	ActionTypeUnlock    = "unlock"
 )
 
 // Status values for action metrics

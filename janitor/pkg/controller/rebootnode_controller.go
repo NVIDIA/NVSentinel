@@ -36,6 +36,7 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
@@ -45,6 +46,7 @@ type RebootNodeReconciler struct {
 	Scheme    *runtime.Scheme
 	Config    *config.RebootNodeControllerConfig
 	CSPClient cspv1alpha1.CSPProviderServiceClient
+	NodeLock  distributedlock.NodeLock
 	grpcConn  *grpc.ClientConn
 }
 
@@ -52,6 +54,7 @@ type RebootNodeReconciler struct {
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=rebootnodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -62,10 +65,33 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if rebootNode.Status.CompletionTime != nil {
-		slog.Debug("RebootNode has completion time set, skipping reconcile", "node", rebootNode.Spec.NodeName)
-		return ctrl.Result{}, nil
+	// Check if reconciliation is complete
+	completedReconciling := rebootNode.Status.CompletionTime != nil
+	if !completedReconciling {
+		// Try to acquire node lock before reconciling
+		locked := r.NodeLock.LockNode(ctx, &rebootNode, rebootNode.Spec.NodeName)
+		if !locked {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		// Execute the reconcile logic
+		result, err := r.reconcileHelper(ctx, &rebootNode)
+		// We always re-queue after successful reconcile to check if unlock is needed on the next reconcile.
+		// This avoids having to re-fetch the object at the end of reconciling to check if CompletionTime was set.
+		if err != nil || result.Requeue || result.RequeueAfter > 0 {
+			return result, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
+	// CompletionTime is set, try to release the lock
+	retryUnlock := r.NodeLock.CheckUnlock(ctx, &rebootNode, rebootNode.Spec.NodeName)
+	if retryUnlock {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileHelper contains the main reconciliation logic
+func (r *RebootNodeReconciler) reconcileHelper(ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode) (ctrl.Result, error) {
 
 	// Take a deep copy to compare against at the end
 	originalRebootNode := rebootNode.DeepCopy()
@@ -257,7 +283,8 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !reflect.DeepEqual(originalRebootNode.Status, rebootNode.Status) {
 		// Refresh the object before updating to avoid precondition failures
 		var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
-		if err := r.Get(ctx, req.NamespacedName, &freshRebootNode); err != nil {
+		objectKey := client.ObjectKey{Name: rebootNode.Name, Namespace: rebootNode.Namespace}
+		if err := r.Get(ctx, objectKey, &freshRebootNode); err != nil {
 			if apierrors.IsNotFound(err) {
 				slog.Info("Post-reconciliation status update: not found, object assumed deleted", "node", rebootNode.Name)
 				return ctrl.Result{}, nil
@@ -291,6 +318,10 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	r.grpcConn = conn
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+
+	// Initialize NodeLock for distributed locking across maintenance operations
+	// TODO: Make namespace configurable via environment variable or config
+	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), "nvsentinel-system")
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		<-ctx.Done()
