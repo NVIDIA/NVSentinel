@@ -130,9 +130,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
                 raise
 
-    def health_event_occurred(
-        self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list, serials: dict[int, str]
-    ) -> None:
+    def health_event_occurred(self, health_details: dict[str, dcgmtypes.HealthDetails], gpu_ids: list) -> None:
         with metrics.dcgm_health_events_publish_time_to_grpc_channel.labels(
             "dcgm_health_events_to_grpc_channel"
         ).time():

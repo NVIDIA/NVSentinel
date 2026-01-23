@@ -122,7 +122,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 fatal_dcgm_health_events_length += 1
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         for event in health_events:
             if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
@@ -153,7 +153,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         assert len(platform_connector_test.entity_cache) == cache_length
         assert (
@@ -171,7 +171,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
         check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         # Verify healthy event was added to cache with correct message format
         dcgm_health_event_key = platform_connector_test._build_cache_key(
@@ -263,7 +263,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         health_events = healthEventProcessor.health_events
 
@@ -391,7 +391,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         health_events = healthEventProcessor.health_events
 
@@ -635,7 +635,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 },
             )
             gpu_ids = [0]
-            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids)
             gpu_health_cache_key = platform_connector_processor._build_cache_key("GpuInforomWatch", "GPU", "0")
             assert (
                 gpu_health_cache_key not in platform_connector_processor.entity_cache
@@ -690,7 +690,7 @@ class TestPlatformConnectors(unittest.TestCase):
             assert dcgm_restored_event.isHealthy == True
 
             # GPU Health Event - send succeeds, cache should be updated
-            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids)
             time.sleep(1)
             assert (
                 gpu_health_cache_key in platform_connector_processor.entity_cache

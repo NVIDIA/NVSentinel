@@ -42,9 +42,7 @@ class FieldDetails:
 
 class CallbackInterface(abc.ABC):
     @abc.abstractmethod
-    def health_event_occurred(
-        self, health_details: dict[str, HealthDetails], gpu_ids: list[int], serials: dict[int, str]
-    ):
+    def health_event_occurred(self, health_details: dict[str, HealthDetails], gpu_ids: list[int]):
         pass
 
     @abc.abstractmethod
