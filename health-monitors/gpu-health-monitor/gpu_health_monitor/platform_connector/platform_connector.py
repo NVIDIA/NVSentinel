@@ -146,7 +146,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
             pending_cache_updates: dict[str, CachedEntityState] = {}
-            pending_metric_updates: list[tuple[str, str, str, int]] = []  # (event_type, gpu_id, severity, value)
+            pending_metric_updates: list[tuple[str, int, str, int]] = []  # (event_type, gpu_id, severity, value)
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
