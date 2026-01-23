@@ -124,7 +124,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                     # Only update cache after successful send
                     self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
                     log.info(f"Updated cache for key {key} after successful send")
-                    # Clear metric for connectivity failure
                     metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
