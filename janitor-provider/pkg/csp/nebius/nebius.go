@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/nebius/gosdk"
 	"github.com/nebius/gosdk/auth"
@@ -168,6 +169,15 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 // - STARTING -> wait for start to complete
 // - RUNNING -> node is ready
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
+	// don't check too early, wait 30 seconds before checking, return not ready if too early
+	storedTime, err := time.Parse(time.RFC3339, requestID)
+	if err != nil {
+		return false, err
+	}
+
+	if time.Since(storedTime) < 30*time.Second {
+		return false, nil
+	}
 	// requestID contains the instance ID from SendRebootSignal
 	instanceID := requestID
 
