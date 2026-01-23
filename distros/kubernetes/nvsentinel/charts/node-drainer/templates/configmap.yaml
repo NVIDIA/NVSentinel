@@ -17,6 +17,8 @@ metadata:
   name: {{ include "node-drainer.fullname" . }}
   labels:
     {{- include "node-drainer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
     evictionTimeoutInSeconds = {{ .Values.evictionTimeoutInSeconds | quote }}

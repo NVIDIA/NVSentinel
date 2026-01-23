@@ -18,6 +18,8 @@ metadata:
   name: {{ include "health-events-analyzer.fullname" . }}
   labels:
     {{- include "health-events-analyzer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -76,7 +78,6 @@ spec:
           args:
           - "--metrics-port={{ .Values.global.metricsPort }}"
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          - "--processing-strategy={{ .Values.processingStrategy }}"
           ports:
             - name: metrics
               containerPort: {{ .Values.global.metricsPort }}
@@ -153,8 +154,7 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
+          secretName: mongo-app-client-cert-secret
           optional: true
       {{- end }}
       restartPolicy: Always

@@ -17,6 +17,8 @@ metadata:
   name: {{ include "csp-health-monitor.fullname" . }}
   labels:
     {{- include "csp-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -83,8 +85,7 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
+          secretName: mongo-app-client-cert-secret # Defined in mongodb-store chart
           optional: true
       {{- end }}
       - name: platform-connector-uds
@@ -110,22 +111,6 @@ spec:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
               protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: metrics
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: metrics
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
@@ -161,29 +146,12 @@ spec:
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
           - "--metrics-port=2113"
-          - "--processing-strategy={{ .Values.processingStrategy }}"
           resources:
             {{- toYaml .Values.quarantineTriggerEngine.resources | default .Values.resources | nindent 12 }}
           ports:
             - name: metrics-sidecar
               containerPort: 2113
               protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: metrics-sidecar
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: metrics-sidecar
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/

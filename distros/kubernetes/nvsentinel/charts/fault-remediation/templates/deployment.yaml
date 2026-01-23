@@ -17,6 +17,8 @@ metadata:
   name: {{ include "fault-remediation.fullname" . }}
   labels:
     {{- include "fault-remediation.labels" . | nindent 4}}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -89,24 +91,29 @@ spec:
           args:
           - "--dry-run={{ ((.Values.global).dryRun) | default false }}"
           - "--enable-log-collector={{ .Values.logCollector.enabled }}"
+          {{- if  (.Values.global).ctrlRuntimeEnabled }}
+          - "--controller-runtime=true"
           - "--leader-elect=true"
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
+            {{- if  (.Values.global).ctrlRuntimeEnabled }}
             - name: health
               containerPort: {{ ((.Values.global).healthPort) | default 9440 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: health
+              port: {{ ternary "health" "metrics" (default false (.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path:  "/readyz"
-              port: "health"
+              path:  {{ ternary "/readyz" "/healthz"  (default false (.Values.global).ctrlRuntimeEnabled) }}
+              port: {{ ternary "health" "metrics"  (default false (.Values.global).ctrlRuntimeEnabled) }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -166,8 +173,7 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
+          secretName: mongo-app-client-cert-secret
           optional: true
       {{- end }}
       - name: config-volume

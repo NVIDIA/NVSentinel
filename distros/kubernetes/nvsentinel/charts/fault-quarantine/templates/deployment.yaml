@@ -17,6 +17,8 @@ metadata:
   name: {{ include "fault-quarantine.fullname" . }}
   labels:
     {{- include "fault-quarantine.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -168,8 +170,7 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
+          secretName: mongo-app-client-cert-secret
           optional: true
       {{- end }}
       {{- if .Values.global.auditLogging.enabled }}
