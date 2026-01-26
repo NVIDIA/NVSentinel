@@ -18,6 +18,8 @@ metadata:
   name: {{ include "labeler.fullname" . }}
   labels:
     {{- include "labeler.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -25,7 +27,10 @@ spec:
       {{- include "labeler.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        &
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

@@ -18,6 +18,8 @@ metadata:
   name: {{ include "health-events-analyzer.fullname" . }}
   labels:
     {{- include "health-events-analyzer.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -25,10 +27,12 @@ spec:
       {{- include "health-events-analyzer.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "health-events-analyzer.labels" . | nindent 8 }}
     spec:
