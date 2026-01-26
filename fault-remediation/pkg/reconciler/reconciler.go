@@ -127,7 +127,7 @@ func (r *FaultRemediationReconciler) Reconcile(
 }
 
 func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
-	healthEventWithStatus model.HealthEventWithStatus) bool {
+	healthEventWithStatus model.HealthEventWithStatus, groupConfig *common.EquivalenceGroupConfig) bool {
 	action := healthEventWithStatus.HealthEvent.RecommendedAction
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
@@ -143,8 +143,7 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		return true
 	}
 
-	_, exists := r.Config.RemediationClient.GetConfig().RemediationActions[action.String()]
-	if common.GetRemediationGroupForAction(action) != "" && exists {
+	if groupConfig != nil {
 		return false
 	}
 
@@ -194,10 +193,8 @@ func (r *FaultRemediationReconciler) runLogCollector(
 }
 
 // performRemediation attempts to create maintenance resource with retries
-func (r *FaultRemediationReconciler) performRemediation(
-	ctx context.Context,
-	healthEventWithStatus *events.HealthEventDoc,
-) (string, error) {
+func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
+	healthEventWithStatus *events.HealthEventDoc, groupConfig *common.EquivalenceGroupConfig) (string, error) {
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 
 	// Update state to "remediating"
@@ -218,7 +215,8 @@ func (r *FaultRemediationReconciler) performRemediation(
 
 	remediationLabelValue := statemanager.RemediationSucceededLabelValue
 
-	crName, createMaintenanceResourceError := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
+	crName, createMaintenanceResourceError := r.Config.RemediationClient.CreateMaintenanceResource(ctx,
+		healthEventData, groupConfig)
 	if createMaintenanceResourceError != nil {
 		metrics.ProcessingErrors.WithLabelValues("cr_creation_failed", nodeName).Inc()
 
@@ -287,8 +285,17 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 	healthEvent := healthEventWithStatus.HealthEvent
 	nodeName := healthEvent.NodeName
 
+	groupConfig, err := common.GetGroupConfigForEvent(r.Config.RemediationClient.GetConfig().RemediationActions,
+		healthEvent)
+	if err != nil {
+		// If we got an error, groupConfig will be nil which will result in shouldSkipEvent setting state label to
+		// remediation-failed
+		slog.Error("Got an error getting group config for event, skipping event and failing remediation",
+			"error", err, "event", healthEventWithStatus.ID)
+	}
+
 	// Check if we should skip this event (NONE actions or unsupported actions)
-	if r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus) {
+	if r.shouldSkipEvent(ctx, healthEventWithStatus.HealthEventWithStatus, groupConfig) {
 		if err := watcherInstance.MarkProcessed(ctx, eventWithToken.ResumeToken); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("mark_processed_error", nodeName).Inc()
 			slog.Error("Error updating resume token", "error", err)
@@ -299,7 +306,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return ctrl.Result{}, nil
 	}
 
-	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent)
+	shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, healthEvent, groupConfig)
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("cr_status_check_error", nodeName).Inc()
 		slog.Error("Error checking existing CR status", "node", nodeName, "error", err)
@@ -335,7 +342,7 @@ func (r *FaultRemediationReconciler) handleRemediationEvent(
 		return result, nil
 	}
 
-	_, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus)
+	_, performRemediationErr := r.performRemediation(ctx, healthEventWithStatus, groupConfig)
 
 	nodeRemediatedStatus := performRemediationErr == nil // success if no error thrown
 	if err = r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, nodeRemediatedStatus); err != nil {
@@ -398,26 +405,11 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	return nil
 }
 
-func (r *FaultRemediationReconciler) checkExistingCRStatus(
-	ctx context.Context,
-	healthEvent *protos.HealthEvent,
-) (bool, string, error) {
+func (r *FaultRemediationReconciler) checkExistingCRStatus(ctx context.Context, healthEvent *protos.HealthEvent,
+	groupConfig *common.EquivalenceGroupConfig) (bool, string, error) {
 	nodeName := healthEvent.NodeName
-	actionName := healthEvent.RecommendedAction.String()
-	tomlConfig := r.Config.RemediationClient.GetConfig()
 
-	// Get equivalence group from action configuration
-	actionConfig, exists := tomlConfig.RemediationActions[actionName]
-	if !exists {
-		slog.Warn("Action not found in remediation configuration, allowing creation",
-			"action", actionName,
-			"node", nodeName)
-
-		return true, "", nil
-	}
-
-	group := actionConfig.EquivalenceGroup
-	if group == "" {
+	if groupConfig == nil {
 		return true, "", nil
 	}
 
@@ -434,31 +426,26 @@ func (r *FaultRemediationReconciler) checkExistingCRStatus(
 		return true, "", nil
 	}
 
-	groupState, exists := state.EquivalenceGroups[group]
-	if !exists {
-		return true, "", nil
-	}
-
 	statusChecker := r.Config.RemediationClient.GetStatusChecker()
 	if statusChecker == nil {
 		slog.Warn("Status checker is not available, allowing creation")
 		return true, "", nil
 	}
 
-	// Use the stored action name to determine the correct CRD type for status checking
-	storedActionName := groupState.ActionName
-	shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, storedActionName, groupState.MaintenanceCR)
+	groupStates := common.FilterEquivalenceGroupStates(groupConfig, state)
 
-	if shouldSkip {
-		slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
-		return false, groupState.MaintenanceCR, nil
-	}
+	for groupName, groupState := range groupStates {
+		shouldSkip := statusChecker.ShouldSkipCRCreation(ctx, groupState.ActionName, groupState.MaintenanceCR)
+		if shouldSkip {
+			slog.Info("CR exists and is in progress, skipping event", "node", nodeName, "crName", groupState.MaintenanceCR)
+			return false, groupState.MaintenanceCR, nil
+		}
 
-	slog.Info("CR completed or failed, allowing retry", "node", nodeName, "crName", groupState.MaintenanceCR)
+		slog.Info("CR completed or failed, allowing retry", "node", nodeName, "crName", groupState.MaintenanceCR)
 
-	if err = r.annotationManager.RemoveGroupFromState(ctx, nodeName, group); err != nil {
-		slog.Error("Failed to remove CR from annotation", "error", err)
-		return false, "", fmt.Errorf("failed to remove CR from annotation: %w", err)
+		if err := r.annotationManager.RemoveGroupFromState(ctx, nodeName, groupName); err != nil {
+			slog.Error("Failed to remove CR from annotation", "error", err)
+		}
 	}
 
 	return true, "", nil

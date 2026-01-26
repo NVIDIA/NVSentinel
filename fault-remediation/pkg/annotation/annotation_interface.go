@@ -45,5 +45,6 @@ type EquivalenceGroupState struct {
 	CreatedAt     time.Time `json:"createdAt"`
 
 	// Action that created the CR (e.g., "RESTART_BM")
+	// Required to look up the corresponding MaintenanceResource from the TomlConfig
 	ActionName string `json:"actionName"`
 }

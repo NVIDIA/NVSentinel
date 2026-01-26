@@ -44,12 +44,7 @@ type LastProcessedObjectIDStore interface {
 
 type EventWatcherInterface interface {
 	Start(ctx context.Context) error
-	SetProcessEventCallback(
-		callback func(
-			ctx context.Context,
-			event *model.HealthEventWithStatus,
-		) *model.Status,
-	)
+	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error
 }
 
@@ -67,12 +62,8 @@ func NewEventWatcher(
 	}
 }
 
-func (w *EventWatcher) SetProcessEventCallback(
-	callback func(
-		ctx context.Context,
-		event *model.HealthEventWithStatus,
-	) *model.Status,
-) {
+func (w *EventWatcher) SetProcessEventCallback(callback func(ctx context.Context,
+	event *model.HealthEventWithStatus) *model.Status) {
 	w.processEventCallback = callback
 }
 
@@ -159,6 +150,15 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		return fmt.Errorf("error getting document ID: %w", err)
 	}
 
+	// Rather than include the object ID on the model.HealthEventWithStatus struct, we will manually set the ID
+	// on the nested protos.HealthEvent struct. Note that protos.HealthEvent structs are stored as part of the
+	// quarantineHealthEvent annotation. We require that the object ID is available in events included in the
+	// annotation so that the node-drainer can use this ID to look up if any previous drains have completed for
+	// the given node.
+	if healthEventWithStatus.HealthEvent != nil {
+		healthEventWithStatus.HealthEvent.Id = eventID
+	}
+
 	// Get the record UUID for database updates (different from changelog ID for PostgreSQL)
 	recordUUID, err := event.GetRecordUUID()
 	if err != nil {
@@ -168,8 +168,8 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	w.lastProcessedObjectID.StoreLastProcessedObjectID(eventID)
 
 	startTime := time.Now()
-	status := w.processEventCallback(ctx, &healthEventWithStatus)
 
+	status := w.processEventCallback(ctx, &healthEventWithStatus)
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("update_quarantine_status_error").Inc()

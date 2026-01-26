@@ -343,6 +343,7 @@ func NewMongoDBClient(ctx context.Context, dbConfig config.DatabaseConfig) (*Mon
 		TotalCACertIntervalSeconds:       dbConfig.GetTimeoutConfig().GetCACertIntervalSeconds(),
 		ChangeStreamRetryDeadlineSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryDeadlineSeconds(),
 		ChangeStreamRetryIntervalSeconds: dbConfig.GetTimeoutConfig().GetChangeStreamRetryIntervalSeconds(),
+		AppName:                          dbConfig.GetAppName(),
 	}
 
 	// Initialize certificate watcher if rotation is enabled

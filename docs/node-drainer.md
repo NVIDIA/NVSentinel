@@ -21,16 +21,18 @@ The Node Drainer module solves this by:
 - **Handling different workload types** with appropriate eviction strategies
 - **Providing status updates** so you can track drain progress
 - **Working with Kubernetes** to ensure workloads are rescheduled on healthy nodes
+- **Executing partial drains** to only drain pods using unhealthy GPUs (when possible)
 
 ## How It Works
 
 The Node Drainer watches the datastore for quarantined nodes and safely evacuates their workloads:
 
 1. Receives quarantined node events from the datastore
-2. Determines eviction mode based on namespace configuration
-3. Evicts pods using Kubernetes Eviction API (respects PodDisruptionBudgets)
-4. Monitors progress and handles stuck or slow-terminating pods
-5. Updates status when complete
+2. Determines if a full drain or a partial drain needs to be executed
+3. Determines eviction mode based on namespace configuration
+4. Evicts pods using Kubernetes Eviction API (respects PodDisruptionBudgets)
+5. Monitors progress and handles stuck or slow-terminating pods
+6. Updates status when complete
 
 System namespace pods are skipped. DaemonSets are typically not evicted as they're system-critical.
 
@@ -51,6 +53,8 @@ node-drainer:
   userNamespaces:
     - name: "*"                      # Pattern matching namespaces
       mode: "AllowCompletion"        # Eviction mode
+  
+  partialDrainEnabled: true
 ```
 
 ### Eviction Modes
@@ -78,6 +82,7 @@ The module supports three eviction modes for different workload types:
 - **Delete Timeout**: Minutes to wait before force deleting pods
 - **Not Ready Timeout**: Minutes before considering a pod stuck
 - **User Namespaces**: Define eviction mode per namespace pattern (supports `*` wildcard)
+- **Partial Drain**: Enable or disable partial drain functionality
 
 ## Key Features
 
@@ -101,3 +106,6 @@ Multiple timeout mechanisms prevent stuck drains:
 
 ### Cold Start Recovery
 Automatically resumes drain operations after restarts - queries datastore for in-progress drains and continues from where it left off.
+
+### Partial Drain Functionality
+For GPU faults that can be remediated with a GPU reset, the Node Drainer will only drain pods which are leveraging the unhealthy GPU. For GPU faults that require a node reboot, all pods on the given node in the configured namespaces will be drained.

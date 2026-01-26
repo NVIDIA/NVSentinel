@@ -158,6 +158,10 @@ func (l *LegacyDatabaseConfigAdapter) GetTimeoutConfig() config.TimeoutConfig {
 	return &LegacyTimeoutConfigAdapter{}
 }
 
+func (l *LegacyDatabaseConfigAdapter) GetAppName() string {
+	return os.Getenv("APP_NAME")
+}
+
 // LegacyCertConfigAdapter adapts DataStoreConfig certificate configuration
 type LegacyCertConfigAdapter struct {
 	dsConfig      *datastore.DataStoreConfig

@@ -120,6 +120,9 @@ spec:
           - name: var-run-vol
             mountPath: /var/run/
           env:
+            # App name for connection identification in logs and currentOp
+            - name: APP_NAME
+              value: {{ .Chart.Name | quote }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: "/etc/ssl/client-certs"

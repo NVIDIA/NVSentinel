@@ -64,6 +64,7 @@ type TomlConfig struct {
 	NotReadyTimeoutMinutes int               `toml:"notReadyTimeoutMinutes"`
 	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
 	CustomDrain            CustomDrainConfig `toml:"customDrain"`
+	PartialDrainEnabled    bool              `toml:"partialDrainEnabled"`
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {

@@ -23,13 +23,14 @@ data:
     systemNamespaces = {{ .Values.systemNamespaces | quote }}
     deleteAfterTimeoutMinutes = {{ .Values.deleteAfterTimeoutMinutes }}
     notReadyTimeoutMinutes = {{ .Values.notReadyTimeoutMinutes }}
+    partialDrainEnabled = {{ .Values.partialDrainEnabled }}
     
     {{- range .Values.userNamespaces }}
     [[userNamespaces]]
     name = {{ .name | quote }}
     mode = {{ .mode | quote }}
     {{- end }}
-    
+
     {{- if .Values.customDrain.enabled }}
     [customDrain]
       enabled = true

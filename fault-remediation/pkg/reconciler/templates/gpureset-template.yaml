@@ -12,28 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: v1
-kind: ConfigMap
+apiVersion: {{.ApiGroup}}/{{.Version}}
+kind: GPUReset
 metadata:
-  name: node-drainer
-  namespace: nvsentinel
-data:
-  config.toml: |
-    evictionTimeoutInSeconds = "60"
-    systemNamespaces = "^(kube-.*|nvsentinel|gpu-operator)$"
-    deleteAfterTimeoutMinutes = 1
-    notReadyTimeoutMinutes = 5
-    partialDrainEnabled = true
-    
-    [[userNamespaces]]
-      name = "immediate-test"
-      mode = "Immediate"
-    
-    [[userNamespaces]]
-      name = "allowcompletion-test"
-      mode = "AllowCompletion"
-    
-    [[userNamespaces]]
-      name = "delete-timeout-test"
-      mode = "DeleteAfterTimeout"
+  name: maintenance-{{.NodeName}}-{{.HealthEventID}}
+spec:
+  nodeName: {{.NodeName}}
+  selector:
+    uuids:
+      - {{.ImpactedEntityScopeValue}}
 

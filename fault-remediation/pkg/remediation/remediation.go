@@ -162,10 +162,8 @@ func (c *FaultRemediationClient) GetStatusChecker() crstatus.CRStatusCheckerInte
 }
 
 // nolint: cyclop // todo
-func (c *FaultRemediationClient) CreateMaintenanceResource(
-	ctx context.Context,
-	healthEventData *events.HealthEventData,
-) (string, error) {
+func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData,
+	groupConfig *common.EquivalenceGroupConfig) (string, error) {
 	healthEvent := healthEventData.HealthEvent
 	healthEventID := healthEventData.ID
 
@@ -203,10 +201,11 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		"nodeUID", node.UID)
 
 	templateData := TemplateData{
-		NodeName:              healthEvent.NodeName,
-		HealthEventID:         healthEventID,
-		RecommendedAction:     healthEvent.RecommendedAction,
-		RecommendedActionName: recommendedActionName,
+		NodeName:                 healthEvent.NodeName,
+		HealthEventID:            healthEventID,
+		RecommendedAction:        healthEvent.RecommendedAction,
+		RecommendedActionName:    recommendedActionName,
+		ImpactedEntityScopeValue: groupConfig.ImpactedEntityScopeValue,
 
 		HealthEvent: healthEvent,
 
@@ -247,10 +246,9 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(
 		"node", healthEvent.NodeName,
 		"template", actionKey)
 
-	group := common.GetRemediationGroupForAction(healthEvent.RecommendedAction)
-	if group != "" && c.annotationManager != nil {
+	if len(groupConfig.EffectiveEquivalenceGroup) != 0 && c.annotationManager != nil {
 		if err = c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-			group, actualCRName, recommendedActionName); err != nil {
+			groupConfig.EffectiveEquivalenceGroup, actualCRName, recommendedActionName); err != nil {
 			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
 				"error", err)
 

@@ -222,7 +222,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 		fatalEvent := helpers.NewHealthEvent(testCtx.NodeName).
 			WithErrorCode("79").
 			WithMessage("XID 79 fatal error").
-			WithRecommendedAction(2)
+			WithRecommendedAction(15)
 		helpers.SendHealthEvent(ctx, t, fatalEvent)
 
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{testCtx.NodeName}, true)

@@ -49,12 +49,12 @@ Look at **Conditions** and **Events** sections for hardware failures.
 
 Query kube-state-metrics to see historic node conditions:
 
-```bash
-# Check node condition transitions over the last hour
-kube_node_status_condition{condition=~"Gpu.*"} [1h]
+```promql
+# Count condition transitions over the last hour (flapping = frequent changes)
+changes(kube_node_status_condition{condition=~"Gpu.*|SysLogs.*", status="true"}[1h]) > 0
 
-# Look for frequent status changes (1 = True, 0 = False, -1 = Unknown)
-# Flapping shows rapid oscillation between states
+# View current GPU/Syslog conditions across all nodes
+kube_node_status_condition{condition=~"Gpu.*|SysLogs.*", status="true"} == 1
 ```
 
 If health checks are flapping, this typically indicates an infrastructure issue that is auto-resolving (network blips, storage latency, etc.). This requires deeper investigation of the underlying infrastructure.
@@ -71,15 +71,33 @@ Repeat for each affected node.
 
 ### 7. Reset Circuit Breaker
 
-**If the circuit breaker was tripped for a long time** or **if the error affected many more nodes that weren't cordoned due to the breaker**, it is recommended to clear resume tokens to avoid processing accumulated events. Follow the [Stale Events Runbook](./stale-events.md).
-
 ⚠️ **Only reset after fixing the root cause**
 
+Choose the appropriate reset mode based on your situation:
+
+#### Option A: Skip accumulated events (recommended after long outages)
+
+Use `cursor: CREATE` to discard events that accumulated while the circuit breaker was tripped. This prevents immediate re-tripping from stale events.
+
 ```bash
-kubectl delete cm circuit-breaker -n nvsentinel
+kubectl patch cm circuit-breaker -n nvsentinel \
+  -p '{"data":{"status":"CLOSED","cursor":"CREATE"}}'
 kubectl rollout restart deploy fault-quarantine -n nvsentinel
 kubectl rollout status deploy fault-quarantine -n nvsentinel
 ```
+
+#### Option B: Process accumulated events
+
+Use `cursor: RESUME` (or omit cursor) to process all events that occurred while tripped. Only use this if you're confident the accumulated events won't cause immediate re-tripping.
+
+```bash
+kubectl patch cm circuit-breaker -n nvsentinel \
+  -p '{"data":{"status":"CLOSED","cursor":"RESUME"}}'
+kubectl rollout restart deploy fault-quarantine -n nvsentinel
+kubectl rollout status deploy fault-quarantine -n nvsentinel
+```
+
+> **Note:** The cursor automatically resets to `RESUME` after startup, so you don't need to change it back manually.
 
 ### 8. Verify Normal Operation
 

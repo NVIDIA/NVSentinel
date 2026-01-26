@@ -51,15 +51,29 @@ Defines the Custom Resource that will be created to trigger remediation actions.
 ```yaml
 fault-remediation:
   maintenance:
-    apiGroup: "janitor.dgxc.nvidia.com"
-    version: "v1alpha1"
-    kind: "RebootNode"
-    completeConditionType: "NodeReady"
-    namespace: "nvsentinel"
-    resourceNames:
-      - "rebootnodes"
-    template: |
-      # Go template content here
+    actions:
+      "COMPONENT_RESET":
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "GPUReset"
+        scope: "Cluster"
+        completeConditionType: "Completed"
+        templateFileName: "gpureset-template.yaml"
+        equivalenceGroup: "reset"
+        supersedingEquivalenceGroups: ["restart"]
+        impactedEntityScope: "GPU_UUID"
+
+    templates:
+      "gpureset-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: GPUReset
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          selector:
+            uuids:
+              - {{ .ImpactedEntityScopeValue }}
 ```
 
 ### Parameters
@@ -73,16 +87,25 @@ API version of the maintenance CRD.
 #### kind
 Kubernetes Kind of the maintenance CRD.
 
+#### scope
+Determines whether the maintenance CRD is cluster-scoped or namespaced.
+
 #### completeConditionType
 Status condition name to check for maintenance completion. Used to prevent duplicate CRs when multiple faults occur on the same node. If condition status is `True`, maintenance is complete. 
 
 #### namespace
 Kubernetes namespace where maintenance CRs will be created.
 
-#### resourceNames
-List of maintenance resource type names for RBAC permissions. Must match the plural names of your CRD types.
+#### equivalenceGroup
+Defines which remediation actions are considered equivalent for deduplication. Actions in the same group will deduplicate against each other regardless of CRD type if a previous CRD is in a non-terminal state.
 
-#### template
+#### supersedingEquivalenceGroups
+Defines additional equivalence groups that are considered equivalent for deduplication. For example, the COMPONENT_RESET action in the reset group should be deduplicated with the RESTART_VM action in the restart group. In other words, rebooting a node will have the same effect as resetting a GPU whereas the inverse is not true.
+
+#### impactedEntityScope
+For the COMPONENT_RESET action, the impacted entity scope should be defined so that there's a unique equivalence group for each entity. The unique equivalence group is constructed by appending the value for the given impacted entity to the equivalence group name. For example, each GPU needing reset will be in its own equivalence group named like reset-<GPU_UUID>.
+
+#### templates
 Go template that generates the maintenance CR YAML. See Template Extension Point section below.
 
 ## Template Extension Point
@@ -93,12 +116,14 @@ The maintenance template is a Go template that generates the Kubernetes CR YAML 
 
 - `.NodeName` (string) - Name of the node requiring maintenance
 - `.HealthEventID` (string) - Unique ID of the triggering health event
+- `.HealthEvent` (HealthEvent) - The entire content of the triggering health event
 - `.RecommendedAction` (int) - Numeric action code from health event (see [health_event.proto](https://github.com/NVIDIA/NVSentinel/blob/main/data-models/protobufs/health_event.proto))
+- `.RecommendedActionName` (string) - Action name from the health event
+- `.ImpactedEntityScopeValue` (string) - The GPU_UUID used in COMPONENT_RESET remediation actions
 - `.ApiGroup` (string) - Value from `maintenance.apiGroup`
 - `.Version` (string) - Value from `maintenance.version`
 - `.Kind` (string) - Value from `maintenance.kind`
 - `.Namespace` (string) - Value from `maintenance.namespace`
-- `.CompleteConditionType` (string) - Value from `maintenance.completeConditionType`
 
 ### Template Examples
 
@@ -106,10 +131,18 @@ The maintenance template is a Go template that generates the Kubernetes CR YAML 
 
 ```yaml
 maintenance:
-  apiGroup: "janitor.dgxc.nvidia.com"
-  version: "v1alpha1"
-  kind: "RebootNode"
-  template: |
+actions:
+  "RESTART_VM":
+    apiGroup: "janitor.dgxc.nvidia.com"
+    version: "v1alpha1"
+    kind: "RebootNode"
+    scope: "Cluster"
+    completeConditionType: "NodeReady"
+    templateFileName: "rebootnode-template.yaml"
+    equivalenceGroup: "restart"
+
+templates:
+  "rebootnode-template.yaml": |
     apiVersion: janitor.dgxc.nvidia.com/v1alpha1
     kind: RebootNode
     metadata:
@@ -122,10 +155,18 @@ maintenance:
 
 ```yaml
 maintenance:
-  apiGroup: "maintenance.example.com"
-  version: "v1"
-  kind: "NodeMaintenance"
-  template: |
+actions:
+  "RESTART_VM":
+    apiGroup: "maintenance.example.com"
+    version: "v1"
+    kind: "NodeMaintenance"
+    scope: "Cluster"
+    completeConditionType: "NodeReady"
+    templateFileName: "maintenance-template.yaml"
+    equivalenceGroup: "maintenance"
+
+templates:
+  "maintenance-template.yaml": |
     apiVersion: maintenance.example.com/v1
     kind: NodeMaintenance
     metadata:

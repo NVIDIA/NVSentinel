@@ -18,6 +18,12 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+const (
+	mongoIDFieldName = "_id"
 )
 
 // Builder provides a database-agnostic query builder
@@ -135,6 +141,10 @@ type eqCondition struct {
 }
 
 func (c *eqCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: c.value,
 	}
@@ -163,6 +173,10 @@ type neCondition struct {
 }
 
 func (c *neCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: map[string]interface{}{"$ne": c.value},
 	}
@@ -190,6 +204,10 @@ type gtCondition struct {
 }
 
 func (c *gtCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: map[string]interface{}{"$gt": c.value},
 	}
@@ -211,6 +229,10 @@ type gteCondition struct {
 }
 
 func (c *gteCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: map[string]interface{}{"$gte": c.value},
 	}
@@ -232,6 +254,10 @@ type ltCondition struct {
 }
 
 func (c *ltCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: map[string]interface{}{"$lt": c.value},
 	}
@@ -253,6 +279,10 @@ type lteCondition struct {
 }
 
 func (c *lteCondition) ToMongo() map[string]interface{} {
+	if c.field == mongoIDFieldName {
+		c.value = convertToMongoObject(c.value)
+	}
+
 	return map[string]interface{}{
 		c.field: map[string]interface{}{"$lte": c.value},
 	}
@@ -274,8 +304,16 @@ type inCondition struct {
 }
 
 func (c *inCondition) ToMongo() map[string]interface{} {
+	values := c.values
+	if c.field == mongoIDFieldName {
+		values = nil
+		for _, value := range c.values {
+			values = append(values, convertToMongoObject(value))
+		}
+	}
+
 	return map[string]interface{}{
-		c.field: map[string]interface{}{"$in": c.values},
+		c.field: map[string]interface{}{"$in": values},
 	}
 }
 
@@ -432,7 +470,7 @@ func mongoFieldToJSONB(fieldPath string) string {
 		if isColumnField(snakeCaseField) {
 			// Convert MongoDB field names to PostgreSQL column names (snake_case)
 			switch snakeCaseField {
-			case "_id":
+			case mongoIDFieldName:
 				return "id"
 			default:
 				return snakeCaseField
@@ -467,6 +505,17 @@ func mongoFieldToJSONB(fieldPath string) string {
 	}
 
 	return jsonbPath.String()
+}
+
+func convertToMongoObject(id interface{}) interface{} {
+	idStr := id.(string)
+
+	objID, err := primitive.ObjectIDFromHex(idStr)
+	if err != nil {
+		return id
+	}
+
+	return objID
 }
 
 // needsDualCaseLookup checks if a field name needs dual-case support (lowercase and camelCase)
@@ -529,7 +578,7 @@ func isColumnField(field string) bool {
 		"created_at": true,
 		"updated_at": true,
 		// Note: MongoDB uses _id, but we map it to id column for PostgreSQL
-		"_id": true,
+		mongoIDFieldName: true,
 
 		// Health events denormalized columns
 		"node_quarantined":           true,

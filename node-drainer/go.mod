@@ -9,6 +9,7 @@ require (
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/fault-quarantine v0.0.0
 	github.com/nvidia/nvsentinel/store-client v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -98,3 +99,5 @@ replace github.com/nvidia/nvsentinel/store-client => ../store-client
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
 replace github.com/nvidia/nvsentinel/commons => ../commons
+
+replace github.com/nvidia/nvsentinel/fault-quarantine => ../fault-quarantine

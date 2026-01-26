@@ -16,11 +16,9 @@ package reconciler
 
 import (
 	"context"
-
 	"log"
 	"os"
 	"path/filepath"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +35,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -51,6 +50,55 @@ import (
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/remediation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+)
+
+var (
+	restartRemediationActions = map[string]config.MaintenanceResource{
+		"RESTART_BM": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "rebootnode-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "restart",
+		},
+		"RESTART_VM": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "rebootnode-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "restart",
+		},
+	}
+	restartAndResetRemediationActions = map[string]config.MaintenanceResource{
+		"RESTART_BM": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "rebootnode-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "restart",
+		},
+		"RESTART_VM": {
+			ApiGroup:              "janitor.dgxc.nvidia.com",
+			Version:               "v1alpha1",
+			Kind:                  "RebootNode",
+			TemplateFileName:      "rebootnode-template.yaml",
+			CompleteConditionType: "NodeReady",
+			EquivalenceGroup:      "restart",
+		},
+		"COMPONENT_RESET": {
+			ApiGroup:                     "janitor.dgxc.nvidia.com",
+			Version:                      "v1alpha1",
+			Kind:                         "GPUReset",
+			TemplateFileName:             "gpureset-template.yaml",
+			CompleteConditionType:        "Complete",
+			EquivalenceGroup:             "reset",
+			ImpactedEntityScope:          "GPU_UUID",
+			SupersedingEquivalenceGroups: []string{"restart"},
+		},
+	}
 )
 
 // MockChangeStreamWatcher provides a mock implementation of datastore.ChangeStreamWatcher for testing
@@ -182,12 +230,13 @@ func TestMain(m *testing.M) {
 	var err error
 	testContext, testCancelFunc = context.WithCancel(context.Background())
 
-	// Get the path to CRD files
-	crdPath := filepath.Join("testdata", "janitor.dgxc.nvidia.com_rebootnodes.yaml")
+	// Get the path to CRD files. These are symlinks to CRDs in Janitor Helm chart
+	rebootNodeCRDPath := filepath.Join("testdata", "janitor.dgxc.nvidia.com_rebootnodes.yaml")
+	gpuResetCRDPath := filepath.Join("testdata", "janitor.dgxc.nvidia.com_gpuresets.yaml")
 
 	// Setup envtest environment with CRDs
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Dir(crdPath)},
+		CRDDirectoryPaths: []string{filepath.Dir(rebootNodeCRDPath), filepath.Dir(gpuResetCRDPath)},
 	}
 
 	testRestConfig, err = testEnv.Start()
@@ -216,7 +265,7 @@ func TestMain(m *testing.M) {
 	}
 	ctrlRuntimeClient = mgr.GetClient()
 
-	remediationClient, err := createTestRemediationClient(false)
+	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 	if err != nil {
 		log.Fatalf("Failed to create remediation client: %v", err)
 	}
@@ -299,30 +348,13 @@ func tearDownTestEnvironment() {
 }
 
 // createTestRemediationClient creates a real FaultRemediationClient for e2e tests
-func createTestRemediationClient(dryRun bool) (remediation.FaultRemediationClientInterface, error) {
+func createTestRemediationClient(dryRun bool,
+	remediationActions map[string]config.MaintenanceResource) (remediation.FaultRemediationClientInterface, error) {
 	remediationConfig := config.TomlConfig{
 		Template: config.Template{
 			MountPath: "./templates",
-			FileName:  "rebootnode-template.yaml",
 		},
-		RemediationActions: map[string]config.MaintenanceResource{
-			"RESTART_BM": {
-				ApiGroup:              "janitor.dgxc.nvidia.com",
-				Version:               "v1alpha1",
-				Kind:                  "RebootNode",
-				TemplateFileName:      "rebootnode-template.yaml",
-				CompleteConditionType: "NodeReady",
-				EquivalenceGroup:      "restart",
-			},
-			"COMPONENT_RESET": {
-				ApiGroup:              "janitor.dgxc.nvidia.com",
-				Version:               "v1alpha1",
-				Kind:                  "RebootNode",
-				TemplateFileName:      "rebootnode-template.yaml",
-				CompleteConditionType: "NodeReady",
-				EquivalenceGroup:      "restart",
-			},
-		},
+		RemediationActions: remediationActions,
 	}
 
 	return remediation.NewRemediationClient(ctrlRuntimeClient, dryRun, remediationConfig)
@@ -340,7 +372,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("FirstEvent_CreatesAnnotation", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient, err := createTestRemediationClient(false)
+		remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 		assert.NoError(t, err)
 		stateManager := statemanager.NewStateManager(testClient)
 
@@ -366,11 +398,13 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, healthEventDoc.HealthEvent)
+		assert.NoError(t, err)
 
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 
-		crName, err := r.performRemediation(ctx, healthEventDoc)
+		crName, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
 		assert.NoError(t, err)
 		assert.NotEmpty(t, crName)
 
@@ -403,7 +437,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("SecondEvent_SkippedWhenCRInProgress", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient, err := createTestRemediationClient(false)
+		remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 		assert.NoError(t, err)
 
 		stateManager := statemanager.NewStateManager(testClient)
@@ -429,17 +463,19 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
+		assert.NoError(t, err)
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.RemediatingLabelValue, false)
 
-		firstCRName, err := r.performRemediation(ctx, event1)
+		firstCRName, err := r.performRemediation(ctx, event1, groupConfig)
 		assert.NoError(t, err)
 
 		// Update CR status to InProgress
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
 		// Event 2: Should be skipped
-		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent)
+		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, groupConfig)
 		assert.NoError(t, err)
 		assert.False(t, shouldCreateCR, "Second event should be skipped")
 		assert.Equal(t, firstCRName, existingCR)
@@ -461,7 +497,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("FailedCR_CleansAnnotationAndAllowsRetry", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient, err := createTestRemediationClient(false)
+		remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 		assert.NoError(t, err)
 
 		stateManager := statemanager.NewStateManager(testClient)
@@ -487,18 +523,20 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
+		assert.NoError(t, err)
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		// TODO: also why does this return an error but also put the change through
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.RemediatingLabelValue, false)
 
-		firstCRName, err := r.performRemediation(ctx, event1)
+		firstCRName, err := r.performRemediation(ctx, event1, groupConfig)
 		assert.NoError(t, err)
 
 		// Simulate CR failure
 		updateRebootNodeStatus(ctx, t, firstCRName, "Failed")
 
 		// Event 2: Should create new CR after cleanup
-		shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent)
+		shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, groupConfig)
 		assert.NoError(t, err)
 		assert.True(t, shouldCreateCR, "Should allow retry after CR failed")
 
@@ -517,11 +555,13 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
+		groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event2.HealthEvent)
+		assert.NoError(t, err)
 
 		//TODO: is this a bug? if you enter remediation-succeeded it won't let you get back to remediating
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 
-		secondCRName, err := r.performRemediation(ctx, event2)
+		secondCRName, err := r.performRemediation(ctx, event2, groupConfig)
 		assert.NoError(t, err)
 
 		// Verify new annotation
@@ -544,7 +584,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 	t.Run("CrossAction_SameGroupDeduplication", func(t *testing.T) {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 
-		remediationClient, err := createTestRemediationClient(false)
+		remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 		assert.NoError(t, err)
 
 		stateManager := statemanager.NewStateManager(testClient)
@@ -560,42 +600,47 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			annotationManager: cfg.RemediationClient.GetAnnotationManager(),
 		}
 
-		// Event 1: COMPONENT_RESET
+		// Event 1: RESTART_VM
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id",
 			HealthEventWithStatus: model.HealthEventWithStatus{
 				HealthEvent: &protos.HealthEvent{
 					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+					RecommendedAction: protos.RecommendedAction_RESTART_VM,
 				},
 			},
 		}
+		groupConfig1, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+			event1.HealthEvent)
+		assert.NoError(t, err)
+
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		// TODO: also why does this return an error but also put the change through
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.RemediatingLabelValue, false)
 
-		firstCRName, err := r.performRemediation(ctx, event1)
+		firstCRName, err := r.performRemediation(ctx, event1, groupConfig1)
 		assert.NoError(t, err)
 
 		// Set InProgress status
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
-		// Event 2: RESTART_VM (same group)
+		// Event 2: RESTART_BM (same group)
 		event2Health := &protos.HealthEvent{
 			NodeName:          nodeName,
 			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		}
-
-		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event2Health)
+		groupConfig2, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+			event2Health)
 		assert.NoError(t, err)
-		assert.False(t, shouldCreateCR, "RESTART_VM should be deduplicated with COMPONENT_RESET (same group)")
+
+		shouldCreateCR, existingCR, err := r.checkExistingCRStatus(ctx, event2Health, groupConfig2)
+		assert.NoError(t, err)
+		assert.False(t, shouldCreateCR, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
 		assert.Equal(t, firstCRName, existingCR)
 
 		// Verify both actions map to same group
-		group1 := common.GetRemediationGroupForAction(protos.RecommendedAction_COMPONENT_RESET)
-		group2 := common.GetRemediationGroupForAction(protos.RecommendedAction_RESTART_BM)
-		assert.Equal(t, group1, group2, "Both actions should be in same equivalence group")
-		assert.Equal(t, "restart", group1)
+		assert.Equal(t, groupConfig1, groupConfig2, "Both actions should be in same equivalence group")
+		assert.Equal(t, "restart", groupConfig1.EffectiveEquivalenceGroup)
 
 		// Cleanup
 		gvr := schema.GroupVersionResource{
@@ -618,7 +663,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 
 	cleanupNodeAnnotations(ctx, t, nodeName)
 
-	remediationClient, err := createTestRemediationClient(false)
+	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 	assert.NoError(t, err)
 
 	stateManager := statemanager.NewStateManager(testClient)
@@ -640,7 +685,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		Resource: "rebootnodes",
 	}
 
-	// Event 1: RESTART_VM creates CR-1
+	// Event 1: RESTART_BM creates CR-1
 	event1 := &events.HealthEventDoc{
 		ID: "test-event-id",
 		HealthEventWithStatus: model.HealthEventWithStatus{
@@ -650,9 +695,12 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
+	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event1.HealthEvent)
+	assert.NoError(t, err)
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 
-	crName1, err := r.performRemediation(ctx, event1)
+	crName1, err := r.performRemediation(ctx, event1, groupConfig)
 	assert.NoError(t, err)
 
 	// Verify annotation on actual node
@@ -660,16 +708,19 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, node.Annotations, annotation.AnnotationKey, "Node should have annotation after first CR")
 
-	// Event 2: COMPONENT_RESET (same group, CR in progress) - should be skipped
+	// Event 2: RESTART_VM (same group, CR in progress) - should be skipped
 	updateRebootNodeStatus(ctx, t, crName1, "InProgress")
 
 	event2 := &protos.HealthEvent{
 		NodeName:          nodeName,
-		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		RecommendedAction: protos.RecommendedAction_RESTART_VM,
 	}
-	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2)
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event2)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_VM)")
+	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2, groupConfig)
+	assert.NoError(t, err)
+	assert.False(t, shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
 	assert.Equal(t, crName1, existingCR)
 
 	// Verify annotation unchanged
@@ -682,11 +733,14 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 
 	event3 := &protos.HealthEvent{
 		NodeName:          nodeName,
-		RecommendedAction: protos.RecommendedAction_RESTART_VM,
+		RecommendedAction: protos.RecommendedAction_RESTART_BM,
 	}
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3)
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event3)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "RESTART_VM should be skipped (CR succeeded)")
+	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
 
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -695,7 +749,10 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		NodeName:          nodeName,
 		RecommendedAction: protos.RecommendedAction_RESTART_BM,
 	}
-	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4)
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event4)
+	assert.NoError(t, err)
+	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
 	assert.NoError(t, err)
 	assert.True(t, shouldCreate, "Should allow retry after failure")
 
@@ -715,7 +772,10 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
-	crName2, err := r.performRemediation(ctx, event5)
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event5.HealthEvent)
+	assert.NoError(t, err)
+	crName2, err := r.performRemediation(ctx, event5, groupConfig)
 	assert.NoError(t, err)
 
 	// Verify new annotation
@@ -727,6 +787,294 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Cleanup
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName1, metav1.DeleteOptions{})
 	_ = testDynamic.Resource(gvr).Delete(ctx, crName2, metav1.DeleteOptions{})
+}
+
+func TestEventSequenceWithSupersedingGroup(t *testing.T) {
+	ctx := testContext
+
+	nodeName := "test-node-sequence-" + "test-node-123"
+	createTestNode(ctx, nodeName, nil, map[string]string{"test": "label"})
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	cleanupNodeAnnotations(ctx, t, nodeName)
+
+	remediationClient, err := createTestRemediationClient(false, restartAndResetRemediationActions)
+	assert.NoError(t, err)
+
+	stateManager := statemanager.NewStateManager(testClient)
+
+	cfg := ReconcilerConfig{
+		RemediationClient: remediationClient,
+		StateManager:      stateManager,
+		UpdateMaxRetries:  3,
+		UpdateRetryDelay:  100 * time.Millisecond,
+	}
+	r := FaultRemediationReconciler{
+		Config:            cfg,
+		annotationManager: cfg.RemediationClient.GetAnnotationManager(),
+	}
+
+	rebootNodeGVR := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "rebootnodes",
+	}
+	gpuResetGVR := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "gpuresets",
+	}
+
+	// Event 1: RESTART_BM in group restart creates CR-1
+	event1 := &events.HealthEventDoc{
+		ID: "test-event-id",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
+			},
+		},
+	}
+	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event1.HealthEvent)
+	assert.NoError(t, err)
+	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
+
+	crName1, err := r.performRemediation(ctx, event1, groupConfig)
+	assert.NoError(t, err)
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, node.Annotations, annotation.AnnotationKey, "Node should have annotation after first CR")
+
+	// Event 2: COMPONENT_RESET in group reset with superseding group restart - should be skipped
+	updateRebootNodeStatus(ctx, t, crName1, "InProgress")
+
+	event2 := model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+				},
+			},
+		},
+	}
+
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event2.HealthEvent)
+	assert.NoError(t, err)
+	shouldSkip := r.shouldSkipEvent(ctx, event2, groupConfig)
+	assert.False(t, shouldSkip, "Shouldn't valid health event")
+	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, groupConfig)
+	assert.NoError(t, err)
+	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
+	assert.Equal(t, crName1, existingCR)
+
+	// Verify annotation unchanged
+	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, crName1, state.EquivalenceGroups["restart"].MaintenanceCR)
+	assert.Equal(t, "RESTART_BM", state.EquivalenceGroups["restart"].ActionName)
+
+	// Event 3: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 succeeds
+	updateRebootNodeStatus(ctx, t, crName1, "Succeeded")
+
+	event3 := &protos.HealthEvent{
+		NodeName:          nodeName,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+			},
+		},
+	}
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event3)
+	assert.NoError(t, err)
+	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldCreate, "COMPONENT_RESET should be created (CR succeeded)")
+
+	// Event 4: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 fails
+	updateRebootNodeStatus(ctx, t, crName1, "Failed")
+
+	event4 := &protos.HealthEvent{
+		NodeName:          nodeName,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+			},
+		},
+	}
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event4)
+	assert.NoError(t, err)
+	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldCreate, "Should allow retry after failure")
+
+	// Verify annotation cleaned
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should clean annotation")
+
+	// Event 5: COMPONENT_RESET in group reset with superseding group restart should create CR-2
+	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
+	event5 := &events.HealthEventDoc{
+		ID: "test-event-id",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted: []*protos.Entity{
+					{
+						EntityType:  "GPU_UUID",
+						EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+					},
+				},
+			},
+		},
+	}
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event5.HealthEvent)
+	assert.NoError(t, err)
+	crName2, err := r.performRemediation(ctx, event5, groupConfig)
+	assert.NoError(t, err)
+
+	// Verify new annotation
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, "", state.EquivalenceGroups["restart"].MaintenanceCR)
+	assert.Equal(t, crName2, state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+	assert.Equal(t, "COMPONENT_RESET", state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].ActionName)
+
+	// Event 6: COMPONENT_RESET in group reset with the same impacted entity should not create CR-3
+	event6 := &protos.HealthEvent{
+		NodeName:          nodeName,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+			},
+		},
+	}
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event6)
+	assert.NoError(t, err)
+	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event6, groupConfig)
+	assert.NoError(t, err)
+	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
+	assert.Equal(t, crName2, existingCR)
+
+	// Verify annotation unchanged
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, crName2, state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+
+	// Event 7: COMPONENT_RESET in group reset with the different entity should allow CR-3 creation
+	event7 := &events.HealthEventDoc{
+		ID: "test-event-id-2",
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted: []*protos.Entity{
+					{
+						EntityType:  "GPU_UUID",
+						EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834",
+					},
+				},
+			},
+		},
+	}
+
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event7.HealthEvent)
+	assert.NoError(t, err)
+	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
+
+	// Verify annotation unchanged
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, crName2, state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+
+	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
+	crName3, err := r.performRemediation(ctx, event7, groupConfig)
+	assert.NoError(t, err)
+
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, crName3, state.EquivalenceGroups["reset-GPU-927d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+	assert.Equal(t, crName2, state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+
+	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, node.Labels[statemanager.NVSentinelStateLabelKey], string(statemanager.RemediationSucceededLabelValue),
+		"Node should have remediation-succeed label value")
+
+	// Event 8: COMPONENT_RESET in group reset with the same entity should allow CR-4 creation after failure
+	updateGPUResetStatus(ctx, t, crName2, "Succeeded")
+
+	event8 := &protos.HealthEvent{
+		NodeName:          nodeName,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		EntitiesImpacted: []*protos.Entity{
+			{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
+			},
+		},
+	}
+
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event8)
+	assert.NoError(t, err)
+	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event8, groupConfig)
+	assert.NoError(t, err)
+	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
+		"COMPONENT_RESET that completed)")
+
+	// Verify annotation removed for CR-2 but not CR-3
+	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+	require.NoError(t, err)
+	assert.Equal(t, "", state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+	assert.Equal(t, crName3, state.EquivalenceGroups["reset-GPU-927d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+
+	// Event 9: COMPONENT_RESET missing GPU_UUID should result in a nvsentinel-state label having value remediation-failed.
+	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
+	event9 := model.HealthEventWithStatus{
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		},
+	}
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		event9.HealthEvent)
+	assert.Error(t, err)
+	assert.Nil(t, groupConfig)
+	shouldSkip = r.shouldSkipEvent(ctx, event9, groupConfig)
+	assert.True(t, shouldSkip, "Should skip invalid health event")
+
+	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Equal(t, node.Labels[statemanager.NVSentinelStateLabelKey], string(statemanager.RemediationFailedLabelValue),
+		"Node should have remediation-failed label value")
+
+	// Cleanup
+	_ = testDynamic.Resource(rebootNodeGVR).Delete(ctx, crName1, metav1.DeleteOptions{})
+	_ = testDynamic.Resource(gpuResetGVR).Delete(ctx, crName2, metav1.DeleteOptions{})
+	_ = testDynamic.Resource(gpuResetGVR).Delete(ctx, crName3, metav1.DeleteOptions{})
 }
 
 // TestFullReconcilerWithMockedMongoDB tests the entire reconciler flow
@@ -811,7 +1159,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		updateCountBefore := mockStore.updateCalled
 
 		eventID2 := "test-event-id-2"
-		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_COMPONENT_RESET)
+		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
 		eventToken2 := datastore.EventWithToken{
 			Event:       map[string]interface{}(event2),
 			ResumeToken: []byte("test-token-2"),
@@ -906,7 +1254,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	})
 
 	t.Run("UnsupportedAction_TrackedInMetrics", func(t *testing.T) {
-		remediationClient, err := createTestRemediationClient(false)
+		remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 		assert.NoError(t, err)
 
 		cfg := ReconcilerConfig{
@@ -929,8 +1277,11 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 				RecommendedAction: protos.RecommendedAction_UNKNOWN,
 			},
 		}
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+			healthEvent.HealthEvent)
+		assert.NoError(t, err)
 
-		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEvent)
+		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
 		assert.True(t, shouldSkip, "Should skip unsupported action")
 
 		afterUnsupported := getCounterVecValue(t, metrics.TotalUnsupportedRemediationActions, "UNKNOWN", nodeName)
@@ -1113,7 +1464,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 	t.Log("Send second event with different action (same equivalence group)")
 	eventID2 := "test-event-id-2"
-	event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_COMPONENT_RESET)
+	event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
 	eventToken2 := datastore.EventWithToken{
 		Event:       map[string]interface{}(event2),
 		ResumeToken: []byte("test-token-2"),
@@ -1234,6 +1585,47 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 }
 
 // Helper functions
+
+func updateGPUResetStatus(ctx context.Context, t *testing.T, crName, status string) {
+	t.Helper()
+
+	gvr := schema.GroupVersionResource{
+		Group:    "janitor.dgxc.nvidia.com",
+		Version:  "v1alpha1",
+		Resource: "gpuresets",
+	}
+
+	// Get the CR
+	cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
+	if err != nil {
+		t.Logf("Warning: Failed to get GPUReset CR %s: %v", crName, err)
+		return
+	}
+
+	// Update status based on the provided status string
+	conditions := []interface{}{}
+	switch status {
+	case "Succeeded":
+		conditions = append(conditions, map[string]interface{}{
+			"type":               "Complete",
+			"status":             "True",
+			"reason":             "GPUResetSucceeded",
+			"message":            "GPU reset successfully",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+		})
+		cr.Object["status"] = map[string]interface{}{
+			"conditions":     conditions,
+			"startTime":      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+			"completionTime": time.Now().Format(time.RFC3339),
+		}
+	}
+
+	// Update the CR status using UpdateStatus
+	_, err = testDynamic.Resource(gvr).UpdateStatus(ctx, cr, metav1.UpdateOptions{})
+	if err != nil {
+		t.Logf("Warning: Failed to update GPUReset CR status: %v", err)
+	}
+}
 
 // updateRebootNodeStatus updates the status of a RebootNode CR for testing
 func updateRebootNodeStatus(ctx context.Context, t *testing.T, crName, status string) {

@@ -33,6 +33,7 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/evaluator"
@@ -55,6 +56,7 @@ type Reconciler struct {
 	evaluator           evaluator.DrainEvaluator
 	kubernetesClient    kubernetes.Interface
 	databaseClient      queue.DataStore
+	healthEventStore    datastore.HealthEventStore
 	customDrainClient   *customdrain.Client
 	nodeEventsMap       map[string]eventStatusMap
 	cancelledNodes      map[string]struct{}
@@ -67,6 +69,7 @@ func NewReconciler(
 	kubeClient kubernetes.Interface,
 	informersInstance *informers.Informers,
 	databaseClient queue.DataStore,
+	healthEventStore datastore.HealthEventStore,
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
 ) (*Reconciler, error) {
@@ -94,6 +97,7 @@ func NewReconciler(
 		evaluator:           drainEvaluator,
 		kubernetesClient:    kubeClient,
 		databaseClient:      databaseClient,
+		healthEventStore:    healthEventStore,
 		customDrainClient:   customDrainClient,
 		nodeEventsMap:       make(map[string]eventStatusMap),
 		cancelledNodes:      make(map[string]struct{}),
@@ -229,7 +233,7 @@ func (r *Reconciler) setInitialStatusAndEnqueue(ctx context.Context, document ma
 	r.logStatusUpdateResult(result, nodeName, documentID)
 
 	// Enqueue to the queue manager
-	return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient)
+	return r.queueManager.EnqueueEventGeneric(ctx, nodeName, document, r.databaseClient, r.healthEventStore)
 }
 
 // logStatusUpdateResult logs the result of the status update
@@ -267,7 +271,7 @@ func unmarshalGenericEvent(event map[string]any, target any) error {
 }
 
 func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
-	event datastore.Event, database queue.DataStore, nodeName string) error {
+	event datastore.Event, database queue.DataStore, healthEventStore datastore.HealthEventStore, nodeName string) error {
 	start := time.Now()
 
 	defer func() {
@@ -295,7 +299,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	r.markEventInProgress(eventID, nodeName)
 
-	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database)
+	actionResult, err := r.evaluator.EvaluateEventWithDatabase(ctx, healthEventWithStatus, database, healthEventStore)
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("evaluate_event_error", nodeName).Inc()
 
@@ -327,26 +331,26 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 		return fmt.Errorf("waiting for retry delay: %v", action.WaitDelay)
 
 	case evaluator.ActionCreateCR:
-		return r.executeCustomDrain(ctx, action, healthEvent, event, database)
+		return r.executeCustomDrain(ctx, action, healthEvent, event, database, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictImmediate:
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
-		return r.executeImmediateEviction(ctx, action, healthEvent)
+		return r.executeImmediateEviction(ctx, action, healthEvent, action.PartialDrainEntity)
 
 	case evaluator.ActionEvictWithTimeout:
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
-		return r.executeTimeoutEviction(ctx, action, healthEvent, eventID)
+		return r.executeTimeoutEviction(ctx, action, healthEvent, eventID, action.PartialDrainEntity)
 
 	case evaluator.ActionCheckCompletion:
 		slog.Debug("Executing ActionCheckCompletion", "node", nodeName)
 		r.updateNodeDrainStatus(ctx, nodeName, &healthEvent, true)
 
-		return r.executeCheckCompletion(ctx, action, healthEvent)
+		return r.executeCheckCompletion(ctx, action, healthEvent, action.PartialDrainEntity)
 
 	case evaluator.ActionMarkAlreadyDrained:
 		r.clearEventStatus(eventID, nodeName)
 
-		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database)
+		err := r.executeMarkAlreadyDrained(ctx, healthEvent, event, database, action.Status)
 		if err == nil {
 			r.deleteCustomDrainCRIfEnabled(ctx, nodeName, eventID)
 		}
@@ -355,7 +359,7 @@ func (r *Reconciler) executeAction(ctx context.Context, action *evaluator.DrainA
 
 	case evaluator.ActionUpdateStatus:
 		r.clearEventStatus(eventID, nodeName)
-		return r.executeUpdateStatus(ctx, healthEvent, event, database)
+		return r.executeUpdateStatus(ctx, healthEvent, event, database, action.Status)
 
 	default:
 		return fmt.Errorf("unknown action: %s", action.Action.String())
@@ -391,11 +395,12 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 	return nil
 }
 
-func (r *Reconciler) executeImmediateEviction(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
+func (r *Reconciler) executeImmediateEviction(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	for _, namespace := range action.Namespaces {
-		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout); err != nil {
+		if err := r.informers.EvictAllPodsInImmediateMode(ctx, namespace, nodeName, action.Timeout,
+			partialDrainEntity); err != nil {
 			metrics.ProcessingErrors.WithLabelValues("immediate_eviction_error", nodeName).Inc()
 			return fmt.Errorf("failed immediate eviction for namespace %s on node %s: %w", namespace, nodeName, err)
 		}
@@ -404,8 +409,8 @@ func (r *Reconciler) executeImmediateEviction(ctx context.Context,
 	return fmt.Errorf("immediate eviction completed, requeuing for status verification")
 }
 
-func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus, eventID string) error {
+func (r *Reconciler) executeTimeoutEviction(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, eventID string, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	timeoutMinutes := int(action.Timeout.Minutes())
 
@@ -428,7 +433,7 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
 	}
 
 	if err := r.informers.DeletePodsAfterTimeout(ctx,
-		nodeName, action.Namespaces, timeoutMinutes, &healthEvent); err != nil {
+		nodeName, action.Namespaces, timeoutMinutes, &healthEvent, partialDrainEntity); err != nil {
 		// Check again after the operation in case cancellation happened during execution
 		r.nodeEventsMapMu.Lock()
 		checkEventStatus, checkEventExists := r.nodeEventsMap[nodeName][eventID]
@@ -450,8 +455,8 @@ func (r *Reconciler) executeTimeoutEviction(ctx context.Context,
 	return fmt.Errorf("timeout eviction initiated, requeuing for status verification")
 }
 
-func (r *Reconciler) executeCheckCompletion(ctx context.Context,
-	action *evaluator.DrainActionResult, healthEvent model.HealthEventWithStatus) error {
+func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluator.DrainActionResult,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	allPodsComplete := true
@@ -459,7 +464,7 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context,
 	var remainingPods []string
 
 	for _, namespace := range action.Namespaces {
-		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName)
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(namespace, nodeName, partialDrainEntity)
 		if err != nil {
 			return fmt.Errorf("failed to check pods in namespace %s on node %s: %w", namespace, nodeName, err)
 		}
@@ -499,24 +504,30 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context,
 }
 
 func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
-	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore) error {
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, status model.Status) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = model.AlreadyDrained
+	podsEvictionStatus.Status = status // expect AlreadyDrained
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
 }
 
-func (r *Reconciler) executeUpdateStatus(ctx context.Context,
-	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore) error {
+func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.HealthEventWithStatus,
+	event datastore.Event, database queue.DataStore, status model.Status) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = model.StatusSucceeded
+	podsEvictionStatus.Status = status // expect StatusSucceeded or StatusFailed
+
+	nodeDrainLabelValue := statemanager.DrainSucceededLabelValue
+	if status == model.StatusFailed {
+		nodeDrainLabelValue = statemanager.DrainFailedLabelValue
+	}
 
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
-		nodeName, statemanager.DrainSucceededLabelValue, false); err != nil {
-		slog.Error("Failed to update node label to drain-succeeded",
+		nodeName, nodeDrainLabelValue, false); err != nil {
+		slog.Error("Failed to update node label",
+			"label", nodeDrainLabelValue,
 			"node", nodeName,
 			"error", err)
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
@@ -761,7 +772,8 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 }
 
 func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.DrainActionResult,
-	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore) error {
+	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore,
+	partialDrainEntity *protos.Entity) error {
 	nodeName := healthEvent.HealthEvent.NodeName
 
 	eventID, err := utils.ExtractDocumentID(event)
@@ -772,7 +784,7 @@ func (r *Reconciler) executeCustomDrain(ctx context.Context, action *evaluator.D
 	podsToDrain := make(map[string][]string)
 
 	for _, ns := range action.Namespaces {
-		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ns, nodeName)
+		pods, err := r.informers.FindEvictablePodsInNamespaceAndNode(ns, nodeName, partialDrainEntity)
 		if err != nil {
 			slog.Warn("Failed to find evictable pods",
 				"namespace", ns,

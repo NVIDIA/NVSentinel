@@ -49,23 +49,32 @@ func TestEquivalenceGroupConfiguration(t *testing.T) {
 				EquivalenceGroup: "restart",
 				TemplateFileName: "template-restart.yaml",
 			},
-			protos.RecommendedAction_COMPONENT_RESET.String(): {
+			protos.RecommendedAction_RESTART_VM.String(): {
 				ApiGroup:         "example.io",
 				Kind:             "ComponentReset",
 				EquivalenceGroup: "restart", // Same group
 				TemplateFileName: "template-reset.yaml",
+			},
+			protos.RecommendedAction_COMPONENT_RESET.String(): {
+				ApiGroup:                     "example.io",
+				Kind:                         "ComponentReset",
+				TemplateFileName:             "template-reset.yaml",
+				EquivalenceGroup:             "reset",
+				SupersedingEquivalenceGroups: []string{"restart"},
+				ImpactedEntityScope:          "GPU_UUID",
 			},
 		},
 	}
 
 	// Test equivalence group retrieval
 	restartBMAction := config.RemediationActions[protos.RecommendedAction_RESTART_BM.String()]
+	restartVMAction := config.RemediationActions[protos.RecommendedAction_RESTART_VM.String()]
 	componentResetAction := config.RemediationActions[protos.RecommendedAction_COMPONENT_RESET.String()]
 
 	// Both actions should have the same equivalence group
-	if restartBMAction.EquivalenceGroup != componentResetAction.EquivalenceGroup {
+	if restartBMAction.EquivalenceGroup != restartVMAction.EquivalenceGroup {
 		t.Errorf("Expected actions to have same equivalence group, got %s and %s",
-			restartBMAction.EquivalenceGroup, componentResetAction.EquivalenceGroup)
+			restartBMAction.EquivalenceGroup, restartVMAction.EquivalenceGroup)
 	}
 
 	// Both should be in "restart" group
@@ -75,15 +84,20 @@ func TestEquivalenceGroupConfiguration(t *testing.T) {
 			expectedGroup, restartBMAction.EquivalenceGroup)
 	}
 
-	if componentResetAction.EquivalenceGroup != expectedGroup {
-		t.Errorf("Expected COMPONENT_RESET to be in %s group, got %s",
-			expectedGroup, componentResetAction.EquivalenceGroup)
+	if restartVMAction.EquivalenceGroup != expectedGroup {
+		t.Errorf("Expected RESTART_VM to be in %s group, got %s",
+			expectedGroup, restartVMAction.EquivalenceGroup)
 	}
 
 	// But they should use different CRD types
-	if restartBMAction.Kind == componentResetAction.Kind {
+	if restartBMAction.Kind == restartVMAction.Kind {
 		t.Errorf("Expected actions to use different CRD kinds, both used %s",
 			restartBMAction.Kind)
+	}
+
+	if componentResetAction.EquivalenceGroup != "reset" {
+		t.Errorf("Expected COMPONENT_RESET actions to be in reset group, got %s",
+			componentResetAction.EquivalenceGroup)
 	}
 
 	// Validate the configuration

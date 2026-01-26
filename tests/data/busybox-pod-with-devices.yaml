@@ -13,27 +13,15 @@
 # limitations under the License.
 
 apiVersion: v1
-kind: ConfigMap
+kind: Pod
 metadata:
-  name: node-drainer
-  namespace: nvsentinel
-data:
-  config.toml: |
-    evictionTimeoutInSeconds = "60"
-    systemNamespaces = "^(kube-.*|nvsentinel|gpu-operator)$"
-    deleteAfterTimeoutMinutes = 1
-    notReadyTimeoutMinutes = 5
-    partialDrainEnabled = true
-    
-    [[userNamespaces]]
-      name = "immediate-test"
-      mode = "Immediate"
-    
-    [[userNamespaces]]
-      name = "allowcompletion-test"
-      mode = "AllowCompletion"
-    
-    [[userNamespaces]]
-      name = "delete-timeout-test"
-      mode = "DeleteAfterTimeout"
-
+  name: test-gpu-pod
+  namespace: test-namespace
+  annotations:
+    dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
+spec:
+  nodeName: NODE_NAME
+  containers:
+    - name: busybox
+      image: busybox:latest
+      command: ["sleep", "3600"]

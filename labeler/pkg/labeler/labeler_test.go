@@ -981,3 +981,197 @@ func TestKataLabelDetection(t *testing.T) {
 		})
 	}
 }
+
+func TestStaleLabelsRemoval(t *testing.T) {
+	tests := []struct {
+		name                  string
+		existingNode          *corev1.Node
+		existingPods          []*corev1.Pod
+		expectedDriverLabel   string
+		expectedDCGMLabel     string
+		shouldHaveDriverLabel bool
+		shouldHaveDCGMLabel   bool
+	}{
+		{
+			name: "both stale labels removed when no pods exist",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+						DCGMVersionLabel:     "3.x",
+					},
+				},
+			},
+			existingPods:          []*corev1.Pod{},
+			shouldHaveDriverLabel: false,
+			shouldHaveDCGMLabel:   false,
+		},
+		{
+			name: "driver label retained when driver pod exists",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+					},
+				},
+			},
+			existingPods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "driver-pod",
+						Labels: map[string]string{"app": "nvidia-driver-daemonset"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+						Containers: []corev1.Container{
+							{Name: "driver", Image: "nvcr.io/nvidia/driver:550.x"},
+						},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+						},
+					},
+				},
+			},
+			expectedDriverLabel:   "true",
+			shouldHaveDriverLabel: true,
+			shouldHaveDCGMLabel:   false,
+		},
+		{
+			name: "DCGM label retained when DCGM pod exists",
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-node",
+					Labels: map[string]string{
+						DCGMVersionLabel: "4.x",
+					},
+				},
+			},
+			existingPods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "dcgm-pod",
+						Labels: map[string]string{"app": "nvidia-dcgm"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+						Containers: []corev1.Container{
+							{Name: "dcgm", Image: "nvcr.io/nvidia/dcgm:4.1.0"},
+						},
+					},
+				},
+			},
+			expectedDCGMLabel:     "4.x",
+			shouldHaveDriverLabel: false,
+			shouldHaveDCGMLabel:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			testEnv := envtest.Environment{}
+			cfg, err := testEnv.Start()
+			require.NoError(t, err, "failed to setup envtest")
+			defer func() { _ = testEnv.Stop() }()
+
+			cli, err := kubernetes.NewForConfig(cfg)
+			require.NoError(t, err, "failed to create kubernetes client")
+
+			ns, err := cli.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"}}, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create namespace")
+
+			_, err = cli.CoreV1().Nodes().Create(ctx, tt.existingNode, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create node")
+
+			for _, pod := range tt.existingPods {
+				po, err := cli.CoreV1().Pods(ns.Name).Create(ctx, pod, metav1.CreateOptions{})
+				require.NoError(t, err, "failed to create pod")
+
+				po.Status = pod.Status
+				_, err = cli.CoreV1().Pods(ns.Name).UpdateStatus(ctx, po, metav1.UpdateOptions{})
+				require.NoError(t, err, "failed to update pod status")
+			}
+
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "")
+			require.NoError(t, err, "failed to create labeler")
+
+			labelerCtx, labelerCancel := context.WithCancel(ctx)
+			defer labelerCancel()
+
+			go func() {
+				_ = labeler.Run(labelerCtx)
+			}()
+
+			require.Eventually(t, func() bool {
+				return labeler.allInformersSynced()
+			}, 10*time.Second, 100*time.Millisecond, "labeler informers did not sync")
+
+			// Wait for pods to be indexed in custom indexes before testing
+			if len(tt.existingPods) > 0 {
+				require.Eventually(t, func() bool {
+					dcgmObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDCGMIndex, tt.existingNode.Name)
+					driverObjs, _ := labeler.podInformer.GetIndexer().ByIndex(NodeDriverIndex, tt.existingNode.Name)
+					return len(dcgmObjs) > 0 || len(driverObjs) > 0
+				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
+
+				// Restore original labels - reconcileAllNodes() may have removed them
+				// before pods were indexed during the initial sync race
+				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+				require.NoError(t, err, "failed to get node")
+				for k, v := range tt.existingNode.Labels {
+					node.Labels[k] = v
+				}
+				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+				require.NoError(t, err, "failed to restore node labels")
+			}
+
+			err = labeler.handleNodeEvent(tt.existingNode)
+			require.NoError(t, err, "failed to handle node event")
+
+			require.Eventually(t, func() bool {
+				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+				if err != nil {
+					t.Logf("Failed to get node: %v", err)
+					return false
+				}
+
+				driverLabel, driverExists := node.Labels[DriverInstalledLabel]
+				dcgmLabel, dcgmExists := node.Labels[DCGMVersionLabel]
+
+				t.Logf("Node labels: driver=%q (exists=%v), dcgm=%q (exists=%v)",
+					driverLabel, driverExists, dcgmLabel, dcgmExists)
+
+				if tt.shouldHaveDriverLabel {
+					if !driverExists || driverLabel != tt.expectedDriverLabel {
+						return false
+					}
+				} else {
+					if driverExists {
+						t.Logf("Driver label should not exist but found: %s", driverLabel)
+						return false
+					}
+				}
+
+				if tt.shouldHaveDCGMLabel {
+					if !dcgmExists || dcgmLabel != tt.expectedDCGMLabel {
+						return false
+					}
+				} else {
+					if dcgmExists {
+						t.Logf("DCGM label should not exist but found: %s", dcgmLabel)
+						return false
+					}
+				}
+
+				return true
+			}, 15*time.Second, 500*time.Millisecond, "labels not set correctly on node %s", tt.existingNode.Name)
+		})
+	}
+}

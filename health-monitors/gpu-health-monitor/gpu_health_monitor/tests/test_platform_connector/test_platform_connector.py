@@ -122,7 +122,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 fatal_dcgm_health_events_length += 1
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         for event in health_events:
             if event.checkName == "GpuInforomWatch" and event.isHealthy == False:
@@ -153,7 +153,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         assert len(platform_connector_test.entity_cache) == cache_length
         assert (
@@ -171,7 +171,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
         check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
         cache_length = len(platform_connector_test.entity_cache)
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         # Verify healthy event was added to cache with correct message format
         dcgm_health_event_key = platform_connector_test._build_cache_key(
@@ -263,7 +263,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         health_events = healthEventProcessor.health_events
 
@@ -391,7 +391,7 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
-        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
         health_events = healthEventProcessor.health_events
 
@@ -550,7 +550,7 @@ class TestPlatformConnectors(unittest.TestCase):
 
         server.stop(0)
 
-    def test_event_retry_and_cache_cleanup_when_platform_connector_down(self):
+    def test_event_retry_and_cache_cleanup_when_platform_connector_down(self) -> None:
         """Test when platform connector goes down and comes back up."""
         import tempfile
         import os
@@ -606,15 +606,14 @@ class TestPlatformConnectors(unittest.TestCase):
             # Verify cache is empty initially
             assert len(platform_connector_processor.entity_cache) == 0
 
-            # Test 1: DCGM Connectivity Failure (system-level event, no entities)
-            # This tests the cache cleanup path: if checkName == "GpuDcgmConnectivityFailure"
+            # Platform-connector is DOWN - send will fail, cache should NOT be updated
             platform_connector_processor.dcgm_connectivity_failed()
             dcgm_failure_cache_key = platform_connector_processor._build_cache_key(
                 "GpuDcgmConnectivityFailure", "DCGM", "ALL"
             )
             assert (
                 dcgm_failure_cache_key not in platform_connector_processor.entity_cache
-            ), "DCGM failure cache entry should be removed after send failure"
+            ), "Cache should NOT be updated when send fails"
 
             # Test 2: DCGM Connectivity Restored
             timestamp = Timestamp()
@@ -622,10 +621,9 @@ class TestPlatformConnectors(unittest.TestCase):
             platform_connector_processor.clear_dcgm_connectivity_failure(timestamp)
             assert (
                 dcgm_failure_cache_key not in platform_connector_processor.entity_cache
-            ), "DCGM restored cache entry should be removed after send failure"
+            ), "Cache should NOT be updated when send fails"
 
-            # Test 3: GPU Health Event (entity-specific event)
-            # This tests the cache cleanup path: elif len(entitiesImpacted) > 0
+            # GPU Health Event - send will fail, cache should NOT be updated
             dcgm_health_events = watcher._get_health_status_dict()
             dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
                 status=dcgmtypes.HealthStatus.FAIL,
@@ -637,11 +635,11 @@ class TestPlatformConnectors(unittest.TestCase):
                 },
             )
             gpu_ids = [0]
-            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids)
             gpu_health_cache_key = platform_connector_processor._build_cache_key("GpuInforomWatch", "GPU", "0")
             assert (
                 gpu_health_cache_key not in platform_connector_processor.entity_cache
-            ), "GPU health cache entry should be removed after send failure"
+            ), "Cache should NOT be updated when send fails"
 
             # Platform connector comes UP - Start server
             healthEventProcessor = PlatformConnectorServicer()
@@ -650,12 +648,12 @@ class TestPlatformConnectors(unittest.TestCase):
             server.add_insecure_port(f"unix://{socket_path}")
             server.start()
 
-            # Retry DCGM Connectivity Failure
+            # DCGM Connectivity Failure - send succeeds, cache should be updated
             platform_connector_processor.dcgm_connectivity_failed()
             time.sleep(1)
             assert (
                 dcgm_failure_cache_key in platform_connector_processor.entity_cache
-            ), "DCGM failure cache entry should be present after successful send"
+            ), "Cache should be updated after successful send"
             assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isFatal == True
             assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isHealthy == False
 
@@ -671,14 +669,14 @@ class TestPlatformConnectors(unittest.TestCase):
             assert dcgm_failure_event.errorCode == ["DCGM_CONNECTIVITY_ERROR"]
             assert dcgm_failure_event.entitiesImpacted == []
 
-            # Retry DCGM Connectivity Restored
+            # DCGM Connectivity Restored - send succeeds, cache should be updated
             timestamp = Timestamp()
             timestamp.GetCurrentTime()
             platform_connector_processor.clear_dcgm_connectivity_failure(timestamp)
             time.sleep(1)
-            assert (
-                platform_connector_processor.entity_cache[dcgm_failure_cache_key].isHealthy == True
-            ), "DCGM failure cache entry should be updated to healthy"
+            assert platform_connector_processor.entity_cache[
+                dcgm_failure_cache_key
+            ].isHealthy, "Cache should be updated after successful send"
 
             # Verify DCGM restored event was sent
             health_events = healthEventProcessor.health_events
@@ -691,12 +689,12 @@ class TestPlatformConnectors(unittest.TestCase):
             assert dcgm_restored_event.isFatal == False
             assert dcgm_restored_event.isHealthy == True
 
-            # Retry GPU Health Event
-            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids, gpu_serials)
+            # GPU Health Event - send succeeds, cache should be updated
+            platform_connector_processor.health_event_occurred(dcgm_health_events, gpu_ids)
             time.sleep(1)
             assert (
                 gpu_health_cache_key in platform_connector_processor.entity_cache
-            ), "GPU health cache entry should be present after successful send"
+            ), "Cache should be updated after successful send"
             assert platform_connector_processor.entity_cache[gpu_health_cache_key].isFatal == True
             assert platform_connector_processor.entity_cache[gpu_health_cache_key].isHealthy == False
 

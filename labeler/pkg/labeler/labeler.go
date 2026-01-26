@@ -68,6 +68,16 @@ type Labeler struct {
 	kataLabels           []string // Instance-specific kata labels
 }
 
+func (l *Labeler) allInformersSynced() bool {
+	for _, synced := range l.informersSynced {
+		if !synced() {
+			return false
+		}
+	}
+
+	return true
+}
+
 // NewLabeler creates a new Labeler instance
 // nolint: cyclop // todo
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
@@ -311,10 +321,31 @@ func (l *Labeler) Run(ctx context.Context) error {
 
 	slog.Info("Labeler caches synced")
 
+	// Reconcile all nodes now that all informers have synced.
+	// This ensures stale labels are cleaned up for nodes that were processed
+	// during initial sync before pod data was available.
+	l.reconcileAllNodes()
+
 	<-ctx.Done()
 	slog.Info("Labeler stopped")
 
 	return nil
+}
+
+func (l *Labeler) reconcileAllNodes() {
+	nodes := l.nodeInformer.GetStore().List()
+	for _, obj := range nodes {
+		node, ok := obj.(*v1.Node)
+		if !ok {
+			continue
+		}
+
+		if err := l.updateNodeLabels(node.Name); err != nil {
+			slog.Error("Failed to reconcile node labels", "node", node.Name, "error", err)
+		}
+	}
+
+	slog.Info("Completed initial node label reconciliation", "nodeCount", len(nodes))
 }
 
 // getDCGMVersionForNode returns the expected DCGM version for a specific node
@@ -530,28 +561,27 @@ func (l *Labeler) updateNodeLabelsForPod(nodeName, expectedDCGMVersion, expected
 	return nil
 }
 
-// handleNodeEvent processes node events to update kata detection label
 func (l *Labeler) handleNodeEvent(obj any) error {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return fmt.Errorf("node event: expected Node object, got %T", obj)
 	}
 
-	expectedKataLabel := l.getKataLabelForNode(node)
-
-	currentKataLabel := node.Labels[KataEnabledLabel]
-	if currentKataLabel == expectedKataLabel {
-		slog.Debug("Node already has correct kata label", "node", node.Name, "kata", expectedKataLabel)
-		return nil
-	}
-
-	// Only update kata label, leave DCGM/driver labels alone
-	return l.updateKataLabel(node.Name, expectedKataLabel)
+	return l.updateNodeLabels(node.Name)
 }
 
-// updateKataLabel updates only the kata label on a node
-func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
-	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+func (l *Labeler) updateNodeLabels(nodeName string) error {
+	driverLabel, err := l.getDriverLabelForNode(nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to check driver pods for node %s: %w", nodeName, err)
+	}
+
+	dcgmVersion, err := l.getDCGMVersionForNode(nodeName)
+	if err != nil {
+		return fmt.Errorf("failed to check DCGM pods for node %s: %w", nodeName, err)
+	}
+
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		node, err := l.clientset.CoreV1().Nodes().Get(l.ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -561,14 +591,11 @@ func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
 			node.Labels = make(map[string]string)
 		}
 
-		currentKataLabel := node.Labels[KataEnabledLabel]
-		if currentKataLabel == expectedKataLabel {
-			slog.Debug("Node already has correct kata label", "node", nodeName, "kata", expectedKataLabel)
+		needsUpdate := l.reconcileNodeLabelsInPlace(node, driverLabel, dcgmVersion)
+		if !needsUpdate {
+			slog.Debug("Node labels are correct", "node", nodeName)
 			return nil
 		}
-
-		node.Labels[KataEnabledLabel] = expectedKataLabel
-		slog.Info("Setting Kata enabled label on node", "node", nodeName, "kata", expectedKataLabel)
 
 		_, err = l.clientset.CoreV1().Nodes().Update(l.ctx, node, metav1.UpdateOptions{})
 
@@ -576,10 +603,44 @@ func (l *Labeler) updateKataLabel(nodeName, expectedKataLabel string) error {
 	})
 	if err != nil {
 		metrics.NodeUpdateFailures.Inc()
-		return fmt.Errorf("failed to update kata label for %s: %w", nodeName, err)
+		return fmt.Errorf("failed to update labels for node %s: %w", nodeName, err)
 	}
 
 	return nil
+}
+
+func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVersion string) bool {
+	needsUpdate := false
+
+	expectedKataLabel := l.getKataLabelForNode(node)
+	if node.Labels[KataEnabledLabel] != expectedKataLabel {
+		needsUpdate = true
+		node.Labels[KataEnabledLabel] = expectedKataLabel
+		slog.Info("Setting Kata enabled label on node", "node", node.Name, "kata", expectedKataLabel)
+	}
+
+	// Only remove stale labels after all informers have synced.
+	// During startup, node events may fire before pod informer has indexed all pods,
+	// which would incorrectly identify valid labels as stale.
+	if !l.allInformersSynced() {
+		return needsUpdate
+	}
+
+	if driverLabel == "" && node.Labels[DriverInstalledLabel] != "" {
+		needsUpdate = true
+
+		delete(node.Labels, DriverInstalledLabel)
+		slog.Info("Removing stale driver installed label from node", "node", node.Name)
+	}
+
+	if dcgmVersion == "" && node.Labels[DCGMVersionLabel] != "" {
+		needsUpdate = true
+
+		delete(node.Labels, DCGMVersionLabel)
+		slog.Info("Removing stale DCGM version label from node", "node", node.Name)
+	}
+
+	return needsUpdate
 }
 
 // handlePodDeleteEvent processes pod delete events by recalculating node labels

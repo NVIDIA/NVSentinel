@@ -303,6 +303,8 @@ node-drainer:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
 
+  partialDrainEnabled: true
+
 
 health-events-analyzer:
   logLevel: debug

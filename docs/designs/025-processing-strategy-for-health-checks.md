@@ -314,7 +314,7 @@ class PlatformConnectorEventProcessor:
         # ... existing fields ...
         self._processing_strategy = processing_strategy  # NEW: Store strategy
     
-    def health_event_occurred(self, health_details, gpu_ids, serials):
+    def health_event_occurred(self, health_details, gpu_ids):
         # Creates HealthEvents in multiple places - add processingStrategy to ALL:
         
         health_event = platformconnector_pb2.HealthEvent(

@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/stretchr/testify/assert"
@@ -310,9 +311,12 @@ spec:
 					},
 				},
 			}
+			groupConfig, err := common.GetGroupConfigForEvent(remediationConfig.RemediationActions,
+				healthEventDoc.HealthEvent)
+			assert.NoError(t, err)
 
 			// Test CreateMaintenanceResource
-			crName, err := remediationClient.CreateMaintenanceResource(context.Background(), healthEventDoc)
+			crName, err := remediationClient.CreateMaintenanceResource(context.Background(), healthEventDoc, groupConfig)
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {

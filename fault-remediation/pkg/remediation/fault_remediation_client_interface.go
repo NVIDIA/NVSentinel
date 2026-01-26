@@ -21,13 +21,15 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 )
 
 type FaultRemediationClientInterface interface {
-	CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData) (string, error)
+	CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData,
+		groupConfig *common.EquivalenceGroupConfig) (string, error)
 	RunLogCollectorJob(ctx context.Context, nodeName string, eventId string) (ctrl.Result, error)
 	GetAnnotationManager() annotation.NodeAnnotationManagerInterface
 	GetStatusChecker() crstatus.CRStatusCheckerInterface
@@ -37,10 +39,11 @@ type FaultRemediationClientInterface interface {
 // TemplateData holds the data to be inserted into the template
 type TemplateData struct {
 	// Node and event data
-	NodeName              string
-	HealthEventID         string
-	RecommendedAction     protos.RecommendedAction
-	RecommendedActionName string
+	NodeName                 string
+	ImpactedEntityScopeValue string
+	HealthEventID            string
+	RecommendedAction        protos.RecommendedAction
+	RecommendedActionName    string
 
 	HealthEvent *protos.HealthEvent
 
