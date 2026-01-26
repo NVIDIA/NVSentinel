@@ -18,7 +18,7 @@
 // Explicit credentials are required - the Nebius SDK does not support automatic credential discovery.
 //
 // Nebius does not provide a direct reboot API, so this implementation uses a stop/start pattern:
-// 1. SendRebootSignal stops the instance and waits returns the instance ID
+// 1. SendRebootSignal stops the instance and waits for the operation to succeed. It then returns the instance ID
 // 2. IsNodeReady polls the instance state and handles the state machine:
 //   - STOPPING -> wait
 //   - STOPPED -> initiate start
@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/nebius/gosdk"
 	"github.com/nebius/gosdk/auth"
@@ -158,7 +159,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	}
 
 	slog.Info("Waiting for instance stop operation to complete", "instanceID", nodeFields.instanceID)
-	if _, err := stopOp.Wait(ctx); err != nil {
+
+	waitCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+
+	if _, err := stopOp.Wait(waitCtx); err != nil {
 		return "", fmt.Errorf("failed to wait for stop operation on instance %s: %w", nodeFields.instanceID, err)
 	}
 
