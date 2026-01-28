@@ -44,11 +44,12 @@ import (
 // TerminateNodeReconciler manages the terminate node operation.
 type TerminateNodeReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Config    *config.TerminateNodeControllerConfig
-	CSPClient cspv1alpha1.CSPProviderServiceClient
-	NodeLock  distributedlock.NodeLock
-	grpcConn  *grpc.ClientConn
+	Scheme        *runtime.Scheme
+	Config        *config.TerminateNodeControllerConfig
+	CSPClient     cspv1alpha1.CSPProviderServiceClient
+	NodeLock      distributedlock.NodeLock
+	LockNamespace string
+	grpcConn      *grpc.ClientConn
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
@@ -331,8 +332,7 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
 
 	// Initialize NodeLock for distributed locking across maintenance operations
-	// TODO: Make namespace configurable via environment variable or config
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), "nvsentinel")
+	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		<-ctx.Done()
