@@ -321,7 +321,7 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Initialize NodeLock for distributed locking across maintenance operations
 	// TODO: Make namespace configurable via environment variable or config
-	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), "nvsentinel-system")
+	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), "nvsentinel")
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		<-ctx.Done()
