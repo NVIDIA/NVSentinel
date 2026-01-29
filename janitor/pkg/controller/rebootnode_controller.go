@@ -59,6 +59,7 @@ type RebootNodeReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
 //nolint:dupl // Structural duplication with TerminateNode is acceptable - different business logic
 func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Get the RebootNode object
@@ -316,6 +317,7 @@ func (r *RebootNodeReconciler) reconcileHelper(ctx context.Context, rebootNode *
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
 //nolint:dupl // Structural duplication with TerminateNode is acceptable - same setup pattern
 func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
