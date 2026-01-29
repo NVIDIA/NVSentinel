@@ -20,7 +20,82 @@ source "${SCRIPT_DIR}/common.sh"
 
 get_boot_id() {
     local node=$1
-    kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}'
+    local boot_id
+    local tmp_err
+    tmp_err=$(mktemp)
+
+    if boot_id=$(kubectl get node "$node" -o jsonpath='{.status.nodeInfo.bootID}' 2>"$tmp_err"); then
+        rm -f "$tmp_err"
+        echo "$boot_id" | tr -d '[:space:]'
+    else
+        log "Warning: kubectl failed to get boot ID for node $node: $(cat "$tmp_err")"
+        rm -f "$tmp_err"
+        echo ""
+    fi
+}
+
+is_node_ready_and_uncordoned() {
+    local node=$1
+    local node_info
+    node_info=$(kubectl get node "$node" -o json 2>/dev/null)
+
+    if [[ -z "$node_info" ]]; then
+        return 1
+    fi
+
+    local is_ready
+    is_ready=$(echo "$node_info" | jq -r '.status.conditions[] | select(.type == "Ready" and .status == "True") | .status')
+    if [[ "$is_ready" != "True" ]]; then
+        return 1
+    fi
+
+    if echo "$node_info" | jq -e '.spec.unschedulable == true' > /dev/null 2>&1; then
+        return 1
+    fi
+
+    local managed_label
+    managed_label=$(echo "$node_info" | jq -r '.metadata.labels["k8saas.nvidia.com/ManagedByNVSentinel"] // ""')
+    if [[ "$managed_label" == "false" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+get_gpu_node_with_healthy_monitor() {
+    local monitor_label=$1
+    local namespace=${2:-nvsentinel}
+
+    # Get nodes running the specified health monitor pod
+    local nodes_with_monitor
+    nodes_with_monitor=$(kubectl get pods -n "$namespace" -l "app.kubernetes.io/name=$monitor_label" \
+        --field-selector=status.phase=Running -o jsonpath='{.items[*].spec.nodeName}')
+
+    if [[ -z "$nodes_with_monitor" ]]; then
+        echo ""
+        return
+    fi
+
+    # Find first GPU node that is Ready, uncordoned, and has the monitor
+    for node in $nodes_with_monitor; do
+        local has_gpu
+        has_gpu=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null)
+
+        if [[ "$has_gpu" == "true" ]] && is_node_ready_and_uncordoned "$node"; then
+            echo "$node"
+            return
+        fi
+    done
+
+    echo ""
+}
+
+get_gpu_node_with_healthy_gpu_monitor() {
+    get_gpu_node_with_healthy_monitor "gpu-health-monitor"
+}
+
+get_gpu_node_with_healthy_syslog_monitor() {
+    get_gpu_node_with_healthy_monitor "syslog-health-monitor"
 }
 
 wait_for_node_condition() {
@@ -76,19 +151,27 @@ wait_for_boot_id_change() {
     local original_boot_id=$2
     local timeout=${UAT_REBOOT_TIMEOUT:-600}
     local elapsed=0
+    local boot_id_changed=false
 
+    # Trim original boot ID for consistent comparison
+    original_boot_id=$(echo "$original_boot_id" | tr -d '[:space:]')
 
     log "Waiting for node $node to reboot (boot ID to change)..."
-
+    log "Original boot ID: $original_boot_id"
 
     while [[ $elapsed -lt $timeout ]]; do
         local current_boot_id
-        current_boot_id=$(get_boot_id "$node" 2>/dev/null || echo "")
+        current_boot_id=$(get_boot_id "$node" || echo "")
 
+        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+            log "Still waiting... elapsed=${elapsed}s, current_boot_id='$current_boot_id'"
+        fi
 
         if [[ -n "$current_boot_id" && "$current_boot_id" != "$original_boot_id" ]]; then
             log "Node $node rebooted successfully (boot ID changed)"
-            elapsed=0
+            log "  Old: $original_boot_id"
+            log "  New: $current_boot_id"
+            boot_id_changed=true
             break
         fi
 
@@ -96,19 +179,26 @@ wait_for_boot_id_change() {
         elapsed=$((elapsed + 5))
     done
 
-    if [[ $elapsed -ge $timeout ]]; then
-        error "Timeout waiting for node $node to reboot"
+    if [[ "$boot_id_changed" != "true" ]]; then
+        local final_boot_id
+        final_boot_id=$(get_boot_id "$node" || echo "FAILED_TO_GET")
+        error "Timeout waiting for node $node to reboot. Current boot ID: '$final_boot_id', Original: '$original_boot_id'"
     fi
 
     log "Waiting for node $node to be uncordoned..."
+    elapsed=0
     while [[ $elapsed -lt $timeout ]]; do
         local is_cordoned
         is_cordoned=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}')
 
-
         if [[ "$is_cordoned" != "true" ]]; then
             log "Node $node is uncordoned and ready ✓"
             return 0
+        fi
+
+        # Log every 30 seconds to show progress
+        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+            log "Still waiting for uncordon... elapsed=${elapsed}s, unschedulable=$is_cordoned"
         fi
 
         sleep 5
@@ -124,10 +214,10 @@ test_gpu_monitoring_dcgm() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_gpu_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy gpu-health-monitor pod (Ready + uncordoned)"
     fi
 
     log "Selected GPU node: $gpu_node"
@@ -185,13 +275,13 @@ test_xid_monitoring_syslog() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy syslog-health-monitor pod (Ready + uncordoned)"
     fi
 
-    log "Selected GPU node: $gpu_node"
+    log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
@@ -223,13 +313,18 @@ test_sxid_monitoring_syslog() {
     log "========================================="
 
     local gpu_node
-    gpu_node=$(kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.name}')
+    gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
     if [[ -z "$gpu_node" ]]; then
-        error "No GPU nodes found"
+        error "No GPU node found with healthy syslog-health-monitor pod (Ready + uncordoned)"
     fi
 
-    log "Selected GPU node: $gpu_node"
+    log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
+
+    local original_boot_id
+    original_boot_id=$(get_boot_id "$gpu_node")
+    log "Original boot ID: $original_boot_id"
+
 
     local dcgm_pod
     dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
@@ -312,7 +407,11 @@ test_sxid_monitoring_syslog() {
 
 main() {
     log "Starting NVSentinel UAT tests..."
-
+    
+    log "Checking if circuit breaker is TRIPPED..."
+    if kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}' | grep -q "TRIPPED"; then
+        error "Circuit breaker is TRIPPED, please reset it manually"
+    fi
 
     test_gpu_monitoring_dcgm
 
