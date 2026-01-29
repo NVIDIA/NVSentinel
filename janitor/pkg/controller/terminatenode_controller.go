@@ -65,6 +65,7 @@ type TerminateNodeReconciler struct {
 // 4. If node is ready, check for timeout.
 // 5. If signal has not been sent, send it to the CSP instance.
 // 6. Write status updates to the TerminateNode CR.
+//nolint:dupl // Structural duplication with RebootNode is acceptable - different business logic
 func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var terminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 	if err := r.Get(ctx, req.NamespacedName, &terminateNode); err != nil {
@@ -326,6 +327,7 @@ func (r *TerminateNodeReconciler) getTimeout() time.Duration {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//nolint:dupl // Structural duplication with RebootNode is acceptable - same setup pattern
 func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
