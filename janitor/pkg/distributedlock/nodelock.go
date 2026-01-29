@@ -31,15 +31,16 @@ import (
 )
 
 /*
-The NodeLock interface can be used in Reconcile functions to add node-level locking functionality across all controllers
-which are leveraging the lock. Prior to reconciling a maintenance resource, any controller leveraging NodeLock must first
-acquire the node-level lock for the given node specified in the maintenance object. This node lock is implemented with a
-lease object per node. A controller must successfully create the node lock prior proceeding with reconciling and release
-the node lock by deleting the lease after it sets a completion timestamp. If the lease lock for a given node already
-exists when a competing object needs reconciled, it will re-queue the object and retry acquiring the lock. The lock is
-held by a given maintenance resource as long as the lease object exists with an owner reference that matches the current
-maintenance resource. Initially acquiring the lock requires successful creation whereas subsequent reconcile loops only
-require fetching the existing object and checking the owner reference matches the current maintenance resource.
+The NodeLock interface can be used in Reconcile functions to add node-level locking functionality across all
+controllers which are leveraging the lock. Prior to reconciling a maintenance resource, any controller leveraging
+NodeLock must first acquire the node-level lock for the given node specified in the maintenance object. This node lock
+is implemented with a lease object per node. A controller must successfully create the node lock prior proceeding with
+reconciling and release the node lock by deleting the lease after it sets a completion timestamp. If the lease lock for
+a given node already exists when a competing object needs reconciled, it will re-queue the object and retry acquiring
+the lock. The lock is held by a given maintenance resource as long as the lease object exists with an owner reference
+that matches the current maintenance resource. Initially acquiring the lock requires successful creation whereas
+subsequent reconcile loops only require fetching the existing object and checking the owner reference matches the
+current maintenance resource.
 
 Controller + CRD requirements for leveraging NodeLock:
 1. Check when locking and unlocking is required: controllers leveraging NodeLock should only call LockNode() if the
@@ -51,8 +52,8 @@ they set the CompletionTime on the current reconcile or having to re-fetch the r
 When the maintenance resource is re-processed with its CompletionTime set, it is safe to call CheckUnlock whether it
 still held the lock or was previously released. See rebootnode_controller.go for an example implementation.
 2. Reconcile until CompletionTime is set: controllers must reconcile CRD objects to a terminal status which is signaled
-by having a CompletionTime status populated. In most cases, an object will require several reconciliations and that object
-will hold the node lock until the CompletionTime is set signaling that the node lock can be released.
+by having a CompletionTime status populated. In most cases, an object will require several reconciliations and that
+object will hold the node lock until the CompletionTime is set signaling that the node lock can be released.
 3. RBAC requirements: controllers leveraging NodeLock need to have the following resources and permissions:
   - resources=leases, verbs=get;list;watch;create;delete
 
@@ -86,14 +87,18 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 	if err == nil {
 		slog.Debug("Node lock already exists, checking if current maintenance resource is the holder",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
+
 		return lease.GetOwnerReferences()[0].UID == maintenanceObject.GetUID()
 	}
+
 	if !apierrors.IsNotFound(err) {
 		slog.Error("Got an error fetching node lock lease",
 			"error", err, "maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 		metrics.IncActionCount(metrics.ActionTypeLock, metrics.StatusFailed, nodeName)
+
 		return false
 	}
+
 	slog.Debug("Node lock lease does not exist, attempting to acquire the lock",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 
@@ -106,9 +111,11 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 	if apiVersion == "" || kind == "" {
 		// Try to extract from the object's type name
 		typeName := fmt.Sprintf("%T", maintenanceObject)
+
 		if apiVersion == "" {
 			apiVersion = "janitor.dgxc.nvidia.com/v1alpha1"
 		}
+
 		if kind == "" {
 			// Extract kind from type name (e.g., "*v1alpha1.RebootNode" -> "RebootNode")
 			if idx := strings.LastIndex(typeName, "."); idx != -1 {
@@ -134,6 +141,7 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 		// There's no need to populate a HolderIdentity, LeaseDurationSeconds, nor RenewTime in Spec, we only need to identify
 		// the corresponding node and maintenance resource which is accomplished by the lease name and ownerReference.
 	}
+
 	err = lock.Create(ctx, lease)
 	if err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -144,10 +152,13 @@ func (lock *nodeLock) LockNode(ctx context.Context, maintenanceObject client.Obj
 			slog.Debug("Node lock lease already exists, failed to acquire the lock",
 				"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 		}
+
 		return false
 	}
+
 	slog.Info("Successfully created node lock lease and acquired lock",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
+
 	return true
 }
 
@@ -161,8 +172,8 @@ CompletionTime, or when the node lock lease fails to be deleted.
 
 External cases for how NodeLock releases node-level locks:
 1. Maintenance resource deletion: if a maintenance object is deleted after it acquires the lock but before it sets
-a completion timestamp and deletes the lock, the owner reference set on the lease object by the owning resource will ensure
-that K8s garbage collection will delete the lock.
+a completion timestamp and deletes the lock, the owner reference set on the lease object by the owning resource will
+ensure that K8s garbage collection will delete the lock.
 2. Node resource deletion: NVSentinel sets an OwnerReference on maintenance resources for the node they correspond to.
 This ensures that the lease objects are cleaned up indirectly if the corresponding node is deleted. In this case,
 we won't ever need to re-acquire the lock since the node is gone, however, it ensures that stale leases do not persist.
@@ -171,10 +182,12 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 	maintenanceObject client.Object, nodeName string) (retryUnlock bool) {
 	slog.Debug("Completion timestamp set for maintenance resource, checking if lock needs released",
 		"maintenanceResource", maintenanceObject.GetName())
+
 	nodeLockName, lease, err := lock.getNodeLockLease(ctx, nodeName)
 	if err != nil {
 		return handleNotFoundError(err, nodeLockName, nodeName)
 	}
+
 	slog.Debug("Node lock already exists, checking if current maintenance resource is the holder",
 		"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", nodeLockName)
 	// The current maintenance object will always have the lock for the second invocation of checkUnlock in
@@ -183,18 +196,20 @@ func (lock *nodeLock) CheckUnlock(ctx context.Context,
 	if lease.GetOwnerReferences()[0].UID == maintenanceObject.GetUID() {
 		slog.Debug("Node lock needs released for maintenance resource, attempting to delete lock",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", lease.GetName())
+
 		err = lock.Delete(ctx, lease)
 		if err != nil {
 			return handleNotFoundError(err, nodeName, nodeName)
 		}
+
 		slog.Info("Node lock successfully released for maintenance resource",
 			"maintenanceResource", maintenanceObject.GetName(), "nodeLockName", lease.GetName())
 	} else {
 		slog.Debug("Node lock already exists but the current maintenance resource isn't the owner",
 			"maintenanceResource", maintenanceObject.GetName())
 	}
-	return false
 
+	return false
 }
 
 func (lock *nodeLock) getNodeLockLease(ctx context.Context, nodeName string) (string, *coordinationv1.Lease, error) {
@@ -202,25 +217,34 @@ func (lock *nodeLock) getNodeLockLease(ctx context.Context, nodeName string) (st
 		Name:      nodeName,
 		Namespace: lock.namespace,
 	}
+
 	var lease coordinationv1.Lease
+
 	err := lock.Get(ctx, nodeLockNamespaceName, &lease)
 	if err != nil {
 		// we rely on the nodeLockName being returned if we do receive a 404 not found error
 		return nodeName, nil, err
 	}
+
 	ownerReferences := lease.GetOwnerReferences()
 	if len(ownerReferences) != 1 {
-		return "", nil, fmt.Errorf("found an unexpected number of owner references on lock %s: %d", nodeName, len(ownerReferences))
+		return "", nil, fmt.Errorf(
+			"found an unexpected number of owner references on lock %s: %d",
+			nodeName, len(ownerReferences))
 	}
+
 	return nodeName, &lease, err
 }
 
 func handleNotFoundError(err error, resourceName string, nodeName string) (retryUnlock bool) {
 	if apierrors.IsNotFound(err) {
 		slog.Debug("Resource does not exist, completing reconciling", "resourceName", resourceName)
+
 		return false
 	}
+
 	slog.Error("Got an error operating on resource, need to retry reconciling", "error", err, "resourceName", resourceName)
 	metrics.IncActionCount(metrics.ActionTypeUnlock, metrics.StatusFailed, nodeName)
+
 	return true
 }

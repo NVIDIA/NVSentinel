@@ -168,8 +168,10 @@ func run() error {
 	podNamespace := os.Getenv("POD_NAMESPACE")
 	if podNamespace == "" {
 		slog.Warn("POD_NAMESPACE not set, defaulting to 'nvsentinel'")
+
 		podNamespace = "nvsentinel"
 	}
+
 	slog.Info("Using namespace for distributed locking", "namespace", podNamespace)
 
 	// Parse config port from address

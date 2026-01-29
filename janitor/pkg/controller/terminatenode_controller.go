@@ -86,6 +86,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err != nil || result.Requeue || result.RequeueAfter > 0 {
 			return result, err
 		}
+
 		return ctrl.Result{Requeue: true}, nil
 	}
 	// CompletionTime is set, try to release the lock
@@ -93,12 +94,12 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if retryUnlock {
 		return ctrl.Result{Requeue: true}, nil
 	}
+
 	return ctrl.Result{}, nil
 }
 
 // reconcileHelper contains the main reconciliation logic
 func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode) (ctrl.Result, error) {
-
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
 
@@ -273,6 +274,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 	if !reflect.DeepEqual(originalTerminateNode.Status, terminateNode.Status) {
 		// Refresh the object before updating to avoid precondition failures
 		var freshTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
+
 		objectKey := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
 		if err := r.Get(ctx, objectKey, &freshTerminateNode); err != nil {
 			if apierrors.IsNotFound(err) {

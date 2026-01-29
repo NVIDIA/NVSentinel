@@ -81,6 +81,7 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err != nil || result.Requeue || result.RequeueAfter > 0 {
 			return result, err
 		}
+
 		return ctrl.Result{Requeue: true}, nil
 	}
 	// CompletionTime is set, try to release the lock
@@ -88,12 +89,12 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if retryUnlock {
 		return ctrl.Result{Requeue: true}, nil
 	}
+
 	return ctrl.Result{}, nil
 }
 
 // reconcileHelper contains the main reconciliation logic
 func (r *RebootNodeReconciler) reconcileHelper(ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode) (ctrl.Result, error) {
-
 	// Take a deep copy to compare against at the end
 	originalRebootNode := rebootNode.DeepCopy()
 
@@ -284,6 +285,7 @@ func (r *RebootNodeReconciler) reconcileHelper(ctx context.Context, rebootNode *
 	if !reflect.DeepEqual(originalRebootNode.Status, rebootNode.Status) {
 		// Refresh the object before updating to avoid precondition failures
 		var freshRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
+
 		objectKey := client.ObjectKey{Name: rebootNode.Name, Namespace: rebootNode.Namespace}
 		if err := r.Get(ctx, objectKey, &freshRebootNode); err != nil {
 			if apierrors.IsNotFound(err) {
