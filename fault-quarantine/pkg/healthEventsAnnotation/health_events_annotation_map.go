@@ -49,8 +49,8 @@ func NewHealthEventsAnnotationMap() *HealthEventsAnnotationMap {
 	}
 }
 
-// createEventKeyForEntity creates a comparable key for a specific entity in a HealthEvent
-func createEventKeyForEntity(
+// CreateEventKeyForEntity creates a comparable key for a specific entity in a HealthEvent
+func CreateEventKeyForEntity(
 	event *protos.HealthEvent,
 	entity *protos.Entity,
 ) HealthEventKey {
@@ -74,13 +74,13 @@ func createEventKeyForEntity(
 // createEventKeys creates keys for all entities in a HealthEvent
 func createEventKeys(event *protos.HealthEvent) []HealthEventKey {
 	if len(event.EntitiesImpacted) == 0 {
-		return []HealthEventKey{createEventKeyForEntity(event, nil)}
+		return []HealthEventKey{CreateEventKeyForEntity(event, nil)}
 	}
 
 	keys := make([]HealthEventKey, 0, len(event.EntitiesImpacted))
 
 	for _, entity := range event.EntitiesImpacted {
-		keys = append(keys, createEventKeyForEntity(event, entity))
+		keys = append(keys, CreateEventKeyForEntity(event, entity))
 	}
 
 	return keys

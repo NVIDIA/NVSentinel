@@ -285,7 +285,7 @@ func TestHandleEvent(t *testing.T) {
 		reconciler := &Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{rules[1]}},
-				Publisher:                 publisher.NewPublisher(mockPublisher),
+				Publisher:                 publisher.NewPublisher(mockPublisher, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 			},
 			databaseClient: mockClient,
 		}
@@ -305,6 +305,7 @@ func TestHandleEvent(t *testing.T) {
 			Metadata:           healthEvent_13.HealthEvent.Metadata,
 			GeneratedTimestamp: healthEvent_13.HealthEvent.GeneratedTimestamp,
 			NodeName:           healthEvent_13.HealthEvent.NodeName,
+			ProcessingStrategy: protos.ProcessingStrategy_EXECUTE_REMEDIATION, // Publisher sets this from config
 		}
 		expectedHealthEvents := &protos.HealthEvents{
 			Version: 1,
@@ -330,7 +331,7 @@ func TestHandleEvent(t *testing.T) {
 		mockPublisher := &mockPublisher{}
 		cfg := HealthEventsAnalyzerReconcilerConfig{
 			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: rules},
-			Publisher:                 publisher.NewPublisher(mockPublisher),
+			Publisher:                 publisher.NewPublisher(mockPublisher, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 		}
 		reconciler := NewReconciler(cfg)
 		reconciler.databaseClient = mockClient
@@ -375,7 +376,7 @@ func TestHandleEvent(t *testing.T) {
 		mockPublisher := &mockPublisher{}
 		cfg := HealthEventsAnalyzerReconcilerConfig{
 			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: rules},
-			Publisher:                 publisher.NewPublisher(mockPublisher),
+			Publisher:                 publisher.NewPublisher(mockPublisher, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 		}
 		reconciler := NewReconciler(cfg)
 		reconciler.databaseClient = mockClient
@@ -400,7 +401,7 @@ func TestHandleEvent(t *testing.T) {
 		mockPublisher := &mockPublisher{}
 		cfg := HealthEventsAnalyzerReconcilerConfig{
 			HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{}},
-			Publisher:                 publisher.NewPublisher(mockPublisher),
+			Publisher:                 publisher.NewPublisher(mockPublisher, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 		}
 		reconciler := NewReconciler(cfg)
 		reconciler.databaseClient = mockClient
@@ -426,7 +427,7 @@ func TestHandleEvent(t *testing.T) {
 		reconciler := &Reconciler{
 			config: HealthEventsAnalyzerReconcilerConfig{
 				HealthEventsAnalyzerRules: &config.TomlConfig{Rules: []config.HealthEventsAnalyzerRule{disabledRule}},
-				Publisher:                 publisher.NewPublisher(mockPublisher),
+				Publisher:                 publisher.NewPublisher(mockPublisher, protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 			},
 			databaseClient: mockClient,
 		}

@@ -56,6 +56,44 @@ const (
     }
   ]
 }`
+	// Pre-R575 driver version metadata (uses V1 IntrInfoBinary patterns from Column C)
+	testMetadataPreR575JSON = `
+{
+  "version": "1.0",
+  "timestamp": "2025-12-10T18:12:55Z",
+  "node_name": "test-node",
+  "driver_version": "570.148.08",
+  "chassis_serial": null,
+  "gpus": [
+    {
+      "gpu_id": 0,
+      "uuid": "GPU-123",
+      "pci_address": "0000:00:08.0",
+      "serial_number": "1655322020697",
+      "device_name": "NVIDIA H100 80GB HBM3",
+      "nvlinks": []
+    }
+  ]
+}`
+	// R575+ driver version metadata (uses V2 IntrInfoBinary patterns from Column D)
+	testMetadataR575JSON = `
+{
+  "version": "1.0",
+  "timestamp": "2025-12-10T18:12:55Z",
+  "node_name": "test-node",
+  "driver_version": "575.51.02",
+  "chassis_serial": null,
+  "gpus": [
+    {
+      "gpu_id": 0,
+      "uuid": "GPU-123",
+      "pci_address": "0000:00:08.0",
+      "serial_number": "1655322020697",
+      "device_name": "NVIDIA H100 80GB HBM3",
+      "nvlinks": []
+    }
+  ]
+}`
 	testMetadataMissingPCIJSON = `
 {
   "version": "1.0",
@@ -597,6 +635,102 @@ func TestCreateHealthEventFromResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNVL5XIDDriverVersionDependentParsing verifies that NVL5 XIDs (144-150) are parsed
+// differently based on driver version. Pre-R575 drivers use V1 IntrInfoBinary patterns (Column C),
+// while R575+ drivers use V2 patterns (Column D) from the Xid-Catalog.xlsx.
+func TestNVL5XIDDriverVersionDependentParsing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create metadata files with different driver versions
+	metadataPreR575 := filepath.Join(tmpDir, "metadata_pre_r575.json")
+	require.NoError(t, os.WriteFile(metadataPreR575, []byte(testMetadataPreR575JSON), 0600))
+
+	metadataR575 := filepath.Join(tmpDir, "metadata_r575.json")
+	require.NoError(t, os.WriteFile(metadataR575, []byte(testMetadataR575JSON), 0600))
+
+	// XID 145 NVL5 message with intrInfo=0x00000082 and errorStatus=0x00000040
+	// This intrInfo matches V1 Rule 7 pattern "------000000----------0010000010" (RLW_REMAP, RESET_GPU)
+	// but does NOT match any V2 pattern
+	//
+	// Binary of 0x00000082: 00000000000000000000000010000010
+	// V1 Rule 7 pattern requires bits 22-31 = "0010000010" - matches
+	// V2 Rule 7 pattern requires bits 25-31 = "0000100" but we have "0000010" - no match
+	nvl5Message := "NVRM: Xid (PCI:0000:00:08.0): 145, RLW_REMAP Nonfatal XC1 i0 Link 10 (0x00000082 0x00000040 0x00000000 0x00000000 0x00000000 0x00000000)"
+
+	t.Run("Pre-R575 driver matches V1 pattern with RESET_GPU resolution", func(t *testing.T) {
+		handler, err := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check",
+			"", metadataPreR575, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+		require.NoError(t, err)
+
+		events, err := handler.ProcessLine(nvl5Message)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should match V1 pattern and produce event")
+		require.Len(t, events.Events, 1)
+
+		event := events.Events[0]
+		// V1 Rule 7 match: RLW_REMAP with Resolution="RESET_GPU" maps to COMPONENT_RESET
+		assert.Equal(t, pb.RecommendedAction_COMPONENT_RESET, event.RecommendedAction,
+			"Pre-R575 driver should match V1 Rule 7 pattern (RESET_GPU maps to COMPONENT_RESET)")
+		assert.Contains(t, event.ErrorCode[0], "145")
+	})
+
+	t.Run("R575+ driver does not match V1 intrInfo pattern", func(t *testing.T) {
+		handler, err := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check",
+			"", metadataR575, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+		require.NoError(t, err)
+
+		events, err := handler.ProcessLine(nvl5Message)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should still produce event even without NVL5 rule match")
+		require.Len(t, events.Events, 1)
+
+		event := events.Events[0]
+		// V2 patterns do NOT match this intrInfo (0x82), so no rule matches, returns default NONE
+		assert.Equal(t, pb.RecommendedAction_NONE, event.RecommendedAction,
+			"R575+ driver should NOT match V1 intrInfo pattern, returns default NONE")
+		assert.Contains(t, event.ErrorCode[0], "145")
+	})
+
+	// Second message with intrInfo=0x00000004 that matches V2 Rule 7 but NOT V1
+	// V2 Rule 7: IntrInfo="------000000-------------0000100" (bits 25-31 = 0000100 = 4)
+	// V1 Rule 7: IntrInfo="------000000----------0010000010" (bits 22-31 = 0010000010 = 130)
+	nvl5MessageV2 := "NVRM: Xid (PCI:0000:00:08.0): 145, RLW_REMAP Nonfatal XC1 i0 Link 10 (0x00000004 0x00000040 0x00000000 0x00000000 0x00000000 0x00000000)"
+
+	t.Run("R575+ driver matches V2 pattern with RESET_GPU resolution", func(t *testing.T) {
+		handler, err := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check",
+			"", metadataR575, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+		require.NoError(t, err)
+
+		events, err := handler.ProcessLine(nvl5MessageV2)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should match V2 pattern and produce event")
+		require.Len(t, events.Events, 1)
+
+		event := events.Events[0]
+		// V2 Rule 7 match: RLW_REMAP with Resolution="RESET_GPU" maps to COMPONENT_RESET
+		assert.Equal(t, pb.RecommendedAction_COMPONENT_RESET, event.RecommendedAction,
+			"R575+ driver should match V2 Rule 7 pattern (RESET_GPU maps to COMPONENT_RESET)")
+		assert.Contains(t, event.ErrorCode[0], "145")
+	})
+
+	t.Run("Pre-R575 driver does not match V2 intrInfo pattern", func(t *testing.T) {
+		handler, err := NewXIDHandler("test-node", "test-agent", "GPU", "xid-check",
+			"", metadataPreR575, pb.ProcessingStrategy_EXECUTE_REMEDIATION)
+		require.NoError(t, err)
+
+		events, err := handler.ProcessLine(nvl5MessageV2)
+		require.NoError(t, err)
+		require.NotNil(t, events, "Should still produce event even without NVL5 rule match")
+		require.Len(t, events.Events, 1)
+
+		event := events.Events[0]
+		// V1 patterns do NOT match this intrInfo (0x04), so no rule matches, returns default NONE
+		assert.Equal(t, pb.RecommendedAction_NONE, event.RecommendedAction,
+			"Pre-R575 driver should NOT match V2 intrInfo pattern, returns default NONE")
+		assert.Contains(t, event.ErrorCode[0], "145")
+	})
 }
 
 func TestNewXIDHandler(t *testing.T) {

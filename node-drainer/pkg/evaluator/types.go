@@ -21,14 +21,16 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 type DrainEvaluator interface {
 	// Database-agnostic method
-	EvaluateEventWithDatabase(context.Context,
-		model.HealthEventWithStatus, queue.DataStore) (*DrainActionResult, error)
+	EvaluateEventWithDatabase(context.Context, model.HealthEventWithStatus, queue.DataStore,
+		datastore.HealthEventStore) (*DrainActionResult, error)
 }
 
 type NodeDrainEvaluator struct {
@@ -39,8 +41,9 @@ type NodeDrainEvaluator struct {
 
 type InformersInterface interface {
 	GetNamespacesMatchingPattern(context.Context, string, string, string) ([]string, error)
-	CheckIfAllPodsAreEvictedInImmediateMode(context.Context, []string, string, time.Duration) bool
-	FindEvictablePodsInNamespaceAndNode(namespace, nodeName string) ([]*v1.Pod, error)
+	CheckIfAllPodsAreEvictedInImmediateMode(context.Context, []string, string, time.Duration, *protos.Entity) bool
+	FindEvictablePodsInNamespaceAndNode(string, string, *protos.Entity) ([]*v1.Pod, error)
+	GetNode(string) (*v1.Node, error)
 }
 
 type CustomDrainClientInterface interface {
@@ -62,11 +65,12 @@ const (
 )
 
 type DrainActionResult struct {
-	Action     DrainAction
-	Namespaces []string
-	Timeout    time.Duration
-	WaitDelay  time.Duration // For ActionWait
-	Status     string        // For ActionUpdateStatus
+	Action             DrainAction
+	Namespaces         []string
+	Timeout            time.Duration
+	WaitDelay          time.Duration // For ActionWait
+	Status             model.Status  // For ActionUpdateStatus
+	PartialDrainEntity *protos.Entity
 }
 
 func (a DrainAction) String() string {

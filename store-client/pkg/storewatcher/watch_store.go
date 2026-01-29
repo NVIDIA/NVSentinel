@@ -365,6 +365,21 @@ func (w *ChangeStreamWatcher) Close(ctx context.Context) error {
 		slog.Info("ChangeStreamWatcher event channel closed", "client", w.clientName)
 	})
 
+	// Disconnect the MongoDB client to release connections
+	if w.client != nil {
+		if disconnectErr := w.client.Disconnect(ctx); disconnectErr != nil {
+			slog.Warn("Failed to disconnect MongoDB client",
+				"client", w.clientName,
+				"error", disconnectErr)
+			// Don't override the original error if changeStream.Close() failed
+			if err == nil {
+				err = fmt.Errorf("failed to disconnect MongoDB client for %s: %w", w.clientName, disconnectErr)
+			}
+		} else {
+			slog.Info("Successfully disconnected MongoDB client", "client", w.clientName)
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to close change stream for client %s: %w", w.clientName, err)
 	}
@@ -508,7 +523,14 @@ func constructMongoClientOptions(
 		AuthSource:    "$external",
 	}
 
-	return options.Client().ApplyURI(mongoConfig.URI).SetTLSConfig(tlsConfig).SetAuth(credential), nil
+	clientOpts := options.Client().ApplyURI(mongoConfig.URI).SetTLSConfig(tlsConfig).SetAuth(credential)
+
+	// Set AppName for MongoDB connection tracking if provided
+	if mongoConfig.AppName != "" {
+		clientOpts.SetAppName(mongoConfig.AppName)
+	}
+
+	return clientOpts, nil
 }
 
 func ConstructClientTLSConfig(

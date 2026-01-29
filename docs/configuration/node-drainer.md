@@ -42,6 +42,16 @@ node-drainer:
 
 > Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
 
+### Partial Drain
+
+If enabled, the node-drainer will only drain pods which are leveraging the GPU_UUID impacted entity in COMPONENT_RESET HealthEvents. If disabled, the node-drainer will drain all eligible pods on the impacted node for the configured namespaces regardless of the remediation action. HealthEvents with the COMPONENT_RESET remediation action must include an impacted entity for the unhealthy GPU_UUID or else the drain will fail. 
+
+IMPORTANT: If this setting is enabled, the COMPONENT_RESET action in fault-remediation must map to a custom resource which takes action only against the GPU_UUID. If partial drain was enabled in node-drainer but fault-remediation mapped COMPONENT_RESET to a reboot action, pods which weren't drained would be restarted as part of the reboot.
+```yaml
+node-drainer:
+  partialDrainEnabled: true
+```
+
 ### Eviction Timeout
 
 Grace period in seconds applied to pod eviction requests in Immediate mode only.

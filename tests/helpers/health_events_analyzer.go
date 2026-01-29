@@ -27,15 +27,17 @@ import (
 )
 
 const (
-	ERRORCODE_13                 = "13"
-	ERRORCODE_48                 = "48"
-	ERRORCODE_31                 = "31"
-	ERRORCODE_119                = "119"
-	ERRORCODE_120                = "120"
-	ERRORCODE_79                 = "79"
-	ERRORCODE_74                 = "74"
-	HEALTH_EVENTS_ANALYZER_AGENT = "health-events-analyzer"
-	SYSLOG_HEALTH_MONITOR_AGENT  = "syslog-health-monitor"
+	ERRORCODE_13                           = "13"
+	ERRORCODE_48                           = "48"
+	ERRORCODE_31                           = "31"
+	ERRORCODE_119                          = "119"
+	ERRORCODE_120                          = "120"
+	ERRORCODE_79                           = "79"
+	ERRORCODE_74                           = "74"
+	HEALTH_EVENTS_ANALYZER_AGENT           = "health-events-analyzer"
+	SYSLOG_HEALTH_MONITOR_AGENT            = "syslog-health-monitor"
+	HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME = "health-events-analyzer"
+	HEALTH_EVENTS_ANALYZER_CONTAINER_NAME  = "health-events-analyzer"
 )
 
 type HealthEventsAnalyzerTestContext struct {
@@ -70,15 +72,22 @@ func SetupHealthEventsAnalyzerTest(ctx context.Context,
 
 	clearHealthEventsAnalyzerConditions(ctx, t, gpuNodeName)
 
-	t.Log("Backing up current health-events-analyzer configmap")
+	if configMapPath != "" {
+		t.Log("Backing up current health-events-analyzer configmap")
 
-	backupData, err := BackupConfigMap(ctx, client, "health-events-analyzer-config", NVSentinelNamespace)
-	require.NoError(t, err)
-	t.Log("Backup created in memory")
+		backupData, err := BackupConfigMap(ctx, client, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+		t.Log("Backup created in memory")
 
-	testCtx.ConfigMapBackup = backupData
+		testCtx.ConfigMapBackup = backupData
 
-	err = applyHealthEventsAnalyzerConfigAndRestart(ctx, t, client, configMapPath)
+		err = createConfigMapFromFilePath(ctx, client, configMapPath, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
+
+	t.Logf("Restarting %s deployment", HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME)
+
+	err = RestartDeployment(ctx, t, client, HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, NVSentinelNamespace)
 	require.NoError(t, err)
 
 	return ctx, testCtx
@@ -165,29 +174,13 @@ func clearHealthEventsAnalyzerConditions(ctx context.Context, t *testing.T, node
 	SendHealthEvent(ctx, t, event)
 }
 
-func applyHealthEventsAnalyzerConfigAndRestart(
-	ctx context.Context, t *testing.T, client klient.Client, configMapPath string,
-) error {
-	t.Helper()
-	t.Logf("Applying health-events-analyzer configmap: %s", configMapPath)
-
-	err := createConfigMapFromFilePath(ctx, client, configMapPath, "health-events-analyzer-config", NVSentinelNamespace)
-	if err != nil {
-		return err
-	}
-
-	t.Log("Restarting health-events-analyzer deployment")
-
-	err = RestartDeployment(ctx, t, client, "health-events-analyzer", NVSentinelNamespace)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client klient.Client, nodeName string) {
 	xidsToInject := []string{ERRORCODE_79, ERRORCODE_48}
+
+	t.Log("Delete any existing RebootNode CR")
+
+	err := DeleteAllRebootNodeCRs(ctx, t, client)
+	require.NoError(t, err, "failed to delete all RebootNode CRs")
 
 	// inject 2 fatal errors and let the remediation cycle finish
 	t.Logf("Injecting fatal errors to node %s", nodeName)
@@ -206,9 +199,6 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 	rebootNodeCR := WaitForRebootNodeCR(ctx, t, client, nodeName)
 	require.NotNil(t, rebootNodeCR, "RebootNode CR should be created for XID error")
 
-	err := DeleteRebootNodeCR(ctx, client, rebootNodeCR)
-	require.NoError(t, err, "failed to delete RebootNode CR")
-
 	SendHealthyEvent(ctx, t, nodeName)
 
 	t.Logf("Waiting for node %s to be fully uncordoned and cleaned up", nodeName)
@@ -219,15 +209,18 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 		}
 
 		if node.Spec.Unschedulable {
+			t.Logf("Node %s is still cordoned", nodeName)
 			return false
 		}
 
 		if node.Annotations != nil {
 			if _, exists := node.Annotations["quarantineHealthEvent"]; exists {
+				t.Logf("Node %s has quarantineHealthEvent annotation", nodeName)
 				return false
 			}
 
 			if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
+				t.Logf("Node %s has latestFaultRemediationState annotation", nodeName)
 				return false
 			}
 		}
@@ -236,6 +229,9 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "node should be fully cleaned up before next remediation cycle")
+
+	err := DeleteRebootNodeCR(ctx, client, rebootNodeCR)
+	require.NoError(t, err, "failed to delete RebootNode CR")
 }
 
 func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
@@ -244,7 +240,10 @@ func TeardownHealthEventsAnalyzer(ctx context.Context, t *testing.T,
 
 	clearHealthEventsAnalyzerConditions(ctx, t, nodeName)
 
-	restoreHealthEventsAnalyzerConfig(ctx, t, c, configMapBackup)
+	if configMapBackup != nil {
+		t.Log("Restoring health-events-analyzer configmap from memory")
+		restoreHealthEventsAnalyzerConfig(ctx, t, c, configMapBackup)
+	}
 
 	return ctx
 }
@@ -256,10 +255,12 @@ func restoreHealthEventsAnalyzerConfig(ctx context.Context, t *testing.T, c *env
 	client, err := c.NewClient()
 	require.NoError(t, err)
 
-	t.Log("Restoring configmap from memory")
+	if configMapBackup != nil {
+		t.Log("Restoring configmap from memory")
 
-	err = createConfigMapFromBytes(ctx, client, configMapBackup, "health-events-analyzer-config", NVSentinelNamespace)
-	require.NoError(t, err)
+		err = createConfigMapFromBytes(ctx, client, configMapBackup, "health-events-analyzer-config", NVSentinelNamespace)
+		require.NoError(t, err)
+	}
 
 	err = RestartDeployment(ctx, t, client, "health-events-analyzer", NVSentinelNamespace)
 	require.NoError(t, err)

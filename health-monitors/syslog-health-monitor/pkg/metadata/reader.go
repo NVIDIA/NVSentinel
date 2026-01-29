@@ -162,6 +162,14 @@ func (r *Reader) GetChassisSerial() *string {
 	return r.metadata.ChassisSerial
 }
 
+func (r *Reader) GetDriverVersion() string {
+	if err := r.ensureLoaded(); err != nil {
+		return ""
+	}
+
+	return r.metadata.DriverVersion
+}
+
 func normalizePCI(pci string) string {
 	parts := strings.Split(pci, ":")
 	if len(parts) != 3 {

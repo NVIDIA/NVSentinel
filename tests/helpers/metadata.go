@@ -36,6 +36,7 @@ type GPUMetadata struct {
 	Version       string   `json:"version"`
 	Timestamp     string   `json:"timestamp"`
 	NodeName      string   `json:"node_name"`
+	DriverVersion string   `json:"driver_version"`
 	ChassisSerial *string  `json:"chassis_serial"`
 	GPUs          []GPU    `json:"gpus"`
 	NVSwitches    []string `json:"nvswitches"`
@@ -64,6 +65,7 @@ func CreateTestMetadata(nodeName string) *GPUMetadata {
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		NodeName:      nodeName,
 		ChassisSerial: &chassisSerial,
+		DriverVersion: "570.148.08",
 		GPUs: []GPU{
 			{
 				GPUID:        0,

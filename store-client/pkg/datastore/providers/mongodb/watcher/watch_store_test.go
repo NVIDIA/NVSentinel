@@ -189,6 +189,8 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 			"_id":           bson.M{"ts": int64(2), "t": int32(2)},
 		}, receivedEvents[1])
 
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(ctx)
 		require.NoError(t, err)
 	})
@@ -289,6 +291,8 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer closeCancel()
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(closeCtx)
 		require.NoError(t, err)
 	})
@@ -352,6 +356,8 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer closeCancel()
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(closeCtx)
 		require.NoError(t, err)
 
@@ -422,6 +428,8 @@ func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
 
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer closeCancel()
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(closeCtx)
 		require.NoError(t, err)
 
@@ -1607,6 +1615,8 @@ func TestChangeStreamWatcher_CloseWithoutPanic(t *testing.T) {
 
 		// Close the watcher while events are still being processed
 		// This should not panic even if there are events waiting to be sent
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(ctx)
 		require.NoError(t, err)
 
@@ -1755,6 +1765,8 @@ func TestChangeStreamWatcher_RapidCloseAndRestart(t *testing.T) {
 			}
 
 			// Immediately close
+			// Set client to nil before Close() - mtest manages client lifecycle
+			watcher.client = nil
 			err = watcher.Close(ctx)
 			require.NoError(mt, err)
 
@@ -1835,6 +1847,8 @@ func TestChangeStreamWatcher_SendOnClosedChannelPrevention(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Close while the send goroutine is likely blocked trying to send
+		// Set client to nil before Close() - mtest manages client lifecycle
+		watcher.client = nil
 		err = watcher.Close(ctx)
 		require.NoError(mt, err)
 

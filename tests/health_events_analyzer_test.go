@@ -33,6 +33,10 @@ import (
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+const (
+	keyOriginalArgsContextKey contextKey = "originalArgs"
+)
+
 // All tests in this file are not yet supported for PostgreSQL.
 // So we skip them for now using a build tag (mongodb) that excludes them from PostgreSQL tests.
 // Github Issue: https://github.com/NVIDIA/NVSentinel/issues/606
@@ -45,7 +49,7 @@ func TestMultipleRemediationsCompleted(t *testing.T) {
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", "")
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", "")
 
 		t.Log("Triggering multiple remediations cycle")
 		client, err := c.NewClient()
@@ -93,7 +97,7 @@ func TestMultipleRemediationsNotTriggered(t *testing.T) {
 		testNodeName := helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		gpuNodeName := testCtx.NodeName
 
@@ -154,7 +158,7 @@ func TestRepeatedXIDOnSameGPU(t *testing.T) {
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
 		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		newCtx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		return newCtx
 	})
@@ -312,7 +316,7 @@ func TestRepeatedXID31OnSameGPU(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		t.Logf("Using node: %s", testNodeName)
 
@@ -452,7 +456,7 @@ func TestXIDErrorOnGPCAndTPC(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
@@ -682,7 +686,7 @@ func TestSoloNoBurstRule(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		t.Logf("Using node: %s", testNodeName)
 
 		entities1 := []helpers.EntityImpacted{
@@ -796,7 +800,7 @@ func TestXID74Reg0SoloNVLinkError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -963,7 +967,7 @@ func TestXID74Reg0ECCParityError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1157,7 +1161,7 @@ func TestXID74Reg2Bit16Or19SetRule(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1343,7 +1347,7 @@ func TestXID74Reg4ECCError(t *testing.T) {
 
 		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
 
-		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-config.yaml", "health-events-analyzer-test", testNodeName)
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
 		testNodeName = testCtx.NodeName
 		t.Logf("Using node: %s", testNodeName)
 
@@ -1518,6 +1522,158 @@ func TestXID74Reg4ECCError(t *testing.T) {
 		}
 
 		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testNodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestHealthEventsAnalyzerStoreOnlyStrategy(t *testing.T) {
+	feature := features.New("TestHealthEventsAnalyzerStoreOnlyStrategy").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+	var testNodeName string
+	var originalArgs []string
+
+	var entitiesImpacted [][]helpers.EntityImpacted
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		originalArgs, err = helpers.SetDeploymentArgs(ctx, t, client, helpers.HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, helpers.NVSentinelNamespace, helpers.HEALTH_EVENTS_ANALYZER_CONTAINER_NAME, map[string]string{
+			"--processing-strategy": "STORE_ONLY",
+		})
+		require.NoError(t, err)
+
+		ctx = context.WithValue(ctx, keyOriginalArgsContextKey, originalArgs)
+
+		helpers.WaitForDeploymentRollout(ctx, t, client, helpers.HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, helpers.NVSentinelNamespace)
+
+		testNodeName = helpers.AcquireNodeFromPool(ctx, t, client, helpers.DefaultExpiry)
+
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "", "health-events-analyzer-test", testNodeName)
+		testNodeName = testCtx.NodeName
+		t.Logf("Using node: %s", testNodeName)
+
+		t.Log("Injecting XID error 120(x2) on same GPU. The node condition should not be added as the processing strategy is STORE_ONLY.")
+
+		entities := []helpers.EntityImpacted{
+			{
+				EntityType:  "PCI",
+				EntityValue: "0001:00:00",
+			},
+			{
+				EntityType:  "GPU_UUID",
+				EntityValue: "GPU-11111111-1111-1111-1111-111111111111",
+			},
+		}
+
+		entitiesImpacted = append(entitiesImpacted, entities)
+
+		errorCodes := []string{helpers.ERRORCODE_120}
+		for _, errorCode := range errorCodes {
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
+				WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+				WithCheckName("SysLogsXIDError").
+				WithEntitiesImpacted(entities).
+				WithFatal(true).
+				WithErrorCode(errorCode).
+				WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM)),
+			)
+		}
+
+		t.Log("Waiting 17s to create burst gap (>15s required)")
+		time.Sleep(17 * time.Second)
+
+		errorCodes = []string{helpers.ERRORCODE_120}
+		for _, errorCode := range errorCodes {
+			helpers.SendHealthEvent(ctx, t, helpers.NewHealthEvent(testNodeName).
+				WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+				WithCheckName("SysLogsXIDError").
+				WithEntitiesImpacted(entities).
+				WithFatal(true).
+				WithErrorCode(errorCode).
+				WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM)),
+			)
+		}
+
+		return ctx
+	})
+
+	feature.Assess("Verify node condition is not added and node is not cordoned when processing STORE_ONLY events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Verifying no node condition is created when processing STORE_ONLY strategy")
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testNodeName, "RepeatedXIDErrorOnSameGPU")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		originalArgs := ctx.Value(keyOriginalArgsContextKey).([]string)
+
+		for _, entities := range entitiesImpacted {
+			syslogHealthEvent := helpers.NewHealthEvent(testNodeName).
+				WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
+				WithEntitiesImpacted(entities).
+				WithCheckName("SysLogsXIDError").
+				WithFatal(false).
+				WithHealthy(true).
+				WithMessage("No health failures").
+				WithComponentClass("GPU")
+			helpers.SendHealthEvent(ctx, t, syslogHealthEvent)
+		}
+
+		err = helpers.RestoreDeploymentArgs(t, ctx, client, helpers.HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, helpers.NVSentinelNamespace, helpers.HEALTH_EVENTS_ANALYZER_CONTAINER_NAME, originalArgs)
+		require.NoError(t, err)
+
+		helpers.WaitForDeploymentRollout(ctx, t, client, helpers.HEALTH_EVENTS_ANALYZER_DEPLOYMENT_NAME, helpers.NVSentinelNamespace)
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testNodeName, testCtx.ConfigMapBackup)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestHealthEventsAnalyzerProcessingStrategyRuleOverride(t *testing.T) {
+	feature := features.New("TestHealthEventsAnalyzerRuleOverride").
+		WithLabel("suite", "health-event-analyzer")
+
+	var testCtx *helpers.HealthEventsAnalyzerTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		ctx, testCtx = helpers.SetupHealthEventsAnalyzerTest(ctx, t, c, "data/health-events-analyzer-rule-override.yaml", "health-events-analyzer-test", "")
+		t.Logf("Using node: %s", testCtx.NodeName)
+		return ctx
+	})
+
+	feature.Assess("Verify node condition is not added for the rule MultipleRemediations as rule strategy is overridden to STORE_ONLY", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Triggering multiple remediations cycle")
+		helpers.TriggerMultipleRemediationsCycle(ctx, t, client, testCtx.NodeName)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithFatal(true).
+			WithErrorCode(helpers.ERRORCODE_31).
+			WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
+		helpers.SendHealthEvent(ctx, t, event)
+
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "MultipleRemediations")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
+
+		return helpers.TeardownHealthEventsAnalyzer(ctx, t, c, testCtx.NodeName, testCtx.ConfigMapBackup)
 	})
 
 	testEnv.Test(t, feature.Feature())

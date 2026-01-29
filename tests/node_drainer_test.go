@@ -195,3 +195,150 @@ func TestNodeDrainerEvictionModes(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
+
+func TestNodeDrainerPartialDrain(t *testing.T) {
+	feature := features.New("TestNodeDrainerPartialDrain").
+		WithLabel("suite", "node-drainer")
+
+	var testCtx *helpers.NodeDrainerTestContext
+	var immediateEvictionPods []string
+	var immediateEvictionPodsWithImpactedGPU []string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "immediate-test")
+		// Since SetupNodeDrainerTest will override the Tilt configmap, we need to ensure that the Helm chart value
+		// correctly set the value.
+		require.Contains(t, string(testCtx.ConfigMapBackup), "partialDrainEnabled = true")
+
+		// prevents conflicting processing from the fault-remediation module, specifically with it adding the
+		// dgxc.nvidia.com/nvsentinel-state label
+		err = helpers.ScaleDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace, 0)
+		require.NoError(t, err)
+
+		immediateEvictionPods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "immediate-test")
+		immediateEvictionPodsWithImpactedGPU = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pod-with-devices.yaml", testCtx.NodeName, "immediate-test")
+
+		helpers.WaitForPodsRunning(newCtx, t, client, "immediate-test", append(immediateEvictionPods,
+			immediateEvictionPodsWithImpactedGPU...))
+
+		return newCtx
+	})
+	feature.Assess("Execute partial drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("119").
+			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithRecommendedAction(2).
+			WithEntitiesImpacted([]helpers.EntityImpacted{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+			})
+		helpers.SendHealthEvent(ctx, t, event)
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+
+		t.Log("Phase 1: ImmediateEviction pod leveraging GPU is evicted immediately")
+		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediateEvictionPodsWithImpactedGPU)
+
+		t.Log("Phase 2: Draining succeeds after pod leveraging GPU is evicted")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+
+		t.Log("Phase 3: ImmediateEviction pods not leveraging GPU should not be deleted")
+		helpers.AssertPodsNeverDeleted(ctx, t, client, "immediate-test", immediateEvictionPods)
+
+		// remaining immediateEvictionPods will be deleted at the end of the following skip draining test
+		return ctx
+	})
+	// We can verify if draining was skipped by leveraging the dgxc.nvidia.com/nvsentinel-state label. If draining
+	// is skipped, no label updates are applied so the value will retain its current value from the beginning of the drain
+	// evaluation and will not go from initialVal -> draining -> drain-succeeded or from initialVal -> drain-succeeded.
+	// To ensure that draining is skipped (the drain isn't re-processed and goes to StatusSucceeded) and that draining
+	// completes (the drain goes to status AlreadyDrained and no bugs prevent processing), we will manually add a
+	// value to the label other than drain-succeeded and ensure that the fault-remediation-module processes the event.
+	// This test ensures that the label goes from <placeholder> -> fault-remediated when draining is skipped which
+	// covers the 2 conditions above.
+	feature.Assess("Skip partial drain if pods using unhealthy GPU are already drained", func(ctx context.Context,
+		t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+		err = helpers.ScaleDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace, 1)
+		require.NoError(t, err)
+		helpers.WaitForDeploymentRollout(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
+
+		nodeLabelSequenceObserved := make(chan bool)
+		desiredNVSentinelStateNodeLabels := []string{
+			string("placeholder"),
+			string(statemanager.RemediatingLabelValue),
+			string(statemanager.RemediationSucceededLabelValue),
+		}
+		err = helpers.StartNodeLabelWatcher(ctx, t, client, testCtx.NodeName, desiredNVSentinelStateNodeLabels,
+			false, nodeLabelSequenceObserved)
+		require.NoError(t, err)
+		err = helpers.SetNodeLabel(ctx, client, testCtx.NodeName, string(statemanager.NVSentinelStateLabelKey), "placeholder")
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("119").
+			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithRecommendedAction(2).
+			WithEntitiesImpacted([]helpers.EntityImpacted{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+			})
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Log("Phase 1: Drain should be skipped")
+		timer := time.NewTimer(1 * time.Minute)
+
+		select {
+		case success := <-nodeLabelSequenceObserved:
+			require.True(t, success)
+		case <-timer.C:
+			require.Fail(t, "timed out waiting desired label changes")
+		}
+
+		t.Log("Phase 2: Pods not leveraging impacted GPU should not be drained")
+		helpers.AssertPodsNeverDeleted(ctx, t, client, "immediate-test", immediateEvictionPods)
+
+		t.Log("Phase 3: Manually deleting pods not leveraging impacted GPU")
+		helpers.DeletePodsByNames(ctx, t, client, "immediate-test", immediateEvictionPods)
+
+		return ctx
+	})
+	feature.Assess("Partial drain failure from GPU UUID missing", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("119").
+			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
+			WithRecommendedAction(2)
+
+		helpers.SendHealthEvent(ctx, t, event)
+
+		t.Log("Phase 1: Wait for node to have drain-failed label")
+		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey,
+			string(statemanager.DrainFailedLabelValue))
+
+		return ctx
+	})
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.DeleteNamespace(ctx, t, client, "immediate-test")
+
+		return helpers.TeardownNodeDrainer(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}

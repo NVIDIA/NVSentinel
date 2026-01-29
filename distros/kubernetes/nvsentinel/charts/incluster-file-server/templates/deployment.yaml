@@ -17,6 +17,8 @@ metadata:
   name: {{ include "incluster-file-server.fullname" . }}
   labels:
     {{- include "incluster-file-server.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: 1
   strategy:
@@ -185,6 +187,8 @@ metadata:
   name: {{ include "incluster-file-server.fullname" . }}-data
   labels:
     {{- include "incluster-file-server.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   accessModes:
 {{- range .Values.persistence.accessModes }}

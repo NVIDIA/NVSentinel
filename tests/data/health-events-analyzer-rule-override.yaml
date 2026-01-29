@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-events-analyzer-config
+  namespace: nvsentinel
+data:
+  config.toml: |
+    [[rules]]
+    name = "MultipleRemediations"
+    description = "Detect if multiple remediations are performed within 2 minutes on a node (test config)"
+    recommended_action = "CONTACT_SUPPORT"
+    evaluate_rule = true
+    processing_strategy = "STORE_ONLY"
+    stage = [
+      '''
+      {
+        "$match": {
+          "$expr": {
+            "$and": [
+              {
+                "$gte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 120]}
+                ]
+              },
+              {
+                "$lte": [
+                  "$healthevent.generatedtimestamp.seconds",
+                  "this.healthevent.generatedtimestamp.seconds"
+                ]
+              }
+            ]
+          }
+        }
+      }
+      ''',
+      '''
+      {
+        "$match": {
+          "healtheventstatus.faultremediated": true,
+          "healthevent.nodename": "this.healthevent.nodename",
+          "healthevent.isfatal": "this.healthevent.isfatal"
+        }
+      }
+      ''',
+      '{"$count": "count"}',
+      '{"$match": {"count": {"$gte": 2}}}'
+    ]

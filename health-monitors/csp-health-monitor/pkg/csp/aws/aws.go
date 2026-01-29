@@ -779,7 +779,7 @@ func (c *AWSClient) mapToValidAction(desc string) pb.RecommendedAction {
 
 			switch {
 			case strings.Contains(section, "reset") && strings.Contains(section, "component"):
-				return pb.RecommendedAction_COMPONENT_RESET
+				return pb.RecommendedAction_RESTART_VM
 
 			case strings.Contains(section, "stop and start") || strings.Contains(section, "reboot"):
 				return pb.RecommendedAction_RESTART_VM

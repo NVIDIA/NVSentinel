@@ -16,18 +16,19 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"golang.org/x/sync/errgroup"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -35,9 +36,13 @@ import (
 
 	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
-	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/initializer"
 )
+
+func init() {
+	utilruntime.Must(corev1.AddToScheme(scheme))
+	utilruntime.Must(batchv1.AddToScheme(scheme))
+}
 
 var (
 	scheme = runtime.NewScheme()
@@ -49,14 +54,12 @@ var (
 
 	// These variables are populated by parsing flags
 	enableLeaderElection        bool
-	enableControllerRuntime     bool
 	leaderElectionLeaseDuration time.Duration
 	leaderElectionRenewDeadline time.Duration
 	leaderElectionRetryPeriod   time.Duration
 	leaderElectionNamespace     string
 	metricsAddr                 string
 	healthAddr                  string
-	kubeconfigPath              string
 	tomlConfigPath              string
 	dryRun                      bool
 	enableLogCollector          bool
@@ -88,96 +91,27 @@ func main() {
 func run() error {
 	parseFlags()
 
-	if !enableControllerRuntime && enableLeaderElection {
-		return errors.New("leader-election requires controller-runtime")
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	params := initializer.InitializationParams{
-		KubeconfigPath:     kubeconfigPath,
-		TomlConfigPath:     tomlConfigPath,
-		DryRun:             dryRun,
-		EnableLogCollector: enableLogCollector,
-	}
-
-	components, err := initializer.InitializeAll(ctx, params)
+	err := setupCtrlRuntimeManagement(ctx)
 	if err != nil {
-		return fmt.Errorf("initialization failed: %w", err)
-	}
-
-	reconciler := components.FaultRemediationReconciler
-
-	defer func() {
-		if err := reconciler.CloseAll(ctx); err != nil {
-			slog.Error("failed to close datastore components", "error", err)
-		}
-	}()
-
-	if enableControllerRuntime {
-		err = setupCtrlRuntimeManagement(ctx, components)
-		if err != nil {
-			return err
-		}
-	} else {
-		err = setupNonCtrlRuntimeManaged(ctx, components)
-		if err != nil {
-			return err
-		}
+		return err
 	}
 
 	return nil
 }
 
-func setupNonCtrlRuntimeManaged(ctx context.Context, components *initializer.Components) error {
-	slog.Info("Running without controller runtime management")
-
-	metricsAddr = strings.TrimPrefix(metricsAddr, ":")
-
-	portInt, err := strconv.Atoi(metricsAddr)
-	if err != nil {
-		return fmt.Errorf("invalid metrics port: %w", err)
-	}
-
-	srv := server.NewServer(
-		server.WithPort(portInt),
-		server.WithPrometheusMetricsCtrlRuntime(),
-		server.WithSimpleHealth(),
-	)
-
-	g, gCtx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		slog.Info("Starting metrics server", "port", portInt)
-
-		if err := srv.Serve(gCtx); err != nil {
-			slog.Error("Metrics server failed - continuing without metrics", "error", err)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		components.FaultRemediationReconciler.StartWatcherStream(gCtx)
-
-		slog.Info("Listening for events on the channel...")
-
-		for event := range components.FaultRemediationReconciler.Watcher.Events() {
-			slog.Info("Event received", "event", event)
-			_, _ = components.FaultRemediationReconciler.Reconcile(gCtx, &event)
-		}
-
-		return nil
-	})
-
-	return g.Wait()
-}
-
-func setupCtrlRuntimeManagement(ctx context.Context, components *initializer.Components) error {
+func setupCtrlRuntimeManagement(ctx context.Context) error {
 	slog.Info("Running in controller runtime managed mode")
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg := ctrl.GetConfigOrDie()
+	cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
+
+	//TODO: setup informers for node and job
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
@@ -204,6 +138,26 @@ func setupCtrlRuntimeManagement(ctx context.Context, components *initializer.Com
 		slog.Error("Unable to set up ready check", "error", err)
 		return err
 	}
+
+	params := initializer.InitializationParams{
+		TomlConfigPath:     tomlConfigPath,
+		DryRun:             dryRun,
+		EnableLogCollector: enableLogCollector,
+		Config:             mgr.GetConfig(),
+	}
+
+	components, err := initializer.InitializeAll(ctx, params, mgr.GetClient())
+	if err != nil {
+		return fmt.Errorf("initialization failed: %w", err)
+	}
+
+	reconciler := components.FaultRemediationReconciler
+
+	defer func() {
+		if err := reconciler.CloseAll(ctx); err != nil {
+			slog.Error("failed to close datastore components", "error", err)
+		}
+	}()
 
 	err = components.FaultRemediationReconciler.SetupWithManager(ctx, mgr)
 	if err != nil {
@@ -235,19 +189,10 @@ func parseFlags() {
 			" (otherwise metrics and health are on same port).",
 	)
 
-	flag.StringVar(&kubeconfigPath, "kubeconfig-path", "", "path to kubeconfig file")
-
 	flag.StringVar(&tomlConfigPath, "config-path", "/etc/config/config.toml",
 		"path where the fault remediation config file is present")
 
 	flag.BoolVar(&dryRun, "dry-run", false, "flag to run fault remediation module in dry-run mode.")
-
-	flag.BoolVar(
-		&enableControllerRuntime,
-		"controller-runtime",
-		false,
-		"Enable controller runtime management of the reconciler.",
-	)
 
 	flag.BoolVar(
 		&enableLeaderElection,

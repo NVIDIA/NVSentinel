@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 )
 
 const (
@@ -35,6 +36,7 @@ const (
 
 type PublisherConfig struct {
 	platformConnectorClient protos.PlatformConnectorClient
+	processingStrategy      protos.ProcessingStrategy
 }
 
 func isRetryableError(err error) bool {
@@ -89,12 +91,17 @@ func (p *PublisherConfig) sendHealthEventWithRetry(ctx context.Context, healthEv
 	return nil
 }
 
-func NewPublisher(platformConnectorClient protos.PlatformConnectorClient) *PublisherConfig {
-	return &PublisherConfig{platformConnectorClient: platformConnectorClient}
+func NewPublisher(platformConnectorClient protos.PlatformConnectorClient,
+	processingStrategy protos.ProcessingStrategy) *PublisherConfig {
+	return &PublisherConfig{
+		platformConnectorClient: platformConnectorClient,
+		processingStrategy:      processingStrategy,
+	}
 }
 
 func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent,
-	recommendedAction protos.RecommendedAction, ruleName string, message string) error {
+	recommendedAction protos.RecommendedAction, ruleName string, message string,
+	rule *config.HealthEventsAnalyzerRule) error {
 	newEvent := proto.Clone(event).(*protos.HealthEvent)
 
 	newEvent.Agent = "health-events-analyzer"
@@ -102,6 +109,18 @@ func (p *PublisherConfig) Publish(ctx context.Context, event *protos.HealthEvent
 	newEvent.RecommendedAction = recommendedAction
 	newEvent.IsHealthy = false
 	newEvent.Message = message
+
+	// Default from module configuration, with an optional rule-level override.
+	newEvent.ProcessingStrategy = p.processingStrategy
+
+	if rule != nil && rule.ProcessingStrategy != "" {
+		value, ok := protos.ProcessingStrategy_value[rule.ProcessingStrategy]
+		if !ok {
+			return fmt.Errorf("unexpected processingStrategy value: %q", rule.ProcessingStrategy)
+		}
+
+		newEvent.ProcessingStrategy = protos.ProcessingStrategy(value)
+	}
 
 	if recommendedAction == protos.RecommendedAction_NONE {
 		newEvent.IsFatal = false

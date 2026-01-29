@@ -92,10 +92,11 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 
 func createPipeline() interface{} {
 	builder := client.GetPipelineBuilder()
-	return builder.BuildNonFatalUnhealthyInsertsPipeline()
+	return builder.BuildProcessableNonFatalUnhealthyInsertsPipeline()
 }
 
-func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {
+func connectToPlatform(socket string, processingStrategy protos.ProcessingStrategy) (
+	*publisher.PublisherConfig, *grpc.ClientConn, error) {
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	conn, err := grpc.NewClient(socket, opts...)
@@ -104,7 +105,7 @@ func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientC
 	}
 
 	platformConnectorClient := protos.NewPlatformConnectorClient(conn)
-	pub := publisher.NewPublisher(platformConnectorClient)
+	pub := publisher.NewPublisher(platformConnectorClient, processingStrategy)
 
 	return pub, conn, nil
 }
@@ -117,6 +118,8 @@ func run() error {
 	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml", "path to TOML config file")
 	databaseClientCertMountPath := flag.String("database-client-cert-mount-path", "/etc/ssl/database-client",
 		"path where the database client cert is mounted")
+	processingStrategyFlag := flag.String("processing-strategy", "EXECUTE_REMEDIATION",
+		"Event processing strategy for analyzer output: EXECUTE_REMEDIATION or STORE_ONLY")
 
 	flag.Parse()
 
@@ -127,7 +130,14 @@ func run() error {
 
 	pipeline := createPipeline()
 
-	pub, conn, err := connectToPlatform(*socket)
+	value, ok := protos.ProcessingStrategy_value[*processingStrategyFlag]
+	if !ok {
+		return fmt.Errorf("unexpected processingStrategy value: %q", *processingStrategyFlag)
+	}
+
+	slog.Info("Event handling strategy configured", "processingStrategy", *processingStrategyFlag)
+
+	pub, conn, err := connectToPlatform(*socket, protos.ProcessingStrategy(value))
 	if err != nil {
 		return err
 	}

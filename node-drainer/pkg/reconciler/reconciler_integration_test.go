@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -44,6 +45,8 @@ import (
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	annotation "github.com/nvidia/nvsentinel/fault-quarantine/pkg/healthEventsAnnotation"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/informers"
@@ -52,6 +55,7 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/reconciler"
 	sdkclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 	sdkconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
+	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
 
@@ -115,6 +119,24 @@ func (m *mockDataStore) FindDocuments(ctx context.Context, filter interface{}, o
 	return nil, nil
 }
 
+func newMockHealthEventStore(healthEvents []datastore.HealthEventWithStatus, err error) *mockHealthEventStore {
+	return &mockHealthEventStore{
+		healthEvents: healthEvents,
+		err:          err,
+	}
+}
+
+type mockHealthEventStore struct {
+	datastore.HealthEventStore
+	healthEvents []datastore.HealthEventWithStatus
+	err          error
+}
+
+func (mockStore *mockHealthEventStore) FindHealthEventsByQuery(_ context.Context,
+	_ datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
+	return mockStore.healthEvents, mockStore.err
+}
+
 func (m *mockDatabaseConfig) GetConnectionURI() string {
 	return m.connectionURI
 }
@@ -133,6 +155,10 @@ func (m *mockDatabaseConfig) GetCertConfig() sdkconfig.CertificateConfig {
 
 func (m *mockDatabaseConfig) GetTimeoutConfig() sdkconfig.TimeoutConfig {
 	return &mockTimeoutConfig{}
+}
+
+func (m *mockDatabaseConfig) GetAppName() string {
+	return "node-drainer"
 }
 
 // mockCertConfig is a simple mock implementation for testing
@@ -185,18 +211,20 @@ func (m *mockTimeoutConfig) GetChangeStreamRetryIntervalSeconds() int {
 // unquarantined events, allow completion mode, terminal states, already drained nodes, daemonsets, etc.
 func TestReconciler_ProcessEvent(t *testing.T) {
 	tests := []struct {
-		name                 string
-		nodeName             string
-		namespaces           []string
-		pods                 []*v1.Pod
-		nodeQuarantined      model.Status
-		drainForce           bool
-		existingNodeLabels   map[string]string
-		mongoFindOneResponse map[string]interface{}
-		expectError          bool
-		expectedNodeLabel    *string
-		numReconciles        int
-		validateFunc         func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error)
+		name                            string
+		nodeName                        string
+		namespaces                      []string
+		pods                            []*v1.Pod
+		nodeQuarantined                 model.Status
+		drainForce                      bool
+		recommendedAction               protos.RecommendedAction
+		entitiesImpacted                []*protos.Entity
+		existingNodeLabels              map[string]string
+		findHealthEventsByQueryResponse []datastore.HealthEventWithStatus
+		expectError                     bool
+		expectedNodeLabel               *string
+		numReconciles                   int
+		validateFunc                    func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error)
 	}{
 		{
 			name:            "ImmediateEviction mode evicts pods",
@@ -297,27 +325,62 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			},
 		},
 		{
-			name:            "AllowCompletion mode waits for pods to complete and verifies consistent pod ordering",
+			name:            "Partial drain for AllowCompletion mode waits only for pods leveraging given GPU UUID",
 			nodeName:        "completion-node",
 			namespaces:      []string{"completion-test"},
 			nodeQuarantined: model.Quarantined,
 			pods: []*v1.Pod{
 				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec: v1.PodSpec{
+						NodeName: "completion-node",
+						Containers: []v1.Container{{
+							Name:  "c",
+							Image: "nginx",
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+								},
+							},
+						}},
+						InitContainers: []v1.Container{{
+							Name:  "c",
+							Image: "nginx",
+							Resources: v1.ResourceRequirements{
+								Limits: v1.ResourceList{
+									v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+								},
+							},
+						}},
+					},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-2", Namespace: "completion-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-456\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
 					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-3", Namespace: "completion-test"},
 					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
 					Status:     v1.PodStatus{Phase: v1.PodRunning},
 				},
+			},
+			entitiesImpacted: []*protos.Entity{
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test"},
-					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
-					Status:     v1.PodStatus{Phase: v1.PodRunning},
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-2", Namespace: "completion-test"},
-					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
-					Status:     v1.PodStatus{Phase: v1.PodRunning},
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
 				},
 			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 			expectError:       true,
 			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
 			numReconciles:     5,
@@ -329,26 +392,179 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
 				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
-				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
-				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "pod list should be in sorted order")
+				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1]"
+				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "only expected pods should be drained")
+			},
+		},
+		{
+			name:            "Partial drain for ImmediateEviction mode only evicts for pods leveraging given GPU UUID",
+			nodeName:        "test-node",
+			namespaces:      []string{"immediate-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "immediate-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-2", Namespace: "immediate-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-456\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-3", Namespace: "immediate-test"},
+					Spec:       v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			entitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+				{
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
+				},
+			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			expectError:       true,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
 
-				for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
-					pod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
-					require.NoError(t, err)
-					pod.Status.Phase = v1.PodSucceeded
-					_, err = client.CoreV1().Pods("completion-test").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-					require.NoError(t, err)
+				// confirm that pod-1 was deleted but not pod-2 and pod-3
+				expectDeletedForPods := map[string]bool{
+					"pod-1": true,
+					"pod-2": false,
+					"pod-3": false,
 				}
+				for podName, expectDeleted := range expectDeletedForPods {
+					pod, err := client.CoreV1().Pods("immediate-test").Get(ctx, podName, metav1.GetOptions{})
+					require.NoError(t, err)
+					assert.True(t, pod.DeletionTimestamp != nil == expectDeleted)
+				}
+			},
+		},
+		{
+			name:            "Partial drain for DeleteAfterTimeout mode only evicts for pods leveraging given GPU UUID",
+			nodeName:        "test-node",
+			namespaces:      []string{"timeout-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "timeout-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-2", Namespace: "timeout-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-456\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pod-3", Namespace: "timeout-test"},
+					Spec:       v1.PodSpec{NodeName: "test-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			entitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+				{
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
+				},
+			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			expectError:       true,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "failed timeout eviction for node test-node: waiting for 1 pods to complete or timeout")
 
-				require.Eventually(t, func() bool {
-					for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
-						updatedPod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
-						if err != nil || updatedPod.Status.Phase != v1.PodSucceeded {
-							return false
-						}
-					}
-					return true
-				}, 30*time.Second, 1*time.Second, "all pod statuses should be updated to succeeded")
+				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
+				require.NoError(t, err)
+				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+				require.Equal(t, nodeEvents.Items[0].Reason, "WaitingBeforeForceDelete")
+				expectedMessage := "Waiting for following pods to finish: [pod-1] in namespace: [timeout-test] or they will be force deleted on:"
+				require.Contains(t, nodeEvents.Items[0].Message, expectedMessage, "only expected pods should be drained")
+			},
+		},
+		{
+			name:            "Partial drain failure if impacted entity is missing GPU UUID",
+			nodeName:        "completion-node",
+			namespaces:      []string{"completion-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test", Annotations: map[string]string{
+						model.PodDeviceAnnotationName: "{\"devices\":{\"nvidia.com/gpu\":[\"GPU-123\"]}}",
+					}},
+					Spec:   v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			entitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
+				},
+			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainFailedLabelValue)),
+			expectError:       false,
+			numReconciles:     1,
+		},
+		{
+			name:            "Partial drain failure if GPU pod is missing device annotation",
+			nodeName:        "completion-node",
+			namespaces:      []string{"completion-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test"},
+					Spec: v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{
+						Name:  "c",
+						Image: "nginx",
+						Resources: v1.ResourceRequirements{
+							Limits: v1.ResourceList{
+								v1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+							},
+						},
+					}}},
+					Status: v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			entitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-123",
+				},
+				{
+					EntityType:  "PCI",
+					EntityValue: "PCI:0000:00:08",
+				},
+			},
+			recommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			expectError:       true,
+			numReconciles:     1,
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to filter pods using entity: pod running-pod-1 is requesting devices but is missing device annotation")
 			},
 		},
 		{
@@ -368,11 +584,16 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			namespaces:      []string{"test-ns"},
 			nodeQuarantined: model.AlreadyQuarantined,
 			pods:            []*v1.Pod{},
-			mongoFindOneResponse: map[string]interface{}{
-				"healtheventstatus": map[string]interface{}{
-					"nodequarantined": string(model.Quarantined),
-					"userpodsevictionstatus": map[string]interface{}{
-						"status": string(model.StatusSucceeded),
+			findHealthEventsByQueryResponse: []datastore.HealthEventWithStatus{
+				{
+					HealthEventStatus: datastore.HealthEventStatus{
+						NodeQuarantined: ptr.To(datastore.Quarantined),
+						UserPodsEvictionStatus: datastore.OperationStatus{
+							Status: datastore.StatusSucceeded,
+						},
+					},
+					HealthEvent: &protos.HealthEvent{
+						RecommendedAction: protos.RecommendedAction_RESTART_VM,
 					},
 				},
 			},
@@ -448,6 +669,61 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 				}, 30*time.Second, 1*time.Second, "all pods should be evicted in single pass")
 			},
 		},
+		{
+			name:            "AllowCompletion mode waits for pods to complete and verifies consistent pod ordering",
+			nodeName:        "completion-node",
+			namespaces:      []string{"completion-test"},
+			nodeQuarantined: model.Quarantined,
+			pods: []*v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-3", Namespace: "completion-test"},
+					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-1", Namespace: "completion-test"},
+					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "running-pod-2", Namespace: "completion-test"},
+					Spec:       v1.PodSpec{NodeName: "completion-node", Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
+					Status:     v1.PodStatus{Phase: v1.PodRunning},
+				},
+			},
+			expectError:       true,
+			expectedNodeLabel: ptr.To(string(statemanager.DrainingLabelValue)),
+			numReconciles:     5,
+			validateFunc: func(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "waiting for pods to complete")
+
+				nodeEvents, err := client.CoreV1().Events(metav1.NamespaceDefault).List(ctx, metav1.ListOptions{FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Node", nodeName)})
+				require.NoError(t, err)
+				require.Len(t, nodeEvents.Items, 1, "only one event should be created despite multiple reconciliations")
+				require.Equal(t, nodeEvents.Items[0].Reason, "AwaitingPodCompletion")
+				expectedMessage := "Waiting for following pods to finish: [completion-test/running-pod-1 completion-test/running-pod-2 completion-test/running-pod-3]"
+				require.Equal(t, expectedMessage, nodeEvents.Items[0].Message, "pod list should be in sorted order")
+
+				for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
+					pod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
+					require.NoError(t, err)
+					pod.Status.Phase = v1.PodSucceeded
+					_, err = client.CoreV1().Pods("completion-test").UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+					require.NoError(t, err)
+				}
+
+				require.Eventually(t, func() bool {
+					for _, podName := range []string{"running-pod-1", "running-pod-2", "running-pod-3"} {
+						updatedPod, err := client.CoreV1().Pods("completion-test").Get(ctx, podName, metav1.GetOptions{})
+						if err != nil || updatedPod.Status.Phase != v1.PodSucceeded {
+							return false
+						}
+					}
+					return true
+				}, 30*time.Second, 1*time.Second, "all pod statuses should be updated to succeeded")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -462,21 +738,18 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 			if nodeLabels == nil {
 				nodeLabels = map[string]string{"test-label": "test-value"}
 			}
-			createNodeWithLabels(setup.ctx, t, setup.client, tt.nodeName, nodeLabels)
+			createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, tt.nodeName, nodeLabels, nil)
 
 			for _, ns := range tt.namespaces {
 				createNamespace(setup.ctx, t, setup.client, ns)
 			}
 
 			for _, pod := range tt.pods {
-				createPod(setup.ctx, t, setup.client, pod.Namespace, pod.Name, tt.nodeName, pod.Status.Phase)
+				createPod(setup.ctx, t, setup.client, pod.Namespace, pod.Name, tt.nodeName, pod.Status.Phase, pod.Annotations, pod.Spec.Containers[0].Resources.Limits)
 			}
 
-			if tt.mongoFindOneResponse != nil {
-				setup.mockCollection.FindDocumentFunc = func(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
-					// Return a mock single result that contains the test data
-					return &mockSingleResult{document: tt.mongoFindOneResponse}, nil
-				}
+			if tt.findHealthEventsByQueryResponse != nil {
+				setup.healthEventStore.healthEvents = tt.findHealthEventsByQueryResponse
 			}
 
 			beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
@@ -489,11 +762,14 @@ func TestReconciler_ProcessEvent(t *testing.T) {
 
 			var err error
 			for i := 0; i < numReconciles; i++ {
-				err = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
-					nodeName:        tt.nodeName,
-					nodeQuarantined: tt.nodeQuarantined,
-					drainForce:      tt.drainForce,
-				})
+				err = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+					healthEventOptions{
+						nodeName:          tt.nodeName,
+						nodeQuarantined:   tt.nodeQuarantined,
+						drainForce:        tt.drainForce,
+						recommendedAction: tt.recommendedAction,
+						entitiesImpacted:  tt.entitiesImpacted,
+					})
 			}
 
 			afterReceived := getCounterValue(t, metrics.TotalEventsReceived)
@@ -537,12 +813,13 @@ func TestReconciler_DryRunMode(t *testing.T) {
 	nodeName := "dry-run-node"
 	createNode(setup.ctx, t, setup.client, nodeName)
 	createNamespace(setup.ctx, t, setup.client, "immediate-test")
-	createPod(setup.ctx, t, setup.client, "immediate-test", "dry-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "immediate-test", "dry-pod", nodeName, v1.PodRunning, nil, nil)
 
-	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
-		nodeName:        nodeName,
-		nodeQuarantined: model.Quarantined,
-	})
+	err := processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore,
+		healthEventOptions{
+			nodeName:        nodeName,
+			nodeQuarantined: model.Quarantined,
+		})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "immediate eviction completed, requeuing for status verification")
 
@@ -571,8 +848,8 @@ func TestReconciler_RequeueMechanism(t *testing.T) {
 
 	initialDepth := getGaugeValue(t, metrics.QueueDepth)
 
-	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning)
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
+	createPod(setup.ctx, t, setup.client, "immediate-test", "test-pod", nodeName, v1.PodRunning, nil, nil)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	require.Eventually(t, func() bool {
 		currentDepth := getGaugeValue(t, metrics.QueueDepth)
@@ -602,8 +879,8 @@ func TestReconciler_AllowCompletionRequeue(t *testing.T) {
 	_, err := setup.client.CoreV1().Namespaces().Create(setup.ctx, ns, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning)
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
+	createPod(setup.ctx, t, setup.client, "completion-test", "running-pod", nodeName, v1.PodRunning, nil, nil)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
 
@@ -653,8 +930,8 @@ func TestReconciler_MultipleNodesRequeue(t *testing.T) {
 	beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
 
 	for _, nodeName := range nodeNames {
-		createPod(setup.ctx, t, setup.client, "immediate-test", fmt.Sprintf("pod-%s", nodeName), nodeName, v1.PodRunning)
-		enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
+		createPod(setup.ctx, t, setup.client, "immediate-test", fmt.Sprintf("pod-%s", nodeName), nodeName, v1.PodRunning, nil, nil)
+		enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 	}
 
 	assertPodsEvicted(t, setup.client, setup.ctx, "immediate-test")
@@ -681,10 +958,10 @@ func TestReconciler_DeleteAfterTimeoutThenAllowCompletion(t *testing.T) {
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 	createNamespace(setup.ctx, t, setup.client, "completion-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning)
-	createPod(setup.ctx, t, setup.client, "completion-test", "completion-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "completion-test", "completion-pod", nodeName, v1.PodRunning, nil, nil)
 
-	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, nodeName)
+	enqueueHealthEvent(setup.ctx, t, setup.queueMgr, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	// Node should enter draining state
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
@@ -882,6 +1159,7 @@ type testSetup struct {
 	client            kubernetes.Interface
 	reconciler        *reconciler.Reconciler
 	mockCollection    *MockMongoCollection
+	healthEventStore  *mockHealthEventStore
 	informersInstance *informers.Informers
 	restConfig        *rest.Config
 	dynamicClient     dynamic.Interface
@@ -906,6 +1184,7 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
 		UserNamespaces:            userNamespaces,
+		PartialDrainEnabled:       true,
 	}
 
 	// Create mock database config for testing
@@ -934,7 +1213,8 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 
 	// Create a mock database client for the test
 	mockDB := &mockDataStore{}
-	r, err := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB, nil, nil)
+	healthEventStore := newMockHealthEventStore(nil, nil)
+	r, err := reconciler.NewReconciler(reconcilerConfig, dryRun, client, informersInstance, mockDB, healthEventStore, nil, nil)
 	require.NoError(t, err)
 
 	return &testSetup{
@@ -942,6 +1222,7 @@ func setupDirectTest(t *testing.T, userNamespaces []config.UserNamespace, dryRun
 		client:            client,
 		reconciler:        r,
 		mockCollection:    &MockMongoCollection{},
+		healthEventStore:  healthEventStore,
 		informersInstance: informersInstance,
 	}
 }
@@ -999,6 +1280,7 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 		DeleteAfterTimeoutMinutes: 5,
 		NotReadyTimeoutMinutes:    2,
 		CustomDrain:               customDrainConfig,
+		PartialDrainEnabled:       true,
 	}
 
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1025,7 +1307,8 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
 
 	mockDB := newMockDataStore()
-	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	healthEventStore := newMockHealthEventStore(nil, nil)
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, healthEventStore, dynamicClient, restMapper)
 	require.NoError(t, err)
 
 	return &testSetup{
@@ -1042,13 +1325,14 @@ func setupCustomDrainTest(t *testing.T, customDrainConfig config.CustomDrainConf
 
 func createNode(ctx context.Context, t *testing.T, client kubernetes.Interface, nodeName string) {
 	t.Helper()
-	createNodeWithLabels(ctx, t, client, nodeName, map[string]string{"test": "true"})
+	createNodeWithLabelsAndAnnotations(ctx, t, client, nodeName, map[string]string{"test": "true"}, nil)
 }
 
-func createNodeWithLabels(ctx context.Context, t *testing.T, client kubernetes.Interface, nodeName string, labels map[string]string) {
+func createNodeWithLabelsAndAnnotations(ctx context.Context, t *testing.T, client kubernetes.Interface,
+	nodeName string, labels map[string]string, annotations map[string]string) {
 	t.Helper()
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: labels, Annotations: annotations},
 		Status:     v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}},
 	}
 	_, err := client.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
@@ -1064,12 +1348,14 @@ func createNamespace(ctx context.Context, t *testing.T, client kubernetes.Interf
 	}
 }
 
-func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, namespace, name, nodeName string, phase v1.PodPhase) {
+func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, namespace, name, nodeName string, phase v1.PodPhase,
+	annotations map[string]string, limits v1.ResourceList) {
 	t.Helper()
 	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       v1.PodSpec{NodeName: nodeName, Containers: []v1.Container{{Name: "c", Image: "nginx"}}},
-		Status:     v1.PodStatus{Phase: phase},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Annotations: annotations},
+		Spec: v1.PodSpec{NodeName: nodeName, Containers: []v1.Container{{Name: "c", Image: "nginx",
+			Resources: v1.ResourceRequirements{Limits: limits}}}},
+		Status: v1.PodStatus{Phase: phase},
 	}
 	po, err := client.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
 	require.NoError(t, err)
@@ -1079,15 +1365,19 @@ func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, n
 }
 
 type healthEventOptions struct {
-	nodeName        string
-	nodeQuarantined model.Status
-	drainForce      bool
+	nodeName          string
+	nodeQuarantined   model.Status
+	drainForce        bool
+	recommendedAction protos.RecommendedAction
+	entitiesImpacted  []*protos.Entity
 }
 
 func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 	healthEvent := &protos.HealthEvent{
-		NodeName:  opts.nodeName,
-		CheckName: "test-check",
+		NodeName:          opts.nodeName,
+		CheckName:         "test-check",
+		RecommendedAction: opts.recommendedAction,
+		EntitiesImpacted:  opts.entitiesImpacted,
 	}
 
 	if opts.drainForce {
@@ -1108,19 +1398,21 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 	}
 }
 
-func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQueueManager, collection *MockMongoCollection, nodeName string) {
+func enqueueHealthEvent(ctx context.Context, t *testing.T, queueMgr queue.EventQueueManager,
+	collection *MockMongoCollection, healthEventStore datastore.HealthEventStore, nodeName string) {
 	t.Helper()
 	event := createHealthEvent(healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
 	})
-	require.NoError(t, queueMgr.EnqueueEventGeneric(ctx, nodeName, event, collection))
+	require.NoError(t, queueMgr.EnqueueEventGeneric(ctx, nodeName, event, collection, healthEventStore))
 }
 
-func processHealthEvent(ctx context.Context, t *testing.T, r *reconciler.Reconciler, collection *MockMongoCollection, opts healthEventOptions) error {
+func processHealthEvent(ctx context.Context, t *testing.T, r *reconciler.Reconciler, collection *MockMongoCollection,
+	healthEventStore datastore.HealthEventStore, opts healthEventOptions) error {
 	t.Helper()
 	event := createHealthEvent(opts)
-	return r.ProcessEventGeneric(ctx, event, collection, opts.nodeName)
+	return r.ProcessEventGeneric(ctx, event, collection, healthEventStore, opts.nodeName)
 }
 
 func assertNodeLabel(t *testing.T, client kubernetes.Interface, ctx context.Context, nodeName string, expectedLabel statemanager.NVSentinelStateLabelValue) {
@@ -1180,7 +1472,7 @@ func TestMetrics_ProcessingErrors(t *testing.T) {
 	invalidEvent := map[string]interface{}{
 		"invalid": "structure",
 	}
-	_ = setup.reconciler.ProcessEventGeneric(setup.ctx, invalidEvent, setup.mockCollection, nodeName)
+	_ = setup.reconciler.ProcessEventGeneric(setup.ctx, invalidEvent, setup.mockCollection, setup.healthEventStore, nodeName)
 
 	afterError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_error", nodeName)
 	assert.Greater(t, afterError, beforeError, "ProcessingErrors should increment for unmarshal_error")
@@ -1195,15 +1487,29 @@ func TestMetrics_NodeDrainTimeout(t *testing.T) {
 	nodeName := "metrics-timeout-node"
 	createNode(setup.ctx, t, setup.client, nodeName)
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
-	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "timeout-pod", nodeName, v1.PodRunning, nil, nil)
 
-	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
+	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.Quarantined,
 	})
 
 	timeoutValue := getGaugeVecValue(t, metrics.NodeDrainTimeout, nodeName)
 	assert.Equal(t, float64(1), timeoutValue, "NodeDrainTimeout should be 1 for node in timeout mode")
+}
+
+func createHealthEventAnnotationsMap(healthEvents []*protos.HealthEvent) (string, error) {
+	healthEventsAnnotationsMap := &annotation.HealthEventsAnnotationMap{
+		Events: make(map[annotation.HealthEventKey]*protos.HealthEvent),
+	}
+	for _, event := range healthEvents {
+		healthEventsAnnotationsMap.Events[annotation.CreateEventKeyForEntity(event, nil)] = event
+	}
+	annotationsMapBytes, err := healthEventsAnnotationsMap.MarshalJSON()
+	if err != nil {
+		return "", err
+	}
+	return string(annotationsMapBytes), nil
 }
 
 // TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess tests that AlreadyDrained doesn't double-count
@@ -1213,23 +1519,32 @@ func TestMetrics_AlreadyQuarantinedDoesNotIncrementDrainSuccess(t *testing.T) {
 	}, false)
 
 	nodeName := "metrics-already-drained-node"
-	createNode(setup.ctx, t, setup.client, nodeName)
+	annotationValue, err := createHealthEventAnnotationsMap([]*protos.HealthEvent{
+		{
+			Id: "68ba1f82edf24b925c99cce8",
+		},
+	})
+	assert.NoError(t, err)
+	createNodeWithLabelsAndAnnotations(setup.ctx, t, setup.client, nodeName, map[string]string{"test": "true"},
+		map[string]string{common.QuarantineHealthEventAnnotationKey: annotationValue})
 
-	setup.mockCollection.FindDocumentFunc = func(ctx context.Context, filter interface{}, options *sdkclient.FindOneOptions) (sdkclient.SingleResult, error) {
-		response := map[string]interface{}{
-			"healtheventstatus": map[string]interface{}{
-				"nodequarantined": string(model.Quarantined),
-				"userpodsevictionstatus": map[string]interface{}{
-					"status": string(model.StatusSucceeded),
+	setup.healthEventStore.healthEvents = []datastore.HealthEventWithStatus{
+		{
+			HealthEventStatus: datastore.HealthEventStatus{
+				NodeQuarantined: ptr.To(datastore.Quarantined),
+				UserPodsEvictionStatus: datastore.OperationStatus{
+					Status: datastore.StatusSucceeded,
 				},
 			},
-		}
-		return &mockSingleResult{document: response}, nil
+			HealthEvent: &protos.HealthEvent{
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
+			},
+		},
 	}
 
 	beforeSkipped := getCounterVecValue(t, metrics.EventsProcessed, metrics.DrainStatusSkipped, nodeName)
 
-	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, healthEventOptions{
+	_ = processHealthEvent(setup.ctx, t, setup.reconciler, setup.mockCollection, setup.healthEventStore, healthEventOptions{
 		nodeName:        nodeName,
 		nodeQuarantined: model.AlreadyQuarantined,
 	})
@@ -1295,7 +1610,7 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil)
 
 	beforeCancelled := getCounterVecValue(t, metrics.CancelledEvent, nodeName, "test-check")
 
@@ -1307,7 +1622,8 @@ func TestReconciler_CancelledEventWithOngoingDrain(t *testing.T) {
 	document := event
 	eventID := fmt.Sprintf("%v", document["_id"])
 
-	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event, setup.mockCollection)
+	healthEventStore := newMockHealthEventStore(nil, nil)
+	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event, setup.mockCollection, healthEventStore)
 	require.NoError(t, err)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
@@ -1343,7 +1659,7 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "stuck-pod", nodeName, v1.PodRunning, nil, nil)
 
 	t.Log("Enqueue Quarantined event - should start deleteAfterTimeout drain")
 	quarantinedEvent := createHealthEvent(healthEventOptions{
@@ -1351,7 +1667,8 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 		nodeQuarantined: model.Quarantined,
 	})
 
-	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, quarantinedEvent, setup.mockCollection)
+	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, quarantinedEvent, setup.mockCollection,
+		setup.healthEventStore)
 	require.NoError(t, err)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
@@ -1364,7 +1681,8 @@ func TestReconciler_UnQuarantinedEventCancelsOngoingDrain(t *testing.T) {
 		nodeName:        nodeName,
 		nodeQuarantined: model.UnQuarantined,
 	})
-	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection)
+	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection,
+		setup.healthEventStore)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -1392,8 +1710,8 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 
 	createNamespace(setup.ctx, t, setup.client, "timeout-test")
 
-	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-1", nodeName, v1.PodRunning)
-	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-2", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-1", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "timeout-test", "pod-2", nodeName, v1.PodRunning, nil, nil)
 
 	t.Log("Enqueue two Quarantined events for the same node")
 	event1 := createHealthEvent(healthEventOptions{
@@ -1408,10 +1726,10 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	})
 	event2["_id"] = nodeName + "-event-2"
 
-	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event1, setup.mockCollection)
+	err := setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event1, setup.mockCollection, setup.healthEventStore)
 	require.NoError(t, err)
 
-	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event2, setup.mockCollection)
+	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, event2, setup.mockCollection, setup.healthEventStore)
 	require.NoError(t, err)
 
 	assertNodeLabel(t, setup.client, setup.ctx, nodeName, statemanager.DrainingLabelValue)
@@ -1423,7 +1741,8 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 		nodeName:        nodeName,
 		nodeQuarantined: model.UnQuarantined,
 	})
-	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection)
+	err = setup.queueMgr.EnqueueEventGeneric(setup.ctx, nodeName, unquarantinedEvent, setup.mockCollection,
+		setup.healthEventStore)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -1465,8 +1784,8 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	createNamespace(setup.ctx, t, setup.client, "default")
 	createNamespace(setup.ctx, t, setup.client, "app-ns")
 
-	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning)
-	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning)
+	createPod(setup.ctx, t, setup.client, "default", "pod-1", nodeName, v1.PodRunning, nil, nil)
+	createPod(setup.ctx, t, setup.client, "app-ns", "app-pod", nodeName, v1.PodRunning, nil, nil)
 
 	gvr := schema.GroupVersionResource{
 		Group:    "drain.example.com",
@@ -1480,7 +1799,7 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	})
 	setup.mockDB.storeEvent(nodeName, event)
 
-	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.Error(t, err, "First call should create CR and return error to trigger retry")
 	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
 
@@ -1502,7 +1821,7 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, nodeName, spec["nodeName"])
 
-	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for retry delay")
 
@@ -1523,7 +1842,7 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(setup.ctx, retrievedCR, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, nodeName)
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, event, setup.mockDB, setup.healthEventStore, nodeName)
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -1574,6 +1893,7 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 		UserNamespaces: []config.UserNamespace{
 			{Name: "*", Mode: config.ModeImmediateEvict},
 		},
+		PartialDrainEnabled: true,
 	}
 
 	mockDatabaseConfig := &mockDatabaseConfig{
@@ -1600,7 +1920,9 @@ func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {
 	require.Eventually(t, informersInstance.HasSynced, 30*time.Second, 1*time.Second)
 
 	mockDB := newMockDataStore()
-	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB, dynamicClient, restMapper)
+	healthEventStore := newMockHealthEventStore(nil, nil)
+	r, err := reconciler.NewReconciler(reconcilerConfig, false, client, informersInstance, mockDB,
+		healthEventStore, dynamicClient, restMapper)
 
 	// Verify that reconciler creation failed when CRD doesn't exist
 	require.Error(t, err, "Reconciler initialization should fail when custom drain CRD doesn't exist")

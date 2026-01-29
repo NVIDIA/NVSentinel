@@ -89,11 +89,17 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ .Values.global.metricsPort }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz
               port: metrics
-            initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
@@ -101,7 +107,6 @@ spec:
             httpGet:
               path: /healthz
               port: metrics
-            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
@@ -145,6 +150,9 @@ spec:
                   fieldPath: metadata.name
             - name: LOG_LEVEL
               value: "{{ .Values.platformConnector.logLevel }}"
+            # App name for connection identification in logs and currentOp
+            - name: APP_NAME
+              value: "platform-connector"
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}
@@ -177,7 +185,8 @@ spec:
         {{- else }}
         - name: mongo-app-client-cert
           secret:
-            secretName: mongo-app-client-cert-secret
+            secretName: {{ include "nvsentinel.certificates.secretName" . }}
+            {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
             optional: true
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}

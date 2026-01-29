@@ -17,6 +17,8 @@ metadata:
   name: {{ include "provider.fullname" . }}
   labels:
     {{- include "provider.labels" . | nindent 4}}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:

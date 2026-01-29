@@ -218,6 +218,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 func TestRoundTrip(t *testing.T) {
 	eventTime := timestamppb.New(time.Now())
 	event := &protos.HealthEvent{
+		Id:                 "123",
 		Version:            1,
 		Agent:              "test-agent",
 		ComponentClass:     "test-component",
@@ -239,6 +240,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	expectedMap := map[string]interface{}{
+		"id":                "123",
 		"version":           float64(1),
 		"agent":             "test-agent",
 		"componentClass":    "test-component",

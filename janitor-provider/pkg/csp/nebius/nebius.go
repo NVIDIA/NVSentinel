@@ -17,8 +17,8 @@
 // Authentication is supported via IAM token (NEBIUS_IAM_TOKEN) or service account key file (NEBIUS_SA_KEY_FILE).
 // Explicit credentials are required - the Nebius SDK does not support automatic credential discovery.
 //
-// Nebius does not provide a direct reboot API, so this implementation uses an async stop/start pattern:
-// 1. SendRebootSignal initiates a stop and returns the instance ID
+// Nebius does not provide a direct reboot API, so this implementation uses a stop/start pattern:
+// 1. SendRebootSignal stops the instance and waits for the operation to succeed. It then returns the instance ID
 // 2. IsNodeReady polls the instance state and handles the state machine:
 //   - STOPPING -> wait
 //   - STOPPED -> initiate start
@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"time"
 
 	"github.com/nebius/gosdk"
 	"github.com/nebius/gosdk/auth"
@@ -127,8 +128,8 @@ func (c *Client) getInstanceService(ctx context.Context) (InstanceService, func(
 
 // SendRebootSignal sends a reboot signal to Nebius for the given node.
 // Nebius doesn't have a direct reboot API, so we stop the instance first.
-// The instance will be started in IsNodeReady after the stop completes.
-// This is async - we don't wait for the stop to complete, just initiate it.
+// This method waits for the stop operation to complete before returning.
+// The instance will be started in IsNodeReady when it detects the STOPPED state.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	// Fetch the node's provider ID
 	providerID := node.Spec.ProviderID
@@ -150,12 +151,23 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 	}
 	defer cleanup()
 
-	_, err = instanceService.Stop(ctx, &compute.StopInstanceRequest{
+	stopOp, err := instanceService.Stop(ctx, &compute.StopInstanceRequest{
 		Id: nodeFields.instanceID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to stop instance %s: %w", nodeFields.instanceID, err)
 	}
+
+	slog.Info("Waiting for instance stop operation to complete", "instanceID", nodeFields.instanceID)
+
+	waitCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	defer cancel()
+
+	if _, err := stopOp.Wait(waitCtx); err != nil {
+		return "", fmt.Errorf("failed to wait for stop operation on instance %s: %w", nodeFields.instanceID, err)
+	}
+
+	slog.Info("Instance stopped successfully", "instanceID", nodeFields.instanceID)
 
 	// Return instance ID - IsNodeReady will poll the instance state
 	return model.ResetSignalRequestRef(nodeFields.instanceID), nil

@@ -121,7 +121,7 @@ func LoadErrorResolutionMap() (map[int]types.ErrorResolution, error) {
 }
 
 // loadNVL5DecodingRules loads NVL5-specific decoding rules using exact column indices
-func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule, error) {
+func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile, driverVersion string) (map[int][]NVL5DecodingRule, error) {
 	nvl5DecodingMap := make(map[int][]NVL5DecodingRule)
 
 	sheetName := "Xid 144-150 Decode"
@@ -141,7 +141,7 @@ func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule,
 			continue
 		}
 
-		rule, err := parseNVL5Row(row)
+		rule, err := parseNVL5Row(row, driverVersion)
 		if err != nil {
 			slog.Debug("Skipping NVL5 row", "row", rowIndex+1, "error", err)
 			continue
@@ -160,10 +160,11 @@ func loadNVL5DecodingRules(xl *xlsxreader.XlsxFile) (map[int][]NVL5DecodingRule,
 }
 
 // parseNVL5Row parses a single row from the NVL5 sheet using column letters to handle gaps
-func parseNVL5Row(row xlsxreader.Row) (*NVL5DecodingRule, error) {
+func parseNVL5Row(row xlsxreader.Row, driverVersion string) (*NVL5DecodingRule, error) {
 	// Column A: 'Xid'
 	// Column B: 'Subcode V1(<R575)/V2(>=R575)...' - This is actually intrInfo decode info, not subcode
-	// Column C: '(V1(<R575)) IntrInfo decode...' - This is the binary pattern for matching
+	// Column C: '(V1(<R575)) IntrInfo decode...' - This is the binary pattern for matching for driver version < R575
+	// Column D: '(V2(>=R575)) IntrInfo decode...' - This is the binary pattern for matching for driver version >= R575
 	// Column E: 'Error Status (hex)'
 	// Column F: 'Resolution Bucket (Data Center Recovery Action)'
 	// Column K: 'Severity...' - Column K, but may have gaps
@@ -186,7 +187,11 @@ func parseNVL5Row(row xlsxreader.Row) (*NVL5DecodingRule, error) {
 		XIDNumber: xidCode,
 	}
 
-	rule.IntrInfoBinary = strings.TrimSpace(columnValues["C"])
+	if IsDriverVersionR575OrNewer(driverVersion) {
+		rule.IntrInfoBinary = strings.TrimSpace(columnValues["D"])
+	} else {
+		rule.IntrInfoBinary = strings.TrimSpace(columnValues["C"])
+	}
 
 	errorStatusStr := columnValues["E"]
 	for errStatus := range strings.SplitSeq(errorStatusStr, "/") {
@@ -200,14 +205,35 @@ func parseNVL5Row(row xlsxreader.Row) (*NVL5DecodingRule, error) {
 	return rule, nil
 }
 
-// GetNVL5DecodingRules returns the NVL5 decoding rules for use in parsing
-func GetNVL5DecodingRules() (map[int][]NVL5DecodingRule, error) {
+// IsDriverVersionR575OrNewer checks if the NVIDIA driver version is R575 or newer.
+// NVIDIA driver versions follow the format "MAJOR.MINOR.PATCH" (e.g., "570.148.08").
+// The R575 threshold means major version >= 575.
+// semver is not used here because the driver version is not a semantic version
+func IsDriverVersionR575OrNewer(version string) bool {
+	// Extract major version (first component before the first dot)
+	parts := strings.SplitN(version, ".", 2)
+	if len(parts) == 0 {
+		return false
+	}
+
+	majorVersion, err := strconv.Atoi(parts[0])
+	if err != nil {
+		slog.Warn("Failed to parse driver major version", "version", version, "error", err)
+		return false
+	}
+
+	return majorVersion >= 575
+}
+
+// GetNVL5DecodingRules returns the NVL5 decoding rules for use in parsing.
+// driverVersion should be in NVIDIA format (e.g., "570.148.08").
+func GetNVL5DecodingRules(driverVersion string) (map[int][]NVL5DecodingRule, error) {
 	xl, err := xlsxreader.NewReader(embeddedXidCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Excel reader from embedded data: %w", err)
 	}
 
-	return loadNVL5DecodingRules(xl)
+	return loadNVL5DecodingRules(xl, driverVersion)
 }
 
 func findXidsSheet(xl *xlsxreader.XlsxFile) (string, error) {

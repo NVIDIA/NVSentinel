@@ -103,3 +103,36 @@ Audit logging environment variables
 - name: AUDIT_LOG_COMPRESS
   value: "{{ .Values.global.auditLogging.compress }}"
 {{- end }}
+
+{{/*
+MongoDB client certificate secret name
+*/}}
+{{- define "nvsentinel.certificates.secretName" -}}
+{{- if and .Values.global.datastore .Values.global.datastore.certificates .Values.global.datastore.certificates.secretName -}}
+{{ .Values.global.datastore.certificates.secretName }}
+{{- else -}}
+mongo-app-client-cert-secret
+{{- end -}}
+{{- end -}}
+
+{{/*
+MongoDB client certificate volume items
+Maps configurable source keys to standard destination paths
+*/}}
+{{- define "nvsentinel.certificates.volumeItems" -}}
+{{- $certKey := "tls.crt" -}}
+{{- $keyKey := "tls.key" -}}
+{{- $caKey := "ca.crt" -}}
+{{- if and .Values.global.datastore .Values.global.datastore.certificates -}}
+  {{- $certKey = .Values.global.datastore.certificates.certKey | default "tls.crt" -}}
+  {{- $keyKey = .Values.global.datastore.certificates.keyKey | default "tls.key" -}}
+  {{- $caKey = .Values.global.datastore.certificates.caKey | default "ca.crt" -}}
+{{- end -}}
+items:
+  - key: {{ $certKey }}
+    path: tls.crt
+  - key: {{ $keyKey }}
+    path: tls.key
+  - key: {{ $caKey }}
+    path: ca.crt
+{{- end -}}

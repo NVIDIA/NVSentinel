@@ -146,7 +146,7 @@ spec:
           set -e
           
           NAMESPACE="{{ .Release.Namespace }}"
-          CLIENT_CERT_SECRET="mongo-app-client-cert-secret"
+          CLIENT_CERT_SECRET="{{ include "nvsentinel.certificates.secretName" . }}"
           ISSUER_SECRET="{{ $issuerSecret }}"
           
           echo "Validating client certificate CA..."
@@ -363,14 +363,8 @@ spec:
       volumes:
         - name: mongo-certificates
           secret:
-            secretName: mongo-app-client-cert-secret
-            items:
-              - key: tls.crt
-                path: tls.crt
-              - key: tls.key
-                path: tls.key
-              - key: ca.crt
-                path: ca.crt
+            secretName: {{ include "nvsentinel.certificates.secretName" . }}
+            {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
       # Job scheduling configuration with backward-compatible fallback
       # Prefers: job.nodeSelector -> Falls back to: mongodb.nodeSelector
       {{- $jobNodeSelector := .Values.mongodb.nodeSelector }}

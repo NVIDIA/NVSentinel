@@ -58,6 +58,7 @@ type appConfig struct {
 	udsPath                     string
 	databaseClientCertMountPath string
 	metricsPort                 string
+	processingStrategy          string
 }
 
 func parseFlags() *appConfig {
@@ -71,6 +72,8 @@ func parseFlags() *appConfig {
 		"Directory where database client tls.crt, tls.key, and ca.crt are mounted.",
 	)
 	flag.StringVar(&cfg.metricsPort, "metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
+	flag.StringVar(&cfg.processingStrategy, "processing-strategy", "EXECUTE_REMEDIATION",
+		"Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY")
 
 	// Parse flags after initialising klog
 	flag.Parse()
@@ -213,7 +216,15 @@ func run() error {
 			return fmt.Errorf("kubernetes client setup failed: %w", err)
 		}
 
-		engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
+		value, ok := pb.ProcessingStrategy_value[appCfg.processingStrategy]
+		if !ok {
+			return fmt.Errorf("invalid processingStrategy %q (expected EXECUTE_REMEDIATION or STORE_ONLY)",
+				appCfg.processingStrategy)
+		}
+
+		slog.Info("Event handling strategy configured", "processingStrategy", appCfg.processingStrategy)
+
+		engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient, pb.ProcessingStrategy(value))
 
 		slog.Info("Trigger engine starting...")
 		engine.Start(gCtx)

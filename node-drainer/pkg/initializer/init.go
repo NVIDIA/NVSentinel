@@ -89,6 +89,12 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Running in dry-run mode")
 	}
 
+	if tomlCfg.PartialDrainEnabled {
+		slog.Info("Running with partial drain enabled")
+	} else {
+		slog.Info("Running with partial drain disabled")
+	}
+
 	clientSet, restConfig, err := initializeKubernetesClient(params.KubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
@@ -150,7 +156,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	// Reconciler creates its own queue manager and needs the database client
 	reconciler, err := initializeReconciler(
 		reconcilerCfg, params.DryRun, clientSet, informersInstance,
-		databaseClient, dynamicClient, restMapper,
+		databaseClient, ds.HealthEventStore(), dynamicClient, restMapper,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize reconciler: %w", err)
@@ -236,12 +242,15 @@ func initializeReconciler(
 	kubeClient kubernetes.Interface,
 	informersInstance *informers.Informers,
 	databaseClient client.DatabaseClient,
+	healthEventStore datastore.HealthEventStore,
 	dynamicClient dynamic.Interface,
 	restMapper *restmapper.DeferredDiscoveryRESTMapper,
 ) (*reconciler.Reconciler, error) {
 	// Create adapter to convert client.DatabaseClient to queue.DataStore interface
 	dbAdapter := &databaseClientAdapter{client: databaseClient}
-	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter, dynamicClient, restMapper)
+
+	return reconciler.NewReconciler(cfg, dryRun, kubeClient, informersInstance, dbAdapter, healthEventStore,
+		dynamicClient, restMapper)
 }
 
 // databaseClientAdapter adapts client.DatabaseClient to queue.DataStore interface

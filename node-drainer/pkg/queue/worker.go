@@ -48,10 +48,10 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 
 	var err error
 	// Use database-agnostic interface
-	if nodeEvent.Event != nil && nodeEvent.Database != nil {
-		err = m.processEventGeneric(ctx, *nodeEvent.Event, nodeEvent.Database, nodeEvent.NodeName)
+	if nodeEvent.Event != nil && nodeEvent.Database != nil && nodeEvent.HealthEventStore != nil {
+		err = m.processEventGeneric(ctx, *nodeEvent.Event, nodeEvent.Database, nodeEvent.HealthEventStore, nodeEvent.NodeName)
 	} else {
-		err = fmt.Errorf("event data or database interface not available")
+		err = fmt.Errorf("event data, database interface, or health event store not available")
 	}
 
 	if err != nil {
@@ -70,12 +70,12 @@ func (m *eventQueueManager) processNextWorkItem(ctx context.Context) bool {
 }
 
 func (m *eventQueueManager) processEventGeneric(ctx context.Context,
-	event datastore.Event, database DataStore, nodeName string) error {
+	event datastore.Event, database DataStore, healthEventStore datastore.HealthEventStore, nodeName string) error {
 	if m.dataStoreEventProcessor == nil {
 		return fmt.Errorf("no datastore event processor configured")
 	}
 
-	return m.dataStoreEventProcessor.ProcessEventGeneric(ctx, event, database, nodeName)
+	return m.dataStoreEventProcessor.ProcessEventGeneric(ctx, event, database, healthEventStore, nodeName)
 }
 
 // processEvent method has been removed - only processEventGeneric is used now

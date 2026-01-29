@@ -37,10 +37,6 @@ type PipelineBuilder interface {
 	// Used by: fault-quarantine to ignore observability-only events (processingStrategy=STORE_ONLY)
 	BuildProcessableHealthEventInsertsPipeline() datastore.Pipeline
 
-	// BuildNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal unhealthy events
-	// Used by: health-events-analyzer for pattern analysis
-	BuildNonFatalUnhealthyInsertsPipeline() datastore.Pipeline
-
 	// BuildProcessableNonFatalUnhealthyInsertsPipeline creates a pipeline for non-fatal, unhealthy event inserts
 	// with processingStrategy=EXECUTE_REMEDIATION. This is used by health-events-analyzer for pattern analysis.
 	BuildProcessableNonFatalUnhealthyInsertsPipeline() datastore.Pipeline

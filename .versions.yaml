@@ -49,7 +49,7 @@ go_tools:
 
 # Protocol Buffers / gRPC
 protobuf:
-  protobuf: 'v33.0'
+  protobuf: 'v33.4'
   protoc_gen_go: 'v1.36.10'
   protoc_gen_go_grpc: 'v1.5.1'
   grpcio_tools: '1.75.1'

@@ -43,6 +43,9 @@ type MongoDBConfig struct {
 	ChangeStreamRetryIntervalSeconds int `env:"MONGODB_CHANGE_STREAM_RETRY_INTERVAL_SECONDS" envDefault:"5"`   //nolint:lll
 
 	UnprocessedEventsMetricUpdateIntervalSeconds int `env:"UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS" envDefault:"25"` //nolint:lll
+
+	// AppName is used to identify the client in database connection tracking
+	AppName string `env:"APP_NAME"`
 }
 
 // TokenConfig holds the token-specific configuration.
@@ -59,6 +62,11 @@ func LoadConfigFromEnv(clientName string) (MongoDBConfig, TokenConfig, error) {
 
 	if err := env.Parse(&mongoConfig); err != nil {
 		return MongoDBConfig{}, TokenConfig{}, fmt.Errorf("failed to parse MongoDB environment variables: %w", err)
+	}
+
+	// Set AppName for MongoDB connection tracking if not already set from environment
+	if mongoConfig.AppName == "" {
+		mongoConfig.AppName = clientName
 	}
 
 	var tokenConfig TokenConfig

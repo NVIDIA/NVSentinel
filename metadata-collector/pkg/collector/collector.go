@@ -48,16 +48,22 @@ func (c *Collector) Collect(ctx context.Context) (*model.GPUMetadata, error) {
 		return nil, fmt.Errorf("failed to get hostname: %w", err)
 	}
 
+	driverVersion, err := c.nvml.GetDriverVersion()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get driver version: %w", err)
+	}
+
 	deviceMap, parsedTopology, err := c.prepareTopologyData(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare topology data: %w", err)
 	}
 
 	metadata := &model.GPUMetadata{
-		Version:   "1.0",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		NodeName:  nodeName,
-		GPUs:      make([]model.GPUInfo, 0, count),
+		Version:       "1.0",
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		NodeName:      nodeName,
+		DriverVersion: driverVersion,
+		GPUs:          make([]model.GPUInfo, 0, count),
 	}
 
 	if err := c.collectGPUData(count, metadata, deviceMap, parsedTopology); err != nil {

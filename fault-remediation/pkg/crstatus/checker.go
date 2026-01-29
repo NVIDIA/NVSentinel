@@ -18,38 +18,33 @@ import (
 	"context"
 	"log/slog"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/restmapper"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 )
 
 type CRStatusChecker struct {
-	dynamicClient      dynamic.Interface
-	restMapper         *restmapper.DeferredDiscoveryRESTMapper
+	client             client.Client
 	remediationActions map[string]config.MaintenanceResource
 	dryRun             bool
 }
 
 func NewCRStatusChecker(
-	dynamicClient dynamic.Interface,
-	restMapper *restmapper.DeferredDiscoveryRESTMapper,
+	client client.Client,
 	remediationActions map[string]config.MaintenanceResource,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		dynamicClient:      dynamicClient,
-		restMapper:         restMapper,
+		client:             client,
 		remediationActions: remediationActions,
 		dryRun:             dryRun,
 	}
 }
 
+// ShouldSkipCRCreation returns true if the CR exists and is not in a terminal state otherwise returns false.
 func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	// Look up the resource config for this action
 	resource, exists := c.remediationActions[actionName]
 	if !exists {
 		slog.Error("No remediation configuration found for action", "action", actionName)
@@ -67,29 +62,17 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName s
 		Kind:    resource.Kind,
 	}
 
-	mapping, err := c.restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		slog.Error("Failed to get REST mapping", "gvk", gvk.String(), "error", err)
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+
+	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
+
+	if err := c.client.Get(ctx, key, obj); err != nil {
+		slog.Warn("Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
 		return false
 	}
 
-	// Use namespace if the resource is namespace-scoped
-	var cr *unstructured.Unstructured
-	if resource.Scope == "Namespaced" && resource.Namespace != "" {
-		cr, err = c.dynamicClient.Resource(mapping.Resource).
-			Namespace(resource.Namespace).Get(ctx, crName, metav1.GetOptions{})
-	} else {
-		cr, err = c.dynamicClient.Resource(mapping.Resource).Get(ctx, crName, metav1.GetOptions{})
-	}
-
-	if err != nil {
-		slog.Warn("Failed to get CR, allowing create",
-			"crName", crName, "namespace", resource.Namespace, "scope", resource.Scope, "error", err)
-
-		return false
-	}
-
-	return c.checkCondition(cr, resource)
+	return c.checkCondition(obj, resource)
 }
 
 func (c *CRStatusChecker) checkCondition(obj *unstructured.Unstructured, resource config.MaintenanceResource) bool {

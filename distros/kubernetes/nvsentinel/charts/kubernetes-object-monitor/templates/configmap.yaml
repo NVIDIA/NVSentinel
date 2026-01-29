@@ -18,6 +18,8 @@ metadata:
   name: {{ include "kubernetes-object-monitor.fullname" . }}
   labels:
     {{- include "kubernetes-object-monitor.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
     {{- range .Values.policies }}
@@ -47,6 +49,9 @@ data:
         recommendedAction = {{ .healthEvent.recommendedAction | quote }}
         {{- if .healthEvent.errorCode }}
         errorCode = [{{- range $index, $code := .healthEvent.errorCode }}{{- if $index }}, {{ end }}{{ $code | quote }}{{- end }}]
+        {{- end }}
+        {{- if .healthEvent.processingStrategy }}
+        processingStrategy = {{ .healthEvent.processingStrategy | quote }}
         {{- end }}
     
     {{- end }}

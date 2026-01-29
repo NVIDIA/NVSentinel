@@ -57,6 +57,15 @@ var (
 		[]string{"rule_name", "node_name"},
 	)
 
+	mongoQueryExecutionDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "mongo_query_execution_duration_seconds",
+			Help:    "Histogram of MongoDB pipeline execution durations.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"rule_name"},
+	)
+
 	// performance metrics
 	eventHandlingDuration = promauto.NewHistogram(
 		prometheus.HistogramOpts{

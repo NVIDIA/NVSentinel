@@ -14,7 +14,6 @@
 
 global:
   dryRun: false
-  ctrlRuntimeEnabled: false
   image:
     tag: "main"
   initContainerImage:
@@ -32,6 +31,11 @@ global:
   #     host: "mongodb"
   #     port: 27017
   #     database: "nvsentinel"
+  #   certificates:
+  #     secretName: "mongo-app-client-cert-secret"  # Secret containing client certificates
+  #     certKey: "tls.crt"      # Key for client certificate (default: tls.crt)
+  #     keyKey: "tls.key"       # Key for client private key (default: tls.key)
+  #     caKey: "ca.crt"         # Key for CA certificate (default: ca.crt)
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.

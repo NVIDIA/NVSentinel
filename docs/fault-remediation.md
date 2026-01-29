@@ -12,6 +12,7 @@ After NVSentinel isolates a faulty node and evacuates workloads, the hardware ne
 
 - **Hardware replacement**: Faulty GPUs need to be physically replaced
 - **Node reboots**: Some issues resolve with a clean restart
+- **GPU resets**: Some issues resolve with a GPU reset
 - **Cloud provider actions**: VMs may need termination and recreation
 
 The Fault Remediation module creates Kubernetes Custom Resources (CRDs) that external operators (like Janitor) watch and act upon to perform the actual repair work.
@@ -37,20 +38,46 @@ Configure the Fault Remediation module through Helm values:
 fault-remediation:
   enabled: true
   dryRun: false          # Test mode - logs actions without executing
-  
+
   maintenance:
-    apiGroup: "janitor.dgxc.nvidia.com"
-    version: "v1alpha1"
-    kind: "RebootNode"
-    namespace: "nvsentinel"
-    
-    template: |
-      apiVersion: janitor.dgxc.nvidia.com/v1alpha1
-      kind: RebootNode
-      metadata:
-        name: maintenance-{{ .NodeName }}-{{ .HealthEventID }}
-      spec:
-        nodeName: {{ .NodeName }}
+    actions:
+      "RESTART_VM":
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "RebootNode"
+        scope: "Cluster"
+        completeConditionType: "NodeReady"
+        templateFileName: "rebootnode-template.yaml"
+        equivalenceGroup: "restart"
+      "COMPONENT_RESET": 
+        apiGroup: "janitor.dgxc.nvidia.com"
+        version: "v1alpha1"
+        kind: "GPUReset"
+        scope: "Cluster"
+        completeConditionType: "Complete"
+        templateFileName: "gpureset-template.yaml"
+        equivalenceGroup: "reset"
+        impactedEntityScope: "GPU_UUID"
+        supersedingEquivalenceGroups: ["restart"]
+
+    templates:
+      "rebootnode-template.yaml": |
+        apiVersion: {{ .ApiGroup }}/{{ .Version }}
+        kind: RebootNode
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+      "gpureset-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: GPUReset
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          selector:
+            uuids:
+              - {{ .ImpactedEntityScopeValue }}
   
   logCollector:
     enabled: false       # Enable log collection before remediation
@@ -62,7 +89,7 @@ fault-remediation:
 
 - **Dry Run**: Test CRD creation without creating maintenance requests
 - **Maintenance CRD**: Define the Custom Resource to create (apiGroup, version, kind, namespace)
-- **Template**: Go template for generating CRDs - receives `.NodeName`, `.HealthEventID`, and `.RecommendedAction`
+- **Template**: Go template for generating CRDs
 - **Log Collection**: Optionally collect diagnostic logs before remediation (syslog, GPU logs, driver information)
 
 ## Key Features
@@ -70,7 +97,7 @@ fault-remediation:
 ### Template-Based CRD Generation
 Flexible Go template system to match your maintenance operator:
 - Customize CRD structure 
-- Access node name, recommended action, and event ID
+- Access node name, the impacted GPU UUID, event ID, and other properties
 - Support different remediation types (reboot, terminate, replace)
 
 ### Intelligent Filtering

@@ -18,6 +18,7 @@ type GPUMetadata struct {
 	Version       string    `json:"version"`
 	Timestamp     string    `json:"timestamp"`
 	NodeName      string    `json:"node_name"`
+	DriverVersion string    `json:"driver_version"`
 	ChassisSerial *string   `json:"chassis_serial"`
 	GPUs          []GPUInfo `json:"gpus"`
 	NVSwitches    []string  `json:"nvswitches"`

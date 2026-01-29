@@ -23,6 +23,7 @@ data:
     systemNamespaces = "^(kube-.*|nvsentinel|gpu-operator)$"
     deleteAfterTimeoutMinutes = 1
     notReadyTimeoutMinutes = 5
+    partialDrainEnabled = true
     
     [[userNamespaces]]
       name = "immediate-test"

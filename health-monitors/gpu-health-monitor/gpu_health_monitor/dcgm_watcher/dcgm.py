@@ -23,7 +23,6 @@ import subprocess
 import time
 import os
 
-
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
 
@@ -269,7 +268,6 @@ class DCGMWatcher:
         dcgm_handle = None
         dcgm_group = None
         gpu_ids = []
-        gpu_serials = {}
 
         # Initial DCGM handle and monitoring setup
         while not exit.is_set():
@@ -285,7 +283,6 @@ class DCGMWatcher:
                         dcgm_handle = None
                         dcgm_group = None
                         gpu_ids = []
-                        gpu_serials = {}
                 else:
                     log.debug("Running health check")
                     health_status, connectivity_success = self._perform_health_check(dcgm_group)
@@ -296,12 +293,11 @@ class DCGMWatcher:
                         dcgm_handle = None
                         dcgm_group = None
                         gpu_ids = []
-                        gpu_serials = {}
                     else:
                         log.debug("Publish DCGM health checks")
                         self._fire_callback_funcs(
                             types.CallbackInterface.health_event_occurred.__name__,
-                            [health_status, gpu_ids, gpu_serials],
+                            [health_status, gpu_ids],
                         )
 
             log.debug("Waiting till next cycle")

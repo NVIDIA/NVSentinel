@@ -157,7 +157,7 @@ func TestSidecarParser_Parse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			parser := NewSidecarParser(server.URL, "test-node")
+			parser := NewSidecarParser(server.URL, "test-node", "570.148.08")
 
 			result, err := parser.Parse(tc.message)
 

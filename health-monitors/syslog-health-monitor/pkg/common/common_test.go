@@ -128,7 +128,67 @@ func TestMapActionStringToProto(t *testing.T) {
 }
 
 func TestGetNVL5DecodingRules(t *testing.T) {
-	rules, err := GetNVL5DecodingRules()
-	assert.Nil(t, err)
-	assert.NotEmpty(t, rules)
+	// Load rules for both driver version ranges
+	rulesV1, err := GetNVL5DecodingRules("570.148.08") // Pre-R575: uses Column C
+	assert.NoError(t, err)
+	rulesV2, err := GetNVL5DecodingRules("580.0.0") // R575+: uses Column D
+	assert.NoError(t, err)
+
+	// Verify all NVL5 XIDs (144-150) are loaded
+	for xid := 144; xid <= 150; xid++ {
+		assert.Contains(t, rulesV1, xid)
+		assert.Contains(t, rulesV2, xid)
+	}
+
+	// Test concrete values from xlsx for XID 145
+	assert.Len(t, rulesV1[145], 33, "XID 145 should have 33 rules")
+
+	// Verify first rule (RLW_CTRL) - concrete values from xlsx
+	rule0V1 := rulesV1[145][0]
+	assert.Equal(t, 145, rule0V1.XIDNumber)
+	assert.Equal(t, "RLW_CTRL", rule0V1.Mnemonic)
+	assert.Equal(t, "Non-fatal", rule0V1.Severity)
+	assert.Equal(t, "IGNORE", rule0V1.Resolution)
+	assert.Equal(t, "------000000----------0001100010", rule0V1.IntrInfoBinary) // V1 pattern
+	assert.Equal(t, []string{"0x80000000"}, rule0V1.ErrorStatusHex)
+
+	// Verify same rule uses different IntrInfoBinary in V2
+	rule0V2 := rulesV2[145][0]
+	assert.Equal(t, "------000000-------------0000011", rule0V2.IntrInfoBinary) // V2 pattern
+	assert.Equal(t, rule0V1.Mnemonic, rule0V2.Mnemonic)                         // Same mnemonic
+	assert.Equal(t, rule0V1.Resolution, rule0V2.Resolution)                     // Same resolution
+
+	// Verify second rule (RLW_REMAP with XID_154_EVAL)
+	rule1V1 := rulesV1[145][1]
+	assert.Equal(t, "RLW_REMAP", rule1V1.Mnemonic)
+	assert.Equal(t, "XID_154_EVAL", rule1V1.Resolution)
+	assert.Equal(t, "------000000----------0010000010", rule1V1.IntrInfoBinary) // V1
+	rule1V2 := rulesV2[145][1]
+	assert.Equal(t, "------000000-------------0000100", rule1V2.IntrInfoBinary) // V2
+}
+
+func TestIsDriverVersionR575OrNewer(t *testing.T) {
+	tests := []struct {
+		version  string
+		expected bool
+	}{
+		// Pre-R575
+		{"570.148.08", false},
+		{"574.99.99", false},
+		{"535.104.05", false},
+		// R575+
+		{"575.0.0", true},
+		{"575.51.02", true},
+		{"580.0.0", true},
+		{"590.100.05", true},
+		// Edge cases
+		{"", false},
+		{"invalid", false},
+		{"580", true},
+	}
+
+	for _, tc := range tests {
+		result := IsDriverVersionR575OrNewer(tc.version)
+		assert.Equal(t, tc.expected, result, "IsDriverVersionR575OrNewer(%q)", tc.version)
+	}
 }

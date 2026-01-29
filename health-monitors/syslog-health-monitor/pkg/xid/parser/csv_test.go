@@ -31,7 +31,7 @@ func TestCSVParser_Parse(t *testing.T) {
 	}
 	require.NotEmpty(t, errorResolutionMap, "XID error resolution map should not be empty")
 
-	nvl5Rules, err := common.GetNVL5DecodingRules()
+	nvl5Rules, err := common.GetNVL5DecodingRules("570.148.08")
 	if err != nil {
 		t.Fatalf("Failed to load embedded XID mapping: %v", err)
 	}

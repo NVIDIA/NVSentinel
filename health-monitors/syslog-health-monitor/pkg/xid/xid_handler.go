@@ -38,10 +38,14 @@ func NewXIDHandler(nodeName, defaultAgentName,
 	defaultComponentClass, checkName, xidAnalyserEndpoint, metadataPath string,
 	processingStrategy pb.ProcessingStrategy,
 ) (*XIDHandler, error) {
+	metadataReader := metadata.NewReader(metadataPath)
+	driverVersion := metadataReader.GetDriverVersion()
+
 	config := parser.ParserConfig{
 		NodeName:            nodeName,
 		XidAnalyserEndpoint: xidAnalyserEndpoint,
 		SidecarEnabled:      xidAnalyserEndpoint != "",
+		DriverVersion:       driverVersion,
 	}
 
 	xidParser, err := parser.CreateParser(config)
@@ -57,7 +61,7 @@ func NewXIDHandler(nodeName, defaultAgentName,
 		processingStrategy:    processingStrategy,
 		pciToGPUUUID:          make(map[string]string),
 		parser:                xidParser,
-		metadataReader:        metadata.NewReader(metadataPath),
+		metadataReader:        metadataReader,
 	}, nil
 }
 

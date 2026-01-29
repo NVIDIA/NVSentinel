@@ -28,26 +28,28 @@ import (
 
 // SidecarParser implements Parser interface using external sidecar service
 type SidecarParser struct {
-	url      string
-	client   *retryablehttp.Client
-	nodeName string
+	url           string
+	client        *retryablehttp.Client
+	nodeName      string
+	driverVersion string
 }
 
 // NewSidecarParser creates a new sidecar parser
-func NewSidecarParser(endpoint, nodeName string) *SidecarParser {
+func NewSidecarParser(endpoint, nodeName, driverVersion string) *SidecarParser {
 	c := retryablehttp.NewClient()
 	c.Logger = slog.With("http", "retryablehttp-client")
 
 	return &SidecarParser{
-		url:      fmt.Sprintf("%s/decode-xid", endpoint),
-		client:   c,
-		nodeName: nodeName,
+		url:           fmt.Sprintf("%s/decode-xid", endpoint),
+		client:        c,
+		nodeName:      nodeName,
+		driverVersion: driverVersion,
 	}
 }
 
 // Parse sends the message to sidecar service for XID parsing
 func (p *SidecarParser) Parse(message string) (*Response, error) {
-	reqBody := Request{XIDMessage: message}
+	reqBody := Request{XIDMessage: message, DriverVersion: p.driverVersion}
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {

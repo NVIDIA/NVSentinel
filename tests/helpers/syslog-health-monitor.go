@@ -54,6 +54,18 @@ func SetUpSyslogHealthMonitor(ctx context.Context, t *testing.T,
 	metadata := CreateTestMetadata(testNodeName)
 	InjectMetadata(t, ctx, client, NVSentinelNamespace, testNodeName, metadata)
 
+	// Restart the syslog-health-monitor pod to pick up the newly injected metadata file.
+	// The metadata reader uses sync.Once caching, so if it tried to read the file before
+	// injection, it will have cached the "file not found" error.
+	t.Logf("Restarting syslog-health-monitor pod to load metadata file")
+	err = DeletePod(ctx, t, client, NVSentinelNamespace, syslogPod.Name, true)
+	require.NoError(t, err, "failed to restart syslog-health-monitor pod")
+
+	syslogPod, err = GetDaemonSetPodOnWorkerNode(ctx, t, client,
+		SyslogDaemonSetName, "syslog-health-monitor-regular", testNodeName)
+	require.NoError(t, err, "failed to get restarted syslog health monitor pod on node %s", testNodeName)
+	t.Logf("New syslog-health-monitor pod: %s on node: %s", syslogPod.Name, syslogPod.Spec.NodeName)
+
 	t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, StubJournalHTTPPort)
 	stopChan, readyChan := PortForwardPod(
 		ctx,
@@ -85,6 +97,9 @@ func TearDownSyslogHealthMonitor(ctx context.Context, t *testing.T, client klien
 		RestoreDaemonSetArgs(ctx, t, client, SyslogDaemonSetName, SyslogContainerName, originalArgs)
 	}
 
+	t.Logf("Cleaning up metadata from node %s", nodeName)
+	DeleteMetadata(t, ctx, client, NVSentinelNamespace, nodeName)
+
 	t.Logf("Restarting syslog-health-monitor pod %s to clear conditions", podName)
 
 	err := DeletePod(ctx, t, client, NVSentinelNamespace, podName, true)
@@ -103,9 +118,6 @@ func TearDownSyslogHealthMonitor(ctx context.Context, t *testing.T, client klien
 			return condition != nil && condition.Status == v1.ConditionFalse
 		}, EventuallyWaitTimeout, WaitInterval, "SysLogsXIDError condition should be cleared")
 	}
-
-	t.Logf("Cleaning up metadata from node %s", nodeName)
-	DeleteMetadata(t, ctx, client, NVSentinelNamespace, nodeName)
 
 	t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
 

@@ -17,6 +17,8 @@ metadata:
   name: {{ include "csp-health-monitor.fullname" . }}
   labels:
     {{- include "csp-health-monitor.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
     # Global settings
