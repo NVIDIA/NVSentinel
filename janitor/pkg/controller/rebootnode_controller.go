@@ -78,10 +78,12 @@ func (r *RebootNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		result, err := r.reconcileHelper(ctx, &rebootNode)
 		// We always re-queue after successful reconcile to check if unlock is needed on the next reconcile.
 		// This avoids having to re-fetch the object at the end of reconciling to check if CompletionTime was set.
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
 		if err != nil || result.Requeue || result.RequeueAfter > 0 {
 			return result, err
 		}
 
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
 		return ctrl.Result{Requeue: true}, nil
 	}
 	// CompletionTime is set, try to release the lock
