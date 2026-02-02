@@ -36,6 +36,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// Event 1: Quarantine event
 	event1 := datastore.Event{
@@ -52,7 +53,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 	}
 
 	// Enqueue first event
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Simulate: Worker gets the event but doesn't call Done yet (simulates processing)
@@ -62,7 +63,7 @@ func TestWorkqueueDeduplication_WithoutEventID(t *testing.T) {
 	assert.Equal(t, "node-1", item1.NodeName)
 
 	// Now enqueue second event WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Without EventID: Both events might get deduplicated because NodeEvent
@@ -82,6 +83,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// Event 1: Quarantine event
 	event1 := datastore.Event{
@@ -98,7 +100,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 	}
 
 	// Enqueue first event (EventID extracted from event map)
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Get the event but DON'T call Done (simulates processing)
@@ -112,7 +114,7 @@ func TestWorkqueueDeduplication_WithEventID(t *testing.T) {
 	assert.Equal(t, 0, queueImpl.queue.Len())
 
 	// Now enqueue second event WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// With EventID: Second event should be in the queue (different EventID!)
@@ -137,6 +139,7 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// Event with status NotStarted
 	event1 := datastore.Event{
@@ -153,7 +156,7 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 	}
 
 	// Enqueue first event
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Get the event but DON'T call Done
@@ -166,7 +169,7 @@ func TestWorkqueueDeduplication_SameEventDifferentStatus(t *testing.T) {
 	assert.Equal(t, 0, queueImpl.queue.Len())
 
 	// Try to enqueue the SAME event (different status) WHILE processing
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", event2, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// The workqueue marks it as "dirty" and adds to the queue
@@ -196,6 +199,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// Fault 1: GPU XID 13
 	event1 := datastore.Event{
@@ -212,7 +216,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 	}
 
 	// Enqueue first fault
-	err := mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event1, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event1, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Get first fault but DON'T call Done (simulates long drain operation)
@@ -222,7 +226,7 @@ func TestWorkqueueDeduplication_MultipleFaultsSameNode(t *testing.T) {
 	assert.Equal(t, "507f1f77bcf86cd799439011", item1.EventID)
 
 	// Enqueue second fault WHILE first is being processed
-	err = mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event2, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-gpu-1", event2, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Second fault should be in the queue (different EventID!)
@@ -245,6 +249,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// T+0ms: Quarantine event arrives
 	quarantineEvent := datastore.Event{
@@ -253,7 +258,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 		"nodeQuarantined": "Quarantined",
 	}
 
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", quarantineEvent, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", quarantineEvent, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	queueImpl := mgr.(*eventQueueManager)
@@ -273,7 +278,7 @@ func TestWorkqueueDeduplication_RealWorldScenario(t *testing.T) {
 		"nodeQuarantined": "Cancelled",
 	}
 
-	err = mgr.EnqueueEventGeneric(ctx, "node-1", cancelledEvent, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-1", cancelledEvent, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// The bug: Without EventID, this would be deduplicated
@@ -299,6 +304,7 @@ func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
 
 	ctx := context.Background()
 	mockDB := &mockDataStore{}
+	mockHealthEventStore := &MockHealthEventStore{}
 
 	// Event for node-1
 	event1 := datastore.Event{
@@ -313,10 +319,10 @@ func TestWorkqueueDeduplication_DifferentNodes(t *testing.T) {
 	}
 
 	// Enqueue both events
-	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB)
+	err := mgr.EnqueueEventGeneric(ctx, "node-1", event1, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
-	err = mgr.EnqueueEventGeneric(ctx, "node-2", event2, mockDB)
+	err = mgr.EnqueueEventGeneric(ctx, "node-2", event2, mockDB, mockHealthEventStore)
 	require.NoError(t, err)
 
 	// Both should be in the queue
@@ -384,4 +390,8 @@ func (m mockCursor) All(ctx context.Context, results interface{}) error {
 
 func (m mockCursor) Err() error {
 	return nil
+}
+
+type MockHealthEventStore struct {
+	datastore.HealthEventStore
 }

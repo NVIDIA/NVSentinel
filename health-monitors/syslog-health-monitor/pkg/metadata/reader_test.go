@@ -173,6 +173,53 @@ func TestGetGPUByPCI(t *testing.T) {
 	}
 }
 
+func TestGetInfoByUUID(t *testing.T) {
+	tmpDir := t.TempDir()
+	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")
+	require.NoError(t, os.WriteFile(metadataFile, []byte(testMetadataJSON), 0600))
+
+	reader := NewReader(metadataFile)
+
+	tests := []struct {
+		name    string
+		uuid    string
+		wantID  int
+		wantErr bool
+	}{
+		{
+			name:    "exact match for GPU 0",
+			uuid:    "GPU-00000000-0000-0000-0000-000000000000",
+			wantID:  0,
+			wantErr: false,
+		},
+		{
+			name:    "exact match for GPU 1",
+			uuid:    "GPU-11111111-1111-1111-1111-111111111111",
+			wantID:  1,
+			wantErr: false,
+		},
+		{
+			name:    "GPU not found",
+			uuid:    "GPU-123",
+			wantID:  -1,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gpu, err := reader.GetInfoByUUID(tt.uuid)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Nil(t, gpu)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, gpu)
+				require.Equal(t, tt.wantID, gpu.GPUID)
+			}
+		})
+	}
+}
+
 func TestGetGPUByNVSwitchLink(t *testing.T) {
 	tmpDir := t.TempDir()
 	metadataFile := filepath.Join(tmpDir, "gpu_metadata.json")

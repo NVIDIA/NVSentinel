@@ -17,6 +17,8 @@ metadata:
   name: {{ include "janitor.fullname" . }}
   labels:
     {{- include "janitor.labels" . | nindent 4}}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -24,10 +26,12 @@ spec:
       {{- include "janitor.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
       annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "janitor.selectorLabels" . | nindent 8 }}
     spec:
@@ -66,6 +70,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}
@@ -133,4 +141,3 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-

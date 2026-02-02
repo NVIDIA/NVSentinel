@@ -18,6 +18,8 @@ metadata:
   name: {{ include "event-exporter.fullname" . }}
   labels:
     {{- include "event-exporter.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
     [exporter.metadata]

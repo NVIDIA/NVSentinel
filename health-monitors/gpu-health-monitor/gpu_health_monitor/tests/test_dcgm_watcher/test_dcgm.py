@@ -28,11 +28,8 @@ class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
         self.fields_changes = None
         self.connectivity_failed_called = False
 
-    def health_event_occurred(
-        self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int], serials: dict[int, str]
-    ):
+    def health_event_occurred(self, health_details: dict[str, dcgm.types.HealthDetails], gpu_ids: list[int]):
         self.health_details = health_details
-        self.serials = serials
 
     def dcgm_connectivity_failed(self):
         self.connectivity_failed_called = True

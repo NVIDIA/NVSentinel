@@ -30,7 +30,8 @@ func TestCheckCondition(t *testing.T) {
 	cfg := map[string]config.MaintenanceResource{
 		"test": testResource,
 	}
-	checker := NewCRStatusChecker(nil, nil, cfg, false)
+
+	checker := NewCRStatusChecker(nil, cfg, false)
 
 	tests := []struct {
 		name     string

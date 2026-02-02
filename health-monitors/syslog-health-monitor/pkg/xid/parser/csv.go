@@ -30,6 +30,23 @@ import (
 
 var (
 	// reXidNVL5Pattern matches NVIDIA NVL5 XID messages with subcode and intrinfo
+	// Example message: NVRM: Xid (PCI:0000:3f:00): 145, RLW_SRC_TRACK Nonfatal XC1 i0
+	//                        Link 10 (0x04082907 0x00000008 0x00000000 0x00000000 0x00000000 0x00000000)
+	//
+	// Format: Xid (PCI:0000:BB:DF): <Xid Number> <sub component> <fatal vs nonfatal> <Crosscontain> <injected>
+	//         <link> (<intrInfo> <errorStatus> <errorDebugData[0]> <errorDebugData[1]> <errorDebugData[2]>
+	// 		   <errorDebugData[3]> <errorDebugData[4]>)
+	//
+	// Match: NVRM: Xid (PCI:0000:3f:00): 145, RLW_SRC_TRACK Nonfatal XC1 i0 Link 10 (0x04082907 0x00000008
+	// Group 1 (PCI address): 0000:3f:00
+	// Group 2 (XID code): 145
+	// Group 3 (Subcode): RLW_SRC_TRACK
+	// Group 4 (Severity): Nonfatal
+	// Group 5 (Crosscontain): XC1
+	// Group 6 (injected): i0
+	// Group 7 (link): 10
+	// Group 8 (intrInfo): 0x04082907
+	// Group 9 (errorStatus): 0x00000008
 	reXidNVL5Pattern = regexp.MustCompile(
 		`NVRM: Xid \(PCI:([^)]+)\): (\d+)(?:, pid=[^,]*)?(?:, name=[^,]*)?, ` +
 			`(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+Link\s+(-?\d+)\s+\((0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)`,

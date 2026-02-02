@@ -68,6 +68,7 @@ Collect all unique API groups and their associated resources from multi-template
   - list
   - update
   - patch
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -82,6 +83,7 @@ Collect all unique API groups and their associated resources from multi-template
   verbs:
   - create
   - delete
+  - update
   - get
   - list
   - watch

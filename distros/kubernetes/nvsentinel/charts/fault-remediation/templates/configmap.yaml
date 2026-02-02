@@ -18,6 +18,8 @@ metadata:
   name: {{ include "fault-remediation.fullname" . }}
   labels:
     {{- include "fault-remediation.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   config.toml: |
     [template]

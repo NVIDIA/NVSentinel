@@ -31,6 +31,7 @@ type DatabaseConfig interface {
 	GetCollectionName() string
 	GetCertConfig() CertificateConfig
 	GetTimeoutConfig() TimeoutConfig
+	GetAppName() string
 }
 
 // CertificateConfig holds TLS certificate configuration
@@ -113,6 +114,7 @@ type StandardDatabaseConfig struct {
 	collectionName string
 	certConfig     CertificateConfig
 	timeoutConfig  TimeoutConfig
+	appName        string
 }
 
 // StandardCertificateConfig implements CertificateConfig
@@ -232,6 +234,7 @@ func NewDatabaseConfigWithCollection(
 		collectionName: collectionName,
 		certConfig:     certConfig,
 		timeoutConfig:  timeoutConfig,
+		appName:        os.Getenv("APP_NAME"),
 	}, nil
 }
 
@@ -320,6 +323,7 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 		collectionName: tableName,
 		certConfig:     certConfig,
 		timeoutConfig:  timeoutConfig,
+		appName:        os.Getenv("APP_NAME"),
 	}, nil
 }
 
@@ -480,6 +484,10 @@ func (c *StandardDatabaseConfig) GetCertConfig() CertificateConfig {
 
 func (c *StandardDatabaseConfig) GetTimeoutConfig() TimeoutConfig {
 	return c.timeoutConfig
+}
+
+func (c *StandardDatabaseConfig) GetAppName() string {
+	return c.appName
 }
 
 func (c *StandardCertificateConfig) GetCertPath() string {

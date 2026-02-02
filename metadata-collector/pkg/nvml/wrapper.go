@@ -155,6 +155,17 @@ func (w *NVMLWrapper) ParseNVLinkTopologyWithContext(ctx context.Context) (map[i
 	return DetectNVLinkTopology(ctx)
 }
 
+func (w *NVMLWrapper) GetDriverVersion() (string, error) {
+	version, ret := nvml.SystemGetDriverVersion()
+	if ret != nvml.SUCCESS {
+		return "", fmt.Errorf("failed to get driver version: %v", nvml.ErrorString(ret))
+	}
+
+	slog.Info("Driver version", "version", version)
+
+	return version, nil
+}
+
 func convertNVMLCString(busID [16]uint8) string {
 	b := make([]byte, 0, 16)
 

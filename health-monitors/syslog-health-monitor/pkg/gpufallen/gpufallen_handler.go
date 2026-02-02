@@ -28,7 +28,9 @@ import (
 
 // NewGPUFallenHandler creates a new GPUFallenHandler instance.
 func NewGPUFallenHandler(nodeName, defaultAgentName,
-	defaultComponentClass, checkName string) (*GPUFallenHandler, error) {
+	defaultComponentClass, checkName string,
+	processingStrategy pb.ProcessingStrategy,
+) (*GPUFallenHandler, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &GPUFallenHandler{
@@ -36,6 +38,7 @@ func NewGPUFallenHandler(nodeName, defaultAgentName,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
 		checkName:             checkName,
+		processingStrategy:    processingStrategy,
 		recentXIDs:            make(map[string]xidRecord),
 		xidWindow:             5 * time.Minute, // Remember XIDs for 5 minutes
 		cancelCleanup:         cancel,
@@ -232,6 +235,7 @@ func (h *GPUFallenHandler) createHealthEventFromError(event *gpuFallenErrorEvent
 		NodeName:           h.nodeName,
 		RecommendedAction:  pb.RecommendedAction_RESTART_BM,
 		ErrorCode:          []string{"GPU_FALLEN_OFF_BUS"},
+		ProcessingStrategy: h.processingStrategy,
 	}
 
 	return &pb.HealthEvents{

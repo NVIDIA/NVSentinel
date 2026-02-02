@@ -1,0 +1,105 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nvidia/nvsentinel/preflight
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 443
+  targetPort: 8443
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1024Mi
+
+livenessProbe:
+  httpGet:
+    scheme: HTTPS
+    path: /healthz
+    port: 8443
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    scheme: HTTPS
+    path: /healthz
+    port: 8443
+  initialDelaySeconds: 2
+  periodSeconds: 5
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+webhook:
+  port: 8443
+  failurePolicy: Fail
+  timeoutSeconds: 10
+  # Set to true to create the two-tier CA
+  # Set to false to use an existing CA issuer
+  createIssuer: true
+  # Only used when createIssuer=false
+  certIssuer: ""
+  caCertificateName: ""
+
+# Init containers to inject into GPU pods
+initContainers:
+  - name: preflight-ping
+    image: ghcr.io/nvidia/nvsentinel/ping:latest
+
+# GPU resource names that trigger preflight injection
+gpuResourceNames:
+  - "nvidia.com/gpu"
+
+# Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
+networkResourceNames:
+  - "nvidia.com/mlnxnics"
+
+# Label-based namespace selection
+# Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled
+namespaceSelector:
+  matchLabels:
+    nvsentinel.nvidia.com/preflight: "enabled"
+
+networkPolicy:
+  enabled: true
+

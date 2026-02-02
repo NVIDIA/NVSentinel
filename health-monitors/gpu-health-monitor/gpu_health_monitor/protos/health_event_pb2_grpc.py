@@ -6,24 +6,23 @@ import warnings
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 from . import health_event_pb2 as health__event__pb2
 
-GRPC_GENERATED_VERSION = "1.75.1"
+GRPC_GENERATED_VERSION = '1.75.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
 try:
     from grpc._utilities import first_version_is_lower
-
     _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
 except ImportError:
     _version_not_supported = True
 
 if _version_not_supported:
     raise RuntimeError(
-        f"The grpc package installed is at version {GRPC_VERSION},"
-        + f" but the generated code in health_event_pb2_grpc.py depends on"
-        + f" grpcio>={GRPC_GENERATED_VERSION}."
-        + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
-        + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
+        f'The grpc package installed is at version {GRPC_VERSION},'
+        + f' but the generated code in health_event_pb2_grpc.py depends on'
+        + f' grpcio>={GRPC_GENERATED_VERSION}.'
+        + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
+        + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
@@ -37,11 +36,10 @@ class PlatformConnectorStub(object):
             channel: A grpc.Channel.
         """
         self.HealthEventOccurredV1 = channel.unary_unary(
-            "/datamodels.PlatformConnector/HealthEventOccurredV1",
-            request_serializer=health__event__pb2.HealthEvents.SerializeToString,
-            response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-            _registered_method=True,
-        )
+                '/datamodels.PlatformConnector/HealthEventOccurredV1',
+                request_serializer=health__event__pb2.HealthEvents.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class PlatformConnectorServicer(object):
@@ -50,44 +48,43 @@ class PlatformConnectorServicer(object):
     def HealthEventOccurredV1(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details("Method not implemented!")
-        raise NotImplementedError("Method not implemented!")
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
 
 def add_PlatformConnectorServicer_to_server(servicer, server):
     rpc_method_handlers = {
-        "HealthEventOccurredV1": grpc.unary_unary_rpc_method_handler(
-            servicer.HealthEventOccurredV1,
-            request_deserializer=health__event__pb2.HealthEvents.FromString,
-            response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-        ),
+            'HealthEventOccurredV1': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthEventOccurredV1,
+                    request_deserializer=health__event__pb2.HealthEvents.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("datamodels.PlatformConnector", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+            'datamodels.PlatformConnector', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers("datamodels.PlatformConnector", rpc_method_handlers)
+    server.add_registered_method_handlers('datamodels.PlatformConnector', rpc_method_handlers)
 
 
-# This class is part of an EXPERIMENTAL API.
+ # This class is part of an EXPERIMENTAL API.
 class PlatformConnector(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def HealthEventOccurredV1(
-        request,
-        target,
-        options=(),
-        channel_credentials=None,
-        call_credentials=None,
-        insecure=False,
-        compression=None,
-        wait_for_ready=None,
-        timeout=None,
-        metadata=None,
-    ):
+    def HealthEventOccurredV1(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
         return grpc.experimental.unary_unary(
             request,
             target,
-            "/datamodels.PlatformConnector/HealthEventOccurredV1",
+            '/datamodels.PlatformConnector/HealthEventOccurredV1',
             health__event__pb2.HealthEvents.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
@@ -98,5 +95,4 @@ class PlatformConnector(object):
             wait_for_ready,
             timeout,
             metadata,
-            _registered_method=True,
-        )
+            _registered_method=True)

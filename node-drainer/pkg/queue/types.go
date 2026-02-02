@@ -24,10 +24,11 @@ import (
 )
 
 type NodeEvent struct {
-	NodeName string
-	EventID  string           // Unique event ID for deduplication (from _id field)
-	Event    *datastore.Event // Database-agnostic event data
-	Database DataStore        // New database-agnostic interface
+	NodeName         string
+	EventID          string                     // Unique event ID for deduplication (from _id field)
+	Event            *datastore.Event           // Database-agnostic event data
+	HealthEventStore datastore.HealthEventStore // New database-agnostic interface
+	Database         DataStore                  // New database-agnostic interface
 
 	// Deprecated fields for backward compatibility
 	EventBSON *map[string]interface{} // DEPRECATED: Use Event instead
@@ -43,14 +44,16 @@ type DataStore interface {
 
 // DataStoreEventProcessor provides database-agnostic event processing
 type DataStoreEventProcessor interface {
-	ProcessEventGeneric(ctx context.Context, event datastore.Event, database DataStore, nodeName string) error
+	ProcessEventGeneric(ctx context.Context, event datastore.Event, database DataStore,
+		healthEventStore datastore.HealthEventStore, nodeName string) error
 }
 
 // EventProcessor interface has been removed - use DataStoreEventProcessor instead
 
 type EventQueueManager interface {
 	// New database-agnostic method
-	EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event, database DataStore) error
+	EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event, database DataStore,
+		healthEventStore datastore.HealthEventStore) error
 
 	// Deprecated EnqueueEvent method has been removed - use EnqueueEventGeneric instead
 

@@ -50,6 +50,7 @@ type SyslogMonitor struct {
 	pcClient              pb.PlatformConnectorClient
 	defaultAgentName      string
 	defaultComponentClass string
+	processingStrategy    pb.ProcessingStrategy
 	pollingInterval       string
 	// Map of check name to last processed cursor
 	checkLastCursors map[string]string

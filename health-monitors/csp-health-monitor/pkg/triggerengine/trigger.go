@@ -56,13 +56,14 @@ const (
 // Engine polls the datastore for maintenance events and forwards the
 // corresponding health signals to NVSentinel through the UDS connector.
 type Engine struct {
-	store           datastore.Store
-	udsClient       pb.PlatformConnectorClient
-	config          *config.Config
-	pollInterval    time.Duration
-	k8sClient       kubernetes.Interface
-	monitoredNodes  sync.Map // Track which nodes are currently being monitored
-	monitorInterval time.Duration
+	store              datastore.Store
+	udsClient          pb.PlatformConnectorClient
+	config             *config.Config
+	pollInterval       time.Duration
+	k8sClient          kubernetes.Interface
+	monitoredNodes     sync.Map // Track which nodes are currently being monitored
+	monitorInterval    time.Duration
+	processingStrategy pb.ProcessingStrategy
 }
 
 // NewEngine constructs a ready-to-run Engine instance.
@@ -71,14 +72,16 @@ func NewEngine(
 	store datastore.Store,
 	udsClient pb.PlatformConnectorClient,
 	k8sClient kubernetes.Interface,
+	processingStrategy pb.ProcessingStrategy,
 ) *Engine {
 	return &Engine{
-		config:          cfg,
-		store:           store,
-		udsClient:       udsClient,
-		pollInterval:    time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
-		k8sClient:       k8sClient,
-		monitorInterval: defaultMonitorInterval,
+		config:             cfg,
+		store:              store,
+		udsClient:          udsClient,
+		pollInterval:       time.Duration(cfg.MaintenanceEventPollIntervalSeconds) * time.Second,
+		k8sClient:          k8sClient,
+		monitorInterval:    defaultMonitorInterval,
+		processingStrategy: processingStrategy,
 	}
 }
 
@@ -343,13 +346,14 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 	}
 
 	healthEvent := &pb.HealthEvent{
-		Agent:             "csp-health-monitor", // Consistent agent name
-		ComponentClass:    event.ResourceType,   // e.g., "EC2", "gce_instance"
-		CheckName:         "CSPMaintenance",     // Consistent check name
-		IsFatal:           isFatal,
-		IsHealthy:         isHealthy,
-		Message:           message,
-		RecommendedAction: pb.RecommendedAction(actionEnum),
+		Agent:              "csp-health-monitor", // Consistent agent name
+		ComponentClass:     event.ResourceType,   // e.g., "EC2", "gce_instance"
+		CheckName:          "CSPMaintenance",     // Consistent check name
+		IsFatal:            isFatal,
+		IsHealthy:          isHealthy,
+		ProcessingStrategy: e.processingStrategy,
+		Message:            message,
+		RecommendedAction:  pb.RecommendedAction(actionEnum),
 		EntitiesImpacted: []*pb.Entity{
 			{
 				EntityType:  event.ResourceType,
@@ -359,9 +363,6 @@ func (e *Engine) mapMaintenanceEventToHealthEvent(
 		Metadata:           event.Metadata, // Pass along metadata
 		NodeName:           event.NodeName, // K8s node name
 		GeneratedTimestamp: timestamppb.New(time.Now()),
-		// TODO: Remove hardcoded processing strategy and make it configurable via the config file.
-		// PR: https://github.com/NVIDIA/NVSentinel/pull/641
-		ProcessingStrategy: pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	}
 
 	return healthEvent, nil

@@ -22,7 +22,8 @@ type Parser interface {
 
 // Request represents a request to parse XID information
 type Request struct {
-	XIDMessage string `json:"xid_message"`
+	XIDMessage    string `json:"xid_message"`
+	DriverVersion string `json:"driver_version"`
 }
 
 // Response represents the result of XID parsing

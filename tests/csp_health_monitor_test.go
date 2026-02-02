@@ -32,7 +32,8 @@ import (
 )
 
 const (
-	cspPollingInterval = 30 * time.Second
+	cspPollingInterval        = 30 * time.Second
+	keyOriginalArgsContextKey = "originalArgs"
 )
 
 // TestCSPHealthMonitorGCPMaintenanceEvent verifies the complete GCP maintenance event lifecycle:
@@ -411,5 +412,117 @@ func TestCSPHealthMonitorQuarantineThreshold(t *testing.T) {
 		return helpers.TeardownCSPHealthMonitorTest(ctx, t, c, testCtx)
 	})
 
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestCSPHealthMonitorStoreOnlyProcessingStrategy verifies the STORE_ONLY processing strategy:
+// The event is stored in the database and exported as a CloudEvent, but does not trigger any cordoning or draining.
+func TestCSPHealthMonitorStoreOnlyProcessingStrategy(t *testing.T) {
+	feature := features.New("Processing Strategy").
+		WithLabel("suite", "csp-health-monitor")
+
+	var testCtx *helpers.CSPHealthMonitorTestContext
+	var injectedEventID string
+	var testInstanceID string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		originalArgs, err := helpers.SetDeploymentArgs(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace, "maintenance-notifier", map[string]string{
+			"--processing-strategy": "STORE_ONLY",
+		})
+		require.NoError(t, err)
+		ctx = context.WithValue(ctx, keyOriginalArgsContextKey, originalArgs)
+
+		helpers.WaitForDeploymentRollout(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace)
+
+		var newCtx context.Context
+		newCtx, testCtx = helpers.SetupCSPHealthMonitorTest(ctx, t, c, helpers.CSPGCP)
+
+		t.Log("Clearing any existing GCP events from mock API")
+		require.NoError(t, testCtx.CSPClient.ClearEvents(helpers.CSPGCP), "failed to clear GCP events")
+
+		testInstanceID = fmt.Sprintf("%d", time.Now().UnixNano())
+
+		t.Logf("Adding GCP instance annotation to node %s (instance_id=%s, zone=us-central1-a)", testCtx.NodeName, testInstanceID)
+		require.NoError(t, helpers.AddGCPInstanceIDAnnotation(ctx, client, testCtx.NodeName, testInstanceID, "us-central1-a"))
+
+		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		require.NoError(t, err)
+		require.Equal(t, testInstanceID, node.Annotations["container.googleapis.com/instance_id"], "GCP instance_id annotation not set")
+		require.Equal(t, "us-central1-a", node.Labels["topology.kubernetes.io/zone"], "zone label not set")
+		t.Log("Verified: node annotations and labels are set correctly")
+
+		// Wait for the monitor to complete at least one poll cycle
+		helpers.WaitForCSPHealthMonitorPoll(t, testCtx.CSPClient, helpers.CSPGCP)
+
+		return newCtx
+	})
+
+	feature.Assess("Injecting PENDING maintenance event and verifying node was not cordoned when processing STORE_ONLY strategy", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Log("Injecting GCP maintenance event with PENDING status into mock Cloud Logging API")
+
+		scheduledStart := time.Now().Add(15 * time.Minute)
+		scheduledEnd := time.Now().Add(75 * time.Minute)
+		event := helpers.CSPMaintenanceEvent{
+			CSP:             helpers.CSPGCP,
+			InstanceID:      testInstanceID,
+			NodeName:        testCtx.NodeName,
+			Zone:            "us-central1-a",
+			ProjectID:       "test-project",
+			Status:          "PENDING",
+			EventTypeCode:   "compute.instances.upcomingMaintenance",
+			MaintenanceType: "SCHEDULED",
+			ScheduledStart:  &scheduledStart,
+			ScheduledEnd:    &scheduledEnd,
+			Description:     "Scheduled maintenance for GCP instance - e2e test",
+		}
+
+		var err error
+		injectedEventID, _, err = testCtx.CSPClient.InjectEvent(event)
+		require.NoError(t, err)
+		t.Logf("Event injected: ID=%s, instanceID=%s, scheduledStart=%s", injectedEventID, testInstanceID, scheduledStart.Format(time.RFC3339))
+
+		// Verify event was stored in mock
+		eventCount, err := testCtx.CSPClient.GetEventCount(helpers.CSPGCP)
+		require.NoError(t, err, "failed to get event count from mock")
+		require.Equal(t, 1, eventCount, "expected 1 event in mock store after injection")
+		t.Logf("Verified: mock store has %d GCP event(s)", eventCount)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "CSPMaintenance")
+		t.Log("Verifying node was not cordoned when processing STORE_ONLY strategy")
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		t.Logf("Verified: node %s was not cordoned when processing STORE_ONLY strategy", testCtx.NodeName)
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   false,
+			ExpectAnnotation: false,
+		})
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		originalArgs := ctx.Value(keyOriginalArgsContextKey).([]string)
+
+		err = helpers.RestoreDeploymentArgs(t, ctx, client, "csp-health-monitor", helpers.NVSentinelNamespace, "maintenance-notifier", originalArgs)
+		require.NoError(t, err)
+
+		helpers.WaitForDeploymentRollout(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace)
+
+		helpers.TeardownCSPHealthMonitorTest(ctx, t, c, testCtx)
+
+		return ctx
+	})
 	testEnv.Test(t, feature.Feature())
 }

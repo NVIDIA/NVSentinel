@@ -222,6 +222,7 @@ func ValidateCloudEvent(
 	t *testing.T,
 	event map[string]any,
 	expectedNodeName, expectedMessage, expectedCheckName, expectedErrorCode string,
+	expectedProcessingStrategy string,
 ) {
 	t.Helper()
 	t.Logf("Validating CloudEvent: %+v", event)
@@ -241,5 +242,6 @@ func ValidateCloudEvent(
 	require.Equal(t, expectedCheckName, healthEvent["checkName"])
 	require.Equal(t, expectedNodeName, healthEvent["nodeName"])
 	require.Equal(t, expectedMessage, healthEvent["message"])
+	require.Equal(t, expectedProcessingStrategy, healthEvent["processingStrategy"])
 	require.Contains(t, healthEvent["errorCode"], expectedErrorCode)
 }

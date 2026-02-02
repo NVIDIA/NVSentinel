@@ -155,6 +155,16 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	databaseClient := datastoreAdapter.GetDatabaseClient()
 
+	// Handle circuit breaker state BEFORE creating change stream watcher
+	// This ensures resume token is deleted (if cursor=CREATE) before the stream opens
+	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
+		return err
+	}
+
+	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
+		return fmt.Errorf("failed to handle circuit breaker cursor mode: %w", err)
+	}
+
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
 		ctx, "fault-quarantine", r.config.DatabasePipeline)
 	if err != nil {
@@ -199,14 +209,6 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 
 	r.initializeQuarantineMetrics()
-
-	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
-		return err
-	}
-
-	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
-		return fmt.Errorf("failed to handle circuit breaker cursor mode: %w", err)
-	}
 
 	r.eventWatcher.SetProcessEventCallback(
 		func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status {

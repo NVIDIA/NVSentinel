@@ -48,10 +48,12 @@ func NewSyslogMonitor(
 	stateFilePath string,
 	xidAnalyserEndpoint string,
 	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
 ) (*SyslogMonitor, error) {
 	return NewSyslogMonitorWithFactory(nodeName, checks, pcClient, defaultAgentName,
 		defaultComponentClass, pollingInterval, stateFilePath, GetDefaultJournalFactory(),
 		xidAnalyserEndpoint, metadataPath,
+		processingStrategy,
 	)
 }
 
@@ -69,6 +71,7 @@ func NewSyslogMonitorWithFactory(
 	journalFactory JournalFactory,
 	xidAnalyserEndpoint string,
 	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
 ) (*SyslogMonitor, error) {
 	// Load state from file
 	state, err := loadState(stateFilePath)
@@ -90,6 +93,7 @@ func NewSyslogMonitorWithFactory(
 		pcClient:              pcClient,
 		defaultAgentName:      defaultAgentName,
 		defaultComponentClass: defaultComponentClass,
+		processingStrategy:    processingStrategy,
 		pollingInterval:       pollingInterval,
 		checkLastCursors:      state.CheckLastCursors,
 		journalFactory:        journalFactory,
@@ -103,7 +107,7 @@ func NewSyslogMonitorWithFactory(
 		switch check.Name {
 		case XIDErrorCheck:
 			xidHandler, err := xid.NewXIDHandler(nodeName,
-				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath)
+				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath, processingStrategy)
 			if err != nil {
 				slog.Error("Error initializing XID handler", "error", err.Error())
 				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
@@ -113,7 +117,7 @@ func NewSyslogMonitorWithFactory(
 
 		case SXIDErrorCheck:
 			sxidHandler, err := sxid.NewSXIDHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath)
+				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath, processingStrategy)
 			if err != nil {
 				slog.Error("Error initializing SXID handler", "error", err.Error())
 				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
@@ -123,7 +127,7 @@ func NewSyslogMonitorWithFactory(
 
 		case GPUFallenOffCheck:
 			gpuFallenHandler, err := gpufallen.NewGPUFallenHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name)
+				nodeName, defaultAgentName, defaultComponentClass, check.Name, processingStrategy)
 			if err != nil {
 				slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
 				return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
@@ -806,6 +810,7 @@ func (sm *SyslogMonitor) prepareHealthEventWithAction(
 		IsHealthy:          isHealthy,
 		NodeName:           sm.nodeName,
 		RecommendedAction:  errRes.RecommendedAction,
+		ProcessingStrategy: sm.processingStrategy,
 	}
 
 	return &pb.HealthEvents{

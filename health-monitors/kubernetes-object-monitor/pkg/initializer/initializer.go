@@ -51,6 +51,7 @@ type Params struct {
 	ResyncPeriod            time.Duration
 	MaxConcurrentReconciles int
 	PlatformConnectorSocket string
+	ProcessingStrategy      string
 }
 
 type Components struct {
@@ -79,7 +80,16 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 	}
 
 	pcClient := pb.NewPlatformConnectorClient(conn)
-	pub := publisher.New(pcClient)
+
+	strategyValue, ok := pb.ProcessingStrategy_value[params.ProcessingStrategy]
+	if !ok {
+		conn.Close()
+		return nil, fmt.Errorf("unexpected processingStrategy value: %q", params.ProcessingStrategy)
+	}
+
+	slog.Info("Event handling strategy configured", "processingStrategy", params.ProcessingStrategy)
+
+	pub := publisher.New(pcClient, pb.ProcessingStrategy(strategyValue))
 
 	mgr, err := createManager(params)
 	if err != nil {
@@ -104,7 +114,8 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, fmt.Errorf("failed to create policy evaluator: %w", err)
 	}
 
-	if err := registerControllers(mgr, evaluator, pub, cfg.Policies, params.MaxConcurrentReconciles); err != nil {
+	if err := registerControllers(mgr, evaluator, pub, cfg.Policies,
+		params.MaxConcurrentReconciles); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to register controllers: %w", err)
 	}

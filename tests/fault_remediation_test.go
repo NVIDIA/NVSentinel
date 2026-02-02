@@ -45,7 +45,7 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 		require.NoError(t, err)
 
 		// Trigger first fault and wait for CR
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 15)
 		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
 		t.Logf("First CR created and completed: %s", cr1.GetName())
 
@@ -54,7 +54,7 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 		time.Sleep(10 * time.Second)
 
 		// Trigger second fault
-		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 2)
+		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 15)
 
 		// Verify that 2 CRs were created
 		require.Eventually(t, func() bool {

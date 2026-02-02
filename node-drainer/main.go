@@ -317,7 +317,7 @@ func handleColdStart(ctx context.Context, components *initializer.Components) er
 		// Create adapter to bridge interface differences
 		dbAdapter := &dataStoreAdapter{DatabaseClient: components.DatabaseClient}
 
-		if err := components.QueueManager.EnqueueEventGeneric(ctx, nodeName, event, dbAdapter); err != nil {
+		if err := components.QueueManager.EnqueueEventGeneric(ctx, nodeName, event, dbAdapter, healthStore); err != nil {
 			slog.Error("Failed to enqueue cold start event", "error", err, "nodeName", nodeName)
 		} else {
 			slog.Info("Re-queued event from cold start", "nodeName", nodeName)

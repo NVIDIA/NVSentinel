@@ -15,8 +15,11 @@
 package sxid
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +43,7 @@ func TestNewSXIDHandler(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, "/tmp/metadata.json")
+			handler, err := NewSXIDHandler(tc.nodeName, tc.agentName, tc.componentClass, tc.checkName, "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 
 			require.NoError(t, err)
 			require.NotNil(t, handler)
@@ -137,6 +140,61 @@ func TestExtractInfoFromNVSwitchErrorMsg(t *testing.T) {
 	}
 }
 
+func TestProcessLineWithValidTopologyFatalSXID(t *testing.T) {
+	// Create temp metadata file with valid NVSwitch topology
+	metadataJSON := `{
+		"version": "1.0",
+		"timestamp": "2025-01-01T00:00:00Z",
+		"node_name": "test-node",
+		"gpus": [
+			{
+				"gpu_id": 1,
+				"uuid": "GPU-aaaabbbb-cccc-dddd-eeee-ffffffffffff",
+				"pci_address": "0000:18:00.0",
+				"serial_number": "GPU-SN-002",
+				"device_name": "NVIDIA H100",
+				"nvlinks": [
+					{
+						"link_id": 2,
+						"remote_pci_address": "0000:c3:00.0",
+						"remote_link_id": 28
+					}
+				]
+			}
+		],
+		"nvswitches": ["0000:c3:00.0"]
+	}`
+
+	tmpDir := t.TempDir()
+	metadataPath := filepath.Join(tmpDir, "gpu_metadata.json")
+	err := os.WriteFile(metadataPath, []byte(metadataJSON), 0o644)
+	require.NoError(t, err)
+
+	handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check", metadataPath, pb.ProcessingStrategy_STORE_ONLY)
+	require.NoError(t, err)
+
+	message := "[ 1108.858286] nvidia-nvswitch0: SXid (PCI:0000:c3:00.0): 24007, Fatal, Link 28 sourcetrack timeout error (First)"
+	events, err := handler.ProcessLine(message)
+
+	require.NoError(t, err)
+	require.NotNil(t, events)
+	require.Len(t, events.Events, 1)
+
+	event := events.Events[0]
+	assert.Equal(t, message, event.Message)
+	assert.Equal(t, []string{"24007"}, event.ErrorCode)
+	assert.True(t, event.IsFatal)
+	assert.False(t, event.IsHealthy)
+	assert.Equal(t, pb.RecommendedAction_CONTACT_SUPPORT, event.RecommendedAction)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy)
+
+	// Verify GPU entity
+	assert.Equal(t, "GPU", event.EntitiesImpacted[3].EntityType)
+	assert.Equal(t, "1", event.EntitiesImpacted[3].EntityValue)
+	assert.Equal(t, "GPU_UUID", event.EntitiesImpacted[4].EntityType)
+	assert.Equal(t, "GPU-aaaabbbb-cccc-dddd-eeee-ffffffffffff", event.EntitiesImpacted[4].EntityValue)
+}
+
 func TestProcessLine(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -166,7 +224,7 @@ func TestProcessLine(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check", "/tmp/metadata.json")
+			handler, err := NewSXIDHandler("test-node", "test-agent", "NVSWITCH", "sxid-check", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 			require.NoError(t, err)
 
 			events, err := handler.ProcessLine(tc.message)
@@ -182,6 +240,7 @@ func TestProcessLine(t *testing.T) {
 					event := events.Events[0]
 					assert.Equal(t, tc.message, event.Message)
 					assert.NotEmpty(t, event.Metadata)
+					assert.Equal(t, pb.ProcessingStrategy_EXECUTE_REMEDIATION, event.ProcessingStrategy)
 				} else {
 					assert.Nil(t, events)
 				}

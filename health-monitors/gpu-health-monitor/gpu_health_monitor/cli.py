@@ -21,7 +21,7 @@ from prometheus_client import start_http_server
 import csv
 from .dcgm_watcher import dcgm
 from .platform_connector import platform_connector
-from gpu_health_monitor.protos import health_event_pb2
+from gpu_health_monitor.protos import health_event_pb2 as platformconnector_pb2
 from gpu_health_monitor.logger import set_default_structured_logger_with_level
 
 
@@ -34,6 +34,7 @@ def _init_event_processor(
     state_file_path: str,
     dcgm_health_conditions_categorization_mapping_config: dict[str, str],
     metadata_path: str,
+    processing_strategy: platformconnector_pb2.ProcessingStrategy,
 ):
     platform_connector_config = config["eventprocessors.platformconnector"]
     match event_processor_name:
@@ -46,6 +47,7 @@ def _init_event_processor(
                 state_file_path=state_file_path,
                 dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path=metadata_path,
+                processing_strategy=processing_strategy,
             )
         case _:
             log.fatal(f"Unknown event processor {event_processor_name}")
@@ -69,6 +71,13 @@ def _init_event_processor(
     help="Path to GPU metadata JSON file",
     required=False,
 )
+@click.option(
+    "--processing-strategy",
+    type=str,
+    default="EXECUTE_REMEDIATION",
+    help="Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
+    required=False,
+)
 def cli(
     dcgm_addr,
     dcgm_error_mapping_config_file,
@@ -78,6 +87,7 @@ def cli(
     state_file,
     dcgm_k8s_service_enabled,
     metadata_path,
+    processing_strategy,
 ):
     exit = Event()
     config = configparser.ConfigParser()
@@ -112,6 +122,15 @@ def cli(
                 f"dcgm error {row[0]} dcgm_error_name {dcgm_errors_info_dict[row[0]]} dcgm_error_recommended_action {row[1]}"
             )
 
+    try:
+        processing_strategy_value = platformconnector_pb2.ProcessingStrategy.Value(processing_strategy)
+    except ValueError:
+        valid_strategies = list(platformconnector_pb2.ProcessingStrategy.keys())
+        log.fatal(f"Invalid processing_strategy '{processing_strategy}'. " f"Valid options are: {valid_strategies}")
+        sys.exit(1)
+
+    log.info(f"Event handling strategy configured to: {processing_strategy_value}")
+
     log.info("Initialization completed")
     enabled_event_processor_names = cli_config["EnabledEventProcessors"].split(",")
     enabled_event_processors = []
@@ -126,6 +145,7 @@ def cli(
                 state_file_path,
                 dcgm_health_conditions_categorization_mapping_config,
                 metadata_path,
+                processing_strategy_value,
             )
         )
 

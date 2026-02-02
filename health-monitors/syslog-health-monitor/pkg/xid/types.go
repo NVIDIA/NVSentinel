@@ -17,12 +17,14 @@ package xid
 import (
 	"regexp"
 
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/metadata"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/xid/parser"
 )
 
 var (
-	reNvrmMap = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:.]+): (GPU-[0-9a-fA-F-]+)`)
+	reNvrmMap   = regexp.MustCompile(`NVRM: GPU at PCI:([0-9a-fA-F:.]+): (GPU-[0-9a-fA-F-]+)`)
+	gpuResetMap = regexp.MustCompile(`GPU reset executed: (GPU-[0-9a-fA-F-]+)`)
 )
 
 type XIDHandler struct {
@@ -30,6 +32,7 @@ type XIDHandler struct {
 	defaultAgentName      string
 	defaultComponentClass string
 	checkName             string
+	processingStrategy    pb.ProcessingStrategy
 
 	pciToGPUUUID   map[string]string
 	parser         parser.Parser

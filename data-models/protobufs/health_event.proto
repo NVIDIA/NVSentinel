@@ -77,6 +77,7 @@ message HealthEvent {
   BehaviourOverrides quarantineOverrides = 14;
   BehaviourOverrides drainOverrides = 15;
   ProcessingStrategy processingStrategy = 16;
+  string id = 17;
 }
 
 message BehaviourOverrides {

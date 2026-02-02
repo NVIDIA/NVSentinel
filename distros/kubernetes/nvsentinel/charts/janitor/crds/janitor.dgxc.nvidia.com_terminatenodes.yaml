@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -141,18 +141,6 @@ spec:
                   - type
                   type: object
                 type: array
-              consecutiveFailures:
-                description: |-
-                  ConsecutiveFailures tracks consecutive CSP operation failures for exponential backoff
-                  Reset to 0 on successful operations
-                format: int32
-                type: integer
-              retryCount:
-                description: |-
-                  RetryCount tracks the number of reconciliation attempts for this terminate operation
-                  Used to implement maximum retry limits to prevent indefinite reconciliation
-                format: int32
-                type: integer
               startTime:
                 description: StartTime is the time when the termination was initiated
                 format: date-time

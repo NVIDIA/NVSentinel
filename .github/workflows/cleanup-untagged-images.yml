@@ -88,6 +88,8 @@ jobs:
           - nvsentinel-health-events-analyzer
           - nvsentinel-janitor
           - nvsentinel-fake-dcgm
+          - nvsentinel/preflight
+          - nvsentinel/ping
 
     steps:
       - name: Delete untagged images for ${{ matrix.package }}

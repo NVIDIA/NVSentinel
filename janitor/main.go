@@ -164,6 +164,16 @@ func run() error {
 		"terminateNode.timeout", cfg.TerminateNode.Timeout,
 		"global.manualMode", cfg.Global.ManualMode)
 
+	// Discover the namespace the pod is running in
+	podNamespace := os.Getenv("POD_NAMESPACE")
+	if podNamespace == "" {
+		slog.Warn("POD_NAMESPACE not set, defaulting to 'nvsentinel'")
+
+		podNamespace = "nvsentinel"
+	}
+
+	slog.Info("Using namespace for distributed locking", "namespace", podNamespace)
+
 	// Parse config port from address
 	// Handles formats like ":8082", "localhost:8082", "0.0.0.0:8082"
 	_, portStr, err := net.SplitHostPort(configAddr)
@@ -305,9 +315,10 @@ func run() error {
 
 	// Setup RebootNode controller
 	if err = (&controller.RebootNodeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Config: &cfg.RebootNode,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.RebootNode,
+		LockNamespace: podNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("Unable to create controller", "controller", "RebootNode", "error", err)
 		return err
@@ -315,9 +326,10 @@ func run() error {
 
 	// Setup TerminateNode controller
 	if err = (&controller.TerminateNodeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Config: &cfg.TerminateNode,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.TerminateNode,
+		LockNamespace: podNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("Unable to create controller", "controller", "TerminateNode", "error", err)
 		return err

@@ -75,7 +75,7 @@ jobs:
             make_command: 'make -C scripts lint'
             step_name: 'Run shellcheck on scripts'
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -115,7 +115,7 @@ jobs:
             python_required: 'true'
             replace_imports: 'false'
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -132,6 +132,31 @@ jobs:
             health-monitors/${{ matrix.component }}/coverage.txt
             health-monitors/${{ matrix.component }}/report.xml
 
+  preflight-checks-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - ping
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C preflight-checks/${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: preflight-${{ matrix.component }}
+          file-paths: |
+            preflight-checks/${{ matrix.component }}/coverage.xml
+            preflight-checks/${{ matrix.component }}/coverage.txt
+            preflight-checks/${{ matrix.component }}/report.xml
 
   modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'
@@ -152,9 +177,10 @@ jobs:
           - node-drainer
           - fault-remediation
           - janitor
+          - preflight
           - tests
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -180,7 +206,7 @@ jobs:
         component:
           - tilt/simple-health-client
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -201,12 +227,12 @@ jobs:
     if: github.repository == 'nvidia/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
+    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Setup Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c  # v6.1.0
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5  # v6.2.0
         with:
           go-version: 'stable'
 
@@ -398,9 +424,9 @@ jobs:
     if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, modules-lint-test, tilt-modules-lint-test]
+    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, tilt-modules-lint-test]
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Download all coverage artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0

@@ -307,13 +307,14 @@ func TestNewSyslogMonitor(t *testing.T) {
 	filePath := testStateFile
 
 	monitor, err := NewSyslogMonitor(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_STORE_ONLY)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, args.NodeName, monitor.nodeName)
 	assert.Equal(t, args.Checks, monitor.checks)
 	assert.NotNil(t, monitor.journalFactory, "Journal factory should not be nil")
 	assert.Equal(t, testStateFile, monitor.stateFilePath)
+	assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, monitor.processingStrategy)
 
 	// Test case 2: With specific fake factory
 	fakeJournalFactory := NewFakeJournalFactory()
@@ -326,7 +327,7 @@ func TestNewSyslogMonitor(t *testing.T) {
 
 	filePath = testStateFile2
 	monitor, err = NewSyslogMonitorWithFactory(args.NodeName,
-		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json")
+		args.Checks, args.PcClient, args.DefaultAgentName, args.DefaultComponentClass, args.PollingInterval, filePath, fakeJournalFactory, "http://localhost:8080", "/tmp/metadata.json", pb.ProcessingStrategy_EXECUTE_REMEDIATION)
 	assert.NoError(t, err)
 	assert.NotNil(t, monitor)
 	assert.Equal(t, fakeJournalFactory, monitor.journalFactory)
@@ -398,6 +399,7 @@ func TestJournalProcessingLogic(t *testing.T) {
 		fakeJournalFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 
@@ -500,6 +502,7 @@ func TestJournalStateManagement(t *testing.T) {
 		mockFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 
@@ -531,6 +534,7 @@ func TestJournalStateManagement(t *testing.T) {
 		mockFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 
@@ -578,6 +582,7 @@ func TestBootIDChangeHandling(t *testing.T) {
 		mockFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 
@@ -627,6 +632,7 @@ func TestRunMultipleChecks(t *testing.T) {
 		mockFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 
@@ -667,6 +673,7 @@ func TestGPUFallenOffHandlerInitialization(t *testing.T) {
 		mockFactory,
 		"http://localhost:8080",
 		"/tmp/metadata.json",
+		pb.ProcessingStrategy_EXECUTE_REMEDIATION,
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, sm.checkToHandlerMap[GPUFallenOffCheck], "GPU Fallen Off handler should be initialized")

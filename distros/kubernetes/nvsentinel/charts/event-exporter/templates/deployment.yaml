@@ -18,6 +18,8 @@ metadata:
   name: {{ include "event-exporter.fullname" . }}
   labels:
     {{- include "event-exporter.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -25,10 +27,12 @@ spec:
       {{- include "event-exporter.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "event-exporter.labels" . | nindent 8 }}
     spec:
@@ -120,6 +124,9 @@ spec:
           - name: var-run-vol
             mountPath: /var/run/
           env:
+            # App name for connection identification in logs and currentOp
+            - name: APP_NAME
+              value: {{ .Chart.Name | quote }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: "/etc/ssl/client-certs"
@@ -160,7 +167,8 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: mongo-app-client-cert-secret
+          secretName: {{ include "nvsentinel.certificates.secretName" . }}
+          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
           optional: true
       {{- end }}
       restartPolicy: Always

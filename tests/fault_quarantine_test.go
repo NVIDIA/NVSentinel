@@ -231,6 +231,75 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
+func TestCircuitBreakerCursorCreateSkipsAccumulatedEvents(t *testing.T) {
+	feature := features.New("TestCircuitBreakerCursorCreateSkipsAccumulatedEvents").
+		WithLabel("suite", "fault-quarantine-circuit-breaker")
+
+	var testCtx *helpers.QuarantineTestContext
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		// Setup with circuit breaker starting in TRIPPED state
+		var newCtx context.Context
+		newCtx, testCtx, _ = helpers.SetupQuarantineTestWithOptions(ctx, t, c, "", &helpers.QuarantineSetupOptions{
+			CircuitBreakerState:      "TRIPPED",
+			CircuitBreakerCursorMode: "RESUME",
+		})
+
+		t.Logf("Selected test node: %s", testCtx.NodeName)
+
+		// Send event while CB is TRIPPED - this will accumulate in datastore
+		t.Logf("Sending event for node %s while CB is TRIPPED (should accumulate)", testCtx.NodeName)
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("Accumulated event while CB tripped")
+		helpers.SendHealthEvent(newCtx, t, event)
+
+		return newCtx
+	})
+
+	feature.Assess("reset CB with cursor=CREATE and verify accumulated event skipped", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		t.Log("Resetting circuit breaker with cursor=CREATE to skip accumulated events")
+		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED", "CREATE")
+
+		t.Logf("Verifying node %s was NOT cordoned (accumulated event should be skipped)", testCtx.NodeName)
+		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, true)
+
+		return ctx
+	})
+
+	feature.Assess("verify new events ARE processed after cursor=CREATE reset", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Send a NEW event for the same node - this should be processed
+		t.Logf("Sending NEW event for node %s (should be processed)", testCtx.NodeName)
+
+		event := helpers.NewHealthEvent(testCtx.NodeName).
+			WithErrorCode("79").
+			WithMessage("New event after CB reset")
+		helpers.SendHealthEvent(ctx, t, event)
+
+		// This node SHOULD be cordoned because it's a new event
+		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
+			ExpectCordoned:   true,
+			ExpectAnnotation: true,
+		})
+
+		t.Logf("Node %s correctly cordoned - new events are being processed", testCtx.NodeName)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		return helpers.TeardownQuarantineTest(ctx, t, c)
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
 func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 	feature := features.New("TestFaultQuarantineWithProcessingStrategy").
 		WithLabel("suite", "fault-quarantine-with-processing-strategy")

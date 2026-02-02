@@ -25,6 +25,7 @@ data:
       "K8sConnectorQps": {{ printf "%.2f" .Values.platformConnector.k8sConnector.qps }},
       "K8sConnectorBurst": {{ .Values.platformConnector.k8sConnector.burst }},
       "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
+      "StoreConnectorMaxRetries": {{ .Values.platformConnector.mongodbStore.maxRetries }},
       "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}",
       "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
       {{- with .Values.platformConnector.pipeline }}

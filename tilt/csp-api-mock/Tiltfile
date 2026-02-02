@@ -25,7 +25,7 @@ k8s_yaml([
 
 k8s_resource(
     'csp-api-mock',
-    port_forwards=['8080:8080', '50051:50051'],
+    port_forwards=['8081:8080', '50051:50051'],
     labels=['mock-services'],
 )
 

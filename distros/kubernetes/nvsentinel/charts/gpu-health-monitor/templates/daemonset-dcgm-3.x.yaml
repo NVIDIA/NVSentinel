@@ -58,6 +58,8 @@ spec:
             - {{ .Values.dcgm.dcgmK8sServiceEnabled | quote }}
             - --metadata-path
             - {{ .Values.global.metadataPath | quote }}
+            - --processing-strategy
+            - {{ .Values.processingStrategy | quote }}
           securityContext:
             runAsUser: 0
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-3.x"

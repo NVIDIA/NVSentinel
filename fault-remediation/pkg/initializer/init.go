@@ -17,22 +17,28 @@ package initializer
 import (
 	"context"
 	"fmt"
+
 	"log/slog"
 	"time"
+
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/reconciler"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/remediation"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	storeconfig "github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"github.com/nvidia/nvsentinel/store-client/pkg/watcher"
+	ctrlruntimeClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type InitializationParams struct {
-	KubeconfigPath     string
+	Config             *rest.Config
 	TomlConfigPath     string
 	DryRun             bool
 	EnableLogCollector bool
@@ -43,7 +49,11 @@ type Components struct {
 }
 
 // nolint: cyclop // todo
-func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
+func InitializeAll(
+	ctx context.Context,
+	params InitializationParams,
+	ctrlruntimeClient ctrlruntimeClient.Client,
+) (*Components, error) {
 	slog.Info("Starting fault remediation module initialization")
 
 	tokenConfig, err := storeconfig.TokenConfigFromEnv("fault-remediation")
@@ -56,7 +66,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	var tomlConfig config.TomlConfig
 	if err := configmanager.LoadTOMLConfig(params.TomlConfigPath, &tomlConfig); err != nil {
-		return nil, fmt.Errorf("error while loading the toml config: %w", err)
+		return nil, fmt.Errorf("error while loading the toml Config: %w", err)
 	}
 
 	// Validate the configuration for consistency
@@ -72,17 +82,23 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		slog.Info("Log collector enabled")
 	}
 
-	// Initialize fault remediation client with full config
-	k8sClient, clientSet, err := reconciler.NewK8sClient(
-		params.KubeconfigPath,
+	remediationClient, err := remediation.NewRemediationClient(
+		ctrlruntimeClient,
 		params.DryRun,
 		tomlConfig,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
+		return nil, fmt.Errorf("error while initializing remediation client: %w", err)
 	}
 
-	slog.Info("Successfully initialized k8s client")
+	kubeClient, err := kubernetes.NewForConfig(params.Config)
+	if err != nil {
+		return nil, fmt.Errorf("error init kube client for state manager: %w", err)
+	}
+
+	stateManager := statemanager.NewStateManager(kubeClient)
+
+	slog.Info("Successfully initialized client")
 
 	// Load datastore configuration
 	datastoreConfig, err := datastore.LoadDatastoreConfig()
@@ -90,7 +106,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("failed to load datastore configuration: %w", err)
 	}
 
-	// Convert store config types to the types expected by reconciler
+	// Convert store Config types to the types expected by reconciler
 	clientTokenConfig := client.TokenConfig{
 		ClientName:      tokenConfig.ClientName,
 		TokenDatabase:   tokenConfig.TokenDatabase,
@@ -120,8 +136,8 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		DataStoreConfig:    *datastoreConfig,
 		TokenConfig:        clientTokenConfig,
 		Pipeline:           pipeline,
-		RemediationClient:  k8sClient,
-		StateManager:       statemanager.NewStateManager(clientSet),
+		RemediationClient:  remediationClient,
+		StateManager:       stateManager,
 		EnableLogCollector: params.EnableLogCollector,
 		UpdateMaxRetries:   tomlConfig.UpdateRetry.MaxRetries,
 		UpdateRetryDelay:   time.Duration(tomlConfig.UpdateRetry.RetryDelaySeconds) * time.Second,

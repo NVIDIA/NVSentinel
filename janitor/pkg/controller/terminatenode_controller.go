@@ -19,7 +19,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
+
+	"log/slog"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,107 +32,78 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
-)
-
-const (
-	// TerminateNodeFinalizer is added to TerminateNode objects to handle cleanup
-	TerminateNodeFinalizer = "janitor.dgxc.nvidia.com/terminatenode-finalizer"
-
-	// MaxTerminateRetries is the maximum number of retry attempts before giving up
-	MaxTerminateRetries = 20 // 10 minutes at 30s base intervals
 )
 
 // TerminateNodeReconciler manages the terminate node operation.
 type TerminateNodeReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Config    *config.TerminateNodeControllerConfig
-	CSPClient cspv1alpha1.CSPProviderServiceClient
-	grpcConn  *grpc.ClientConn
-}
-
-// updateTerminateNodeStatus is a helper function that handles status updates with proper error handling.
-// It delegates to the generic updateNodeActionStatus function.
-func (r *TerminateNodeReconciler) updateTerminateNodeStatus(
-	ctx context.Context,
-	req ctrl.Request,
-	original *janitordgxcnvidiacomv1alpha1.TerminateNode,
-	updated *janitordgxcnvidiacomv1alpha1.TerminateNode,
-	result ctrl.Result,
-) (ctrl.Result, error) {
-	return updateNodeActionStatus(
-		ctx,
-		r.Status(),
-		original,
-		updated,
-		&original.Status,
-		&updated.Status,
-		updated.Spec.NodeName,
-		"terminatenode",
-		result,
-	)
+	Scheme        *runtime.Scheme
+	Config        *config.TerminateNodeControllerConfig
+	CSPClient     cspv1alpha1.CSPProviderServiceClient
+	NodeLock      distributedlock.NodeLock
+	LockNamespace string
+	grpcConn      *grpc.ClientConn
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
+// Steps of the terminate node reconciliation loop:
+// 1. Initialize conditions and start time.
+// 2. Check if a terminate signal has already been sent.
+// 3. Delete the node if it is not ready.
+// 4. If node is ready, check for timeout.
+// 5. If signal has not been sent, send it to the CSP instance.
+// 6. Write status updates to the TerminateNode CR.
+//
+//nolint:dupl // Structural duplication with RebootNode is acceptable - different business logic
 func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	// Get the TerminateNode object
 	var terminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 	if err := r.Get(ctx, req.NamespacedName, &terminateNode); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion with finalizer
-	if !terminateNode.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&terminateNode, TerminateNodeFinalizer) {
-			logger.Info("terminatenode deletion requested, performing cleanup",
-				"node", terminateNode.Spec.NodeName,
-				"conditions", terminateNode.Status.Conditions)
-
-			// Best effort: log the state for audit trail
-			// Future enhancement: Could add CSP cancellation API call here if available
-
-			controllerutil.RemoveFinalizer(&terminateNode, TerminateNodeFinalizer)
-
-			if err := r.Update(ctx, &terminateNode); err != nil {
-				return ctrl.Result{}, err
-			}
+	// Check if reconciliation is complete
+	completedReconciling := terminateNode.Status.CompletionTime != nil
+	if !completedReconciling {
+		// Try to acquire node lock before reconciling
+		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
+		if !locked {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		// Execute the reconcile logic
+		result, err := r.reconcileHelper(ctx, &terminateNode)
+		// We always re-queue after successful reconcile to check if unlock is needed on the next reconcile.
+		// This avoids having to re-fetch the object at the end of reconciling to check if CompletionTime was set.
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
+		if err != nil || result.Requeue || result.RequeueAfter > 0 {
+			return result, err
 		}
 
-		return ctrl.Result{}, nil
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
+		return ctrl.Result{Requeue: true}, nil
+	}
+	// CompletionTime is set, try to release the lock
+	retryUnlock := r.NodeLock.CheckUnlock(ctx, &terminateNode, terminateNode.Spec.NodeName)
+	if retryUnlock {
+		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(&terminateNode, TerminateNodeFinalizer) {
-		controllerutil.AddFinalizer(&terminateNode, TerminateNodeFinalizer)
+	return ctrl.Result{}, nil
+}
 
-		if err := r.Update(ctx, &terminateNode); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	if terminateNode.Status.CompletionTime != nil {
-		logger.V(1).Info("terminatenode has completion time set, skipping reconcile",
-			"node", terminateNode.Spec.NodeName)
-
-		return ctrl.Result{}, nil
-	}
-
+// reconcileHelper contains the main reconciliation logic
+func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode) (ctrl.Result, error) {
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
 
@@ -141,60 +115,20 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Set the start time if it is not already set
 	terminateNode.SetStartTime()
 
-	// Check if max retries exceeded
-	if terminateNode.Status.RetryCount >= MaxTerminateRetries {
-		logger.Info("max retries exceeded, marking as failed",
-			"node", terminateNode.Spec.NodeName,
-			"retries", int(terminateNode.Status.RetryCount),
-			"maxRetries", MaxTerminateRetries)
-
-		terminateNode.SetCompletionTime()
-		terminateNode.SetCondition(metav1.Condition{
-			Type:   janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
-			Status: metav1.ConditionFalse,
-			Reason: "MaxRetriesExceeded",
-			Message: fmt.Sprintf("Node failed to terminate after %d retries over %s",
-				MaxTerminateRetries, r.getTerminateTimeout()),
-			LastTransitionTime: metav1.Now(),
-		})
-
-		metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, terminateNode.Spec.NodeName)
-
-		result = ctrl.Result{} // Don't requeue
-
-		// Update status and return
-		return r.updateTerminateNodeStatus(ctx, req, originalTerminateNode, &terminateNode, result)
-	}
-
 	// Get the node to terminate
-	var node corev1.Node
-
-	nodeExists := true
-
-	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, &node); err != nil {
+	node := &corev1.Node{}
+	if err := r.Get(ctx, client.ObjectKey{Name: terminateNode.Spec.NodeName}, node); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Node is already deleted, which is the desired state
-			nodeExists = false
+			// Node is already deleted, which is the desired state. Do not return an error.
+			node = nil
 		} else {
 			return ctrl.Result{}, err
 		}
 	}
 
-	// Check if terminate is in progress
 	if terminateNode.IsTerminateInProgress() {
-		// Increment retry count for monitoring attempts
-		terminateNode.Status.RetryCount++
-
-		switch {
-		case !nodeExists:
-			logger.Info("node terminated successfully",
-				"node", terminateNode.Spec.NodeName,
-				"duration", time.Since(terminateNode.Status.StartTime.Time))
-
-			// Reset failure counters on success
-			terminateNode.Status.ConsecutiveFailures = 0
-
-			// Node is gone, termination succeeded
+		// nolint:gocritic // the if/else chain is fine
+		if node == nil {
 			terminateNode.SetCompletionTime()
 			terminateNode.SetCondition(metav1.Condition{
 				Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionNodeTerminated,
@@ -205,24 +139,16 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			})
 
 			// Record successful termination metrics
-			metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, terminateNode.Spec.NodeName)
-			metrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
+			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, terminateNode.Spec.NodeName)
+			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
-		case isNodeNotReady(&node):
-			// Node is not ready, delete it from Kubernetes
-			logger.Info("node reached not ready state, deleting from cluster",
-				"node", terminateNode.Spec.NodeName)
+		} else if isNodeNotReady(node) {
+			slog.Info("Node reached not ready state, deleting from cluster", "node", terminateNode.Spec.NodeName)
 
-			if err := r.Delete(ctx, &node); err != nil {
-				logger.Error(err, "failed to delete node from kubernetes",
-					"node", node.Name)
-
+			if err := r.Delete(ctx, node); err != nil {
 				return ctrl.Result{}, err
 			}
-
-			// Reset failure counters on success
-			terminateNode.Status.ConsecutiveFailures = 0
 
 			// Update status
 			terminateNode.SetCompletionTime()
@@ -235,16 +161,12 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			})
 
 			// Record successful termination metrics
-			metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, node.Name)
-			metrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
+			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusSucceeded, node.Name)
+			metrics.GlobalMetrics.RecordActionMTTR(metrics.ActionTypeTerminate, time.Since(terminateNode.Status.StartTime.Time))
 
 			result = ctrl.Result{} // Don't requeue on success
-		case time.Since(terminateNode.Status.StartTime.Time) > r.getTerminateTimeout():
-			// Timeout exceeded
-			logger.Error(nil, "node terminate timed out",
-				"node", node.Name,
-				"timeout", r.getTerminateTimeout(),
-				"elapsed", time.Since(terminateNode.Status.StartTime.Time))
+		} else if time.Since(terminateNode.Status.StartTime.Time) > r.getTimeout() {
+			slog.Error("Node terminate timed out", "node", node.Name, "timeout", r.getTimeout())
 
 			// Update status
 			terminateNode.SetCompletionTime()
@@ -256,20 +178,17 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				LastTransitionTime: metav1.Now(),
 			})
 
-			metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
+			metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
 
 			result = ctrl.Result{} // Don't requeue on timeout
-		default:
+		} else {
 			// Still waiting for terminate to complete
-			// Use exponential backoff if there have been failures
-			delay := getNextRequeueDelay(terminateNode.Status.ConsecutiveFailures)
-			result = ctrl.Result{RequeueAfter: delay}
+			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		}
 	} else {
-		// Terminate not in progress yet, need to send signal
-
-		// If node doesn't exist, this is an error (should have been caught by webhook)
-		if !nodeExists {
+		// If this case is hit it means that the node did not exist when
+		// the CR was created. This case should be handled by the admission webhook.
+		if node == nil {
 			return ctrl.Result{}, errors.New("node not found and terminate not in progress")
 		}
 
@@ -277,8 +196,7 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		signalAlreadySent := false
 
 		for _, condition := range terminateNode.Status.Conditions {
-			if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent &&
-				condition.Status == metav1.ConditionTrue {
+			if condition.Type == janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent && condition.Status == metav1.ConditionTrue {
 				signalAlreadySent = true
 				break
 			}
@@ -286,15 +204,11 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		if signalAlreadySent {
 			// Signal was already sent, just continue monitoring
-			logger.V(1).Info("terminate signal already sent, continuing monitoring",
-				"node", node.Name)
+			slog.Debug("Terminate signal already sent for node, continuing monitoring", "node", node.Name)
 
-			delay := getNextRequeueDelay(terminateNode.Status.ConsecutiveFailures)
-			result = ctrl.Result{RequeueAfter: delay}
+			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
-			// Need to send terminate signal
 			if r.Config.ManualMode {
-				// Check if manual mode condition is already set
 				isManualModeConditionSet := false
 
 				for _, condition := range terminateNode.Status.Conditions {
@@ -313,46 +227,22 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 						Message:            "Janitor is in manual mode, outside actor required to send terminate signal",
 						LastTransitionTime: now,
 					})
-					metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
+					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				}
 
-				logger.Info("manual mode enabled, janitor will not send terminate signal",
-					"node", node.Name)
+				slog.Info("Manual mode enabled, janitor will not send terminate signal for node", "node", node.Name)
 
 				result = ctrl.Result{}
 			} else {
-				// Send terminate signal via CSP
-				logger.Info("sending terminate signal to node",
-					"node", terminateNode.Spec.NodeName)
-
-				metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
-
+				slog.Info("Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
+				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
 				_, terminateErr := r.CSPClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
 				})
 
-				// Check for timeout
-				if errors.Is(terminateErr, context.DeadlineExceeded) {
-					logger.Info("CSP operation timed out, will retry",
-						"node", node.Name,
-						"operation", "SendTerminateSignal",
-						"timeout", CSPOperationTimeout)
-
-					terminateNode.Status.ConsecutiveFailures++
-					delay := getNextRequeueDelay(terminateNode.Status.ConsecutiveFailures)
-
-					result = ctrl.Result{RequeueAfter: delay}
-					// Update status and return early
-					return r.updateTerminateNodeStatus(ctx, req, originalTerminateNode, &terminateNode, result)
-				}
-
 				// Update status based on terminate result
 				var signalSentCondition metav1.Condition
-
 				if terminateErr == nil {
-					// Reset consecutive failures on success
-					terminateNode.Status.ConsecutiveFailures = 0
-
 					signalSentCondition = metav1.Condition{
 						Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent,
 						Status:             metav1.ConditionTrue,
@@ -363,8 +253,6 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					// Continue monitoring if signal was sent successfully
 					result = ctrl.Result{RequeueAfter: 30 * time.Second}
 				} else {
-					terminateNode.Status.ConsecutiveFailures++
-
 					signalSentCondition = metav1.Condition{
 						Type:               janitordgxcnvidiacomv1alpha1.TerminateNodeConditionSignalSent,
 						Status:             metav1.ConditionFalse,
@@ -374,10 +262,11 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					}
 
 					terminateNode.SetCompletionTime()
+
 					// Don't requeue on failure
 					result = ctrl.Result{}
 
-					metrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
+					metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusFailed, node.Name)
 				}
 
 				terminateNode.SetCondition(signalSentCondition)
@@ -385,8 +274,36 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// Update status at the end of reconciliation
-	return r.updateTerminateNodeStatus(ctx, req, originalTerminateNode, &terminateNode, result)
+	// Compare status to see if anything changed, and push updates if needed
+	if !reflect.DeepEqual(originalTerminateNode.Status, terminateNode.Status) {
+		// Refresh the object before updating to avoid precondition failures
+		var freshTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
+
+		objectKey := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
+		if err := r.Get(ctx, objectKey, &freshTerminateNode); err != nil {
+			if apierrors.IsNotFound(err) {
+				slog.Debug("Post-reconciliation status update: not found, object assumed deleted", "node", terminateNode.Name)
+
+				return ctrl.Result{}, nil
+			}
+
+			slog.Error("failed to refresh TerminateNode before status update", "error", err)
+
+			return ctrl.Result{}, err
+		}
+
+		// Apply status changes to the fresh object
+		freshTerminateNode.Status = terminateNode.Status
+
+		if err := r.Status().Update(ctx, &freshTerminateNode); err != nil {
+			slog.Error("failed to update TerminateNode status", "error", err)
+			return ctrl.Result{}, err
+		}
+
+		slog.Info("TerminateNode status updated", "node", terminateNode.Spec.NodeName)
+	}
+
+	return result, nil
 }
 
 // isNodeNotReady returns true if the node is not in Ready state
@@ -400,8 +317,8 @@ func isNodeNotReady(node *corev1.Node) bool {
 	return false
 }
 
-// getTerminateTimeout returns the timeout for terminate operations
-func (r *TerminateNodeReconciler) getTerminateTimeout() time.Duration {
+// getTimeout returns the timeout for terminate operations
+func (r *TerminateNodeReconciler) getTimeout() time.Duration {
 	cfg := r.Config
 	if cfg == nil || cfg.Timeout == 0 {
 		return 30 * time.Minute // fallback default
@@ -411,6 +328,8 @@ func (r *TerminateNodeReconciler) getTerminateTimeout() time.Duration {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+//nolint:dupl // Structural duplication with RebootNode is acceptable - same setup pattern
 func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -420,6 +339,9 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.grpcConn = conn
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
 
+	// Initialize NodeLock for distributed locking across maintenance operations
+	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
+
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		<-ctx.Done()
 		return r.grpcConn.Close()
@@ -427,10 +349,6 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
 	}
 
-	// Note: We use RequeueAfter in the reconcile loop rather than the controller's
-	// rate limiter because we need per-resource (per-node) backoff based on each
-	// node's individual failure count, not per-controller rate limiting.
-	// This allows nodes with consecutive failures to back off independently.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.TerminateNode{}).
 		Named("terminatenode").

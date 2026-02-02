@@ -17,6 +17,8 @@ metadata:
   name: {{ include "fault-remediation.fullname" . }}
   labels:
     {{- include "fault-remediation.labels" . | nindent 4}}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -24,10 +26,12 @@ spec:
       {{- include "fault-remediation.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
       annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "fault-remediation.selectorLabels" . | nindent 8 }}
     spec:
@@ -87,29 +91,24 @@ spec:
           args:
           - "--dry-run={{ ((.Values.global).dryRun) | default false }}"
           - "--enable-log-collector={{ .Values.logCollector.enabled }}"
-          {{- if  (.Values.global).ctrlRuntimeEnabled }}
-          - "--controller-runtime=true"
           - "--leader-elect=true"
-          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ ((.Values.global).metricsPort) | default 2112 }}
-            {{- if  (.Values.global).ctrlRuntimeEnabled }}
             - name: health
               containerPort: {{ ((.Values.global).healthPort) | default 9440 }}
-            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ ternary "health" "metrics" (default false (.Values.global).ctrlRuntimeEnabled) }}
+              port: health
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path:  {{ ternary "/readyz" "/healthz"  (default false (.Values.global).ctrlRuntimeEnabled) }}
-              port: {{ ternary "health" "metrics"  (default false (.Values.global).ctrlRuntimeEnabled) }}
+              path:  "/readyz"
+              port: "health"
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -136,6 +135,9 @@ spec:
                 fieldPath: metadata.name
           - name: LOG_LEVEL
             value: "{{ .Values.logLevel }}"
+          # App name for connection identification in logs and currentOp
+          - name: APP_NAME
+            value: {{ .Chart.Name | quote }}
           {{- if .Values.global.auditLogging.enabled }}
           {{- include "nvsentinel.auditLogging.envVars" . | nindent 10 }}
           {{- end }}
@@ -169,7 +171,8 @@ spec:
       {{- else }}
       - name: mongo-app-client-cert
         secret:
-          secretName: mongo-app-client-cert-secret
+          secretName: {{ include "nvsentinel.certificates.secretName" . }}
+          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
           optional: true
       {{- end }}
       - name: config-volume

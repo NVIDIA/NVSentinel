@@ -27,6 +27,8 @@ type HealthEventsAnalyzerRule struct {
 	RecommendedAction string   `toml:"recommended_action"`
 	Message           string   `toml:"message"`
 	EvaluateRule      bool     `toml:"evaluate_rule"`
+	// Optional: override the module-level processing strategy for events published by this rule.
+	ProcessingStrategy string `toml:"processing_strategy"`
 }
 
 type TomlConfig struct {

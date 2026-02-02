@@ -16,49 +16,65 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/crstatus"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/events"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
 
 // MockK8sClient is a mock implementation of K8sClient interface
 type MockK8sClient struct {
-	createMaintenanceResourceFn func(ctx context.Context, healthEventData *HealthEventData) (bool, string)
-	runLogCollectorJobFn        func(ctx context.Context, nodeName string) error
-	annotationManagerOverride   NodeAnnotationManagerInterface
-	realStatusChecker           *crstatus.CRStatusChecker
+	createMaintenanceResourceFn func(ctx context.Context, healthEventData *events.HealthEventData,
+		groupConfig *common.EquivalenceGroupConfig) (string, error)
+	runLogCollectorJobFn      func(ctx context.Context, nodeName string) (ctrl.Result, error)
+	annotationManagerOverride annotation.NodeAnnotationManagerInterface
+	mockStatusChecker         *mockStatusChecker
 }
 
-type CRStatusCheckerInterface interface {
-	IsSuccessful(ctx context.Context, crName string) bool
+func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData, groupConfig *common.EquivalenceGroupConfig) (string, error) {
+	return m.createMaintenanceResourceFn(ctx, healthEventData, groupConfig)
 }
 
-func (m *MockK8sClient) CreateMaintenanceResource(ctx context.Context, healthEventData *HealthEventData) (bool, string) {
-	return m.createMaintenanceResourceFn(ctx, healthEventData)
-}
-
-func (m *MockK8sClient) RunLogCollectorJob(ctx context.Context, nodeName string) error {
+func (m *MockK8sClient) RunLogCollectorJob(ctx context.Context, nodeName string, eventId string) (ctrl.Result, error) {
 	return m.runLogCollectorJobFn(ctx, nodeName)
 }
 
-func (m *MockK8sClient) GetAnnotationManager() NodeAnnotationManagerInterface {
+func (m *MockK8sClient) GetAnnotationManager() annotation.NodeAnnotationManagerInterface {
 	return m.annotationManagerOverride
 }
 
-func (m *MockK8sClient) GetStatusChecker() *crstatus.CRStatusChecker {
-	return m.realStatusChecker
+func (m *MockK8sClient) GetStatusChecker() crstatus.CRStatusCheckerInterface {
+	return m.mockStatusChecker
+}
+
+type mockStatusChecker struct {
+	shouldSkip []bool
+	callCount  int
+}
+
+func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
+	shouldSkip := statusChecker.shouldSkip[statusChecker.callCount]
+	if statusChecker.callCount < len(statusChecker.shouldSkip)-1 {
+		statusChecker.callCount++
+	}
+	return shouldSkip
 }
 
 func (m *MockK8sClient) GetConfig() *config.TomlConfig {
@@ -109,24 +125,26 @@ func (w *MockCRStatusCheckerWrapper) IsSuccessful(ctx context.Context, crName st
 }
 
 type MockNodeAnnotationManager struct {
-	existingCR string
+	existingCRs map[string]string
 }
 
-func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*RemediationStateAnnotation, error) {
-	if m.existingCR == "" {
-		return &RemediationStateAnnotation{
-			EquivalenceGroups: make(map[string]EquivalenceGroupState),
-		}, nil
+func (m *MockNodeAnnotationManager) GetRemediationState(ctx context.Context, nodeName string) (*annotation.RemediationStateAnnotation, *corev1.Node, error) {
+	if m.existingCRs == nil {
+		return &annotation.RemediationStateAnnotation{
+			EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
+		}, nil, nil
 	}
 
-	return &RemediationStateAnnotation{
-		EquivalenceGroups: map[string]EquivalenceGroupState{
-			"restart": {
-				MaintenanceCR: m.existingCR,
-				CreatedAt:     time.Now(),
-			},
-		},
-	}, nil
+	annotationState := &annotation.RemediationStateAnnotation{
+		EquivalenceGroups: make(map[string]annotation.EquivalenceGroupState),
+	}
+	for groupName, crName := range m.existingCRs {
+		annotationState.EquivalenceGroups[groupName] = annotation.EquivalenceGroupState{
+			MaintenanceCR: crName,
+			CreatedAt:     time.Now(),
+		}
+	}
+	return annotationState, nil, nil
 }
 
 func (m *MockNodeAnnotationManager) UpdateRemediationState(ctx context.Context, nodeName string,
@@ -196,23 +214,30 @@ func (m *MockDatabaseClient) NewChangeStreamWatcher(ctx context.Context, tokenCo
 	return nil, nil // Simple mock implementation
 }
 
+func getGroupConfig(equivalenceGroup string, supersedingEquivalenceGroups []string) *common.EquivalenceGroupConfig {
+	return &common.EquivalenceGroupConfig{
+		EffectiveEquivalenceGroup:    equivalenceGroup,
+		SupersedingEquivalenceGroups: supersedingEquivalenceGroups,
+	}
+}
+
 func TestNewReconciler(t *testing.T) {
 	tests := []struct {
 		name             string
 		nodeName         string
-		crCreationResult bool
+		crCreationResult error
 		dryRun           bool
 	}{
 		{
 			name:             "Create reconciler with dry run enabled",
 			nodeName:         "node1",
-			crCreationResult: true,
+			crCreationResult: nil,
 			dryRun:           true,
 		},
 		{
 			name:             "Create reconciler with dry run disabled",
 			nodeName:         "node2",
-			crCreationResult: false,
+			crCreationResult: fmt.Errorf("test error"),
 			dryRun:           false,
 		},
 	}
@@ -228,9 +253,10 @@ func TestNewReconciler(t *testing.T) {
 					},
 				},
 				RemediationClient: &MockK8sClient{
-					createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
+					createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+						_ *common.EquivalenceGroupConfig) (string, error) {
 						assert.Equal(t, tt.nodeName, healthEventDoc.HealthEventWithStatus.HealthEvent.NodeName)
-						return tt.crCreationResult, "test-cr-name"
+						return "test-cr-name", tt.crCreationResult
 					},
 				},
 			}
@@ -249,29 +275,30 @@ func TestHandleEvent(t *testing.T) {
 		name              string
 		nodeName          string
 		recommendedAction protos.RecommendedAction
-		shouldSucceed     bool
+		expectedError     error
 	}{
 		{
 			name:              "Successful RESTART_VM action",
 			nodeName:          "node1",
 			recommendedAction: protos.RecommendedAction_RESTART_BM,
-			shouldSucceed:     true,
+			expectedError:     nil,
 		},
 		{
 			name:              "Failed RESTART_VM action",
 			nodeName:          "node2",
 			recommendedAction: protos.RecommendedAction_RESTART_BM,
-			shouldSucceed:     false,
+			expectedError:     fmt.Errorf("test error"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+					_ *common.EquivalenceGroupConfig) (string, error) {
 					assert.Equal(t, tt.nodeName, healthEventDoc.HealthEventWithStatus.HealthEvent.NodeName)
 					assert.Equal(t, tt.recommendedAction, healthEventDoc.HealthEventWithStatus.HealthEvent.RecommendedAction)
-					return tt.shouldSucceed, "test-cr-name"
+					return "test-cr-name", tt.expectedError
 				},
 			}
 
@@ -280,7 +307,7 @@ func TestHandleEvent(t *testing.T) {
 			}
 
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
-			healthEventData := &HealthEventData{
+			healthEventData := &events.HealthEventData{
 				ID: uuid.New().String(),
 				HealthEventWithStatus: model.HealthEventWithStatus{
 					HealthEvent: &protos.HealthEvent{
@@ -289,17 +316,20 @@ func TestHandleEvent(t *testing.T) {
 					},
 				},
 			}
-			result, _ := r.config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData)
-			assert.Equal(t, tt.shouldSucceed, result)
+			groupConfig := getGroupConfig("restart", nil)
+
+			_, err := r.Config.RemediationClient.CreateMaintenanceResource(ctx, healthEventData, groupConfig)
+			assert.Equal(t, tt.expectedError, err)
 		})
 	}
 }
 
 func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			groupConfig *common.EquivalenceGroupConfig) (string, error) {
 			t.Errorf("CreateMaintenanceResource should not be called on an unsupported action")
-			return false, ""
+			return "", fmt.Errorf("test error")
 		},
 	}
 	count := 0
@@ -322,7 +352,7 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventData{
+	healthEvent := events.HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -339,14 +369,15 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 	// shouldSkipEvent should return true for UNKNOWN action
-	assert.True(t, r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus))
+	assert.True(t, r.shouldSkipEvent(t.Context(), healthEvent.HealthEventWithStatus, nil))
 }
 
 func TestPerformRemediationWithSuccess(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr-success"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr-success", nil
 		},
 	}
 	count := 0
@@ -373,7 +404,7 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventData{
+	healthEvent := events.HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -389,21 +420,23 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
-	healthEventDoc := &HealthEventDoc{
+	healthEventDoc := &events.HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName, err := r.performRemediation(ctx, healthEventDoc)
+	groupConfig := getGroupConfig("restart", nil)
+
+	crName, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, success)
 	assert.Equal(t, "test-cr-success", crName)
 }
 
 func TestPerformRemediationWithFailure(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return false, ""
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "", errors.New("test error")
 		},
 	}
 	count := 0
@@ -430,7 +463,7 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventData{
+	healthEvent := events.HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -446,21 +479,22 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
-	healthEventDoc := &HealthEventDoc{
+	healthEventDoc := &events.HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
-	success, crName, err := r.performRemediation(ctx, healthEventDoc)
-	assert.NoError(t, err)
-	assert.False(t, success)
+	groupConfig := getGroupConfig("restart", nil)
+	crName, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
+	assert.Error(t, err)
 	assert.Empty(t, crName)
 }
 
 func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 	ctx := context.Background()
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr-label-error"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr-label-error", nil
 		},
 	}
 	stateManager := &statemanager.MockStateManager{
@@ -476,7 +510,7 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 		UpdateMaxRetries:  2,
 		UpdateRetryDelay:  1 * time.Microsecond,
 	}
-	healthEvent := HealthEventData{
+	healthEvent := events.HealthEventData{
 		HealthEventWithStatus: model.HealthEventWithStatus{
 			CreatedAt: time.Now(),
 			HealthEvent: &protos.HealthEvent{
@@ -492,21 +526,21 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 	// Convert HealthEventData to HealthEventDoc
-	healthEventDoc := &HealthEventDoc{
+	healthEventDoc := &events.HealthEventDoc{
 		ID:                    "test-id-123",
 		HealthEventWithStatus: healthEvent.HealthEventWithStatus,
 	}
+	groupConfig := getGroupConfig("restart", nil)
 	// Even with label update errors, remediation should still succeed
-	success, crName, err := r.performRemediation(ctx, healthEventDoc)
-	assert.NoError(t, err)
-	assert.True(t, success)
-	assert.Equal(t, "test-cr-label-error", crName)
+	_, err := r.performRemediation(ctx, healthEventDoc, groupConfig)
+	assert.Error(t, err)
 }
 
 func TestShouldSkipEvent(t *testing.T) {
 	mockK8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr", nil
 		},
 	}
 	stateManager := &statemanager.MockStateManager{
@@ -523,6 +557,7 @@ func TestShouldSkipEvent(t *testing.T) {
 		name              string
 		nodeName          string
 		recommendedAction protos.RecommendedAction
+		groupConfig       *common.EquivalenceGroupConfig
 		shouldSkip        bool
 		description       string
 	}{
@@ -530,6 +565,7 @@ func TestShouldSkipEvent(t *testing.T) {
 			name:              "Skip NONE action",
 			nodeName:          "test-node-1",
 			recommendedAction: protos.RecommendedAction_NONE,
+			groupConfig:       nil,
 			shouldSkip:        true,
 			description:       "NONE actions should be skipped",
 		},
@@ -537,6 +573,7 @@ func TestShouldSkipEvent(t *testing.T) {
 			name:              "Process RESTART_VM action",
 			nodeName:          "test-node-2",
 			recommendedAction: protos.RecommendedAction_RESTART_BM,
+			groupConfig:       getGroupConfig("restart", nil),
 			shouldSkip:        false,
 			description:       "RESTART_VM actions should not be skipped",
 		},
@@ -544,6 +581,7 @@ func TestShouldSkipEvent(t *testing.T) {
 			name:              "Skip CONTACT_SUPPORT action",
 			nodeName:          "test-node-3",
 			recommendedAction: protos.RecommendedAction_CONTACT_SUPPORT,
+			groupConfig:       nil,
 			shouldSkip:        true,
 			description:       "Unsupported CONTACT_SUPPORT action should be skipped",
 		},
@@ -551,6 +589,7 @@ func TestShouldSkipEvent(t *testing.T) {
 			name:              "Skip unknown action",
 			nodeName:          "test-node-4",
 			recommendedAction: protos.RecommendedAction(999),
+			groupConfig:       nil,
 			shouldSkip:        true,
 			description:       "Unknown actions should be skipped",
 		},
@@ -566,7 +605,7 @@ func TestShouldSkipEvent(t *testing.T) {
 				HealthEvent: healthEvent,
 			}
 
-			result := r.shouldSkipEvent(t.Context(), healthEventWithStatus)
+			result := r.shouldSkipEvent(t.Context(), healthEventWithStatus, tt.groupConfig)
 			assert.Equal(t, tt.shouldSkip, result, tt.description)
 		})
 	}
@@ -577,13 +616,14 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr-name"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr-name", nil
 		},
-		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) (ctrl.Result, error) {
 			called = true
 			assert.Equal(t, "test-node-none", nodeName)
-			return nil
+			return ctrl.Result{}, nil
 		},
 	}
 	stateManager := &statemanager.MockStateManager{
@@ -604,10 +644,11 @@ func TestRunLogCollectorOnNoneActionWhenEnabled(t *testing.T) {
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector run before skipping
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
-		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
+		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
-	assert.True(t, r.shouldSkipEvent(t.Context(), event))
+	groupConfig := getGroupConfig("restart", nil)
+	assert.True(t, r.shouldSkipEvent(t.Context(), event, groupConfig))
 	assert.True(t, called, "log collector job should be invoked when enabled for NONE action")
 }
 
@@ -620,6 +661,7 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 		jobResult      bool
 		expectedResult bool
 		description    string
+		returnedResult ctrl.Result
 	}{
 		{
 			name:           "Log collector job succeeds",
@@ -636,40 +678,28 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 			description:    "Error path - job fails to complete",
 		},
 		{
-			name:           "Log collector job with api error",
-			nodeName:       "test-node-api-error",
+			name:           "Log collector job return requeue",
+			nodeName:       "test-node-fail",
 			jobResult:      false,
 			expectedResult: false,
-			description:    "Error path - kubernetes API error during job creation",
-		},
-		{
-			name:           "Log collector job with creation error",
-			nodeName:       "test-node-create-error",
-			jobResult:      false,
-			expectedResult: false,
-			description:    "Error path - job creation fails",
-		},
-		{
-			name:           "Log collector job timeout",
-			nodeName:       "test-node-timeout",
-			jobResult:      false,
-			expectedResult: false,
-			description:    "Error path - job times out",
+			description:    "Error path - job fails to complete",
+			returnedResult: ctrl.Result{RequeueAfter: 5 * time.Minute},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			k8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-					return true, "test-cr-name"
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+					_ *common.EquivalenceGroupConfig) (string, error) {
+					return "test-cr-name", nil
 				},
-				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+				runLogCollectorJobFn: func(ctx context.Context, nodeName string) (ctrl.Result, error) {
 					assert.Equal(t, tt.nodeName, nodeName)
 					if tt.jobResult {
-						return nil
+						return tt.returnedResult, nil
 					}
-					return fmt.Errorf("job failed")
+					return ctrl.Result{}, fmt.Errorf("job failed")
 				},
 			}
 
@@ -679,11 +709,12 @@ func TestRunLogCollectorJobErrorScenarios(t *testing.T) {
 			}
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
-			result := r.config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName)
+			result, err := r.Config.RemediationClient.RunLogCollectorJob(ctx, tt.nodeName, "")
 			if tt.expectedResult {
-				assert.NoError(t, result, tt.description)
+				assert.NoError(t, err, tt.description)
+				assert.Equal(t, tt.returnedResult, result)
 			} else {
-				assert.Error(t, result, tt.description)
+				assert.Error(t, err, tt.description)
 			}
 		})
 	}
@@ -694,13 +725,14 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 
 	called := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr-name"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr-name", nil
 		},
-		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) (ctrl.Result, error) {
 			called = true
 			// In dry run mode, this should return nil without actually creating the job
-			return nil
+			return ctrl.Result{}, nil
 		},
 	}
 
@@ -710,8 +742,8 @@ func TestRunLogCollectorJobDryRunMode(t *testing.T) {
 	}
 	r := NewFaultRemediationReconciler(nil, nil, nil, cfg, true)
 
-	result := r.config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run")
-	assert.NoError(t, result, "Dry run should return no error")
+	_, err := r.Config.RemediationClient.RunLogCollectorJob(ctx, "test-node-dry-run", "")
+	assert.NoError(t, err, "Dry run should return no error")
 	assert.True(t, called, "Function should be called even in dry run mode")
 }
 
@@ -720,12 +752,13 @@ func TestLogCollectorDisabled(t *testing.T) {
 
 	logCollectorCalled := false
 	k8sClient := &MockK8sClient{
-		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-			return true, "test-cr-name"
+		createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+			_ *common.EquivalenceGroupConfig) (string, error) {
+			return "test-cr-name", nil
 		},
-		runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+		runLogCollectorJobFn: func(ctx context.Context, nodeName string) (ctrl.Result, error) {
 			logCollectorCalled = true
-			return nil
+			return ctrl.Result{}, nil
 		},
 	}
 	stateManager := &statemanager.MockStateManager{
@@ -746,10 +779,11 @@ func TestLogCollectorDisabled(t *testing.T) {
 	event := model.HealthEventWithStatus{HealthEvent: he}
 
 	// Simulate the Start loop behavior: log collector should NOT run when disabled
-	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.config.EnableLogCollector {
-		_ = r.config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName)
+	if event.HealthEvent.RecommendedAction == protos.RecommendedAction_NONE && r.Config.EnableLogCollector {
+		_, _ = r.Config.RemediationClient.RunLogCollectorJob(ctx, event.HealthEvent.NodeName, "")
 	}
-	assert.True(t, r.shouldSkipEvent(t.Context(), event))
+	groupConfig := getGroupConfig("restart", nil)
+	assert.True(t, r.shouldSkipEvent(t.Context(), event, groupConfig))
 	assert.False(t, logCollectorCalled, "log collector job should NOT be invoked when disabled")
 }
 
@@ -796,8 +830,9 @@ func TestUpdateNodeRemediatedStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-					return true, "test-cr"
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+					_ *common.EquivalenceGroupConfig) (string, error) {
+					return "test-cr", nil
 				},
 			}
 			cfg := ReconcilerConfig{
@@ -833,136 +868,95 @@ func TestCRBasedDeduplication(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name          string
-		existingCR    string
-		crSucceeded   bool
-		currentAction protos.RecommendedAction
-		expectedSkip  bool
-		description   string
+		name                   string
+		existingCRs            map[string]string
+		shouldSkipCRCreation   []bool // if nil we will not provide a StatusChecker instances
+		groupConfig            *common.EquivalenceGroupConfig
+		expectedShouldCreateCR bool
 	}{
 		{
-			name:          "NoCR_AllowRemediation",
-			existingCR:    "",
-			crSucceeded:   false,
-			currentAction: protos.RecommendedAction_RESTART_BM,
-			expectedSkip:  false,
-			description:   "Should allow remediation when no CR exists",
+			name:                   "NoStatusChecker_AllowRemediation",
+			existingCRs:            nil,
+			shouldSkipCRCreation:   nil,
+			groupConfig:            getGroupConfig("restart", nil),
+			expectedShouldCreateCR: true,
 		},
 		{
-			name:          "CRSucceeded_SkipRemediation",
-			existingCR:    "maintenance-node-123",
-			crSucceeded:   true,
-			currentAction: protos.RecommendedAction_RESTART_BM,
-			expectedSkip:  true,
-			description:   "Should skip remediation when CR succeeded",
+			name:                   "NoCR_AllowRemediation",
+			existingCRs:            nil,
+			shouldSkipCRCreation:   []bool{true},
+			groupConfig:            getGroupConfig("restart", nil),
+			expectedShouldCreateCR: true,
 		},
 		{
-			name:          "CRFailed_AllowRemediation",
-			existingCR:    "maintenance-node-789",
-			crSucceeded:   false,
-			currentAction: protos.RecommendedAction_RESTART_BM,
-			expectedSkip:  false,
-			description:   "Should allow remediation when CR failed",
+			name:                   "CRFailed_AllowRemediation",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			shouldSkipCRCreation:   []bool{false},
+			groupConfig:            getGroupConfig("restart", nil),
+			expectedShouldCreateCR: true,
+		},
+		{
+			name:                   "CRSucceeded_SkipRemediation",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123"},
+			shouldSkipCRCreation:   []bool{true},
+			groupConfig:            getGroupConfig("restart", nil),
+			expectedShouldCreateCR: false,
+		},
+		{
+			name:                   "MultipleCRs_SkipRemediation_MultipleEquivalenceGroups_OneInProgress",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123", "reset-GPU-123": "maintenance-gpu-123"},
+			shouldSkipCRCreation:   []bool{false, true},
+			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
+			expectedShouldCreateCR: false,
+		},
+		{
+			name:                   "MultipleCRs_AllowRemediation_MultipleEquivalenceGroups_BothCompleted",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123", "reset-GPU-123": "maintenance-gpu-123"},
+			shouldSkipCRCreation:   []bool{false, false},
+			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
+			expectedShouldCreateCR: true,
+		},
+		{
+			name:                   "MultipleCRs_AllowRemediation_MultipleEquivalenceGroups_OneInProgressNotMatching",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123", "reset-GPU-123": "maintenance-gpu-123"},
+			shouldSkipCRCreation:   []bool{false, true},
+			groupConfig:            getGroupConfig("reset", []string{"reset-GPU-123"}),
+			expectedShouldCreateCR: true,
+		},
+		{
+			name:                   "MultipleCRs_AllowRemediation_MultipleEquivalenceGroups_OneInProgressNotMatchingForSuperseding",
+			existingCRs:            map[string]string{"restart": "maintenance-node-123", "reset-GPU-456": "maintenance-gpu-456"},
+			shouldSkipCRCreation:   []bool{false, true},
+			groupConfig:            getGroupConfig("restart", []string{"reset-GPU-123"}),
+			expectedShouldCreateCR: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockAnnotationManager := &MockNodeAnnotationManager{
-				existingCR: tt.existingCR,
+				existingCRs: tt.existingCRs,
 			}
 
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-					return true, "test-cr"
-				},
 				annotationManagerOverride: mockAnnotationManager,
+			}
+
+			if tt.shouldSkipCRCreation != nil {
+				mockK8sClient.mockStatusChecker = &mockStatusChecker{
+					shouldSkip: tt.shouldSkipCRCreation,
+				}
 			}
 
 			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
 			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
 
 			healthEvent := &protos.HealthEvent{
-				NodeName:          "test-node",
-				RecommendedAction: tt.currentAction,
+				NodeName: "test-node",
 			}
-
-			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent)
-			assert.NoError(t, err, tt.description)
-			assert.True(t, shouldCreateCR, "Should always allow retry when no status checker")
-		})
-	}
-}
-
-func TestCrossActionRemediationWithEquivalenceGroups(t *testing.T) {
-	ctx := context.Background()
-
-	tests := []struct {
-		name           string
-		existingAction protos.RecommendedAction
-		newEventAction protos.RecommendedAction
-		crSucceeded    bool
-		shouldCreateCR bool
-		description    string
-	}{
-		{
-			name:           "ComponentReset_vs_NodeReboot_SameGroup_NotSucceeded",
-			existingAction: protos.RecommendedAction_COMPONENT_RESET,
-			newEventAction: protos.RecommendedAction_RESTART_BM,
-			crSucceeded:    false,
-			shouldCreateCR: true,
-			description:    "Should allow RESTART_BM when COMPONENT_RESET CR not succeeded (same group)",
-		},
-		{
-			name:           "NodeReboot_vs_RestartVM_SameGroup_Succeeded",
-			existingAction: protos.RecommendedAction_RESTART_BM,
-			newEventAction: protos.RecommendedAction_RESTART_VM,
-			crSucceeded:    true,
-			shouldCreateCR: false,
-			description:    "Should create RESTART_VM when RESTART_BM CR succeeded (same group, but only partial fix)",
-		},
-		{
-			name:           "ResetGPU_vs_RestartBM_SameGroup_NotSucceeded",
-			existingAction: protos.RecommendedAction_COMPONENT_RESET,
-			newEventAction: protos.RecommendedAction_RESTART_BM,
-			crSucceeded:    false,
-			shouldCreateCR: true,
-			description:    "Should allow RESTART_BM when COMPONENT_RESET CR not succeeded (same group)",
-		},
-		{
-			name:           "ComponentReset_vs_NONE_NotInGroup",
-			existingAction: protos.RecommendedAction_COMPONENT_RESET,
-			newEventAction: protos.RecommendedAction_NONE,
-			crSucceeded:    true,
-			shouldCreateCR: false,
-			description:    "NONE action handling is independent of CR status",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockAnnotationManager := &MockNodeAnnotationManager{
-				existingCR: "maintenance-node-existing",
-			}
-
-			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-					return true, "test-cr"
-				},
-				annotationManagerOverride: mockAnnotationManager,
-			}
-
-			cfg := ReconcilerConfig{RemediationClient: mockK8sClient}
-			r := NewFaultRemediationReconciler(nil, nil, nil, cfg, false)
-
-			healthEvent := &protos.HealthEvent{
-				NodeName:          "test-node",
-				RecommendedAction: tt.newEventAction,
-			}
-
-			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent)
-			assert.NoError(t, err, tt.description)
-			assert.True(t, shouldCreateCR, "Should always allow retry when no status checker")
+			shouldCreateCR, _, err := r.checkExistingCRStatus(ctx, healthEvent, tt.groupConfig)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedShouldCreateCR, shouldCreateCR)
 		})
 	}
 }
@@ -998,12 +992,13 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 			logCollectorCalled := false
 
 			mockK8sClient := &MockK8sClient{
-				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *HealthEventData) (bool, string) {
-					return true, "test-cr"
+				createMaintenanceResourceFn: func(ctx context.Context, healthEventDoc *events.HealthEventData,
+					_ *common.EquivalenceGroupConfig) (string, error) {
+					return "test-cr", nil
 				},
-				runLogCollectorJobFn: func(ctx context.Context, nodeName string) error {
+				runLogCollectorJobFn: func(ctx context.Context, nodeName string) (ctrl.Result, error) {
 					logCollectorCalled = true
-					return nil
+					return ctrl.Result{}, nil
 				},
 			}
 
@@ -1024,7 +1019,7 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 			shouldCreateCR := tt.shouldCreateCR
 
 			if shouldCreateCR {
-				r.runLogCollector(ctx, healthEvent)
+				r.runLogCollector(ctx, healthEvent, "")
 			}
 
 			assert.Equal(t, tt.expectLogCollectorCall, logCollectorCalled, tt.description)

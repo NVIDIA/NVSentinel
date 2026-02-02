@@ -135,12 +135,20 @@ func initializeK8sConnector(
 
 func initializeDatabaseStoreConnector(
 	ctx context.Context,
+	config map[string]interface{},
 	databaseClientCertMountPath string,
 ) (*store.DatabaseStoreConnector, error) {
 	ringBuffer := ringbuffer.NewRingBuffer("databaseStore", ctx)
 	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
 
-	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath)
+	maxRetriesInt64, ok := config["StoreConnectorMaxRetries"].(int64)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert StoreConnectorMaxRetries to int: %v", config["StoreConnectorMaxRetries"])
+	}
+
+	maxRetries := int(maxRetriesInt64)
+
+	storeConnector, err := store.InitializeDatabaseStoreConnector(ctx, ringBuffer, databaseClientCertMountPath, maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 	}
@@ -257,7 +265,7 @@ func initializeConnectors(
 
 	// Keep the legacy config key name for backward compatibility with existing ConfigMaps
 	if config["enableMongoDBStorePlatformConnector"] == True || config["enablePostgresDBStorePlatformConnector"] == True {
-		storeConnector, err = initializeDatabaseStoreConnector(ctx, databaseClientCertMountPath)
+		storeConnector, err = initializeDatabaseStoreConnector(ctx, config, databaseClientCertMountPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize database store connector: %w", err)
 		}

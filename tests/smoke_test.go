@@ -75,7 +75,7 @@ func TestFatalHealthEvent(t *testing.T) {
 			string(statemanager.RemediatingLabelValue),
 			string(statemanager.RemediationSucceededLabelValue),
 		}
-		err = helpers.StartNodeLabelWatcher(ctx, t, client, nodeName, desiredNVSentinelStateNodeLabels, nodeLabelSequenceObserved)
+		err = helpers.StartNodeLabelWatcher(ctx, t, client, nodeName, desiredNVSentinelStateNodeLabels, true, nodeLabelSequenceObserved)
 		assert.NoError(t, err, "failed to start node label watcher")
 
 		// Sleep to ensure Kubernetes watch is fully established before triggering state changes

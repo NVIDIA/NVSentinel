@@ -45,8 +45,8 @@ func (m *eventQueueManager) SetDataStoreEventProcessor(processor DataStoreEventP
 }
 
 // EnqueueEventGeneric enqueues an event using the new database-agnostic interface
-func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context,
-	nodeName string, event datastore.Event, database DataStore) error {
+func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context, nodeName string, event datastore.Event,
+	database DataStore, healthEventStore datastore.HealthEventStore) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("context cancelled while enqueueing event for node %s: %w", nodeName, ctx.Err())
 	}
@@ -60,10 +60,11 @@ func (m *eventQueueManager) EnqueueEventGeneric(ctx context.Context,
 	eventID := utils.ExtractEventID(event)
 
 	nodeEvent := NodeEvent{
-		NodeName: nodeName,
-		EventID:  eventID,
-		Event:    &event,
-		Database: database,
+		NodeName:         nodeName,
+		EventID:          eventID,
+		Event:            &event,
+		Database:         database,
+		HealthEventStore: healthEventStore,
 	}
 
 	slog.Debug("Enqueueing event", "nodeName", nodeName, "eventID", eventID)
