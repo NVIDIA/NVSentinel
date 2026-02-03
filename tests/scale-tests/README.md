@@ -140,7 +140,7 @@ See [results/](results/) for detailed test reports.
 - Scale tests at 10% (150 nodes) and 25% (375 nodes) cluster failure
 - Monitor mode-specific metrics: `node_drainer_force_delete_pods_after_timeout`, `node_drainer_waiting_for_timeout`
 
-**Testing Version:** NVSentinel v0.6.0 (requires v0.6.0+ for mixed eviction mode functionality)
+**Testing Version:** NVSentinel v0.8.0 (requires v0.8.0+ for mixed eviction mode functionality)
 
 **Key Findings:**
 - **Immediate mode:** All pods evicted instantly — 100% success
@@ -196,7 +196,7 @@ The test configuration enables MongoDB metrics for Prometheus. If using `kube-pr
 - 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
 - 📊 [FQM Latency & Queue Depth](results/FQM_Latency_and_Queue_Depth_Results.md) - End-to-end cordoning latency at 10-50% cluster failure
 - 📊 [Concurrent Drain Operations](results/Concurrent_Drain_Results.md) - Node Drainer scaling with 300 concurrent drains
-- 📊 [Mixed Eviction Modes](results/Mixed_Eviction_Results.md) - Testing mixed eviction policies at 10% and 25% scale (NVSentinel v0.6.0)
+- 📊 [Mixed Eviction Modes](results/Mixed_Eviction_Results.md) - Testing mixed eviction policies at 10% and 25% scale (NVSentinel v0.8.0)
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
 
 ## Directory Structure
@@ -245,8 +245,8 @@ Scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
 - **MongoDB:** Successfully handles sustained loads from 30-500 events/sec with default configuration
 - **FQM Cordoning:** 100% success rate at all scales, ~2.5 nodes/sec processing rate
 - **Node Drainer:** Successfully evicted 11,000+ pods at 50% cluster failure with 0 errors; bottleneck is Kubernetes client rate limit (5 evictions/sec)
-- **Mixed Eviction Modes:** Successfully validated at 10% and 25% scales with NVSentinel v0.6.0; all three modes (Immediate, AllowCompletion, DeleteAfterTimeout) functioned correctly without cross-contamination
+- **Mixed Eviction Modes:** Successfully validated at 10% and 25% scales with NVSentinel v0.8.0; all three modes (Immediate, AllowCompletion, DeleteAfterTimeout) functioned correctly without cross-contamination
 
 ---
 
-**Last Updated:** January 12, 2026
+**Last Updated:** February 2, 2026

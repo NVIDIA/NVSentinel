@@ -1,10 +1,10 @@
 # Mixed Eviction Modes Scale Test Results
 
 **Cluster:** 1503 nodes (3 system + 1500 customer aws-cpu-m7i.xlarge nodes)  
-**NVSentinel Version:** v0.6.0  
-**Test Date:** January 12, 2026
+**NVSentinel Version:** v0.8.0  
+**Test Date:** February 2, 2026
 
-> **Note:** This test suite was added after the initial scale testing effort. Mixed eviction mode functionality requires NVSentinel v0.6.0 or later.
+> **Note:** This test suite was added after the initial scale testing effort. Mixed eviction mode functionality requires NVSentinel v0.8.0 or later.
 
 ---
 
@@ -271,7 +271,7 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 1. **Mixed eviction modes work correctly at scale**
    - Immediate, AllowCompletion, and DeleteAfterTimeout all functioned as expected
    - No cross-contamination between modes
-   - Validated on v0.6.0
+   - Validated on v0.8.0
 
 2. **Performance scales linearly**
    - Consistent 2.5 nodes/sec cordon rate at both 10% and 25% scales
@@ -304,7 +304,7 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 
 ### Recommendations
 
-1. **Production readiness:** Mixed eviction modes are production-ready in v0.6.0+
+1. **Production readiness:** Mixed eviction modes are production-ready in v0.8.0+
 2. **Configuration guidance:** Document the priority order of eviction modes for operators
 3. **Monitoring:** Recommend tracking `node_drainer_force_delete_pods_after_timeout` metric in production to validate timeout behavior
 
@@ -313,10 +313,10 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 ## Test Environment
 
 - **Cluster:** rs3 (1500 nodes)
-- **NVSentinel Version:** v0.6.0
+- **NVSentinel Version:** v0.8.0
 - **MongoDB:** 3-replica, 6Gi memory per replica
 - **Test Workloads:** inference-sim (1500 pods per namespace, 30s terminationGracePeriodSeconds)
-- **Test Dates:** January 12, 2026
+- **Test Dates:** February 2, 2026
 
 ### Manifests Used
 
@@ -333,4 +333,4 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 
 ---
 
-**Last Updated:** January 12, 2026
+**Last Updated:** February 2, 2026
