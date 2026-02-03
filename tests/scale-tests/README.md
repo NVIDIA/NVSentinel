@@ -137,19 +137,18 @@ See [results/](results/) for detailed test reports.
 
 **Test Scenarios (1500-node cluster):**
 - Three namespaces configured with different eviction modes on the same nodes
-- Scale tests at 10% (150 nodes) and 25% (375 nodes) cluster failure
+- Scale tests at 10% (150 nodes), 25% (375 nodes), and 50% (750 nodes) cluster failure
 - Monitor mode-specific metrics: `node_drainer_force_delete_pods_after_timeout`, `node_drainer_waiting_for_timeout`
 
 **Testing Version:** NVSentinel v0.8.0 (requires v0.8.0+ for mixed eviction mode functionality)
 
 **Key Findings:**
-- **Immediate mode:** All pods evicted instantly — 100% success
-- **AllowCompletion mode:** All pods remain on cordoned nodes — correctly waiting
-- **DeleteAfterTimeout mode:** 147-148 pods (98-99%) force-deleted after 2-minute timeout at 10% scale; 225 pods (60%) at 25% scale
-- **Performance:** Consistent ~2.5 nodes/sec cordon rate at both 10% and 25% scales
+- **Immediate mode:** All pods evicted — 100% success at all scales
+- **AllowCompletion mode:** All pods remain on cordoned nodes — correctly NOT evicting
+- **DeleteAfterTimeout mode:** Pods force-deleted after 2-minute timeout at all scales
+- **Performance:** Consistent ~2.5-2.6 nodes/sec cordon rate across all scales (62s, 150s, 300s)
 - **No cross-contamination:** All three eviction modes worked independently without interference
-
-**Note:** 50% scale (750 nodes) test encountered issues and was not completed.
+- **M3 validation:** 750 nodes showed perfect 750/750 AllowCompletion match with proper pod distribution
 
 📊 **[Full Results](results/Mixed_Eviction_Results.md)**
 
@@ -196,7 +195,7 @@ The test configuration enables MongoDB metrics for Prometheus. If using `kube-pr
 - 📊 [API Server Impact & MongoDB Performance](results/API_and_MongoDB_Results.md) - Light/Medium/Heavy load test results
 - 📊 [FQM Latency & Queue Depth](results/FQM_Latency_and_Queue_Depth_Results.md) - End-to-end cordoning latency at 10-50% cluster failure
 - 📊 [Concurrent Drain Operations](results/Concurrent_Drain_Results.md) - Node Drainer scaling with 300 concurrent drains
-- 📊 [Mixed Eviction Modes](results/Mixed_Eviction_Results.md) - Testing mixed eviction policies at 10% and 25% scale (NVSentinel v0.8.0)
+- 📊 [Mixed Eviction Modes](results/Mixed_Eviction_Results.md) - Testing mixed eviction policies at 10%, 25%, and 50% scale (NVSentinel v0.8.0)
 - 📊 [Production Baseline Analysis](results/PRODUCTION_BASELINE.md) - Real-world event rate analysis
 
 ## Directory Structure
@@ -239,13 +238,13 @@ tests/scale-tests/
 
 ## Summary
 
-Scale testing on a 1500-node cluster validates NVSentinel v0.4.0 performance:
+Scale testing on a 1500-node cluster validates NVSentinel performance:
 
 - **API Server:** Minimal latency impact with P75 stable at ~20ms even at 500 events/sec sustained load
 - **MongoDB:** Successfully handles sustained loads from 30-500 events/sec with default configuration
 - **FQM Cordoning:** 100% success rate at all scales, ~2.5 nodes/sec processing rate
 - **Node Drainer:** Successfully evicted 11,000+ pods at 50% cluster failure with 0 errors; bottleneck is Kubernetes client rate limit (5 evictions/sec)
-- **Mixed Eviction Modes:** Successfully validated at 10% and 25% scales with NVSentinel v0.8.0; all three modes (Immediate, AllowCompletion, DeleteAfterTimeout) functioned correctly without cross-contamination
+- **Mixed Eviction Modes:** Successfully validated at 10%, 25%, and 50% scales with NVSentinel v0.8.0; all three modes (Immediate, AllowCompletion, DeleteAfterTimeout) functioned correctly without cross-contamination
 
 ---
 
