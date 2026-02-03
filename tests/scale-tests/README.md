@@ -26,13 +26,13 @@ This test suite validates NVSentinel's performance and scalability under realist
 
 ### Installation
 
-Deploy NVSentinel v0.4.0 via Helm with MongoDB metrics enabled:
+Deploy NVSentinel v0.8.0 via Helm with MongoDB metrics enabled:
 
 ```bash
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel \
   --create-namespace \
-  --version v0.4.0 \
+  --version v0.8.0 \
   --values configs/values-v0.4.0-with-mongodb-metrics.yaml \
   --wait
 ```
