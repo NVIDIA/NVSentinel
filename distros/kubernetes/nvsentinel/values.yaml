@@ -97,6 +97,13 @@ global:
   preflight:
     enabled: false
 
+# Network policy configuration
+# The metrics-access network policy restricts ingress to metrics ports only.
+# This can block other services (e.g., cert-manager webhook) when deployed
+# in the same namespace. Set enabled=false to disable the network policy.
+networkPolicy:
+  enabled: true
+
 platformConnector:
   image:
     repository: ghcr.io/nvidia/nvsentinel/platform-connectors
