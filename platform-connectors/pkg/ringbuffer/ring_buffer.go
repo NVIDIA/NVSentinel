@@ -62,6 +62,7 @@ func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *
 	}
 
 	workqueue.SetProvider(prometheusMetricsProvider{})
+
 	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[*protos.HealthEvents](
 		cfg.baseDelay,
 		cfg.maxDelay,
