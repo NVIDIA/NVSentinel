@@ -51,7 +51,9 @@ if [ ! -f go.work ]; then
     ./janitor-provider \
     ./labeler \
     ./node-drainer \
-    ./platform-connectors
+    ./platform-connectors \
+    ./preflight \
+    ./preflight-checks/ping
 fi
 
 ko build "${KO_FLAGS[@]}" \
@@ -66,7 +68,9 @@ ko build "${KO_FLAGS[@]}" \
   ./janitor-provider \
   ./labeler \
   ./node-drainer \
-  ./platform-connectors 
+  ./platform-connectors \
+  ./preflight \
+  ./preflight-checks/ping 
 
 echo "built refs:"
 cat digests.txt

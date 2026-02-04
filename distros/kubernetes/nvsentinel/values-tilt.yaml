@@ -89,6 +89,9 @@ global:
 
   eventExporter:
     enabled: true
+
+  preflight:
+    enabled: false
   
   metricsPort: 2112
 

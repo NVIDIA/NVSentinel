@@ -117,6 +117,9 @@ jobs:
           - component: file-server-cleanup
             make_command: 'make -C log-collector docker-publish-file-server-cleanup'
             container_name: 'nvsentinel/file-server-cleanup'
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset docker-publish'
+            container_name: 'nvsentinel/gpu-reset'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:

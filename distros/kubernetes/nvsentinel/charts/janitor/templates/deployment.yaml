@@ -70,6 +70,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}

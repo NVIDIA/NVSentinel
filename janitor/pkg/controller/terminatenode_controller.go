@@ -37,22 +37,26 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
 // TerminateNodeReconciler manages the terminate node operation.
 type TerminateNodeReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Config    *config.TerminateNodeControllerConfig
-	CSPClient cspv1alpha1.CSPProviderServiceClient
-	grpcConn  *grpc.ClientConn
+	Scheme        *runtime.Scheme
+	Config        *config.TerminateNodeControllerConfig
+	CSPClient     cspv1alpha1.CSPProviderServiceClient
+	NodeLock      distributedlock.NodeLock
+	LockNamespace string
+	grpcConn      *grpc.ClientConn
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;delete
 
 // Steps of the terminate node reconciliation loop:
 // 1. Initialize conditions and start time.
@@ -61,17 +65,45 @@ type TerminateNodeReconciler struct {
 // 4. If node is ready, check for timeout.
 // 5. If signal has not been sent, send it to the CSP instance.
 // 6. Write status updates to the TerminateNode CR.
+//
+//nolint:dupl // Structural duplication with RebootNode is acceptable - different business logic
 func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var terminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
 	if err := r.Get(ctx, req.NamespacedName, &terminateNode); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if terminateNode.Status.CompletionTime != nil {
-		slog.Debug("TerminateNode has completion time set, skipping reconcile", "node", terminateNode.Spec.NodeName)
-		return ctrl.Result{}, nil
+	// Check if reconciliation is complete
+	completedReconciling := terminateNode.Status.CompletionTime != nil
+	if !completedReconciling {
+		// Try to acquire node lock before reconciling
+		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
+		if !locked {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		// Execute the reconcile logic
+		result, err := r.reconcileHelper(ctx, &terminateNode)
+		// We always re-queue after successful reconcile to check if unlock is needed on the next reconcile.
+		// This avoids having to re-fetch the object at the end of reconciling to check if CompletionTime was set.
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
+		if err != nil || result.Requeue || result.RequeueAfter > 0 {
+			return result, err
+		}
+
+		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
+		return ctrl.Result{Requeue: true}, nil
+	}
+	// CompletionTime is set, try to release the lock
+	retryUnlock := r.NodeLock.CheckUnlock(ctx, &terminateNode, terminateNode.Spec.NodeName)
+	if retryUnlock {
+		return ctrl.Result{Requeue: true}, nil
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// reconcileHelper contains the main reconciliation logic
+func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminateNode *janitordgxcnvidiacomv1alpha1.TerminateNode) (ctrl.Result, error) {
 	// Take a deep copy to compare against at the end
 	originalTerminateNode := terminateNode.DeepCopy()
 
@@ -246,7 +278,9 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !reflect.DeepEqual(originalTerminateNode.Status, terminateNode.Status) {
 		// Refresh the object before updating to avoid precondition failures
 		var freshTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
-		if err := r.Get(ctx, req.NamespacedName, &freshTerminateNode); err != nil {
+
+		objectKey := client.ObjectKey{Name: terminateNode.Name, Namespace: terminateNode.Namespace}
+		if err := r.Get(ctx, objectKey, &freshTerminateNode); err != nil {
 			if apierrors.IsNotFound(err) {
 				slog.Debug("Post-reconciliation status update: not found, object assumed deleted", "node", terminateNode.Name)
 
@@ -294,6 +328,8 @@ func (r *TerminateNodeReconciler) getTimeout() time.Duration {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+//nolint:dupl // Structural duplication with RebootNode is acceptable - same setup pattern
 func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -302,6 +338,9 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	r.grpcConn = conn
 	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+
+	// Initialize NodeLock for distributed locking across maintenance operations
+	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
 
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		<-ctx.Done()

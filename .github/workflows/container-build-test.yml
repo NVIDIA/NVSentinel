@@ -65,6 +65,9 @@ jobs:
             make_command: 'make -C log-collector docker-build-log-collector'
           - component: file-server-cleanup
             make_command: 'make -C log-collector docker-build-file-server-cleanup'
+          # GPU Reset (Docker-based)
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset docker-build'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -125,6 +128,10 @@ jobs:
           - module: health-monitors/kubernetes-object-monitor
             path: .
           - module: event-exporter
+            path: .
+          - module: preflight
+            path: .
+          - module: preflight-checks/ping
             path: .
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

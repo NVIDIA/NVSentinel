@@ -62,7 +62,8 @@ PYTHON_MODULES := \
 
 # Container-only modules
 CONTAINER_MODULES := \
-	log-collector
+	log-collector \
+    gpu-reset
 
 # Special modules requiring private repo access
 PRIVATE_MODULES := \
@@ -267,7 +268,7 @@ install-go-ci: ## Install Go $(GO_VERSION) for CI environments (Linux/macOS, amd
 
 # Lint and test all modules (delegates to sub-Makefiles)
 .PHONY: lint-test-all
-lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint ## Lint and test all modules
+lint-test-all: protos-lint license-headers-lint gomod-lint health-monitors-lint-test-all go-lint-test-all python-lint-test-all kubernetes-distro-lint log-collector-lint gpu-reset-lint ## Lint and test all modules
 
 # Health monitors lint-test (delegate to health-monitors/Makefile)
 .PHONY: health-monitors-lint-test-all
@@ -501,6 +502,12 @@ helm-lint:
 log-collector-lint: ## Lint shell scripts in log collector
 	@echo "Linting log collector shell scripts..."
 	$(MAKE) -C log-collector lint
+
+# GPU reset lint (shell script)
+.PHONY: gpu-reset-lint
+gpu-reset-lint: ## Lint shell scripts in GPU reset
+	@echo "Linting GPU reset shell scripts..."
+	$(MAKE) -C gpu-reset lint
 
 # Build targets (delegate to sub-Makefiles for better organization)
 .PHONY: build-all

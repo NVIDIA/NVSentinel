@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -25,6 +26,8 @@ import (
 const (
 	ActionTypeReboot    = "reboot"
 	ActionTypeTerminate = "terminate"
+	ActionTypeLock      = "lock"
+	ActionTypeUnlock    = "unlock"
 )
 
 // Status values for action metrics
@@ -81,6 +84,13 @@ func (m *ActionMetrics) RecordActionMTTR(actionType string, duration time.Durati
 	actionMTTRHistogram.With(prometheus.Labels{
 		"action_type": actionType,
 	}).Observe(duration.Seconds())
+}
+
+// GetActionsCountValue returns the current value of the actions counter for testing purposes
+func (m *ActionMetrics) GetActionsCountValue(actionType, status, node string) float64 {
+	return testutil.ToFloat64(
+		actionsCount.WithLabelValues(actionType, status, node),
+	)
 }
 
 // GlobalMetrics is the global metrics instance for easy access across controllers

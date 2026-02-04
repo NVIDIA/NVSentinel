@@ -36,6 +36,16 @@ rules:
   - patch
   - update
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+- apiGroups:
   - janitor.dgxc.nvidia.com
   resources:
   - rebootnodes

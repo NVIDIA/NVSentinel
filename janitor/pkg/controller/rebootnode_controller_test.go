@@ -30,6 +30,7 @@ import (
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
+	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 )
 
 func TestRebootNodeReconciler_getRebootTimeout(t *testing.T) {
@@ -128,6 +129,7 @@ var _ = Describe("RebootNode Controller", func() {
 				Timeout: 30 * time.Minute,
 			},
 			CSPClient: mockCSP.Client,
+			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
 		}
 
 		// Default to success behavior - tests can override as needed
