@@ -22,34 +22,26 @@ log = logging.getLogger(__name__)
 class GPUDiscovery:
     """Discovers GPUs allocated to this container using NVML.
 
-    We use pynvml (NVML) instead of `dcgmi discovery -l` because NVML respects
+    We use pynvml (NVML) instead of `dcgmi discovery` because NVML respects
     the NVIDIA container runtime's GPU isolation. When a container is allocated
     specific GPUs via NVIDIA_VISIBLE_DEVICES or Kubernetes device plugins, NVML
-    only returns those allocated GPUs.
+    only returns those allocated GPUs with container-local indices (0, 1, ...).
 
     Example on an 8-GPU node with a container allocated 2 GPUs:
 
-        # Embedded mode (local hostengine inside container):
-        $ dcgmi discovery -l
-        2 GPUs found.
-        GPU 0: GPU-bfd72471-...  (PCI 0000000D:00:00.0)
-        GPU 1: GPU-60ef74d0-...  (PCI 0000000E:00:00.0)
-
-        # Standalone mode (node's hostengine):
+        # DCGM hostengine sees all 8 node GPUs:
         $ dcgmi discovery -l --host nvidia-dcgm.gpu-operator.svc:5555
         8 GPUs found.
         GPU 0-5: ... (other tenants' GPUs)
-        GPU 6: GPU-bfd72471-...  (PCI 0000000D:00:00.0)  <- same GPU, different index!
-        GPU 7: GPU-60ef74d0-...  (PCI 0000000E:00:00.0)
+        GPU 6: GPU-bfd72471-...  <- our container's first GPU
+        GPU 7: GPU-60ef74d0-...  <- our container's second GPU
 
-    Notice the same physical GPUs have different indices: container sees them as
-    GPU 0,1 while the node sees them as GPU 6,7. If we used the standalone
-    hostengine and ran diagnostics on "GPU 0", we'd diagnose a completely
-    different GPU belonging to another tenant!
+        # NVML inside container sees only allocated GPUs with local indices:
+        nvmlDeviceGetCount() -> 2
+        GPU 0: GPU-bfd72471-...  <- same physical GPU as node's GPU 6
+        GPU 1: GPU-60ef74d0-...  <- same physical GPU as node's GPU 7
 
-    NVML (pynvml) always returns container-local indices, so we use it to
-    discover allocated GPUs, then create a targeted DCGM group with those
-    indices for diagnostics.
+    NVML gives us container-local indices that we pass to DCGM for diagnostics.
     """
 
     def __init__(self):

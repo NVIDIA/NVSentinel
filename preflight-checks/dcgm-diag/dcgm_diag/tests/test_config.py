@@ -21,10 +21,10 @@ from dcgm_diag.protos import health_event_pb2 as pb
 class TestConfigFromEnv:
     def test_valid_minimal_config(self, valid_env: None) -> None:
         cfg = Config.from_env()
+        assert cfg.hostengine_addr == "nvidia-dcgm.gpu-operator.svc:5555"
         assert cfg.connector_socket == "/var/run/nvsentinel.sock"
         assert cfg.node_name == "test-node"
         assert cfg.diag_level == 2
-        assert cfg.hostengine_addr == ""
         assert cfg.processing_strategy == pb.ProcessingStrategy.Value("EXECUTE_REMEDIATION")
 
     def test_all_options(self, valid_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,12 +37,20 @@ class TestConfigFromEnv:
         assert cfg.hostengine_addr == "localhost:5555"
         assert cfg.processing_strategy == pb.ProcessingStrategy.Value("STORE_ONLY")
 
+    def test_missing_hostengine_addr(self, clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PLATFORM_CONNECTOR_SOCKET", "/sock")
+        monkeypatch.setenv("NODE_NAME", "test-node")
+        with pytest.raises(ValueError, match="DCGM_HOSTENGINE_ADDR is required"):
+            Config.from_env()
+
     def test_missing_connector_socket(self, clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DCGM_HOSTENGINE_ADDR", "localhost:5555")
         monkeypatch.setenv("NODE_NAME", "test-node")
         with pytest.raises(ValueError, match="PLATFORM_CONNECTOR_SOCKET is required"):
             Config.from_env()
 
     def test_missing_node_name(self, clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DCGM_HOSTENGINE_ADDR", "localhost:5555")
         monkeypatch.setenv("PLATFORM_CONNECTOR_SOCKET", "/sock")
         with pytest.raises(ValueError, match="NODE_NAME is required"):
             Config.from_env()

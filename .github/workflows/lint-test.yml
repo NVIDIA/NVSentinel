@@ -58,6 +58,10 @@ jobs:
             make_command: 'make -C log-collector lint-log-collector'
             step_name: 'Run lint'
             replace_imports: 'false'
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset lint'
+            step_name: 'Run lint'
+            replace_imports: 'false'
           - component: file-server-cleanup
             make_command: 'make -C log-collector lint-file-server-cleanup'
             step_name: 'Run lint'
@@ -146,8 +150,8 @@ jobs:
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
 
-      - name: Run lint
-        run: make -C preflight-checks/${{ matrix.component }} lint
+      - name: Run lint and test
+        run: make -C preflight-checks/${{ matrix.component }} lint-test
 
   modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'

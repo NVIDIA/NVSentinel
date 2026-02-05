@@ -34,6 +34,9 @@ class Config:
         node_name = os.getenv("NODE_NAME", "")
         strategy_str = os.getenv("PROCESSING_STRATEGY", "EXECUTE_REMEDIATION")
 
+        if not hostengine_addr:
+            raise ValueError("DCGM_HOSTENGINE_ADDR is required")
+
         if not connector_socket:
             raise ValueError("PLATFORM_CONNECTOR_SOCKET is required")
 

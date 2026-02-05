@@ -41,7 +41,7 @@ class DCGMDiagnostic:
         4: dcgm_structs.DCGM_DIAG_LVL_XLONG,
     }
 
-    def __init__(self, hostengine_addr: str = "") -> None:
+    def __init__(self, hostengine_addr: str) -> None:
         self._hostengine_addr = hostengine_addr
         self._handle: pydcgm.DcgmHandle | None = None
         self._gpu_discovery = GPUDiscovery()
@@ -57,15 +57,11 @@ class DCGMDiagnostic:
         return self._gpu_discovery.get_all_uuids()
 
     def _connect(self) -> None:
-        if self._hostengine_addr:
-            log.info(f"Connecting to DCGM hostengine at {self._hostengine_addr}")
-            self._handle = pydcgm.DcgmHandle(
-                ipAddress=self._hostengine_addr,
-                opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO,
-            )
-        else:
-            log.info("Starting DCGM in embedded mode")
-            self._handle = pydcgm.DcgmHandle(opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO)
+        log.info(f"Connecting to DCGM hostengine at {self._hostengine_addr}")
+        self._handle = pydcgm.DcgmHandle(
+            ipAddress=self._hostengine_addr,
+            opMode=dcgm_structs.DCGM_OPERATION_MODE_AUTO,
+        )
 
     def _disconnect(self) -> None:
         if self._handle:

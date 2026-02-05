@@ -46,12 +46,12 @@ var (
 	nodeConditionUpdateDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "k8s_platform_connector_node_condition_update_duration_milliseconds",
 		Help:    "Duration of node condition updates in milliseconds",
-		Buckets: prometheus.LinearBuckets(0, 10, 500),
+		Buckets: prometheus.ExponentialBuckets(10, 2, 12),
 	})
 
 	nodeEventUpdateCreateDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "k8s_platform_connector_node_event_update_create_duration_milliseconds",
 		Help:    "Duration of node event updates/creations in milliseconds",
-		Buckets: prometheus.LinearBuckets(0, 10, 500),
+		Buckets: prometheus.ExponentialBuckets(10, 2, 12),
 	})
 )

@@ -161,5 +161,6 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def valid_env(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
     """Set minimum valid environment."""
+    monkeypatch.setenv("DCGM_HOSTENGINE_ADDR", "nvidia-dcgm.gpu-operator.svc:5555")
     monkeypatch.setenv("PLATFORM_CONNECTOR_SOCKET", "/var/run/nvsentinel.sock")
     monkeypatch.setenv("NODE_NAME", "test-node")

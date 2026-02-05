@@ -76,6 +76,7 @@ DOCKER_IMAGES=(
     "nvsentinel/syslog-health-monitor"
     "nvsentinel/log-collector"
     "nvsentinel/file-server-cleanup"
+    "nvsentinel/gpu-reset"
 )
 
 # Counters

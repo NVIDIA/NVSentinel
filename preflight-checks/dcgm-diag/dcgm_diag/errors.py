@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 DEFAULT_ERROR_MAPPING_PATH = "/etc/dcgm/dcgmerrorsmapping.csv"
 
 
-@lru_cache(maxsize=1)
 def _load_code_to_name() -> dict[int, str]:
     """Load DCGM error code → name mapping from dcgm_errors module."""
     try:
@@ -39,7 +38,6 @@ def _load_code_to_name() -> dict[int, str]:
         return {}
 
 
-@lru_cache(maxsize=1)
 def _load_name_to_action() -> dict[str, int]:
     """Load DCGM error name → action mapping from CSV file."""
     path = os.getenv("DCGM_ERROR_MAPPING_PATH", DEFAULT_ERROR_MAPPING_PATH)

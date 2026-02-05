@@ -32,23 +32,9 @@ class TestDCGMDiagnosticConnect:
     """Tests for DCGM connection handling."""
 
     @patch("dcgm_diag.diag.GPUDiscovery")
-    @patch("dcgm_diag.diag.pydcgm.DcgmHandle")
-    def test_standalone_mode_passes_ip_address(
-        self, mock_handle_class: MagicMock, mock_gpu_discovery_class: MagicMock
-    ) -> None:
-        """Standalone mode should pass ipAddress to DcgmHandle."""
-        diag = DCGMDiagnostic(hostengine_addr="nvidia-dcgm.gpu-operator.svc:5555")
-        diag._connect()
-
-        mock_handle_class.assert_called_once_with(
-            ipAddress="nvidia-dcgm.gpu-operator.svc:5555",
-            opMode=dcgm_structs_mock.DCGM_OPERATION_MODE_AUTO,
-        )
-
-    @patch("dcgm_diag.diag.GPUDiscovery")
     def test_disconnect_handles_shutdown_exception(self, mock_gpu_discovery_class: MagicMock) -> None:
         """Disconnect should handle shutdown exceptions gracefully."""
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
         diag._handle = MagicMock()
         diag._handle.Shutdown.side_effect = Exception("Connection lost")
 
@@ -77,7 +63,7 @@ class TestDCGMDiagnosticParseResponse:
         ]
         response.errors = [MagicMock(testId=0, entity=MagicMock(entityId=0), code=123, msg=b"ECC error detected")]
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
         results = diag._parse_response(response, [0])
 
         assert len(results) == 1
@@ -103,7 +89,7 @@ class TestDCGMDiagnosticParseResponse:
         ]
         response.errors = []
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
 
         # Only request GPUs 0 and 2 (not 1 and 3)
         results = diag._parse_response(response, [0, 2])
@@ -133,7 +119,7 @@ class TestDCGMDiagnosticParseResponse:
         ]
         response.errors = [MagicMock(testId=1, entity=MagicMock(entityId=0), code=50, msg=b"PCIe warning")]
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
         results = diag._parse_response(response, [0])
 
         assert len(results) == 2
@@ -187,7 +173,7 @@ class TestDCGMDiagnosticRun:
         mock_discovery.get_allocated_gpus.return_value = []
         mock_gpu_discovery_class.return_value = mock_discovery
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
 
         with pytest.raises(RuntimeError, match="No GPUs allocated"):
             diag.run(level=1)
@@ -210,7 +196,7 @@ class TestDCGMDiagnosticRun:
         mock_group.action.RunDiagnostic.side_effect = Exception("DCGM error")
         mock_group_class.return_value = mock_group
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
 
         with pytest.raises(Exception, match="DCGM error"):
             diag.run(level=1)
@@ -231,7 +217,7 @@ class TestDCGMDiagnosticRun:
         mock_group = MagicMock()
         mock_group_class.return_value = mock_group
 
-        diag = DCGMDiagnostic()
+        diag = DCGMDiagnostic(hostengine_addr="localhost:5555")
         diag._handle = MagicMock()
         diag._create_gpu_group([0, 1, 2])
 
