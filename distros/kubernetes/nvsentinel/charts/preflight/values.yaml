@@ -107,17 +107,16 @@ initContainers:
     #     memory: 512Mi
 
   # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
-  # Uncomment to enable:
-  # - name: preflight-nccl-loopback
-  #   image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
-  #   env:
-  #     - name: BW_THRESHOLD_GBPS
-  #       value: "150"  # Minimum acceptable bus bandwidth in GB/s
-  #     - name: TEST_SIZE_MB
-  #       value: "256"  # Message size for all-reduce test
-  #   volumeMounts:
-  #     - name: nvsentinel-socket
-  #       mountPath: /var/run
+  - name: preflight-nccl-loopback
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
+    env:
+      - name: BW_THRESHOLD_GBPS
+        value: "150"  # Minimum acceptable bus bandwidth in GB/s
+      - name: TEST_SIZE_MB
+        value: "256"  # Message size for all-reduce test
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
 
 gpuResourceNames:
   - "nvidia.com/gpu"
