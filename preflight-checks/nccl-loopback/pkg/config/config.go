@@ -16,11 +16,14 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
@@ -39,7 +42,7 @@ type Config struct {
 	NumGPUs int
 
 	// NCCLTestBinary is the path to the all_reduce_perf binary.
-	NCCLTestBinary string
+	NCCLTestBinaryPath string
 
 	// ConnectorSocket is the Unix socket path for the Platform Connector.
 	ConnectorSocket string
@@ -52,96 +55,210 @@ type Config struct {
 }
 
 // FromEnv loads configuration from environment variables.
-func FromEnv() (*Config, error) {
-	cfg := &Config{
-		BWThresholdGbps: 150.0,
-		TestSizeMB:      256,
-		NCCLTestBinary:  "/opt/nccl-tests/build/all_reduce_perf",
+func FromEnv(ctx context.Context) (*Config, error) {
+	bwThreshold, err := parsePositiveFloat("BW_THRESHOLD_GBPS", 150.0)
+	if err != nil {
+		return nil, err
 	}
 
-	if v := os.Getenv("BW_THRESHOLD_GBPS"); v != "" {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid BW_THRESHOLD_GBPS: %w", err)
-		}
-
-		if f <= 0 {
-			return nil, fmt.Errorf("BW_THRESHOLD_GBPS must be positive, got %f", f)
-		}
-
-		cfg.BWThresholdGbps = f
+	testSize, err := parsePositiveInt("TEST_SIZE_MB", 256)
+	if err != nil {
+		return nil, err
 	}
 
-	if v := os.Getenv("TEST_SIZE_MB"); v != "" {
-		i, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid TEST_SIZE_MB: %w", err)
-		}
-
-		if i <= 0 {
-			return nil, fmt.Errorf("TEST_SIZE_MB must be positive, got %d", i)
-		}
-
-		cfg.TestSizeMB = i
-	}
-
-	// Detect GPU count at runtime - works for both device plugin and DRA
-	detected, err := detectGPUCount()
+	numGPUs, err := detectGPUCount(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect GPU count: %w", err)
 	}
 
-	cfg.NumGPUs = detected
-
-	if v := os.Getenv("NCCL_TEST_BINARY"); v != "" {
-		cfg.NCCLTestBinary = v
+	binaryPath, err := parseBinaryPath()
+	if err != nil {
+		return nil, err
 	}
 
-	cfg.ConnectorSocket = os.Getenv("PLATFORM_CONNECTOR_SOCKET")
-	if cfg.ConnectorSocket == "" {
-		return nil, fmt.Errorf("PLATFORM_CONNECTOR_SOCKET is required")
+	connectorSocket, err := requireEnv("PLATFORM_CONNECTOR_SOCKET")
+	if err != nil {
+		return nil, err
 	}
 
-	cfg.NodeName = os.Getenv("NODE_NAME")
-	if cfg.NodeName == "" {
-		return nil, fmt.Errorf("NODE_NAME is required")
+	nodeName, err := requireEnv("NODE_NAME")
+	if err != nil {
+		return nil, err
 	}
 
+	strategy, err := parseProcessingStrategy()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{
+		BWThresholdGbps:    bwThreshold,
+		TestSizeMB:         testSize,
+		NumGPUs:            numGPUs,
+		NCCLTestBinaryPath: binaryPath,
+		ConnectorSocket:    connectorSocket,
+		NodeName:           nodeName,
+		ProcessingStrategy: strategy,
+	}, nil
+}
+
+func parsePositiveFloat(envKey string, defaultVal float64) (float64, error) {
+	v := os.Getenv(envKey)
+	if v == "" {
+		slog.Debug("Using default value for env var", "key", envKey, "default", defaultVal)
+		return defaultVal, nil
+	}
+
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Error("Failed to parse env var as float", "key", envKey, "value", v, "error", err)
+		return 0, fmt.Errorf("invalid %s: %w", envKey, err)
+	}
+
+	if f <= 0 {
+		slog.Error("Env var must be positive", "key", envKey, "value", f)
+		return 0, fmt.Errorf("%s must be positive, got %f", envKey, f)
+	}
+
+	slog.Debug("Parsed env var", "key", envKey, "value", f)
+
+	return f, nil
+}
+
+func parsePositiveInt(envKey string, defaultVal int) (int, error) {
+	v := os.Getenv(envKey)
+	if v == "" {
+		slog.Debug("Using default value for env var", "key", envKey, "default", defaultVal)
+		return defaultVal, nil
+	}
+
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Error("Failed to parse env var as int", "key", envKey, "value", v, "error", err)
+		return 0, fmt.Errorf("invalid %s: %w", envKey, err)
+	}
+
+	if i <= 0 {
+		slog.Error("Env var must be positive", "key", envKey, "value", i)
+		return 0, fmt.Errorf("%s must be positive, got %d", envKey, i)
+	}
+
+	slog.Debug("Parsed env var", "key", envKey, "value", i)
+
+	return i, nil
+}
+
+func parseBinaryPath() (string, error) {
+	path := os.Getenv("NCCL_TEST_BINARY_PATH")
+	if path == "" {
+		path = "/opt/nccl-tests/build/all_reduce_perf"
+	}
+
+	if err := validateExecutable(path); err != nil {
+		slog.Error("Binary validation failed", "path", path, "error", err)
+		return "", fmt.Errorf("invalid NCCL_TEST_BINARY_PATH: %w", err)
+	}
+
+	slog.Debug("Binary validated successfully", "path", path)
+
+	return path, nil
+}
+
+func requireEnv(key string) (string, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		slog.Error("Required env var not set", "key", key)
+		return "", fmt.Errorf("%s is required", key)
+	}
+
+	slog.Debug("Loaded required env var", "key", key)
+
+	return v, nil
+}
+
+func parseProcessingStrategy() (pb.ProcessingStrategy, error) {
 	strategyStr := os.Getenv("PROCESSING_STRATEGY")
 	if strategyStr == "" {
 		strategyStr = "EXECUTE_REMEDIATION"
+		slog.Debug("Using default processing strategy", "strategy", strategyStr)
 	}
 
 	strategy, ok := pb.ProcessingStrategy_value[strategyStr]
 	if !ok {
-		return nil, fmt.Errorf("invalid PROCESSING_STRATEGY: %s", strategyStr)
+		slog.Error("Invalid processing strategy", "strategy", strategyStr)
+		return 0, fmt.Errorf("invalid PROCESSING_STRATEGY: %s", strategyStr)
 	}
 
-	cfg.ProcessingStrategy = pb.ProcessingStrategy(strategy)
+	slog.Debug("Parsed processing strategy", "strategy", strategyStr)
 
-	return cfg, nil
+	return pb.ProcessingStrategy(strategy), nil
 }
 
 // detectGPUCount uses nvidia-smi to count visible GPUs.
 // Works regardless of whether GPUs were allocated via device plugin or DRA.
-func detectGPUCount() (int, error) {
-	// Use nvidia-smi with CSV format for reliable parsing
-	cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+//
+// We use nvidia-smi instead of go-nvml to avoid CGO version compatibility issues
+// with NVML libraries across different driver versions. For this simple use case
+// (just counting GPUs), shelling out to nvidia-smi is more portable.
+//
+// Example output:
+//
+//	$ nvidia-smi --query-gpu=name --format=csv,noheader
+//	NVIDIA H100 80GB HBM3
+//	NVIDIA H100 80GB HBM3
+//	NVIDIA H100 80GB HBM3
+//	NVIDIA H100 80GB HBM3
+func detectGPUCount(ctx context.Context) (int, error) {
+	slog.Debug("Detecting GPU count using nvidia-smi")
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
 
 	var stdout bytes.Buffer
+
 	cmd.Stdout = &stdout
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			slog.Error("nvidia-smi timed out", "timeout", "30s")
+			return 0, fmt.Errorf("nvidia-smi timed out after 30s")
+		}
+
+		slog.Error("nvidia-smi command failed", "error", err)
+
 		return 0, fmt.Errorf("nvidia-smi failed: %w", err)
 	}
 
-	// Count non-empty lines (each line is one GPU)
 	output := strings.TrimSpace(stdout.String())
 	if output == "" {
+		slog.Error("nvidia-smi returned empty output, no GPUs found")
 		return 0, fmt.Errorf("no GPUs found")
 	}
 
 	count := len(strings.Split(output, "\n"))
+	slog.Info("Detected GPUs", "count", count)
 
 	return count, nil
+}
+
+func validateExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		slog.Error("File stat failed", "path", path, "error", err)
+		return fmt.Errorf("file not found: %w", err)
+	}
+
+	if info.IsDir() {
+		slog.Error("Path is a directory", "path", path)
+		return fmt.Errorf("path is a directory, not an executable")
+	}
+
+	if info.Mode()&0111 == 0 {
+		slog.Error("File is not executable", "path", path, "mode", info.Mode())
+		return fmt.Errorf("file is not executable")
+	}
+
+	return nil
 }

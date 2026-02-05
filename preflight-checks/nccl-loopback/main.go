@@ -32,13 +32,13 @@ var (
 )
 
 const (
-	exitSuccess     = 0
-	exitTestFailed  = 1
-	exitConfigError = 2
+	exitSuccess        = 0
+	exitTestFailed     = 1
+	exitConfigError    = 2
+	exitSendEventError = 3
 )
 
 func main() {
-	// Configure structured logging
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
@@ -56,8 +56,7 @@ func main() {
 func run() int {
 	ctx := context.Background()
 
-	// Load configuration
-	cfg, err := config.FromEnv()
+	cfg, err := config.FromEnv(ctx)
 	if err != nil {
 		slog.Error("Configuration error", "error", err)
 		return exitConfigError
@@ -67,32 +66,29 @@ func run() int {
 		"bw_threshold_gbps", cfg.BWThresholdGbps,
 		"test_size_mb", cfg.TestSizeMB,
 		"num_gpus", cfg.NumGPUs,
-		"binary", cfg.NCCLTestBinary,
+		"binary", cfg.NCCLTestBinaryPath,
 		"node_name", cfg.NodeName)
 
-	// Create health reporter
 	reporter := health.NewReporter(
 		cfg.ConnectorSocket,
 		cfg.NodeName,
 		cfg.ProcessingStrategy,
 	)
 
-	// Run benchmark
-	runner := benchmark.NewRunner(cfg.NCCLTestBinary)
+	runner := benchmark.NewRunner(cfg.NCCLTestBinaryPath)
 
-	result, err := runner.Run(cfg.NumGPUs, cfg.TestSizeMB)
+	result, err := runner.Run(ctx, cfg.NumGPUs, cfg.TestSizeMB)
 	if err != nil {
 		slog.Error("NCCL benchmark failed", "error", err)
 
-		// Send failure health event
-		sendErr := reporter.SendEvent(ctx,
+		if sendErr := reporter.SendEvent(ctx,
 			false, // isHealthy
 			true,  // isFatal
 			fmt.Sprintf("NCCL loopback test failed: %v", err),
 			"NCCL_TEST_ERROR",
-		)
-		if sendErr != nil {
+		); sendErr != nil {
 			slog.Error("Failed to send health event", "error", sendErr)
+			return exitSendEventError
 		}
 
 		return exitTestFailed
@@ -104,7 +100,6 @@ func run() int {
 		"num_gpus", result.NumGPUs,
 		"test_size_bytes", result.TestSizeBytes)
 
-	// Check if bandwidth meets threshold
 	if result.BusBandwidthGbps < cfg.BWThresholdGbps {
 		slog.Error("NCCL loopback test FAILED: bandwidth below threshold",
 			"measured_gbps", result.BusBandwidthGbps,
@@ -116,40 +111,37 @@ func run() int {
 			cfg.BWThresholdGbps,
 		)
 
-		sendErr := reporter.SendEvent(ctx,
+		if sendErr := reporter.SendEvent(ctx,
 			false, // isHealthy
 			true,  // isFatal
 			message,
 			"NCCL_BW_DEGRADED",
-		)
-		if sendErr != nil {
+		); sendErr != nil {
 			slog.Error("Failed to send health event", "error", sendErr)
+			return exitSendEventError
 		}
 
 		return exitTestFailed
 	}
 
-	// Test passed
 	slog.Info("NCCL loopback test PASSED",
 		"measured_gbps", result.BusBandwidthGbps,
 		"threshold_gbps", cfg.BWThresholdGbps)
 
-	// Send success health event
 	message := fmt.Sprintf(
 		"NCCL all-reduce bus bandwidth %.2f GB/s meets threshold %.2f GB/s",
 		result.BusBandwidthGbps,
 		cfg.BWThresholdGbps,
 	)
 
-	sendErr := reporter.SendEvent(ctx,
+	if sendErr := reporter.SendEvent(ctx,
 		true,  // isHealthy
 		false, // isFatal
 		message,
 		"",
-	)
-	if sendErr != nil {
+	); sendErr != nil {
 		slog.Error("Failed to send health event", "error", sendErr)
-		// Don't fail the test just because health event failed to send
+		return exitSendEventError
 	}
 
 	return exitSuccess

@@ -16,12 +16,14 @@ package benchmark
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Result holds the results of an NCCL all-reduce benchmark.
@@ -52,28 +54,45 @@ func NewRunner(binaryPath string) *Runner {
 	return &Runner{binaryPath: binaryPath}
 }
 
+var gpuRankPattern = regexp.MustCompile(`#\s+Rank\s+\d+\s+Group`)
+
+const benchmarkTimeout = 5 * time.Minute
+
 // Run executes the all_reduce_perf benchmark and returns the results.
 // numGPUs specifies how many GPUs to use (must match NVIDIA_VISIBLE_DEVICES count).
 // testSizeMB specifies the message size in megabytes.
-func (r *Runner) Run(numGPUs, testSizeMB int) (*Result, error) {
+func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, benchmarkTimeout)
+	defer cancel()
+
 	sizeArg := fmt.Sprintf("%dM", testSizeMB)
 
-	// -b: min bytes, -e: max bytes, -g: num GPUs
-	cmd := exec.Command(r.binaryPath,
+	//nolint:gosec // Validated binary path
+	cmd := exec.CommandContext(ctx, r.binaryPath,
 		"-b", sizeArg,
 		"-e", sizeArg,
 		"-g", strconv.Itoa(numGPUs),
 	)
 
 	var stdout, stderr bytes.Buffer
+
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	slog.Info("Running NCCL all-reduce benchmark",
 		"binary", r.binaryPath,
-		"size_mb", testSizeMB)
+		"size_mb", testSizeMB,
+		"num_gpus", numGPUs,
+		"timeout", benchmarkTimeout)
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			slog.Error("NCCL benchmark timed out", "timeout", benchmarkTimeout)
+			return nil, fmt.Errorf("all_reduce_perf timed out after %s", benchmarkTimeout)
+		}
+
+		slog.Error("NCCL benchmark failed", "error", err, "stderr", stderr.String())
+
 		return nil, fmt.Errorf("all_reduce_perf failed: %w\nstderr: %s", err, stderr.String())
 	}
 
@@ -91,7 +110,8 @@ func (r *Runner) Run(numGPUs, testSizeMB int) (*Result, error) {
 }
 
 // parseOutput extracts benchmark results from all_reduce_perf output.
-// Example line:
+//
+// Example output line:
 //
 //	268435456  67108864  float  sum  -1  2362.7  113.62  198.83  0  2354.8  113.99  199.49  0
 //
@@ -99,26 +119,46 @@ func (r *Runner) Run(numGPUs, testSizeMB int) (*Result, error) {
 func parseOutput(output string, testSizeMB int) (*Result, error) {
 	expectedSize := int64(testSizeMB) * 1024 * 1024
 
-	// Find number of GPUs from "Using devices" section
-	numGPUs := 0
-	gpuPattern := regexp.MustCompile(`#\s+Rank\s+\d+\s+Group`)
-
-	for line := range strings.SplitSeq(output, "\n") {
-		if gpuPattern.MatchString(line) {
-			numGPUs++
-		}
-	}
-
+	numGPUs := countGPUs(output)
 	if numGPUs == 0 {
 		return nil, fmt.Errorf("could not determine number of GPUs from output")
 	}
 
-	// Find the data line with our test size
-	// Lines starting with whitespace followed by the size in bytes
-	var busbw, algbw float64
+	algbw, busbw, err := extractBandwidth(output, expectedSize)
+	if err != nil {
+		return nil, err
+	}
 
-	found := false
+	return &Result{
+		BusBandwidthGbps:  busbw,
+		AlgoBandwidthGbps: algbw,
+		NumGPUs:           numGPUs,
+		TestSizeBytes:     expectedSize,
+	}, nil
+}
 
+func countGPUs(output string) int {
+	count := 0
+
+	for line := range strings.SplitSeq(output, "\n") {
+		if gpuRankPattern.MatchString(line) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// extractBandwidth parses the data line matching expectedSize and returns bandwidth values.
+//
+// Input line format (from all_reduce_perf):
+//
+//	#       size    count  type  redop  root   time  algbw  busbw  #wrong   time  algbw  busbw  #wrong
+//	   268435456 67108864 float    sum    -1 2362.7 113.62 198.83       0 2354.8 113.99 199.49       0
+//	   ^size(B)                                ^time  ^algbw ^busbw (out-of-place results)
+//
+// Returns algbw=113.62, busbw=198.83 for the line above.
+func extractBandwidth(output string, expectedSize int64) (algbw, busbw float64, err error) {
 	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -130,38 +170,23 @@ func parseOutput(output string, testSizeMB int) (*Result, error) {
 			continue
 		}
 
-		// First field is size in bytes
-		size, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
+		size, parseErr := strconv.ParseInt(fields[0], 10, 64)
+		if parseErr != nil || size != expectedSize {
 			continue
 		}
 
-		if size == expectedSize {
-			// Parse out-of-place busbw (column 7, 0-indexed)
-			algbw, err = strconv.ParseFloat(fields[6], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse algbw: %w", err)
-			}
-
-			busbw, err = strconv.ParseFloat(fields[7], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse busbw: %w", err)
-			}
-
-			found = true
-
-			break
+		algbw, err = strconv.ParseFloat(fields[6], 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to parse algbw: %w", err)
 		}
+
+		busbw, err = strconv.ParseFloat(fields[7], 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to parse busbw: %w", err)
+		}
+
+		return algbw, busbw, nil
 	}
 
-	if !found {
-		return nil, fmt.Errorf("could not find results for size %d bytes in output", expectedSize)
-	}
-
-	return &Result{
-		BusBandwidthGbps:  busbw,
-		AlgoBandwidthGbps: algbw,
-		NumGPUs:           numGPUs,
-		TestSizeBytes:     expectedSize,
-	}, nil
+	return 0, 0, fmt.Errorf("could not find results for size %d bytes in output", expectedSize)
 }

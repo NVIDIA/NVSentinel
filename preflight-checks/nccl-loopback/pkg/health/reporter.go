@@ -23,29 +23,27 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
 	agentName      = "preflight-nccl-loopback"
-	componentClass = "GPU"
+	componentClass = "Node"
 	checkName      = "NCCLLoopbackTest"
 
-	maxRetries    = 5
-	initialDelay  = 2 * time.Second
-	backoffFactor = 1.5
-	rpcTimeout    = 30 * time.Second
+	rpcTimeout = 30 * time.Second
 )
 
-// Reporter sends health events to the Platform Connector.
 type Reporter struct {
 	socketPath         string
 	nodeName           string
 	processingStrategy pb.ProcessingStrategy
 }
 
-// NewReporter creates a new health event reporter.
 func NewReporter(socketPath, nodeName string, strategy pb.ProcessingStrategy) *Reporter {
 	// Remove unix:// prefix if present for grpc.Dial
 	socketPath = strings.TrimPrefix(socketPath, "unix://")
@@ -57,7 +55,6 @@ func NewReporter(socketPath, nodeName string, strategy pb.ProcessingStrategy) *R
 	}
 }
 
-// SendEvent sends a health event to the Platform Connector.
 func (r *Reporter) SendEvent(ctx context.Context, isHealthy, isFatal bool, message string, errorCode string) error {
 	recommendedAction := pb.RecommendedAction_NONE
 	if !isHealthy {
@@ -82,12 +79,7 @@ func (r *Reporter) SendEvent(ctx context.Context, isHealthy, isFatal bool, messa
 		GeneratedTimestamp: timestamppb.Now(),
 		NodeName:           r.nodeName,
 		ProcessingStrategy: r.processingStrategy,
-		EntitiesImpacted: []*pb.Entity{
-			{
-				EntityType:  "NODE",
-				EntityValue: r.nodeName,
-			},
-		},
+		EntitiesImpacted:   []*pb.Entity{},
 	}
 
 	healthEvents := &pb.HealthEvents{
@@ -106,31 +98,44 @@ func (r *Reporter) SendEvent(ctx context.Context, isHealthy, isFatal bool, messa
 }
 
 func (r *Reporter) sendWithRetries(ctx context.Context, events *pb.HealthEvents) error {
-	delay := initialDelay
+	backoff := wait.Backoff{
+		Steps:    5,
+		Duration: 2 * time.Second,
+		Factor:   1.5,
+		Jitter:   0.1,
+	}
 
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	return wait.ExponentialBackoff(backoff, func() (bool, error) {
 		err := r.send(ctx, events)
 		if err == nil {
 			slog.Info("Health event sent successfully")
-			return nil
+			return true, nil
 		}
 
-		lastErr = err
+		if isRetryable(err) {
+			slog.Warn("Retryable error sending health event", "error", err)
+			return false, nil
+		}
 
-		slog.Warn("Failed to send health event",
-			"attempt", attempt+1,
-			"max_retries", maxRetries,
-			"error", err)
+		slog.Error("Non-retryable error sending health event", "error", err)
 
-		if attempt < maxRetries-1 {
-			time.Sleep(delay)
-			delay = time.Duration(float64(delay) * backoffFactor)
+		return false, fmt.Errorf("non-retryable error: %w", err)
+	})
+}
+
+func isRetryable(err error) bool {
+	if s, ok := status.FromError(err); ok {
+		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded ||
+			s.Code() == codes.ResourceExhausted {
+			return true
 		}
 	}
 
-	return fmt.Errorf("failed to send health event after %d retries: %w", maxRetries, lastErr)
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "EOF")
 }
 
 func (r *Reporter) send(ctx context.Context, events *pb.HealthEvents) error {
