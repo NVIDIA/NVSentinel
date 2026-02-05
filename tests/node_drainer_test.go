@@ -20,324 +20,396 @@ package tests
 import (
 	"context"
 	"testing"
-	"time"
 
 	"tests/helpers"
 
+	nvsentinelv1alpha1 "github.com/nvidia/nvsentinel/api/nvsentinel/v1alpha1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 )
 
-func TestNodeDrainerEvictionModes(t *testing.T) {
-	feature := features.New("TestNodeDrainerEvictionModes").
-		WithLabel("suite", "node-drainer")
-
-	var testCtx *helpers.NodeDrainerTestContext
-	var kubeSystemPods, immediatePods, allowCompletionPods, deleteTimeoutPods []string
-	var finalizerPod string
+// TestDrainControllerBasicFlow tests the DrainController's basic drain flow.
+func TestDrainControllerBasicFlow(t *testing.T) {
+	feature := features.New("TestDrainControllerBasicFlow").
+		WithLabel("suite", "drain-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		workloadNamespace := "drain-test"
+		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		require.NoError(t, err)
 
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "immediate-test")
+		// Create test pods on the node
+		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
+		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
-		require.NoError(t, helpers.CreateNamespace(ctx, client, "allowcompletion-test"))
-		require.NoError(t, helpers.CreateNamespace(ctx, client, "delete-timeout-test"))
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
-		kubeSystemPods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "kube-system")
-		immediatePods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "immediate-test")
-		finalizerPodNames := helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pod-with-finalizer.yaml", testCtx.NodeName, "immediate-test")
-		allowCompletionPods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "allowcompletion-test")
-		deleteTimeoutPods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "delete-timeout-test")
-
-		require.Len(t, finalizerPodNames, 1)
-		finalizerPod = finalizerPodNames[0]
-
-		helpers.WaitForPodsRunning(newCtx, t, client, "kube-system", kubeSystemPods)
-		helpers.WaitForPodsRunning(newCtx, t, client, "immediate-test", append(immediatePods, finalizerPod))
-		helpers.WaitForPodsRunning(newCtx, t, client, "allowcompletion-test", allowCompletionPods)
-		helpers.WaitForPodsRunning(newCtx, t, client, "delete-timeout-test", deleteTimeoutPods)
-
-		return newCtx
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
+		return ctx
 	})
 
-	feature.Assess("all eviction modes in single drain cycle", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("DrainController transitions Quarantined event to Draining", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		defer func() {
-			var p v1.Pod
-			if err := client.Resources().Get(ctx, finalizerPod, "immediate-test", &p); err == nil {
-				p.Finalizers = []string{}
-				_ = client.Resources().Update(ctx, &p)
-			}
-			_ = client.Resources().Delete(ctx, &p)
-		}()
+		// Create a fatal event
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithMessage("XID error occurred").
+			WithRecommendedAction(nvsentinelv1alpha1.ActionRestartVM).
+			Build()
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("GPU Fallen off the bus")
-		helpers.SendHealthEvent(ctx, t, event)
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent: %s", created.Name)
 
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
+		ctx = context.WithValue(ctx, keyHealthEventName, created.Name)
 
-		t.Log("Phase 1: Immediate mode evicts pods immediately")
-		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediatePods)
+		// Wait for QuarantineController to process first
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
 
-		t.Log("Phase 1: kube-system pods NOT evicted (namespace exclusion)")
-		helpers.AssertPodsNeverDeleted(ctx, t, client, "kube-system", kubeSystemPods)
-
-		t.Log("Phase 1: Finalizer pod stuck in Terminating")
-		err = helpers.DeletePod(ctx, t, client, "immediate-test", finalizerPod, false)
-		require.NoError(t, err)
-
-		require.Eventually(t, func() bool {
-			var p v1.Pod
-			err := client.Resources().Get(ctx, finalizerPod, "immediate-test", &p)
-			if err != nil {
-				return false
-			}
-			return p.DeletionTimestamp != nil
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
-
-		require.Never(t, func() bool {
-			var p v1.Pod
-			err := client.Resources().Get(ctx, finalizerPod, "immediate-test", &p)
-			return err != nil
-		}, helpers.NeverWaitTimeout, helpers.WaitInterval)
-
-		t.Log("Phase 2: Both allowCompletion and deleteAfterTimeout waiting (verify for 15s)")
-		require.Never(t, func() bool {
-			for _, podName := range allowCompletionPods {
-				pod := &v1.Pod{}
-				if err := client.Resources().Get(ctx, podName, "allowcompletion-test", pod); err != nil {
-					return true
-				}
-			}
-			for _, podName := range deleteTimeoutPods {
-				pod := &v1.Pod{}
-				if err := client.Resources().Get(ctx, podName, "delete-timeout-test", pod); err != nil {
-					return true
-				}
-			}
-			return false
-		}, helpers.NeverWaitTimeout, helpers.WaitInterval, "both mode pods should wait, not be deleted immediately")
-
-		t.Log("Phase 3: Waiting for deleteAfterTimeout to expire (~60s)")
-		// The deleteAfterTimeoutMinutes is set to 1 minute in nd-all-modes.yaml
-		// Adding 10s buffer to account for processing time
-		time.Sleep(70 * time.Second)
-
-		t.Log("Phase 4: DeleteAfterTimeout pods force-deleted after timeout")
-		// This verifies that DeleteAfterTimeout is processed before AllowCompletion (not blocked by it)
-		helpers.WaitForPodsDeleted(ctx, t, client, "delete-timeout-test", deleteTimeoutPods)
-
-		t.Log("Phase 5: Verify AllowCompletion pods are still waiting (priority verification)")
-		// AllowCompletion pods should still exist - they wait indefinitely for natural completion
-		for _, podName := range allowCompletionPods {
-			pod := &v1.Pod{}
-			err := client.Resources().Get(ctx, podName, "allowcompletion-test", pod)
-			require.NoError(t, err, "AllowCompletion pod %s should still exist after DeleteAfterTimeout completes", podName)
-			require.Nil(t, pod.DeletionTimestamp, "AllowCompletion pod %s should not be terminating", podName)
-		}
-
-		t.Log("Phase 6: Manually completing AllowCompletion pods to finish drain")
-		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", allowCompletionPods)
-		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", allowCompletionPods)
-
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		helpers.DeletePodsByNames(ctx, t, client, "kube-system", kubeSystemPods)
+		// Wait for DrainController to start draining
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseDraining)
+		t.Log("DrainController started draining (phase=Draining)")
 
 		return ctx
 	})
 
-	feature.Assess("drainer resumes work after restart", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("DrainController transitions to Drained after pods evicted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		podNames := helpers.ResetNodeAndTriggerDrain(ctx, t, client, testCtx.NodeName, "allowcompletion-test")
+		// Manually delete pods to simulate eviction completion
+		t.Log("Manually draining pods to simulate eviction")
+		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
 
-		restartTime := time.Now()
-		err = helpers.RestartDeployment(ctx, t, client, "node-drainer", helpers.NVSentinelNamespace)
-		require.NoError(t, err)
+		// Wait for DrainController to complete drain
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseDrained)
+		t.Logf("DrainController completed drain (phase=%s)", event.Status.Phase)
 
-		require.Eventually(t, func() bool {
-			found, event := helpers.CheckNodeEventExists(ctx, client, testCtx.NodeName, "NodeDraining", "", restartTime)
-			if found {
-				t.Logf("Found event after restart: %s", event.Reason)
-			}
-			return found
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
-
-		helpers.DeletePodsByNames(ctx, t, client, "allowcompletion-test", podNames)
-		helpers.WaitForPodsDeleted(ctx, t, client, "allowcompletion-test", podNames)
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
+		// Verify PodsDrained condition is set
+		helpers.AssertPodsDrainedCondition(t, event)
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		helpers.DeleteNamespace(ctx, t, client, "allowcompletion-test")
-		helpers.DeleteNamespace(ctx, t, client, "delete-timeout-test")
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
 
-		return helpers.TeardownNodeDrainer(ctx, t, c)
+		// Uncordon node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		if err == nil && node.Spec.Unschedulable {
+			node.Spec.Unschedulable = false
+			client.Resources().Update(ctx, node)
+		}
+
+		helpers.DeleteNamespace(ctx, t, client, namespaceName)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())
 }
 
-func TestNodeDrainerPartialDrain(t *testing.T) {
-	feature := features.New("TestNodeDrainerPartialDrain").
-		WithLabel("suite", "node-drainer")
-
-	var testCtx *helpers.NodeDrainerTestContext
-	var immediateEvictionPods []string
-	var immediateEvictionPodsWithImpactedGPU []string
+// TestDrainSkipOverride tests that drain can be skipped via override.
+func TestDrainSkipOverride(t *testing.T) {
+	feature := features.New("TestDrainSkipOverride").
+		WithLabel("suite", "drain-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		workloadNamespace := "drain-skip-test"
+		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		require.NoError(t, err)
 
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupNodeDrainerTest(ctx, t, c, "data/nd-all-modes.yaml", "immediate-test")
-		// Since SetupNodeDrainerTest will override the Tilt configmap, we need to ensure that the Helm chart value
-		// correctly set the value.
-		require.Contains(t, string(testCtx.ConfigMapBackup), "partialDrainEnabled = true")
+		// Create test pods on the node
+		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
+		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
-		// prevents conflicting processing from the fault-remediation module, specifically with it adding the
-		// dgxc.nvidia.com/nvsentinel-state label
-		err = helpers.ScaleDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace, 0)
-		require.NoError(t, err)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
-		immediateEvictionPods = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pods.yaml", testCtx.NodeName, "immediate-test")
-		immediateEvictionPodsWithImpactedGPU = helpers.CreatePodsFromTemplate(newCtx, t, client, "data/busybox-pod-with-devices.yaml", testCtx.NodeName, "immediate-test")
-
-		helpers.WaitForPodsRunning(newCtx, t, client, "immediate-test", append(immediateEvictionPods,
-			immediateEvictionPodsWithImpactedGPU...))
-
-		return newCtx
-	})
-	feature.Assess("Execute partial drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
-			WithRecommendedAction(2).
-			WithEntitiesImpacted([]helpers.EntityImpacted{
-				{
-					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-123",
-				},
-			})
-		helpers.SendHealthEvent(ctx, t, event)
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainingLabelValue)
-
-		t.Log("Phase 1: ImmediateEviction pod leveraging GPU is evicted immediately")
-		helpers.WaitForPodsDeleted(ctx, t, client, "immediate-test", immediateEvictionPodsWithImpactedGPU)
-
-		t.Log("Phase 2: Draining succeeds after pod leveraging GPU is evicted")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey, helpers.DrainSucceededLabelValue)
-
-		t.Log("Phase 3: ImmediateEviction pods not leveraging GPU should not be deleted")
-		helpers.AssertPodsNeverDeleted(ctx, t, client, "immediate-test", immediateEvictionPods)
-
-		// remaining immediateEvictionPods will be deleted at the end of the following skip draining test
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 		return ctx
 	})
-	// We can verify if draining was skipped by leveraging the dgxc.nvidia.com/nvsentinel-state label. If draining
-	// is skipped, no label updates are applied so the value will retain its current value from the beginning of the drain
-	// evaluation and will not go from initialVal -> draining -> drain-succeeded or from initialVal -> drain-succeeded.
-	// To ensure that draining is skipped (the drain isn't re-processed and goes to StatusSucceeded) and that draining
-	// completes (the drain goes to status AlreadyDrained and no bugs prevent processing), we will manually add a
-	// value to the label other than drain-succeeded and ensure that the fault-remediation-module processes the event.
-	// This test ensures that the label goes from <placeholder> -> fault-remediated when draining is skipped which
-	// covers the 2 conditions above.
-	feature.Assess("Skip partial drain if pods using unhealthy GPU are already drained", func(ctx context.Context,
-		t *testing.T, c *envconf.Config) context.Context {
+
+	feature.Assess("Event with skip drain override skips drain phase", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
-		err = helpers.ScaleDeployment(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace, 1)
+
+		// Get current pod names
+		pods, err := helpers.GetPodsOnNode(ctx, client.Resources(), nodeName)
 		require.NoError(t, err)
-		helpers.WaitForDeploymentRollout(ctx, t, client, "fault-remediation", helpers.NVSentinelNamespace)
-
-		nodeLabelSequenceObserved := make(chan bool)
-		desiredNVSentinelStateNodeLabels := []string{
-			string("placeholder"),
-			string(statemanager.RemediatingLabelValue),
-			string(statemanager.RemediationSucceededLabelValue),
-		}
-		err = helpers.StartNodeLabelWatcher(ctx, t, client, testCtx.NodeName, desiredNVSentinelStateNodeLabels,
-			false, nodeLabelSequenceObserved)
-		require.NoError(t, err)
-		err = helpers.SetNodeLabel(ctx, client, testCtx.NodeName, string(statemanager.NVSentinelStateLabelKey), "placeholder")
-		require.NoError(t, err)
-
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
-			WithRecommendedAction(2).
-			WithEntitiesImpacted([]helpers.EntityImpacted{
-				{
-					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-123",
-				},
-			})
-		helpers.SendHealthEvent(ctx, t, event)
-
-		t.Log("Phase 1: Drain should be skipped")
-		timer := time.NewTimer(1 * time.Minute)
-
-		select {
-		case success := <-nodeLabelSequenceObserved:
-			require.True(t, success)
-		case <-timer.C:
-			require.Fail(t, "timed out waiting desired label changes")
+		var podNames []string
+		for _, pod := range pods {
+			if pod.Namespace == namespaceName {
+				podNames = append(podNames, pod.Name)
+			}
 		}
 
-		t.Log("Phase 2: Pods not leveraging impacted GPU should not be drained")
-		helpers.AssertPodsNeverDeleted(ctx, t, client, "immediate-test", immediateEvictionPods)
+		// Create event with skip drain override
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithSkipDrain(true). // Skip drain
+			Build()
 
-		t.Log("Phase 3: Manually deleting pods not leveraging impacted GPU")
-		helpers.DeletePodsByNames(ctx, t, client, "immediate-test", immediateEvictionPods)
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent with skip drain: %s", created.Name)
+
+		// Wait for quarantine (drain is skipped, but quarantine should still happen)
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
+
+		// Verify event never reaches Draining phase
+		helpers.AssertHealthEventNeverReachesPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseDraining)
+
+		// Verify pods are NOT evicted
+		if len(podNames) > 0 {
+			helpers.AssertPodsNeverDeleted(ctx, t, client, namespaceName, podNames)
+		}
 
 		return ctx
 	})
-	feature.Assess("Partial drain failure from GPU UUID missing", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("119").
-			WithMessage("NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver]").
-			WithRecommendedAction(2)
-
-		helpers.SendHealthEvent(ctx, t, event)
-
-		t.Log("Phase 1: Wait for node to have drain-failed label")
-		helpers.WaitForNodeLabel(ctx, t, client, testCtx.NodeName, statemanager.NVSentinelStateLabelKey,
-			string(statemanager.DrainFailedLabelValue))
-
-		return ctx
-	})
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
+		// Uncordon node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		if err == nil && node.Spec.Unschedulable {
+			node.Spec.Unschedulable = false
+			client.Resources().Update(ctx, node)
+		}
+
+		helpers.DeleteNamespace(ctx, t, client, namespaceName)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestDrainWithKubeSystemExclusion tests that kube-system pods are not evicted.
+func TestDrainWithKubeSystemExclusion(t *testing.T) {
+	feature := features.New("TestDrainWithKubeSystemExclusion").
+		WithLabel("suite", "drain-controller")
+
+	var kubeSystemPodNames []string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		// Record existing kube-system pods on this node
+		pods, err := helpers.GetPodsOnNode(ctx, client.Resources(), nodeName)
+		require.NoError(t, err)
+		for _, pod := range pods {
+			if pod.Namespace == "kube-system" && pod.Status.Phase == v1.PodRunning {
+				kubeSystemPodNames = append(kubeSystemPodNames, pod.Name)
+			}
+		}
+		t.Logf("Found %d kube-system pods on node %s", len(kubeSystemPodNames), nodeName)
+
+		// Create user workload namespace
+		workloadNamespace := "drain-exclusion-test"
+		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
 		require.NoError(t, err)
 
-		helpers.DeleteNamespace(ctx, t, client, "immediate-test")
+		// Create test pods
+		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
+		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
-		return helpers.TeardownNodeDrainer(ctx, t, c)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
+		return ctx
+	})
+
+	feature.Assess("kube-system pods are not evicted during drain", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Create fatal event
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			Build()
+
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+
+		// Wait for drain to start
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseDraining)
+
+		// Verify kube-system pods are NOT deleted
+		if len(kubeSystemPodNames) > 0 {
+			helpers.AssertPodsNeverDeleted(ctx, t, client, "kube-system", kubeSystemPodNames)
+			t.Logf("Verified %d kube-system pods were not evicted", len(kubeSystemPodNames))
+		}
+
+		// Manually drain user workload to complete the drain
+		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
+
+		// Wait for drain to complete
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseDrained)
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
+		// Uncordon node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		if err == nil && node.Spec.Unschedulable {
+			node.Spec.Unschedulable = false
+			client.Resources().Update(ctx, node)
+		}
+
+		helpers.DeleteNamespace(ctx, t, client, namespaceName)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestDrainPhaseSequence tests the full phase sequence through drain.
+func TestDrainPhaseSequence(t *testing.T) {
+	feature := features.New("TestDrainPhaseSequence").
+		WithLabel("suite", "drain-controller")
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		workloadNamespace := "drain-sequence-test"
+		err = helpers.CreateNamespace(ctx, client, workloadNamespace)
+		require.NoError(t, err)
+
+		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
+		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
+
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
+		return ctx
+	})
+
+	feature.Assess("HealthEvent progresses through New → Quarantined → Draining → Drained", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
+		client, err := c.NewClient()
+		require.NoError(t, err)
+
+		// Create fatal event
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			Build()
+
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent: %s", created.Name)
+
+		// Define expected phase sequence
+		sequence := helpers.ExpectedPhaseSequence{
+			nvsentinelv1alpha1.PhaseQuarantined,
+			nvsentinelv1alpha1.PhaseDraining,
+		}
+
+		// Wait for sequence up to Draining
+		helpers.WaitForHealthEventPhaseSequence(ctx, t, client, created.Name, sequence)
+
+		// Manually drain to complete
+		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
+
+		// Wait for Drained
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseDrained)
+
+		t.Log("Successfully verified phase sequence: New → Quarantined → Draining → Drained")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := ctx.Value(keyNodeName).(string)
+		namespaceName := ctx.Value(keyNamespace).(string)
+
+		// Uncordon node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		if err == nil && node.Spec.Unschedulable {
+			node.Spec.Unschedulable = false
+			client.Resources().Update(ctx, node)
+		}
+
+		helpers.DeleteNamespace(ctx, t, client, namespaceName)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())

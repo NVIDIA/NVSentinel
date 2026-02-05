@@ -1,0 +1,101 @@
+# Default values for health-provider
+# This is a YAML-formatted file.
+
+# Number of replicas (DaemonSet uses nodeSelector instead)
+replicaCount: 1
+
+image:
+  repository: nvcr.io/nvidia/nvsentinel/health-provider
+  pullPolicy: IfNotPresent
+  tag: ""  # Overrides the chart appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod security context
+podSecurityContext: {}
+
+# Container security context - requires privileged for NVML
+securityContext:
+  privileged: true
+
+# Server configuration
+server:
+  # Address of device-api-server gRPC endpoint
+  address: "localhost:9001"
+
+# NVML configuration
+nvml:
+  # Enable NVML GPU health monitoring
+  enabled: true
+  # Root path for NVIDIA driver libraries
+  driverRoot: "/run/nvidia/driver"
+
+# Health check configuration
+healthCheck:
+  # HTTP port for liveness/readiness probes
+  port: 8082
+  livenessProbe:
+    httpGet:
+      path: /livez
+      port: health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+# Node selector - use to restrict to GPU nodes
+nodeSelector: {}
+  # nvidia.com/gpu.present: "true"
+
+# Tolerations - tolerate GPU-related taints
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+# Affinity rules
+affinity: {}
+
+# RuntimeClassName for NVIDIA GPU access without consuming GPUs
+runtimeClassName: nvidia
+
+# Volume mounts for NVIDIA driver libraries
+volumes:
+  - name: driver-root
+    hostPath:
+      path: /run/nvidia/driver
+      type: DirectoryOrCreate
+
+volumeMounts:
+  - name: driver-root
+    mountPath: /run/nvidia/driver
+    readOnly: true
+
+# Environment variables
+env: []
+
+# Logging verbosity (klog -v flag)
+logVerbosity: 2

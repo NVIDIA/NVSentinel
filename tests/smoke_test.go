@@ -20,15 +20,13 @@ package tests
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
-	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"tests/helpers"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	nvsentinelv1alpha1 "github.com/nvidia/nvsentinel/api/nvsentinel/v1alpha1"
 )
 
 func TestFatalHealthEvent(t *testing.T) {
@@ -41,9 +39,6 @@ func TestFatalHealthEvent(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
-		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
-
 		// Use a real (non-KWOK) node for smoke test to validate actual container execution
 		nodeName, err := helpers.GetRealNodeName(ctx, client)
 		assert.NoError(t, err, "failed to get real node")
@@ -55,43 +50,53 @@ func TestFatalHealthEvent(t *testing.T) {
 		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
 		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
+		// Clean up any existing HealthEvents for this node
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
 		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 
 		return ctx
 	})
 
-	nodeLabelSequenceObserved := make(chan bool)
-	feature.Assess("Can start node label watcher", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Can create fatal HealthEvent CRD", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		nodeName := ctx.Value(keyNodeName).(string)
-		t.Logf("Starting label sequence watcher for node %s", nodeName)
-		desiredNVSentinelStateNodeLabels := []string{
-			string(statemanager.QuarantinedLabelValue),
-			string(statemanager.DrainingLabelValue),
-			string(statemanager.DrainSucceededLabelValue),
-			string(statemanager.RemediatingLabelValue),
-			string(statemanager.RemediationSucceededLabelValue),
-		}
-		err = helpers.StartNodeLabelWatcher(ctx, t, client, nodeName, desiredNVSentinelStateNodeLabels, true, nodeLabelSequenceObserved)
-		assert.NoError(t, err, "failed to start node label watcher")
+		// Create a fatal HealthEvent CRD (replaces HTTP POST to health-event endpoint)
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-smoke-test").
+			WithCheckName("GpuXidError").
+			WithComponentClass("GPU").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithEntity("GPU", "0").
+			WithMessage("XID error occurred").
+			WithRecommendedAction(nvsentinelv1alpha1.ActionRestartVM).
+			Build()
 
-		// Sleep to ensure Kubernetes watch is fully established before triggering state changes
-		// This prevents missing early label transitions due to watch startup latency
-		t.Log("Waiting for watch to establish connection...")
-		time.Sleep(2 * time.Second)
-		t.Log("Watch established, ready for health event")
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent CRD: %s", created.Name)
 
+		ctx = context.WithValue(ctx, keyHealthEventName, created.Name)
 		return ctx
 	})
 
-	feature.Assess("Can send fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		nodeName := ctx.Value(keyNodeName).(string)
+	feature.Assess("HealthEvent transitions to Quarantined phase", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
 
-		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event.json")
-		assert.NoError(t, err, "failed to send health event")
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Wait for QuarantineController to process the event
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseQuarantined)
+		t.Logf("HealthEvent %s reached phase: %s", eventName, event.Status.Phase)
+
+		// Verify NodeQuarantined condition is set
+		helpers.AssertNodeQuarantinedCondition(t, event)
 
 		return ctx
 	})
@@ -108,66 +113,55 @@ func TestFatalHealthEvent(t *testing.T) {
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
-		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "True", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:79 GPU:0 XID error occurred Recommended Action=RESTART_VM;", nodeCondition.Message)
+		// Verify node is unschedulable
+		assert.True(t, node.Spec.Unschedulable, "node should be unschedulable (cordoned)")
 
 		return ctx
 	})
 
-	feature.Assess("Drain label is set and pods are not evicted, delete the pod to move the process forward", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		nodeName := ctx.Value(keyNodeName).(string)
+	feature.Assess("HealthEvent transitions to Draining then Drained", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
 		namespaceName := ctx.Value(keyNamespace).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.DrainingLabelValue))
+		// Wait for DrainController to start draining
+		helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseDraining)
+		t.Logf("HealthEvent %s is in Draining phase", eventName)
 
-		expectedDrainingNodeEvent := v1.Event{
-			Type:   "NodeDraining",
-			Reason: "AwaitingPodCompletion",
-		}
-		helpers.WaitForNodeEvent(ctx, t, client, nodeName, expectedDrainingNodeEvent)
-
+		// Manually drain pods to simulate completion (for test with AllowCompletion mode)
 		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
+
+		// Wait for drain to complete
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseDrained)
+		t.Logf("HealthEvent %s reached phase: %s", eventName, event.Status.Phase)
+
+		// Verify PodsDrained condition is set
+		helpers.AssertPodsDrainedCondition(t, event)
 
 		return ctx
 	})
 
-	feature.Assess("Remediation CR is created and completes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("HealthEvent transitions to Remediated", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		rebootNode := helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
+		// Wait for RemediationController to process the event
+		// This will create a RebootNode CR and wait for it to complete
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseRemediated)
+		t.Logf("HealthEvent %s reached phase: %s", eventName, event.Status.Phase)
 
+		// Verify Remediated condition is set
+		helpers.AssertRemediatedCondition(t, event)
+
+		// Clean up the RebootNode CR created by remediation
+		rebootNode := helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
 		err = helpers.DeleteRebootNodeCR(ctx, client, rebootNode)
 		assert.NoError(t, err, "failed to delete RebootNode CR")
-
-		return ctx
-	})
-
-	feature.Assess("Audit logs are generated for API calls", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		assert.NoError(t, err, "failed to create kubernetes client")
-
-		components := []string{"fault-quarantine", "fault-remediation", "janitor"}
-		helpers.VerifyAuditLogsExist(ctx, t, client, components)
 
 		return ctx
 	})
@@ -189,11 +183,31 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Can send healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Create healthy HealthEvent to resolve", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/healthy-event.json")
-		assert.NoError(t, err, "failed to send health event")
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Create a healthy event (replaces HTTP POST to health-event endpoint)
+		helpers.SendHealthyEventViaCRD(ctx, t, client, nodeName)
+		t.Logf("Created healthy HealthEvent for node %s", nodeName)
+
+		return ctx
+	})
+
+	feature.Assess("Original HealthEvent transitions to Resolved", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// Wait for the original event to be resolved
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseResolved)
+		t.Logf("HealthEvent %s reached phase: %s", eventName, event.Status.Phase)
+
+		// Verify ResolvedAt timestamp is set
+		helpers.AssertResolvedAtSet(t, event)
 
 		return ctx
 	})
@@ -207,44 +221,12 @@ func TestFatalHealthEvent(t *testing.T) {
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
 
-		// Wait for node condition to be updated to healthy
-		t.Logf("Waiting for node %s condition to become healthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
-
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
+		// Verify node is schedulable again
+		assert.False(t, node.Spec.Unschedulable, "node should be schedulable (uncordoned)")
 
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "False", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsHealthy", nodeCondition.Reason)
-		assert.Equal(t, "No Health Failures", nodeCondition.Message)
-
-		return ctx
-	})
-
-	feature.Assess("Observed NVSentinel expected state label changes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		// With state buffering (1000ms window) and out-of-order sorting implemented in
-		// StartNodeLabelWatcher, we can now reliably observe rapid state transitions that occur
-		// with PostgreSQL LISTEN/NOTIFY. The watcher buffers updates and sorts them by expected
-		// sequence to capture all intermediate states even when Kubernetes watch delivers updates
-		// out of order or with significant latency.
-		select {
-		case success := <-nodeLabelSequenceObserved:
-			assert.True(t, success)
-		default:
-			assert.Fail(t, "did not observe expected label changes for nvsentinel-state")
-		}
 		return ctx
 	})
 
@@ -256,8 +238,8 @@ func TestFatalHealthEvent(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
-		helpers.RestoreQuarantineConfig(ctx, t, c)
-		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+		// Clean up HealthEvent CRDs
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
 		return ctx
 	})
@@ -275,9 +257,6 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
-		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
-
 		// Use a real (non-KWOK) node for smoke test to validate actual container execution
 		nodeName, err := helpers.GetRealNodeName(ctx, client)
 		assert.NoError(t, err, "failed to get real node")
@@ -289,23 +268,50 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		podTemplate := helpers.NewGPUPodSpec(workloadNamespace, 1)
 		helpers.CreatePodsAndWaitTillRunning(ctx, t, client, []string{nodeName}, podTemplate)
 
+		// Clean up any existing resources
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+		helpers.DeleteAllLogCollectorJobs(ctx, t, client)
+
 		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		ctx = context.WithValue(ctx, keyNamespace, workloadNamespace)
 
 		return ctx
 	})
 
-	feature.Assess("Can send fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Can create unsupported fatal HealthEvent CRD", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		// Delete any existing log-collector jobs for this node before sending event
-		helpers.DeleteAllLogCollectorJobs(ctx, t, client)
+		// Create an unsupported fatal HealthEvent (XID 145 = CONTACT_SUPPORT)
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-smoke-test").
+			WithCheckName("GpuXidError").
+			WithComponentClass("GPU").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("145").
+			WithEntity("GPU", "0").
+			WithMessage("XID error occurred").
+			WithRecommendedAction(nvsentinelv1alpha1.ActionContactSupport).
+			Build()
 
-		err = helpers.SendHealthEventsToNodes([]string{nodeName}, "data/unsupported-health-event.json")
-		assert.NoError(t, err, "failed to send health event")
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent CRD: %s", created.Name)
+
+		ctx = context.WithValue(ctx, keyHealthEventName, created.Name)
+		return ctx
+	})
+
+	feature.Assess("HealthEvent transitions to Quarantined phase", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		event := helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseQuarantined)
+		t.Logf("HealthEvent %s reached phase: %s", eventName, event.Status.Phase)
 
 		return ctx
 	})
@@ -319,49 +325,24 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		t.Logf("Waiting for node %s to be cordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, true)
 
-		// Wait for node condition to be updated to unhealthy
-		t.Logf("Waiting for node %s condition to become unhealthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsNotHealthy", v1.ConditionTrue)
-
-		node, err := helpers.GetNodeByName(ctx, client, nodeName)
-		assert.NoError(t, err, "failed to get node after cordoning")
-
-		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
-		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "True", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:145 GPU:0 XID error occurred Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
-
 		return ctx
 	})
 
-	feature.Assess("Drain label is set and pods are not evicted, delete the pod to move the process forward", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		nodeName := ctx.Value(keyNodeName).(string)
+	feature.Assess("HealthEvent transitions through Draining to Drained", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
 		namespaceName := ctx.Value(keyNamespace).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.DrainingLabelValue))
+		// Wait for DrainController to start draining
+		helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseDraining)
 
-		expectedDrainingNodeEvent := v1.Event{
-			Type:   "NodeDraining",
-			Reason: "AwaitingPodCompletion",
-		}
-		helpers.WaitForNodeEvent(ctx, t, client, nodeName, expectedDrainingNodeEvent)
-
+		// Manually drain pods
 		helpers.DrainRunningPodsInNamespace(ctx, t, client, namespaceName)
+
+		// Wait for drain to complete
+		helpers.WaitForHealthEventPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseDrained)
 
 		return ctx
 	})
@@ -372,29 +353,33 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		// For unsupported events, log-collector should NOT be triggered
-		// since shouldSkipEvent returns true and we return early before runLogCollector
+		// For unsupported events (CONTACT_SUPPORT), log-collector should NOT be triggered
 		helpers.VerifyNoLogCollectorJobExists(ctx, t, client, nodeName)
 
 		return ctx
 	})
 
-	feature.Assess("Remediation failed label is set", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("HealthEvent stays in Drained (remediation skipped for CONTACT_SUPPORT)", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		eventName := ctx.Value(keyHealthEventName).(string)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		// For CONTACT_SUPPORT events, the RemediationController should not progress to Remediated
+		// because no automatic remediation is possible
+		helpers.AssertHealthEventNeverReachesPhase(ctx, t, client, eventName, nvsentinelv1alpha1.PhaseRemediated)
+
+		return ctx
+	})
+
+	feature.Assess("Create healthy HealthEvent to resolve", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		helpers.WaitForNodesWithLabel(ctx, t, client, []string{nodeName}, statemanager.NVSentinelStateLabelKey, string(statemanager.RemediationFailedLabelValue))
-
-		return ctx
-	})
-
-	feature.Assess("Can send healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		nodeName := ctx.Value(keyNodeName).(string)
-
-		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/healthy-event.json")
-		assert.NoError(t, err, "failed to send health event")
+		helpers.SendHealthyEventViaCRD(ctx, t, client, nodeName)
+		t.Logf("Created healthy HealthEvent for node %s", nodeName)
 
 		return ctx
 	})
@@ -408,28 +393,10 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		t.Logf("Waiting for node %s to be uncordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
 
-		// Wait for node condition to be updated to healthy
-		t.Logf("Waiting for node %s condition to become healthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
-
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
 
-		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "False", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsHealthy", nodeCondition.Reason)
-		assert.Equal(t, "No Health Failures", nodeCondition.Message)
+		assert.False(t, node.Spec.Unschedulable, "node should be schedulable (uncordoned)")
 
 		return ctx
 	})
@@ -442,8 +409,8 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
-		helpers.RestoreQuarantineConfig(ctx, t, c)
-		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+		// Clean up HealthEvent CRDs
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
 		return ctx
 	})

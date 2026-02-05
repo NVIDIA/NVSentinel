@@ -14,26 +14,87 @@
 
 syntax = "proto3";
 
-package nvidia.nvsentinel.v1alpha1;
+package nvidia.device.v1alpha1;
 
 option go_package = "github.com/nvidia/nvsentinel/api/gen/go/device/v1alpha1;v1alpha1";
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 // ==========================================
 // Resource Definitions
 // ==========================================
 
+// ObjectMeta is a subset of k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta.
+message ObjectMeta {
+  // name is the unique logical identifier of the resource. Must be unique within a namespace.
+  string name = 1;
+
+  // resource_version represents the internal version of this object.
+  //
+  // Value must be treated as opaque by clients and passed unmodified back to the server.
+	// Populated by the system.
+	// Read-only.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
+  string resource_version = 2;
+
+  // namespace defines the space within which each name must be unique. An empty namespace is
+  // equivalent to the "default" namespace, but "default" is the canonical reprsentation.
+  // Not all objects are required to be scoped to a namespace - the value of this field for
+  // those objects will be empty.
+  string namespace = 3;
+}
+
+// ListMeta is a subset of k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta.
+message ListMeta {
+  // resource_version identifies the version of the list snapshot.
+  // Clients can use this version to establish a watch from a consistent point in time.
+  //
+  // Value must be treated as opaque by clients and passed unmodified back to the server.
+  // Populated by the system.
+  // Read-only.
+  // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
+  string resource_version = 1;
+}
+
+// GetOptions is the standard query options to the standard gRPC get call.
+message GetOptions {
+  // resource_version sets a constraint on what resource versions a request may be served from.
+  //
+  // Optional. Defaults to unset.
+  string resource_version = 1;
+
+  // namespace sets a constraint on what namespaces a request may be served from.
+  // An empty namespace is treated as a request for all namespaces.
+  //
+  // Optional. Defaults to unset.
+  string namespace = 2;
+}
+
+// ListOptions is the query options to a standard gRPC list call. It is a subset of k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions.
+message ListOptions {
+  // resource_version sets a constraint on what resource versions a request may be served from.
+  //
+  // Optional. Defaults to unset.
+  string resource_version = 1;
+
+  // namespace sets a constraint on what namespaces a request may be served from.
+  // An empty namespace is treated as a request for all namespaces.
+  //
+  // Optional. Defaults to unset.
+  string namespace = 2;
+}
+
 // Gpu represents a single GPU resource.
 //
 // Its structure follows the Kubernetes Resource Model pattern (Spec/Status).
+//
+// The resource name (metadata.name) is typically the lowercased GPU UUID, 
+// but may take other forms.
+//
+// Example: "gpu-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
 message Gpu {
-  // name is the unique logical identifier of the GPU resource.
-  //
-  // This is typically the lowercased GPU UUID, but may take other forms.
-  //
-  // Example: "gpu-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"
-  string name = 1;
+  ObjectMeta metadata = 1;
 
   // spec defines the identity and desired attributes of the GPU resource.
   GpuSpec spec = 2;
@@ -41,12 +102,20 @@ message Gpu {
   // status contains the most recently observed state of the GPU resource.
   // This data may lag slightly behind the actual on-device state.
   GpuStatus status = 3;
+
+  // resource_version is a monotonically increasing version number.
+  //
+  // This increments on every modification to the GPU and can be used by
+  // consumers to detect changes or implement optimistic concurrency.
+  int64 resource_version = 4;
 }
 
 // GpuList is a collection of GPU resources.
 message GpuList {
+  ListMeta metadata = 1;
+
   // items is the list of GPU resources.
-  repeated Gpu items = 1;
+  repeated Gpu items = 2;
 }
 
 // GpuSpec describes the identity and desired attributes of the GPU.
@@ -92,16 +161,112 @@ message Condition {
 // Service Definition
 // ==========================================
 
-// GpuService provides an API for observing GPU resources.
+// GpuService provides a unified API for managing GPU resources.
+//
+// Read operations (Get, List, Watch) are intended for consumers like
+// device plugins and DRA drivers.
+//
+// Write operations (Create, Update, UpdateStatus, Delete) are intended
+// for providers like health monitors.
+//
+// All write operations acquire exclusive write locks, blocking ALL consumer
+// read operations until the write completes. This ensures consumers never
+// read stale data during status transitions.
+//
+// Access control should be enforced at the infrastructure level (e.g.,
+// NetworkPolicy, mTLS) rather than in the API itself.
 service GpuService {
+  // ==========================================
+  // Read Operations (Consumers + Providers)
+  // ==========================================
+
   // GetGpu retrieves a single GPU resource by its unique name.
+  //
+  // Returns:
+  //   - The GPU if found
+  //   - NOT_FOUND if no GPU with that name exists
   rpc GetGpu(GetGpuRequest) returns (GetGpuResponse);
 
-  // ListGpus retrieves a list of GPU resources.
+  // ListGpus retrieves all GPU resources.
+  //
+  // Returns a GpuList containing all registered GPUs.
   rpc ListGpus(ListGpusRequest) returns (ListGpusResponse);
 
   // WatchGpus streams lifecycle events for GPU resources.
+  //
+  // Events are sent for:
+  //   - ADDED: A new GPU was created
+  //   - MODIFIED: An existing GPU was updated
+  //   - DELETED: A GPU was removed
+  //
+  // The stream will receive an initial batch of ADDED events for all
+  // existing GPUs, followed by real-time events as changes occur.
   rpc WatchGpus(WatchGpusRequest) returns (stream WatchGpusResponse);
+
+  // ==========================================
+  // Write Operations (Providers Only)
+  // ==========================================
+
+  // CreateGpu registers a new GPU with the server.
+  //
+  // The GPU name (metadata.name) must be unique. If a GPU with the
+  // same name already exists, returns ALREADY_EXISTS.
+  //
+  // This operation acquires a write lock, blocking consumer reads
+  // until the operation completes.
+  //
+  // Returns:
+  //   - The created GPU with server-assigned fields (resource_version)
+  //   - ALREADY_EXISTS if a GPU with that name exists
+  //   - INVALID_ARGUMENT if required fields are missing
+  rpc CreateGpu(CreateGpuRequest) returns (CreateGpuResponse);
+
+  // UpdateGpu replaces an existing GPU resource.
+  //
+  // The entire GPU (spec and status) is replaced. Use UpdateGpuStatus
+  // if you only need to update the status.
+  //
+  // Optimistic concurrency: If resource_version is provided and does
+  // not match the current version, returns ABORTED.
+  //
+  // This operation acquires a write lock.
+  //
+  // Returns:
+  //   - The updated GPU
+  //   - NOT_FOUND if the GPU doesn't exist
+  //   - ABORTED if resource_version doesn't match (conflict)
+  rpc UpdateGpu(UpdateGpuRequest) returns (UpdateGpuResponse);
+
+  // UpdateGpuStatus updates only the status of an existing GPU.
+  //
+  // This is the primary method for health monitors to report GPU state.
+  // The spec is not modified.
+  //
+  // This follows the Kubernetes subresource pattern where status is
+  // updated separately from spec.
+  //
+  // This operation acquires a write lock, blocking consumer reads
+  // until the operation completes. This ensures consumers never read
+  // stale data during status transitions (e.g., healthy → unhealthy).
+  //
+  // Returns:
+  //   - The updated GPU
+  //   - NOT_FOUND if the GPU doesn't exist
+  //   - ABORTED if resource_version doesn't match (conflict)
+  rpc UpdateGpuStatus(UpdateGpuStatusRequest) returns (UpdateGpuStatusResponse);
+
+  // DeleteGpu removes a GPU from the server.
+  //
+  // After deletion, the GPU will no longer appear in ListGpus or
+  // GetGpu responses. Active WatchGpus streams will receive a
+  // DELETED event.
+  //
+  // This operation acquires a write lock.
+  //
+  // Returns:
+  //   - Empty on success
+  //   - NOT_FOUND if the GPU doesn't exist
+  rpc DeleteGpu(DeleteGpuRequest) returns (google.protobuf.Empty);
 }
 
 // ==========================================
@@ -112,6 +277,9 @@ service GpuService {
 message GetGpuRequest {
   // The unique resource name of the GPU to retrieve.
   string name = 1;
+
+  // opts contains the standard query and scoping options for the request.
+  GetOptions opts = 2;
 }
 
 // GetGpuResponse contains the requested GPU resource.
@@ -121,10 +289,10 @@ message GetGpuResponse {
 }
 
 // ListGpusRequest specifies the criteria for listing GPU resources.
-//
-// NOTE: The request is currently empty, but reserved for future support
-// of filtering and pagination.
-message ListGpusRequest {}
+message ListGpusRequest {
+  // opts contains the standard query and scoping options for the list.
+  ListOptions opts = 1;
+}
 
 // ListGpusResponse contains the list of GPU resources.
 message ListGpusResponse {
@@ -133,10 +301,10 @@ message ListGpusResponse {
 }
 
 // WatchGpusRequest specifies the parameters for the watch stream.
-//
-// NOTE: The request is currently empty, but reserved for future support
-// of filtering and resource versioning (resumption).
-message WatchGpusRequest {}
+message WatchGpusRequest {
+  // opts contains the standard query and scoping options for the watch.
+  ListOptions opts = 1;
+}
 
 // WatchGpusResponse describes a change event for a GPU resource.
 message WatchGpusResponse {
@@ -154,4 +322,67 @@ message WatchGpusResponse {
   // For "DELETED", this contains the last known state.
   // For "ERROR", this may be empty or contain partial data.
   Gpu object = 2;
+}
+
+// CreateGpuRequest contains the GPU to create.
+message CreateGpuRequest {
+  // The GPU to create.
+  // Required: metadata.name, spec.uuid
+  Gpu gpu = 1;
+}
+
+// CreateGpuResponse contains the created GPU.
+message CreateGpuResponse {
+  // gpu is the created GPU with server-assigned fields (resource_version).
+  Gpu gpu = 1;
+
+  // created is true if a new GPU was created, false if it already existed.
+  //
+  // When false, the returned gpu contains the existing GPU data.
+  // This enables idempotent registration patterns.
+  bool created = 2;
+}
+
+// UpdateGpuRequest contains the GPU to update.
+message UpdateGpuRequest {
+  // The GPU to update.
+  // Required: metadata.name
+  // Optional: resource_version for optimistic concurrency
+  Gpu gpu = 1;
+}
+
+// UpdateGpuResponse contains the updated GPU.
+message UpdateGpuResponse {
+  // gpu is the updated GPU.
+  Gpu gpu = 1;
+}
+
+// UpdateGpuStatusRequest contains the status update for a GPU.
+message UpdateGpuStatusRequest {
+  // The name of the GPU to update.
+  // Required.
+  string name = 1;
+
+  // The new status to set.
+  // This completely replaces the existing status.
+  // Required.
+  GpuStatus status = 2;
+
+  // Expected resource_version for optimistic concurrency.
+  // If set and doesn't match current version, returns ABORTED.
+  // Optional.
+  int64 resource_version = 3;
+}
+
+// UpdateGpuStatusResponse contains the updated GPU.
+message UpdateGpuStatusResponse {
+  // gpu is the updated GPU.
+  Gpu gpu = 1;
+}
+
+// DeleteGpuRequest specifies which GPU to delete.
+message DeleteGpuRequest {
+  // The unique name of the GPU to delete.
+  // Required.
+  string name = 1;
 }

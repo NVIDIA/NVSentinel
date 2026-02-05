@@ -1,0 +1,21 @@
+# ==============================================================================
+# GIT ATTRIBUTES
+# ==============================================================================
+# Use 'linguist-generated=true' to hide generated code from GitHub PR diffs.
+# ==============================================================================
+
+# Hide Kubernetes generated helpers (DeepCopy, Defaults, Conversions, OpenAPI, etc)
+zz_generated.*.go linguist-generated=true
+
+# Hide generated Protobuf Go bindings
+*.pb.go linguist-generated=true
+
+# Hide generated client library
+client-go/client/** linguist-generated=true
+client-go/listers/** linguist-generated=true
+client-go/informers/** linguist-generated=true
+
+# Hide copied, unmodified upstream code
+code-generator/cmd/client-gen/types/** linguist-generated=true
+code-generator/cmd/client-gen/generators/scheme/** linguist-generated=true
+code-generator/cmd/client-gen/generators/util/** linguist-generated=true

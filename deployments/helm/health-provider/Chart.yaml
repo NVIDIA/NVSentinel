@@ -1,0 +1,24 @@
+apiVersion: v2
+name: health-provider
+description: GPU Health Provider for NVSentinel - monitors GPU health via NVML
+
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - nvidia
+  - gpu
+  - health
+  - monitoring
+  - nvml
+
+home: https://github.com/nvidia/nvsentinel
+sources:
+  - https://github.com/nvidia/nvsentinel
+
+maintainers:
+  - name: NVIDIA
+    url: https://github.com/nvidia
+
+dependencies: []

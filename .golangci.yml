@@ -18,7 +18,8 @@ run:
   modules-download-mode: readonly
   issues-exit-code: 1
   tests: false
-  allow-parallel-runners: false
+  allow-parallel-runners: true
+
 output:
   formats:
     text:
@@ -28,6 +29,7 @@ output:
     code-climate:
       path: code-quality-report.json
   path-prefix: ""
+
 linters:
   enable:
     - asciicheck
@@ -46,6 +48,7 @@ linters:
     - goconst
     - gocritic
     - gosec
+    - govet
     - lll
     - misspell
     - nestif
@@ -53,7 +56,6 @@ linters:
     - noctx
     - whitespace
     - wsl_v5
-    - gosec
   exclusions:
     generated: lax
     presets:
@@ -65,8 +67,8 @@ linters:
       - third_party$
       - builtin$
       - examples$
-issues:
-  uniq-by-line: false
+      - code-generator/cmd$
+
 formatters:
   enable:
     - gofmt
@@ -77,3 +79,7 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - code-generator/cmd$
+
+issues:
+  uniq-by-line: false

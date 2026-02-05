@@ -1,0 +1,56 @@
+# Sidecar test values - validates nvml-provider sidecar architecture
+# Usage: helm upgrade nvsentinel deployments/helm/nvsentinel -n nvsentinel -f deployments/helm/values-sidecar-test.yaml
+
+image:
+  repository: ttl.sh/device-api-server-sidecar
+  tag: "2h"
+  pullPolicy: Always
+
+# Disable built-in NVML provider (use sidecar instead)
+nvml:
+  enabled: false
+
+# Enable NVML Provider sidecar
+nvmlProvider:
+  enabled: true
+  image:
+    repository: ttl.sh/nvml-provider-sidecar
+    tag: "2h"
+    pullPolicy: Always
+  serverAddress: "localhost:50051"
+  providerID: "nvml-provider-sidecar"
+  driverRoot: /run/nvidia/driver
+  healthCheckEnabled: true
+  healthPort: 8082
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Override node selector (cluster uses node-type=gpu instead of nvidia.com/gpu.present)
+# Set to null to remove the default, then add only the one we need
+nodeSelector:
+  nvidia.com/gpu.present: null
+  node-type: gpu
+
+# RuntimeClass for NVML access
+runtimeClassName: nvidia
+
+logging:
+  verbosity: 2
+  format: json
+
+# Run as root to allow hostPath socket creation
+podSecurityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  runAsGroup: 0
+  fsGroup: 0
+
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+  runAsGroup: 0

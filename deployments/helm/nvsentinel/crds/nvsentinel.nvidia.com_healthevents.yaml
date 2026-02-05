@@ -1,0 +1,361 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: healthevents.nvsentinel.nvidia.com
+spec:
+  group: nvsentinel.nvidia.com
+  names:
+    kind: HealthEvent
+    listKind: HealthEventList
+    plural: healthevents
+    shortNames:
+    - he
+    - hevt
+    singular: healthevent
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      type: string
+    - jsonPath: .spec.isFatal
+      name: Fatal
+      type: boolean
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HealthEvent represents a GPU health event detected by a health monitor.
+          It replaces the MongoDB HealthEventWithStatus document and enables
+          Kubernetes-native coordination between fault-quarantine, node-drainer,
+          and remediation controllers.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HealthEventSpec defines the immutable details of a health event.
+              These fields are set when the event is created and should not be modified.
+            properties:
+              agent:
+                description: Agent is the name of the agent that reported the event
+                  (for compatibility with protobuf).
+                type: string
+              checkName:
+                description: |-
+                  CheckName identifies the specific health check that detected the issue.
+                  Examples: "xid-error-check", "memory-ecc-check", "thermal-check"
+                type: string
+              componentClass:
+                description: |-
+                  ComponentClass identifies the type of component affected.
+                  Examples: "GPU", "NIC", "Storage", "Memory"
+                type: string
+              detectedAt:
+                description: DetectedAt is the timestamp when the event was first
+                  detected.
+                format: date-time
+                type: string
+              entitiesImpacted:
+                description: EntitiesImpacted lists the specific entities affected
+                  by this event.
+                items:
+                  description: Entity represents an impacted entity (GPU, NIC, etc.).
+                  properties:
+                    type:
+                      description: Type identifies the kind of entity (e.g., "GPU",
+                        "NIC").
+                      type: string
+                    value:
+                      description: Value is the identifier for the entity (e.g., GPU
+                        UUID).
+                      type: string
+                  required:
+                  - type
+                  - value
+                  type: object
+                type: array
+              errorCodes:
+                description: |-
+                  ErrorCodes contains the error codes associated with this event.
+                  For GPU events, these are typically XID error codes (e.g., "79", "31").
+                items:
+                  type: string
+                type: array
+              isFatal:
+                default: false
+                description: |-
+                  IsFatal indicates whether this event requires immediate node quarantine.
+                  Fatal events trigger the full fault-handling workflow.
+                type: boolean
+              isHealthy:
+                default: false
+                description: |-
+                  IsHealthy indicates the current health state.
+                  false = unhealthy (problem detected), true = healthy (recovered)
+                type: boolean
+              maintenance:
+                description: |-
+                  Maintenance contains CSP maintenance event details.
+                  Only populated when Source is "csp-health-monitor".
+                properties:
+                  actualEndTime:
+                    description: ActualEndTime is when maintenance actually ended.
+                    format: date-time
+                    type: string
+                  actualStartTime:
+                    description: ActualStartTime is when maintenance actually started.
+                    format: date-time
+                    type: string
+                  csp:
+                    description: CSP identifies the cloud service provider.
+                    enum:
+                    - aws
+                    - gcp
+                    type: string
+                  cspStatus:
+                    description: CSPStatus is the status reported by the CSP.
+                    type: string
+                  eventId:
+                    description: EventID is the CSP's identifier for this maintenance
+                      event.
+                    type: string
+                  maintenanceType:
+                    description: MaintenanceType indicates if this is scheduled or
+                      unscheduled.
+                    enum:
+                    - SCHEDULED
+                    - UNSCHEDULED
+                    type: string
+                  scheduledEndTime:
+                    description: ScheduledEndTime is when maintenance is scheduled
+                      to end.
+                    format: date-time
+                    type: string
+                  scheduledStartTime:
+                    description: ScheduledStartTime is when maintenance is scheduled
+                      to begin.
+                    format: date-time
+                    type: string
+                required:
+                - csp
+                - eventId
+                - maintenanceType
+                type: object
+              message:
+                description: Message provides a human-readable description of the
+                  event.
+                type: string
+              metadata:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Metadata contains additional key-value data about the event.
+                  Common keys: "uuid", "temperature", "serialNumber"
+                type: object
+              nodeName:
+                description: NodeName is the Kubernetes node where the event occurred.
+                type: string
+              overrides:
+                description: Overrides allows customizing the fault-handling behavior
+                  for this event.
+                properties:
+                  drain:
+                    description: Drain overrides control pod eviction behavior.
+                    properties:
+                      force:
+                        default: false
+                        description: Force causes the action to proceed even if conditions
+                          aren't met.
+                        type: boolean
+                      skip:
+                        default: false
+                        description: Skip causes the action to be skipped entirely.
+                        type: boolean
+                    type: object
+                  quarantine:
+                    description: Quarantine overrides control node cordoning behavior.
+                    properties:
+                      force:
+                        default: false
+                        description: Force causes the action to proceed even if conditions
+                          aren't met.
+                        type: boolean
+                      skip:
+                        default: false
+                        description: Skip causes the action to be skipped entirely.
+                        type: boolean
+                    type: object
+                type: object
+              recommendedAction:
+                allOf:
+                - enum:
+                  - NONE
+                  - COMPONENT_RESET
+                  - CONTACT_SUPPORT
+                  - RUN_FIELDDIAG
+                  - RESTART_VM
+                  - RESTART_BM
+                  - REPLACE_VM
+                  - RUN_DCGMEUD
+                  - UNKNOWN
+                - enum:
+                  - NONE
+                  - COMPONENT_RESET
+                  - CONTACT_SUPPORT
+                  - RUN_FIELDDIAG
+                  - RESTART_VM
+                  - RESTART_BM
+                  - REPLACE_VM
+                  - RUN_DCGMEUD
+                  - UNKNOWN
+                default: NONE
+                description: RecommendedAction suggests what action should be taken.
+                type: string
+              source:
+                description: |-
+                  Source identifies the health monitor that detected this event.
+                  Examples: "nvml-health-monitor", "dcgm", "csp-health-monitor", "syslog-monitor"
+                type: string
+            required:
+            - checkName
+            - componentClass
+            - detectedAt
+            - isFatal
+            - isHealthy
+            - nodeName
+            - source
+            type: object
+          status:
+            description: |-
+              HealthEventStatus defines the current processing state of a health event.
+              These fields are updated by controllers as the event moves through the workflow.
+            properties:
+              conditions:
+                description: Conditions provide detailed status for each stage of
+                  processing.
+                items:
+                  description: |-
+                    HealthEventCondition represents a condition of a HealthEvent.
+                    Follows the standard Kubernetes condition pattern.
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime is the last time the condition
+                        transitioned.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable description of the
+                        condition.
+                      type: string
+                    observedGeneration:
+                      description: ObservedGeneration is the generation of the resource
+                        when this condition was set.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: Reason is a brief machine-readable reason for the
+                        condition.
+                      type: string
+                    status:
+                      description: Status is the status of the condition (True, False,
+                        Unknown).
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      allOf:
+                      - enum:
+                        - Detected
+                        - NodeQuarantined
+                        - PodsDrained
+                        - Remediated
+                        - Resolved
+                      - enum:
+                        - Detected
+                        - NodeQuarantined
+                        - PodsDrained
+                        - Remediated
+                        - Resolved
+                      description: Type is the type of condition.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastRemediationTime:
+                description: LastRemediationTime is when remediation was last attempted.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation observed by the
+                  controller.
+                format: int64
+                type: integer
+              phase:
+                allOf:
+                - enum:
+                  - New
+                  - Quarantined
+                  - Draining
+                  - Drained
+                  - Remediating
+                  - Remediated
+                  - Resolved
+                  - Cancelled
+                - enum:
+                  - New
+                  - Quarantined
+                  - Draining
+                  - Drained
+                  - Remediating
+                  - Remediated
+                  - Resolved
+                  - Cancelled
+                default: New
+                description: Phase represents the current state in the fault-handling
+                  workflow.
+                type: string
+              resolvedAt:
+                description: |-
+                  ResolvedAt is when the event reached the Resolved phase.
+                  Used for TTL calculation.
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

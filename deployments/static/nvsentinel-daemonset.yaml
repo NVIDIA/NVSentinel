@@ -1,0 +1,212 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# NVSentinel Static Deployment Manifest
+#
+# This manifest deploys the Device API Server with the NVML Provider sidecar.
+# For production use, consider using the Helm chart for better configurability.
+#
+# Usage:
+#   kubectl apply -f nvsentinel-daemonset.yaml
+#
+# Prerequisites:
+#   - Kubernetes 1.25+
+#   - RuntimeClass 'nvidia' configured (GPU Operator or manual setup)
+#   - GPU nodes labeled with 'nvidia.com/gpu.present=true'
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvsentinel
+  labels:
+    app.kubernetes.io/name: nvsentinel
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nvsentinel
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: nvsentinel
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nvsentinel
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: nvsentinel
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless for DaemonSet
+  selector:
+    app.kubernetes.io/name: nvsentinel
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvsentinel
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: nvsentinel
+    app.kubernetes.io/component: device-api-server
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nvsentinel
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvsentinel
+        app.kubernetes.io/component: device-api-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: nvsentinel
+      runtimeClassName: nvidia
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Device API Server - Pure Go, no NVML dependencies
+        - name: device-api-server
+          image: ghcr.io/nvidia/nvsentinel/device-api-server:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --grpc-address=:50051
+            - --health-port=8081
+            - --metrics-port=9090
+            - --provider-address=localhost:9001
+            - --unix-socket=/var/run/device-api/device.sock
+            - --v=0
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: device-api-socket
+              mountPath: /var/run/device-api
+
+        # NVML Provider Sidecar - CGO binary, requires RuntimeClass nvidia
+        - name: nvml-provider
+          image: ghcr.io/nvidia/nvsentinel/nvml-provider:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --server-address=localhost:9001
+            - --provider-id=nvml-provider
+            - --driver-root=/run/nvidia/driver
+            - --health-port=8082
+            - --health-check-enabled=true
+            - --v=0
+          ports:
+            - name: provider-health
+              containerPort: 8082
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: provider-health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: provider-health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: device-api-socket
+          emptyDir: {}

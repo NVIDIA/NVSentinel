@@ -1,0 +1,220 @@
+{{/*
+Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "device-api-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "device-api-server.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "device-api-server.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "device-api-server.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "device-api-server.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- if or .Values.runtimeClassName (and .Values.nvml.enabled (not .Values.runtimeClassName)) }}
+      runtimeClassName: {{ .Values.runtimeClassName | default "nvidia" }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "device-api-server.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --grpc-address={{ .Values.server.grpcAddress }}
+            - --unix-socket={{ .Values.server.unixSocket }}
+            - --health-port={{ .Values.server.healthPort }}
+            - --metrics-port={{ .Values.server.metricsPort }}
+            - --shutdown-timeout={{ .Values.server.shutdownTimeout }}
+            - --shutdown-delay={{ .Values.server.shutdownDelay }}
+            - --log-format={{ .Values.logging.format }}
+            - -v={{ .Values.logging.verbosity }}
+            {{- /* nvmlProvider.enabled doesn't require args on server - the sidecar connects to the server */}}
+            {{- if .Values.nvml.enabled }}
+            - --enable-nvml-provider=true
+            - --nvml-driver-root={{ .Values.nvml.driverRoot }}
+            - --nvml-health-check={{ .Values.nvml.healthCheckEnabled }}
+            {{- if .Values.nvml.additionalIgnoredXids }}
+            - --nvml-ignored-xids={{ .Values.nvml.additionalIgnoredXids }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.nvml.enabled }}
+            # NVIDIA Container Toolkit environment variables
+            # These configure NVML access without consuming GPU resources
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "utility"
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                # Sleep to allow k8s to propagate endpoint removal
+                command: ["sleep", "{{ .Values.server.shutdownDelay }}"]
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.server.grpcAddress | trimPrefix ":" | int }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.server.healthPort }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.server.metricsPort }}
+              protocol: TCP
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: {{ include "device-api-server.socketDir" . }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if .Values.nvmlProvider.enabled }}
+        # NVML Provider sidecar container
+        - name: nvml-provider
+          image: "{{ .Values.nvmlProvider.image.repository }}:{{ .Values.nvmlProvider.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.nvmlProvider.image.pullPolicy }}
+          args:
+            - --server-address={{ .Values.nvmlProvider.serverAddress }}
+            - --provider-id={{ .Values.nvmlProvider.providerID }}
+            - --driver-root={{ .Values.nvmlProvider.driverRoot }}
+            - --health-check={{ .Values.nvmlProvider.healthCheckEnabled }}
+            - --health-port={{ .Values.nvmlProvider.healthPort }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # NVIDIA Container Toolkit environment variables
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "utility"
+          ports:
+            - name: provider-health
+              containerPort: {{ .Values.nvmlProvider.healthPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: provider-health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: provider-health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- with .Values.nvmlProvider.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.nvmlProvider.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: {{ include "device-api-server.socketDir" . }}
+            type: DirectoryOrCreate
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # terminationGracePeriodSeconds = preStop sleep + shutdown delay + shutdown timeout + buffer
+      terminationGracePeriodSeconds: {{ add .Values.server.shutdownDelay .Values.server.shutdownDelay .Values.server.shutdownTimeout 5 }}

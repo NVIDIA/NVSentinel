@@ -1,0 +1,307 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for nvsentinel.
+# This is a YAML-formatted file.
+
+# -- Number of replicas (ignored for DaemonSet, kept for consistency)
+replicaCount: 1
+
+# -- Image configuration
+image:
+  # -- Image repository
+  repository: ghcr.io/nvidia/nvsentinel/device-api-server
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to Chart appVersion)
+  tag: ""
+
+# -- Image pull secrets
+imagePullSecrets: []
+
+# -- Override the name of the chart
+nameOverride: ""
+
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+# -- Server configuration
+server:
+  # -- gRPC server TCP address
+  grpcAddress: ":50051"
+  # -- Unix socket path for node-local communication
+  unixSocket: /var/run/device-api/device.sock
+  # -- HTTP port for health endpoints (/healthz, /readyz)
+  healthPort: 8081
+  # -- HTTP port for Prometheus metrics
+  metricsPort: 9090
+  # -- Graceful shutdown timeout in seconds
+  shutdownTimeout: 30
+  # -- Shutdown delay in seconds (allows k8s endpoint propagation)
+  shutdownDelay: 5
+
+# -- Logging configuration
+logging:
+  # -- Log verbosity level (0=info, higher=more verbose)
+  verbosity: 0
+  # -- Log format: text or json
+  format: json
+
+# -- NVML Fallback Provider configuration (built-in)
+# Enables built-in GPU enumeration and health monitoring via NVML.
+# Uses the 'nvidia' RuntimeClass to inject NVML libraries without consuming GPU resources.
+# NOTE: For containerized deployment, prefer nvmlProvider (sidecar) instead.
+nvml:
+  # -- Enable the NVML fallback provider
+  enabled: false
+  # -- Root path where NVIDIA driver libraries are located
+  # Common values: /run/nvidia/driver (container), / (bare metal)
+  driverRoot: /run/nvidia/driver
+  # -- Comma-separated list of additional XID error codes to ignore
+  # Default ignored XIDs: 13, 31, 43, 45, 68, 109 (application errors)
+  additionalIgnoredXids: ""
+  # -- Enable XID event monitoring for health checks
+  healthCheckEnabled: true
+
+# -- NVML Provider Sidecar configuration
+# Deploys the NVML provider as a sidecar container that connects to device-api-server
+# via gRPC. This provides better isolation and independent updates compared to the
+# built-in nvml provider.
+nvmlProvider:
+  # -- Enable the NVML provider sidecar container
+  enabled: false
+  # -- Image configuration for the nvml-provider sidecar
+  image:
+    # -- Image repository
+    repository: ghcr.io/nvidia/nvsentinel/nvml-provider
+    # -- Image tag (defaults to Chart appVersion)
+    tag: ""
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- gRPC address of the provider service endpoint on device-api-server
+  # This should match the provider TCP listener (internal, not exposed externally)
+  serverAddress: "localhost:9001"
+  # -- Unique identifier for this provider instance
+  providerID: "nvml-provider-sidecar"
+  # -- Root path where NVIDIA driver libraries are located
+  driverRoot: /run/nvidia/driver
+  # -- Enable XID event monitoring for health checks
+  healthCheckEnabled: true
+  # -- HTTP port for health check endpoints
+  healthPort: 8082
+  # -- Resource limits and requests for the sidecar
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # -- Security context for the sidecar container
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# -- RuntimeClassName for the pod
+# Set to "nvidia" when nvml.enabled is true to inject NVIDIA driver libraries
+# Requires the NVIDIA GPU Operator or manual RuntimeClass configuration
+runtimeClassName: ""
+
+# -- ServiceAccount configuration
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  # -- ServiceAccount name (generated if not set)
+  name: ""
+  # -- Annotations to add to the ServiceAccount
+  annotations: {}
+  # -- Automount service account token
+  automountServiceAccountToken: false
+
+# -- RBAC configuration
+rbac:
+  # -- Create RBAC resources
+  create: true
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod labels
+podLabels: {}
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# -- Resource limits and requests
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# -- Node selector for scheduling
+# @default -- Schedules only on GPU nodes
+nodeSelector:
+  nvidia.com/gpu.present: "true"
+
+# -- Tolerations for scheduling
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+
+# -- Affinity rules
+affinity: {}
+
+# -- Priority class name
+priorityClassName: ""
+
+# -- Liveness probe configuration
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Update strategy for the DaemonSet
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# -- Service configuration (for metrics scraping)
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service annotations
+  annotations: {}
+
+# -- Prometheus metrics configuration
+metrics:
+  # -- Enable metrics endpoint
+  enabled: true
+  # -- ServiceMonitor configuration (requires Prometheus Operator)
+  serviceMonitor:
+    # -- Create ServiceMonitor resource
+    enabled: false
+    # -- ServiceMonitor namespace (defaults to release namespace)
+    namespace: ""
+    # -- Additional labels for ServiceMonitor
+    labels: {}
+    # -- Scrape interval
+    interval: 30s
+    # -- Scrape timeout
+    scrapeTimeout: 10s
+    # -- Metric relabeling configs
+    metricRelabelings: []
+    # -- Relabeling configs
+    relabelings: []
+  # -- PrometheusRule configuration (requires Prometheus Operator)
+  prometheusRule:
+    # -- Create PrometheusRule resource
+    enabled: false
+    # -- PrometheusRule namespace (defaults to release namespace)
+    namespace: ""
+    # -- Additional labels for PrometheusRule
+    labels: {}
+    # -- Additional alerting rules
+    additionalRules: []
+
+# -- Additional environment variables
+env: []
+# - name: LOG_FORMAT
+#   value: json
+
+# -- Additional volume mounts
+extraVolumeMounts: []
+
+# -- Additional volumes
+extraVolumes: []
+
+# -- Init containers
+initContainers: []
+
+# -- Sidecar containers
+sidecars: []
+
+# -- HealthEvent CRD configuration
+# Configures the HealthEvent custom resource for GPU health event tracking
+# and coordination between NVSentinel components.
+healthEvents:
+  # -- Enable HealthEvent CRD and controller
+  enabled: false
+
+  # -- TTL (Time-To-Live) policy for automatic cleanup of resolved events
+  ttl:
+    # -- Duration after which resolved events are deleted
+    # Format: Go duration (e.g., "168h" = 7 days, "720h" = 30 days)
+    # Set to "0" to disable automatic cleanup
+    afterResolved: "168h"
+
+    # -- Retention mode: "standard" or "compliance"
+    # - standard: Uses afterResolved for cleanup timing
+    # - compliance: Uses complianceRetention (overrides afterResolved)
+    retentionMode: "standard"
+
+    # -- Retention period for compliance mode (e.g., "2160h" = 90 days)
+    complianceRetention: "2160h"
+
+    # -- Maximum events to delete per cleanup cycle
+    batchSize: "100"
+
+    # -- Interval between cleanup cycles
+    cleanupInterval: "5m"
+
+  # -- Event history limits to prevent unbounded growth
+  limits:
+    # -- Maximum events per node (0 = unlimited)
+    maxEventsPerNode: "0"
+
+    # -- Maximum total events cluster-wide (0 = unlimited)
+    maxTotalEvents: "0"

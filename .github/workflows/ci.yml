@@ -1,0 +1,234 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - device-api
+  pull_request:
+    branches:
+      - device-api
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read         # Required for checking out code
+  actions: write         # Required for uploading test artifacts
+  pull-requests: write   # Required for coverage report comments
+
+env:
+  # Go cache settings (specific to this workflow)
+  GOPATH: /home/runner/go
+  GOCACHE: /home/runner/.cache/go-build
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: ${{ matrix.step_name }}
+        run: ${{ matrix.make_command }}
+
+      - name: Load Helm version from .versions.yaml
+        if: matrix.component == 'helm-charts'
+        id: helm-version
+        run: |
+          HELM_VERSION=$(yq eval '.testing_tools.helm' .versions.yaml)
+          echo "helm_version=${HELM_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Setup Helm
+        if: matrix.component == 'helm-charts'
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
+        with:
+          version: ${{ steps.helm-version.outputs.helm_version }}
+
+      - name: Validate Helm Charts
+        if: matrix.component == 'helm-charts'
+        run: make helm-lint
+
+  health-monitors-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - component: syslog-health-monitor
+          - component: csp-health-monitor
+          - component: kubernetes-object-monitor
+          - component: gpu-health-monitor
+            install_dcgm: 'true'
+            python_required: 'true'
+            replace_imports: 'false'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C health-monitors/${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: ${{ matrix.component }}
+          file-paths: |
+            health-monitors/${{ matrix.component }}/coverage.xml
+            health-monitors/${{ matrix.component }}/coverage.txt
+            health-monitors/${{ matrix.component }}/report.xml
+
+  preflight-checks-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - ping
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C preflight-checks/${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: preflight-${{ matrix.component }}
+          file-paths: |
+            preflight-checks/${{ matrix.component }}/coverage.xml
+            preflight-checks/${{ matrix.component }}/coverage.txt
+            preflight-checks/${{ matrix.component }}/report.xml
+
+  modules-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - platform-connectors
+          - event-exporter
+          - store-client
+          - commons
+          - data-models
+          - health-events-analyzer
+          - fault-quarantine
+          - labeler
+          - metadata-collector
+          - node-drainer
+          - fault-remediation
+          - janitor
+          - preflight
+          - tests
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C ${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: ${{ matrix.component }}
+          file-paths: |
+            ${{ matrix.component }}/coverage.xml
+            ${{ matrix.component }}/coverage.txt
+            ${{ matrix.component }}/report.xml
+
+  tilt-modules-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - tilt/simple-health-client
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C ${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: simple-health-client
+          file-paths: |
+            ${{ matrix.component }}/coverage.xml
+            ${{ matrix.component }}/coverage.txt
+            ${{ matrix.component }}/report.xml
+
+  consolidated-coverage-report:
+    if: github.repository == 'nvidia/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 15
+    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, tilt-modules-lint-test]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5  # v6.2.0
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: "**/go.sum"
+
+      - name: Install tools
+        run: |
+          echo "Installing yq..."
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+          echo "Installing protoc..."
+          PROTOC_VERSION=$(yq eval '.protobuf.protobuf' .versions.yaml | sed 's/v//')
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip
+          sudo unzip -o protoc-${PROTOC_VERSION}-linux-x86_64.zip -d /usr/local
+          rm protoc-${PROTOC_VERSION}-linux-x86_64.zip
+
+          echo "Installing golangci-lint..."
+          LINT_VERSION=$(yq eval '.go_tools.golangci_lint' .versions.yaml)
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin $LINT_VERSION
+
+      - name: Generate
+        run: make verify-codegen
+
+      - name: Lint
+        run: make lint
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test

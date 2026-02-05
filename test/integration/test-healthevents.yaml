@@ -1,0 +1,124 @@
+# Test HealthEvents for Integration Testing
+#
+# These are sample HealthEvent resources that simulate GPU faults
+# for testing the controller chain.
+#
+# Usage:
+#   kubectl apply -f test-healthevents.yaml
+#   kubectl get healthevents -w
+#
+---
+# Test 1: Fatal XID Error - Should trigger full workflow
+# New -> Quarantined -> Drained -> Remediated
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: HealthEvent
+metadata:
+  name: test-fatal-xid-79
+  labels:
+    test: integration
+    scenario: fatal-xid
+spec:
+  source: "nvml-health-monitor"
+  nodeName: "ip-10-0-0-10"  # Target a real worker node
+  componentClass: "GPU"
+  checkName: "xid-error-check"
+  isFatal: true
+  isHealthy: false
+  message: "XID 79: GPU has fallen off the bus"
+  recommendedAction: RESTART_VM
+  errorCodes:
+    - "79"
+  entitiesImpacted:
+    - type: GPU
+      value: GPU-TEST-12345678-1234-1234-1234-123456789ABC
+  detectedAt: "2026-02-04T13:00:00Z"
+  metadata:
+    uuid: "GPU-TEST-12345678-1234-1234-1234-123456789ABC"
+    productName: "NVIDIA A100 80GB"
+status:
+  phase: New
+---
+# Test 2: Non-Fatal XID Error - Should resolve immediately
+# New -> Resolved (non-fatal, just logged)
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: HealthEvent
+metadata:
+  name: test-nonfatal-xid-31
+  labels:
+    test: integration
+    scenario: nonfatal-xid
+spec:
+  source: "nvml-health-monitor"
+  nodeName: "ip-10-0-0-236"
+  componentClass: "GPU"
+  checkName: "xid-error-check"
+  isFatal: false
+  isHealthy: false
+  message: "XID 31: GPU memory page fault (application error)"
+  recommendedAction: NONE
+  errorCodes:
+    - "31"
+  entitiesImpacted:
+    - type: GPU
+      value: GPU-TEST-87654321-4321-4321-4321-CBA987654321
+  detectedAt: "2026-02-04T13:01:00Z"
+status:
+  phase: New
+---
+# Test 3: Fatal event with quarantine skip override
+# New -> Cancelled (quarantine skipped)
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: HealthEvent
+metadata:
+  name: test-fatal-skip-quarantine
+  labels:
+    test: integration
+    scenario: skip-quarantine
+spec:
+  source: "nvml-health-monitor"
+  nodeName: "ip-10-0-0-81"
+  componentClass: "GPU"
+  checkName: "thermal-check"
+  isFatal: true
+  isHealthy: false
+  message: "GPU temperature exceeded threshold"
+  recommendedAction: CONTACT_SUPPORT
+  errorCodes:
+    - "thermal"
+  entitiesImpacted:
+    - type: GPU
+      value: GPU-TEST-THERMAL-1234-5678-9ABC
+  detectedAt: "2026-02-04T13:02:00Z"
+  overrides:
+    quarantine:
+      skip: true  # Skip quarantine, go straight to cancelled
+status:
+  phase: New
+---
+# Test 4: CSP Maintenance Event
+# Tests the maintenance event flow
+apiVersion: nvsentinel.nvidia.com/v1alpha1
+kind: HealthEvent
+metadata:
+  name: test-csp-maintenance
+  labels:
+    test: integration
+    scenario: csp-maintenance
+spec:
+  source: "csp-health-monitor"
+  nodeName: "ip-10-0-0-236"
+  componentClass: "GPU"
+  checkName: "aws-maintenance"
+  isFatal: true
+  isHealthy: false
+  message: "AWS scheduled maintenance notification"
+  recommendedAction: RESTART_VM
+  detectedAt: "2026-02-04T13:03:00Z"
+  maintenance:
+    csp: aws
+    eventId: "aws-maint-123456"
+    maintenanceType: SCHEDULED
+    scheduledStartTime: "2026-02-05T06:00:00Z"
+    scheduledEndTime: "2026-02-05T08:00:00Z"
+status:
+  phase: New

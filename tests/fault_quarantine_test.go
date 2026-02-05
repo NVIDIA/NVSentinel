@@ -23,7 +23,7 @@ import (
 
 	"tests/helpers"
 
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	nvsentinelv1alpha1 "github.com/nvidia/nvsentinel/api/nvsentinel/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
@@ -32,80 +32,144 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
-func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
-	feature := features.New("TestCELExpressionFiltering").
-		WithLabel("suite", "fault-quarantine-cel")
-
-	var testCtx *helpers.QuarantineTestContext
+// TestNonFatalEventDoesNotTriggerQuarantine tests that non-fatal events don't trigger quarantine.
+func TestNonFatalEventDoesNotTriggerQuarantine(t *testing.T) {
+	feature := features.New("TestNonFatalEventDoesNotTriggerQuarantine").
+		WithLabel("suite", "quarantine-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/managed-by-nvsentinel-configmap.yaml")
-		return newCtx
-	})
-
-	feature.Assess("event doesn't match CEL expression", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithCheckName("UnknownCheck").
-			WithErrorCode("999")
-		helpers.SendHealthEvent(ctx, t, event)
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
 
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
-		})
+		// Clean up any existing HealthEvents
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		return ctx
 	})
 
-	feature.Assess("node with ManagedByNVSentinel=false label ignored by CEL", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Non-fatal event stays in New phase, node not cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testCtx.NodeName, false)
+		// Create a non-fatal event (isFatal=false)
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuWarning").
+			WithComponentClass("GPU").
+			WithFatal(false). // Non-fatal
+			WithHealthy(false).
+			WithErrorCodes("999").
+			WithMessage("Non-fatal warning").
+			Build()
+
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created non-fatal HealthEvent: %s", created.Name)
+
+		ctx = context.WithValue(ctx, keyHealthEventName, created.Name)
+
+		// Assert that the event never reaches Quarantined phase
+		// QuarantineController should skip non-fatal events
+		helpers.AssertHealthEventNeverReachesPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
+
+		// Verify node was NOT cordoned
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		require.NoError(t, err)
-
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID error occurred")
-		helpers.SendHealthEvent(ctx, t, event)
-
-		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, true)
+		assert.False(t, node.Spec.Unschedulable, "node should NOT be cordoned for non-fatal event")
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, testCtx.NodeName)
-		require.NoError(t, err)
-
-		return helpers.TeardownQuarantineTest(ctx, t, c)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())
 }
 
-func TestPreCordonedNodeHandling(t *testing.T) {
-	feature := features.New("TestPreCordonedNodeHandling").
-		WithLabel("suite", "fault-quarantine-special-modes")
-
-	var testCtx *helpers.QuarantineTestContext
+// TestHealthyEventDoesNotTriggerQuarantine tests that healthy events don't trigger quarantine.
+func TestHealthyEventDoesNotTriggerQuarantine(t *testing.T) {
+	feature := features.New("TestHealthyEventDoesNotTriggerQuarantine").
+		WithLabel("suite", "quarantine-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "data/basic-matching-configmap.yaml")
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		return ctx
+	})
+
+	feature.Assess("Healthy event stays in New phase, node not cordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		t.Logf("Manually cordoning and tainting node %s", testCtx.NodeName)
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		// Create a healthy event (isHealthy=true)
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithComponentClass("GPU").
+			WithFatal(true).
+			WithHealthy(true). // Healthy
+			WithMessage("No errors detected").
+			Build()
+
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created healthy HealthEvent: %s", created.Name)
+
+		// Assert that the event never reaches Quarantined phase
+		helpers.AssertHealthEventNeverReachesPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
+
+		// Verify node was NOT cordoned
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		require.NoError(t, err)
+		assert.False(t, node.Spec.Unschedulable, "node should NOT be cordoned for healthy event")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+// TestPreCordonedNodeHandling tests that QuarantineController handles pre-cordoned nodes correctly.
+func TestPreCordonedNodeHandling(t *testing.T) {
+	feature := features.New("TestPreCordonedNodeHandling").
+		WithLabel("suite", "quarantine-controller")
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		// Pre-cordon the node manually with a taint
+		t.Logf("Manually cordoning and tainting node %s", nodeName)
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		require.NoError(t, err)
 
 		node.Spec.Unschedulable = true
@@ -117,102 +181,63 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 
 		err = client.Resources().Update(ctx, node)
 		require.NoError(t, err)
-		t.Logf("Node %s pre-cordoned with manual taint", testCtx.NodeName)
+		t.Logf("Node %s pre-cordoned with manual taint", nodeName)
 
-		return newCtx
-	})
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
-	feature.Assess("FQ adds its taints to pre-cordoned node", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID error occurred")
-		helpers.SendHealthEvent(ctx, t, event)
-
-		t.Log("Waiting for FQ to add its taint to pre-cordoned node")
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				t.Logf("failed to get node: %v", err)
-				return false
-			}
-
-			hasFQTaint := false
-			hasManualTaint := false
-
-			for _, taint := range node.Spec.Taints {
-				if taint.Key == "AggregatedNodeHealth" {
-					hasFQTaint = true
-				}
-				if taint.Key == "manual-taint" {
-					hasManualTaint = true
-				}
-			}
-
-			t.Logf("Node state: hasFQTaint=%v, hasManualTaint=%v, cordoned=%v, taints=%+v",
-				hasFQTaint, hasManualTaint, node.Spec.Unschedulable, node.Spec.Taints)
-
-			if !hasFQTaint {
-				t.Log("Waiting for FQ taint to be added")
-				return false
-			}
-
-			return hasFQTaint && hasManualTaint && node.Spec.Unschedulable
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
-		t.Log("FQ taint successfully added to pre-cordoned node")
-
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		return ctx
 	})
 
-	feature.Assess("FQ annotations added", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("QuarantineController processes event on pre-cordoned node", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		// Create a fatal event
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithMessage("XID error occurred").
+			Build()
+
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent: %s", created.Name)
+
+		ctx = context.WithValue(ctx, keyHealthEventName, created.Name)
+
+		// Wait for QuarantineController to process (should still transition to Quarantined)
+		helpers.WaitForHealthEventPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
+
+		// Verify the manual taint is preserved
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		require.NoError(t, err)
-		require.NotNil(t, node.Annotations)
 
-		_, exists := node.Annotations["quarantineHealthEvent"]
-		assert.True(t, exists)
-
-		return ctx
-	})
-
-	feature.Assess("FQ clears its taints on healthy event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client, err := c.NewClient()
-		require.NoError(t, err)
-
-		helpers.SendHealthyEvent(ctx, t, testCtx.NodeName)
-
-		require.Eventually(t, func() bool {
-			node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
-			if err != nil {
-				return false
+		hasManualTaint := false
+		for _, taint := range node.Spec.Taints {
+			if taint.Key == "manual-taint" {
+				hasManualTaint = true
+				break
 			}
-
-			hasFQTaint := false
-			for _, taint := range node.Spec.Taints {
-				if taint.Key == "AggregatedNodeHealth" {
-					hasFQTaint = true
-					break
-				}
-			}
-
-			_, hasAnnotation := node.Annotations["quarantineHealthEvent"]
-
-			return !hasFQTaint && !hasAnnotation
-		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval)
+		}
+		assert.True(t, hasManualTaint, "manual taint should be preserved")
+		assert.True(t, node.Spec.Unschedulable, "node should remain cordoned")
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		// Clean up the node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		if err == nil {
 			node.Spec.Unschedulable = false
 			newTaints := []v1.Taint{}
@@ -225,183 +250,154 @@ func TestPreCordonedNodeHandling(t *testing.T) {
 			client.Resources().Update(ctx, node)
 		}
 
-		return helpers.TeardownQuarantineTest(ctx, t, c)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())
 }
 
-func TestCircuitBreakerCursorCreateSkipsAccumulatedEvents(t *testing.T) {
-	feature := features.New("TestCircuitBreakerCursorCreateSkipsAccumulatedEvents").
-		WithLabel("suite", "fault-quarantine-circuit-breaker")
-
-	var testCtx *helpers.QuarantineTestContext
+// TestQuarantineSkipOverride tests that quarantine can be skipped via override.
+func TestQuarantineSkipOverride(t *testing.T) {
+	feature := features.New("TestQuarantineSkipOverride").
+		WithLabel("suite", "quarantine-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		// Setup with circuit breaker starting in TRIPPED state
-		var newCtx context.Context
-		newCtx, testCtx, _ = helpers.SetupQuarantineTestWithOptions(ctx, t, c, "", &helpers.QuarantineSetupOptions{
-			CircuitBreakerState:      "TRIPPED",
-			CircuitBreakerCursorMode: "RESUME",
-		})
-
-		t.Logf("Selected test node: %s", testCtx.NodeName)
-
-		// Send event while CB is TRIPPED - this will accumulate in datastore
-		t.Logf("Sending event for node %s while CB is TRIPPED (should accumulate)", testCtx.NodeName)
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("Accumulated event while CB tripped")
-		helpers.SendHealthEvent(newCtx, t, event)
-
-		return newCtx
-	})
-
-	feature.Assess("reset CB with cursor=CREATE and verify accumulated event skipped", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		t.Log("Resetting circuit breaker with cursor=CREATE to skip accumulated events")
-		helpers.SetCircuitBreakerState(ctx, t, c, "CLOSED", "CREATE")
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
 
-		t.Logf("Verifying node %s was NOT cordoned (accumulated event should be skipped)", testCtx.NodeName)
-		helpers.AssertNodeNeverQuarantined(ctx, t, client, testCtx.NodeName, true)
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
 		return ctx
 	})
 
-	feature.Assess("verify new events ARE processed after cursor=CREATE reset", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Event with skip quarantine override doesn't cordon node", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		// Send a NEW event for the same node - this should be processed
-		t.Logf("Sending NEW event for node %s (should be processed)", testCtx.NodeName)
+		// Create a fatal event with skip quarantine override
+		event := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithMessage("XID error occurred").
+			WithSkipQuarantine(true). // Skip quarantine
+			Build()
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("New event after CB reset")
-		helpers.SendHealthEvent(ctx, t, event)
+		created := helpers.CreateHealthEventCRD(ctx, t, client, event)
+		t.Logf("Created HealthEvent with skip quarantine: %s", created.Name)
 
-		// This node SHOULD be cordoned because it's a new event
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
-		})
+		// Assert that the event never reaches Quarantined phase
+		// QuarantineController should respect the skip override
+		helpers.AssertHealthEventNeverReachesPhase(ctx, t, client, created.Name, nvsentinelv1alpha1.PhaseQuarantined)
 
-		t.Logf("Node %s correctly cordoned - new events are being processed", testCtx.NodeName)
+		// Verify node was NOT cordoned
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		require.NoError(t, err)
+		assert.False(t, node.Spec.Unschedulable, "node should NOT be cordoned when quarantine is skipped")
 
 		return ctx
 	})
 
 	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		return helpers.TeardownQuarantineTest(ctx, t, c)
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+		return ctx
 	})
 
 	testEnv.Test(t, feature.Feature())
 }
 
-func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
-	feature := features.New("TestFaultQuarantineWithProcessingStrategy").
-		WithLabel("suite", "fault-quarantine-with-processing-strategy")
-
-	var testCtx *helpers.QuarantineTestContext
+// TestMultipleEventsOnSameNode tests handling of multiple events on the same node.
+func TestMultipleEventsOnSameNode(t *testing.T) {
+	feature := features.New("TestMultipleEventsOnSameNode").
+		WithLabel("suite", "quarantine-controller")
 
 	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		var newCtx context.Context
-		newCtx, testCtx = helpers.SetupQuarantineTest(ctx, t, c, "")
-		return newCtx
+		client, err := c.NewClient()
+		assert.NoError(t, err)
+
+		nodeName := helpers.SelectTestNodeFromUnusedPool(ctx, t, client)
+		t.Logf("Selected test node: %s", nodeName)
+
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
+
+		ctx = context.WithValue(ctx, keyNodeName, nodeName)
+		return ctx
 	})
 
-	feature.Assess("Check that node is not quarantined for STORE_ONLY events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("Second event on already-quarantined node processes correctly", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		nodeName := ctx.Value(keyNodeName).(string)
+
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID error occurred").
-			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
-			WithCheckName("SysLogsXIDError").
-			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_ONLY))
-		helpers.SendHealthEvent(ctx, t, event)
+		// Create first fatal event
+		event1 := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuXidError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("79").
+			WithMessage("First XID error").
+			Build()
 
-		t.Logf("Node %s should not have condition SysLogsXIDError", testCtx.NodeName)
-		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "SysLogsXIDError")
+		created1 := helpers.CreateHealthEventCRD(ctx, t, client, event1)
+		t.Logf("Created first HealthEvent: %s", created1.Name)
 
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
-		})
+		// Wait for first event to quarantine the node
+		helpers.WaitForHealthEventPhase(ctx, t, client, created1.Name, nvsentinelv1alpha1.PhaseQuarantined)
+		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, true)
 
-		event = helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("DCGM_FR_CLOCK_THROTTLE_POWER").
-			WithCheckName("GpuPowerWatch").
-			WithFatal(false).
-			WithProcessingStrategy(int(protos.ProcessingStrategy_STORE_ONLY))
-		helpers.SendHealthEvent(ctx, t, event)
+		// Create second fatal event on the same node
+		event2 := helpers.NewHealthEventCRD(nodeName).
+			WithSource("e2e-test").
+			WithCheckName("GpuMemoryError").
+			WithFatal(true).
+			WithHealthy(false).
+			WithErrorCodes("31").
+			WithMessage("Second memory error").
+			Build()
 
-		t.Logf("Node %s should not have GpuPowerWatch node event", testCtx.NodeName)
-		helpers.EnsureNodeEventNotPresent(ctx, t, client, testCtx.NodeName, "GpuPowerWatch", "GpuPowerWatchIsNotHealthy")
+		created2 := helpers.CreateHealthEventCRD(ctx, t, client, event2)
+		t.Logf("Created second HealthEvent: %s", created2.Name)
 
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
-		})
+		// Second event should also transition to Quarantined (node already cordoned)
+		helpers.WaitForHealthEventPhase(ctx, t, client, created2.Name, nvsentinelv1alpha1.PhaseQuarantined)
+
+		// Verify node is still cordoned
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		require.NoError(t, err)
+		assert.True(t, node.Spec.Unschedulable, "node should remain cordoned")
 
 		return ctx
 	})
 
-	feature.Assess("Check that node is quarantined for EXECUTE_REMEDIATION events", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client, err := c.NewClient()
-		require.NoError(t, err)
+		assert.NoError(t, err)
 
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithMessage("XID error occurred").
-			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
-			WithCheckName("SysLogsXIDError").
-			WithProcessingStrategy(int(protos.ProcessingStrategy_EXECUTE_REMEDIATION))
-		helpers.SendHealthEvent(ctx, t, event)
+		nodeName := ctx.Value(keyNodeName).(string)
 
-		t.Logf("Node %s should have condition SysLogsXIDError", testCtx.NodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testCtx.NodeName, "SysLogsXIDError", "", "SysLogsXIDErrorIsNotHealthy", v1.ConditionTrue)
-
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
-		})
-
-		event = helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("DCGM_FR_CLOCK_THROTTLE_POWER").
-			WithCheckName("GpuPowerWatch").
-			WithFatal(false).
-			WithProcessingStrategy(int(protos.ProcessingStrategy_EXECUTE_REMEDIATION))
-		helpers.SendHealthEvent(ctx, t, event)
-
-		t.Logf("Node %s should have node event GpuPowerWatch", testCtx.NodeName)
-		expectedEvent := v1.Event{
-			Type:    "GpuPowerWatch",
-			Reason:  "GpuPowerWatchIsNotHealthy",
-			Message: "ErrorCode:DCGM_FR_CLOCK_THROTTLE_POWER GPU:0 Recommended Action=NONE;",
+		// Uncordon node
+		node, err := helpers.GetNodeByName(ctx, client, nodeName)
+		if err == nil && node.Spec.Unschedulable {
+			node.Spec.Unschedulable = false
+			client.Resources().Update(ctx, node)
 		}
-		helpers.WaitForNodeEvent(ctx, t, client, testCtx.NodeName, expectedEvent)
 
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
-		})
-
+		helpers.DeleteAllHealthEventCRDs(ctx, t, client)
 		return ctx
-	})
-
-	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		event := helpers.NewHealthEvent(testCtx.NodeName).
-			WithErrorCode("79").
-			WithHealthy(true).
-			WithAgent(helpers.SYSLOG_HEALTH_MONITOR_AGENT).
-			WithCheckName("SysLogsXIDError")
-		helpers.SendHealthEvent(ctx, t, event)
-
-		return helpers.TeardownQuarantineTest(ctx, t, c)
 	})
 
 	testEnv.Test(t, feature.Feature())

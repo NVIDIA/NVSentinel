@@ -1,0 +1,72 @@
+{{/*
+Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{- if .Values.healthEvents.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "device-api-server.fullname" . }}-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "device-api-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: policy
+data:
+  # ==========================================================================
+  # HealthEvent TTL Policy
+  # ==========================================================================
+  # Controls automatic cleanup of resolved HealthEvent CRs.
+  # The TTL controller deletes events after they remain in "Resolved" phase
+  # for the specified duration.
+
+  # Time-to-live after event reaches Resolved phase.
+  # Format: Go duration string (e.g., "168h" = 7 days, "720h" = 30 days)
+  # Set to "0" to disable automatic cleanup.
+  ttlAfterResolved: {{ .Values.healthEvents.ttl.afterResolved | quote }}
+
+  # ==========================================================================
+  # Retention Policy
+  # ==========================================================================
+  # Overrides TTL for compliance requirements.
+
+  # Retention mode: "standard" (uses ttlAfterResolved) or "compliance" (uses complianceRetention)
+  retentionMode: {{ .Values.healthEvents.ttl.retentionMode | quote }}
+
+  # Retention period for compliance mode (e.g., "2160h" = 90 days)
+  # Only used when retentionMode is "compliance"
+  complianceRetention: {{ .Values.healthEvents.ttl.complianceRetention | quote }}
+
+  # ==========================================================================
+  # Cleanup Behavior
+  # ==========================================================================
+
+  # Maximum number of events to delete per reconciliation cycle.
+  # Prevents API server overload during bulk cleanup.
+  batchSize: {{ .Values.healthEvents.ttl.batchSize | quote }}
+
+  # Interval between cleanup cycles.
+  # Format: Go duration string (e.g., "5m", "1h")
+  cleanupInterval: {{ .Values.healthEvents.ttl.cleanupInterval | quote }}
+
+  # ==========================================================================
+  # Event History Limits
+  # ==========================================================================
+  # Optional limits to prevent unbounded growth.
+
+  # Maximum events to retain per node (0 = unlimited)
+  maxEventsPerNode: {{ .Values.healthEvents.limits.maxEventsPerNode | quote }}
+
+  # Maximum total events cluster-wide (0 = unlimited)
+  maxTotalEvents: {{ .Values.healthEvents.limits.maxTotalEvents | quote }}
+{{- end }}

@@ -1,0 +1,127 @@
+{{/*
+Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+===============================================================================
+  NVIDIA Device API Server has been installed!
+===============================================================================
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Chart Version: {{ .Chart.Version }}
+App Version: {{ .Chart.AppVersion }}
+
+-------------------------------------------------------------------------------
+  Configuration Summary
+-------------------------------------------------------------------------------
+
+gRPC Address: {{ .Values.server.grpcAddress }}
+Unix Socket: {{ .Values.server.unixSocket }}
+Health Port: {{ .Values.server.healthPort }}
+Metrics Port: {{ .Values.server.metricsPort }}
+{{- if .Values.nvml.enabled }}
+NVML Provider: Enabled
+  - Driver Root: {{ .Values.nvml.driverRoot }}
+  - Health Check: {{ .Values.nvml.healthCheckEnabled }}
+{{- else }}
+NVML Provider: Disabled
+{{- end }}
+
+-------------------------------------------------------------------------------
+  Verify Installation
+-------------------------------------------------------------------------------
+
+1. Check that DaemonSet pods are running on GPU nodes:
+
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
+
+2. Check pod logs:
+
+   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+3. Verify health endpoint (from within the cluster):
+
+   kubectl run -n {{ .Release.Namespace }} --rm -it --restart=Never --image=curlimages/curl:latest curl -- \
+     curl -s http://{{ include "device-api-server.fullname" . }}-metrics.{{ .Release.Namespace }}.svc:{{ .Values.server.metricsPort }}/metrics | head -20
+
+{{- if .Values.metrics.enabled }}
+
+-------------------------------------------------------------------------------
+  Metrics & Monitoring
+-------------------------------------------------------------------------------
+
+Metrics endpoint: http://<pod-ip>:{{ .Values.server.metricsPort }}/metrics
+
+{{- if .Values.metrics.serviceMonitor.enabled }}
+ServiceMonitor: Enabled (Prometheus will auto-discover)
+{{- else }}
+ServiceMonitor: Disabled
+  To enable Prometheus auto-discovery, upgrade with:
+  --set metrics.serviceMonitor.enabled=true
+{{- end }}
+
+{{- if .Values.metrics.prometheusRule.enabled }}
+PrometheusRule: Enabled (alerts configured)
+{{- else }}
+PrometheusRule: Disabled
+  To enable alerting rules, upgrade with:
+  --set metrics.prometheusRule.enabled=true
+{{- end }}
+{{- end }}
+
+-------------------------------------------------------------------------------
+  Client Connection
+-------------------------------------------------------------------------------
+
+Providers and consumers on the same node can connect via:
+
+  - Unix Socket: {{ .Values.server.unixSocket }}
+  - gRPC (TCP): localhost{{ .Values.server.grpcAddress }}
+
+Example using grpcurl:
+
+  # List available services
+  grpcurl -plaintext localhost:{{ .Values.server.grpcAddress | trimPrefix ":" }} list
+
+  # List GPUs
+  grpcurl -plaintext localhost:{{ .Values.server.grpcAddress | trimPrefix ":" }} \
+    nvidia.device.v1alpha1.GpuService/ListGpus
+
+{{- if .Values.nvml.enabled }}
+
+-------------------------------------------------------------------------------
+  NVML Provider Notes
+-------------------------------------------------------------------------------
+
+The NVML provider requires:
+  1. RuntimeClass "nvidia" must exist in the cluster
+  2. NVIDIA GPU Operator or Container Toolkit installed
+  3. Nodes must have NVIDIA GPUs
+
+Verify RuntimeClass exists:
+  kubectl get runtimeclass nvidia
+
+If not present, create it or install the NVIDIA GPU Operator:
+  https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/
+
+{{- end }}
+
+-------------------------------------------------------------------------------
+  Support
+-------------------------------------------------------------------------------
+
+Documentation: https://github.com/nvidia/device-api
+Issues: https://github.com/nvidia/device-api/issues
+
+===============================================================================

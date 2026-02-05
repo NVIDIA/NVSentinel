@@ -8,6 +8,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-logr/logr v1.4.3
 	github.com/hashicorp/go-retryablehttp v0.7.8
+	github.com/nvidia/nvsentinel/api v0.0.0
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
 	github.com/prometheus/client_golang v1.23.2
@@ -90,6 +91,8 @@ require (
 )
 
 // Local replacements for internal modules
+replace github.com/nvidia/nvsentinel/api => ../api
+
 replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
 replace github.com/nvidia/nvsentinel/store-client => ../store-client

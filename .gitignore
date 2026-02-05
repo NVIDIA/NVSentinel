@@ -20,120 +20,21 @@ api/bin/*
 *.test
 
 # Output of the go coverage tool
-*.out
+**/*.out
+code-quality-report.json
 
 # Go workspace file
 go.work
 go.work.sum
 
-# Dependency directories
-# vendor/
+# Local tool binaries (managed by api/Makefile)
+api/bin/*
 
-### Python ###
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Server binary output
+bin/
+device-api-server
 
-# C extensions
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Python version management
-# .python-version
-
-# Poetry local configuration file
-poetry.toml
-
-# Pipenv
-#Pipfile.lock
-
-# Poetry lock file
-#poetry.lock
-
-# pdm
-#pdm.lock
-.pdm.toml
-__pypackages__/
-
-# ============================================================================
-# Testing & Coverage Reports
-# ============================================================================
-# Test reports
-report.xml
-nosetests.xml
-coverage.xml
-
-# Coverage data
-.coverage
-.coverage.*
-*.cover
-*.py,cover
-cover/
-coverage.txt
-htmlcov/
-
-# Code quality reports
-code-quality-report.json
-
-# Test frameworks
-.tox/
-.nox/
-.cache
-.hypothesis/
-.pytest_cache/
-
-# ============================================================================
-# Documentation & Build Outputs
-# ============================================================================
-# Sphinx documentation
-docs/_build/
-
-# mkdocs documentation
-/site
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Distribution directories
-dist/
-
-# ============================================================================
+# ==============================================================================
 # IDE & Editor Configurations
 # ============================================================================
 
@@ -249,198 +150,16 @@ tags
 ### Emacs ###
 *~
 \#*\#
-/.emacs.desktop
-/.emacs.desktop.lock
-*.elc
-auto-save-list
-tramp
-.\#*
 
-# Org-mode
-.org-id-locations
-*_archive
+# ==============================================================================
+# Temporary Implementation Documents
+# ==============================================================================
+NVML_CONTAINERIZATION_IMPLEMENTATION.md
+PR720_REFACTOR_PLAN.md
+ARCH_CONTEXT.md
+IMPLEMENTATION_TASKS.md
 
-# flymake-mode
-*_flymake.*
-
-# eshell files
-/eshell/history
-/eshell/lastdir
-
-# elpa packages
-/elpa/
-
-# reftex files
-*.rel
-
-# AUCTeX auto folder
-/auto/
-
-# cask packages
-.cask/
-
-# Flycheck
-flycheck_*.el
-
-# server auth directory
-/server/
-
-# projectiles files
-.projectile
-
-# directory configuration
-.dir-locals.el
-
-# network security
-/network-security.data
-
-# ============================================================================
-# Notebooks & Interactive Development
-# ============================================================================
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# ============================================================================
-# Python Type Checkers & Linters
-# ============================================================================
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# ruff
-.ruff_cache/
-
-# LSP config files
-pyrightconfig.json
-
-# ============================================================================
-# Python Web Frameworks
-# ============================================================================
-# Django
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask
-instance/
-.webassets-cache
-
-# Scrapy
-.scrapy
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# Translations
-*.mo
-*.pot
-
-# ============================================================================
-# Infrastructure as Code
-# ============================================================================
-
-### Terraform ###
-# Local .terraform directories
-**/.terraform/*
-
-# .tfstate files
-*.tfstate
-*.tfstate.*
-
-# Crash log files
-crash.log
-crash.*.log
-
-# Sensitive data files
-*.tfvars
-*.tfvars.json
-
-# Override files
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-
-### Helm ###
-# Chart dependencies
-**/charts/*.tgz
-
-
-# Ignore generated credentials from google-github-actions/auth
-gha-creds-*.json
-
-
-# Terraform 
-.terraformrc
-*_override.tf
-*_override.tf.json
-*.tfstate
-*.tfstate.*
-*.tfvars
-crash.*.log
-crash.log
-override.tf
-override.tf.json
-terraform.rc
-
-# Teraform Demo 
-.terraform
-.terraform.lock.hcl
-
-# ============================================================================
-# Environment Management
-# ============================================================================
-
-### Version Management Tools ###
-mise.toml
-
-### VSCode ###
-*.code-workspace
-
-# ============================================================================
-# Project-Specific Files
-# ============================================================================
-digests.txt
-images.json
-
-# Binary files
-fault-quarantine/fault-quarantine
-fault-remediation/fault-remediation
-health-events-analyzer/health-events-analyzer
-health-monitors/syslog-health-monitor/syslog-health-monitor
-health-monitors/kubernetes-object-monitor/kubernetes-object-monitor
-labeler/labeler
-metadata-collector/metadata-collector
-node-drainer/node-drainer
-platform-connectors/platform-connectors
-event-exporter/event-exporter
-tests/scale-tests/FQM_LATENCY_TEST_PLAN.md
-tests/scale-tests/CONCURRENT_DRAIN_TEST_PLAN.md
-tests/scale-tests/results/*.csv
-tests/scale-tests/cmd/fqm-scale-test/results/
+# ==============================================================================
+# Git Worktrees
+# ==============================================================================
+.worktrees/

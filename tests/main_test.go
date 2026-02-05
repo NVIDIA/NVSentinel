@@ -26,6 +26,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
+
+	nvsentinelv1alpha1 "github.com/nvidia/nvsentinel/api/nvsentinel/v1alpha1"
 )
 
 var testEnv env.Environment
@@ -36,9 +38,10 @@ var testEnv env.Environment
 type testContextKey int
 
 const (
-	keyNodeName  testContextKey = iota //lint:ignore U1000 Used by test files with build tags
-	keyNamespace                       //lint:ignore U1000 Used by test files with build tags
-	keyPodName                         //lint:ignore U1000 Used by test files with build tags
+	keyNodeName        testContextKey = iota //lint:ignore U1000 Used by test files with build tags
+	keyNamespace                             //lint:ignore U1000 Used by test files with build tags
+	keyPodName                               //lint:ignore U1000 Used by test files with build tags
+	keyHealthEventName                       //lint:ignore U1000 Used by test files with build tags
 )
 
 // TestMain sets up the test environment and makes testEnv available
@@ -53,6 +56,11 @@ func TestMain(m *testing.M) {
 	// Register KWOK types with the scheme for typed client support
 	if err := kwokv1alpha1.AddToScheme(cfg.Client().Resources().GetScheme()); err != nil {
 		panic(fmt.Sprintf("failed to register KWOK types: %v", err))
+	}
+
+	// Register NVSentinel HealthEvent CRD types for CRD-based E2E tests
+	if err := nvsentinelv1alpha1.AddToScheme(cfg.Client().Resources().GetScheme()); err != nil {
+		panic(fmt.Sprintf("failed to register NVSentinel types: %v", err))
 	}
 
 	testEnv = env.NewWithConfig(cfg)
