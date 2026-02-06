@@ -104,14 +104,28 @@ main() {
         node_name=$(echo "$node" | cut -d'/' -f2)
         echo "Node: $node_name"
         
-        # Get all conditions
-        kubectl get "$node" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}' | \
-            grep -v "^Ready\|^MemoryPressure\|^DiskPressure\|^PIDPressure\|^NetworkUnavailable" || true
+        # Get all conditions and capture for checking while also displaying
+        node_conditions=$(kubectl get "$node" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}') || {
+            echo "  ⚠️  Failed to fetch conditions for $node_name"
+            continue
+        }
+        conditions_output=$(echo "$node_conditions" | \
+            grep -v "^Ready\|^MemoryPressure\|^DiskPressure\|^PIDPressure\|^NetworkUnavailable" || true)
+        
+        echo "$conditions_output"
+        
+        # Track if we found any actual health failures (Status=True indicating a problem)
+        if echo "$conditions_output" | grep -q $'\t'"True"$'\t'; then
+            has_conditions=true
+        fi
         
     done
     
-    if [ "$has_conditions" = false ]; then
-        echo "  ℹ️  No health event conditions found (cluster is healthy)"
+    echo ""
+    if [ "$has_conditions" = true ]; then
+        echo "  ⚠️  Health issues detected (see conditions above)"
+    else
+        echo "  ✅ No health event conditions found (cluster is healthy)"
     fi
     
     section "Recent Events"
