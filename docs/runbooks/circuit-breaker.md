@@ -9,6 +9,41 @@ This runbook guides you through investigating and resetting a tripped circuit br
 - In-progress remediation continues, but no new actions are taken
 - Only reset after investigating and fixing the root cause
 
+## Common Scenarios
+
+### Cluster Scale Operations
+
+Circuit breakers often trip during **legitimate cluster operations** such as:
+
+- **Initial cluster bringup**: Creating a CPU-only cluster, then adding GPU node pools
+- **Autoscaling events**: Karpenter/Cluster Autoscaler rapidly provisioning nodes
+- **Capacity expansion**: Adding new node pools after receiving GPU quota
+- **Multi-zone expansion**: Adding nodes across multiple availability zones
+
+**Why**: New GPU nodes appear "unhealthy" during initialization (GPU driver, GPU Operator, DCGM not ready). On small clusters, even adding 1 node can exceed the threshold.
+
+**Prevention**: Label nodes before scale operations:
+
+```bash
+# Before adding nodes
+kubectl label node --all k8saas.nvidia.com/ManagedByNVSentinel=false
+
+# After nodes are healthy
+kubectl label node --all k8saas.nvidia.com/ManagedByNVSentinel-
+```
+
+See [Cluster Scale Operations](cluster-scale-operations.md) for detailed procedures.
+
+### GPU Driver Upgrades
+
+During driver/GPU Operator upgrades, DCGM becomes temporarily unavailable. Parallel upgrades can trip the breaker.
+
+See [Driver Upgrades](driver-upgrades.md) for procedures.
+
+### Node Maintenance
+
+OS maintenance (OSMO), node reboots, or infrastructure work affecting multiple nodes simultaneously.
+
 ## Procedure
 
 ### 1. Verify Status
@@ -110,3 +145,11 @@ kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}'
 # Monitor nodes
 kubectl get nodes -w
 ```
+
+## Related Documentation
+
+- [Cluster Scale Operations](cluster-scale-operations.md) - Preventing circuit breaker trips during node scale-up
+- [Driver Upgrades](driver-upgrades.md) - Managing circuit breaker during GPU driver upgrades  
+- [ADR-022: Circuit Breaker Reset Mechanism](../designs/022-circuit-breaker-reset-mechanism.md) - Design details on cursor modes
+- [ADR-027: Automated Node Labeling](../designs/027-automated-node-labeling.md) - Future automation for scale operations
+

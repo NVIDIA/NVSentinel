@@ -232,6 +232,45 @@ For detailed module configuration, see the **[Helm Chart Configuration Guide](di
 - **[Metadata Collector](docs/metadata-collector.md)**: Gathers GPU and NVSwitch topology information
 - **[Log Collection](docs/log-collection.md)**: Collects diagnostic logs and GPU reports for troubleshooting
 
+## 📚 Documentation
+
+### Runbooks and Operational Guides
+
+NVSentinel provides comprehensive documentation for common operational scenarios:
+
+**Essential Reading**:
+- **[Maintenance Operations Guide](docs/runbooks/maintenance-operations.md)** - Complete guide for all maintenance scenarios (start here!)
+- **[Cluster Scale Operations](docs/runbooks/cluster-scale-operations.md)** - Prevent circuit breaker trips during node scale-up and cluster bringup
+- **[Circuit Breaker Troubleshooting](docs/runbooks/circuit-breaker.md)** - Reset and troubleshoot circuit breaker trips
+- **[Driver Upgrades](docs/runbooks/driver-upgrades.md)** - Safely upgrade GPU drivers and GPU Operator
+
+**Additional Resources**:
+- [All Runbooks](docs/runbooks/) - Complete list of troubleshooting guides
+- [Architecture Decision Records (ADRs)](docs/designs/) - Design decisions and rationale
+- [Component Documentation](docs/) - Detailed docs for each NVSentinel component
+
+### Key Topics
+
+#### Preventing Circuit Breaker Issues
+
+The most common operational issue is the circuit breaker tripping during legitimate operations like:
+- Initial GPU node bringup (CPU → GPU cluster transitions)
+- Autoscaling events (Karpenter, Cluster Autoscaler)
+- GPU driver or operator upgrades
+- Node maintenance operations
+
+**Solution**: Label nodes to exclude them from NVSentinel management during transitional states:
+
+```bash
+# Before maintenance/scale-up
+kubectl label node <NODE_NAME> k8saas.nvidia.com/ManagedByNVSentinel=false
+
+# After nodes are healthy
+kubectl label node <NODE_NAME> k8saas.nvidia.com/ManagedByNVSentinel-
+```
+
+See the [Cluster Scale Operations](docs/runbooks/cluster-scale-operations.md) guide for detailed procedures.
+
 ## 📋 Requirements
 
 - **Kubernetes**: 1.25 or later

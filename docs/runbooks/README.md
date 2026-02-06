@@ -4,13 +4,17 @@ This directory contains troubleshooting runbooks for NVSentinel operations.
 
 ## Available Runbooks
 
+### Maintenance Operations
+- [Maintenance Operations Guide](maintenance-operations.md) - **START HERE** - Comprehensive guide for all maintenance scenarios
+- [Cluster Scale Operations](cluster-scale-operations.md) - Prevent circuit breaker trips during node scale-up and initial bringup
+- [Driver Upgrades](driver-upgrades.md) - Safely upgrade GPU drivers without triggering circuit breaker
+
 ### Core System Issues
 - [Circuit Breaker Troubleshooting](circuit-breaker.md) - Reset a tripped circuit breaker after mass cordon events
 - [Cordoned Nodes](cordoned-nodes.md) - Investigate and remediate cordoned nodes
 - [Node Conditions](node-conditions.md) - Handle nodes with health conditions but not cordoned
 - [Stale Events](stale-events.md) - Clear accumulated events after system downtime
 - [Datastore Connection](datastore-connection.md) - Connect to MongoDB for health event queries
-- [Driver Upgrades](driver-upgrades.md) - Runbook for driver upgrade
 
 ### Platform Connector Issues
 - [Node Event Creation Failures](node-event-creation-failures.md) - Resolve failures when creating Kubernetes node events
