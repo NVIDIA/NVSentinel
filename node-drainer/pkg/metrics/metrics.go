@@ -101,38 +101,13 @@ var (
 		},
 	)
 
-	// PodEvictionDuration tracks time to successfully evict all pods from a node
+	// PodEvictionDuration tracks time to successfully evict all pods from a node.
+	// Exponential buckets from 0.1s to ~3 days (0.1 * 2^22 = 259200s).
 	PodEvictionDuration = promauto.NewHistogram(
 		prometheus.HistogramOpts{
-			Name: "node_drainer_pod_eviction_duration_seconds",
-			Help: "Time from event receipt by node-drainer to successful pod eviction completion.",
-			Buckets: []float64{
-				0.1,
-				0.25,
-				0.5,
-				1,
-				2,
-				3,
-				4,
-				5,
-				10,
-				30,
-				60,      // 1 minute
-				300,     // 5 minutes
-				900,     // 15 minutes
-				1800,    // 30 minutes
-				3600,    // 1 hour
-				10800,   // 3 hours
-				21600,   // 6 hours
-				43200,   // 12 hours
-				86400,   // 1 day
-				259200,  // 3 days
-				604800,  // 7 days
-				1296000, // 15 days
-				2592000, // 30 days
-				5184000, // 60 days
-				7776000, // 90 days
-			},
+			Name:    "node_drainer_pod_eviction_duration_seconds",
+			Help:    "Time from event receipt by node-drainer to successful pod eviction completion.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 23),
 		},
 	)
 

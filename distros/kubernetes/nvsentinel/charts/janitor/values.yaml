@@ -139,6 +139,27 @@ config:
       # If not set or set to empty, defaults to config.timeout (25m)
       timeout: "25m"
 
+    # GPU reset controller configuration
+    gpuReset:
+      # Enable/disable the GPU reset controller (default: true)
+      enabled: true
+      timeout: "25m"
+      serviceManager:
+        name: "gpu-operator"
+      resetJob:
+        # imagePullSecrets can be specified under image.imagePullSecrets, otherwise we will
+        # fall back to global.imagePullSecrets.
+        image:
+          repository: ghcr.io/nvidia/nvsentinel/gpu-reset
+          tag: ""
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+
 # Webhook Configuration
 webhook:
   # Port for the webhook server

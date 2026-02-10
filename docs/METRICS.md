@@ -46,7 +46,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_taints_removed_total` | Counter | `taint_key`, `taint_effect` | Total number of taints removed from nodes |
 | `fault_quarantine_cordons_applied_total` | Counter | - | Total number of cordons applied to nodes |
 | `fault_quarantine_cordons_removed_total` | Counter | - | Total number of cordons removed from nodes |
-| `fault_quarantine_node_cordon_duration_seconds` | Histogram | - | Time from health event generation to node cordon completion. Buckets: 1s to 1 hour |
+| `fault_quarantine_node_quarantine_duration_seconds` | Histogram | - | Time from health event generation to node quarantine completion. Buckets: Prometheus DefBuckets |
 
 ### Ruleset Evaluation Metrics
 
@@ -79,7 +79,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `node_drainer_processing_errors_total` | Counter | `error_type`, `node` | Total number of errors encountered during event processing and node draining |
 | `node_drainer_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 | `node_drainer_queue_depth` | Gauge | - | Total number of pending events in the queue |
-| `node_drainer_pod_eviction_duration_seconds` | Histogram | - | Time from event receipt by node-drainer to successful pod eviction. Buckets: 1 minute to 90 days |
+| `node_drainer_pod_eviction_duration_seconds` | Histogram | - | Time from event receipt by node-drainer to successful pod eviction completion. Buckets: Exponential (0.1s, factor 2, 23 buckets, up to ~3 days) |
 
 ### Node Draining Metrics
 
@@ -101,7 +101,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_remediation_processing_errors_total` | Counter | `error_type`, `node_name` | Total number of errors encountered during event processing |
 | `fault_remediation_unsupported_actions_total` | Counter | `action`, `node_name` | Total number of health events with currently unsupported remediation actions |
 | `fault_remediation_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
-| `fault_remediation_cr_generate_duration_seconds` | Histogram | - | Time from event receipt by fault-remediation to CR creation. Buckets: 1 minute to 90 days |
+| `fault_remediation_cr_generate_duration_seconds` | Histogram | - | Time from drain completion (or quarantine completion if drain timestamp unavailable) to maintenance CR creation. Buckets: Prometheus DefBuckets |
 
 ### Log Collector Metrics
 

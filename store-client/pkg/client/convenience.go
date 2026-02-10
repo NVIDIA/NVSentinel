@@ -42,7 +42,7 @@ func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseC
 		"healtheventstatus.nodequarantined": status,
 	}
 
-	if status == "Quarantined" {
+	if status == "Quarantined" || status == "AlreadyQuarantined" {
 		fields["healtheventstatus.quarantinefinishtimestamp"] = time.Now()
 	}
 

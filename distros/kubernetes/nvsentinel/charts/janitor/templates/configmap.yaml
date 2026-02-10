@@ -66,3 +66,26 @@ data:
       {{- if .Values.config.controllers.terminateNode.cspProviderHost }}
       cspProviderHost: {{ .Values.config.controllers.terminateNode.cspProviderHost }}
       {{- end }}
+
+    gpuResetController:
+      enabled: {{ if (hasKey .Values.config.controllers.gpuReset "enabled") }}{{ .Values.config.controllers.gpuReset.enabled }}{{ else }}true{{ end }}
+      timeout: {{ .Values.config.controllers.gpuReset.timeout | default .Values.config.timeout | default "25m" }}
+      manualMode: {{ .Values.config.manualMode | default false }}
+      {{- if .Values.config.controllers.gpuReset.cspProviderHost }}
+      cspProviderHost: {{ .Values.config.controllers.gpuReset.cspProviderHost }}
+      {{- end }}
+      {{- if .Values.config.controllers.gpuReset.resetJob }}
+      resetJob:
+        imageConfig:
+          image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          {{- with (.Values.config.controllers.gpuReset.resetJob.image.imagePullSecrets | default  (.Values.global).imagePullSecrets) }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 10 }}
+          {{- end }}
+        resources:
+          {{- toYaml .Values.config.controllers.gpuReset.resetJob.resources | nindent 10 }}
+      {{- end }}
+      {{- if .Values.config.controllers.gpuReset.serviceManager }}
+      serviceManager:
+        {{- toYaml .Values.config.controllers.gpuReset.serviceManager | nindent 8 }}
+      {{- end }}

@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -90,7 +91,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Client: k8sClient,
 			Scheme: scheme.Scheme,
 			Config: &config.TerminateNodeControllerConfig{
-				ManualMode: false,
+				ManualMode: ptr.To(false),
 			},
 			CSPClient: mockCSP.Client,
 			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
@@ -387,7 +388,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 	Context("when manual mode is enabled", func() {
 		BeforeEach(func() {
 			// Enable manual mode in the reconciler config
-			reconciler.Config.ManualMode = true
+			reconciler.Config.ManualMode = ptr.To(true)
 		})
 
 		It("should set ManualMode condition on the first reconciliation", func() {
@@ -400,8 +401,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			// In manual mode, controller doesn't requeue after setting ManualMode condition
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get updated TerminateNode
 			var updatedTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode
@@ -500,8 +500,7 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			// Next reconciliation should detect not ready node and delete it, completing termination immediately
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			// Controller deletes the node and completes termination immediately, so no requeue
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get final state
 			var finalTerminateNode janitordgxcnvidiacomv1alpha1.TerminateNode

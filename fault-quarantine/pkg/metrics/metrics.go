@@ -128,7 +128,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_node_quarantine_duration_seconds",
 			Help:    "Time from health event generation to node quarantine completion.",
-			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 4, 5, 10, 30, 60, 120, 300, 600, 1800, 3600}, // 0.1s to 1 hour
+			Buckets: prometheus.DefBuckets,
 		},
 	)
 
@@ -173,7 +173,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_get_total_nodes_retry_attempts",
 			Help:    "Number of retry attempts needed for getTotalNodesWithRetry.",
-			Buckets: []float64{0, 1, 2, 3, 5, 10},
+			Buckets: prometheus.DefBuckets,
 		},
 	)
 )

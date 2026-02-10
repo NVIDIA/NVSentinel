@@ -849,6 +849,7 @@ func (r *Reconciler) updateQuarantineMetrics(
 
 		duration := metricsutil.CalculateDurationSeconds(generatedTimestamp)
 		slog.Info("Node quarantine duration", "duration", duration)
+
 		if duration > 0 {
 			metrics.NodeQuarantineDuration.Observe(duration)
 		}

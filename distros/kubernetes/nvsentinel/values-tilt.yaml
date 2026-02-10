@@ -16,6 +16,9 @@ global:
   dryRun: false
   kubeVersion: 1.31.0
 
+  imagePullSecrets:
+    - name: global-pull-secret
+
   # NOTE: Datastore configuration is provided by:
   # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
   # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
@@ -3702,6 +3705,38 @@ health-events-analyzer:
 janitor:
   config:
     cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+    controllers:
+      gpuReset:
+        enabled: true
+        timeout: "25m"
+        serviceManager:
+          name: "gpu-operator"
+          spec:
+            namespace: "gpu-operator"
+            teardownTimeout: "5m"
+            restoreTimeout: "10m"
+            managerSelector:
+              app.kubernetes.io/managed-by: "tilt"
+            apps:
+            - appSelector:
+                app: "nvidia-dcgm"
+              nodeLabel: "nvidia.com/gpu.deploy.dcgm"
+              enabledValue: "true"
+              disabledValue: "false"
+        resetJob:
+          image:
+            repository: "alpine"
+            tag: "latest"
+            imagePullSecrets:
+            - name: pull-secret
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
   webhook:
     certIssuer: "janitor-selfsigned-issuer"
 

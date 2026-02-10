@@ -598,7 +598,8 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	}
 
 	// Set DrainFinishTimestamp when drain completes successfully
-	if userPodsEvictionStatus.Status == model.StatusSucceeded {
+	if userPodsEvictionStatus.Status == model.StatusSucceeded ||
+		userPodsEvictionStatus.Status == model.AlreadyDrained {
 		now := time.Now().UTC()
 		updateFields["healtheventstatus.drainfinishtimestamp"] = now
 	}

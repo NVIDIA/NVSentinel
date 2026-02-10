@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -126,7 +127,8 @@ var _ = Describe("RebootNode Controller", func() {
 			Client: k8sClient,
 			Scheme: scheme.Scheme,
 			Config: &config.RebootNodeControllerConfig{
-				Timeout: 30 * time.Minute,
+				Timeout:    30 * time.Minute,
+				ManualMode: ptr.To(false),
 			},
 			CSPClient: mockCSP.Client,
 			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
@@ -231,7 +233,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on completion
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -285,7 +287,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0))) // Should not requeue on failure
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -482,7 +484,7 @@ var _ = Describe("RebootNode Controller", func() {
 	Context("when manual mode is enabled", func() {
 		BeforeEach(func() {
 			// Enable manual mode in the reconciler config
-			reconciler.Config.ManualMode = true
+			reconciler.Config.ManualMode = ptr.To(true)
 		})
 
 		It("should set ManualMode condition on the first reconciliation", func() {
@@ -495,8 +497,7 @@ var _ = Describe("RebootNode Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			// In manual mode, controller doesn't requeue after setting ManualMode condition
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get updated RebootNode
 			var updatedRebootNode janitordgxcnvidiacomv1alpha1.RebootNode
@@ -584,8 +585,7 @@ var _ = Describe("RebootNode Controller", func() {
 			// Next reconciliation should complete the reboot since node is ready
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			// In manual mode, when both CSP (always true) and Kubernetes report ready, reboot completes
-			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+			Expect(result.RequeueAfter).To(Equal(2 * time.Second))
 
 			// Get final state
 			var finalRebootNode janitordgxcnvidiacomv1alpha1.RebootNode

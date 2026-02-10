@@ -28,4 +28,16 @@ kindV1Alpha4Cluster:
     - role: control-plane
     - role: control-plane
     - role: worker
+      kubeadmConfigPatches:
+        - |
+          kind: JoinConfiguration
+          nodeRegistration:
+            kubeletExtraArgs:
+              node-labels: "nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"
     - role: worker
+      kubeadmConfigPatches:
+        - |
+          kind: JoinConfiguration
+          nodeRegistration:
+            kubeletExtraArgs:
+              node-labels: "nvidia.com/gpu.deploy.dcgm=true,nvidia.com/gpu.deploy.driver=true"

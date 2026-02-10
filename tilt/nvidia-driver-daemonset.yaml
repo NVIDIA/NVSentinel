@@ -15,6 +15,8 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
+  labels:
+    app: nvidia-driver-daemonset
   name: nvidia-driver-daemonset
   namespace: gpu-operator
 spec:
@@ -26,10 +28,12 @@ spec:
       labels:
         app: nvidia-driver-daemonset
     spec:
+      nodeSelector:
+        nvidia.com/gpu.deploy.driver: "true"
       containers:
-      - image: public.ecr.aws/docker/library/ubuntu:22.04
-        command: ["sleep", "infinity"]
-        name: nvidia-driver-ctr
+        - image: public.ecr.aws/docker/library/ubuntu:22.04
+          command: ["sleep", "infinity"]
+          name: nvidia-driver-ctr
       tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
