@@ -225,6 +225,16 @@ The test manifests include `topologySpreadConstraints` with `maxSkew: 3`, which 
 5. **AllowCompletion verified:** Pods correctly NOT evicted in all three tests
 6. **Perfect distribution validation:** M3 showed exact 750/750 match with perfect pod distribution
 
+**Note on DeleteAfterTimeout Drain Time:**
+
+The comparison table shows DeleteAfterTimeout drain times of ~90s, ~4 min, and ~10 min — longer than the configured 2-minute timeout. This is expected because:
+
+1. **Timeout triggers initiation, not completion:** The 2-minute timeout determines *when* force-deletion begins, not when it finishes
+2. **API rate limiting:** The Kubernetes client rate limiter (5 deletions/sec) throttles how fast pods can be deleted. With 750 pods to force-delete (M3), the deletion API calls alone take ~150 seconds
+3. **Staggered timeouts:** Events are created over the cordon phase (~5 min for M3), so different nodes hit their 2-minute timeout at different times
+
+The gradual decrease in pod counts (e.g., M2: 317 → 298 → 252 → 164 → 70 → 0) reflects this staggered timeout + rate-limited deletion pattern. The key validation is that all DeleteAfterTimeout pods are eventually force-deleted, which succeeds in all tests.
+
 ---
 
 ## Node Drainer Behavior Analysis
