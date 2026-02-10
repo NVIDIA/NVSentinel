@@ -26,7 +26,29 @@ rules:
   - get
   - list
   - watch
+  - patch
+  - update
   - delete
+- apiGroups:
+    - ""
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
+    - watch
+    - patch
+- apiGroups:
+    - batch
+  resources:
+    - jobs
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - delete
+    - patch
 - apiGroups:
   - ""
   resources:
@@ -97,4 +119,29 @@ rules:
   - terminatenodes/finalizers
   verbs:
   - update
-
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - gpuresets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - gpuresets/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - janitor.dgxc.nvidia.com
+  resources:
+  - gpuresets/finalizers
+  verbs:
+  - update

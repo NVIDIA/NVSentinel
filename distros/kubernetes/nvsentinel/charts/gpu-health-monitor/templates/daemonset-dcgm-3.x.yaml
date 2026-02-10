@@ -47,7 +47,7 @@ spec:
             - --dcgm-error-mapping-config-file
             - "/etc/dcgmhealth/dcgmerrorsmapping.csv"
             - --dcgm-addr
-            - {{ ternary  (printf "%s:%v" .Values.dcgm.service.endpoint .Values.dcgm.service.port) "localhost:5555" .Values.dcgm.dcgmK8sServiceEnabled | quote }}
+            - {{ ternary (include "gpu-health-monitor.dcgmAddr" .) "localhost:5555" (include "gpu-health-monitor.dcgmEnabled" . | eq "true") | quote }}
             - --port
             - "{{ .Values.global.metricsPort }}"
             - --verbose
@@ -55,7 +55,7 @@ spec:
             - --state-file
             - "/var/run/statefile"
             - --dcgm-k8s-service-enabled
-            - {{ .Values.dcgm.dcgmK8sServiceEnabled | quote }}
+            - {{ include "gpu-health-monitor.dcgmEnabled" . | quote }}
             - --metadata-path
             - {{ .Values.global.metadataPath | quote }}
             - --processing-strategy

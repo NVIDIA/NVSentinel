@@ -129,6 +129,7 @@ include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
+include('../gpu-reset/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
     '../distros/kubernetes/nvsentinel/values-tilt.yaml',

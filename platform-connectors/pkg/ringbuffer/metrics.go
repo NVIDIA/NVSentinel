@@ -42,7 +42,7 @@ func (prometheusMetricsProvider) NewLatencyMetric(name string) workqueue.Histogr
 	return promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "platform_connector_workqueue_latency_seconds_" + name,
 		Help:    "How long an item stays in Platform connector workqueue before being requested",
-		Buckets: prometheus.LinearBuckets(0, 10, 500),
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
 	}, []string{workqueueLabel}).WithLabelValues(name)
 }
 
@@ -50,7 +50,7 @@ func (prometheusMetricsProvider) NewWorkDurationMetric(name string) workqueue.Hi
 	return promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "platform_connector_workqueue_work_duration_seconds_" + name,
 		Help:    "How long processing an item from Platform connector workqueue takes",
-		Buckets: prometheus.LinearBuckets(0, 10, 500),
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
 	}, []string{workqueueLabel}).WithLabelValues(name)
 }
 

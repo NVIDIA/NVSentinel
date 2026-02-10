@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"os"
 
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 type Config struct {
@@ -33,6 +33,14 @@ type FileConfig struct {
 	InitContainers       []corev1.Container `yaml:"initContainers"`
 	GPUResourceNames     []string           `yaml:"gpuResourceNames"`
 	NetworkResourceNames []string           `yaml:"networkResourceNames"`
+	DCGM                 DCGMConfig         `yaml:"dcgm"`
+}
+
+type DCGMConfig struct {
+	HostengineAddr     string `yaml:"hostengineAddr"`
+	DiagLevel          int    `yaml:"diagLevel"`
+	ConnectorSocket    string `yaml:"connectorSocket"`
+	ProcessingStrategy string `yaml:"processingStrategy"`
 }
 
 func Load(path string) (*Config, error) {
@@ -48,6 +56,14 @@ func Load(path string) (*Config, error) {
 
 	if len(fileConfig.GPUResourceNames) == 0 {
 		fileConfig.GPUResourceNames = []string{"nvidia.com/gpu"}
+	}
+
+	if fileConfig.DCGM.DiagLevel == 0 {
+		fileConfig.DCGM.DiagLevel = 1
+	}
+
+	if fileConfig.DCGM.ProcessingStrategy == "" {
+		fileConfig.DCGM.ProcessingStrategy = "EXECUTE_REMEDIATION"
 	}
 
 	return &Config{FileConfig: fileConfig}, nil

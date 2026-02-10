@@ -76,27 +76,28 @@ func (r *TerminateNodeReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Check if reconciliation is complete
 	completedReconciling := terminateNode.Status.CompletionTime != nil
 	if !completedReconciling {
-		// Try to acquire node lock before reconciling
 		locked := r.NodeLock.LockNode(ctx, &terminateNode, terminateNode.Spec.NodeName)
 		if !locked {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
-		// Execute the reconcile logic
+
 		result, err := r.reconcileHelper(ctx, &terminateNode)
-		// We always re-queue after successful reconcile to check if unlock is needed on the next reconcile.
-		// This avoids having to re-fetch the object at the end of reconciling to check if CompletionTime was set.
-		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
-		if err != nil || result.Requeue || result.RequeueAfter > 0 {
+		// We will always re-queue the object and check if Unlock is needed on the next reconcile rather than
+		// re-fetch the object or require reconcileHelper to specify it completed reconciling. If the controller
+		// forces a re-queue by returning an error or setting a RequeueAfter, we will respect that re-queue behavior,
+		// else we will manually set RequeueAfter. As a result, if the controller doesn't force a re-queue or forces
+		// a re-queue by setting Requeue, we will set RequeueAfter. Setting Requeue to true is deprecated
+		// and can lead to long reconcile times so we will enforce that RequeueAfter is used.
+		if err != nil || result.RequeueAfter > 0 {
 			return result, err
 		}
 
-		//nolint:staticcheck // SA1019: Requeue deprecated but changing behavior needs careful review
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
-	// CompletionTime is set, try to release the lock
+
 	retryUnlock := r.NodeLock.CheckUnlock(ctx, &terminateNode, terminateNode.Spec.NodeName)
 	if retryUnlock {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -208,7 +209,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 
 			result = ctrl.Result{RequeueAfter: 30 * time.Second}
 		} else {
-			if r.Config.ManualMode {
+			if *r.Config.ManualMode {
 				isManualModeConditionSet := false
 
 				for _, condition := range terminateNode.Status.Conditions {

@@ -16,6 +16,9 @@ global:
   dryRun: false
   kubeVersion: 1.31.0
 
+  imagePullSecrets:
+    - name: global-pull-secret
+
   # NOTE: Datastore configuration is provided by:
   # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
   # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
@@ -3702,6 +3705,38 @@ health-events-analyzer:
 janitor:
   config:
     cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+    controllers:
+      gpuReset:
+        enabled: true
+        timeout: "25m"
+        serviceManager:
+          name: "gpu-operator"
+          spec:
+            namespace: "gpu-operator"
+            teardownTimeout: "5m"
+            restoreTimeout: "10m"
+            managerSelector:
+              app.kubernetes.io/managed-by: "tilt"
+            apps:
+            - appSelector:
+                app: "nvidia-dcgm"
+              nodeLabel: "nvidia.com/gpu.deploy.dcgm"
+              enabledValue: "true"
+              disabledValue: "false"
+        resetJob:
+          image:
+            repository: "alpine"
+            tag: "latest"
+            imagePullSecrets:
+            - name: pull-secret
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
   webhook:
     certIssuer: "janitor-selfsigned-issuer"
 
@@ -3778,6 +3813,8 @@ platformConnector:
     #     isFatal: false
 kubernetes-object-monitor:
   logLevel: debug
+  # Short resync period for faster test feedback (production should use 30s+)
+  resyncPeriod: 5s
 
   policies:
     - name: node-test-condition
@@ -3796,6 +3833,55 @@ kubernetes-object-monitor:
         recommendedAction: CONTACT_SUPPORT
         errorCode:
           - NODE_TEST_CONDITION_NOT_READY
+
+    # This policy monitors DaemonSet pods in the gpu-operator namespace and publishes
+    # fatal health events when pods are unhealthy. It detects:
+    # 1. Pods not in Running/Succeeded phase (e.g., Pending, Failed)
+    # 2. Pods in CrashLoopBackOff (phase=Running but container is crashing)
+    #
+    - name: gpu-operator-pod-health
+      enabled: true
+      resource:
+        group: ""
+        version: v1
+        kind: Pod
+      predicate:
+        # Trigger event if:
+        # 1. Pod is in gpu-operator namespace
+        # 2. Pod is owned by a DaemonSet (filters to only monitor DaemonSet pods)
+        # 3. Pod has been assigned to a node (nodeName is set)
+        # 4. Pod is unhealthy: either NOT in Running/Succeeded state OR in CrashLoopBackOff
+        # 5. Pod has been running for at least 30 seconds (grace period)
+        #
+        # Note: CrashLoopBackOff pods have phase=Running but container is in Waiting state
+        # with reason=CrashLoopBackOff, so we must check containerStatuses explicitly.
+        expression: |
+          resource.metadata.namespace == 'gpu-operator' && 
+          has(resource.metadata.ownerReferences) &&
+          resource.metadata.ownerReferences.exists(r, r.kind == 'DaemonSet') &&
+          has(resource.spec.nodeName) && resource.spec.nodeName != "" &&
+          has(resource.status.startTime) &&
+          now - timestamp(resource.status.startTime) > duration('30s') &&
+          (
+            (resource.status.phase != 'Running' && resource.status.phase != 'Succeeded') ||
+            (
+              has(resource.status.containerStatuses) &&
+              resource.status.containerStatuses.exists(cs,
+                has(cs.state.waiting) && 
+                has(cs.state.waiting.reason) && 
+                cs.state.waiting.reason == 'CrashLoopBackOff'
+              )
+            )
+          )
+      nodeAssociation:
+        expression: resource.spec.nodeName
+      healthEvent:
+        componentClass: Software
+        isFatal: true
+        message: "GPU Operator DaemonSet pod is unhealthy (not Running or in CrashLoopBackOff)"
+        recommendedAction: CONTACT_SUPPORT
+        errorCode:
+          - GPU_OPERATOR_POD_UNHEALTHY
 
   affinity:
     podAntiAffinity:

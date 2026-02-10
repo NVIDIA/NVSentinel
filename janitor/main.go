@@ -150,20 +150,6 @@ func run() error {
 		"config", configFile,
 		"secure-metrics", secureMetrics)
 
-	// Load configuration from file
-	cfg, err := config.LoadConfig(configFile)
-	if err != nil {
-		slog.Error("Unable to load configuration", "error", err)
-		return err
-	}
-
-	slog.Info("Loaded configuration",
-		"rebootNode.enabled", cfg.RebootNode.Enabled,
-		"rebootNode.timeout", cfg.RebootNode.Timeout,
-		"terminateNode.enabled", cfg.TerminateNode.Enabled,
-		"terminateNode.timeout", cfg.TerminateNode.Timeout,
-		"global.manualMode", cfg.Global.ManualMode)
-
 	// Discover the namespace the pod is running in
 	podNamespace := os.Getenv("POD_NAMESPACE")
 	if podNamespace == "" {
@@ -172,7 +158,14 @@ func run() error {
 		podNamespace = "nvsentinel"
 	}
 
-	slog.Info("Using namespace for distributed locking", "namespace", podNamespace)
+	slog.Info("Using namespace for distributed locking and GPU reset resources", "namespace", podNamespace)
+
+	// Load configuration from file
+	cfg, err := config.LoadConfig(configFile, podNamespace)
+	if err != nil {
+		slog.Error("Unable to load configuration", "error", err)
+		return err
+	}
 
 	// Parse config port from address
 	// Handles formats like ":8082", "localhost:8082", "0.0.0.0:8082"
@@ -313,6 +306,13 @@ func run() error {
 
 	slog.Info("Manager created successfully")
 
+	// Global function to configure field indexers to prevent multiple controllers
+	// from registering the same field indexer.
+	if err = controller.ConfigureFieldIndexers(mgr, cfg); err != nil {
+		slog.Error("Unable to configure field indexers", "error", err)
+		return err
+	}
+
 	// Setup RebootNode controller
 	if err = (&controller.RebootNodeReconciler{
 		Client:        mgr.GetClient(),
@@ -335,7 +335,17 @@ func run() error {
 		return err
 	}
 
-	slog.Info("RebootNode and TerminateNode controllers registered")
+	if err = (&controller.GPUResetReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.GPUReset,
+		LockNamespace: podNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create controller", "controller", "GPUReset", "error", err)
+		return err
+	}
+
+	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
 
 	// Setup unified webhook for all Janitor CRDs
 	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {

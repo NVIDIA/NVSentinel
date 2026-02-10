@@ -39,6 +39,7 @@ var janitorWebhookLog = logf.Log.WithName("janitor-webhook")
 const (
 	controllerTypeRebootNode    = "RebootNode"
 	controllerTypeTerminateNode = "TerminateNode"
+	controllerTypeGPUReset      = "GPUReset"
 )
 
 // SetupJanitorWebhookWithManager registers the webhook for CRs managed by Janitor.
@@ -71,6 +72,14 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 		return err
 	}
 
+	// Register webhook for GPUReset
+	if err := ctrl.NewWebhookManagedBy(mgr).
+		For(&janitordgxcnvidiacomv1alpha1.GPUReset{}).
+		WithValidator(validator).
+		Complete(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -79,6 +88,9 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 
 // nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-terminatenode,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=create;update;delete,versions=v1alpha1,name=vterminatenode-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// nolint:lll
+// +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-gpureset,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=gpuresets,verbs=create;update;delete,versions=v1alpha1,name=vgpureset-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // JanitorCustomValidator struct is responsible for validating all Janitor resources
 // when they are created, updated, or deleted.
@@ -192,6 +204,63 @@ func (v *JanitorCustomValidator) validateNoActiveTermination(ctx context.Context
 	return nil
 }
 
+func (v *JanitorCustomValidator) validateNoActiveResetForSameGPU(ctx context.Context, nodeName string,
+	currentUUIDs []string) error {
+	if v.Client == nil {
+		return fmt.Errorf("kubernetes client not available for reset validation")
+	}
+
+	var gpuResetList janitordgxcnvidiacomv1alpha1.GPUResetList
+	if err := v.Client.List(ctx, &gpuResetList); err != nil {
+		return fmt.Errorf("failed to list GPUReset resources: %w", err)
+	}
+
+	for _, gpuReset := range gpuResetList.Items {
+		if gpuReset.Spec.NodeName != nodeName {
+			continue
+		}
+
+		if gpuReset.Status.CompletionTime == nil {
+			for _, currentUUID := range currentUUIDs {
+				for _, inProgressUUID := range gpuReset.Spec.Selector.UUIDs {
+					if currentUUID == inProgressUUID {
+						return fmt.Errorf("node '%s' and GPU '%s' already has an active reset in progress (GPUReset: %s)",
+							nodeName, currentUUID, gpuReset.Name)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName string,
+	oldUUIDs, newUUIDs []string) error {
+	if oldNodeName != newNodeName {
+		return fmt.Errorf("nodeName cannot be changed after creation")
+	}
+
+	if len(oldUUIDs) != len(newUUIDs) {
+		return fmt.Errorf("uuids cannot be changed after creation")
+	}
+
+	count := make(map[string]int)
+
+	for _, uuid := range oldUUIDs {
+		count[uuid]++
+	}
+
+	for _, uuid := range newUUIDs {
+		count[uuid]--
+		if count[uuid] < 0 {
+			return fmt.Errorf("uuids cannot be changed after creation")
+		}
+	}
+
+	return nil
+}
+
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
 // nolint:cyclop
 func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
@@ -243,6 +312,26 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 				"name", objName,
 				"nodeName", nodeName,
 				"error", err.Error(),
+			)
+
+			return nil, err
+		}
+
+	case *janitordgxcnvidiacomv1alpha1.GPUReset:
+		objName = typedObj.GetName()
+		controllerType = controllerTypeGPUReset
+		nodeName = typedObj.Spec.NodeName
+		uuids := typedObj.Spec.Selector.UUIDs
+
+		if v.Config == nil || !v.Config.GPUReset.Enabled {
+			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting creation", "name", objName)
+			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+		}
+
+		// Check for active terminations
+		if err := v.validateNoActiveResetForSameGPU(ctx, nodeName, uuids); err != nil {
+			janitorWebhookLog.Info("Active reset validation failed", "type", controllerType, "name", objName,
+				"nodeName", nodeName, "error", err.Error(),
 			)
 
 			return nil, err
@@ -331,6 +420,27 @@ func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 			}
 		}
 
+	case *janitordgxcnvidiacomv1alpha1.GPUReset:
+		objName = typedObj.GetName()
+		controllerType = controllerTypeGPUReset
+		nodeName = typedObj.Spec.NodeName
+
+		if v.Config == nil || !v.Config.GPUReset.Enabled {
+			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting update", "name", objName)
+			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
+		}
+
+		// Prevent changes to nodeName or GPU UUIDs
+		if oldGPUReset, ok := oldObj.(*janitordgxcnvidiacomv1alpha1.GPUReset); ok {
+			oldNodeName = oldGPUReset.Spec.NodeName
+
+			err := v.validateNodeAndGPUs(oldNodeName, nodeName, oldGPUReset.Spec.Selector.UUIDs,
+				typedObj.Spec.Selector.UUIDs)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 	default:
 		return nil, fmt.Errorf("expected a Janitor CR object but got %T", newObj)
 	}
@@ -368,6 +478,7 @@ func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
+// nolint:cyclop
 func (v *JanitorCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	var (
 		objName        string
@@ -391,6 +502,17 @@ func (v *JanitorCustomValidator) ValidateDelete(ctx context.Context, obj runtime
 		if v.Config == nil || !v.Config.TerminateNode.Enabled {
 			janitorWebhookLog.Info("TerminateNode controller is disabled, rejecting deletion", "name", objName)
 			return nil, fmt.Errorf("TerminateNode controller is disabled in configuration")
+		}
+
+	// Finalizer on GPUReset resources will ensure services are restored prior to deletion so we do not need to
+	// have the webhook block a deletion if the given GPUReset has not completed reconciling.
+	case *janitordgxcnvidiacomv1alpha1.GPUReset:
+		objName = typedObj.GetName()
+		controllerType = controllerTypeGPUReset
+
+		if v.Config == nil || !v.Config.GPUReset.Enabled {
+			janitorWebhookLog.Info("GPUReset controller is disabled, rejecting deletion", "name", objName)
+			return nil, fmt.Errorf("GPUReset controller is disabled in configuration")
 		}
 
 	default:

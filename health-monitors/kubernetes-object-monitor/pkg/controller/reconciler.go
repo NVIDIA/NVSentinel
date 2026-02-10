@@ -32,7 +32,13 @@ import (
 )
 
 type HealthEventPublisher interface {
-	PublishHealthEvent(ctx context.Context, policy *config.Policy, nodeName string, isHealthy bool) error
+	PublishHealthEvent(
+		ctx context.Context,
+		policy *config.Policy,
+		nodeName string,
+		isHealthy bool,
+		resourceInfo *config.ResourceInfo,
+	) error
 }
 
 type ResourceReconciler struct {
@@ -42,6 +48,7 @@ type ResourceReconciler struct {
 	annotationMgr *annotations.Manager
 	policies      []config.Policy
 	gvk           schema.GroupVersionKind
+	// matchStates maps stateKey -> nodeName
 	matchStates   map[string]string
 	matchStatesMu sync.RWMutex
 }
@@ -65,6 +72,7 @@ func NewResourceReconciler(
 	}
 }
 
+// LoadState reloads persisted policy match state from node annotations.
 func (r *ResourceReconciler) LoadState(ctx context.Context) error {
 	allMatches, err := r.annotationMgr.LoadAllMatches(ctx)
 	if err != nil {
@@ -114,6 +122,9 @@ func (r *ResourceReconciler) handleGetError(ctx context.Context, err error, req 
 	return ctrl.Result{}, fmt.Errorf("failed to get resource: %w", err)
 }
 
+// cleanupDeletedResource handles cleanup when a resource is deleted.
+// when a pod is deleted, we uncordon the node immediately.
+// This means if a replacement pod comes up unhealthy, it will be re-cordoned.
 func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctrl.Request) {
 	slog.Info("Cleaning up deleted resource", "resource", req.NamespacedName)
 
@@ -134,7 +145,34 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 		r.matchStatesMu.RUnlock()
 
 		if wasMatched {
-			if err := r.publisher.PublishHealthEvent(ctx, &p, nodeName, true); err != nil {
+			// For Node resources, the deleted resource is the node itself.
+			// In this case, there's no point publishing a healthy event or trying to
+			// remove annotations - the node is gone.
+			isNodeResource := r.gvk.Kind == "Node" && nodeName == req.Name
+			if isNodeResource {
+				slog.Info("Node deleted, cleaning up internal state without publishing",
+					"policy", p.Name, "node", nodeName)
+
+				r.matchStatesMu.Lock()
+				delete(r.matchStates, stateKey)
+				r.matchStatesMu.Unlock()
+
+				continue
+			}
+
+			resourceInfo := &config.ResourceInfo{
+				Group:     r.gvk.Group,
+				Version:   r.gvk.Version,
+				Kind:      r.gvk.Kind,
+				Namespace: req.Namespace,
+				Name:      req.Name,
+			}
+
+			// Pod deleted - publish healthy event to uncordon the node
+			slog.Info("Resource deleted, publishing healthy event to uncordon node",
+				"policy", p.Name, "resource", req.NamespacedName, "node", nodeName)
+
+			if err := r.publisher.PublishHealthEvent(ctx, &p, nodeName, true, resourceInfo); err != nil {
 				slog.Error("Failed to publish healthy event for deleted resource",
 					"policy", p.Name,
 					"resource", req.NamespacedName,
@@ -142,12 +180,6 @@ func (r *ResourceReconciler) cleanupDeletedResource(ctx context.Context, req ctr
 					"error", err)
 				metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 			}
-
-			slog.Debug("Removing match state for deleted resource",
-				"resource", req.NamespacedName,
-				"node", nodeName,
-				"policy", p.Name,
-				"stateKey", stateKey)
 
 			r.matchStatesMu.Lock()
 			delete(r.matchStates, stateKey)
@@ -168,12 +200,14 @@ func (r *ResourceReconciler) reconcilePolicy(
 	matched, err := r.evaluator.EvaluatePredicate(ctx, p.Name, obj)
 	if err != nil {
 		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, "cel_error").Inc()
+
 		return fmt.Errorf("predicate evaluation failed: %w", err)
 	}
 
 	nodeName, err := r.evaluator.EvaluateNodeAssociation(ctx, p.Name, obj)
 	if err != nil {
 		metrics.PolicyEvaluationErrors.WithLabelValues(p.Name, "node_association_error").Inc()
+
 		return fmt.Errorf("node association evaluation failed: %w", err)
 	}
 
@@ -187,12 +221,20 @@ func (r *ResourceReconciler) reconcilePolicy(
 	storedNodeName, wasMatched := r.matchStates[stateKey]
 	r.matchStatesMu.RUnlock()
 
+	resourceInfo := &config.ResourceInfo{
+		Group:     r.gvk.Group,
+		Version:   r.gvk.Version,
+		Kind:      r.gvk.Kind,
+		Namespace: obj.GetNamespace(),
+		Name:      obj.GetName(),
+	}
+
 	if matched && !wasMatched {
-		return r.handleUnhealthyTransition(ctx, p, nodeName, stateKey)
+		return r.handleUnhealthyTransition(ctx, p, nodeName, stateKey, resourceInfo)
 	}
 
 	if !matched && wasMatched {
-		return r.handleHealthyTransition(ctx, p, storedNodeName, stateKey)
+		return r.handleHealthyTransition(ctx, p, storedNodeName, stateKey, resourceInfo)
 	}
 
 	return nil
@@ -203,8 +245,9 @@ func (r *ResourceReconciler) handleUnhealthyTransition(
 	p *config.Policy,
 	nodeName string,
 	stateKey string,
+	resourceInfo *config.ResourceInfo,
 ) error {
-	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, false); err != nil {
+	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, false, resourceInfo); err != nil {
 		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 		return fmt.Errorf("failed to publish unhealthy event: %w", err)
 	}
@@ -227,8 +270,9 @@ func (r *ResourceReconciler) handleHealthyTransition(
 	p *config.Policy,
 	nodeName string,
 	stateKey string,
+	resourceInfo *config.ResourceInfo,
 ) error {
-	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, true); err != nil {
+	if err := r.publisher.PublishHealthEvent(ctx, p, nodeName, true, resourceInfo); err != nil {
 		metrics.HealthEventsPublishErrors.WithLabelValues(p.Name, "grpc_error").Inc()
 		return fmt.Errorf("failed to publish healthy event: %w", err)
 	}
@@ -244,6 +288,7 @@ func (r *ResourceReconciler) handleHealthyTransition(
 	return nil
 }
 
+// getStateKey generates the state key for tracking: policyName/namespace/resourceName
 func (r *ResourceReconciler) getStateKey(p *config.Policy, obj *unstructured.Unstructured) string {
 	if obj.GetNamespace() != "" {
 		return fmt.Sprintf("%s/%s/%s", p.Name, obj.GetNamespace(), obj.GetName())

@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	testNodeUID       = "0f43ccca-2918-4b33-a42a-81916841de1f"
-	testNamespace     = "default"
+	testNodeUID   = "0f43ccca-2918-4b33-a42a-81916841de1f"
+	testNamespace = "default"
 )
 
 type mockReconciler struct {
@@ -64,17 +64,17 @@ func (r *mockReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if !completedReconciling {
 		locked := r.nodeLock.LockNode(ctx, &rebootNode, rebootNode.Spec.NodeName)
 		if !locked {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 		}
 		result, err := r.reconcileHelper(ctx, req, &rebootNode)
-		if err != nil || result.Requeue || result.RequeueAfter > 0 {
+		if err != nil || result.RequeueAfter > 0 {
 			return result, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 	retryUnlock := r.nodeLock.CheckUnlock(ctx, &rebootNode, rebootNode.Spec.NodeName)
 	if retryUnlock {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second * 2}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -413,7 +413,7 @@ var _ = Describe("NodeLock", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: time.Second * 2}))
 		})
 		It("reconciling not complete, lock acquired, controller re-queued", func() {
 			nodeLock, k8sClient = newTestNodeLock(scheme, statusSubresource, interceptor.Funcs{},
@@ -431,7 +431,7 @@ var _ = Describe("NodeLock", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: time.Second * 2}))
 		})
 		It("reconciling complete, lock not held", func() {
 			testRebootNode.Status.CompletionTime = &metav1.Time{Time: time.Now().Add(-5 * time.Minute)}
@@ -466,7 +466,7 @@ var _ = Describe("NodeLock", func() {
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+			Expect(result).To(Equal(ctrl.Result{RequeueAfter: time.Second * 2}))
 		})
 	})
 })

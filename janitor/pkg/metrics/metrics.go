@@ -56,6 +56,38 @@ var (
 		},
 		[]string{"action_type"},
 	)
+
+	GPUResetRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gpu_reset_requests_total",
+		Help: "Total number of GPU reset requests initiated.",
+	}, []string{"node"})
+
+	GPUResetRequestsCompletedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gpu_reset_requests_completed_total",
+		Help: "Total number of completed GPU reset requests, labeled by their final status.",
+	}, []string{"node", "status"})
+
+	GPUResetDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "gpu_reset_duration_seconds",
+		Help: "The end-to-end duration of GPU reset workflows, from controller acknowledgment to completion, " +
+			"labeled by their final status.",
+		Buckets: prometheus.LinearBuckets(30, 30, 10),
+	}, []string{"node", "status"})
+
+	GPUResetPendingRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gpu_reset_pending_requests",
+		Help: "The number of GPU reset requests currently pending (e.g., waiting due to resource contention).",
+	}, []string{"node"})
+
+	GPUResetActiveRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gpu_reset_active_requests",
+		Help: "The number of GPU reset requests currently in progress.",
+	}, []string{"node"})
+
+	GPUResetFailureReasonsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gpu_reset_failure_reasons_total",
+		Help: "Total number of GPU reset failures, labeled by the specific reason.",
+	}, []string{"node", "reason"})
 )
 
 // ActionMetrics provides a centralized interface for recording action metrics
@@ -64,8 +96,16 @@ type ActionMetrics struct{}
 // NewActionMetrics creates a new ActionMetrics instance and registers the metrics
 func NewActionMetrics() *ActionMetrics {
 	// Register metrics with the controller-runtime metrics registry
-	metrics.Registry.MustRegister(actionsCount)
-	metrics.Registry.MustRegister(actionMTTRHistogram)
+	metrics.Registry.MustRegister(
+		actionsCount,
+		actionMTTRHistogram,
+		GPUResetRequestsTotal,
+		GPUResetRequestsCompletedTotal,
+		GPUResetDurationSeconds,
+		GPUResetPendingRequests,
+		GPUResetActiveRequests,
+		GPUResetFailureReasonsTotal,
+	)
 
 	return &ActionMetrics{}
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -75,9 +76,17 @@ func TestReconciler_NodeHealthyToUnhealthy(t *testing.T) {
 	assert.Equal(t, beforeMatches+1, afterMatches)
 
 	require.Eventually(t, func() bool {
-		return len(setup.publisher.publishedEvents) == 1 &&
-			setup.publisher.publishedEvents[0].nodeName == nodeName &&
-			!setup.publisher.publishedEvents[0].isHealthy
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		// Verify event properties including resourceInfo (entitiesImpacted)
+		return event.nodeName == nodeName &&
+			!event.isHealthy &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Kind == "Node" &&
+			event.resourceInfo.Namespace == "" && // cluster-scoped
+			event.resourceInfo.Name == nodeName
 	}, time.Second, 50*time.Millisecond)
 }
 
@@ -95,8 +104,12 @@ func TestReconciler_NodeUnhealthyToHealthy(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return len(setup.publisher.publishedEvents) > 0 &&
-			!setup.publisher.publishedEvents[0].isHealthy
+			!setup.publisher.publishedEvents[0].isHealthy &&
+			setup.publisher.publishedEvents[0].resourceInfo != nil
 	}, time.Second, 50*time.Millisecond)
+
+	// Store the unhealthy event resourceInfo for comparison
+	unhealthyResourceInfo := setup.publisher.publishedEvents[0].resourceInfo
 
 	updateNodeStatus(t, setup, nodeName, v1.ConditionTrue)
 	setup.publisher.publishedEvents = []mockPublishedEvent{}
@@ -108,8 +121,18 @@ func TestReconciler_NodeUnhealthyToHealthy(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 
 	require.Eventually(t, func() bool {
-		return len(setup.publisher.publishedEvents) > 0 &&
-			setup.publisher.publishedEvents[0].isHealthy
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		// Verify recovery event has same resourceInfo as unhealthy event
+		return event.isHealthy &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Group == unhealthyResourceInfo.Group &&
+			event.resourceInfo.Version == unhealthyResourceInfo.Version &&
+			event.resourceInfo.Kind == unhealthyResourceInfo.Kind &&
+			event.resourceInfo.Name == unhealthyResourceInfo.Name &&
+			event.resourceInfo.Namespace == unhealthyResourceInfo.Namespace
 	}, time.Second, 50*time.Millisecond)
 }
 
@@ -139,13 +162,13 @@ func TestReconciler_NodeDeleted(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
-	require.Eventually(t, func() bool {
-		if len(setup.publisher.publishedEvents) != 1 {
-			return false
-		}
-		event := setup.publisher.publishedEvents[0]
-		return event.nodeName == nodeName && event.isHealthy
-	}, time.Second, 50*time.Millisecond)
+	// When a node is deleted, we should NOT publish a healthy event.
+	// The internal state is cleaned up silently because:
+	// 1. The node no longer exists, so there's no point in publishing
+	// 2. fault-quarantine handles node deletion separately via its node informer
+	require.Never(t, func() bool {
+		return len(setup.publisher.publishedEvents) > 0
+	}, 500*time.Millisecond, 50*time.Millisecond)
 }
 
 func TestReconciler_MultipleNodes(t *testing.T) {
@@ -168,12 +191,25 @@ func TestReconciler_MultipleNodes(t *testing.T) {
 		if len(setup.publisher.publishedEvents) < len(nodeNames) {
 			return false
 		}
-		nodeEvents := make(map[string]bool)
+
+		// Verify each event has unique resourceInfo (entitiesImpacted)
+		seenEntities := make(map[string]bool)
 		for _, event := range setup.publisher.publishedEvents {
-			nodeEvents[event.nodeName] = true
+			if event.resourceInfo == nil {
+				return false
+			}
+			entityKey := event.resourceInfo.Kind + "/" + event.resourceInfo.Name
+			if seenEntities[entityKey] {
+				// Duplicate entity found - this is wrong
+				return false
+			}
+			seenEntities[entityKey] = true
 		}
+
+		// Verify all expected nodes have events
 		for _, nodeName := range nodeNames {
-			if !nodeEvents[nodeName] {
+			entityKey := "Node/" + nodeName
+			if !seenEntities[entityKey] {
 				return false
 			}
 		}
@@ -303,9 +339,17 @@ func TestReconciler_CustomResource(t *testing.T) {
 			return false
 		}
 		event := setup.publisher.publishedEvents[0]
+		// For namespaced resources (GPUJob), resourceInfo should have:
+		// - Kind: "GPUJob"
+		// - Namespace: "default"
+		// - Name: jobName
 		return event.nodeName == nodeName &&
 			!event.isHealthy &&
-			event.policy.Name == "gpu-job-failed"
+			event.policy.Name == "gpu-job-failed" &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Kind == "GPUJob" &&
+			event.resourceInfo.Namespace == namespace &&
+			event.resourceInfo.Name == jobName
 	}, time.Second, 50*time.Millisecond)
 
 	setup.publisher.publishedEvents = []mockPublishedEvent{}
@@ -325,7 +369,10 @@ func TestReconciler_CustomResource(t *testing.T) {
 		event := setup.publisher.publishedEvents[0]
 		return event.nodeName == nodeName &&
 			event.isHealthy &&
-			event.policy.Name == "gpu-job-failed"
+			event.policy.Name == "gpu-job-failed" &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Kind == "GPUJob" &&
+			event.resourceInfo.Name == jobName
 	}, time.Second, 50*time.Millisecond)
 }
 
@@ -431,8 +478,9 @@ func TestReconciler_ColdStart(t *testing.T) {
 			postRestartAction: func(t *testing.T, s *testSetup, _ string, node *v1.Node) {
 				require.NoError(t, s.k8sClient.Delete(s.ctx, node))
 			},
-			expectEvent:   true,
-			expectHealthy: true,
+			// When a node is deleted, we silently clean up internal state without publishing
+			// a healthy event. fault-quarantine handles node deletion separately.
+			expectEvent: false,
 		},
 	}
 
@@ -477,6 +525,98 @@ func TestReconciler_ColdStart(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Pod-based policy tests
+// =============================================================================
+
+// TestReconciler_PodUnhealthyOnNode tests that an unhealthy pod triggers a health event
+func TestReconciler_PodUnhealthyOnNode(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-pod-1"
+	namespace := "gpu-operator"
+	podName := "test-pod-1"
+
+	// Create the node first
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	// Create namespace
+	createNamespace(t, setup, namespace)
+
+	// Create a pod in Pending phase (unhealthy)
+	createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify health event was published
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 1 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[0]
+		return event.nodeName == nodeName &&
+			!event.isHealthy &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Kind == "Pod" &&
+			event.resourceInfo.Namespace == namespace &&
+			event.resourceInfo.Name == podName
+	}, time.Second, 50*time.Millisecond)
+}
+
+// TestReconciler_PodHealthyOnNode tests that a pod becoming healthy triggers a healthy event
+func TestReconciler_PodHealthyOnNode(t *testing.T) {
+	setup := setupPodTest(t)
+	nodeName := "test-node-pod-2"
+	namespace := "gpu-operator"
+	podName := "test-pod-2"
+
+	// Create the node first
+	createNode(t, setup, nodeName, v1.ConditionTrue)
+
+	// Create namespace
+	createNamespace(t, setup, namespace)
+
+	// Create a pod in Pending phase (unhealthy)
+	createPod(t, setup, namespace, podName, nodeName, v1.PodPending)
+
+	// First reconcile - should publish unhealthy event
+	result, err := setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	require.Eventually(t, func() bool {
+		return len(setup.publisher.publishedEvents) == 1
+	}, time.Second, 50*time.Millisecond)
+
+	// Update pod to Running phase (healthy)
+	updatePodPhase(t, setup, namespace, podName, v1.PodRunning)
+
+	// Second reconcile - should publish healthy event
+	result, err = setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: podName},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify healthy event was published
+	require.Eventually(t, func() bool {
+		if len(setup.publisher.publishedEvents) != 2 {
+			return false
+		}
+		event := setup.publisher.publishedEvents[1]
+		return event.nodeName == nodeName &&
+			event.isHealthy &&
+			event.resourceInfo != nil &&
+			event.resourceInfo.Kind == "Pod" &&
+			event.resourceInfo.Name == podName
+	}, time.Second, 50*time.Millisecond)
 }
 
 type testSetup struct {
@@ -649,10 +789,11 @@ func setupTestWithCRD(t *testing.T, policies []config.Policy, crd *apiextensions
 }
 
 type mockPublishedEvent struct {
-	ctx       context.Context
-	policy    *config.Policy
-	nodeName  string
-	isHealthy bool
+	ctx          context.Context
+	policy       *config.Policy
+	nodeName     string
+	isHealthy    bool
+	resourceInfo *config.ResourceInfo
 }
 
 type mockPublisher struct {
@@ -664,12 +805,14 @@ func (m *mockPublisher) PublishHealthEvent(
 	policy *config.Policy,
 	nodeName string,
 	isHealthy bool,
+	resourceInfo *config.ResourceInfo,
 ) error {
 	m.publishedEvents = append(m.publishedEvents, mockPublishedEvent{
-		ctx:       ctx,
-		policy:    policy,
-		nodeName:  nodeName,
-		isHealthy: isHealthy,
+		ctx:          ctx,
+		policy:       policy,
+		nodeName:     nodeName,
+		isHealthy:    isHealthy,
+		resourceInfo: resourceInfo,
 	})
 	return nil
 }
@@ -853,4 +996,158 @@ func gpuJobCRD() *apiextensionsv1.CustomResourceDefinition {
 			},
 		},
 	}
+}
+
+// =============================================================================
+// Pod-based policy helper functions
+// =============================================================================
+
+func defaultPodHealthPolicy() config.Policy {
+	return config.Policy{
+		Name:    "gpu-operator-pod-health",
+		Enabled: true,
+		Resource: config.ResourceSpec{
+			Group:   "",
+			Version: "v1",
+			Kind:    "Pod",
+		},
+		Predicate: config.PredicateSpec{
+			// Pod is unhealthy if not Running or Succeeded
+			Expression: `resource.metadata.namespace == 'gpu-operator' && 
+				has(resource.spec.nodeName) && resource.spec.nodeName != "" &&
+				resource.status.phase != 'Running' && 
+				resource.status.phase != 'Succeeded'`,
+		},
+		NodeAssociation: &config.AssociationSpec{
+			Expression: `resource.spec.nodeName`,
+		},
+		HealthEvent: config.HealthEventSpec{
+			ComponentClass:    "Software",
+			IsFatal:           true,
+			Message:           "GPU Operator pod is not healthy",
+			RecommendedAction: "CONTACT_SUPPORT",
+			ErrorCode:         []string{"GPU_OPERATOR_POD_UNHEALTHY"},
+		},
+	}
+}
+
+func setupPodTest(t *testing.T) *testSetup {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	testEnv := &envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		assert.NoError(t, testEnv.Stop())
+	})
+
+	k8sClient, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+
+	mockPub := &mockPublisher{
+		publishedEvents: []mockPublishedEvent{},
+	}
+
+	policies := []config.Policy{defaultPodHealthPolicy()}
+
+	celEnvironment, err := celenv.NewEnvironment(k8sClient)
+	require.NoError(t, err)
+
+	evaluator, err := policy.NewEvaluator(celEnvironment, policies)
+	require.NoError(t, err)
+
+	gvk := schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	}
+
+	annotationMgr := annotations.NewManager(k8sClient)
+
+	reconciler := controller.NewResourceReconciler(
+		k8sClient,
+		evaluator,
+		mockPub,
+		annotationMgr,
+		policies,
+		gvk,
+	)
+
+	return &testSetup{
+		ctx:        ctx,
+		k8sClient:  k8sClient,
+		reconciler: reconciler,
+		publisher:  mockPub,
+		evaluator:  evaluator,
+		testEnv:    testEnv,
+	}
+}
+
+func createNamespace(t *testing.T, setup *testSetup, name string) {
+	t.Helper()
+
+	ns := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+	}
+	err := setup.k8sClient.Create(setup.ctx, ns)
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		require.NoError(t, err)
+	}
+}
+
+func createPod(t *testing.T, setup *testSetup, namespace, name, nodeName string, phase v1.PodPhase) *v1.Pod {
+	t.Helper()
+
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: v1.PodSpec{
+			NodeName: nodeName,
+			Containers: []v1.Container{
+				{
+					Name:  "test-container",
+					Image: "busybox",
+				},
+			},
+		},
+	}
+
+	require.NoError(t, setup.k8sClient.Create(setup.ctx, pod))
+
+	// Update the pod status to set the phase
+	pod.Status.Phase = phase
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
+
+	require.Eventually(t, func() bool {
+		updatedPod := &v1.Pod{}
+		if err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: namespace, Name: name}, updatedPod); err != nil {
+			return false
+		}
+		return updatedPod.Status.Phase == phase
+	}, time.Second, 50*time.Millisecond)
+
+	return pod
+}
+
+func updatePodPhase(t *testing.T, setup *testSetup, namespace, name string, phase v1.PodPhase) {
+	t.Helper()
+
+	pod := &v1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: namespace, Name: name}, pod))
+
+	pod.Status.Phase = phase
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
+
+	require.Eventually(t, func() bool {
+		updatedPod := &v1.Pod{}
+		if err := setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: namespace, Name: name}, updatedPod); err != nil {
+			return false
+		}
+		return updatedPod.Status.Phase == phase
+	}, time.Second, 50*time.Millisecond)
 }

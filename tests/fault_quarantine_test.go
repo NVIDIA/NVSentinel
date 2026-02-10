@@ -54,8 +54,10 @@ func TestDontCordonIfEventDoesntMatchCELExpression(t *testing.T) {
 		helpers.SendHealthEvent(ctx, t, event)
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
 		})
 
 		return ctx
@@ -284,8 +286,10 @@ func TestCircuitBreakerCursorCreateSkipsAccumulatedEvents(t *testing.T) {
 
 		// This node SHOULD be cordoned because it's a new event
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: true},
+			},
 		})
 
 		t.Logf("Node %s correctly cordoned - new events are being processed", testCtx.NodeName)
@@ -328,8 +332,10 @@ func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "SysLogsXIDError")
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
 		})
 
 		event = helpers.NewHealthEvent(testCtx.NodeName).
@@ -343,8 +349,10 @@ func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 		helpers.EnsureNodeEventNotPresent(ctx, t, client, testCtx.NodeName, "GpuPowerWatch", "GpuPowerWatchIsNotHealthy")
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
 		})
 
 		return ctx
@@ -366,8 +374,10 @@ func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, testCtx.NodeName, "SysLogsXIDError", "", "SysLogsXIDErrorIsNotHealthy", v1.ConditionTrue)
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: true},
+			},
 		})
 
 		event = helpers.NewHealthEvent(testCtx.NodeName).
@@ -386,8 +396,10 @@ func TestFaultQuarantineWithProcessingStrategy(t *testing.T) {
 		helpers.WaitForNodeEvent(ctx, t, client, testCtx.NodeName, expectedEvent)
 
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   true,
-			ExpectAnnotation: true,
+			ExpectCordoned: true,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: true},
+			},
 		})
 
 		return ctx

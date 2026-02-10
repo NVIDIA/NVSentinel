@@ -23,16 +23,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
+)
+
+const (
+	testNamespace = "nvsentinel"
 )
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
 	// Test that loading a non-existent config file returns error
-	config, err := LoadConfig("/nonexistent/path/config.yaml")
+	config, err := LoadConfig("/nonexistent/path/config.yaml", testNamespace)
 	assert.Error(t, err, "Should error when config file path is invalid")
 	assert.Nil(t, config, "Should return nil config on error")
 }
 
-func TestLoadConfig_ValidYAML(t *testing.T) {
+func TestLoadConfig_GlobalDefaults(t *testing.T) {
 	// Create a temporary config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
@@ -46,46 +52,363 @@ global:
       - matchLabels:
           environment: production
           critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
 
 rebootNodeController:
   enabled: true
-  manualMode: false
-  timeout: 20m
 
 terminateNodeController:
+  enabled: true
+
+gpuResetController:
   enabled: false
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify global config
+	assert.Equal(t, 30*time.Minute, config.Global.Timeout)
+	assert.True(t, *config.Global.ManualMode)
+	assert.Len(t, config.Global.Nodes.Exclusions, 1)
+	assert.Equal(t, "production", config.Global.Nodes.Exclusions[0].MatchLabels["environment"])
+	assert.Equal(t, "true", config.Global.Nodes.Exclusions[0].MatchLabels["critical"])
+	assert.Equal(t, "janitor-provider.nvsentinel.svc.cluster.local:50051", config.Global.CSPProviderHost)
+
+	// Verify RebootNode config
+	assert.True(t, config.RebootNode.Enabled)
+	assert.True(t, *config.RebootNode.ManualMode)
+	assert.Equal(t, config.Global.Timeout, config.RebootNode.Timeout)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.RebootNode.Exclusions)
+	assert.Equal(t, config.Global.CSPProviderHost, config.RebootNode.CSPProviderHost)
+
+	// Verify TerminateNode config
+	assert.True(t, config.TerminateNode.Enabled)
+	assert.True(t, *config.TerminateNode.ManualMode)
+	assert.Equal(t, config.Global.Timeout, config.TerminateNode.Timeout)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.TerminateNode.Exclusions)
+	assert.Equal(t, config.Global.CSPProviderHost, config.TerminateNode.CSPProviderHost)
+
+	// Verify GPUReset config
+	assert.False(t, config.GPUReset.Enabled)
+	assert.True(t, *config.GPUReset.ManualMode)
+	assert.Equal(t, config.Global.Timeout, config.GPUReset.Timeout)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.GPUReset.Exclusions)
+	assert.Equal(t, config.Global.CSPProviderHost, config.GPUReset.CSPProviderHost)
+}
+
+func TestLoadConfig_ControllerOverrides(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
   manualMode: true
-  timeout: 15m
+  nodes:
+    exclusions:
+    - matchLabels:
+        environment: production
+        critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+  timeout: 25m
+  manualMode: false
+  exclusions:
+  - matchLabels:
+      environment: dev
+      critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50052
+
+terminateNodeController:
+  enabled: true
+  timeout: 26m
+  manualMode: false
+  exclusions:
+  - matchLabels:
+      environment: staging
+      critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50053
+
+gpuResetController:
+  enabled: true
+  timeout: 27m
+  manualMode: false
+  exclusions:
+  - matchLabels:
+      environment: qa
+      critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50054
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+      imagePullSecrets:
+      - name: pull-secret
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  serviceManager:
+    name: gpu-operator
+    spec:
+      apps:
+      - appSelector:
+          app: nvidia-dcgm
+        disabledValue: "false"
+        enabledValue: "true"
+        nodeLabel: nvidia.com/gpu.deploy.dcgm
+      managerSelector:
+        app.kubernetes.io/managed-by: tilt
+      namespace: gpu-operator
+      restoreTimeout: 10m
+      teardownTimeout: 5m
+`
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify global config
+	assert.Equal(t, 30*time.Minute, config.Global.Timeout)
+	assert.True(t, *config.Global.ManualMode)
+	assert.Len(t, config.Global.Nodes.Exclusions, 1)
+	assert.Equal(t, "production", config.Global.Nodes.Exclusions[0].MatchLabels["environment"])
+	assert.Equal(t, "true", config.Global.Nodes.Exclusions[0].MatchLabels["critical"])
+	assert.Equal(t, "janitor-provider.nvsentinel.svc.cluster.local:50051", config.Global.CSPProviderHost)
+
+	// Verify RebootNode config
+	assert.True(t, config.RebootNode.Enabled)
+	assert.Equal(t, 25*time.Minute, config.RebootNode.Timeout)
+	assert.False(t, *config.RebootNode.ManualMode)
+	assert.Len(t, config.RebootNode.Exclusions, 1)
+	assert.Equal(t, "dev", config.RebootNode.Exclusions[0].MatchLabels["environment"])
+	assert.Equal(t, "true", config.RebootNode.Exclusions[0].MatchLabels["critical"])
+	assert.Equal(t, "janitor-provider.nvsentinel.svc.cluster.local:50052", config.RebootNode.CSPProviderHost)
+
+	// Verify TerminateNode config
+	assert.True(t, config.TerminateNode.Enabled)
+	assert.Equal(t, 26*time.Minute, config.TerminateNode.Timeout)
+	assert.False(t, *config.TerminateNode.ManualMode)
+	assert.Len(t, config.TerminateNode.Exclusions, 1)
+	assert.Equal(t, "staging", config.TerminateNode.Exclusions[0].MatchLabels["environment"])
+	assert.Equal(t, "true", config.TerminateNode.Exclusions[0].MatchLabels["critical"])
+	assert.Equal(t, "janitor-provider.nvsentinel.svc.cluster.local:50053", config.TerminateNode.CSPProviderHost)
+
+	// Verify GPUReset config
+	assert.True(t, config.GPUReset.Enabled)
+	assert.Equal(t, 27*time.Minute, config.GPUReset.Timeout)
+	assert.False(t, *config.GPUReset.ManualMode)
+	assert.Len(t, config.GPUReset.Exclusions, 1)
+	assert.Equal(t, "qa", config.GPUReset.Exclusions[0].MatchLabels["environment"])
+	assert.Equal(t, "true", config.GPUReset.Exclusions[0].MatchLabels["critical"])
+	assert.Equal(t, "janitor-provider.nvsentinel.svc.cluster.local:50054", config.GPUReset.CSPProviderHost)
+
+	imagePullSecrets := []ImagePullSecret{
+		{
+			Name: "pull-secret",
+		},
+	}
+	resourceRequirements := ResourceRequirements{
+		Limits: map[string]string{
+			"memory": "128Mi",
+			"cpu":    "100m",
+		},
+		Requests: map[string]string{
+			"memory": "64Mi",
+			"cpu":    "50m",
+		},
+	}
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
+		resourceRequirements)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
+
+	expectedServiceManager := gpuservices.Manager{
+		Name: "gpu-operator",
+		Spec: gpuservices.ManagerSpec{
+			ManagerSelector: map[string]string{"app.kubernetes.io/managed-by": "tilt"},
+			Namespace:       "gpu-operator",
+			Apps: []gpuservices.AppSpec{
+				{
+					AppSelector:   map[string]string{"app": "nvidia-dcgm"},
+					NodeLabel:     "nvidia.com/gpu.deploy.dcgm",
+					EnabledValue:  "true",
+					DisabledValue: "false",
+				},
+			},
+			TeardownTimeout: 5 * time.Minute,
+			RestoreTimeout:  10 * time.Minute,
+		},
+	}
+	assert.Equal(t, expectedServiceManager, config.GPUReset.ServiceManager)
+}
+
+func TestLoadConfig_MinimalGPUResetControllerConfig(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  manualMode: true
+  nodes:
+    exclusions:
+      - matchLabels:
+          environment: production
+          critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+
+terminateNodeController:
+  enabled: true
+
+gpuResetController:
+  enabled: true
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+  serviceManager:
+    name: "gpu-operator"
 `
 
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
 
 	// Load the config
-	config, err := LoadConfig(configPath)
+	config, err := LoadConfig(configPath, testNamespace)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
-	// Verify global config
-	assert.Equal(t, 30*time.Minute, config.Global.Timeout)
-	assert.True(t, config.Global.ManualMode)
-	assert.Len(t, config.Global.Nodes.Exclusions, 1)
-	assert.Equal(t, "production", config.Global.Nodes.Exclusions[0].MatchLabels["environment"])
-	assert.Equal(t, "true", config.Global.Nodes.Exclusions[0].MatchLabels["critical"])
+	// Verify GPUReset config
+	assert.True(t, config.GPUReset.Enabled)
 
-	// Verify RebootNode config
-	assert.True(t, config.RebootNode.Enabled)
-	assert.False(t, config.RebootNode.ManualMode)
-	assert.Equal(t, 20*time.Minute, config.RebootNode.Timeout)
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{})
+	assert.NoError(t, err)
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
-	// Verify TerminateNode config
-	assert.False(t, config.TerminateNode.Enabled)
-	assert.True(t, config.TerminateNode.ManualMode)
-	assert.Equal(t, 15*time.Minute, config.TerminateNode.Timeout)
+	assert.Equal(t, gpuservices.Manager{Name: "gpu-operator"}, config.GPUReset.ServiceManager)
+}
 
-	// Verify that node exclusions are propagated to controller configs
-	assert.Equal(t, config.Global.Nodes.Exclusions, config.RebootNode.NodeExclusions)
-	assert.Equal(t, config.Global.Nodes.Exclusions, config.TerminateNode.NodeExclusions)
+func TestLoadConfig_GPUResetEnabledMissingImage(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  manualMode: true
+  nodes:
+    exclusions:
+      - matchLabels:
+          environment: production
+          critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+
+terminateNodeController:
+  enabled: true
+
+gpuResetController:
+  enabled: true
+  serviceManager:
+    name: "gpu-operator"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.Error(t, err)
+	require.Nil(t, config)
+}
+
+func TestLoadConfig_GPUResetInvalidResources(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  manualMode: true
+  nodes:
+    exclusions:
+      - matchLabels:
+          environment: production
+          critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+
+terminateNodeController:
+  enabled: true
+
+gpuResetController:
+  enabled: true
+  timeout: 27m
+  manualMode: false
+  exclusions:
+  - matchLabels:
+      environment: qa
+      critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50054
+  resetJob:
+    imageConfig:
+      image: "alpine:latest"
+      imagePullSecrets:
+      - name: pull-secret
+    resources:
+      limits:
+        cpu: abc
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  serviceManager:
+    name: gpu-operator
+    spec:
+      apps:
+      - appSelector:
+          app: nvidia-dcgm
+        disabledValue: "false"
+        enabledValue: "true"
+        nodeLabel: nvidia.com/gpu.deploy.dcgm
+      managerSelector:
+        app.kubernetes.io/managed-by: tilt
+      namespace: gpu-operator
+      restoreTimeout: 10m
+      teardownTimeout: 5m
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.Error(t, err)
+	require.Nil(t, config)
 }
 
 func TestLoadConfig_InvalidYAML(t *testing.T) {
@@ -103,7 +426,7 @@ global:
 	require.NoError(t, err)
 
 	// Load the config - should error on unmarshal
-	config, err := LoadConfig(configPath)
+	config, err := LoadConfig(configPath, testNamespace)
 	assert.Error(t, err)
 	assert.Nil(t, config)
 	assert.Contains(t, err.Error(), "failed to unmarshal config")
@@ -118,45 +441,15 @@ func TestLoadConfig_EmptyFile(t *testing.T) {
 	require.NoError(t, err)
 
 	// Load the config - should succeed with defaults
-	config, err := LoadConfig(configPath)
+	config, err := LoadConfig(configPath, testNamespace)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
 	// Verify defaults (zero values)
-	assert.Equal(t, time.Duration(0), config.Global.Timeout)
-	assert.False(t, config.Global.ManualMode)
+	assert.Equal(t, 30*time.Minute, config.Global.Timeout)
+	assert.False(t, *config.Global.ManualMode)
 	assert.Len(t, config.Global.Nodes.Exclusions, 0)
-}
-
-func TestLoadConfig_PartialConfig(t *testing.T) {
-	// Create a config file with only some fields set
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "partial-config.yaml")
-
-	configContent := `
-global:
-  timeout: 45m
-
-rebootNodeController:
-  enabled: true
-`
-
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
-	require.NoError(t, err)
-
-	// Load the config
-	config, err := LoadConfig(configPath)
-	require.NoError(t, err)
-	require.NotNil(t, config)
-
-	// Verify set values
-	assert.Equal(t, 45*time.Minute, config.Global.Timeout)
-	assert.True(t, config.RebootNode.Enabled)
-
-	// Verify unset values use defaults
-	assert.False(t, config.Global.ManualMode)
-	assert.False(t, config.TerminateNode.Enabled)
-	assert.Equal(t, time.Duration(0), config.TerminateNode.Timeout)
+	assert.Len(t, config.Global.CSPProviderHost, 0)
 }
 
 func TestLoadConfig_NodeExclusionsPropagation(t *testing.T) {
@@ -179,7 +472,7 @@ global:
 	require.NoError(t, err)
 
 	// Load the config
-	config, err := LoadConfig(configPath)
+	config, err := LoadConfig(configPath, testNamespace)
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
@@ -187,66 +480,15 @@ global:
 	assert.Len(t, config.Global.Nodes.Exclusions, 2)
 
 	// Verify exclusions are propagated to both controller configs
-	assert.Equal(t, config.Global.Nodes.Exclusions, config.RebootNode.NodeExclusions)
-	assert.Equal(t, config.Global.Nodes.Exclusions, config.TerminateNode.NodeExclusions)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.RebootNode.Exclusions)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.TerminateNode.Exclusions)
+	assert.Equal(t, config.Global.Nodes.Exclusions, config.GPUReset.Exclusions)
 
 	// Verify first exclusion (matchLabels)
-	assert.Equal(t, "system", config.RebootNode.NodeExclusions[0].MatchLabels["tier"])
+	assert.Equal(t, "system", config.RebootNode.Exclusions[0].MatchLabels["tier"])
 
 	// Verify second exclusion (matchExpressions)
-	require.Len(t, config.RebootNode.NodeExclusions[1].MatchExpressions, 1)
-	assert.Equal(t, "node-role.kubernetes.io/control-plane", config.RebootNode.NodeExclusions[1].MatchExpressions[0].Key)
-	assert.Equal(t, metav1.LabelSelectorOpExists, config.RebootNode.NodeExclusions[1].MatchExpressions[0].Operator)
-}
-
-func TestConfig_ZeroValues(t *testing.T) {
-	t.Run("zero value config has expected defaults", func(t *testing.T) {
-		config := &Config{}
-
-		// Global config zero values
-		assert.Equal(t, time.Duration(0), config.Global.Timeout)
-		assert.False(t, config.Global.ManualMode)
-		assert.Empty(t, config.Global.Nodes.Exclusions)
-
-		// RebootNode config zero values
-		assert.False(t, config.RebootNode.Enabled)
-		assert.False(t, config.RebootNode.ManualMode)
-		assert.Equal(t, time.Duration(0), config.RebootNode.Timeout)
-		assert.Empty(t, config.RebootNode.NodeExclusions)
-
-		// TerminateNode config zero values
-		assert.False(t, config.TerminateNode.Enabled)
-		assert.False(t, config.TerminateNode.ManualMode)
-		assert.Equal(t, time.Duration(0), config.TerminateNode.Timeout)
-		assert.Empty(t, config.TerminateNode.NodeExclusions)
-	})
-
-	t.Run("controller configs are independent", func(t *testing.T) {
-		config := &Config{
-			RebootNode: RebootNodeControllerConfig{
-				Enabled:    true,
-				ManualMode: false,
-				Timeout:    5 * time.Minute,
-			},
-			TerminateNode: TerminateNodeControllerConfig{
-				Enabled:    false,
-				ManualMode: true,
-				Timeout:    10 * time.Minute,
-			},
-		}
-
-		// Verify each controller can have different settings
-		assert.True(t, config.RebootNode.Enabled)
-		assert.False(t, config.RebootNode.ManualMode)
-		assert.Equal(t, 5*time.Minute, config.RebootNode.Timeout)
-
-		assert.False(t, config.TerminateNode.Enabled)
-		assert.True(t, config.TerminateNode.ManualMode)
-		assert.Equal(t, 10*time.Minute, config.TerminateNode.Timeout)
-
-		// Modifying one doesn't affect the other
-		config.RebootNode.Timeout = 15 * time.Minute
-		assert.Equal(t, 15*time.Minute, config.RebootNode.Timeout)
-		assert.Equal(t, 10*time.Minute, config.TerminateNode.Timeout)
-	})
+	require.Len(t, config.RebootNode.Exclusions[1].MatchExpressions, 1)
+	assert.Equal(t, "node-role.kubernetes.io/control-plane", config.RebootNode.Exclusions[1].MatchExpressions[0].Key)
+	assert.Equal(t, metav1.LabelSelectorOpExists, config.RebootNode.Exclusions[1].MatchExpressions[0].Operator)
 }

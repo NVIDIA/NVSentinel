@@ -496,15 +496,13 @@ func TestCSPHealthMonitorStoreOnlyProcessingStrategy(t *testing.T) {
 		helpers.EnsureNodeConditionNotPresent(ctx, t, client, testCtx.NodeName, "CSPMaintenance")
 		t.Log("Verifying node was not cordoned when processing STORE_ONLY strategy")
 		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
 		})
 
 		t.Logf("Verified: node %s was not cordoned when processing STORE_ONLY strategy", testCtx.NodeName)
-		helpers.AssertQuarantineState(ctx, t, client, testCtx.NodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
-		})
 
 		return ctx
 	})

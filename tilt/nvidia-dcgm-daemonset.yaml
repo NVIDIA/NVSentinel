@@ -29,12 +29,18 @@ spec:
       labels:
         app: nvidia-dcgm
     spec:
+      nodeSelector:
+        nvidia.com/gpu.deploy.dcgm: "true"
       containers:
-      - image: ghcr.io/nvidia/nvsentinel-fake-dcgm:4.2.0
-        name: nvidia-dcgm-ctr
+        - image: ghcr.io/nvidia/nvsentinel-fake-dcgm:4.2.0
+          name: nvidia-dcgm-ctr
       tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
+        - key: AggregatedNodeHealth
+          operator: Equal
+          value: "False"
+          effect: NoSchedule
 ---
 apiVersion: v1
 kind: Service
@@ -47,13 +53,13 @@ metadata:
 spec:
   internalTrafficPolicy: Local
   ipFamilies:
-  - IPv4
+    - IPv4
   ipFamilyPolicy: SingleStack
   ports:
-  - name: dcgm
-    port: 5555
-    protocol: TCP
-    targetPort: 5555
+    - name: dcgm
+      port: 5555
+      protocol: TCP
+      targetPort: 5555
   selector:
     app: nvidia-dcgm
   sessionAffinity: None

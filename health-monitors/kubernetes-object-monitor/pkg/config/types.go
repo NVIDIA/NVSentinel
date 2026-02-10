@@ -57,3 +57,24 @@ func (r *ResourceSpec) GVK() string {
 
 	return r.Group + "/" + r.Version + "/" + r.Kind
 }
+
+// ResourceInfo contains the metadata needed to identify a resource in health events.
+// This is used to populate the entitiesImpacted field, which allows fault-quarantine
+// to track each resource individually. The full GVK (Group, Version, Kind) is included
+// to uniquely identify resource types, as the same Kind can exist in different API groups.
+type ResourceInfo struct {
+	Group     string
+	Version   string
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+// GVK returns a string representation of the Group/Version/Kind.
+func (r *ResourceInfo) GVK() string {
+	if r.Group == "" {
+		return r.Version + "/" + r.Kind
+	}
+
+	return r.Group + "/" + r.Version + "/" + r.Kind
+}

@@ -713,8 +713,10 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 
 		t.Log("Verifying node was not cordoned")
 		helpers.AssertQuarantineState(ctx, t, client, nodeName, helpers.QuarantineAssertion{
-			ExpectCordoned:   false,
-			ExpectAnnotation: false,
+			ExpectCordoned: false,
+			AnnotationChecks: []helpers.AnnotationCheck{
+				{Key: helpers.QuarantineHealthEventAnnotationKey, ShouldExist: false},
+			},
 		})
 
 		return ctx

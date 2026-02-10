@@ -45,8 +45,11 @@ func New(client pb.PlatformConnectorClient, processingStrategy pb.ProcessingStra
 	}
 }
 
+// PublishHealthEvent publishes a health event to the platform connector.
+// The resourceInfo parameter is used to populate the entitiesImpacted field,
+// which allows fault-quarantine to track each resource individually.
 func (p *Publisher) PublishHealthEvent(ctx context.Context,
-	policy *config.Policy, nodeName string, isHealthy bool) error {
+	policy *config.Policy, nodeName string, isHealthy bool, resourceInfo *config.ResourceInfo) error {
 	strategy := p.processingStrategy
 
 	if policy.HealthEvent.ProcessingStrategy != "" {
@@ -56,6 +59,24 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		}
 
 		strategy = pb.ProcessingStrategy(value)
+	}
+
+	// Build entitiesImpacted from resource info
+
+	var entitiesImpacted []*pb.Entity
+
+	if resourceInfo != nil {
+		entityValue := resourceInfo.Name
+		if resourceInfo.Namespace != "" {
+			entityValue = fmt.Sprintf("%s/%s", resourceInfo.Namespace, resourceInfo.Name)
+		}
+
+		entitiesImpacted = []*pb.Entity{
+			{
+				EntityType:  resourceInfo.GVK(),
+				EntityValue: entityValue,
+			},
+		}
 	}
 
 	event := &pb.HealthEvent{
@@ -71,6 +92,7 @@ func (p *Publisher) PublishHealthEvent(ctx context.Context,
 		RecommendedAction:  mapRecommendedAction(policy.HealthEvent.RecommendedAction),
 		ErrorCode:          policy.HealthEvent.ErrorCode,
 		ProcessingStrategy: strategy,
+		EntitiesImpacted:   entitiesImpacted,
 	}
 
 	healthEvents := &pb.HealthEvents{

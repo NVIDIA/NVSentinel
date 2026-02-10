@@ -58,6 +58,10 @@ jobs:
             make_command: 'make -C log-collector lint-log-collector'
             step_name: 'Run lint'
             replace_imports: 'false'
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset lint'
+            step_name: 'Run lint'
+            replace_imports: 'false'
           - component: file-server-cleanup
             make_command: 'make -C log-collector lint-file-server-cleanup'
             step_name: 'Run lint'
@@ -139,7 +143,8 @@ jobs:
     strategy:
       matrix:
         component:
-          - ping
+          - dcgm-diag
+          - nccl-loopback
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -148,15 +153,6 @@ jobs:
 
       - name: Run lint and test
         run: make -C preflight-checks/${{ matrix.component }} lint-test
-
-      - name: Upload artifacts
-        uses: ./.github/actions/upload-test-artifacts
-        with:
-          component-name: preflight-${{ matrix.component }}
-          file-paths: |
-            preflight-checks/${{ matrix.component }}/coverage.xml
-            preflight-checks/${{ matrix.component }}/coverage.txt
-            preflight-checks/${{ matrix.component }}/report.xml
 
   modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'

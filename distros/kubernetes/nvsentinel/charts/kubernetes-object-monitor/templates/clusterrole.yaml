@@ -41,12 +41,20 @@ rules:
       - watch
       - patch
       - update
+  # This loop automatically generates rules for all resources defined in your policies.
   {{- range $group, $resources := $resourcesByGroup }}
-  {{- if ne $group "" }}
+  {{- /* Skip nodes in core group since we already added it above */}}
+  {{- $filteredResources := list }}
+  {{- range $resources }}
+    {{- if not (and (eq $group "") (eq . "nodes")) }}
+      {{- $filteredResources = append $filteredResources . }}
+    {{- end }}
+  {{- end }}
+  {{- if $filteredResources }}
   - apiGroups:
       - {{ $group | quote }}
     resources:
-      {{- range $resources }}
+      {{- range $filteredResources }}
       - {{ . }}
       {{- end }}
     verbs:

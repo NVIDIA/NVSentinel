@@ -99,3 +99,57 @@ Certificate DNS names
 - {{ include "preflight.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
 {{- end }}
 
+{{/*
+DCGM service endpoint - uses global.dcgm.service.endpoint with fallback to local
+*/}}
+{{- define "preflight.dcgmEndpoint" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
+{{- .Values.global.dcgm.service.endpoint | default .Values.dcgm.service.endpoint }}
+{{- else }}
+{{- .Values.dcgm.service.endpoint }}
+{{- end }}
+{{- end }}
+
+{{/*
+DCGM service port - uses global.dcgm.service.port with fallback to local
+*/}}
+{{- define "preflight.dcgmPort" -}}
+{{- if and .Values.global .Values.global.dcgm .Values.global.dcgm.service }}
+{{- .Values.global.dcgm.service.port | default .Values.dcgm.service.port }}
+{{- else }}
+{{- .Values.dcgm.service.port }}
+{{- end }}
+{{- end }}
+
+{{/*
+DCGM hostengine address - combines endpoint and port
+*/}}
+{{- define "preflight.dcgmHostengineAddr" -}}
+{{- printf "%s:%v" (include "preflight.dcgmEndpoint" .) (include "preflight.dcgmPort" .) }}
+{{- end }}
+
+{{/*
+DCGM diagnostic level
+*/}}
+{{- define "preflight.dcgmDiagLevel" -}}
+{{- .Values.dcgm.diagLevel | default 1 }}
+{{- end }}
+
+{{/*
+Event processing strategy
+*/}}
+{{- define "preflight.processingStrategy" -}}
+{{- .Values.dcgm.processingStrategy | default "EXECUTE_REMEDIATION" }}
+{{- end }}
+
+{{/*
+Platform connector socket path for health event reporting
+Uses global.socketPath with unix:// prefix
+*/}}
+{{- define "preflight.connectorSocket" -}}
+{{- if and .Values.global .Values.global.socketPath }}
+{{- printf "unix://%s" .Values.global.socketPath }}
+{{- else }}
+{{- "unix:///var/run/nvsentinel.sock" }}
+{{- end }}
+{{- end }}

@@ -32,6 +32,16 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Workaround for freeing up more disk space
+      shell: bash
+      run: |
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo docker system prune -f
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
       with:
@@ -86,6 +96,22 @@ runs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
         fi
+
+    - name: Free disk space for SBOM generation
+      shell: bash
+      run: |
+        echo "=== Disk usage BEFORE cleanup ==="
+        df -h
+        # Remove pre-installed tools (if they exist on this runner)
+        sudo rm -rf /usr/local/lib/android || true
+        sudo rm -rf /usr/share/dotnet || true
+        sudo rm -rf /opt/ghc || true
+        # Thorough Docker cleanup - build cache no longer needed after push
+        docker buildx prune -f --all || true
+        docker system prune -af --volumes || true
+        rm -rf /tmp/.buildx-cache || true
+        echo "=== Disk usage AFTER cleanup ==="
+        df -h
     
     - name: Generate SBOM and Attest
       uses: ./.github/actions/sbom-and-attest

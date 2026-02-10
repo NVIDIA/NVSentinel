@@ -65,6 +65,14 @@ jobs:
             make_command: 'make -C log-collector docker-build-log-collector'
           - component: file-server-cleanup
             make_command: 'make -C log-collector docker-build-file-server-cleanup'
+          # Preflight Checks (Docker-based)
+          - component: preflight-dcgm-diag
+            make_command: 'make -C preflight-checks/dcgm-diag docker-build'
+          - component: preflight-nccl-loopback
+            make_command: 'make -C preflight-checks/nccl-loopback docker-build'
+          # GPU Reset (Docker-based)
+          - component: gpu-reset
+            make_command: 'make -C gpu-reset docker-build'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -127,8 +135,6 @@ jobs:
           - module: event-exporter
             path: .
           - module: preflight
-            path: .
-          - module: preflight-checks/ping
             path: .
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2

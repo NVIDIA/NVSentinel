@@ -52,8 +52,7 @@ if [ ! -f go.work ]; then
     ./labeler \
     ./node-drainer \
     ./platform-connectors \
-    ./preflight \
-    ./preflight-checks/ping
+    ./preflight
 fi
 
 ko build "${KO_FLAGS[@]}" \
@@ -69,8 +68,7 @@ ko build "${KO_FLAGS[@]}" \
   ./labeler \
   ./node-drainer \
   ./platform-connectors \
-  ./preflight \
-  ./preflight-checks/ping 
+  ./preflight
 
 echo "built refs:"
 cat digests.txt

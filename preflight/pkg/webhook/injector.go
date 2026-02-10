@@ -15,11 +15,16 @@
 package webhook
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+)
+
+const (
+	nvsentinelSocketVolumeName = "nvsentinel-socket"
 )
 
 type PatchOperation struct {
@@ -68,6 +73,9 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, erro
 			})
 		}
 	}
+
+	volumePatches := i.injectVolumes(pod)
+	patches = append(patches, volumePatches...)
 
 	return patches, nil
 }
@@ -142,8 +150,131 @@ func (i *Injector) buildInitContainers(maxResources corev1.ResourceList) []corev
 			container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("500Mi")
 		}
 
+		i.injectCommonEnv(container)
+		i.injectDCGMEnv(container)
+
 		initContainers = append(initContainers, *container)
 	}
 
 	return initContainers
+}
+
+// injectCommonEnv injects environment variables common to all preflight init containers.
+// These include NODE_NAME, PLATFORM_CONNECTOR_SOCKET, and PROCESSING_STRATEGY which are
+// needed by any preflight check that publishes health events.
+func (i *Injector) injectCommonEnv(container *corev1.Container) {
+	envVars := []corev1.EnvVar{
+		{
+			Name: "NODE_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "spec.nodeName",
+				},
+			},
+		},
+	}
+
+	if i.cfg.DCGM.ConnectorSocket != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PLATFORM_CONNECTOR_SOCKET",
+			Value: i.cfg.DCGM.ConnectorSocket,
+		})
+	}
+
+	if i.cfg.DCGM.ProcessingStrategy != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PROCESSING_STRATEGY",
+			Value: i.cfg.DCGM.ProcessingStrategy,
+		})
+	}
+
+	i.mergeEnvVars(container, envVars)
+}
+
+func (i *Injector) injectVolumes(pod *corev1.Pod) []PatchOperation {
+	var patches []PatchOperation
+
+	var volumesToAdd []corev1.Volume
+
+	existingVolumes := make(map[string]bool)
+	for _, vol := range pod.Spec.Volumes {
+		existingVolumes[vol.Name] = true
+	}
+
+	if i.cfg.DCGM.ConnectorSocket != "" && !existingVolumes[nvsentinelSocketVolumeName] {
+		// Platform-connector mounts /var/run/nvsentinel (host) -> /var/run (container)
+		// and creates socket at /var/run/nvsentinel.sock inside its container.
+		// This is the same hostPath used by gpu-health-monitor.
+		hostPathType := corev1.HostPathDirectoryOrCreate
+
+		volumesToAdd = append(volumesToAdd, corev1.Volume{
+			Name: nvsentinelSocketVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/var/run/nvsentinel",
+					Type: &hostPathType,
+				},
+			},
+		})
+	}
+
+	if len(volumesToAdd) == 0 {
+		return patches
+	}
+
+	if len(pod.Spec.Volumes) == 0 {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/volumes",
+			Value: volumesToAdd,
+		})
+	} else {
+		for _, vol := range volumesToAdd {
+			patches = append(patches, PatchOperation{
+				Op:    "add",
+				Path:  "/spec/volumes/-",
+				Value: vol,
+			})
+		}
+	}
+
+	return patches
+}
+
+// injectDCGMEnv injects DCGM-specific environment variables for the dcgm-diag check.
+func (i *Injector) injectDCGMEnv(container *corev1.Container) {
+	if container.Name != "preflight-dcgm-diag" {
+		return
+	}
+
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "DCGM_DIAG_LEVEL",
+			Value: fmt.Sprintf("%d", i.cfg.DCGM.DiagLevel),
+		},
+	}
+
+	if i.cfg.DCGM.HostengineAddr != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "DCGM_HOSTENGINE_ADDR",
+			Value: i.cfg.DCGM.HostengineAddr,
+		})
+	}
+
+	i.mergeEnvVars(container, envVars)
+}
+
+// mergeEnvVars merges the provided env vars into the container.
+// User-defined env vars (already present in container) take precedence.
+func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.EnvVar) {
+	existingEnvNames := make(map[string]bool)
+	for _, env := range container.Env {
+		existingEnvNames[env.Name] = true
+	}
+
+	for _, env := range envVars {
+		if !existingEnvNames[env.Name] {
+			container.Env = append(container.Env, env)
+		}
+	}
 }

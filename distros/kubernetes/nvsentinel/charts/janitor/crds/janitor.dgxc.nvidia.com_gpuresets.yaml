@@ -1,10 +1,10 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.0
   name: gpuresets.janitor.dgxc.nvidia.com
 spec:
   group: janitor.dgxc.nvidia.com
@@ -31,6 +31,10 @@ spec:
     - description: The target node for the GPU reset
       jsonPath: .spec.nodeName
       name: Node
+      type: string
+    - description: The current status of the reset
+      jsonPath: .status.phase
+      name: Status
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -58,7 +62,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: GPUResetSpec defines the desired state of GPUReset.
+            description: Specification of the desired behavior of the GPU reset operation.
             properties:
               nodeName:
                 description: NodeName identifies the node which contains the GPUs
@@ -89,17 +93,20 @@ spec:
             - nodeName
             type: object
           status:
-            description: GPUResetStatus defines the observed state of GPUReset.
+            description: |-
+              Most recently observed status of the GPU reset operation.
+              This data may not be up to date.
+              Populated by the system.
+              Read-only.
             properties:
               completionTime:
-                description: |-
-                  CompletionTime is the time at which the reset operation finished,
+                description: RFC 3339 date and time at which the reset operation finished,
                   regardless of the outcome (success or failure).
                 format: date-time
                 type: string
               conditions:
                 description: Conditions represent the latest available observations
-                  of an object's current state.
+                  of a reset operations state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -155,9 +162,59 @@ spec:
                   - type
                   type: object
                 type: array
+              jobRef:
+                description: JobRef is a reference to the job that will execute the
+                  GPU reset operation.
+                properties:
+                  apiVersion:
+                    description: API version of the referent.
+                    type: string
+                  fieldPath:
+                    description: |-
+                      If referring to a piece of an object instead of an entire object, this string
+                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
+                      For example, if the object reference is to a container within a pod, this would take on a value like:
+                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
+                      the event) or if no container name is specified "spec.containers[2]" (container with
+                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
+                      referencing a part of an object.
+                    type: string
+                  kind:
+                    description: |-
+                      Kind of the referent.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+                    type: string
+                  name:
+                    description: |-
+                      Name of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
+                    type: string
+                  resourceVersion:
+                    description: |-
+                      Specific resourceVersion to which this reference is made, if any.
+                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
+                    type: string
+                  uid:
+                    description: |-
+                      UID of the referent.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              phase:
+                description: |-
+                  The phase of a GPUReset is a simple, high-level summary of where the reset operation is in its lifecycle.
+                  The conditions array, the reason and message fields, and the individual reset job contain
+                  more detail about the reset status.
+                type: string
               startTime:
-                description: StartTime is the time at which the reset operation began
-                  processing.
+                description: RFC 3339 date and time at which the object was acknowledged
+                  by the GPUReset controller.
                 format: date-time
                 type: string
             type: object

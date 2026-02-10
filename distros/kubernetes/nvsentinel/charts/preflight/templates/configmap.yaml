@@ -25,6 +25,10 @@ data:
       {{- toYaml .Values.gpuResourceNames | nindent 6 }}
     networkResourceNames:
       {{- toYaml .Values.networkResourceNames | nindent 6 }}
+    dcgm:
+      hostengineAddr: {{ include "preflight.dcgmHostengineAddr" . | quote }}
+      diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
+      connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
+      processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}
-

@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "nvsentinel-dcgm-diag"
+version = "0.1.0"
+description = "DCGM preflight diagnostic check"
+authors = ["NVIDIA"]
+packages = [{include = "dcgm_diag"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+grpcio = "^1.74.0"
+protobuf = ">=6.31.1,<7.0.0"
+pynvml = "^12.0.0"
+structlog = "^25.1.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^26.1.0"
+pytest = "^9.0.0"
+coverage = "^7.13.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+dcgm-diag = "dcgm_diag.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["dcgm_diag/tests"]
+pythonpath = ["."]
+
+[tool.black]
+line-length = 120
+exclude = '''
+(
+  /(
+      \.eggs
+    | \.git
+    | \.venv
+    | _build
+    | dist
+  )/
+  | dcgm_diag/protos
+)
+'''

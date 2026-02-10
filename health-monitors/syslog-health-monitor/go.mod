@@ -5,7 +5,7 @@ go 1.25.0
 toolchain go1.25.3
 
 require (
-	github.com/coreos/go-systemd/v22 v22.6.0
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/nvidia/nvsentinel/commons v0.0.0
 	github.com/nvidia/nvsentinel/data-models v0.0.0
