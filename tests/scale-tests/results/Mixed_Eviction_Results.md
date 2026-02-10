@@ -96,42 +96,32 @@ This uneven distribution explains why the "pods on cordoned nodes" counts don't 
 
 **Test Parameters:**
 - **Nodes cordoned:** 150
-- **Time to cordon (FQM):** 62.4s  
-- **Cordon rate:** 2.5 nodes/sec
+- **Time to cordon (FQM):** 62.6s  
+- **Cordon rate:** 2.50 nodes/sec
 - **Peak queue depth:** 129 nodes
 
 **Eviction Results:**
 
-| Namespace | Eviction Mode | Pods on Cordoned Nodes (initial) | Pods Remaining (after 3 min) | Status |
-|-----------|---------------|----------------------------------|------------------------------|--------|
-| test-immediate | Immediate | 150 | 0 | Evicted immediately |
-| test-allow-completion | AllowCompletion | 150 | 150 | Waiting (no eviction) |
-| test-delete-timeout | DeleteAfterTimeout | ~148 | 0 | Force-deleted after 2 min |
+| Namespace | Eviction Mode | Initial on Cordoned | After 30s | After 60s | After 90s | Final | Status |
+|-----------|---------------|---------------------|-----------|-----------|-----------|-------|--------|
+| test-immediate | Immediate | 7 | 0 | 0 | 0 | 0 | Fully drained |
+| test-allow-completion | AllowCompletion | 150 | 150 | 150 | 150 | 150 | NOT evicting (correct!) |
+| test-delete-timeout | DeleteAfterTimeout | 151 | 83 | 9 | 0 | 0 | Force-deleted after 2 min |
 
-**Prometheus Metrics:**
+**Drain Progress Timeline:**
 
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Force-deleted pods | 147-148 | Two runs: 147 then 148 (consistent) |
-| Events received | 1,153 | |
-| Processing errors | 1 | |
-| Queue depth (final) | 0 | All events processed |
+| Time | test-immediate | test-allow-completion | test-delete-timeout |
+|------|----------------|----------------------|---------------------|
+| T+0 (cordon done) | 7 | 150 | 151 |
+| T+30s | 0 | 150 | 83 |
+| T+60s | 0 | 150 | 9 |
+| T+90s | 0 | 150 | 0 |
 
 **Key Observations:**
-- **Immediate mode:** All pods evicted instantly
-- **AllowCompletion mode:** 150 pods remained on cordoned nodes (correct behavior - no active eviction)
-- **DeleteAfterTimeout mode:** 147-148 pods force-deleted after 2-minute timeout
-- **Count variance:** Not exactly 150 due to Kubernetes scheduler distribution (some nodes may not have had test-delete-timeout pods initially)
-
-**Evidence from Node Events:**
-```
-WaitingBeforeForceDelete - Waiting for following pods to finish: [inference-sim-xxx] in namespace: [test-delete-timeout] or they will be force deleted on: 2026-01-12T19:47:14Z
-```
-
-**Consistency Check:** Test was run twice to verify repeatability:
-- Run 1: 147 pods force-deleted
-- Run 2: 148 pods force-deleted  
-- **98-99% consistency**
+- **Immediate mode:** Almost fully drained *during* cordon phase (only 7 pods remaining at T+0); fully drained by T+30s
+- **AllowCompletion mode:** Exactly 150 pods remained on cordoned nodes throughout (correct behavior - NOT actively evicting)
+- **DeleteAfterTimeout mode:** 151 pods on cordoned nodes, fully drained by T+90s after 2-minute timeout
+- **Drain speed:** Immediate mode is extremely fast — eviction happens concurrently with cordoning
 
 ---
 
@@ -219,11 +209,11 @@ WaitingBeforeForceDelete - Waiting for following pods to finish: [inference-sim-
 | Metric | M1 (150 nodes) | M2 (375 nodes) | M3 (750 nodes) | Scaling Behavior |
 |--------|----------------|----------------|----------------|------------------|
 | Nodes cordoned | 150 | 375 | 750 | Linear |
-| Time to cordon | 62.4s | 150.6s | 300.8s | Linear (~2.5x per 2x nodes) |
-| Cordon rate | 2.5 nodes/sec | 2.59 nodes/sec | 2.59 nodes/sec | Constant (~2.5/sec) |
+| Time to cordon | 62.6s | 150.6s | 300.8s | Linear (~2.5x per 2x nodes) |
+| Cordon rate | 2.50 nodes/sec | 2.59 nodes/sec | 2.59 nodes/sec | Constant (~2.5/sec) |
 | Peak queue | 129 | 349 | 711 | Linear |
-| Immediate drain time | ~3 min | ~2 min | ~6 min | Scales with node count |
-| DeleteAfterTimeout drain | ~3 min | ~4 min | ~10 min | ~2 min timeout + drain |
+| Immediate drain time | <30s | ~2 min | ~6 min | Concurrent with cordon |
+| DeleteAfterTimeout drain | ~90s | ~4 min | ~10 min | ~2 min timeout + drain |
 | AllowCompletion on cordoned | 150 | 366 | 750 | Matches cordoned nodes |
 | AllowCompletion evicted | 0 | 0 | 0 | None (correct) |
 
@@ -231,7 +221,7 @@ WaitingBeforeForceDelete - Waiting for following pods to finish: [inference-sim-
 1. **Linear scaling:** Cordon time scales linearly with node count (62s → 150s → 300s)
 2. **Consistent throughput:** 2.5-2.6 nodes/sec cordon rate maintained across all scales
 3. **No cross-contamination:** All three eviction modes worked independently without interference
-4. **Drain time increases with scale:** Larger tests take longer to fully drain all pods
+4. **Immediate mode is fast:** Eviction happens concurrently with cordoning — most pods drained before cordon phase completes
 5. **AllowCompletion verified:** Pods correctly NOT evicted in all three tests
 6. **Perfect distribution validation:** M3 showed exact 750/750 match with perfect pod distribution
 
@@ -315,9 +305,9 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 |--------|--------|-----------|-----------|-----------|--------|
 | Immediate eviction | All pods evicted | 0 remaining | 0 remaining | 0 remaining | Pass |
 | AllowCompletion wait | Pods remain on node | 150 remaining | 366 remaining | 750 remaining | Pass |
-| DeleteAfterTimeout | Force-delete after 2 min | ~0 remaining | 0 remaining | 0 remaining | Pass |
-| Cordon rate | ~2.5 nodes/sec | 2.5 nodes/sec | 2.59 nodes/sec | 2.59 nodes/sec | Pass |
-| Pod distribution match | Close to cordoned | N/A | 366/375 (97.6%) | 750/750 (100%) | Pass |
+| DeleteAfterTimeout | Force-delete after 2 min | 0 remaining | 0 remaining | 0 remaining | Pass |
+| Cordon rate | ~2.5 nodes/sec | 2.50 nodes/sec | 2.59 nodes/sec | 2.59 nodes/sec | Pass |
+| Pod distribution match | Close to cordoned | 150/150 (100%) | 366/375 (97.6%) | 750/750 (100%) | Pass |
 
 ### Areas for Further Investigation
 
@@ -345,7 +335,7 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 - **NVSentinel Version:** v0.8.0
 - **MongoDB:** 3-replica, 6Gi memory per replica
 - **Test Workloads:** inference-sim (1500 pods per namespace, 30s terminationGracePeriodSeconds)
-- **Test Dates:** February 2, 2026
+- **Test Dates:** February 2-10, 2026
 
 ### Manifests Used
 
@@ -362,4 +352,4 @@ T0+∞: AllowCompletion pods wait indefinitely (test-allow-completion)
 
 ---
 
-**Last Updated:** February 2, 2026
+**Last Updated:** February 10, 2026

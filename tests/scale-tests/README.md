@@ -26,14 +26,23 @@ This test suite validates NVSentinel's performance and scalability under realist
 
 ### Installation
 
-Deploy NVSentinel v0.8.0 via Helm with MongoDB metrics enabled:
+Deploy NVSentinel via Helm with MongoDB metrics enabled:
 
 ```bash
+# For most tests (API/MongoDB, FQM Latency, Concurrent Drain):
+helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+  --namespace nvsentinel \
+  --create-namespace \
+  --version v0.4.0 \
+  --values configs/values-v0.4.0-with-mongodb-metrics.yaml \
+  --wait
+
+# For Mixed Eviction Mode tests (requires v0.8.0+):
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel \
   --create-namespace \
   --version v0.8.0 \
-  --values configs/values-v0.4.0-with-mongodb-metrics.yaml \
+  --values configs/values-v0.8.0-with-mongodb-metrics.yaml \
   --wait
 ```
 
@@ -225,6 +234,7 @@ tests/scale-tests/
 │   └── README.md
 └── configs/                         # Configuration files
     ├── values-v0.4.0-with-mongodb-metrics.yaml
+    ├── values-v0.8.0-with-mongodb-metrics.yaml
     └── node-drainer-mixed-eviction.toml
 ```
 
@@ -248,4 +258,4 @@ Scale testing on a 1500-node cluster validates NVSentinel performance:
 
 ---
 
-**Last Updated:** February 2, 2026
+**Last Updated:** February 10, 2026
