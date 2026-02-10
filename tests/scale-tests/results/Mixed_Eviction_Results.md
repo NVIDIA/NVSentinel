@@ -73,9 +73,9 @@ mode = "AllowCompletion"
 
 ### Note on Pod Distribution
 
-The test deployments do not include `podAntiAffinity` rules, so Kubernetes scheduler distributes pods unevenly across nodes. In our tests, we observed that some nodes received 30-70+ pods from a single namespace while over 1,000 nodes had zero pods. For example, one node had 74 test-allow-completion pods while 1,014 nodes had none.
+Early test runs showed extremely uneven pod distribution (30-70+ pods on some nodes, 1,000+ nodes with zero pods). This was caused by **skyhook taints** on most nodes preventing pod scheduling. After removing the taints (`kubectl taint nodes --all skyhook.nvidia.com:NoSchedule-`), pod distribution improved dramatically.
 
-This uneven distribution explains why the "pods on cordoned nodes" counts don't match the number of cordoned nodes (e.g., cordoning 375 nodes resulted in 1,046 test-allow-completion pods being affected, not 375). This behavior is representative of real-world deployments where pod distribution varies based on scheduler decisions, resource availability, and timing. The test validates that eviction modes work correctly regardless of pod density per node.
+The test manifests include `topologySpreadConstraints` with `maxSkew: 3`, which ensures reasonable distribution across nodes when taints are not blocking scheduling. Final test runs achieved near-perfect distribution: M1 showed 150/150 match, M2 showed 366/375 (97.6%), and M3 showed 750/750 (100%).
 
 ### Metrics Monitored
 
