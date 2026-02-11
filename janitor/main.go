@@ -62,352 +62,6 @@ func init() {
 	utilruntime.Must(janitordgxcnvidiacomv1alpha1.AddToScheme(scheme))
 }
 
-// runFlags holds all CLI flags for the janitor process.
-type runFlags struct {
-	metricsAddr                                      string
-	metricsCertPath, metricsCertName, metricsCertKey string
-	webhookCertPath, webhookCertName, webhookCertKey string
-	probeAddr                                        string
-	configAddr                                       string
-	enableLeaderElection                             bool
-	secureMetrics                                    bool
-	enableHTTP2                                      bool
-	configFile                                       string
-	leaseDuration                                    time.Duration
-	renewDeadline                                    time.Duration
-	retryPeriod                                      time.Duration
-}
-
-func parseFlags() runFlags {
-	var f runFlags
-
-	flag.StringVar(&f.metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&f.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.StringVar(&f.configAddr, "config-bind-address", ":8082", "The address the config endpoint binds to.")
-	flag.BoolVar(&f.enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&f.secureMetrics, "metrics-secure", false,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&f.webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&f.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&f.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&f.metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&f.metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&f.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&f.enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&f.configFile, "config", "", "The path to the configuration file.")
-
-	// Leader election flags: defaulting to high values; janitor is not sensitive to slow leader transitions.
-	flag.DurationVar(&f.leaseDuration, "lease-duration", 90*time.Second,
-		"The duration that non-leader candidates will wait to force acquire leadership.")
-	flag.DurationVar(&f.renewDeadline, "renew-deadline", 60*time.Second,
-		"The duration that the acting controlplane will retry refreshing leadership before giving up.")
-	flag.DurationVar(&f.retryPeriod, "retry-period", 5*time.Second,
-		"The duration the LeaderElector clients should wait between tries of actions.")
-
-	flag.Parse()
-
-	slog.Info("Parsed flags",
-		"metrics-bind-address", f.metricsAddr,
-		"health-probe-bind-address", f.probeAddr,
-		"config-bind-address", f.configAddr,
-		"leader-elect", f.enableLeaderElection,
-		"config", f.configFile,
-		"secure-metrics", f.secureMetrics)
-
-	return f
-}
-
-func resolvePodNamespace() string {
-	ns := os.Getenv("POD_NAMESPACE")
-
-	if ns == "" {
-		slog.Warn("POD_NAMESPACE not set, defaulting to 'nvsentinel'")
-
-		ns = "nvsentinel"
-	}
-
-	slog.Info("Using namespace for distributed locking and GPU reset resources", "namespace", ns)
-
-	return ns
-}
-
-func setupConfigServer(cfg *config.Config, configAddr string) (server.Server, int, error) {
-	_, portStr, err := net.SplitHostPort(configAddr)
-	if err != nil {
-		portStr = configAddr
-
-		if portStr != "" && portStr[0] == ':' {
-			portStr = portStr[1:]
-		}
-	}
-
-	configPort, err := strconv.Atoi(portStr)
-	if err != nil {
-		slog.Error("Invalid config-bind-address port", "error", err, "address", configAddr)
-
-		return nil, 0, fmt.Errorf("invalid config-bind-address port %q: %w", configAddr, err)
-	}
-
-	configHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if err := json.NewEncoder(w).Encode(cfg); err != nil {
-			slog.Error("Failed to encode configuration as JSON", "error", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-
-			return
-		}
-	})
-
-	configServer := server.NewServer(
-		server.WithPort(configPort),
-		server.WithHandler("/config", configHandler),
-	)
-
-	return configServer, configPort, nil
-}
-
-// tlsAndServers holds the webhook server, metrics options, and optional cert watchers.
-type tlsAndServers struct {
-	webhookServer        webhook.Server
-	metricsServerOptions metricsserver.Options
-	metricsCertWatcher   *certwatcher.CertWatcher
-	webhookCertWatcher   *certwatcher.CertWatcher
-}
-
-func setupTLSAndServers(f runFlags) (tlsAndServers, error) {
-	var tlsOpts []func(*tls.Config)
-
-	if !f.enableHTTP2 {
-		disableHTTP2 := func(c *tls.Config) { c.NextProtos = []string{"http/1.1"} }
-		tlsOpts = append(tlsOpts, disableHTTP2)
-	}
-
-	var out tlsAndServers
-
-	webhookTLSOpts := tlsOpts
-
-	if len(f.webhookCertPath) > 0 {
-		slog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", f.webhookCertPath,
-			"webhook-cert-name", f.webhookCertName,
-			"webhook-cert-key", f.webhookCertKey)
-
-		w, err := certwatcher.New(
-			filepath.Join(f.webhookCertPath, f.webhookCertName),
-			filepath.Join(f.webhookCertPath, f.webhookCertKey),
-		)
-		if err != nil {
-			slog.Error("Failed to initialize webhook certificate watcher", "error", err)
-
-			return tlsAndServers{}, err
-		}
-
-		out.webhookCertWatcher = w
-
-		webhookTLSOpts = append(webhookTLSOpts, func(c *tls.Config) { c.GetCertificate = w.GetCertificate })
-	}
-
-	out.webhookServer = webhook.NewServer(webhook.Options{TLSOpts: webhookTLSOpts})
-
-	out.metricsServerOptions = metricsserver.Options{
-		BindAddress:   f.metricsAddr,
-		SecureServing: f.secureMetrics,
-		TLSOpts:       tlsOpts,
-	}
-
-	if f.secureMetrics {
-		out.metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-
-	if len(f.metricsCertPath) > 0 {
-		slog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", f.metricsCertPath,
-			"metrics-cert-name", f.metricsCertName,
-			"metrics-cert-key", f.metricsCertKey)
-
-		m, err := certwatcher.New(
-			filepath.Join(f.metricsCertPath, f.metricsCertName),
-			filepath.Join(f.metricsCertPath, f.metricsCertKey),
-		)
-		if err != nil {
-			slog.Error("Failed to initialize metrics certificate watcher", "error", err)
-
-			return tlsAndServers{}, err
-		}
-
-		out.metricsCertWatcher = m
-		out.metricsServerOptions.TLSOpts = append(out.metricsServerOptions.TLSOpts,
-			func(c *tls.Config) { c.GetCertificate = m.GetCertificate })
-	}
-
-	return out, nil
-}
-
-//nolint:cyclop // main wiring: linear setup; complexity from sequential error checks
-func run() error {
-	// 1. Parse flags and resolve pod namespace
-	flags := parseFlags()
-	podNamespace := resolvePodNamespace()
-
-	// 2. Load configuration
-	cfg, err := config.LoadConfig(flags.configFile, podNamespace)
-	if err != nil {
-		slog.Error("Unable to load configuration", "error", err)
-
-		return err
-	}
-
-	// 3. Setup config server (port, handler, server)
-	configServer, configPort, err := setupConfigServer(cfg, flags.configAddr)
-	if err != nil {
-		return err
-	}
-
-	// 4. Setup TLS options, webhook server, and metrics options (including cert watchers)
-	tlsAndSrv, err := setupTLSAndServers(flags)
-	if err != nil {
-		return err
-	}
-
-	// 5. Create controller manager
-	restConfig := ctrl.GetConfigOrDie()
-	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
-		return auditlogger.NewAuditingRoundTripper(rt)
-	})
-
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                tlsAndSrv.metricsServerOptions,
-		WebhookServer:          tlsAndSrv.webhookServer,
-		HealthProbeBindAddress: flags.probeAddr,
-		LeaderElection:         flags.enableLeaderElection,
-		LeaderElectionID:       "janitor.dgxc.nvidia.com",
-		LeaseDuration:          &flags.leaseDuration,
-		RenewDeadline:          &flags.renewDeadline,
-		RetryPeriod:            &flags.retryPeriod,
-	})
-	if err != nil {
-		slog.Error("Unable to create manager", "error", err)
-
-		return err
-	}
-
-	slog.Info("Manager created successfully")
-
-	// 6. Configure field indexers and register controllers
-	if err = controller.ConfigureFieldIndexers(mgr, cfg); err != nil {
-		slog.Error("Unable to configure field indexers", "error", err)
-
-		return err
-	}
-
-	if err = (&controller.RebootNodeReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Config:        &cfg.RebootNode,
-		LockNamespace: podNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		slog.Error("Unable to create controller", "controller", "RebootNode", "error", err)
-
-		return err
-	}
-
-	if err = (&controller.TerminateNodeReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Config:        &cfg.TerminateNode,
-		LockNamespace: podNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		slog.Error("Unable to create controller", "controller", "TerminateNode", "error", err)
-
-		return err
-	}
-
-	if err = (&controller.GPUResetReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Config:        &cfg.GPUReset,
-		LockNamespace: podNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		slog.Error("unable to create controller", "controller", "GPUReset", "error", err)
-
-		return err
-	}
-
-	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
-
-	// 7. Register webhook
-	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {
-		slog.Error("Unable to create webhook", "webhook", "Janitor", "error", err)
-
-		return err
-	}
-
-	slog.Info("Janitor validation webhook registered for all CRDs")
-
-	// 8. Add certificate watchers to manager
-	if tlsAndSrv.metricsCertWatcher != nil {
-		slog.Info("Adding metrics certificate watcher to manager")
-
-		if err := mgr.Add(tlsAndSrv.metricsCertWatcher); err != nil {
-			slog.Error("Unable to add metrics certificate watcher to manager", "error", err)
-
-			return err
-		}
-	}
-
-	if tlsAndSrv.webhookCertWatcher != nil {
-		slog.Info("Adding webhook certificate watcher to manager")
-
-		if err := mgr.Add(tlsAndSrv.webhookCertWatcher); err != nil {
-			slog.Error("Unable to add webhook certificate watcher to manager", "error", err)
-
-			return err
-		}
-	}
-
-	// 9. Setup health checks
-	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		slog.Error("Unable to set up health check", "error", err)
-
-		return err
-	}
-
-	if err = mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		slog.Error("Unable to set up ready check", "error", err)
-
-		return err
-	}
-
-	// 10. Start config server and manager, wait for shutdown
-	ctx := ctrl.SetupSignalHandler()
-	g, gCtx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		slog.Info("Starting config server", "port", configPort)
-
-		return configServer.Serve(gCtx)
-	})
-
-	g.Go(func() error {
-		slog.Info("Starting manager")
-
-		return mgr.Start(gCtx)
-	})
-
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func main() {
 	logger.SetDefaultStructuredLogger("janitor", version)
 	slog.Info("Starting janitor", "version", version, "commit", commit, "date", date)
@@ -416,6 +70,8 @@ func main() {
 		slog.Warn("Failed to initialize audit logger", "error", err)
 	}
 
+	// Bridge slog to logr for controller-runtime
+	// This ensures that controllers using log.FromContext(ctx) get slog
 	slogHandler := slog.Default().Handler()
 	logrLogger := logr.FromSlogHandler(slogHandler)
 	ctrllog.SetLogger(logrLogger)
@@ -433,4 +89,324 @@ func main() {
 	if err := auditlogger.CloseAuditLogger(); err != nil {
 		slog.Warn("Failed to close audit logger", "error", err)
 	}
+}
+
+// nolint:cyclop,gocyclo,gocognit
+func run() error {
+	var (
+		metricsAddr                                      string
+		metricsCertPath, metricsCertName, metricsCertKey string
+		webhookCertPath, webhookCertName, webhookCertKey string
+		probeAddr                                        string
+		configAddr                                       string
+		enableLeaderElection                             bool
+		secureMetrics                                    bool
+		enableHTTP2                                      bool
+		configFile                                       string
+		// Leader election tuning parameters
+		leaseDuration time.Duration
+		renewDeadline time.Duration
+		retryPeriod   time.Duration
+	)
+
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to. "+
+		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&configAddr, "config-bind-address", ":8082", "The address the config endpoint binds to.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager. "+
+			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&secureMetrics, "metrics-secure", false,
+		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
+	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
+	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.")
+	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
+	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.BoolVar(&enableHTTP2, "enable-http2", false,
+		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&configFile, "config", "", "The path to the configuration file.")
+
+	// Leader election flags
+	// Defaulting to pretty high values, we were hitting some crashes
+	// with the default values. Janitor as a project is not sensitive
+	// to slow leader transitions so high defaults are okay.
+	flag.DurationVar(&leaseDuration, "lease-duration", 90*time.Second,
+		"The duration that non-leader candidates will wait to force acquire leadership.")
+	flag.DurationVar(&renewDeadline, "renew-deadline", 60*time.Second,
+		"The duration that the acting controlplane will retry refreshing leadership before giving up.")
+	flag.DurationVar(&retryPeriod, "retry-period", 5*time.Second,
+		"The duration the LeaderElector clients should wait between tries of actions.")
+
+	flag.Parse()
+
+	slog.Info("Parsed flags",
+		"metrics-bind-address", metricsAddr,
+		"health-probe-bind-address", probeAddr,
+		"config-bind-address", configAddr,
+		"leader-elect", enableLeaderElection,
+		"config", configFile,
+		"secure-metrics", secureMetrics)
+
+	// Discover the namespace the pod is running in
+	podNamespace := os.Getenv("POD_NAMESPACE")
+	if podNamespace == "" {
+		slog.Warn("POD_NAMESPACE not set, defaulting to 'nvsentinel'")
+
+		podNamespace = "nvsentinel"
+	}
+
+	slog.Info("Using namespace for distributed locking and GPU reset resources", "namespace", podNamespace)
+
+	// Load configuration from file
+	cfg, err := config.LoadConfig(configFile, podNamespace)
+	if err != nil {
+		slog.Error("Unable to load configuration", "error", err)
+		return err
+	}
+
+	// Parse config port from address
+	// Handles formats like ":8082", "localhost:8082", "0.0.0.0:8082"
+	_, portStr, err := net.SplitHostPort(configAddr)
+	if err != nil {
+		// If SplitHostPort fails, assume it's just a port number
+		portStr = configAddr
+		if portStr != "" && portStr[0] == ':' {
+			portStr = portStr[1:]
+		}
+	}
+
+	configPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		slog.Error("Invalid config-bind-address port", "error", err, "address", configAddr)
+		return fmt.Errorf("invalid config-bind-address port %q: %w", configAddr, err)
+	}
+
+	// Create config handler
+	configHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if err := json.NewEncoder(w).Encode(cfg); err != nil {
+			slog.Error("Failed to encode configuration as JSON", "error", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+
+			return
+		}
+	})
+
+	// Create config server using common server implementation
+	// Note: Health checks are handled by controller-runtime manager on probeAddr
+	configServer := server.NewServer(
+		server.WithPort(configPort),
+		server.WithHandler("/config", configHandler),
+	)
+
+	// Setup TLS options
+	var tlsOpts []func(*tls.Config)
+
+	// if the enable-http2 flag is false (the default), http/2 should be disabled
+	if !enableHTTP2 {
+		disableHTTP2 := func(c *tls.Config) {
+			c.NextProtos = []string{"http/1.1"}
+		}
+		tlsOpts = append(tlsOpts, disableHTTP2)
+	}
+
+	// Create watchers for metrics and webhooks certificates
+	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
+
+	// Initial webhook TLS options
+	webhookTLSOpts := tlsOpts
+
+	if len(webhookCertPath) > 0 {
+		slog.Info("Initializing webhook certificate watcher using provided certificates",
+			"webhook-cert-path", webhookCertPath,
+			"webhook-cert-name", webhookCertName,
+			"webhook-cert-key", webhookCertKey)
+
+		webhookCertWatcher, err = certwatcher.New(
+			filepath.Join(webhookCertPath, webhookCertName),
+			filepath.Join(webhookCertPath, webhookCertKey),
+		)
+		if err != nil {
+			slog.Error("Failed to initialize webhook certificate watcher", "error", err)
+			return err
+		}
+
+		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
+			config.GetCertificate = webhookCertWatcher.GetCertificate
+		})
+	}
+
+	webhookServer := webhook.NewServer(webhook.Options{
+		TLSOpts: webhookTLSOpts,
+	})
+
+	// Metrics endpoint configuration
+	metricsServerOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: secureMetrics,
+		TLSOpts:       tlsOpts,
+	}
+
+	if secureMetrics {
+		// FilterProvider is used to protect the metrics endpoint with authn/authz.
+		// These configurations ensure that only authorized users and service accounts
+		// can access the metrics endpoint. The RBAC are configured in the Helm chart.
+		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+
+	// If the certificate is not specified, controller-runtime will automatically
+	// generate self-signed certificates for the metrics server. While convenient for development and testing,
+	// this setup is not recommended for production.
+	if len(metricsCertPath) > 0 {
+		slog.Info("Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", metricsCertPath,
+			"metrics-cert-name", metricsCertName,
+			"metrics-cert-key", metricsCertKey)
+
+		metricsCertWatcher, err = certwatcher.New(
+			filepath.Join(metricsCertPath, metricsCertName),
+			filepath.Join(metricsCertPath, metricsCertKey),
+		)
+		if err != nil {
+			slog.Error("Failed to initialize metrics certificate watcher", "error", err)
+			return err
+		}
+
+		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
+			config.GetCertificate = metricsCertWatcher.GetCertificate
+		})
+	}
+
+	// Setup controller manager
+	// Get the Kubernetes config and wrap it with audit logging
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return auditlogger.NewAuditingRoundTripper(rt)
+	})
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsServerOptions,
+		WebhookServer:          webhookServer,
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "janitor.dgxc.nvidia.com",
+		LeaseDuration:          &leaseDuration,
+		RenewDeadline:          &renewDeadline,
+		RetryPeriod:            &retryPeriod,
+	})
+	if err != nil {
+		slog.Error("Unable to create manager", "error", err)
+		return err
+	}
+
+	slog.Info("Manager created successfully")
+
+	// Global function to configure field indexers to prevent multiple controllers
+	// from registering the same field indexer.
+	if err = controller.ConfigureFieldIndexers(mgr, cfg); err != nil {
+		slog.Error("Unable to configure field indexers", "error", err)
+		return err
+	}
+
+	// Setup RebootNode controller
+	if err = (&controller.RebootNodeReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.RebootNode,
+		LockNamespace: podNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("Unable to create controller", "controller", "RebootNode", "error", err)
+		return err
+	}
+
+	// Setup TerminateNode controller
+	if err = (&controller.TerminateNodeReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.TerminateNode,
+		LockNamespace: podNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("Unable to create controller", "controller", "TerminateNode", "error", err)
+		return err
+	}
+
+	if err = (&controller.GPUResetReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Config:        &cfg.GPUReset,
+		LockNamespace: podNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		slog.Error("unable to create controller", "controller", "GPUReset", "error", err)
+		return err
+	}
+
+	slog.Info("RebootNode, TerminateNode, and GPUReset controllers registered")
+
+	// Setup unified webhook for all Janitor CRDs
+	if err = webhookv1alpha1.SetupJanitorWebhookWithManager(mgr, cfg); err != nil {
+		slog.Error("Unable to create webhook", "webhook", "Janitor", "error", err)
+		return err
+	}
+
+	slog.Info("Janitor validation webhook registered for all CRDs")
+
+	// Add certificate watchers to manager if configured
+	if metricsCertWatcher != nil {
+		slog.Info("Adding metrics certificate watcher to manager")
+
+		if err := mgr.Add(metricsCertWatcher); err != nil {
+			slog.Error("Unable to add metrics certificate watcher to manager", "error", err)
+			return err
+		}
+	}
+
+	if webhookCertWatcher != nil {
+		slog.Info("Adding webhook certificate watcher to manager")
+
+		if err := mgr.Add(webhookCertWatcher); err != nil {
+			slog.Error("Unable to add webhook certificate watcher to manager", "error", err)
+			return err
+		}
+	}
+
+	// Setup health checks
+	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		slog.Error("Unable to set up health check", "error", err)
+		return err
+	}
+
+	if err = mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		slog.Error("Unable to set up ready check", "error", err)
+		return err
+	}
+
+	// Setup signal handler for graceful shutdown
+	ctx := ctrl.SetupSignalHandler()
+
+	// Use errgroup to manage both the config server and controller manager
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start config server
+	g.Go(func() error {
+		slog.Info("Starting config server", "port", configPort)
+		return configServer.Serve(gCtx)
+	})
+
+	// Start controller manager
+	g.Go(func() error {
+		slog.Info("Starting manager")
+		return mgr.Start(gCtx)
+	})
+
+	// Wait for both to complete
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	return nil
 }

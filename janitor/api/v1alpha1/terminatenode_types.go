@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// nolint:wsl // API types migrated from old code
 package v1alpha1
 
 import (
@@ -55,7 +56,7 @@ type TerminateNodeStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName"
 // +kubebuilder:printcolumn:name="Force",type="boolean",JSONPath=".spec.force"
-//nolint:lll // kubebuilder printcolumn marker must stay on one line
+//nolint:lll // kubebuilder printcolumn marker
 // +kubebuilder:printcolumn:name="NodeTerminated",type="string",JSONPath=".status.conditions[?(@.type=='NodeTerminated')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

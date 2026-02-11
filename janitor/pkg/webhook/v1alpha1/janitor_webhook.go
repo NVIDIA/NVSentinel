@@ -83,13 +83,13 @@ func SetupJanitorWebhookWithManager(mgr ctrl.Manager, cfg *config.Config) error 
 	return nil
 }
 
-// nolint:lll // kubebuilder directive must stay on one line
+// nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-rebootnode,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=rebootnodes,verbs=create;update;delete,versions=v1alpha1,name=vrebootnode-v1alpha1.kb.io,admissionReviewVersions=v1
 
-// nolint:lll // kubebuilder directive must stay on one line
+// nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-terminatenode,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=create;update;delete,versions=v1alpha1,name=vterminatenode-v1alpha1.kb.io,admissionReviewVersions=v1
 
-// nolint:lll // kubebuilder directive must stay on one line
+// nolint:lll
 // +kubebuilder:webhook:path=/validate-janitor-dgxc-nvidia-com-v1alpha1-gpureset,mutating=false,failurePolicy=fail,sideEffects=None,groups=janitor.dgxc.nvidia.com,resources=gpuresets,verbs=create;update;delete,versions=v1alpha1,name=vgpureset-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // JanitorCustomValidator struct is responsible for validating all Janitor resources
@@ -138,8 +138,7 @@ func (v *JanitorCustomValidator) validateNodeNotInExclusions(ctx context.Context
 
 		if selector.Matches(labels.Set(node.Labels)) {
 			return fmt.Errorf(
-				"node '%s' is excluded from janitor operations due to a label on the node "+
-					"matching the label exclusion '%s' from config value global.nodes.exclusions",
+				"node '%s' is excluded from janitor operations due to a label on the node matching the label exclusion '%s' from config value global.nodes.exclusions", // nolint:lll
 				nodeName,
 				selector.String(),
 			)
@@ -195,7 +194,7 @@ func (v *JanitorCustomValidator) validateNoActiveTermination(ctx context.Context
 		// Check if this termination is still active (not completed)
 		if terminateNode.Status.CompletionTime == nil {
 			return fmt.Errorf(
-				"node '%s' already has an active termination in progress (TerminateNode: %s)",
+				"node '%s' already has an active termination in progress (TerminateNode: %s)", // nolint:lll
 				nodeName,
 				terminateNode.Name,
 			)
@@ -263,9 +262,7 @@ func (v *JanitorCustomValidator) validateNodeAndGPUs(oldNodeName, newNodeName st
 }
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-//
 // nolint:cyclop
-// Type switch over Janitor CR kinds with per-kind config and validation; splitting would reduce readability.
 func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	var (
 		objName        string
@@ -287,7 +284,7 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		// Check for active reboots
 		if err := v.validateNoActiveReboot(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Active reboot validation failed",
+				"Active reboot validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -310,7 +307,7 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 		// Check for active terminations
 		if err := v.validateNoActiveTermination(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Active termination validation failed",
+				"Active termination validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -348,7 +345,7 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 	if nodeName != "" {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Node validation failed",
+				"Node validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -360,7 +357,7 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Node exclusion list validation failed",
+				"Node exclusion list validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -377,12 +374,8 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-//
-// nolint:cyclop
-// Type switch over Janitor CR kinds with per-kind config and immutability checks; splitting would reduce readability.
-func (v *JanitorCustomValidator) ValidateUpdate(
-	ctx context.Context, oldObj, newObj runtime.Object,
-) (admission.Warnings, error) {
+// nolint:cyclop,lll
+func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	var (
 		objName        string
 		controllerType string
@@ -456,7 +449,7 @@ func (v *JanitorCustomValidator) ValidateUpdate(
 	if nodeName != "" {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Node validation failed",
+				"Node validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -468,7 +461,7 @@ func (v *JanitorCustomValidator) ValidateUpdate(
 
 		if err := v.validateNodeNotInExclusions(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
-				"Node exclusion list validation failed",
+				"Node exclusion list validation failed", // nolint:lll
 				"type", controllerType,
 				"name", objName,
 				"nodeName", nodeName,
@@ -485,8 +478,7 @@ func (v *JanitorCustomValidator) ValidateUpdate(
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-//
-// nolint:cyclop // type switch over Janitor CR kinds; splitting would reduce readability
+// nolint:cyclop
 func (v *JanitorCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	var (
 		objName        string

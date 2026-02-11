@@ -28,60 +28,50 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 )
 
+// nolint:cyclop // Business logic migrated from old code
 func ConfigureFieldIndexers(mgr ctrl.Manager, cfg *config.Config) error {
-	if !cfg.GPUReset.Enabled {
-		return nil
-	}
+	managerFieldIndexer := mgr.GetFieldIndexer()
 
-	indexer := mgr.GetFieldIndexer()
+	if cfg.GPUReset.Enabled {
+		if err := managerFieldIndexer.IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
+			func(obj client.Object) []string {
+				p, ok := obj.(*corev1.Pod)
+				if !ok {
+					return nil
+				}
+				if p.Spec.NodeName == "" {
+					return nil
+				}
+				return []string{p.Spec.NodeName}
+			}); err != nil {
+			return fmt.Errorf("failed to add indexer on pods for spec.nodeName: %w", err)
+		}
 
-	if err := indexPodsByNodeName(indexer); err != nil {
-		return fmt.Errorf("failed to add indexer on pods for spec.nodeName: %w", err)
-	}
+		if err := managerFieldIndexer.IndexField(context.Background(), &v1alpha1.GPUReset{}, "spec.nodeName",
+			func(obj client.Object) []string {
+				gr, ok := obj.(*v1alpha1.GPUReset)
+				if !ok {
+					return nil
+				}
+				if gr.Spec.NodeName == "" {
+					return nil
+				}
+				return []string{gr.Spec.NodeName}
+			}); err != nil {
+			return fmt.Errorf("failed to add indexer on GPUResets for spec.nodeName: %w", err)
+		}
 
-	if err := indexGPUResetsByNodeName(indexer); err != nil {
-		return fmt.Errorf("failed to add indexer on GPUResets for spec.nodeName: %w", err)
-	}
-
-	if err := indexJobsByOwner(indexer); err != nil {
-		return fmt.Errorf("failed to add indexer on Jobs for metadata.controller: %w", err)
+		if err := managerFieldIndexer.IndexField(context.Background(), &batchv1.Job{}, "metadata.controller",
+			func(obj client.Object) []string {
+				owner := metav1.GetControllerOf(obj)
+				if owner == nil || owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != "GPUReset" {
+					return nil
+				}
+				return []string{owner.Name}
+			}); err != nil {
+			return fmt.Errorf("failed to add indexer on Jobs for metadata.controller: %w", err)
+		}
 	}
 
 	return nil
-}
-
-func indexPodsByNodeName(indexer client.FieldIndexer) error {
-	return indexer.IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
-		func(obj client.Object) []string {
-			p, ok := obj.(*corev1.Pod)
-			if !ok || p.Spec.NodeName == "" {
-				return nil
-			}
-
-			return []string{p.Spec.NodeName}
-		})
-}
-
-func indexGPUResetsByNodeName(indexer client.FieldIndexer) error {
-	return indexer.IndexField(context.Background(), &v1alpha1.GPUReset{}, "spec.nodeName",
-		func(obj client.Object) []string {
-			gr, ok := obj.(*v1alpha1.GPUReset)
-			if !ok || gr.Spec.NodeName == "" {
-				return nil
-			}
-
-			return []string{gr.Spec.NodeName}
-		})
-}
-
-func indexJobsByOwner(indexer client.FieldIndexer) error {
-	return indexer.IndexField(context.Background(), &batchv1.Job{}, "metadata.controller",
-		func(obj client.Object) []string {
-			owner := metav1.GetControllerOf(obj)
-			if owner == nil || owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != "GPUReset" {
-				return nil
-			}
-
-			return []string{owner.Name}
-		})
 }
