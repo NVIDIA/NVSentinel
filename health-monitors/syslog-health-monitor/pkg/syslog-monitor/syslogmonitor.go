@@ -602,12 +602,8 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 	return nil
 }
 
-// processJournalEntries reads and processes journal entries
-//
-//nolint:gocognit,cyclop // single flow: init or resume, then process loop with recovery; splitting would scatter logic
+// processJournalEntries reads and processes journal entries.
 func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefinition) error {
-	// currentEntryCursor will store the cursor of the entry currently being processed or just processed.
-	// sm.checkLastCursors[checkName] will store the cursor to resume from on the NEXT run.
 	lastKnownCursor, hasLastCursor := sm.checkLastCursors[check.Name]
 
 	bootID, err := journal.GetBootID()
@@ -621,6 +617,25 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		return sm.initializeJournalFromTail(journal, check)
 	}
 
+	ready, err := sm.resumeFromLastCursor(journal, check, lastKnownCursor)
+	if err != nil {
+		return err
+	}
+
+	if !ready {
+		return nil
+	}
+
+	return sm.processAllEntries(journal, check)
+}
+
+// resumeFromLastCursor seeks to the last known cursor and advances to the first new entry.
+// Returns (true, nil) when the journal is positioned at the first new entry to process;
+// (false, nil) when there are no new entries or after re-initializing on seek failure;
+// (false, err) on error.
+func (sm *SyslogMonitor) resumeFromLastCursor(
+	journal Journal, check CheckDefinition, lastKnownCursor string,
+) (bool, error) {
 	slog.Info("Resuming from last known cursor",
 		"check", check.Name,
 		"cursor", lastKnownCursor)
@@ -632,13 +647,13 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 			"error", err)
 
 		if errSeekTail := journal.SeekTail(); errSeekTail != nil {
-			return fmt.Errorf("check '%s': failed to seek to journal tail during re-initialization after SeekCursor error: %w",
-				check.Name, errSeekTail)
+			return false, fmt.Errorf("check '%s': failed to seek to journal tail during "+
+				"re-initialization after SeekCursor error: %w", check.Name, errSeekTail)
 		}
 
 		tailCursor, errGetCursor := journal.GetCursor()
 		if errGetCursor != nil {
-			return fmt.Errorf("check '%s': failed to get cursor at journal tail during re-initialization: %w",
+			return false, fmt.Errorf("check '%s': failed to get cursor at journal tail during re-initialization: %w",
 				check.Name, errGetCursor)
 		}
 
@@ -648,130 +663,186 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 
 		sm.checkLastCursors[check.Name] = tailCursor
 
-		return nil // No entries processed on this re-initialization run.
+		return false, nil // No entries processed on this re-initialization run.
 	}
 
 	// Successfully sought to lastKnownCursor. Now advance to the *next* entry.
 	// This is crucial: we process entries *after* the lastKnownCursor.
 	advanced, nextErr := journal.Next()
 	if nextErr != nil && !errors.Is(nextErr, io.EOF) {
-		return fmt.Errorf("check '%s': error advancing from resumed cursor '%s': %w", check.Name, lastKnownCursor, nextErr)
+		return false, fmt.Errorf("check '%s': error advancing from resumed cursor '%s': %w",
+			check.Name, lastKnownCursor, nextErr)
 	}
 
 	if errors.Is(nextErr, io.EOF) || advanced == 0 {
 		slog.Info("No new entries since last cursor",
 			"check", check.Name,
 			"cursor", lastKnownCursor)
-		// sm.checkLastCursors[checkName] is already lastKnownCursor, which is correct for the next run.
-		return nil
+
+		return false, nil
 	}
 
 	// Journal cursor is now positioned at the first new entry to process.
+	return true, nil
+}
+
+// processAllEntries processes journal entries from the current cursor to the end.
+// The journal must already be positioned at the first entry to process.
+func (sm *SyslogMonitor) processAllEntries(journal Journal, check CheckDefinition) error {
 	for {
-		currentEntryCursor, err := journal.GetCursor() // Cursor of the entry we are about to process
+		currentEntryCursor, err := journal.GetCursor()
 		if err != nil {
-			slog.Warn("Failed to get cursor for current entry, attempting to advance",
-				"check", check.Name,
-				"error", err,
-				"lastStoredCursor", sm.checkLastCursors[check.Name])
-
-			advancedNext, advErr := journal.Next()
-			if errors.Is(advErr, io.EOF) || advancedNext == 0 {
-				slog.Info("Reached end of journal while recovering from GetCursor error",
-					"check", check.Name,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				break
+			breakLoop, retErr := sm.recoverFromGetCursorError(journal, check)
+			if retErr != nil {
+				return retErr
 			}
 
-			if advErr != nil {
-				slog.Error("Error advancing journal after GetCursor error, stopping",
-					"check", check.Name,
-					"error", advErr,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				return fmt.Errorf("error advancing after GetCursor error for check '%s' (last stored cursor for next run %s): %w",
-					check.Name, sm.checkLastCursors[check.Name], advErr)
-			}
-
-			continue // Skip to the next iteration
-		}
-
-		message, err := sm.getJournalMessage(journal, check.Name)
-		if err != nil {
-			slog.Warn("Failed to get journal message, skipping entry",
-				"check", check.Name,
-				"cursor", currentEntryCursor,
-				"error", err,
-				"nextCursor", sm.checkLastCursors[check.Name])
-
-			advancedNext, advErr := journal.Next()
-
-			if errors.Is(advErr, io.EOF) || advancedNext == 0 {
-				slog.Info("Reached end of journal while recovering from message error",
-					"check", check.Name,
-					"entryCursor", currentEntryCursor,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
+			if breakLoop {
 				break
-			} else if advErr != nil {
-				slog.Error("Error advancing journal after message error, stopping",
-					"check", check.Name,
-					"entryCursor", currentEntryCursor,
-					"error", advErr,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				return fmt.Errorf("error advancing after getJournalMessage for check '%s' (entry cursor %s, "+
-					"last stored cursor for next run %s): %v",
-					check.Name, currentEntryCursor, sm.checkLastCursors[check.Name], advErr)
 			}
 
 			continue
 		}
 
-		if message == "" {
-			// Successfully read an empty message. This entry is considered processed.
-			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check, read empty message", "name", check.Name,
-				"message", message,
-				"cursor", currentEntryCursor)
-		} else {
-			err = sm.handleSingleLine(check, message)
-			if err != nil {
-				continue
+		message, err := sm.getJournalMessage(journal, check.Name)
+		if err != nil {
+			breakLoop, retErr := sm.recoverFromMessageError(journal, check, currentEntryCursor, err)
+			if retErr != nil {
+				return retErr
 			}
-			// This entry (matched or not) is considered processed.
-			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Debug("Check errored but considered processed", "name", check.Name,
-				"message", message,
-				"cursor", currentEntryCursor)
+
+			if breakLoop {
+				break
+			}
+
+			continue
 		}
 
-		advancedNext, advErr := journal.Next()
-		if errors.Is(advErr, io.EOF) || advancedNext == 0 {
-			slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
-			// sm.checkLastCursors[checkName] is already set to currentEntryCursor.
+		breakLoop, retErr := sm.processOneEntryAndAdvance(journal, check, currentEntryCursor, message)
+		if retErr != nil {
+			return retErr
+		}
+
+		if breakLoop {
 			break
-		}
-
-		if advErr != nil {
-			// Error advancing. currentEntryCursor was the last successfully processed one.
-			slog.Error("Error reading next journal entry, stopping",
-				"check", check.Name,
-				"cursor", currentEntryCursor,
-				"error", advErr)
-
-			return fmt.Errorf("check '%s': error reading next journal entry after cursor %s: %w",
-				check.Name, currentEntryCursor, advErr)
 		}
 	}
 
-	finalCursor := sm.checkLastCursors[check.Name] // Should always exist if we passed initialization.
+	finalCursor := sm.checkLastCursors[check.Name]
 	slog.Info("Finished processing journal entries",
 		"check", check.Name,
 		"nextCursor", finalCursor)
 
 	return nil
+}
+
+// recoverFromGetCursorError attempts to advance past the current entry after a GetCursor error.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) recoverFromGetCursorError(journal Journal, check CheckDefinition) (bool, error) {
+	slog.Warn("Failed to get cursor for current entry, attempting to advance",
+		"check", check.Name,
+		"lastStoredCursor", sm.checkLastCursors[check.Name])
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Reached end of journal while recovering from GetCursor error",
+			"check", check.Name,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error advancing journal after GetCursor error, stopping",
+			"check", check.Name,
+			"error", advErr,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return false, fmt.Errorf("error advancing after GetCursor error for check '%s' "+
+			"(last stored cursor for next run %s): %w",
+			check.Name, sm.checkLastCursors[check.Name], advErr)
+	}
+
+	return false, nil
+}
+
+// recoverFromMessageError attempts to advance past the current entry after a getJournalMessage error.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) recoverFromMessageError(
+	journal Journal, check CheckDefinition, currentEntryCursor string, messageErr error,
+) (bool, error) {
+	slog.Warn("Failed to get journal message, skipping entry",
+		"check", check.Name,
+		"cursor", currentEntryCursor,
+		"error", messageErr,
+		"nextCursor", sm.checkLastCursors[check.Name])
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Reached end of journal while recovering from message error",
+			"check", check.Name,
+			"entryCursor", currentEntryCursor,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error advancing journal after message error, stopping",
+			"check", check.Name,
+			"entryCursor", currentEntryCursor,
+			"error", advErr,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return false, fmt.Errorf("error advancing after getJournalMessage for check '%s' "+
+			"(entry cursor %s, last stored cursor for next run %s): %v",
+			check.Name, currentEntryCursor, sm.checkLastCursors[check.Name], advErr)
+	}
+
+	return false, nil
+}
+
+// processOneEntryAndAdvance updates cursor for the entry, handles the message, and advances.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) processOneEntryAndAdvance(
+	journal Journal, check CheckDefinition, currentEntryCursor string, message string,
+) (bool, error) {
+	if message == "" {
+		sm.checkLastCursors[check.Name] = currentEntryCursor
+		slog.Info("Check, read empty message", "name", check.Name,
+			"message", message,
+			"cursor", currentEntryCursor)
+	} else {
+		err := sm.handleSingleLine(check, message)
+		if err != nil {
+			// Skip this entry on handler error; continue processing remaining entries.
+			return false, nil //nolint:nilerr // intentional: do not stop the loop
+		}
+
+		sm.checkLastCursors[check.Name] = currentEntryCursor
+		slog.Debug("Check errored but considered processed", "name", check.Name,
+			"message", message,
+			"cursor", currentEntryCursor)
+	}
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error reading next journal entry, stopping",
+			"check", check.Name,
+			"cursor", currentEntryCursor,
+			"error", advErr)
+
+		return false, fmt.Errorf("check '%s': error reading next journal entry after cursor %s: %w",
+			check.Name, currentEntryCursor, advErr)
+	}
+
+	return false, nil
 }
 
 // initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
