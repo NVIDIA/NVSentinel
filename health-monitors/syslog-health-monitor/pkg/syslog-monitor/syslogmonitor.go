@@ -507,46 +507,6 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 	return nil
 }
 
-// initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
-// Used when there is no last known cursor (first run or no saved state). Returns nil on success.
-func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
-	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
-
-	if err := journal.SeekTail(); err != nil {
-		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
-	}
-
-	count, errPrev := journal.Previous()
-	if errPrev != nil && !errors.Is(errPrev, io.EOF) {
-		return fmt.Errorf("seek previous: %w", errPrev)
-	}
-
-	if count == 0 {
-		slog.Info("Journal is empty, nothing to do", "check", check.Name)
-
-		return nil
-	}
-
-	cursor, err := journal.GetCursor()
-	if err != nil {
-		if strings.Contains(err.Error(), "cannot assign requested address") {
-			slog.Info("No cursor available, journal empty", "check", check.Name)
-
-			return nil
-		}
-
-		return fmt.Errorf("get cursor: %w", err)
-	}
-
-	slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
-		"check", check.Name,
-		"cursor", cursor)
-
-	sm.checkLastCursors[check.Name] = cursor
-
-	return nil
-}
-
 // processJournalEntries reads and processes journal entries
 //
 //nolint:gocognit,cyclop // single flow: init or resume, then process loop with recovery; splitting would scatter logic
@@ -715,6 +675,46 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 	slog.Info("Finished processing journal entries",
 		"check", check.Name,
 		"nextCursor", finalCursor)
+
+	return nil
+}
+
+// initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
+// Used when there is no last known cursor (first run or no saved state). Returns nil on success.
+func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
+	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
+
+	if err := journal.SeekTail(); err != nil {
+		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
+	}
+
+	count, errPrev := journal.Previous()
+	if errPrev != nil && !errors.Is(errPrev, io.EOF) {
+		return fmt.Errorf("seek previous: %w", errPrev)
+	}
+
+	if count == 0 {
+		slog.Info("Journal is empty, nothing to do", "check", check.Name)
+
+		return nil
+	}
+
+	cursor, err := journal.GetCursor()
+	if err != nil {
+		if strings.Contains(err.Error(), "cannot assign requested address") {
+			slog.Info("No cursor available, journal empty", "check", check.Name)
+
+			return nil
+		}
+
+		return fmt.Errorf("get cursor: %w", err)
+	}
+
+	slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
+		"check", check.Name,
+		"cursor", cursor)
+
+	sm.checkLastCursors[check.Name] = cursor
 
 	return nil
 }

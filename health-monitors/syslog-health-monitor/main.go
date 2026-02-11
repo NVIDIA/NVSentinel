@@ -83,6 +83,64 @@ func main() {
 	}
 }
 
+func run() error {
+	nodeName, err := validateNodeName()
+	if err != nil {
+		return err
+	}
+
+	root := context.Background()
+
+	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	conn, client, err := dialPlatformConnector(ctx, *platformConnectorSocket)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			slog.Error("Error closing gRPC connection", "error", closeErr)
+		}
+	}()
+
+	checks, err = buildChecksFromFlag()
+	if err != nil {
+		return err
+	}
+
+	checks = applyKataConfig(checks)
+
+	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
+	if err != nil {
+		return err
+	}
+
+	srv, portInt, err := createMetricsServer()
+	if err != nil {
+		return err
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
+	})
+
+	return g.Wait()
+}
+
 func validateNodeName() (string, error) {
 	flag.Parse()
 	slog.Info("Parsed command line flags successfully")
@@ -265,64 +323,6 @@ func runPollingLoop(
 			backoff = 0
 		}
 	}
-}
-
-func run() error {
-	nodeName, err := validateNodeName()
-	if err != nil {
-		return err
-	}
-
-	root := context.Background()
-
-	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	conn, client, err := dialPlatformConnector(ctx, *platformConnectorSocket)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			slog.Error("Error closing gRPC connection", "error", closeErr)
-		}
-	}()
-
-	checks, err = buildChecksFromFlag()
-	if err != nil {
-		return err
-	}
-
-	checks = applyKataConfig(checks)
-
-	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
-	if err != nil {
-		return err
-	}
-
-	srv, portInt, err := createMetricsServer()
-	if err != nil {
-		return err
-	}
-
-	g, gCtx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		slog.Info("Starting metrics server", "port", portInt)
-
-		if err := srv.Serve(gCtx); err != nil {
-			slog.Error("Metrics server failed - continuing without metrics", "error", err)
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
-	})
-
-	return g.Wait()
 }
 
 // dialWithRetry dials a gRPC target with bounded retries and per-attempt timeout.
