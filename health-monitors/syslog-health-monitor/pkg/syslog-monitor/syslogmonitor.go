@@ -59,8 +59,6 @@ func NewSyslogMonitor(
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
-//
-//nolint:cyclop // constructor + switch over check types; refactor would not simplify
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -104,41 +102,9 @@ func NewSyslogMonitorWithFactory(
 		xidAnalyserEndpoint:   xidAnalyserEndpoint,
 	}
 
-	for _, check := range checks {
-		switch check.Name {
-		case XIDErrorCheck:
-			xidHandler, err := xid.NewXIDHandler(nodeName,
-				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing XID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = xidHandler
-
-		case SXIDErrorCheck:
-			sxidHandler, err := sxid.NewSXIDHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing SXID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = sxidHandler
-
-		case GPUFallenOffCheck:
-			gpuFallenHandler, err := gpufallen.NewGPUFallenHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = gpuFallenHandler
-
-		default:
-			slog.Error("Unsupported check", "check", check.Name)
-		}
+	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
+		xidAnalyserEndpoint, metadataPath, processingStrategy); err != nil {
+		return nil, err
 	}
 
 	// Handle boot ID changes (system reboot detection)
@@ -149,6 +115,78 @@ func NewSyslogMonitorWithFactory(
 	slog.Info("SyslogMonitor initialized with persistent state. Each check will resume from last processed cursor.")
 
 	return sm, nil
+}
+
+// initHandlers creates and registers a handler for each check. Unsupported check names are logged and skipped.
+func initHandlers(
+	sm *SyslogMonitor,
+	checks []CheckDefinition,
+	nodeName string,
+	defaultAgentName string,
+	defaultComponentClass string,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) error {
+	for _, check := range checks {
+		handler, err := initHandlerForCheck(check, nodeName, defaultAgentName, defaultComponentClass,
+			xidAnalyserEndpoint, metadataPath, processingStrategy)
+		if err != nil {
+			return err
+		}
+
+		if handler == nil {
+			slog.Error("Unsupported check", "check", check.Name)
+			continue
+		}
+
+		sm.checkToHandlerMap[check.Name] = handler
+	}
+
+	return nil
+}
+
+// initHandlerForCheck creates a Handler for the given check. Returns (nil, nil) for unsupported check names.
+func initHandlerForCheck(
+	check CheckDefinition,
+	nodeName string,
+	defaultAgentName string,
+	defaultComponentClass string,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) (types.Handler, error) {
+	switch check.Name {
+	case XIDErrorCheck:
+		h, err := xid.NewXIDHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			xidAnalyserEndpoint, metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing XID handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
+		}
+
+		return h, nil
+	case SXIDErrorCheck:
+		h, err := sxid.NewSXIDHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing SXID handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
+		}
+
+		return h, nil
+	case GPUFallenOffCheck:
+		h, err := gpufallen.NewGPUFallenHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
+		}
+
+		return h, nil
+	default:
+		return nil, nil
+	}
 }
 
 // Run executes all configured checks
@@ -193,80 +231,105 @@ func saveState(stateFilePath string, state syslogMonitorState) error {
 	return nil
 }
 
-// loadState loads the monitor state from a file
-//
-//nolint:cyclop,gocognit // linear load with fallbacks (missing, empty, corrupt, version); refactor would not simplify
+// loadState loads the monitor state from a file.
 func loadState(stateFilePath string) (syslogMonitorState, error) {
-	var state syslogMonitorState
+	data, err := readStateFile(stateFilePath)
+	if err != nil {
+		return syslogMonitorState{}, err
+	}
 
+	if data == nil {
+		return newDefaultState(), nil
+	}
+
+	state, ok := parseStateData(stateFilePath, data)
+	if !ok {
+		return newDefaultState(), nil
+	}
+
+	// Version migration needed if not zero and not current
+	if state.Version != 0 && state.Version != stateFileVersion {
+		return migrateStateVersion(stateFilePath, state)
+	}
+
+	return ensureStateInitialized(state), nil
+}
+
+// newDefaultState returns a fresh state for first run or after reset.
+func newDefaultState() syslogMonitorState {
+	return syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "",
+		CheckLastCursors: make(map[string]string),
+	}
+}
+
+// readStateFile reads the state file. Returns (nil, nil) if file does not exist; (nil, err) on read error.
+func readStateFile(stateFilePath string) ([]byte, error) {
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return default state for first run
-			return syslogMonitorState{
-				Version:          stateFileVersion,
-				BootID:           "",
-				CheckLastCursors: make(map[string]string),
-			}, nil
+			return nil, nil
 		}
 
-		return state, fmt.Errorf("failed to read state from file: %w", err)
+		return nil, fmt.Errorf("failed to read state from file: %w", err)
 	}
 
-	// Check if file is empty
+	return data, nil
+}
+
+// parseStateData unmarshals state from data. Returns (state, true) on success; (zero, false) if empty or corrupt.
+func parseStateData(stateFilePath string, data []byte) (syslogMonitorState, bool) {
 	if len(data) == 0 {
 		slog.Warn("State file exists but is empty, treating as non-existent",
 			"stateFile", stateFilePath)
 
-		return syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           "",
-			CheckLastCursors: make(map[string]string),
-		}, nil
+		return syslogMonitorState{}, false
 	}
 
+	var state syslogMonitorState
 	if err := json.Unmarshal(data, &state); err != nil {
 		slog.Warn("State file is corrupted, resetting to default",
 			"stateFile", stateFilePath,
 			"error", err)
 
-		return syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           "",
-			CheckLastCursors: make(map[string]string),
-		}, nil
+		return syslogMonitorState{}, false
 	}
 
-	if state.Version != 0 && state.Version != stateFileVersion {
-		if verifyStateFields(state) {
-			slog.Info("State file version mismatch but compatible",
-				"expected", stateFileVersion,
-				"actual", state.Version)
-			// update the state version to latest current version
-			state.Version = stateFileVersion
-
-			if err := saveState(stateFilePath, state); err != nil {
-				return state, fmt.Errorf("failed to save updated state: %w", err)
-			}
-
-			return state, nil
-		}
-
-		return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
-	}
-
-	// Ensure maps are not nil
-	if state.CheckLastCursors == nil {
-		state.CheckLastCursors = make(map[string]string)
-	}
-
-	return state, nil
+	return state, true
 }
 
 // verifyStateFields verifies if necessary fields for current state version are present
 func verifyStateFields(state syslogMonitorState) bool {
 	// For syslog monitor, we mainly need the CheckLastCursors map to exist
 	return state.CheckLastCursors != nil
+}
+
+// migrateStateVersion updates state to current version if compatible, or returns an error.
+func migrateStateVersion(stateFilePath string, state syslogMonitorState) (syslogMonitorState, error) {
+	if verifyStateFields(state) {
+		slog.Info("State file version mismatch but compatible",
+			"expected", stateFileVersion,
+			"actual", state.Version)
+
+		state.Version = stateFileVersion
+		if err := saveState(stateFilePath, state); err != nil {
+			return state, fmt.Errorf("failed to save updated state: %w", err)
+		}
+
+		return state, nil
+	}
+
+	return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
+}
+
+// ensureStateInitialized ensures required maps are non-nil.
+func ensureStateInitialized(state syslogMonitorState) syslogMonitorState {
+	if state.CheckLastCursors == nil {
+		state.CheckLastCursors = make(map[string]string)
+	}
+
+	return state
 }
 
 // fetchCurrentBootID returns the current system boot ID
