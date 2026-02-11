@@ -94,7 +94,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, client, err := dialPlatformConnector(ctx, *platformConnectorSocket)
+	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket)
 	if err != nil {
 		return err
 	}
@@ -104,6 +104,8 @@ func run() error {
 			slog.Error("Error closing gRPC connection", "error", closeErr)
 		}
 	}()
+
+	client := pb.NewPlatformConnectorClient(conn)
 
 	checks, err = buildChecksFromFlag()
 	if err != nil {
@@ -155,19 +157,17 @@ func validateNodeName() (string, error) {
 	return nodeName, nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, pb.PlatformConnectorClient, error) {
+func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, error) {
 	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
 	slog.Info("Creating gRPC client to platform connector", "socket", socket)
 
 	conn, err := dialWithRetry(ctx, socket, dialOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create gRPC client after retries: %w", err)
+		return nil, fmt.Errorf("failed to create gRPC client after retries: %w", err)
 	}
 
-	client := pb.NewPlatformConnectorClient(conn)
-
-	return conn, client, nil
+	return conn, nil
 }
 
 func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
