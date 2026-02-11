@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//nolint:lll
 package v1alpha1
 
 import (
@@ -89,6 +88,7 @@ const (
 // +kubebuilder:object:root=false
 type GPUSelector struct {
 	// UUIDs is a list of GPU UUIDs.
+	//nolint:lll // kubebuilder validation pattern must stay on one line
 	// +kubebuilder:validation:items:Pattern="^GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 	// +kubebuilder:validation:Optional
 	// +optional
@@ -150,8 +150,8 @@ type GPUResetStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName",description="The target node for the GPU reset"
-// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase",description="The current status of the reset"
+// +kubebuilder:printcolumn:name="Node",type="string",JSONPath=".spec.nodeName",description="Target node for GPU reset"
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase",description="Current status of reset"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // GPUReset is the Schema for the gpuresets API.

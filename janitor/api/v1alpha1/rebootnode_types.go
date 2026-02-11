@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// nolint:wsl // API types migrated from old code
 package v1alpha1
 
 import (

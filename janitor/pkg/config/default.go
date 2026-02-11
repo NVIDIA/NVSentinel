@@ -33,8 +33,15 @@ const (
 	HostDevLogPath        = "/dev/log"
 )
 
-// nolint:cyclop // expected cyclomatic complexity for applying default settings
 func applyConfigDefaults(config *Config) {
+	applyGlobalDefaults(config)
+	applyTimeoutDefaults(config)
+	applyManualModeDefaults(config)
+	applyExclusionsDefaults(config)
+	applyCSPProviderHostDefaults(config)
+}
+
+func applyGlobalDefaults(config *Config) {
 	if config.Global.Timeout == 0 {
 		config.Global.Timeout = 30 * time.Minute
 	}
@@ -42,7 +49,9 @@ func applyConfigDefaults(config *Config) {
 	if config.Global.ManualMode == nil {
 		config.Global.ManualMode = ptr.To(false)
 	}
+}
 
+func applyTimeoutDefaults(config *Config) {
 	if config.RebootNode.Timeout == 0 {
 		config.RebootNode.Timeout = config.Global.Timeout
 	}
@@ -54,7 +63,9 @@ func applyConfigDefaults(config *Config) {
 	if config.GPUReset.Timeout == 0 {
 		config.GPUReset.Timeout = config.Global.Timeout
 	}
+}
 
+func applyManualModeDefaults(config *Config) {
 	if config.RebootNode.ManualMode == nil {
 		config.RebootNode.ManualMode = config.Global.ManualMode
 	}
@@ -66,7 +77,9 @@ func applyConfigDefaults(config *Config) {
 	if config.GPUReset.ManualMode == nil {
 		config.GPUReset.ManualMode = config.Global.ManualMode
 	}
+}
 
+func applyExclusionsDefaults(config *Config) {
 	if len(config.RebootNode.Exclusions) == 0 {
 		config.RebootNode.Exclusions = config.Global.Nodes.Exclusions
 	}
@@ -78,7 +91,9 @@ func applyConfigDefaults(config *Config) {
 	if len(config.GPUReset.Exclusions) == 0 {
 		config.GPUReset.Exclusions = config.Global.Nodes.Exclusions
 	}
+}
 
+func applyCSPProviderHostDefaults(config *Config) {
 	if len(config.RebootNode.CSPProviderHost) == 0 {
 		config.RebootNode.CSPProviderHost = config.Global.CSPProviderHost
 	}

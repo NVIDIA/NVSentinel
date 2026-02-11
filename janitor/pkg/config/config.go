@@ -16,6 +16,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -129,7 +130,8 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 	}
 
 	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok { //nolint:errorlint
+		var configFileNotFound viper.ConfigFileNotFoundError
+		if errors.As(err, &configFileNotFound) {
 			// File not found, using defaults
 		} else {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
