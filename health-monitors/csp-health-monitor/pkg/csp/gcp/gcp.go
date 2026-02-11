@@ -393,20 +393,23 @@ func (c *Client) getNodeNameForGcpLogEntry(
 			"zone", gcpZone)
 
 		nodeName, mappingErr = c.mapGCPInstanceToNodeName(ctx, gcpNumericInstanceID, eventMetaForMapper)
-		//nolint:gocritic
 		if mappingErr != nil {
 			slog.Warn("Error mapping GCP resource ID to K8s node name. Proceeding without node name",
 				"instanceID", gcpNumericInstanceID,
 				"zone", gcpZone,
 				"error", mappingErr)
-		} else if nodeName == "" {
+		}
+
+		if mappingErr == nil && nodeName == "" {
 			slog.Debug("No K8s node found for GCP resource ID. Event will be processed without NodeName",
 				"instanceID", gcpNumericInstanceID,
 				"zone", gcpZone)
 
 			mappingErr = fmt.Errorf("no K8s node found for GCP numeric instance ID '%s' (Zone: '%s')",
 				gcpNumericInstanceID, gcpZone)
-		} else {
+		}
+
+		if mappingErr == nil && nodeName != "" {
 			slog.Debug("Mapped GCP resource ID to K8s Node",
 				"instanceID", gcpNumericInstanceID,
 				"zone", gcpZone,

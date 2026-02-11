@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -59,7 +60,7 @@ func NewSyslogMonitor(
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
 //
-//nolint:cyclop
+//nolint:cyclop // constructor + switch over check types; refactor would not simplify
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -194,7 +195,7 @@ func saveState(stateFilePath string, state syslogMonitorState) error {
 
 // loadState loads the monitor state from a file
 //
-//nolint:cyclop,gocognit // TODO
+//nolint:cyclop,gocognit // linear load with fallbacks (missing, empty, corrupt, version); refactor would not simplify
 func loadState(stateFilePath string) (syslogMonitorState, error) {
 	var state syslogMonitorState
 
@@ -388,32 +389,30 @@ func (sm *SyslogMonitor) validateJournalPath(check CheckDefinition) error {
 
 // openJournal opens the systemd journal with the specified path
 func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
-	//nolint:nestif
-	if check.JournalPath != "" {
-		slog.Info("Verifying journal path",
-			"check", check.Name,
-			"path", check.JournalPath)
-
-		// Only validate path on filesystem for real journal factories
-		if sm.journalFactory.RequiresFileSystemCheck() {
-			if err := sm.validateJournalPath(check); err != nil {
-				return nil, fmt.Errorf("journal path validation failed for check %s: %w", check.Name, err)
-			}
-		}
-
-		slog.Info("Opening journal at path",
-			"check", check.Name,
-			"path", check.JournalPath)
-
-		journal, err := sm.journalFactory.NewJournalFromDir(check.JournalPath)
-		if err != nil {
-			return nil, fmt.Errorf("check '%s': failed to open journal from dir %s: %w", check.Name, check.JournalPath, err)
-		}
-
-		return journal, nil
-	} else {
+	if check.JournalPath == "" {
 		return nil, fmt.Errorf("check '%s': journal path is empty. Path-specific journal expected for checks", check.Name)
 	}
+
+	slog.Info("Verifying journal path",
+		"check", check.Name,
+		"path", check.JournalPath)
+
+	if sm.journalFactory.RequiresFileSystemCheck() {
+		if err := sm.validateJournalPath(check); err != nil {
+			return nil, fmt.Errorf("journal path validation failed for check %s: %w", check.Name, err)
+		}
+	}
+
+	slog.Info("Opening journal at path",
+		"check", check.Name,
+		"path", check.JournalPath)
+
+	journal, err := sm.journalFactory.NewJournalFromDir(check.JournalPath)
+	if err != nil {
+		return nil, fmt.Errorf("check '%s': failed to open journal from dir %s: %w", check.Name, check.JournalPath, err)
+	}
+
+	return journal, nil
 }
 
 // configureBootFilter sets up the boot filter for the journal
@@ -438,7 +437,7 @@ func (sm *SyslogMonitor) configureBootFilter(journal Journal, checkName string) 
 
 // configureTagFilters sets up the tag-based filters for the journal
 //
-//nolint:gocognit,cyclop
+//nolint:gocognit,cyclop // single switch over tag types; splitting would reduce clarity
 func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinition) error {
 	for _, tag := range check.Tags {
 		trimmedTag := strings.TrimSpace(tag)
@@ -469,35 +468,38 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 				return err // Error message from configureBootFilter should be sufficient
 			}
 		default:
-			if strings.HasPrefix(trimmedTag, "-u ") || strings.HasPrefix(trimmedTag, "--unit ") { //nolint:nestif // TODO
-				var unitName string
-				if strings.HasPrefix(trimmedTag, "-u ") {
-					unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
-				} else { // Must be --unit due to the check above
-					unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "--unit "))
-				}
-
-				if unitName != "" {
-					matchExpr := FieldSystemdUnit + "=" + unitName
-
-					slog.Info("Adding unit filter",
-						"check", check.Name,
-						"tag", trimmedTag,
-						"match", matchExpr)
-
-					if err := journal.AddMatch(matchExpr); err != nil {
-						return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
-							check.Name, unitName, matchExpr, err)
-					}
-				} else {
-					slog.Warn("Tag for unit filtering resulted in empty unit name",
-						"check", check.Name,
-						"tag", trimmedTag)
-				}
-			} else {
+			if !strings.HasPrefix(trimmedTag, "-u ") && !strings.HasPrefix(trimmedTag, "--unit ") {
 				slog.Info("Ignoring unrecognized tag in 'configureTagFilters'",
 					"check", check.Name,
 					"tag", trimmedTag)
+
+				continue
+			}
+
+			var unitName string
+			if strings.HasPrefix(trimmedTag, "-u ") {
+				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
+			} else {
+				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "--unit "))
+			}
+
+			if unitName == "" {
+				slog.Warn("Tag for unit filtering resulted in empty unit name",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			matchExpr := FieldSystemdUnit + "=" + unitName
+			slog.Info("Adding unit filter",
+				"check", check.Name,
+				"tag", trimmedTag,
+				"match", matchExpr)
+
+			if err := journal.AddMatch(matchExpr); err != nil {
+				return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
+					check.Name, unitName, matchExpr, err)
 			}
 		}
 	}
@@ -505,9 +507,49 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 	return nil
 }
 
+// initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
+// Used when there is no last known cursor (first run or no saved state). Returns nil on success.
+func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
+	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
+
+	if err := journal.SeekTail(); err != nil {
+		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
+	}
+
+	count, errPrev := journal.Previous()
+	if errPrev != nil && !errors.Is(errPrev, io.EOF) {
+		return fmt.Errorf("seek previous: %w", errPrev)
+	}
+
+	if count == 0 {
+		slog.Info("Journal is empty, nothing to do", "check", check.Name)
+
+		return nil
+	}
+
+	cursor, err := journal.GetCursor()
+	if err != nil {
+		if strings.Contains(err.Error(), "cannot assign requested address") {
+			slog.Info("No cursor available, journal empty", "check", check.Name)
+
+			return nil
+		}
+
+		return fmt.Errorf("get cursor: %w", err)
+	}
+
+	slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
+		"check", check.Name,
+		"cursor", cursor)
+
+	sm.checkLastCursors[check.Name] = cursor
+
+	return nil
+}
+
 // processJournalEntries reads and processes journal entries
 //
-//nolint:gocognit,cyclop
+//nolint:gocognit,cyclop // single flow: init or resume, then process loop with recovery; splitting would scatter logic
 func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefinition) error {
 	// currentEntryCursor will store the cursor of the entry currently being processed or just processed.
 	// sm.checkLastCursors[checkName] will store the cursor to resume from on the NEXT run.
@@ -519,48 +561,10 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 	}
 
 	slog.Info("Boot ID for check", "check", check.Name, "bootID", bootID)
-	// This block handles:
-	// 1. Non-boot checks on their first run (hasLastCursor == false)
-	// 2. All checks (boot or non-boot) on subsequent runs (hasLastCursor == true)
-	//nolint:nestif // TODO
-	if !hasLastCursor { // This implies !check.Boot due to the block above
-		slog.Info("No last known cursor, seeking to journal tail",
-			"check", check.Name)
 
-		if err := journal.SeekTail(); err != nil {
-			return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
-		}
-
-		count, errPrev := journal.Previous()
-		if errPrev != nil && !errors.Is(errPrev, io.EOF) {
-			return fmt.Errorf("seek previous: %w", errPrev)
-		}
-
-		if count == 0 { // journal is empty
-			slog.Info("Journal is empty, nothing to do", "check", check.Name)
-			return nil
-		}
-
-		cursor, err := journal.GetCursor()
-		if err != nil {
-			if strings.Contains(err.Error(), "cannot assign requested address") {
-				slog.Info("No cursor available, journal empty", "check", check.Name)
-				return nil
-			}
-
-			return fmt.Errorf("get cursor: %w", err)
-		}
-
-		slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
-			"check", check.Name,
-			"cursor", cursor)
-
-		sm.checkLastCursors[check.Name] = cursor
-
-		return nil // No entries processed on this initialization run.
+	if !hasLastCursor {
+		return sm.initializeJournalFromTail(journal, check)
 	}
-
-	// If we are here, hasLastCursor is true.
 
 	slog.Info("Resuming from last known cursor",
 		"check", check.Name,
@@ -599,7 +603,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		return fmt.Errorf("check '%s': error advancing from resumed cursor '%s': %w", check.Name, lastKnownCursor, nextErr)
 	}
 
-	if nextErr == io.EOF || advanced == 0 { //nolint:errorlint // TODO
+	if errors.Is(nextErr, io.EOF) || advanced == 0 {
 		slog.Info("No new entries since last cursor",
 			"check", check.Name,
 			"cursor", lastKnownCursor)
@@ -617,7 +621,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 				"lastStoredCursor", sm.checkLastCursors[check.Name])
 
 			advancedNext, advErr := journal.Next()
-			if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
+			if errors.Is(advErr, io.EOF) || advancedNext == 0 {
 				slog.Info("Reached end of journal while recovering from GetCursor error",
 					"check", check.Name,
 					"nextCursor", sm.checkLastCursors[check.Name])
@@ -648,7 +652,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 
 			advancedNext, advErr := journal.Next()
 
-			if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
+			if errors.Is(advErr, io.EOF) || advancedNext == 0 {
 				slog.Info("Reached end of journal while recovering from message error",
 					"check", check.Name,
 					"entryCursor", currentEntryCursor,
@@ -689,7 +693,7 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 		}
 
 		advancedNext, advErr := journal.Next()
-		if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
+		if errors.Is(advErr, io.EOF) || advancedNext == 0 {
 			slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
 			// sm.checkLastCursors[checkName] is already set to currentEntryCursor.
 			break
@@ -857,6 +861,10 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 
 // isRetryableError determines if an error is retryable
 func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	if s, ok := status.FromError(err); ok {
 		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
 			return true
@@ -867,8 +875,11 @@ func isRetryableError(err error) bool {
 		return true
 	}
 
-	if err == io.EOF || strings.Contains(err.Error(), "connection reset by peer") || //nolint:errorlint // TODO
-		strings.Contains(err.Error(), "broken pipe") {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
 		return true
 	}
 

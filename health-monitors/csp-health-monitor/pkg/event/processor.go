@@ -112,7 +112,7 @@ func (p *Processor) inheritState(ctx context.Context, event *model.MaintenanceEv
 
 // inheritPendingToOngoing inherits fields from a prior PENDING event.
 //
-//nolint:cyclop
+//nolint:cyclop // splitting would reduce readability
 func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.MaintenanceEvent) {
 	prior, found, err := p.store.FindLatestActiveEventByNodeAndType(
 		ctx, event.NodeName, event.MaintenanceType, []model.InternalStatus{model.StatusDetected})
@@ -150,7 +150,7 @@ func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.Ma
 
 // inheritOngoingToCompleted inherits fields from a prior ONGOING event.
 //
-//nolint:cyclop
+//nolint:cyclop // splitting would reduce readability
 func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.MaintenanceEvent) {
 	slog.Info(
 		"[Processor.inheritOngoingToCompleted] Processing COMPLETED event, attempting to find latest ONGOING for node",

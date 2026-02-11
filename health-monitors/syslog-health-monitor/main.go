@@ -83,96 +83,97 @@ func main() {
 	}
 }
 
-//nolint:cyclop,gocognit // function coordinates process wiring, IO, and retries
-func run() error {
+func validateNodeName() (string, error) {
 	flag.Parse()
 	slog.Info("Parsed command line flags successfully")
 
 	nodeName := *nodeNameEnv
 	if nodeName == "" {
-		return fmt.Errorf("NODE_NAME env not set and --node-name flag not provided, cannot run")
+		return "", fmt.Errorf("NODE_NAME env not set and --node-name flag not provided, cannot run")
 	}
 
 	slog.Info("Configuration", "node", nodeName, "kata-enabled", *kataEnabled)
 
-	// Root context canceled on SIGINT/SIGTERM so goroutines can exit cleanly.
-	root := context.Background()
-	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
+	return nodeName, nil
+}
 
-	defer stop()
+func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, pb.PlatformConnectorClient, error) {
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
-	// Build gRPC dial options (mTLS can replace insecure credentials in production).
-	var dialOpts []grpc.DialOption
+	slog.Info("Creating gRPC client to platform connector", "socket", socket)
 
-	dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-
-	// Create gRPC client to platform connector with retries and per-attempt timeout.
-	slog.Info("Creating gRPC client to platform connector", "socket", *platformConnectorSocket)
-
-	conn, err := dialWithRetry(ctx, *platformConnectorSocket, dialOpts...)
+	conn, err := dialWithRetry(ctx, socket, dialOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to create gRPC client after retries: %w", err)
+		return nil, nil, fmt.Errorf("failed to create gRPC client after retries: %w", err)
 	}
-
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			slog.Error("Error closing gRPC connection", "error", closeErr)
-		}
-	}()
 
 	client := pb.NewPlatformConnectorClient(conn)
 
-	checks = make([]fd.CheckDefinition, 0)
+	return conn, client, nil
+}
+
+func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
+	list := make([]fd.CheckDefinition, 0)
+
 	for c := range strings.SplitSeq((*checksList), ",") {
-		checks = append(checks, fd.CheckDefinition{
+		list = append(list, fd.CheckDefinition{
 			Name:        c,
 			JournalPath: "/nvsentinel/var/log/journal/",
 		})
 	}
 
-	if len(checks) == 0 {
-		return fmt.Errorf("no checks defined in the config file")
+	if len(list) == 0 {
+		return nil, fmt.Errorf("no checks defined in the config file")
 	}
 
-	// Handle kata-specific configuration
-	if stringutil.IsTruthyValue(*kataEnabled) {
-		slog.Info("Kata mode enabled, adding containerd service filter and removing SysLogsSXIDError check")
+	return list, nil
+}
 
-		// Add containerd service filter to all checks for kata nodes
-		for i := range checks {
-			if checks[i].Tags == nil {
-				checks[i].Tags = []string{"-u", "containerd.service"}
-			} else {
-				checks[i].Tags = append(checks[i].Tags, "-u", "containerd.service")
-			}
-		}
-
-		// Remove SysLogsSXIDError check for kata nodes (not supported in kata environment)
-		filteredChecks := make([]fd.CheckDefinition, 0, len(checks))
-
-		for _, check := range checks {
-			if check.Name != "SysLogsSXIDError" {
-				filteredChecks = append(filteredChecks, check)
-			}
-		}
-
-		checks = filteredChecks
+func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
+	if !stringutil.IsTruthyValue(*kataEnabled) {
+		return list
 	}
 
-	slog.Info("Creating syslog monitor", "checksCount", len(checks))
+	slog.Info("Kata mode enabled, adding containerd service filter and removing SysLogsSXIDError check")
 
+	for i := range list {
+		if list[i].Tags == nil {
+			list[i].Tags = []string{"-u", "containerd.service"}
+		} else {
+			list[i].Tags = append(list[i].Tags, "-u", "containerd.service")
+		}
+	}
+
+	filtered := make([]fd.CheckDefinition, 0, len(list))
+
+	for _, check := range list {
+		if check.Name != "SysLogsSXIDError" {
+			filtered = append(filtered, check)
+		}
+	}
+
+	return filtered
+}
+
+func createSyslogMonitor(
+	nodeName string,
+	list []fd.CheckDefinition,
+	client pb.PlatformConnectorClient,
+) (*fd.SyslogMonitor, time.Duration, error) {
 	value, ok := pb.ProcessingStrategy_value[*processingStrategyFlag]
 	if !ok {
-		return fmt.Errorf("unexpected processingStrategy value: %q", *processingStrategyFlag)
+		return nil, 0, fmt.Errorf("unexpected processingStrategy value: %q", *processingStrategyFlag)
 	}
 
 	slog.Info("Event handling strategy configured", "processingStrategy", *processingStrategyFlag)
 
 	processingStrategy := pb.ProcessingStrategy(value)
 
-	fdHealthMonitor, err := fd.NewSyslogMonitor(
+	slog.Info("Creating syslog monitor", "checksCount", len(list))
+
+	monitor, err := fd.NewSyslogMonitor(
 		nodeName,
-		checks,
+		list,
 		client,
 		defaultAgentName,
 		defaultComponentClass,
@@ -183,19 +184,23 @@ func run() error {
 		processingStrategy,
 	)
 	if err != nil {
-		return fmt.Errorf("error creating syslog health monitor: %w", err)
+		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)
 	}
 
 	pollingInterval, err := time.ParseDuration(*pollingIntervalFlag)
 	if err != nil {
-		return fmt.Errorf("error parsing polling interval: %w", err)
+		return nil, 0, fmt.Errorf("error parsing polling interval: %w", err)
 	}
 
 	slog.Info("Polling interval configured", "interval", pollingInterval)
 
+	return monitor, pollingInterval, nil
+}
+
+func createMetricsServer() (server.Server, int, error) {
 	portInt, err := strconv.Atoi(*metricsPort)
 	if err != nil {
-		return fmt.Errorf("invalid metrics port: %w", err)
+		return nil, 0, fmt.Errorf("invalid metrics port: %w", err)
 	}
 
 	srv := server.NewServer(
@@ -204,11 +209,105 @@ func run() error {
 		server.WithSimpleHealth(),
 	)
 
-	// Run the HTTP server and the polling loop under an errgroup bound to ctx.
+	return srv, portInt, nil
+}
+
+func runPollingLoop(
+	ctx context.Context,
+	monitor *fd.SyslogMonitor,
+	interval time.Duration,
+	list []fd.CheckDefinition,
+) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	slog.Info("Configured checks", "checks", list)
+	slog.Info("Syslog health monitor initialization complete, starting polling loop...")
+
+	var backoff time.Duration
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Polling loop stopped due to context cancellation")
+
+			return nil
+		case <-ticker.C:
+			slog.Info("Performing scheduled health check run...")
+
+			if err := monitor.Run(); err != nil {
+				if backoff == 0 {
+					backoff = 2 * time.Second
+				} else {
+					backoff *= 2
+				}
+
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+
+				slog.Error("Health check run failed; will retry after backoff", "error", err, "backoff", backoff)
+
+				timer := time.NewTimer(backoff)
+
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					slog.Info("Polling loop stopped during backoff due to context cancellation")
+
+					return nil
+				case <-timer.C:
+				}
+
+				continue
+			}
+
+			backoff = 0
+		}
+	}
+}
+
+func run() error {
+	nodeName, err := validateNodeName()
+	if err != nil {
+		return err
+	}
+
+	root := context.Background()
+
+	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	conn, client, err := dialPlatformConnector(ctx, *platformConnectorSocket)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			slog.Error("Error closing gRPC connection", "error", closeErr)
+		}
+	}()
+
+	checks, err = buildChecksFromFlag()
+	if err != nil {
+		return err
+	}
+
+	checks = applyKataConfig(checks)
+
+	monitor, pollingInterval, err := createSyslogMonitor(nodeName, checks, client)
+	if err != nil {
+		return err
+	}
+
+	srv, portInt, err := createMetricsServer()
+	if err != nil {
+		return err
+	}
+
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Start the metrics/health server.
-	// Metrics server failures are logged but do NOT terminate the service.
 	g.Go(func() error {
 		slog.Info("Starting metrics server", "port", portInt)
 
@@ -219,67 +318,10 @@ func run() error {
 		return nil
 	})
 
-	// Polling loop with context-aware cancellation and tolerant error handling.
 	g.Go(func() error {
-		ticker := time.NewTicker(pollingInterval)
-		defer ticker.Stop()
-
-		slog.Info("Configured checks", "checks", checks)
-
-		slog.Info(
-			"Syslog health monitor initialization complete, starting polling loop...",
-		)
-
-		// Simple backoff for transient Run() errors.
-		var backoff time.Duration
-
-		for {
-			select {
-			case <-gCtx.Done():
-				slog.Info("Polling loop stopped due to context cancellation")
-				return nil // graceful shutdown (do not surface as error)
-			case <-ticker.C:
-				slog.Info("Performing scheduled health check run...")
-
-				if err := fdHealthMonitor.Run(); err != nil {
-					// Log and continue; apply a capped backoff to avoid hot-looping on persistent failures.
-					if backoff == 0 {
-						backoff = 2 * time.Second
-					} else {
-						backoff *= 2
-					}
-
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
-
-					slog.Error(
-						"Health check run failed; will retry after backoff",
-						"error", err,
-						"backoff", backoff,
-					)
-
-					timer := time.NewTimer(backoff)
-
-					select {
-					case <-gCtx.Done():
-						timer.Stop()
-						slog.Info("Polling loop stopped during backoff due to context cancellation")
-
-						return nil
-					case <-timer.C:
-					}
-
-					continue
-				}
-
-				// On success, reset backoff.
-				backoff = 0
-			}
-		}
+		return runPollingLoop(gCtx, monitor, pollingInterval, checks)
 	})
 
-	// Wait until either goroutine returns.
 	return g.Wait()
 }
 

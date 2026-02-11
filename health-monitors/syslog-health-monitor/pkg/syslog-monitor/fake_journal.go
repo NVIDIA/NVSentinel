@@ -196,25 +196,31 @@ func (j *FakeJournal) SeekCursor(cursor string) error {
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes
-	if len(j.Entries) > 0 { //nolint:nestif // TODO
-		if len(j.Matches) > 0 {
-			// Find the last entry that matches all filters
-			for i := len(j.Entries) - 1; i >= 0; i-- {
-				if j.matchesFilters(j.Entries[i]) {
-					j.CurrentPosition = i
-					return nil
-				}
-			}
-			// No matches
-			j.CurrentPosition = len(j.Entries)
-		} else {
-			// For test purposes, position at the FIRST entry (index 0) instead of the last
-			// to force processing the entire journal in the first run
-			j.CurrentPosition = 0
-		}
-	} else {
+	if len(j.Entries) == 0 {
 		j.CurrentPosition = -1
+
+		return nil
 	}
+
+	if len(j.Matches) == 0 {
+		// For test purposes, position at the FIRST entry (index 0) instead of the last
+		// to force processing the entire journal in the first run
+		j.CurrentPosition = 0
+
+		return nil
+	}
+
+	// Find the last entry that matches all filters
+	for i := len(j.Entries) - 1; i >= 0; i-- {
+		if j.matchesFilters(j.Entries[i]) {
+			j.CurrentPosition = i
+
+			return nil
+		}
+	}
+
+	// No matches
+	j.CurrentPosition = len(j.Entries)
 
 	return nil
 }

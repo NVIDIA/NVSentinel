@@ -355,7 +355,7 @@ func updateEventFromAuditLog(
 	return
 }
 
-//nolint:cyclop
+//nolint:cyclop // single switch over CSP status; splitting would reduce clarity
 func finalizeEventStatus(event *model.MaintenanceEvent, methodName string, entryInsertID string) {
 	switch event.CSPStatus {
 	case model.CSPStatusPending:
