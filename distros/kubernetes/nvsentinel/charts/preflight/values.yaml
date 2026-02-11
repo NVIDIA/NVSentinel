@@ -17,7 +17,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: latest
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -132,6 +132,30 @@ gpuResourceNames:
 # Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
 networkResourceNames:
   - "nvidia.com/mlnxnics"
+
+# Gang discovery configuration for multi-node preflight checks.
+# Default (empty): K8s 1.35+ native WorkloadRef API
+# For PodGroup-based schedulers, set name and other fields:
+gangDiscovery: {}
+  # name: "volcano"
+  # annotationKeys: ["volcano.sh/pod-group"]
+  # labelKeys: ["volcano.sh/job-name"]  # optional fallback
+  # podGroupGVR:
+  #   group: "scheduling.volcano.sh"
+  #   version: "v1beta1"
+  #   resource: "podgroups"
+  # minCountExpr: "podGroup.spec.minMember"  # CEL expression
+
+# Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
+gangCoordination:
+  # Enable gang coordination (required for gang-wide checks)
+  enabled: true
+  # Maximum time to wait for all gang members to register
+  timeout: "10m"
+  # Port for PyTorch distributed TCP bootstrap (torchrun)
+  masterPort: 29500
+  # Path where gang ConfigMap is mounted in init containers
+  configMapMountPath: "/etc/preflight"
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled

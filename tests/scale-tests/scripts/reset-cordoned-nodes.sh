@@ -20,6 +20,8 @@ echo "🔄 Resetting NVSentinel-cordoned nodes..."
 # 1. Scale FQM to 0 to stop it while we clean up
 echo "   Scaling FQM to 0..."
 kubectl scale deployment/fault-quarantine -n nvsentinel --replicas=0
+kubectl scale deployment/node-drainer -n nvsentinel --replicas=0
+kubectl scale deployment/fault-remediation -n nvsentinel --replicas=0
 
 # 2. While FQM restarts, bulk uncordon ALL SchedulingDisabled nodes (parallel)
 echo "   Bulk uncordoning all SchedulingDisabled nodes (parallel)..."
@@ -36,12 +38,17 @@ kubectl label nodes -l k8saas.nvidia.com/cordon-by=NVSentinel \
 echo "Removing quarantine annotations..."
 kubectl annotate nodes --all quarantineHealthEvent- quarantineHealthEventIsCordoned- 2>/dev/null || true
 
-# 4. Scale FQM back to 1
-echo "   Scaling FQM back to 1..."
-kubectl scale deployment/fault-quarantine -n nvsentinel --replicas=1
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fault-quarantine -n nvsentinel --timeout=60s
+# 4. Wait before scaling back up
+echo "   Waiting 60 seconds before scaling back up..."
+sleep 60
 
-# 5. Verify
+# 5. Scale deployments back to 1
+echo "   Scaling deployments back to 1..."
+kubectl scale deployment/node-drainer -n nvsentinel --replicas=1
+kubectl scale deployment/fault-quarantine -n nvsentinel --replicas=1
+kubectl scale deployment/fault-remediation -n nvsentinel --replicas=1
+
+# 6. Verify
 REMAINING=$(kubectl get nodes -l k8saas.nvidia.com/cordon-by=NVSentinel --no-headers 2>/dev/null | wc -l)
 echo ""
 echo "✅ Reset complete. Remaining cordoned: $REMAINING"

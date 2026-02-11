@@ -442,6 +442,7 @@ platform-connectors/platform-connectors
 event-exporter/event-exporter
 tests/scale-tests/FQM_LATENCY_TEST_PLAN.md
 tests/scale-tests/CONCURRENT_DRAIN_TEST_PLAN.md
+tests/scale-tests/MIXED_EVICTION_TEST_PLAN.md
 tests/scale-tests/results/*.csv
 tests/scale-tests/cmd/fqm-scale-test/results/
 preflight-checks/dcgm-diag/dcgm-diag

@@ -1,0 +1,67 @@
+# Mixed Eviction Test - Immediate Mode Namespace
+# Used for Mixed Eviction Tests (Issue #386)
+#
+# Pattern: 1500 pods (~1 per node) with Immediate eviction mode
+# Resources: Small (10m CPU, 32Mi memory per pod)
+# Termination: 30 seconds
+# Eviction Mode: Immediate - pods are evicted immediately when node is drained
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-immediate
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-sim
+  namespace: test-immediate
+  labels:
+    app: inference-sim
+    eviction-mode: immediate
+spec:
+  replicas: 1500
+  selector:
+    matchLabels:
+      app: inference-sim
+  template:
+    metadata:
+      labels:
+        app: inference-sim
+        eviction-mode: immediate
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: inference
+        image: public.ecr.aws/docker/library/python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import signal
+          import time
+          import sys
+
+          def handler(signum, frame):
+              print("Received SIGTERM, shutting down gracefully...")
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, handler)
+          print("Inference simulator started (immediate mode)")
+          while True:
+              time.sleep(3600)
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "50m"
+            memory: "64Mi"
+      topologySpreadConstraints:
+      - maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: inference-sim
+

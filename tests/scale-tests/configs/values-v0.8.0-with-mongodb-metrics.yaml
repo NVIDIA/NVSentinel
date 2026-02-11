@@ -1,0 +1,126 @@
+# NVSentinel v0.8.0 Configuration - Scale Testing with MongoDB Metrics
+# Enables: Fault Quarantine Module (FQM), Node Drainer, Fault Remediation, MongoDB Metrics
+#
+# Purpose: Scale testing with full observability
+# Cluster: rs3 (AWS CPU-only nodes: aws-cpu-m7i.xlarge)
+# Key Features:
+#   - FQM watches ALL nodes (not just GPU nodes)
+#   - MongoDB 6Gi memory (validated from previous tests)
+#   - Platform Connector writes to MongoDB
+#   - Complete fault remediation pipeline enabled
+#   - MongoDB metrics enabled for Prometheus
+#
+# Date: February 2, 2026
+# Version: v0.8.0
+
+global:
+  dryRun: false
+  image:
+    tag: "v0.8.0"
+  metricsPort: 2112
+
+  # Allow platform connectors to run on nodes with skyhook taint
+  tolerations:
+    - key: "skyhook.nvidia.com"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  nodeSelector: {}
+  affinity: {}
+  systemNodeSelector: {}
+  systemNodeTolerations: []
+  imagePullSecrets: []
+
+  # Feature flags for scale testing
+  gpuHealthMonitor:
+    enabled: false  # No GPUs in aws-cpu-m7i.xlarge nodes
+  healthEventsAnalyzer:
+    enabled: false
+  faultQuarantine:
+    enabled: true  # Enable for testing
+  nodeDrainer:
+    enabled: true  # Enable for testing
+  faultRemediation:
+    enabled: true  # Enable for fault remediation
+  janitor:
+    enabled: false  # Not needed for initial testing
+  cspHealthMonitor:
+    enabled: false
+  syslogHealthMonitor:
+    enabled: false
+  labeler:
+    enabled: true
+  metadataCollector:
+    enabled: false  # Not needed for CPU-only nodes
+  inclusterFileServer:
+    enabled: false
+  mongodbStore:
+    enabled: true  # Required for FQM
+
+# PodMonitor for Prometheus Operator (new in v0.8.0)
+podMonitor:
+  enabled: true
+  interval: 30s
+
+# Node Drainer resource override - default 300Mi is too low for large clusters
+# At 1500 nodes, node-drainer OOMKills during informer sync with 300Mi
+node-drainer:
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+
+platformConnector:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+  mongodbStore:
+    enabled: true  # CRITICAL: Required for platform connector to write to MongoDB
+  nodeMetadata:
+    enabled: false
+
+# MongoDB configuration for scale testing
+mongodb-store:
+  mongodb:
+    auth:
+      enabled: true
+      rootUser: root
+    architecture: replicaset
+    replicaCount: 3
+    replicaSetName: rs0
+    resources:
+      requests:
+        memory: "6Gi"  # Validated requirement
+        cpu: "2000m"
+      limits:
+        memory: "6Gi"
+        cpu: "2000m"
+    persistence:
+      enabled: true
+      size: 20Gi
+    # Enable MongoDB metrics for Prometheus
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        labels:
+          release: prometheus  # Required for Prometheus Operator to discover this ServiceMonitor
+
+socketPath: "/var/run/nvsentinel.sock"
+
