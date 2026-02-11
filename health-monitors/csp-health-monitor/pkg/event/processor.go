@@ -137,13 +137,11 @@ func (p *Processor) inheritPendingToOngoing(ctx context.Context, event *model.Ma
 	}
 
 	event.MaintenanceType = prior.MaintenanceType
-	if (event.ResourceID == "" || event.ResourceID == defaultUnknown) && prior.ResourceID != "" &&
-		prior.ResourceID != defaultUnknown {
+	if emptyOrDefault(event.ResourceID) && !emptyOrDefault(prior.ResourceID) {
 		event.ResourceID = prior.ResourceID
 	}
 
-	if (event.ResourceType == "" || event.ResourceType == defaultUnknown) && prior.ResourceType != "" &&
-		prior.ResourceType != defaultUnknown {
+	if emptyOrDefault(event.ResourceType) && !emptyOrDefault(prior.ResourceType) {
 		event.ResourceType = prior.ResourceType
 	}
 }
@@ -209,13 +207,11 @@ func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.
 		event.ActualStartTime = priorEvent.ActualStartTime
 	}
 
-	if (event.ResourceID == "" || event.ResourceID == defaultUnknown) &&
-		(priorEvent.ResourceID != "" && priorEvent.ResourceID != defaultUnknown) {
+	if emptyOrDefault(event.ResourceID) && !emptyOrDefault(priorEvent.ResourceID) {
 		event.ResourceID = priorEvent.ResourceID
 	}
 
-	if (event.ResourceType == "" || event.ResourceType == defaultUnknown) &&
-		(priorEvent.ResourceType != "" && priorEvent.ResourceType != defaultUnknown) {
+	if emptyOrDefault(event.ResourceType) && !emptyOrDefault(priorEvent.ResourceType) {
 		event.ResourceType = priorEvent.ResourceType
 	}
 
@@ -225,6 +221,11 @@ func (p *Processor) inheritOngoingToCompleted(ctx context.Context, event *model.
 		"scheduledStart", safeFormatTime(event.ScheduledStartTime),
 		"actualStart", safeFormatTime(event.ActualStartTime),
 	)
+}
+
+// emptyOrDefault returns true if s is empty or the default unknown placeholder.
+func emptyOrDefault(s string) bool {
+	return s == "" || s == defaultUnknown
 }
 
 // logEventDetails logs key event fields before upsert.
@@ -246,7 +247,7 @@ func (p *Processor) logEventDetails(event *model.MaintenanceEvent) {
 
 // logMissingNode warns if NodeName is missing but ResourceID is present.
 func (p *Processor) logMissingNode(event *model.MaintenanceEvent) {
-	if event.NodeName == "" && event.ResourceID != "" && event.ResourceID != defaultUnknown {
+	if event.NodeName == "" && !emptyOrDefault(event.ResourceID) {
 		slog.Warn(
 			"Event has ResourceID but no NodeName; mapping may have failed",
 			"eventID", event.EventID,

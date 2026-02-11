@@ -868,7 +868,9 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 	cursor, err := journal.GetCursor()
 	if err != nil {
 		if isRetryableJournalError(err) {
-			slog.Info("No cursor available, journal empty", "check", check.Name)
+			slog.Warn("Transient journal read error, will retry on next run",
+				"check", check.Name,
+				"error", err)
 
 			return nil
 		}
