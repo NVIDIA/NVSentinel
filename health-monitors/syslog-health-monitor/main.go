@@ -174,8 +174,13 @@ func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
 	list := make([]fd.CheckDefinition, 0)
 
 	for c := range strings.SplitSeq((*checksList), ",") {
+		name := strings.TrimSpace(c)
+		if name == "" {
+			continue
+		}
+
 		list = append(list, fd.CheckDefinition{
-			Name:        c,
+			Name:        name,
 			JournalPath: "/nvsentinel/var/log/journal/",
 		})
 	}
@@ -293,34 +298,38 @@ func runPollingLoop(
 		case <-ticker.C:
 			slog.Info("Performing scheduled health check run...")
 
-			if err := monitor.Run(); err != nil {
-				if backoff == 0 {
-					backoff = 2 * time.Second
-				} else {
-					backoff *= 2
+			for {
+				if err := monitor.Run(); err != nil {
+					if backoff == 0 {
+						backoff = 2 * time.Second
+					} else {
+						backoff *= 2
+					}
+
+					if backoff > 30*time.Second {
+						backoff = 30 * time.Second
+					}
+
+					slog.Error("Health check run failed; will retry after backoff", "error", err, "backoff", backoff)
+
+					timer := time.NewTimer(backoff)
+
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						slog.Info("Polling loop stopped during backoff due to context cancellation")
+
+						return nil
+					case <-timer.C:
+					}
+
+					continue
 				}
 
-				if backoff > 30*time.Second {
-					backoff = 30 * time.Second
-				}
+				backoff = 0
 
-				slog.Error("Health check run failed; will retry after backoff", "error", err, "backoff", backoff)
-
-				timer := time.NewTimer(backoff)
-
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					slog.Info("Polling loop stopped during backoff due to context cancellation")
-
-					return nil
-				case <-timer.C:
-				}
-
-				continue
+				break
 			}
-
-			backoff = 0
 		}
 	}
 }
