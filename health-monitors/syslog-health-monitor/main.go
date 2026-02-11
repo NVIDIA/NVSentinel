@@ -196,9 +196,9 @@ func applyKataConfig(list []fd.CheckDefinition) []fd.CheckDefinition {
 
 	for i := range list {
 		if list[i].Tags == nil {
-			list[i].Tags = []string{"-u", "containerd.service"}
+			list[i].Tags = []string{"-u containerd.service"}
 		} else {
-			list[i].Tags = append(list[i].Tags, "-u", "containerd.service")
+			list[i].Tags = append(list[i].Tags, "-u containerd.service")
 		}
 	}
 

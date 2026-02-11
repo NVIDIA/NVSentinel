@@ -439,8 +439,8 @@ func (sm *SyslogMonitor) configureBootFilter(journal Journal, checkName string) 
 //
 //nolint:gocognit,cyclop // single switch over tag types; splitting would reduce clarity
 func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinition) error {
-	for _, tag := range check.Tags {
-		trimmedTag := strings.TrimSpace(tag)
+	for j := 0; j < len(check.Tags); j++ {
+		trimmedTag := strings.TrimSpace(check.Tags[j])
 		if trimmedTag == "" {
 			continue
 		}
@@ -467,6 +467,37 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 			if err := sm.configureBootFilter(journal, check.Name); err != nil {
 				return err // Error message from configureBootFilter should be sufficient
 			}
+		case "-u", "--unit":
+			// Standalone flag: next tag element is the unit name
+			if j+1 >= len(check.Tags) {
+				slog.Warn("Tag for unit filtering missing unit name (end of list)",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			j++
+
+			unitName := strings.TrimSpace(check.Tags[j])
+			if unitName == "" {
+				slog.Warn("Tag for unit filtering resulted in empty unit name",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			matchExpr := FieldSystemdUnit + "=" + unitName
+			slog.Info("Adding unit filter",
+				"check", check.Name,
+				"tag", trimmedTag,
+				"match", matchExpr)
+
+			if err := journal.AddMatch(matchExpr); err != nil {
+				return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
+					check.Name, unitName, matchExpr, err)
+			}
 		default:
 			if !strings.HasPrefix(trimmedTag, "-u ") && !strings.HasPrefix(trimmedTag, "--unit ") {
 				slog.Info("Ignoring unrecognized tag in 'configureTagFilters'",
@@ -476,6 +507,7 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 				continue
 			}
 
+			// Combined flag: unit name in same element (e.g. "-u containerd.service")
 			var unitName string
 			if strings.HasPrefix(trimmedTag, "-u ") {
 				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
@@ -701,7 +733,7 @@ func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckD
 
 	cursor, err := journal.GetCursor()
 	if err != nil {
-		if strings.Contains(err.Error(), "cannot assign requested address") {
+		if isRetryableJournalError(err) {
 			slog.Info("No cursor available, journal empty", "check", check.Name)
 
 			return nil
