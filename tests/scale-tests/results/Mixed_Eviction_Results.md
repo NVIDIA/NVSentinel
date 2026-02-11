@@ -121,7 +121,7 @@ The test manifests include `topologySpreadConstraints` with `maxSkew: 3`, which 
 - **Immediate mode:** Almost fully drained *during* cordon phase (only 7 pods remaining at T+0); fully drained by T+30s
 - **AllowCompletion mode:** Exactly 150 pods remained on cordoned nodes throughout (correct behavior - NOT actively evicting)
 - **DeleteAfterTimeout mode:** 151 pods on cordoned nodes, fully drained by T+90s after 2-minute timeout
-- **Drain speed:** Immediate mode is extremely fast — eviction happens concurrently with cordoning
+- **Drain speed:** Immediate mode is extremely fast — cordon and drain are separate sequential API calls, but the time gap is so small that eviction appears to happen concurrently with cordoning
 
 ---
 
@@ -221,7 +221,7 @@ The test manifests include `topologySpreadConstraints` with `maxSkew: 3`, which 
 1. **Linear scaling:** Cordon time scales linearly with node count (62s → 150s → 300s)
 2. **Consistent throughput:** 2.5-2.6 nodes/sec cordon rate maintained across all scales
 3. **No cross-contamination:** All three eviction modes worked independently without interference
-4. **Immediate mode is fast:** Eviction happens concurrently with cordoning — most pods drained before cordon phase completes
+4. **Immediate mode is fast:** Cordon and drain are sequential API calls, but eviction follows so quickly that most pods are drained before the cordon phase completes
 5. **AllowCompletion verified:** Pods correctly NOT evicted in all three tests
 6. **Perfect distribution validation:** M3 showed exact 750/750 match with perfect pod distribution
 
