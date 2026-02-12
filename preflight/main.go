@@ -30,7 +30,11 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
+	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
+	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -39,6 +43,9 @@ var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
+
+	discoverer     gang.GangDiscoverer
+	onGangRegister webhook.GangRegistrationFunc
 )
 
 func main() {
@@ -76,18 +83,88 @@ func run() error {
 
 	slog.Info("Configuration loaded",
 		"initContainers", len(cfg.InitContainers),
-		"gpuResourceNames", cfg.GPUResourceNames)
+		"gpuResourceNames", cfg.GPUResourceNames,
+		"gangCoordinationEnabled", cfg.GangCoordination.Enabled)
 
-	handler := webhook.NewHandler(cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if cfg.GangCoordination.Enabled {
+		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
+			return err
+		}
+	}
+
+	handler := webhook.NewHandler(cfg, discoverer, onGangRegister)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
 	mux.HandleFunc("/healthz", handleHealth)
 
+	return runHTTPServer(ctx, mux, certDir, port)
+}
+
+func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get in-cluster config: %w", err)
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
+	if err != nil {
+		return fmt.Errorf("failed to create controller manager: %w", err)
+	}
+
+	discoverer, err = gang.NewDiscovererFromConfig(
+		cfg.GangDiscovery,
+		mgr.GetClient(),
+		mgr.GetRESTMapper(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create gang discoverer: %w", err)
+	}
+
+	coordinatorConfig := gang.CoordinatorConfig{
+		MasterPort: cfg.GangCoordination.MasterPort,
+	}
+	coordinator := gang.NewCoordinator(mgr.GetClient(), coordinatorConfig)
+
+	gangController := controller.NewGangController(
+		mgr.GetClient(),
+		coordinator,
+		discoverer,
+	)
+
+	if err := gangController.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to setup gang controller: %w", err)
+	}
+
+	onGangRegister = gangController.RegisterPod
+
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			slog.Error("Controller manager failed, initiating shutdown", "error", err)
+			stop()
+		}
+	}()
+
+	discovererName := "kubernetes"
+	if cfg.GangDiscovery.Name != "" {
+		discovererName = cfg.GangDiscovery.Name
+	}
+
+	slog.Info("Gang coordination enabled",
+		"discoverer", discovererName,
+		"timeout", cfg.GangCoordination.Timeout,
+		"masterPort", cfg.GangCoordination.MasterPort)
+
+	return nil
+}
+
+func runHTTPServer(ctx context.Context, handler http.Handler, certDir string, port int) error {
 	certPath := filepath.Join(certDir, "tls.crt")
 	keyPath := filepath.Join(certDir, "tls.key")
 
-	// Use certwatcher for automatic certificate rotation
 	certWatcher, err := certwatcher.New(certPath, keyPath)
 	if err != nil {
 		return fmt.Errorf("failed to create certificate watcher: %w", err)
@@ -95,7 +172,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
@@ -103,9 +180,6 @@ func run() error {
 			MinVersion:     tls.VersionTLS12,
 		},
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		if err := certWatcher.Start(ctx); err != nil {

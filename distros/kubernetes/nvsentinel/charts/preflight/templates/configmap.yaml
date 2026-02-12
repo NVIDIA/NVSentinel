@@ -30,5 +30,12 @@ data:
       diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
       connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
       processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
+    gangDiscovery:
+      {{- toYaml .Values.gangDiscovery | nindent 6 }}
+    gangCoordination:
+      enabled: {{ .Values.gangCoordination.enabled }}
+      timeout: {{ .Values.gangCoordination.timeout | quote }}
+      masterPort: {{ .Values.gangCoordination.masterPort }}
+      configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
     initContainers:
       {{- toYaml .Values.initContainers | nindent 6 }}
