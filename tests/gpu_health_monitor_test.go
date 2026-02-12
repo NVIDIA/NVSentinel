@@ -695,9 +695,24 @@ func TestGpuHealthMonitorStoreOnlyEvents(t *testing.T) {
 			fmt.Sprintf("dcgmi test --host %s:%s --inject --gpuid 0 -f 84 -v 0",
 				dcgmServiceHost, dcgmServicePort)}
 
-		stdout, stderr, execErr := helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, podName, "", cmd)
+		var stdout, stderr string
+		var execErr error
+		// Retry the injection command only for exit code 235 (DCGM_ST_CONNECTION_NOT_VALID)
+		// as DCGM might need time to initialize after pod rollout
+		require.Eventually(t, func() bool {
+			stdout, stderr, execErr = helpers.ExecInPod(ctx, restConfig, helpers.NVSentinelNamespace, podName, "", cmd)
+			if execErr != nil {
+				if strings.Contains(execErr.Error(), "exit code 235") {
+					t.Logf("DCGM error injection failed with exit code 235 (will retry): %v, stderr: %s", execErr, stderr)
+					return false
+				}
+			}
+			return true
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "failed to inject Inforom error after retries: %s", stderr)
+
 		require.NoError(t, execErr, "failed to inject Inforom error: %s", stderr)
 		require.Contains(t, stdout, "Successfully injected", "Inforom error injection failed")
+		t.Logf("Successfully injected Inforom error")
 
 		return ctx
 	})
