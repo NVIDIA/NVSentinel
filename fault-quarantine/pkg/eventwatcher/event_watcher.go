@@ -177,12 +177,33 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 			return fmt.Errorf("failed to update node quarantine status: %w", err)
 		}
+
+		emitNodeQuarantineDuration(status, &healthEventWithStatus)
 	}
 
 	duration := time.Since(startTime).Seconds()
 	metrics.EventHandlingDuration.Observe(duration)
 
 	return nil
+}
+
+func emitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
+	if status == nil || (*status != model.Quarantined && *status != model.AlreadyQuarantined) {
+		return
+	}
+
+	if healthEventWithStatus.HealthEvent == nil || healthEventWithStatus.HealthEvent.GetGeneratedTimestamp() == nil {
+		return
+	}
+
+	genTs := healthEventWithStatus.HealthEvent.GetGeneratedTimestamp().AsTime()
+	duration := time.Since(genTs).Seconds()
+
+	slog.Info("Node quarantine duration", "duration", duration)
+
+	if duration > 0 {
+		metrics.NodeQuarantineDuration.Observe(duration)
+	}
 }
 
 func (w *EventWatcher) updateUnprocessedEventsMetric(ctx context.Context) {

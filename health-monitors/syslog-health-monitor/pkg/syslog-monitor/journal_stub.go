@@ -242,7 +242,7 @@ func GetDefaultJournalFactory() JournalFactory {
 
 		slog.Info("starting HTTP server", "port", HTTP_SERVER_PORT)
 
-		//nolint:gosec
+		//nolint:gosec // stub server for tests; TLS and timeouts not required
 		err := http.ListenAndServe(":"+HTTP_SERVER_PORT, nil)
 		if err != nil {
 			slog.Error("failed to start HTTP server", "error", err)

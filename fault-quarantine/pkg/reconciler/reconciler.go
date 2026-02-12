@@ -28,7 +28,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/metricsutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -798,9 +797,7 @@ func (r *Reconciler) applyQuarantine(
 
 	slog.Debug("QuarantineNodeAndSetAnnotations completed successfully", "node", event.HealthEvent.NodeName)
 
-	r.updateQuarantineMetrics(event.HealthEvent.NodeName,
-		event.HealthEvent.GeneratedTimestamp.AsTime(),
-		taintsToBeApplied, isCordoned)
+	r.updateQuarantineMetrics(event.HealthEvent.NodeName, taintsToBeApplied, isCordoned)
 
 	status := model.Quarantined
 
@@ -833,7 +830,6 @@ func (r *Reconciler) addHealthEventAnnotation(
 // updateQuarantineMetrics updates Prometheus metrics after quarantining a node
 func (r *Reconciler) updateQuarantineMetrics(
 	nodeName string,
-	generatedTimestamp time.Time,
 	taintsToBeApplied []config.Taint,
 	isCordoned *atomic.Bool,
 ) {
@@ -846,13 +842,6 @@ func (r *Reconciler) updateQuarantineMetrics(
 
 	if isCordoned.Load() {
 		metrics.CordonsApplied.Inc()
-
-		duration := metricsutil.CalculateDurationSeconds(generatedTimestamp)
-		slog.Info("Node quarantine duration", "duration", duration)
-
-		if duration > 0 {
-			metrics.NodeQuarantineDuration.Observe(duration)
-		}
 	}
 }
 

@@ -31,7 +31,6 @@ import (
 	"k8s.io/client-go/restmapper"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/eventutil"
-	"github.com/nvidia/nvsentinel/commons/pkg/metricsutil"
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -525,19 +524,6 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		nodeDrainLabelValue = statemanager.DrainFailedLabelValue
 	}
 
-	if status == model.StatusSucceeded &&
-		healthEvent.HealthEventStatus.QuarantineFinishTimestamp != nil &&
-		healthEvent.HealthEventStatus.DrainFinishTimestamp == nil {
-		quarantineFinishTime := *healthEvent.HealthEventStatus.QuarantineFinishTimestamp
-		evictionDuration := metricsutil.CalculateDurationSeconds(quarantineFinishTime)
-
-		slog.Info("Node drainer evictionDuration is", "evictionDuration", evictionDuration)
-
-		if evictionDuration > 0 {
-			metrics.PodEvictionDuration.Observe(evictionDuration)
-		}
-	}
-
 	if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 		nodeName, nodeDrainLabelValue, false); err != nil {
 		slog.Error("Failed to update node label",
@@ -547,13 +533,8 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 		metrics.ProcessingErrors.WithLabelValues("label_update_error", nodeName).Inc()
 	}
 
-	err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
+	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusDrained)
-	if err != nil {
-		return fmt.Errorf("failed to update user pod eviction status: %w", err)
-	}
-
-	return nil
 }
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
@@ -611,6 +592,20 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	if err != nil {
 		metrics.ProcessingErrors.WithLabelValues("update_status_error", nodeName).Inc()
 		return fmt.Errorf("error updating document with ID: %v, error: %w", documentID, err)
+	}
+
+	if userPodsEvictionStatus.Status == model.StatusSucceeded ||
+		userPodsEvictionStatus.Status == model.AlreadyDrained {
+		if healthEvent, parseErr := eventutil.ParseHealthEventFromEvent(event); parseErr == nil &&
+			healthEvent.HealthEventStatus.QuarantineFinishTimestamp != nil {
+			evictionDuration := time.Since(*healthEvent.HealthEventStatus.QuarantineFinishTimestamp).Seconds()
+
+			slog.Info("Node drainer evictionDuration is", "evictionDuration", evictionDuration)
+
+			if evictionDuration > 0 {
+				metrics.PodEvictionDuration.Observe(evictionDuration)
+			}
+		}
 	}
 
 	slog.Info("Health event status has been updated",

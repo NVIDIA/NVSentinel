@@ -173,7 +173,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_get_total_nodes_retry_attempts",
 			Help:    "Number of retry attempts needed for getTotalNodesWithRetry.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: []float64{0, 1, 2, 3, 5, 10},
 		},
 	)
 )

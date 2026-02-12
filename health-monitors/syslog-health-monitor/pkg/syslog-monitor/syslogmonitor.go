@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -58,8 +59,6 @@ func NewSyslogMonitor(
 }
 
 // NewSyslogMonitorWithFactory creates a new SyslogMonitor instance with a specific journal factory
-//
-//nolint:cyclop
 func NewSyslogMonitorWithFactory(
 	nodeName string,
 	checks []CheckDefinition,
@@ -103,41 +102,9 @@ func NewSyslogMonitorWithFactory(
 		xidAnalyserEndpoint:   xidAnalyserEndpoint,
 	}
 
-	for _, check := range checks {
-		switch check.Name {
-		case XIDErrorCheck:
-			xidHandler, err := xid.NewXIDHandler(nodeName,
-				defaultAgentName, defaultComponentClass, check.Name, xidAnalyserEndpoint, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing XID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = xidHandler
-
-		case SXIDErrorCheck:
-			sxidHandler, err := sxid.NewSXIDHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, metadataPath, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing SXID handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = sxidHandler
-
-		case GPUFallenOffCheck:
-			gpuFallenHandler, err := gpufallen.NewGPUFallenHandler(
-				nodeName, defaultAgentName, defaultComponentClass, check.Name, processingStrategy)
-			if err != nil {
-				slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
-				return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
-			}
-
-			sm.checkToHandlerMap[check.Name] = gpuFallenHandler
-
-		default:
-			slog.Error("Unsupported check", "check", check.Name)
-		}
+	if err := initHandlers(sm, checks, nodeName, defaultAgentName, defaultComponentClass,
+		xidAnalyserEndpoint, metadataPath, processingStrategy); err != nil {
+		return nil, err
 	}
 
 	// Handle boot ID changes (system reboot detection)
@@ -148,6 +115,78 @@ func NewSyslogMonitorWithFactory(
 	slog.Info("SyslogMonitor initialized with persistent state. Each check will resume from last processed cursor.")
 
 	return sm, nil
+}
+
+// initHandlers creates and registers a handler for each check. Unsupported check names are logged and skipped.
+func initHandlers(
+	sm *SyslogMonitor,
+	checks []CheckDefinition,
+	nodeName string,
+	defaultAgentName string,
+	defaultComponentClass string,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) error {
+	for _, check := range checks {
+		handler, err := initHandlerForCheck(check, nodeName, defaultAgentName, defaultComponentClass,
+			xidAnalyserEndpoint, metadataPath, processingStrategy)
+		if err != nil {
+			return err
+		}
+
+		if handler == nil {
+			slog.Error("Unsupported check", "check", check.Name)
+			continue
+		}
+
+		sm.checkToHandlerMap[check.Name] = handler
+	}
+
+	return nil
+}
+
+// initHandlerForCheck creates a Handler for the given check. Returns (nil, nil) for unsupported check names.
+func initHandlerForCheck(
+	check CheckDefinition,
+	nodeName string,
+	defaultAgentName string,
+	defaultComponentClass string,
+	xidAnalyserEndpoint string,
+	metadataPath string,
+	processingStrategy pb.ProcessingStrategy,
+) (types.Handler, error) {
+	switch check.Name {
+	case XIDErrorCheck:
+		h, err := xid.NewXIDHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			xidAnalyserEndpoint, metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing XID handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize XID handler: %w", err)
+		}
+
+		return h, nil
+	case SXIDErrorCheck:
+		h, err := sxid.NewSXIDHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			metadataPath, processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing SXID handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize SXID handler: %w", err)
+		}
+
+		return h, nil
+	case GPUFallenOffCheck:
+		h, err := gpufallen.NewGPUFallenHandler(nodeName, defaultAgentName, defaultComponentClass, check.Name,
+			processingStrategy)
+		if err != nil {
+			slog.Error("Error initializing GPU Fallen Off handler", "error", err.Error())
+			return nil, fmt.Errorf("failed to initialize GPU Fallen Off handler: %w", err)
+		}
+
+		return h, nil
+	default:
+		return nil, nil
+	}
 }
 
 // Run executes all configured checks
@@ -192,80 +231,105 @@ func saveState(stateFilePath string, state syslogMonitorState) error {
 	return nil
 }
 
-// loadState loads the monitor state from a file
-//
-//nolint:cyclop,gocognit // TODO
+// loadState loads the monitor state from a file.
 func loadState(stateFilePath string) (syslogMonitorState, error) {
-	var state syslogMonitorState
+	data, err := readStateFile(stateFilePath)
+	if err != nil {
+		return syslogMonitorState{}, err
+	}
 
+	if data == nil {
+		return newDefaultState(), nil
+	}
+
+	state, ok := parseStateData(stateFilePath, data)
+	if !ok {
+		return newDefaultState(), nil
+	}
+
+	// Version migration needed if not zero and not current
+	if state.Version != 0 && state.Version != stateFileVersion {
+		return migrateStateVersion(stateFilePath, state)
+	}
+
+	return ensureStateInitialized(state), nil
+}
+
+// newDefaultState returns a fresh state for first run or after reset.
+func newDefaultState() syslogMonitorState {
+	return syslogMonitorState{
+		Version:          stateFileVersion,
+		BootID:           "",
+		CheckLastCursors: make(map[string]string),
+	}
+}
+
+// readStateFile reads the state file. Returns (nil, nil) if file does not exist; (nil, err) on read error.
+func readStateFile(stateFilePath string) ([]byte, error) {
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Return default state for first run
-			return syslogMonitorState{
-				Version:          stateFileVersion,
-				BootID:           "",
-				CheckLastCursors: make(map[string]string),
-			}, nil
+			return nil, nil
 		}
 
-		return state, fmt.Errorf("failed to read state from file: %w", err)
+		return nil, fmt.Errorf("failed to read state from file: %w", err)
 	}
 
-	// Check if file is empty
+	return data, nil
+}
+
+// parseStateData unmarshals state from data. Returns (state, true) on success; (zero, false) if empty or corrupt.
+func parseStateData(stateFilePath string, data []byte) (syslogMonitorState, bool) {
 	if len(data) == 0 {
 		slog.Warn("State file exists but is empty, treating as non-existent",
 			"stateFile", stateFilePath)
 
-		return syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           "",
-			CheckLastCursors: make(map[string]string),
-		}, nil
+		return syslogMonitorState{}, false
 	}
 
+	var state syslogMonitorState
 	if err := json.Unmarshal(data, &state); err != nil {
 		slog.Warn("State file is corrupted, resetting to default",
 			"stateFile", stateFilePath,
 			"error", err)
 
-		return syslogMonitorState{
-			Version:          stateFileVersion,
-			BootID:           "",
-			CheckLastCursors: make(map[string]string),
-		}, nil
+		return syslogMonitorState{}, false
 	}
 
-	if state.Version != 0 && state.Version != stateFileVersion {
-		if verifyStateFields(state) {
-			slog.Info("State file version mismatch but compatible",
-				"expected", stateFileVersion,
-				"actual", state.Version)
-			// update the state version to latest current version
-			state.Version = stateFileVersion
-
-			if err := saveState(stateFilePath, state); err != nil {
-				return state, fmt.Errorf("failed to save updated state: %w", err)
-			}
-
-			return state, nil
-		}
-
-		return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
-	}
-
-	// Ensure maps are not nil
-	if state.CheckLastCursors == nil {
-		state.CheckLastCursors = make(map[string]string)
-	}
-
-	return state, nil
+	return state, true
 }
 
 // verifyStateFields verifies if necessary fields for current state version are present
 func verifyStateFields(state syslogMonitorState) bool {
 	// For syslog monitor, we mainly need the CheckLastCursors map to exist
 	return state.CheckLastCursors != nil
+}
+
+// migrateStateVersion updates state to current version if compatible, or returns an error.
+func migrateStateVersion(stateFilePath string, state syslogMonitorState) (syslogMonitorState, error) {
+	if verifyStateFields(state) {
+		slog.Info("State file version mismatch but compatible",
+			"expected", stateFileVersion,
+			"actual", state.Version)
+
+		state.Version = stateFileVersion
+		if err := saveState(stateFilePath, state); err != nil {
+			return state, fmt.Errorf("failed to save updated state: %w", err)
+		}
+
+		return state, nil
+	}
+
+	return state, fmt.Errorf("state file version mismatch: expected %d, got %d", stateFileVersion, state.Version)
+}
+
+// ensureStateInitialized ensures required maps are non-nil.
+func ensureStateInitialized(state syslogMonitorState) syslogMonitorState {
+	if state.CheckLastCursors == nil {
+		state.CheckLastCursors = make(map[string]string)
+	}
+
+	return state
 }
 
 // fetchCurrentBootID returns the current system boot ID
@@ -388,32 +452,30 @@ func (sm *SyslogMonitor) validateJournalPath(check CheckDefinition) error {
 
 // openJournal opens the systemd journal with the specified path
 func (sm *SyslogMonitor) openJournal(check CheckDefinition) (Journal, error) {
-	//nolint:nestif
-	if check.JournalPath != "" {
-		slog.Info("Verifying journal path",
-			"check", check.Name,
-			"path", check.JournalPath)
-
-		// Only validate path on filesystem for real journal factories
-		if sm.journalFactory.RequiresFileSystemCheck() {
-			if err := sm.validateJournalPath(check); err != nil {
-				return nil, fmt.Errorf("journal path validation failed for check %s: %w", check.Name, err)
-			}
-		}
-
-		slog.Info("Opening journal at path",
-			"check", check.Name,
-			"path", check.JournalPath)
-
-		journal, err := sm.journalFactory.NewJournalFromDir(check.JournalPath)
-		if err != nil {
-			return nil, fmt.Errorf("check '%s': failed to open journal from dir %s: %w", check.Name, check.JournalPath, err)
-		}
-
-		return journal, nil
-	} else {
+	if check.JournalPath == "" {
 		return nil, fmt.Errorf("check '%s': journal path is empty. Path-specific journal expected for checks", check.Name)
 	}
+
+	slog.Info("Verifying journal path",
+		"check", check.Name,
+		"path", check.JournalPath)
+
+	if sm.journalFactory.RequiresFileSystemCheck() {
+		if err := sm.validateJournalPath(check); err != nil {
+			return nil, fmt.Errorf("journal path validation failed for check %s: %w", check.Name, err)
+		}
+	}
+
+	slog.Info("Opening journal at path",
+		"check", check.Name,
+		"path", check.JournalPath)
+
+	journal, err := sm.journalFactory.NewJournalFromDir(check.JournalPath)
+	if err != nil {
+		return nil, fmt.Errorf("check '%s': failed to open journal from dir %s: %w", check.Name, check.JournalPath, err)
+	}
+
+	return journal, nil
 }
 
 // configureBootFilter sets up the boot filter for the journal
@@ -438,10 +500,10 @@ func (sm *SyslogMonitor) configureBootFilter(journal Journal, checkName string) 
 
 // configureTagFilters sets up the tag-based filters for the journal
 //
-//nolint:gocognit,cyclop
+//nolint:gocognit,cyclop // single switch over tag types; splitting would reduce clarity
 func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinition) error {
-	for _, tag := range check.Tags {
-		trimmedTag := strings.TrimSpace(tag)
+	for j := 0; j < len(check.Tags); j++ {
+		trimmedTag := strings.TrimSpace(check.Tags[j])
 		if trimmedTag == "" {
 			continue
 		}
@@ -468,36 +530,71 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 			if err := sm.configureBootFilter(journal, check.Name); err != nil {
 				return err // Error message from configureBootFilter should be sufficient
 			}
+		case "-u", "--unit":
+			// Standalone flag: next tag element is the unit name
+			if j+1 >= len(check.Tags) {
+				slog.Warn("Tag for unit filtering missing unit name (end of list)",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			j++
+
+			unitName := strings.TrimSpace(check.Tags[j])
+			if unitName == "" {
+				slog.Warn("Tag for unit filtering resulted in empty unit name",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			matchExpr := FieldSystemdUnit + "=" + unitName
+			slog.Info("Adding unit filter",
+				"check", check.Name,
+				"tag", trimmedTag,
+				"match", matchExpr)
+
+			if err := journal.AddMatch(matchExpr); err != nil {
+				return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
+					check.Name, unitName, matchExpr, err)
+			}
 		default:
-			if strings.HasPrefix(trimmedTag, "-u ") || strings.HasPrefix(trimmedTag, "--unit ") { //nolint:nestif // TODO
-				var unitName string
-				if strings.HasPrefix(trimmedTag, "-u ") {
-					unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
-				} else { // Must be --unit due to the check above
-					unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "--unit "))
-				}
-
-				if unitName != "" {
-					matchExpr := FieldSystemdUnit + "=" + unitName
-
-					slog.Info("Adding unit filter",
-						"check", check.Name,
-						"tag", trimmedTag,
-						"match", matchExpr)
-
-					if err := journal.AddMatch(matchExpr); err != nil {
-						return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
-							check.Name, unitName, matchExpr, err)
-					}
-				} else {
-					slog.Warn("Tag for unit filtering resulted in empty unit name",
-						"check", check.Name,
-						"tag", trimmedTag)
-				}
-			} else {
+			if !strings.HasPrefix(trimmedTag, "-u ") && !strings.HasPrefix(trimmedTag, "--unit ") {
 				slog.Info("Ignoring unrecognized tag in 'configureTagFilters'",
 					"check", check.Name,
 					"tag", trimmedTag)
+
+				continue
+			}
+
+			// Combined flag: unit name in same element (e.g. "-u containerd.service")
+			var unitName string
+			if strings.HasPrefix(trimmedTag, "-u ") {
+				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "-u "))
+			} else {
+				unitName = strings.TrimSpace(strings.TrimPrefix(trimmedTag, "--unit "))
+			}
+
+			if unitName == "" {
+				slog.Warn("Tag for unit filtering resulted in empty unit name",
+					"check", check.Name,
+					"tag", trimmedTag)
+
+				continue
+			}
+
+			matchExpr := FieldSystemdUnit + "=" + unitName
+			slog.Info("Adding unit filter",
+				"check", check.Name,
+				"tag", trimmedTag,
+				"match", matchExpr)
+
+			if err := journal.AddMatch(matchExpr); err != nil {
+				return fmt.Errorf("check '%s': failed to add unit match for '%s' (using expression '%s'): %w",
+					check.Name, unitName, matchExpr, err)
 			}
 		}
 	}
@@ -505,12 +602,8 @@ func (sm *SyslogMonitor) configureTagFilters(journal Journal, check CheckDefinit
 	return nil
 }
 
-// processJournalEntries reads and processes journal entries
-//
-//nolint:gocognit,cyclop
+// processJournalEntries reads and processes journal entries.
 func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefinition) error {
-	// currentEntryCursor will store the cursor of the entry currently being processed or just processed.
-	// sm.checkLastCursors[checkName] will store the cursor to resume from on the NEXT run.
 	lastKnownCursor, hasLastCursor := sm.checkLastCursors[check.Name]
 
 	bootID, err := journal.GetBootID()
@@ -519,49 +612,30 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 	}
 
 	slog.Info("Boot ID for check", "check", check.Name, "bootID", bootID)
-	// This block handles:
-	// 1. Non-boot checks on their first run (hasLastCursor == false)
-	// 2. All checks (boot or non-boot) on subsequent runs (hasLastCursor == true)
-	//nolint:nestif // TODO
-	if !hasLastCursor { // This implies !check.Boot due to the block above
-		slog.Info("No last known cursor, seeking to journal tail",
-			"check", check.Name)
 
-		if err := journal.SeekTail(); err != nil {
-			return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
-		}
-
-		count, errPrev := journal.Previous()
-		if errPrev != nil && !errors.Is(errPrev, io.EOF) {
-			return fmt.Errorf("seek previous: %w", errPrev)
-		}
-
-		if count == 0 { // journal is empty
-			slog.Info("Journal is empty, nothing to do", "check", check.Name)
-			return nil
-		}
-
-		cursor, err := journal.GetCursor()
-		if err != nil {
-			if strings.Contains(err.Error(), "cannot assign requested address") {
-				slog.Info("No cursor available, journal empty", "check", check.Name)
-				return nil
-			}
-
-			return fmt.Errorf("get cursor: %w", err)
-		}
-
-		slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
-			"check", check.Name,
-			"cursor", cursor)
-
-		sm.checkLastCursors[check.Name] = cursor
-
-		return nil // No entries processed on this initialization run.
+	if !hasLastCursor {
+		return sm.initializeJournalFromTail(journal, check)
 	}
 
-	// If we are here, hasLastCursor is true.
+	ready, err := sm.resumeFromLastCursor(journal, check, lastKnownCursor)
+	if err != nil {
+		return err
+	}
 
+	if !ready {
+		return nil
+	}
+
+	return sm.processAllEntries(journal, check)
+}
+
+// resumeFromLastCursor seeks to the last known cursor and advances to the first new entry.
+// Returns (true, nil) when the journal is positioned at the first new entry to process;
+// (false, nil) when there are no new entries or after re-initializing on seek failure;
+// (false, err) on error.
+func (sm *SyslogMonitor) resumeFromLastCursor(
+	journal Journal, check CheckDefinition, lastKnownCursor string,
+) (bool, error) {
 	slog.Info("Resuming from last known cursor",
 		"check", check.Name,
 		"cursor", lastKnownCursor)
@@ -573,13 +647,13 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 			"error", err)
 
 		if errSeekTail := journal.SeekTail(); errSeekTail != nil {
-			return fmt.Errorf("check '%s': failed to seek to journal tail during re-initialization after SeekCursor error: %w",
-				check.Name, errSeekTail)
+			return false, fmt.Errorf("check '%s': failed to seek to journal tail during "+
+				"re-initialization after SeekCursor error: %w", check.Name, errSeekTail)
 		}
 
 		tailCursor, errGetCursor := journal.GetCursor()
 		if errGetCursor != nil {
-			return fmt.Errorf("check '%s': failed to get cursor at journal tail during re-initialization: %w",
+			return false, fmt.Errorf("check '%s': failed to get cursor at journal tail during re-initialization: %w",
 				check.Name, errGetCursor)
 		}
 
@@ -589,128 +663,226 @@ func (sm *SyslogMonitor) processJournalEntries(journal Journal, check CheckDefin
 
 		sm.checkLastCursors[check.Name] = tailCursor
 
-		return nil // No entries processed on this re-initialization run.
+		return false, nil // No entries processed on this re-initialization run.
 	}
 
 	// Successfully sought to lastKnownCursor. Now advance to the *next* entry.
 	// This is crucial: we process entries *after* the lastKnownCursor.
 	advanced, nextErr := journal.Next()
 	if nextErr != nil && !errors.Is(nextErr, io.EOF) {
-		return fmt.Errorf("check '%s': error advancing from resumed cursor '%s': %w", check.Name, lastKnownCursor, nextErr)
+		return false, fmt.Errorf("check '%s': error advancing from resumed cursor '%s': %w",
+			check.Name, lastKnownCursor, nextErr)
 	}
 
-	if nextErr == io.EOF || advanced == 0 { //nolint:errorlint // TODO
+	if errors.Is(nextErr, io.EOF) || advanced == 0 {
 		slog.Info("No new entries since last cursor",
 			"check", check.Name,
 			"cursor", lastKnownCursor)
-		// sm.checkLastCursors[checkName] is already lastKnownCursor, which is correct for the next run.
-		return nil
+
+		return false, nil
 	}
 
 	// Journal cursor is now positioned at the first new entry to process.
+	return true, nil
+}
+
+// processAllEntries processes journal entries from the current cursor to the end.
+// The journal must already be positioned at the first entry to process.
+func (sm *SyslogMonitor) processAllEntries(journal Journal, check CheckDefinition) error {
 	for {
-		currentEntryCursor, err := journal.GetCursor() // Cursor of the entry we are about to process
+		currentEntryCursor, err := journal.GetCursor()
 		if err != nil {
-			slog.Warn("Failed to get cursor for current entry, attempting to advance",
-				"check", check.Name,
-				"error", err,
-				"lastStoredCursor", sm.checkLastCursors[check.Name])
-
-			advancedNext, advErr := journal.Next()
-			if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
-				slog.Info("Reached end of journal while recovering from GetCursor error",
-					"check", check.Name,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				break
+			breakLoop, retErr := sm.recoverFromGetCursorError(journal, check)
+			if retErr != nil {
+				return retErr
 			}
 
-			if advErr != nil {
-				slog.Error("Error advancing journal after GetCursor error, stopping",
-					"check", check.Name,
-					"error", advErr,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				return fmt.Errorf("error advancing after GetCursor error for check '%s' (last stored cursor for next run %s): %w",
-					check.Name, sm.checkLastCursors[check.Name], advErr)
-			}
-
-			continue // Skip to the next iteration
-		}
-
-		message, err := sm.getJournalMessage(journal, check.Name)
-		if err != nil {
-			slog.Warn("Failed to get journal message, skipping entry",
-				"check", check.Name,
-				"cursor", currentEntryCursor,
-				"error", err,
-				"nextCursor", sm.checkLastCursors[check.Name])
-
-			advancedNext, advErr := journal.Next()
-
-			if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
-				slog.Info("Reached end of journal while recovering from message error",
-					"check", check.Name,
-					"entryCursor", currentEntryCursor,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
+			if breakLoop {
 				break
-			} else if advErr != nil {
-				slog.Error("Error advancing journal after message error, stopping",
-					"check", check.Name,
-					"entryCursor", currentEntryCursor,
-					"error", advErr,
-					"nextCursor", sm.checkLastCursors[check.Name])
-
-				return fmt.Errorf("error advancing after getJournalMessage for check '%s' (entry cursor %s, "+
-					"last stored cursor for next run %s): %v",
-					check.Name, currentEntryCursor, sm.checkLastCursors[check.Name], advErr)
 			}
 
 			continue
 		}
 
-		if message == "" {
-			// Successfully read an empty message. This entry is considered processed.
-			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Info("Check, read empty message", "name", check.Name,
-				"message", message,
-				"cursor", currentEntryCursor)
-		} else {
-			err = sm.handleSingleLine(check, message)
-			if err != nil {
-				continue
+		message, err := sm.getJournalMessage(journal, check.Name)
+		if err != nil {
+			breakLoop, retErr := sm.recoverFromMessageError(journal, check, currentEntryCursor, err)
+			if retErr != nil {
+				return retErr
 			}
-			// This entry (matched or not) is considered processed.
-			sm.checkLastCursors[check.Name] = currentEntryCursor // Update cursor for the next run
-			slog.Debug("Check errored but considered processed", "name", check.Name,
-				"message", message,
-				"cursor", currentEntryCursor)
+
+			if breakLoop {
+				break
+			}
+
+			continue
 		}
 
-		advancedNext, advErr := journal.Next()
-		if advErr == io.EOF || advancedNext == 0 { //nolint:errorlint // TODO
-			slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
-			// sm.checkLastCursors[checkName] is already set to currentEntryCursor.
+		breakLoop, retErr := sm.processOneEntryAndAdvance(journal, check, currentEntryCursor, message)
+		if retErr != nil {
+			return retErr
+		}
+
+		if breakLoop {
 			break
-		}
-
-		if advErr != nil {
-			// Error advancing. currentEntryCursor was the last successfully processed one.
-			slog.Error("Error reading next journal entry, stopping",
-				"check", check.Name,
-				"cursor", currentEntryCursor,
-				"error", advErr)
-
-			return fmt.Errorf("check '%s': error reading next journal entry after cursor %s: %w",
-				check.Name, currentEntryCursor, advErr)
 		}
 	}
 
-	finalCursor := sm.checkLastCursors[check.Name] // Should always exist if we passed initialization.
+	finalCursor := sm.checkLastCursors[check.Name]
 	slog.Info("Finished processing journal entries",
 		"check", check.Name,
 		"nextCursor", finalCursor)
+
+	return nil
+}
+
+// recoverFromGetCursorError attempts to advance past the current entry after a GetCursor error.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) recoverFromGetCursorError(journal Journal, check CheckDefinition) (bool, error) {
+	slog.Warn("Failed to get cursor for current entry, attempting to advance",
+		"check", check.Name,
+		"lastStoredCursor", sm.checkLastCursors[check.Name])
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Reached end of journal while recovering from GetCursor error",
+			"check", check.Name,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error advancing journal after GetCursor error, stopping",
+			"check", check.Name,
+			"error", advErr,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return false, fmt.Errorf("error advancing after GetCursor error for check '%s' "+
+			"(last stored cursor for next run %s): %w",
+			check.Name, sm.checkLastCursors[check.Name], advErr)
+	}
+
+	return false, nil
+}
+
+// recoverFromMessageError attempts to advance past the current entry after a getJournalMessage error.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) recoverFromMessageError(
+	journal Journal, check CheckDefinition, currentEntryCursor string, messageErr error,
+) (bool, error) {
+	slog.Warn("Failed to get journal message, skipping entry",
+		"check", check.Name,
+		"cursor", currentEntryCursor,
+		"error", messageErr,
+		"nextCursor", sm.checkLastCursors[check.Name])
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Reached end of journal while recovering from message error",
+			"check", check.Name,
+			"entryCursor", currentEntryCursor,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error advancing journal after message error, stopping",
+			"check", check.Name,
+			"entryCursor", currentEntryCursor,
+			"error", advErr,
+			"nextCursor", sm.checkLastCursors[check.Name])
+
+		return false, fmt.Errorf("error advancing after getJournalMessage for check '%s' "+
+			"(entry cursor %s, last stored cursor for next run %s): %v",
+			check.Name, currentEntryCursor, sm.checkLastCursors[check.Name], advErr)
+	}
+
+	return false, nil
+}
+
+// processOneEntryAndAdvance updates cursor for the entry, handles the message, and advances.
+// Returns (true, nil) if end of journal; (false, err) on advance error; (false, nil) to continue.
+func (sm *SyslogMonitor) processOneEntryAndAdvance(
+	journal Journal, check CheckDefinition, currentEntryCursor string, message string,
+) (bool, error) {
+	if message == "" {
+		sm.checkLastCursors[check.Name] = currentEntryCursor
+		slog.Info("Check, read empty message", "name", check.Name,
+			"message", message,
+			"cursor", currentEntryCursor)
+	} else {
+		err := sm.handleSingleLine(check, message)
+		if err != nil {
+			// Skip this entry on handler error; continue processing remaining entries.
+			return false, nil //nolint:nilerr // intentional: do not stop the loop
+		}
+
+		sm.checkLastCursors[check.Name] = currentEntryCursor
+		slog.Debug("Check errored but considered processed", "name", check.Name,
+			"message", message,
+			"cursor", currentEntryCursor)
+	}
+
+	advancedNext, advErr := journal.Next()
+	if errors.Is(advErr, io.EOF) || advancedNext == 0 {
+		slog.Info("Check no more", "name", check.Name, "cursor", currentEntryCursor)
+
+		return true, nil
+	}
+
+	if advErr != nil {
+		slog.Error("Error reading next journal entry, stopping",
+			"check", check.Name,
+			"cursor", currentEntryCursor,
+			"error", advErr)
+
+		return false, fmt.Errorf("check '%s': error reading next journal entry after cursor %s: %w",
+			check.Name, currentEntryCursor, advErr)
+	}
+
+	return false, nil
+}
+
+// initializeJournalFromTail seeks to the journal tail, sets the resume cursor, and returns.
+// Used when there is no last known cursor (first run or no saved state). Returns nil on success.
+func (sm *SyslogMonitor) initializeJournalFromTail(journal Journal, check CheckDefinition) error {
+	slog.Info("No last known cursor, seeking to journal tail", "check", check.Name)
+
+	if err := journal.SeekTail(); err != nil {
+		return fmt.Errorf("check '%s': failed to seek to journal tail for initialization: %w", check.Name, err)
+	}
+
+	count, errPrev := journal.Previous()
+	if errPrev != nil && !errors.Is(errPrev, io.EOF) {
+		return fmt.Errorf("seek previous: %w", errPrev)
+	}
+
+	if count == 0 {
+		slog.Info("Journal is empty, nothing to do", "check", check.Name)
+
+		return nil
+	}
+
+	cursor, err := journal.GetCursor()
+	if err != nil {
+		if isRetryableJournalError(err) {
+			slog.Warn("Transient journal read error, will retry on next run",
+				"check", check.Name,
+				"error", err)
+
+			return nil
+		}
+
+		return fmt.Errorf("get cursor: %w", err)
+	}
+
+	slog.Info("Initialized. Journal processing will start from entries after cursor on the next run",
+		"check", check.Name,
+		"cursor", cursor)
+
+	sm.checkLastCursors[check.Name] = cursor
 
 	return nil
 }
@@ -857,6 +1029,10 @@ func (sm *SyslogMonitor) sendHealthEventWithRetry(healthEvents *pb.HealthEvents,
 
 // isRetryableError determines if an error is retryable
 func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	if s, ok := status.FromError(err); ok {
 		if s.Code() == codes.Unavailable || s.Code() == codes.DeadlineExceeded {
 			return true
@@ -867,8 +1043,11 @@ func isRetryableError(err error) bool {
 		return true
 	}
 
-	if err == io.EOF || strings.Contains(err.Error(), "connection reset by peer") || //nolint:errorlint // TODO
-		strings.Contains(err.Error(), "broken pipe") {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
 		return true
 	}
 

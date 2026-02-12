@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/nvidia/nvsentinel/commons/pkg/metricsutil"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -240,7 +239,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 			return "", fmt.Errorf("failed to create maintenance CR: %w", err)
 		}
 	} else if healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
-		duration := metricsutil.CalculateDurationSeconds(*healthEventData.HealthEventStatus.DrainFinishTimestamp)
+		duration := time.Since(*healthEventData.HealthEventStatus.DrainFinishTimestamp).Seconds()
 		if duration > 0 {
 			slog.Info("Fault remediation CR generation duration",
 				"duration", duration,
