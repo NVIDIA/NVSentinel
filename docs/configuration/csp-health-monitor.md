@@ -141,6 +141,9 @@ csp-health-monitor:
       
       # How often to poll AWS Health API (seconds)
       pollingIntervalSeconds: 60
+      
+      # (Optional) Custom IAM role name for IRSA
+      iamRoleName: ""
 ```
 
 ### AWS Parameters
@@ -153,6 +156,13 @@ AWS region where the EKS cluster is deployed. The monitor queries the AWS Health
 
 #### pollingIntervalSeconds
 How frequently the monitor polls the AWS Health API for maintenance events. Lower values provide faster detection but increase API usage.
+
+#### iamRoleName
+Custom IAM role name for IRSA (IAM Roles for Service Accounts). When set, the ServiceAccount annotation uses this role name directly instead of constructing one from `clusterName`.
+
+If left empty (default), the role name is generated as `<clusterName>-nvsentinel-health-monitor-assume-role-policy`.
+
+> **Important (EKS)**: AWS IAM role names have a maximum of 64 characters. The default suffix `-nvsentinel-health-monitor-assume-role-policy` is 45 characters, leaving only **19 characters** for the cluster name. If your EKS cluster name exceeds 19 characters, you **must** set `iamRoleName` to a custom value.
 
 ### Complete AWS Example
 
@@ -177,6 +187,35 @@ csp-health-monitor:
       region: "us-east-1"
       pollingIntervalSeconds: 60
 ```
+
+### AWS Example with Custom IAM Role Name
+
+For clusters with long names (>19 characters), set `iamRoleName` explicitly:
+
+```yaml
+csp-health-monitor:
+  cspName: "aws"
+  
+  configToml:
+    clusterName: "my-very-long-production-eks-cluster-name"
+    
+    aws:
+      accountId: "123456789012"
+      region: "us-east-1"
+      pollingIntervalSeconds: 60
+      iamRoleName: "my-custom-nvsentinel-role"
+```
+
+## CSP-Specific IAM Requirements
+
+Each cloud provider handles IAM identity for the CSP Health Monitor differently:
+
+| Provider | IAM Identity Configuration | Naming Flexibility |
+|----------|---------------------------|-------------------|
+| **GCP**  | `gcp.gcpServiceAccountName` — User provides any GCP Service Account name. The ServiceAccount annotation is built as `<name>@<project>.iam.gserviceaccount.com`. | Fully flexible. No naming convention enforced. |
+| **AWS (EKS)** | `aws.iamRoleName` (optional) — User provides a custom IAM role name. If omitted, the role name defaults to `<clusterName>-nvsentinel-health-monitor-assume-role-policy`. | Flexible when `iamRoleName` is set. The default convention imposes a **19-character cluster name limit** (AWS IAM role names max 64 chars, default suffix is 45 chars). |
+
+> **Recommendation for EKS users**: If your cluster name is longer than 19 characters, always set `aws.iamRoleName` explicitly and create the corresponding IAM role with that name. See [IAM Setup](../csp-health-monitor-iam.md) for detailed instructions.
 
 ## Advanced Configuration
 

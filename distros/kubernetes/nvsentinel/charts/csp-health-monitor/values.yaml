@@ -88,3 +88,7 @@ configToml:
     pollingIntervalSeconds: 60 # Used by main monitor (AWS poller)
     # AWS region of the tenant cluster.
     region: "" # Used by main monitor
+    # Custom IAM role name for IRSA (IAM Roles for Service Accounts).
+    # If empty, defaults to "<clusterName>-nvsentinel-health-monitor-assume-role-policy".
+    # Set this if your cluster name exceeds 19 characters (AWS IAM role names max 64 chars).
+    iamRoleName: ""
