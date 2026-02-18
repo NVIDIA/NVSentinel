@@ -146,6 +146,33 @@ wait_for_node_quarantine() {
     error "Timeout waiting for node $node to be quarantined"
 }
 
+wait_for_node_unquarantine() {
+    local node=$1
+    local timeout=${UAT_UNQUARANTINE_TIMEOUT:-300}
+    local elapsed=0
+
+    log "Waiting for node $node to be uncordoned..."
+    while [[ $elapsed -lt $timeout ]]; do
+        local is_cordoned
+        is_cordoned=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}')
+
+        if [[ "$is_cordoned" != "true" ]]; then
+            log "Node $node is uncordoned and ready ✓"
+            return 0
+        fi
+
+        # Log every 30 seconds to show progress
+        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
+            log "Still waiting for uncordon... elapsed=${elapsed}s, unschedulable=$is_cordoned"
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for node $node to be uncordoned"
+}
+
 wait_for_boot_id_change() {
     local node=$1
     local original_boot_id=$2
@@ -185,27 +212,48 @@ wait_for_boot_id_change() {
         error "Timeout waiting for node $node to reboot. Current boot ID: '$final_boot_id', Original: '$original_boot_id'"
     fi
 
-    log "Waiting for node $node to be uncordoned..."
-    elapsed=0
+    wait_for_node_unquarantine "$node"
+}
+
+wait_for_gpu_reset() {
+    local node=$1
+    local uuid=$2
+    local timeout=${UAT_RESET_TIMEOUT:-600}
+    local elapsed=0
+
+    log "Waiting for GPU reset for $uuid on $node (GPU reset syslog message from Janitor)..."
+
+    local driver_pod
+    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$node')].metadata.name}" | head -1)
+
+    if [[ -z "$driver_pod" ]]; then
+        error "No driver pod found on node $node"
+    fi
+
     while [[ $elapsed -lt $timeout ]]; do
-        local is_cordoned
-        is_cordoned=$(kubectl get node "$node" -o jsonpath='{.spec.unschedulable}')
-
-        if [[ "$is_cordoned" != "true" ]]; then
-            log "Node $node is uncordoned and ready ✓"
-            return 0
+        # We are ignoring log lines that include RuntimeService to prevent picking up syslog messages which result
+        # from this kubectl exec request. This is to prevent the second kubectl exec request from matching the first
+        # exec request and incorrectly determining that the GPUReset job wrote the syslog. Additionally, we
+        # have to make sure that the syslog-health-monitor itself doesn't pick up this log line and pre-maturely write
+        # a healthy event. Rather than add a similar check for the presence of RuntimeService in the syslog-health-monitor
+        # regex, we will grep the lines without the GPU UUID (which won't match the syslog-health-monitor regex) and then
+        # check if it's included in the output client-side.
+        if exec_output=$(kubectl exec -n gpu-operator "$driver_pod" -- sh -c  "tail -n 10000 /var/log/syslog | grep \"GPU reset executed:\" | grep -v \"RuntimeService\""); then
+            if echo $exec_output | grep "$uuid"; then
+              log "GPU $uuid reset successfully"
+              elapsed=0
+              break
+            fi
         fi
-
-        # Log every 30 seconds to show progress
-        if [[ $((elapsed % 30)) -eq 0 && $elapsed -gt 0 ]]; then
-            log "Still waiting for uncordon... elapsed=${elapsed}s, unschedulable=$is_cordoned"
-        fi
-
         sleep 5
         elapsed=$((elapsed + 5))
     done
 
-    error "Timeout waiting for node $node to be uncordoned"
+    if [[ $elapsed -ge $timeout ]]; then
+        error "Timeout waiting for GPU $uuid to reset"
+    fi
+
+    wait_for_node_unquarantine "$node"
 }
 
 test_gpu_monitoring_dcgm() {
@@ -257,9 +305,10 @@ test_gpu_monitoring_dcgm() {
     fi
     log "Node event verified: GpuPowerWatch is non-fatal, appears in events ✓"
 
-    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 84 -v 0    # infoROM watch error
+    # XID 95 results in A DCGM_FR_UNCONTAINED_ERROR from GpuMemWatch which requires a RESTART_VM action
+    kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 230 -v 95
 
-    wait_for_node_condition "$gpu_node" "GpuInforomWatch"
+    wait_for_node_condition "$gpu_node" "GpuMemWatch"
 
     wait_for_node_quarantine "$gpu_node"
 
@@ -270,9 +319,9 @@ test_gpu_monitoring_dcgm() {
 }
 
 test_xid_monitoring_syslog() {
-    log "========================================="
-    log "Test 2: XID monitoring via syslog"
-    log "========================================="
+    log "======================================================"
+    log "Test 2: XID monitoring via syslog triggers RESTART_VM"
+    log "======================================================"
 
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
@@ -294,8 +343,8 @@ test_xid_monitoring_syslog() {
         error "No driver pod found on node $gpu_node"
     fi
 
-    log "Injecting XID 119 message via logger on pod: $driver_pod"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8)."
+    log "Injecting XID 79 message via logger on pod: $driver_pod"
+    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus."
 
     wait_for_node_condition "$gpu_node" "SysLogsXIDError"
 
@@ -307,9 +356,68 @@ test_xid_monitoring_syslog() {
     log "Test 2 PASSED ✓"
 }
 
+test_xid_monitoring_syslog_gpu_reset() {
+    log "=========================================================="
+    log "Test 3: XID monitoring via syslog triggers COMPONENT_RESET"
+    log "=========================================================="
+
+    local drainer_configmap
+    drainer_configmap=$(kubectl get configmaps -n nvsentinel node-drainer -o jsonpath="{.data.config\.toml}")
+
+    if ! echo "$drainer_configmap" | grep -q "partialDrainEnabled = true"; then
+        log "GPU reset is not enabled, skipping Test 3"
+        return 0
+    fi
+
+    local gpu_node
+    gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
+
+    if [[ -z "$gpu_node" ]]; then
+        error "No GPU node found with healthy syslog-health-monitor pod (Ready + uncordoned)"
+    fi
+
+    log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
+
+    local driver_pod
+    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
+
+    if [[ -z "$driver_pod" ]]; then
+        error "No driver pod found on node $gpu_node"
+    fi
+
+    log "Fetching GPU UUID and PCI from nvidia-smi in driver pod to construct syslog message"
+
+    uuid_pci=$(kubectl exec -n gpu-operator "$driver_pod" -- sh -c  "nvidia-smi --query-gpu=uuid,pci.bus_id --format=csv,noheader | head -n 1")
+
+    if [[ -z "$uuid_pci" ]]; then
+        error "No nvidia-smi query output on node $gpu_node"
+    fi
+
+    uuid=$(echo "$uuid_pci" | awk -F', ' '{print $1}')
+    pci=$(echo "$uuid_pci" | awk -F', ' '{print $2}' | sed -E 's/^00000000://; s/\.0$//; y/ABCDEF/abcdef/; s/^/0000:/')
+    if [[ -z "$uuid" || -z "$pci" ]]; then
+        error "Parsed empty UUID or PCI from nvidia-smi output: '$uuid_pci'"
+    fi
+    log "Resetting GPU UUID $uuid on PCI $pci"
+
+    log "Injecting XID 119 message on GPU $uuid via logger on pod: $driver_pod"
+    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8)."
+
+    wait_for_node_condition "$gpu_node" "SysLogsXIDError"
+
+    wait_for_node_quarantine "$gpu_node"
+
+    log "Waiting for node to GPU reset and recover..."
+    wait_for_gpu_reset "$gpu_node" "$uuid"
+
+    wait_for_node_unquarantine "$gpu_node"
+
+    log "Test 3 PASSED ✓"
+}
+
 test_sxid_monitoring_syslog() {
     log "========================================="
-    log "Test 3: SXID monitoring (NVSwitch errors)"
+    log "Test 4: SXID monitoring (NVSwitch errors)"
     log "========================================="
 
     local gpu_node
@@ -402,7 +510,7 @@ test_sxid_monitoring_syslog() {
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
 
-    log "Test 3 PASSED ✓"
+    log "Test 4 PASSED ✓"
 }
 
 main() {
@@ -420,6 +528,9 @@ main() {
     sleep 60
 
     test_xid_monitoring_syslog
+
+    test_xid_monitoring_syslog_gpu_reset
+
     # test_sxid_monitoring_syslog
 
     log "========================================="

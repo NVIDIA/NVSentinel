@@ -30,6 +30,8 @@ const (
 	QuarantineHealthEventIsCordonedAnnotationValueTrue = "True"
 	QuarantinedNodeUncordonedManuallyAnnotationKey     = "quarantinedNodeUncordonedManually"
 	QuarantinedNodeUncordonedManuallyAnnotationValue   = "True"
+	QuarantinedNodeIsUntaintedManuallyAnnotationKey    = "quarantinedNodeUntaintedManually"
+	QuarantinedNodeIsUntaintedManuallyAnnotationValue  = "True"
 
 	ServiceName = "NVSentinel"
 )

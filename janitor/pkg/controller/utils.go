@@ -18,9 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,7 +42,7 @@ func ConfigureFieldIndexers(mgr ctrl.Manager, cfg *config.Config) error {
 				}
 				return []string{p.Spec.NodeName}
 			}); err != nil {
-			return fmt.Errorf("failed to add indexer on pods for spec.nodeName: %w", err)
+			return fmt.Errorf("failed to add indexer on Pods for spec.nodeName: %w", err)
 		}
 
 		if err := managerFieldIndexer.IndexField(context.Background(), &v1alpha1.GPUReset{}, "spec.nodeName",
@@ -59,17 +57,6 @@ func ConfigureFieldIndexers(mgr ctrl.Manager, cfg *config.Config) error {
 				return []string{gr.Spec.NodeName}
 			}); err != nil {
 			return fmt.Errorf("failed to add indexer on GPUResets for spec.nodeName: %w", err)
-		}
-
-		if err := managerFieldIndexer.IndexField(context.Background(), &batchv1.Job{}, "metadata.controller",
-			func(obj client.Object) []string {
-				owner := metav1.GetControllerOf(obj)
-				if owner == nil || owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != "GPUReset" {
-					return nil
-				}
-				return []string{owner.Name}
-			}); err != nil {
-			return fmt.Errorf("failed to add indexer on Jobs for metadata.controller: %w", err)
 		}
 	}
 

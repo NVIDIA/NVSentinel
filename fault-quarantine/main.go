@@ -94,14 +94,6 @@ func run() error {
 		return fmt.Errorf("initialization failed: %w", err)
 	}
 
-	slog.Info("Starting node informer")
-
-	if err := components.K8sClient.NodeInformer.Run(ctx.Done()); err != nil {
-		return fmt.Errorf("failed to start node informer: %w", err)
-	}
-
-	slog.Info("Node informer started and synced")
-
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {

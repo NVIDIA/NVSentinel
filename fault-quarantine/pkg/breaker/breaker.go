@@ -405,7 +405,7 @@ func (b *slidingWindowBreaker) calculateBackoffDelay(attempt int,
 	}
 
 	// Safe conversion: attempt is guaranteed to be [0, 30] at this point
-	safeAttempt := uint(attempt)          //nolint:gosec // Range validated above
+	safeAttempt := uint(attempt)
 	multiplier := int64(1 << safeAttempt) // 2^attempt as integer
 	delay := time.Duration(int64(initialDelay) * multiplier)
 

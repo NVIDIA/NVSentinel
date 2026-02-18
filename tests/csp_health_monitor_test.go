@@ -32,8 +32,8 @@ import (
 )
 
 const (
-	cspPollingInterval        = 30 * time.Second
-	keyOriginalArgsContextKey = "originalArgs"
+	cspPollingInterval     = 30 * time.Second
+	originalArgsContextKey = "originalArgs"
 )
 
 // TestCSPHealthMonitorGCPMaintenanceEvent verifies the complete GCP maintenance event lifecycle:
@@ -433,7 +433,7 @@ func TestCSPHealthMonitorStoreOnlyProcessingStrategy(t *testing.T) {
 			"--processing-strategy": "STORE_ONLY",
 		})
 		require.NoError(t, err)
-		ctx = context.WithValue(ctx, keyOriginalArgsContextKey, originalArgs)
+		ctx = context.WithValue(ctx, originalArgsContextKey, originalArgs)
 
 		helpers.WaitForDeploymentRollout(ctx, t, client, "csp-health-monitor", helpers.NVSentinelNamespace)
 
@@ -511,7 +511,7 @@ func TestCSPHealthMonitorStoreOnlyProcessingStrategy(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err)
 
-		originalArgs := ctx.Value(keyOriginalArgsContextKey).([]string)
+		originalArgs := ctx.Value(originalArgsContextKey).([]string)
 
 		err = helpers.RestoreDeploymentArgs(t, ctx, client, "csp-health-monitor", helpers.NVSentinelNamespace, "maintenance-notifier", originalArgs)
 		require.NoError(t, err)

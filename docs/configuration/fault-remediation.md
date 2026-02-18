@@ -57,7 +57,7 @@ fault-remediation:
         version: "v1alpha1"
         kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "Completed"
+        completeConditionType: "Complete"
         templateFileName: "gpureset-template.yaml"
         equivalenceGroup: "reset"
         supersedingEquivalenceGroups: ["restart"]

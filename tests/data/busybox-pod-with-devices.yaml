@@ -18,7 +18,7 @@ metadata:
   name: test-gpu-pod
   namespace: test-namespace
   annotations:
-    dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-123"]}}'
+    dgxc.nvidia.com/devices: '{"devices":{"nvidia.com/gpu":["GPU-455d8f70-2051-db6c-0430-ffc457bff834"]}}'
 spec:
   nodeName: NODE_NAME
   containers:

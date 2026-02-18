@@ -85,7 +85,7 @@ func TestLogCollectorFailure(t *testing.T) {
 		require.NoError(t, err, "failed to create kubernetes client")
 
 		// Send fatal health event with supported action (will trigger remediation + log-collector)
-		err = helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event.json")
+		err = helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event-restart-vm.json")
 		assert.NoError(t, err, "failed to send health event")
 
 		t.Logf("Waiting for node %s to be cordoned", nodeName)
@@ -106,7 +106,7 @@ func TestLogCollectorFailure(t *testing.T) {
 
 		// Verify remediation succeeded - check for RebootNode CR creation and completion
 		t.Logf("Verifying RebootNode CR was created and completed for node %s", nodeName)
-		_ = helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
+		_ = helpers.WaitForCR(ctx, t, client, nodeName, helpers.RebootNodeGVK)
 
 		// Verify no remediation-failed label
 		t.Logf("Verifying no remediation-failed label on node %s", nodeName)

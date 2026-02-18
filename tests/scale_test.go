@@ -121,7 +121,7 @@ func TestScaleHealthEvents(t *testing.T) {
 	feature.Assess("Send unhealthy events to trigger circuit breaker", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		healthCheckNodes := ctx.Value(keyHealthCheckNodes).([]string)
 
-		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/fatal-health-event.json")
+		err := helpers.SendHealthEventsToNodes(healthCheckNodes, "data/fatal-health-event-restart-vm.json")
 		assert.NoError(t, err, "failed to send unhealthy events")
 
 		return ctx
@@ -324,7 +324,7 @@ func TestScaleHealthEvents(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
-		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
 		assert.NoError(t, err, "failed to delete RebootNode CRs")
 
 		originalDeployment := ctx.Value(keyOriginalDeployment).(*appsv1.Deployment)

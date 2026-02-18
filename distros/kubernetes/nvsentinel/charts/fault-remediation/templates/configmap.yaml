@@ -40,6 +40,12 @@ data:
     {{- if $config.equivalenceGroup }}
     equivalenceGroup = {{ $config.equivalenceGroup | quote }}
     {{- end }}
+    {{- if $config.impactedEntityScope }}
+    impactedEntityScope = {{ $config.impactedEntityScope | quote }}
+    {{- end }}
+    {{- if $config.supersedingEquivalenceGroups }}
+    supersedingEquivalenceGroups = {{ $config.supersedingEquivalenceGroups | toJson }}
+    {{- end }}
     {{- end }}
     
     [updateRetry]

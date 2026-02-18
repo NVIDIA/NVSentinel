@@ -16,6 +16,7 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 )
 
 const (
@@ -46,6 +48,9 @@ type NodeInformer struct {
 
 	// onManualUncordon is called when a node is manually uncordoned while having FQ annotations
 	onManualUncordon func(nodeName string) error
+
+	// onManualUntaint is called when a node is manually untainted while having FQ annotations
+	onManualUntaint func(nodeName string) error
 }
 
 // Lister returns the informer's node lister.
@@ -178,7 +183,10 @@ func (ni *NodeInformer) ListNodes() ([]*v1.Node, error) {
 	return ni.lister.List(labels.Everything())
 }
 
-// handleAddNode logs when a node is added.
+// handleAddNode logs when a node is added and checks for stale state.
+// This is important during informer restart/resync when we get ADD events
+// for all existing nodes. If a node was manually uncordoned/untainted while
+// FQ was down, we need to detect and handle it.
 func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
@@ -190,6 +198,89 @@ func (ni *NodeInformer) handleAddNode(obj interface{}) {
 	}
 
 	slog.Debug("Node added", "node", node.Name)
+
+	// Check for stale state: node has FQ annotations but state doesn't match
+	// This can happen if FQ crashed and node was manually uncordoned/untainted
+	ni.checkStaleStateOnAdd(node)
+}
+
+// checkStaleStateOnAdd checks if a node added during initial sync has stale FQ state.
+// This handles the case where FQ crashed, node was manually uncordoned/untainted,
+// and FQ restarted (getting ADD events instead of UPDATE events).
+func (ni *NodeInformer) checkStaleStateOnAdd(node *v1.Node) {
+	// Check for stale uncordon state: node has FQ cordon annotation but is not cordoned
+	if ni.checkStaleUncordonState(node) {
+		return
+	}
+
+	// Check for stale untaint state: node has FQ taint annotation but expected taints are missing
+	ni.checkStaleUntaintState(node)
+}
+
+// checkStaleUncordonState checks if node has stale uncordon state and handles it.
+// Returns true if stale uncordon was detected (and handled), false otherwise.
+func (ni *NodeInformer) checkStaleUncordonState(node *v1.Node) bool {
+	_, hasCordonAnnotation := node.Annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]
+	if !hasCordonAnnotation || node.Spec.Unschedulable {
+		return false
+	}
+
+	slog.Info("Detected stale uncordon state on node add (node has FQ annotation but is not cordoned)",
+		"node", node.Name)
+
+	if err := ni.onManualUncordon(node.Name); err != nil {
+		slog.Error("Failed to handle stale uncordon state on node add", "node", node.Name, "error", err)
+	} else {
+		slog.Debug("Successfully handled stale uncordon state on node add", "node", node.Name)
+	}
+
+	return true
+}
+
+// checkStaleUntaintState checks if node has stale untaint state and handles it.
+func (ni *NodeInformer) checkStaleUntaintState(node *v1.Node) {
+	taintsAnnotation, hasTaintsAnnotation := node.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+	if !hasTaintsAnnotation || taintsAnnotation == "" {
+		return
+	}
+
+	// Parse expected taints from annotation
+	var expectedTaints []config.Taint
+	if err := json.Unmarshal([]byte(taintsAnnotation), &expectedTaints); err != nil {
+		slog.Debug("Failed to unmarshal taints annotation during stale state check on add",
+			"node", node.Name, "error", err)
+
+		return
+	}
+
+	// Check if any expected taints are missing from the node
+	if !ni.hasMissingTaints(node, expectedTaints) {
+		return
+	}
+
+	slog.Info("Detected stale untaint state on node add (node has FQ taint annotation but taints are missing)",
+		"node", node.Name)
+
+	if err := ni.onManualUntaint(node.Name); err != nil {
+		slog.Error("Failed to handle stale untaint state on node add", "node", node.Name, "error", err)
+	} else {
+		slog.Debug("Successfully handled stale untaint state on node add", "node", node.Name)
+	}
+}
+
+// hasMissingTaints checks if any expected taints are missing from the node.
+func (ni *NodeInformer) hasMissingTaints(node *v1.Node, expectedTaints []config.Taint) bool {
+	for _, expectedTaint := range expectedTaints {
+		if !hasTaint(node, expectedTaint) {
+			slog.Debug("FQ taint is missing from node (stale state detected on add)",
+				"node", node.Name,
+				"missingTaint", fmt.Sprintf("%s=%s:%s", expectedTaint.Key, expectedTaint.Value, expectedTaint.Effect))
+
+			return true
+		}
+	}
+
+	return false
 }
 
 // handleUpdateNodeWrapper is a wrapper for handleUpdateNode that converts interface{} to *v1.Node.
@@ -241,9 +332,63 @@ func (ni *NodeInformer) detectAndHandleManualUncordon(oldNode, newNode *v1.Node)
 	return true
 }
 
-// handleUpdateNode detects and handles manual uncordon of quarantined nodes.
+// detectAndHandleManualUntaint checks if a node was manually untainted and handles it
+func (ni *NodeInformer) detectAndHandleManualUntaint(oldNode, newNode *v1.Node) bool {
+	// Check if node has FQ taint annotation
+	taintsAnnotation, hasTaintsAnnotation := newNode.Annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]
+	if !hasTaintsAnnotation || taintsAnnotation == "" {
+		return false
+	}
+
+	slog.Debug("Node has FQ taints annotation", "node", newNode.Name)
+
+	// Parse expected taints from annotation
+	var expectedTaints []config.Taint
+	if err := json.Unmarshal([]byte(taintsAnnotation), &expectedTaints); err != nil {
+		slog.Error("Failed to unmarshal taints annotation during manual untaint detection",
+			"node", newNode.Name, "error", err)
+
+		return false
+	}
+
+	// Check if any expected FQ taint was REMOVED in this update
+	// Must have been present in oldNode and now missing in newNode
+	taintWasRemoved := false
+
+	for _, expectedTaint := range expectedTaints {
+		wasPresentBefore := hasTaint(oldNode, expectedTaint)
+		isPresentNow := hasTaint(newNode, expectedTaint)
+
+		if wasPresentBefore && !isPresentNow {
+			taintWasRemoved = true
+
+			slog.Debug("FQ taint was removed from node",
+				"node", newNode.Name,
+				"removedTaint", fmt.Sprintf("%s=%s:%s", expectedTaint.Key, expectedTaint.Value, expectedTaint.Effect))
+
+			break
+		}
+	}
+
+	// If no taint was actually removed in this update, don't trigger
+	if !taintWasRemoved {
+		return false
+	}
+
+	slog.Info("Detected manual untaint of FQ-quarantined node", "node", newNode.Name)
+
+	if err := ni.onManualUntaint(newNode.Name); err != nil {
+		slog.Error("Manual untaint callback failed", "node", newNode.Name, "error", err)
+	}
+
+	return true
+}
+
+// handleUpdateNode detects and handles manual uncordon and manual untaint of quarantined nodes.
 func (ni *NodeInformer) handleUpdateNode(oldNode, newNode *v1.Node) {
+	// Check manual uncordon first - if it triggers, it does full cleanup including taints
 	ni.detectAndHandleManualUncordon(oldNode, newNode)
+	ni.detectAndHandleManualUntaint(oldNode, newNode)
 }
 
 // SetOnQuarantinedNodeDeletedCallback sets the callback function for when a quarantined node is deleted
@@ -254,6 +399,11 @@ func (ni *NodeInformer) SetOnQuarantinedNodeDeletedCallback(callback func(nodeNa
 // SetOnManualUncordonCallback sets the callback function for when a node is manually uncordoned
 func (ni *NodeInformer) SetOnManualUncordonCallback(callback func(nodeName string) error) {
 	ni.onManualUncordon = callback
+}
+
+// SetOnManualUntaintCallback sets the callback function for when a node is manually untainted
+func (ni *NodeInformer) SetOnManualUntaintCallback(callback func(nodeName string) error) {
+	ni.onManualUntaint = callback
 }
 
 // handleDeleteNode handles node deletion events.
@@ -288,4 +438,17 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 	if hadQuarantineAnnotation && ni.onQuarantinedNodeDeleted != nil {
 		ni.onQuarantinedNodeDeleted(node.Name)
 	}
+}
+
+// hasTaint checks if a node has a specific taint
+func hasTaint(node *v1.Node, expectedTaint config.Taint) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == expectedTaint.Key &&
+			taint.Value == expectedTaint.Value &&
+			string(taint.Effect) == expectedTaint.Effect {
+			return true
+		}
+	}
+
+	return false
 }

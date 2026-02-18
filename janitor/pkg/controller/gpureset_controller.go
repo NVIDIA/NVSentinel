@@ -867,8 +867,10 @@ func (r *GPUResetReconciler) newGpuResetJob(ctx context.Context, gr *v1alpha1.GP
 		jobMeta.Labels = make(map[string]string)
 	}
 
-	jobMeta.Labels["gpureset-name"] = gr.Name
-	jobMeta.Labels[jobOwnerKey] = gr.Name
+	if len(gr.Name) <= validation.DNS1123LabelMaxLength {
+		jobMeta.Labels["gpureset-name"] = gr.Name
+		jobMeta.Labels[jobOwnerKey] = gr.Name
+	}
 
 	jobSpec := *r.Config.ResolvedJobTemplate.Spec.DeepCopy()
 

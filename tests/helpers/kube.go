@@ -65,6 +65,19 @@ const (
 	NVSentinelNamespace   = "nvsentinel"
 )
 
+var (
+	RebootNodeGVK = schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "RebootNode",
+	}
+	GPUResetGVK = schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "GPUReset",
+	}
+)
+
 func WaitForNodesCordonState(
 	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, shouldCordon bool,
 ) {
@@ -508,67 +521,64 @@ func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, po
 	return nil
 }
 
-func listAllRebootNodes(ctx context.Context, c klient.Client) (*unstructured.UnstructuredList, error) {
-	rebootNodeList := &unstructured.UnstructuredList{}
-	rebootNodeList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
-		Kind:    "RebootNodeList",
-	})
+func ListAllCRs(ctx context.Context, c klient.Client,
+	groupVersionKind schema.GroupVersionKind) (*unstructured.UnstructuredList, error) {
+	crList := &unstructured.UnstructuredList{}
+	crList.SetGroupVersionKind(groupVersionKind)
 
-	err := c.Resources().List(ctx, rebootNodeList)
+	err := c.Resources().List(ctx, crList)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list rebootnodes: %w", err)
+		return nil, fmt.Errorf("failed to list custom resources: %w", err)
 	}
 
-	return rebootNodeList, nil
+	return crList, nil
 }
 
-// WaitForNoRebootNodeCR asserts that no RebootNode CR is created for a node within a timeout period.
+// WaitForNoCR asserts that no CR is created for a node within a timeout period.
 // Uses require.Never to continuously check that CR never appears.
-func WaitForNoRebootNodeCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string) {
+func WaitForNoCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
+	groupVersionKind schema.GroupVersionKind) {
 	t.Helper()
-	t.Logf("Asserting no RebootNode CR is created for node %s", nodeName)
+	t.Logf("Asserting no CR is created for node %s", nodeName)
 	require.Never(t, func() bool {
-		rebootNodeList, err := listAllRebootNodes(ctx, c)
+		crList, err := ListAllCRs(ctx, c, groupVersionKind)
 		if err != nil {
-			t.Logf("Error listing RebootNode CRs: %v", err)
+			t.Logf("Error listing CRs: %v", err)
 			return false
 		}
 
-		for _, item := range rebootNodeList.Items {
+		for _, item := range crList.Items {
 			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
 			if err != nil || !found {
 				continue
 			}
 
 			if nodeNameInCR == nodeName {
-				t.Logf("RebootNode CR created for node %s (should not exist)!", nodeName)
+				t.Logf("CR created for node %s (should not exist)!", nodeName)
 				return true
 			}
 		}
 
 		return false
 	}, NeverWaitTimeout, WaitInterval,
-		"RebootNode CR should not be created for node %s", nodeName)
+		"CR should not be created for node %s", nodeName)
 }
 
-func WaitForRebootNodeCR(
-	ctx context.Context, t *testing.T, c klient.Client, nodeName string,
-) *unstructured.Unstructured {
+func WaitForCR(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
+	groupVersionKind schema.GroupVersionKind) *unstructured.Unstructured {
 	t.Helper()
 
 	var resultCR *unstructured.Unstructured
 
 	require.Eventually(t, func() bool {
-		rebootNodeList, err := listAllRebootNodes(ctx, c)
+		crList, err := ListAllCRs(ctx, c, groupVersionKind)
 		if err != nil {
-			t.Logf("failed to list rebootnodes: %v", err)
+			t.Logf("failed to list CRs: %v", err)
 			return false
 		}
 
-		for i := range rebootNodeList.Items {
-			item := &rebootNodeList.Items[i]
+		for i := range crList.Items {
+			item := &crList.Items[i]
 
 			nodeNameInCR, found, err := unstructured.NestedString(item.Object, "spec", "nodeName")
 			if err != nil || !found || nodeNameInCR != nodeName {
@@ -578,54 +588,80 @@ func WaitForRebootNodeCR(
 			// Found the CR for this node
 			completionTime, found, err := unstructured.NestedString(item.Object, "status", "completionTime")
 			if err != nil || !found || completionTime == "" {
-				t.Logf("RebootNode for node %s: waiting for completion", nodeName)
+				t.Logf("CR for node %s: waiting for completion %s", nodeName, item.GetName())
 
 				return false
 			}
 
-			t.Logf("RebootNode for node %s completed at %s", nodeName, completionTime)
+			t.Logf("CR for node %s completed at %s", nodeName, completionTime)
 
 			resultCR = item
 
 			return true
 		}
 
-		t.Logf("No RebootNode CR found for node %s yet", nodeName)
+		t.Logf("No CR found for node %s yet", nodeName)
 
 		return false
 	}, EventuallyWaitTimeout, WaitInterval,
-		"RebootNode CR should be created and complete for node %s", nodeName)
+		"CR should be created and complete for node %s", nodeName)
 
 	return resultCR
 }
 
-func DeleteAllRebootNodeCRs(ctx context.Context, t *testing.T, c klient.Client) error {
-	rebootNodeList, err := listAllRebootNodes(ctx, c)
+func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersionKind schema.GroupVersionKind) error {
+	crList, err := ListAllCRs(ctx, c, groupVersionKind)
 	if err != nil {
-		return fmt.Errorf("failed to list rebootnodes: %w", err)
+		return fmt.Errorf("failed to list CRs: %w", err)
 	}
 
-	for _, item := range rebootNodeList.Items {
-		err = DeleteRebootNodeCR(ctx, c, &item)
+	for _, item := range crList.Items {
+		err = DeleteCR(ctx, c, &item)
 		if err != nil {
-			return fmt.Errorf("failed to delete reboot node: %w", err)
+			return fmt.Errorf("failed to delete CR: %w", err)
 		}
 	}
 
 	return nil
 }
 
-func DeleteRebootNodeCR(ctx context.Context, c klient.Client, rebootNode *unstructured.Unstructured) error {
-	err := c.Resources().Delete(ctx, rebootNode)
+func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructured) error {
+	err := c.Resources().Delete(ctx, cr)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
 
-		return fmt.Errorf("failed to delete RebootNode CR %s: %w", rebootNode.GetName(), err)
+		return fmt.Errorf("failed to delete CR %s: %w", cr.GetName(), err)
 	}
 
 	return nil
+}
+
+func GetStartAndCompletionTimes(maintenanceCR *unstructured.Unstructured) (*time.Time, *time.Time, error) {
+	startTimeStr, found, err := unstructured.NestedString(maintenanceCR.Object, "status", "startTime")
+	if err != nil || !found {
+		return nil, nil, fmt.Errorf("failed to get startTime for maintenance CR: %s", maintenanceCR.GetName())
+	}
+
+	completionTimeStr, found, err := unstructured.NestedString(maintenanceCR.Object, "status", "completionTime")
+	if err != nil || !found {
+		return nil, nil, fmt.Errorf("failed to get completionTime for maintenance CR: %s", maintenanceCR.GetName())
+	}
+
+	startTime, err := time.Parse(time.RFC3339, startTimeStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse start time for maintenance CR %s: %w",
+			maintenanceCR.GetName(), err)
+	}
+
+	completionTime, err := time.Parse(time.RFC3339, completionTimeStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse completionTime for maintenance CR %s: %w",
+			maintenanceCR.GetName(), err)
+	}
+
+	return &startTime, &completionTime, nil
 }
 
 func GetAllNodesNames(ctx context.Context, c klient.Client) ([]string, error) {
@@ -849,18 +885,10 @@ func GetPodsOnNode(
 // CreateRebootNodeCR creates a RebootNode custom resource for the specified node.
 // Returns the created CR object and any error that occurred.
 // If creation fails (e.g., webhook rejection), the error is returned for the caller to inspect.
-func CreateRebootNodeCR(
-	ctx context.Context,
-	c klient.Client,
-	nodeName string,
-	crName string,
-) (*unstructured.Unstructured, error) {
+func CreateRebootNodeCR(ctx context.Context, c klient.Client, nodeName string,
+	crName string) (*unstructured.Unstructured, error) {
 	rebootNode := &unstructured.Unstructured{}
-	rebootNode.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
-		Kind:    "RebootNode",
-	})
+	rebootNode.SetGroupVersionKind(RebootNodeGVK)
 	rebootNode.SetName(crName)
 
 	err := unstructured.SetNestedField(rebootNode.Object, nodeName, "spec", "nodeName")
@@ -874,6 +902,30 @@ func CreateRebootNodeCR(
 	}
 
 	return rebootNode, nil
+}
+
+func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crName string,
+	uuid string) (*unstructured.Unstructured, error) {
+	gpuReset := &unstructured.Unstructured{}
+	gpuReset.SetGroupVersionKind(GPUResetGVK)
+	gpuReset.SetName(crName)
+
+	err := unstructured.SetNestedField(gpuReset.Object, nodeName, "spec", "nodeName")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
+	}
+
+	err = unstructured.SetNestedSlice(gpuReset.Object, []interface{}{uuid}, "spec", "selector", "uuids")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set selector.uuids in spec: %w", err)
+	}
+
+	err = c.Resources().Create(ctx, gpuReset)
+	if err != nil {
+		return nil, err
+	}
+
+	return gpuReset, nil
 }
 
 func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []byte, name, namespace string) error {

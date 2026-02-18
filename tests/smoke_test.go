@@ -90,7 +90,7 @@ func TestFatalHealthEvent(t *testing.T) {
 	feature.Assess("Can send fatal health event", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
-		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event.json")
+		err := helpers.SendHealthEventsToNodes([]string{nodeName}, "data/fatal-health-event-restart-vm.json")
 		assert.NoError(t, err, "failed to send health event")
 
 		return ctx
@@ -105,25 +105,17 @@ func TestFatalHealthEvent(t *testing.T) {
 		t.Logf("Waiting for node %s to be cordoned", nodeName)
 		helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, true)
 
+		// Wait for node condition to be updated to unhealthy
+		t.Logf("Waiting for node %s condition to become unhealthy", nodeName)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+			"ErrorCode:79 GPU:0 XID error occurred Recommended Action=RESTART_VM;",
+			"GpuXidErrorIsNotHealthy", v1.ConditionTrue)
+
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
 
 		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
 		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "True", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:79 GPU:0 XID error occurred Recommended Action=RESTART_VM;", nodeCondition.Message)
 
 		return ctx
 	})
@@ -148,15 +140,15 @@ func TestFatalHealthEvent(t *testing.T) {
 		return ctx
 	})
 
-	feature.Assess("Remediation CR is created and completes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	feature.Assess("RebootNode CR is created and completes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		nodeName := ctx.Value(keyNodeName).(string)
 
 		client, err := c.NewClient()
 		assert.NoError(t, err, "failed to create kubernetes client")
 
-		rebootNode := helpers.WaitForRebootNodeCR(ctx, t, client, nodeName)
+		rebootNode := helpers.WaitForCR(ctx, t, client, nodeName, helpers.RebootNodeGVK)
 
-		err = helpers.DeleteRebootNodeCR(ctx, client, rebootNode)
+		err = helpers.DeleteCR(ctx, client, rebootNode)
 		assert.NoError(t, err, "failed to delete RebootNode CR")
 
 		return ctx
@@ -209,26 +201,12 @@ func TestFatalHealthEvent(t *testing.T) {
 
 		// Wait for node condition to be updated to healthy
 		t.Logf("Waiting for node %s condition to become healthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+			"No Health Failures", "GpuXidErrorIsHealthy", v1.ConditionFalse)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
-
 		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "False", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsHealthy", nodeCondition.Reason)
-		assert.Equal(t, "No Health Failures", nodeCondition.Message)
 
 		return ctx
 	})
@@ -321,27 +299,14 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 
 		// Wait for node condition to be updated to unhealthy
 		t.Logf("Waiting for node %s condition to become unhealthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsNotHealthy", v1.ConditionTrue)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+			"ErrorCode:145 GPU:0 XID error occurred Recommended Action=CONTACT_SUPPORT;",
+			"GpuXidErrorIsNotHealthy", v1.ConditionTrue)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after cordoning")
-
 		assert.Equal(t, "NVSentinel", node.Labels["cordon-by"])
 		assert.Equal(t, "Basic-Match-Rule", node.Labels["cordon-reason"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "True", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsNotHealthy", nodeCondition.Reason)
-		assert.Equal(t, "ErrorCode:145 GPU:0 XID error occurred Recommended Action=CONTACT_SUPPORT;", nodeCondition.Message)
 
 		return ctx
 	})
@@ -410,26 +375,12 @@ func TestFatalUnsupportedHealthEvent(t *testing.T) {
 
 		// Wait for node condition to be updated to healthy
 		t.Logf("Waiting for node %s condition to become healthy", nodeName)
-		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError", "", "GpuXidErrorIsHealthy", v1.ConditionFalse)
+		helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+			"No Health Failures", "GpuXidErrorIsHealthy", v1.ConditionFalse)
 
 		node, err := helpers.GetNodeByName(ctx, client, nodeName)
 		assert.NoError(t, err, "failed to get node after uncordoning")
-
 		assert.Equal(t, "NVSentinel", node.Labels["uncordon-by"])
-
-		var nodeCondition *v1.NodeCondition
-		for i := range node.Status.Conditions {
-			if node.Status.Conditions[i].Type == "GpuXidError" {
-				nodeCondition = &node.Status.Conditions[i]
-				break
-			}
-		}
-		assert.NotNil(t, nodeCondition, "node condition GpuXidError not found")
-
-		assert.Equal(t, "GpuXidError", string(nodeCondition.Type))
-		assert.Equal(t, "False", string(nodeCondition.Status))
-		assert.Equal(t, "GpuXidErrorIsHealthy", nodeCondition.Reason)
-		assert.Equal(t, "No Health Failures", nodeCondition.Message)
 
 		return ctx
 	})

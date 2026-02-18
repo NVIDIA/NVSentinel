@@ -594,8 +594,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		return fmt.Errorf("error updating document with ID: %v, error: %w", documentID, err)
 	}
 
-	if userPodsEvictionStatus.Status == model.StatusSucceeded ||
-		userPodsEvictionStatus.Status == model.AlreadyDrained {
+	if userPodsEvictionStatus.Status == model.StatusSucceeded {
 		if healthEvent, parseErr := eventutil.ParseHealthEventFromEvent(event); parseErr == nil &&
 			healthEvent.HealthEventStatus.QuarantineFinishTimestamp != nil {
 			evictionDuration := time.Since(*healthEvent.HealthEventStatus.QuarantineFinishTimestamp).Seconds()

@@ -84,9 +84,12 @@ Error while fetching maintenance events: operation error Health: DescribeEvents,
 1. **Check IAM policy is attached to role:**
 
 ```bash
+# Use your custom role name if aws.iamRoleName is set, otherwise use the default pattern
 aws iam list-attached-role-policies \
-    --role-name <CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy
+    --role-name <IAM_ROLE_NAME>
 ```
+
+> **Note**: The role name is either the value of `aws.iamRoleName` (if set) or the default `<CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy`.
 
 Expected output should show `CSPHealthMonitorPolicy` attached.
 
@@ -94,7 +97,7 @@ Expected output should show `CSPHealthMonitorPolicy` attached.
 
 ```bash
 aws iam get-role \
-    --role-name <CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy \
+    --role-name <IAM_ROLE_NAME> \
     --query 'Role.AssumeRolePolicyDocument'
 ```
 
@@ -106,7 +109,7 @@ Expected: Trust policy should reference the correct EKS OIDC provider and `syste
 kubectl get serviceaccount csp-health-monitor -n nvsentinel -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
 ```
 
-Expected output: `arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy`
+Expected output: `arn:aws:iam::<ACCOUNT_ID>:role/<IAM_ROLE_NAME>`
 
 ### Resolution
 
@@ -116,11 +119,11 @@ If IAM policy is not attached:
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 aws iam attach-role-policy \
-    --role-name <CLUSTER_NAME>-nvsentinel-health-monitor-assume-role-policy \
+    --role-name <IAM_ROLE_NAME> \
     --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/CSPHealthMonitorPolicy
 ```
 
-If the role ARN doesn't match Helm values, update `configToml.clusterName` and redeploy.
+If the role ARN doesn't match Helm values, ensure `aws.iamRoleName` (or `configToml.clusterName` if using the default pattern) is correct, and redeploy.
 
 ### Test Permissions Manually
 

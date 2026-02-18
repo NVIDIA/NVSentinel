@@ -45,6 +45,15 @@ func TestTomlConfig_Validate(t *testing.T) {
 		errorSubstr string
 	}{
 		{
+			name: "empty template mountPath should be rejected",
+			config: TomlConfig{
+				Template:          Template{MountPath: ""},
+				RemediationActions: map[string]MaintenanceResource{},
+			},
+			expectError: true,
+			errorSubstr: "template mountPath must be non-empty",
+		},
+		{
 			name: "valid config with matching templates",
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
@@ -140,6 +149,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
+			errorSubstr: "must have a non-empty EquivalenceGroup",
 		},
 		{
 			name: "missing SupersedingEquivalenceGroup should be rejected",
@@ -155,23 +165,29 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
+			errorSubstr: "must be defined in config",
 		},
 		{
 			name: "SupersedingEquivalenceGroup cannot include the EquivalenceGroup",
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"COMPONENT_RESET": {
+					"ACTION_A": {
+						TemplateFileName: "template-a.yaml",
+						Scope:            "Cluster",
+						EquivalenceGroup: "restart",
+					},
+					"ACTION_B": {
 						TemplateFileName:             "template-b.yaml",
 						Scope:                        "Namespaced",
 						Namespace:                    "test-namespace",
 						EquivalenceGroup:             "reset",
 						SupersedingEquivalenceGroups: []string{"restart", "reset"},
-						ImpactedEntityScope:          "GPU_UUID",
 					},
 				},
 			},
 			expectError: true,
+			errorSubstr: "cannot include the EquivalenceGroup itself",
 		},
 		{
 			name: "Non-supported ImpactedEntityScope should be rejected",
@@ -187,32 +203,33 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
+			errorSubstr: "does not support partial draining",
 		},
 		{
 			name: "SupersedingEquivalenceGroup cannot have an ImpactedEntityScope",
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
-					"ACTION_A": {
-						TemplateFileName:    "template-a.yaml",
-						Scope:               "Cluster",
+					"COMPONENT_RESET": {
+						TemplateFileName:    "template-b.yaml",
+						Scope:               "Namespaced",
+						Namespace:           "test-namespace",
 						EquivalenceGroup:    "restart",
-						ImpactedEntityScope: "PCI",
+						ImpactedEntityScope: "GPU_UUID",
 					},
 					"ACTION_B": {
-						TemplateFileName:             "template-b.yaml",
-						Scope:                        "Namespaced",
-						Namespace:                    "test-namespace",
+						TemplateFileName:             "template-a.yaml",
+						Scope:                        "Cluster",
 						EquivalenceGroup:             "reset",
 						SupersedingEquivalenceGroups: []string{"restart"},
-						ImpactedEntityScope:          "GPU_UUID",
 					},
 				},
 			},
 			expectError: true,
+			errorSubstr: "cannot have an ImpactedEntityScope defined",
 		},
 		{
-			name: "SupersedingEquivalenceGroup cannot have an ImpactedEntityScope",
+			name: "SupersedingEquivalenceGroup cannot have an ImpactedEntityScope (COMPONENT_RESET)",
 			config: TomlConfig{
 				Template: Template{MountPath: tempDir},
 				RemediationActions: map[string]MaintenanceResource{
@@ -233,6 +250,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
+			errorSubstr: "cannot have an ImpactedEntityScope defined",
 		},
 		{
 			name: "Only the COMPONENT_RESET action can have an ImpactedEntityScope",
@@ -255,6 +273,7 @@ func TestTomlConfig_Validate(t *testing.T) {
 				},
 			},
 			expectError: true,
+			errorSubstr: "cannot have an ImpactedEntityScope defined",
 		},
 	}
 

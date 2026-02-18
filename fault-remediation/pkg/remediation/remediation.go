@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-remediation/pkg/config"
@@ -50,6 +51,7 @@ const (
 	jobMetricsAlreadyCountedAnnotation = "dgxc.nvidia.com/logcollector-metrics-recorded"
 	trueStringVal                      = "true"
 	controllerRequeueDuration          = 10 * time.Second
+	labelValueCharactersLimit          = 63
 
 	// Environment variable names
 	LogCollectorManifestPathEnv = "LOG_COLLECTOR_MANIFEST_PATH"
@@ -161,7 +163,6 @@ func (c *FaultRemediationClient) GetStatusChecker() crstatus.CRStatusCheckerInte
 	return c.statusChecker
 }
 
-// nolint: cyclop // todo
 func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, healthEventData *events.HealthEventData,
 	groupConfig *common.EquivalenceGroupConfig) (string, error) {
 	healthEvent := healthEventData.HealthEvent
@@ -184,8 +185,6 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return "", fmt.Errorf("error selecting remediation action and template: %w", err)
 	}
 
-	// Get the node object to extract UID for owner reference
-	// This also verifies the node exists before creating CR
 	node, err := c.getNodeForOwnerReference(ctx, healthEvent.NodeName)
 	if err != nil {
 		slog.Warn("Failed to get node for owner reference, skipping CR creation",
@@ -195,76 +194,101 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 		return "", fmt.Errorf("failed to get node for owner reference: %w", err)
 	}
 
-	slog.Info("Creating maintenance CR",
-		"node", healthEvent.NodeName,
-		"template", actionKey,
-		"nodeUID", node.UID)
+	templateData := templateDataFromEvent(healthEvent, healthEventID, recommendedActionName,
+		groupConfig.ImpactedEntityScopeValue, maintenanceResource)
 
-	templateData := TemplateData{
+	actualCRName, err := c.createMaintenanceCR(ctx, selectedTemplate, templateData, actionKey, node, healthEventData)
+	if err != nil {
+		return "", err
+	}
+
+	if err := c.updateRemediationAnnotationIfNeeded(ctx, healthEvent.NodeName, groupConfig.EffectiveEquivalenceGroup,
+		actualCRName, recommendedActionName); err != nil {
+		return "", err
+	}
+
+	return actualCRName, nil
+}
+
+// templateDataFromEvent builds TemplateData from health event and maintenance resource.
+func templateDataFromEvent(healthEvent *protos.HealthEvent, healthEventID, recommendedActionName,
+	impactedEntityScopeValue string, maintenanceResource config.MaintenanceResource,
+) TemplateData {
+	return TemplateData{
 		NodeName:                 healthEvent.NodeName,
 		HealthEventID:            healthEventID,
 		RecommendedAction:        healthEvent.RecommendedAction,
 		RecommendedActionName:    recommendedActionName,
-		ImpactedEntityScopeValue: groupConfig.ImpactedEntityScopeValue,
-
-		HealthEvent: healthEvent,
-
-		ApiGroup:  maintenanceResource.ApiGroup,
-		Version:   maintenanceResource.Version,
-		Kind:      maintenanceResource.Kind,
-		Namespace: maintenanceResource.Namespace,
+		ImpactedEntityScopeValue: impactedEntityScopeValue,
+		HealthEvent:              healthEvent,
+		ApiGroup:                 maintenanceResource.ApiGroup,
+		Version:                  maintenanceResource.Version,
+		Kind:                     maintenanceResource.Kind,
+		Namespace:                maintenanceResource.Namespace,
 	}
+}
+
+// createMaintenanceCR renders the template, sets owner ref, and creates the maintenance CR.
+func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, selectedTemplate *template.Template,
+	templateData TemplateData, actionKey string, node *corev1.Node, healthEventData *events.HealthEventData,
+) (string, error) {
+	slog.Info("Creating maintenance CR",
+		"node", healthEventData.HealthEvent.NodeName,
+		"template", actionKey,
+		"nodeUID", node.UID)
 
 	maintenance, yamlStr, err := renderMaintenanceFromTemplate(selectedTemplate, templateData)
 	if err != nil {
-		slog.Error("Failed to render maintenance template",
-			"template", actionKey,
-			"error", err)
-
+		slog.Error("Failed to render maintenance template", "template", actionKey, "error", err)
 		return "", fmt.Errorf("error rendering maintenance template: %w", err)
 	}
 
-	slog.Debug("Generated YAML from template",
-		"template", actionKey,
-		"yaml", yamlStr)
-
+	slog.Debug("Generated YAML from template", "template", actionKey, "yaml", yamlStr)
 	setNodeOwnerRef(maintenance, node)
 
 	err = c.client.Create(ctx, maintenance)
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			slog.Info("Maintenance CR already exists for node, treating as success", "CR",
-				crName, "node", healthEvent.NodeName)
-		} else {
-			return "", fmt.Errorf("failed to create maintenance CR: %w", err)
+			slog.Info("Maintenance CR already exists for node, treating as success",
+				"CR", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName)
+
+			return maintenance.GetName(), nil
 		}
+
+		return "", fmt.Errorf("failed to create maintenance CR: %w", err)
 	} else if healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
 		duration := time.Since(*healthEventData.HealthEventStatus.DrainFinishTimestamp).Seconds()
 		if duration > 0 {
 			slog.Info("Fault remediation CR generation duration",
 				"duration", duration,
-				"node", healthEvent.NodeName)
+				"node", healthEventData.HealthEvent.NodeName)
 			metrics.CRGenerationDuration.Observe(duration)
 		}
 	}
 
-	actualCRName := maintenance.GetName()
 	slog.Info("Created Maintenance CR successfully",
-		"crName", actualCRName,
-		"node", healthEvent.NodeName,
-		"template", actionKey)
+		"crName", maintenance.GetName(), "node", healthEventData.HealthEvent.NodeName, "template", actionKey)
 
-	if len(groupConfig.EffectiveEquivalenceGroup) != 0 && c.annotationManager != nil {
-		if err = c.annotationManager.UpdateRemediationState(ctx, healthEvent.NodeName,
-			groupConfig.EffectiveEquivalenceGroup, actualCRName, recommendedActionName); err != nil {
-			slog.Warn("Failed to update node annotation", "node", healthEvent.NodeName,
-				"error", err)
+	return maintenance.GetName(), nil
+}
 
-			return "", fmt.Errorf("failed to update node annotation: %w", err)
-		}
+// updateRemediationAnnotationIfNeeded updates node remediation state when equivalence group
+// and annotation manager are set.
+func (c *FaultRemediationClient) updateRemediationAnnotationIfNeeded(ctx context.Context, nodeName string,
+	effectiveEquivalenceGroup string, actualCRName, recommendedActionName string,
+) error {
+	if effectiveEquivalenceGroup == "" || c.annotationManager == nil {
+		return nil
 	}
 
-	return actualCRName, nil
+	err := c.annotationManager.UpdateRemediationState(ctx, nodeName, effectiveEquivalenceGroup,
+		actualCRName, recommendedActionName)
+	if err != nil {
+		slog.Warn("Failed to update node annotation", "node", nodeName, "error", err)
+		return fmt.Errorf("failed to update node annotation: %w", err)
+	}
+
+	return nil
 }
 
 func renderMaintenanceFromTemplate(
@@ -501,36 +525,35 @@ func (c *FaultRemediationClient) checkLogCollectorComplete(
 	conditions []metav1.Condition,
 ) (bool, error) {
 	completeCondition := meta.FindStatusCondition(conditions, string(batchv1.JobComplete))
-	//nolint:nestif // todo
-	if completeCondition != nil && completeCondition.Status == metav1.ConditionTrue {
-		slog.Info("Log collector job completed successfully", "job", job.Name)
-		// Use job's actual duration instead of custom tracking
-		// reconciliation can be called multiple times so use annotation to make sure we're not duplicate recording metrics
-		if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
-			updateJob := job.DeepCopy()
-			if updateJob.Annotations == nil {
-				updateJob.Annotations = map[string]string{}
-			}
-
-			updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
-
-			err := c.client.Update(ctx, updateJob)
-			if err != nil {
-				return false, err
-			}
-
-			metrics.LogCollectorJobs.WithLabelValues(nodeName, "success").Inc()
-
-			if job.Status.StartTime != nil {
-				duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
-				metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "success").Observe(duration)
-			}
-		}
-
-		return true, nil
+	if completeCondition == nil || completeCondition.Status != metav1.ConditionTrue {
+		return false, nil
 	}
 
-	return false, nil
+	slog.Info("Log collector job completed successfully", "job", job.Name)
+	// Use job's actual duration instead of custom tracking
+	// reconciliation can be called multiple times so use annotation to make sure we're not duplicate recording metrics
+	if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
+		updateJob := job.DeepCopy()
+		if updateJob.Annotations == nil {
+			updateJob.Annotations = map[string]string{}
+		}
+
+		updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
+
+		err := c.client.Update(ctx, updateJob)
+		if err != nil {
+			return false, err
+		}
+
+		metrics.LogCollectorJobs.WithLabelValues(nodeName, "success").Inc()
+
+		if job.Status.StartTime != nil {
+			duration := job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+			metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "success").Observe(duration)
+		}
+	}
+
+	return true, nil
 }
 
 func (c *FaultRemediationClient) checkLogCollectorFailed(
@@ -541,41 +564,55 @@ func (c *FaultRemediationClient) checkLogCollectorFailed(
 ) (bool, error) {
 	// check if failed
 	failedCondition := meta.FindStatusCondition(conditions, string(batchv1.JobFailed))
-	//nolint:nestif // todo
-	if failedCondition != nil && failedCondition.Status == metav1.ConditionTrue {
-		slog.Info("Log collector job failed", "job", job.Name)
-
-		// reconciliation can be called multiple times so use annotation to make sure we're not duplicate recording metrics
-		if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
-			updateJob := job.DeepCopy()
-			if updateJob.Annotations == nil {
-				updateJob.Annotations = map[string]string{}
-			}
-
-			updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
-
-			err := c.client.Update(ctx, updateJob)
-			if err != nil {
-				return false, err
-			}
-
-			// Use job's actual duration for failed jobs too
-			var duration float64
-			if job.Status.CompletionTime != nil {
-				duration = job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
-			} else {
-				duration = time.Since(job.Status.StartTime.Time).Seconds()
-			}
-
-			metrics.LogCollectorJobs.WithLabelValues(nodeName, "failure").Inc()
-			metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "failure").Observe(duration)
-		}
-
-		// dont return error so reconciliation can continue
-		return true, nil
+	if failedCondition == nil || failedCondition.Status != metav1.ConditionTrue {
+		return false, nil
 	}
 
-	return false, nil
+	slog.Info("Log collector job failed", "job", job.Name)
+
+	// reconciliation can be called multiple times so use annotation to make sure we're not duplicate recording metrics
+	if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
+		if err := c.recordLogCollectorFailureMetrics(ctx, job, nodeName); err != nil {
+			return false, err
+		}
+	}
+
+	// dont return error so reconciliation can continue
+	return true, nil
+}
+
+// recordLogCollectorFailureMetrics updates the job annotation and records failure metrics.
+func (c *FaultRemediationClient) recordLogCollectorFailureMetrics(
+	ctx context.Context,
+	job batchv1.Job,
+	nodeName string,
+) error {
+	updateJob := job.DeepCopy()
+	if updateJob.Annotations == nil {
+		updateJob.Annotations = map[string]string{}
+	}
+
+	updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
+
+	if err := c.client.Update(ctx, updateJob); err != nil {
+		return err
+	}
+
+	var duration float64
+
+	switch {
+	case job.Status.StartTime == nil:
+		duration = 0
+	case job.Status.CompletionTime != nil:
+		duration = job.Status.CompletionTime.Sub(job.Status.StartTime.Time).Seconds()
+	default:
+		duration = time.Since(job.Status.StartTime.Time).Seconds()
+	}
+
+	metrics.LogCollectorJobs.WithLabelValues(nodeName, "failure").Inc()
+	metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "failure").Observe(duration)
+
+	return nil
 }
 
 func (c *FaultRemediationClient) checkLogCollectorTimedOut(
@@ -594,31 +631,30 @@ func (c *FaultRemediationClient) checkLogCollectorTimedOut(
 	}
 
 	// check timeout
-	//nolint:nestif // todo
-	if time.Since(job.CreationTimestamp.Time) > timeout {
-		slog.Info("Log collector job past timeout", "job", job.Name, "timeout", timeout)
-
-		if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
-			updateJob := job.DeepCopy()
-			if updateJob.Annotations == nil {
-				updateJob.Annotations = map[string]string{}
-			}
-
-			updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
-
-			err := c.client.Update(ctx, updateJob)
-			if err != nil {
-				return false, err
-			}
-
-			metrics.LogCollectorJobs.WithLabelValues(nodeName, "timeout").Inc()
-			metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "timeout").Observe(timeout.Seconds())
-		}
-
-		return true, nil
+	if time.Since(job.CreationTimestamp.Time) <= timeout {
+		return false, nil
 	}
 
-	return false, nil
+	slog.Info("Log collector job past timeout", "job", job.Name, "timeout", timeout)
+
+	if job.Annotations == nil || job.Annotations[jobMetricsAlreadyCountedAnnotation] != trueStringVal {
+		updateJob := job.DeepCopy()
+		if updateJob.Annotations == nil {
+			updateJob.Annotations = map[string]string{}
+		}
+
+		updateJob.Annotations[jobMetricsAlreadyCountedAnnotation] = trueStringVal
+
+		err := c.client.Update(ctx, updateJob)
+		if err != nil {
+			return false, err
+		}
+
+		metrics.LogCollectorJobs.WithLabelValues(nodeName, "timeout").Inc()
+		metrics.LogCollectorJobDuration.WithLabelValues(nodeName, "timeout").Observe(timeout.Seconds())
+	}
+
+	return true, nil
 }
 
 func (c *FaultRemediationClient) GetConfig() *config.TomlConfig {

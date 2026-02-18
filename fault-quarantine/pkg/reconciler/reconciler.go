@@ -155,33 +155,17 @@ func (r *Reconciler) Start(ctx context.Context) error {
 
 	databaseClient := datastoreAdapter.GetDatabaseClient()
 
-	// Handle circuit breaker state BEFORE creating change stream watcher
+	// Handle circuit breaker cursor mode BEFORE creating change stream watcher
 	// This ensures resume token is deleted (if cursor=CREATE) before the stream opens
-	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
-		return err
-	}
-
+	// Note: We don't check if tripped here because that requires the node informer to be synced
 	if err := r.handleCircuitBreakerCursorMode(ctx, databaseClient); err != nil {
 		return fmt.Errorf("failed to handle circuit breaker cursor mode: %w", err)
 	}
 
-	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
-		ctx, "fault-quarantine", r.config.DatabasePipeline)
+	oldWatcher, err := r.setupChangeStreamWatcher(ctx, datastoreAdapter)
 	if err != nil {
-		return fmt.Errorf("failed to create change stream watcher: %w", err)
+		return err
 	}
-
-	// Unwrap to get client.ChangeStreamWatcher for EventWatcher compatibility
-	type unwrapper interface {
-		Unwrap() client.ChangeStreamWatcher
-	}
-
-	unwrapable, ok := changeStreamWatcher.(unwrapper)
-	if !ok {
-		return fmt.Errorf("watcher does not support unwrapping to client.ChangeStreamWatcher")
-	}
-
-	oldWatcher := unwrapable.Unwrap()
 
 	// Create event watcher with the new signature
 	r.eventWatcher = eventwatcher.NewEventWatcher(
@@ -191,7 +175,27 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		r,              // Reconciler implements LastProcessedObjectIDStore interface
 	)
 
-	r.setupNodeInformerCallbacks()
+	r.SetupNodeInformerCallbacks()
+
+	slog.Info("Starting node informer")
+
+	go func() {
+		if err := r.k8sClient.NodeInformer.Run(ctx.Done()); err != nil {
+			slog.Error("Node informer failed", "error", err)
+		}
+	}()
+
+	// Wait for the informer cache to sync before proceeding
+	if !r.k8sClient.NodeInformer.WaitForSync(ctx) {
+		return fmt.Errorf("failed to sync NodeInformer cache")
+	}
+
+	slog.Info("Node informer started and synced")
+
+	// Check circuit breaker state AFTER informer is synced (IsTripped needs node counts from informer)
+	if err := r.checkCircuitBreakerAtStartup(ctx); err != nil {
+		return fmt.Errorf("failed to check circuit breaker at startup: %w", err)
+	}
 
 	ruleSetEvals, err := r.initializeRuleSetEvaluators()
 	if err != nil {
@@ -203,10 +207,6 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	rulesetsConfig := r.buildRulesetsConfig()
 
 	r.precomputeTaintInitKeys(ruleSetEvals, rulesetsConfig)
-
-	if !r.k8sClient.NodeInformer.WaitForSync(ctx) {
-		return fmt.Errorf("failed to sync NodeInformer cache")
-	}
 
 	r.initializeQuarantineMetrics()
 
@@ -225,14 +225,42 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	return nil
 }
 
+// setupChangeStreamWatcher creates and unwraps the change stream watcher
+func (r *Reconciler) setupChangeStreamWatcher(
+	ctx context.Context,
+	datastoreAdapter interface {
+		CreateChangeStreamWatcher(ctx context.Context, clientName string, pipeline interface{}) (
+			datastore.ChangeStreamWatcher, error)
+	},
+) (client.ChangeStreamWatcher, error) {
+	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
+		ctx, "fault-quarantine", r.config.DatabasePipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
+	}
+
+	// Unwrap to get client.ChangeStreamWatcher for EventWatcher compatibility
+	type unwrapper interface {
+		Unwrap() client.ChangeStreamWatcher
+	}
+
+	unwrapable, ok := changeStreamWatcher.(unwrapper)
+	if !ok {
+		return nil, fmt.Errorf("watcher does not support unwrapping to client.ChangeStreamWatcher")
+	}
+
+	return unwrapable.Unwrap(), nil
+}
+
 // setupNodeInformerCallbacks configures callbacks on the already-created node informer
-func (r *Reconciler) setupNodeInformerCallbacks() {
+func (r *Reconciler) SetupNodeInformerCallbacks() {
 	r.k8sClient.NodeInformer.SetOnQuarantinedNodeDeletedCallback(func(nodeName string) {
 		metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
 		slog.Info("Set currentQuarantinedNodes to 0 for deleted quarantined node", "node", nodeName)
 	})
 
 	r.k8sClient.NodeInformer.SetOnManualUncordonCallback(r.handleManualUncordon)
+	r.k8sClient.NodeInformer.SetOnManualUntaintCallback(r.handleManualUntaint)
 }
 
 // initializeRuleSetEvaluators initializes all rule set evaluators from config
@@ -760,7 +788,13 @@ func (r *Reconciler) applyQuarantine(
 	slog.Debug("Added health event annotation successfully", "node", event.HealthEvent.NodeName)
 
 	// Remove manual uncordon annotation if present before applying new quarantine
-	r.cleanupManualUncordonAnnotation(ctx, event.HealthEvent.NodeName, annotations)
+	if err := r.cleanupManualUncordonAnnotation(ctx, event.HealthEvent.NodeName, annotations); err != nil {
+		slog.Error("Failed to cleanup manual uncordon annotation",
+			"error", err, "node", event.HealthEvent.NodeName)
+		metrics.ProcessingErrors.WithLabelValues("cleanup_manual_uncordon_annotation_error").Inc()
+
+		return nil
+	}
 
 	if !r.config.CircuitBreakerEnabled {
 		slog.Info("Circuit breaker is disabled, proceeding with quarantine action without protection",
@@ -952,7 +986,13 @@ func (r *Reconciler) handleQuarantinedNode(
 		slog.Info("All health checks recovered for node, proceeding with uncordon",
 			"node", event.NodeName)
 
-		return r.performUncordon(ctx, event, annotations)
+		isUncordoned, err := r.performUncordon(ctx, event, annotations)
+		if err != nil {
+			slog.Error("Failed to uncordon node", "error", err, "node", event.NodeName)
+			metrics.ProcessingErrors.WithLabelValues("uncordon_error").Inc()
+		}
+
+		return isUncordoned
 	}
 
 	slog.Info("Node remains quarantined with failing checks",
@@ -1108,7 +1148,7 @@ func (r *Reconciler) performUncordon(
 	ctx context.Context,
 	event *protos.HealthEvent,
 	annotations map[string]string,
-) bool {
+) (bool, error) {
 	slog.Info("All entities recovered for check - proceeding with uncordon",
 		"check", event.CheckName,
 		"node", event.NodeName)
@@ -1118,11 +1158,11 @@ func (r *Reconciler) performUncordon(
 		event, annotations)
 	if err != nil {
 		slog.Error("Failed to prepare uncordon params for node", "node", event.NodeName, "error", err)
-		return true
+		return true, fmt.Errorf("failed to prepare uncordon params for node %s: %w", event.NodeName, err)
 	}
 
 	if len(taintsToBeRemoved) == 0 && !isUnCordon {
-		return false
+		return false, nil
 	}
 
 	if !isUnCordon {
@@ -1154,12 +1194,12 @@ func (r *Reconciler) performUncordon(
 		slog.Error("Failed to untaint and uncordon node", "node", event.NodeName, "error", err)
 		metrics.ProcessingErrors.WithLabelValues("untaint_and_uncordon_error").Inc()
 
-		return true
+		return true, fmt.Errorf("failed to untaint and uncordon node %s: %w", event.NodeName, err)
 	}
 
 	r.updateUncordonMetrics(event.NodeName, taintsToBeRemoved, isUnCordon)
 
-	return false
+	return false, nil
 }
 
 // prepareUncordonParams prepares parameters for uncordoning a node
@@ -1261,7 +1301,7 @@ func (r *Reconciler) getNodeQuarantineAnnotations(nodeName string) (map[string]s
 }
 
 func (r *Reconciler) cleanupManualUncordonAnnotation(ctx context.Context, nodeName string,
-	annotations map[string]string) {
+	annotations map[string]string) error {
 	if _, hasManualUncordon := annotations[common.QuarantinedNodeUncordonedManuallyAnnotationKey]; hasManualUncordon {
 		slog.Info("Removing manual uncordon annotation from node before applying new quarantine", "node", nodeName)
 
@@ -1283,8 +1323,11 @@ func (r *Reconciler) cleanupManualUncordonAnnotation(ctx context.Context, nodeNa
 
 		if err := r.k8sClient.UpdateNode(ctx, nodeName, updateFn); err != nil {
 			slog.Error("Failed to remove manual uncordon annotation from node", "node", nodeName, "error", err)
+			return fmt.Errorf("failed to remove manual uncordon annotation from node %s: %w", nodeName, err)
 		}
 	}
+
+	return nil
 }
 
 // handleManualUncordon handles the case when a node is manually uncordoned while having FQ annotations
@@ -1299,18 +1342,9 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	annotationsToRemove := []string{}
 
-	var taintsToRemove []config.Taint
-
-	taintsKey := common.QuarantineHealthEventAppliedTaintsAnnotationKey
-	if taintsStr, exists := annotations[taintsKey]; exists && taintsStr != "" {
-		annotationsToRemove = append(annotationsToRemove, taintsKey)
-
-		if err := json.Unmarshal([]byte(taintsStr), &taintsToRemove); err != nil {
-			slog.Error("Failed to unmarshal taints", "node", nodeName, "error", err)
-			return fmt.Errorf("failed to unmarshal taints for manually uncordoned node %s: %w", nodeName, err)
-		}
-
-		slog.Debug("Parsed taints to remove", "node", nodeName, "taintCount", len(taintsToRemove))
+	// Remove the applied taints annotation (but keep the taints themselves on the node)
+	if _, exists := annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
 	}
 
 	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
@@ -1332,7 +1366,6 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 	if err := r.k8sClient.HandleManualUncordonCleanup(
 		ctx,
 		nodeName,
-		taintsToRemove,
 		annotationsToRemove,
 		newAnnotations,
 		[]string{statemanager.NVSentinelStateLabelKey},
@@ -1345,6 +1378,10 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 
 	slog.Debug("Successfully completed K8s cleanup for manual uncordon", "node", nodeName)
 
+	slog.Info("Set currentQuarantinedNodes to 0 for manually uncordoned node", "node", nodeName)
+	metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
+	metrics.TotalNodesManuallyUncordoned.WithLabelValues(nodeName).Inc()
+
 	// Cancel latest quarantining events (if eventWatcher is available)
 	if r.eventWatcher != nil {
 		slog.Debug("Calling CancelLatestQuarantiningEvents for manual uncordon", "node", nodeName)
@@ -1352,21 +1389,85 @@ func (r *Reconciler) handleManualUncordon(nodeName string) error {
 		if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName); err != nil {
 			slog.Error("Failed to cancel latest quarantining events for manually uncordoned node",
 				"node", nodeName, "error", err)
-			metrics.ProcessingErrors.WithLabelValues("mongodb_cancelled_update_error").Inc()
-
-			return fmt.Errorf("failed to cancel latest quarantining events for node %s: %w", nodeName, err)
+			metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
+		} else {
+			slog.Debug("Successfully cancelled latest quarantining events", "node", nodeName)
 		}
-
-		slog.Debug("Successfully cancelled latest quarantining events", "node", nodeName)
 	} else {
 		slog.Warn("eventWatcher is NIL - cannot cancel quarantining events in database", "node", nodeName)
 	}
 
-	metrics.TotalNodesManuallyUncordoned.WithLabelValues(nodeName).Inc()
-	metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
-	slog.Info("Set currentQuarantinedNodes to 0 for manually uncordoned node", "node", nodeName)
-
 	slog.Info("Successfully completed manual uncordon handling", "node", nodeName)
+
+	return nil
+}
+
+// handleManualUntaint handles the case when a node is manually untainted while having FQ annotations
+func (r *Reconciler) handleManualUntaint(nodeName string) error {
+	annotations, err := r.getNodeQuarantineAnnotations(nodeName)
+	if err != nil {
+		slog.Error("Failed to get node annotations", "node", nodeName, "error", err)
+		return fmt.Errorf("failed to get annotations for manually untainted node %s: %w", nodeName, err)
+	}
+
+	slog.Debug("Retrieved node annotations for manual untaint", "node", nodeName, "annotationCount", len(annotations))
+
+	annotationsToRemove := []string{}
+
+	if _, exists := annotations[common.QuarantineHealthEventAppliedTaintsAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAppliedTaintsAnnotationKey)
+	}
+
+	if _, exists := annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventAnnotationKey)
+	}
+
+	if _, exists := annotations[common.QuarantineHealthEventIsCordonedAnnotationKey]; exists {
+		annotationsToRemove = append(annotationsToRemove, common.QuarantineHealthEventIsCordonedAnnotationKey)
+	}
+
+	slog.Debug("Prepared annotations to remove", "node", nodeName, "count", len(annotationsToRemove))
+
+	newAnnotations := map[string]string{
+		common.QuarantinedNodeIsUntaintedManuallyAnnotationKey: common.QuarantinedNodeIsUntaintedManuallyAnnotationValue,
+	}
+
+	ctx := context.Background()
+
+	if err := r.k8sClient.HandleManualUntaintCleanup(
+		ctx,
+		nodeName,
+		annotationsToRemove,
+		newAnnotations,
+		[]string{statemanager.NVSentinelStateLabelKey},
+	); err != nil {
+		slog.Error("Failed to clean up manually untainted node", "node", nodeName, "error", err)
+		metrics.ProcessingErrors.WithLabelValues("manual_untaint_cleanup_error").Inc()
+
+		return fmt.Errorf("failed to clean up manually untainted node %s: %w", nodeName, err)
+	}
+
+	slog.Debug("Successfully completed K8s cleanup for manual untaint", "node", nodeName)
+
+	// Reset the quarantine gauge metric since the node is no longer quarantined
+	metrics.CurrentQuarantinedNodes.WithLabelValues(nodeName).Set(0)
+	metrics.TotalNodesManuallyUntainted.WithLabelValues(nodeName).Inc()
+	slog.Info("Set currentQuarantinedNodes to 0 after manual untaint", "node", nodeName)
+
+	// Cancel latest quarantining events (if eventWatcher is available)
+	if r.eventWatcher != nil {
+		slog.Debug("Calling CancelLatestQuarantiningEvents for manual untaint", "node", nodeName)
+
+		if err := r.eventWatcher.CancelLatestQuarantiningEvents(ctx, nodeName); err != nil {
+			slog.Error("Failed to cancel latest quarantining events for manually untainted node",
+				"node", nodeName, "error", err)
+			metrics.ProcessingErrors.WithLabelValues("mongodb_cancel_quarantine_error").Inc()
+		} else {
+			slog.Debug("Successfully cancelled latest quarantining events", "node", nodeName)
+		}
+	}
+
+	slog.Info("Successfully completed manual untaint handling", "node", nodeName)
 
 	return nil
 }

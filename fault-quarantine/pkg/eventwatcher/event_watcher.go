@@ -178,7 +178,7 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 			return fmt.Errorf("failed to update node quarantine status: %w", err)
 		}
 
-		emitNodeQuarantineDuration(status, &healthEventWithStatus)
+		EmitNodeQuarantineDuration(status, &healthEventWithStatus)
 	}
 
 	duration := time.Since(startTime).Seconds()
@@ -187,8 +187,8 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 	return nil
 }
 
-func emitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
-	if status == nil || (*status != model.Quarantined && *status != model.AlreadyQuarantined) {
+func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
+	if status == nil || *status != model.Quarantined {
 		return
 	}
 
@@ -280,7 +280,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
 	if err != nil {
 		if errors.Is(err, client.ErrNoDocuments) {
-			slog.Debug("No quarantining/unquarantining events found for node", "node", nodeName)
+			slog.Warn("No quarantining/unquarantining events found for node", "node", nodeName)
 
 			return nil
 		}
@@ -291,6 +291,12 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	}
 
 	if err := result.Decode(&latestEvent); err != nil {
+		if errors.Is(err, client.ErrNoDocuments) || client.IsNoDocumentsError(err) {
+			slog.Warn("No quarantining/unquarantining events found for node", "node", nodeName)
+
+			return nil
+		}
+
 		slog.Error("Error decoding latest event", "node", nodeName, "error", err)
 
 		return fmt.Errorf("error decoding latest quarantining event for node %s: %w", nodeName, err)

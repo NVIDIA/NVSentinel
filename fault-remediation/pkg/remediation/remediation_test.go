@@ -557,3 +557,21 @@ func TestRunLogCollectorJob(t *testing.T) {
 		})
 	}
 }
+
+func TestRemediationClientGetters(t *testing.T) {
+	fakeClient := fake.NewClientBuilder().Build()
+	cfg := config.TomlConfig{
+		Template: config.Template{MountPath: "templates"},
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_RESTART_BM.String(): {
+				Version: "v1alpha1", ApiGroup: "janitor.dgxc.nvidia.com", Kind: "RebootNode",
+				TemplateFileName: "rebootnode-template.yaml",
+			},
+		},
+	}
+	c, err := NewRemediationClient(fakeClient, false, cfg)
+	require.NoError(t, err)
+	assert.NotNil(t, c.GetAnnotationManager())
+	assert.NotNil(t, c.GetStatusChecker())
+	assert.Equal(t, "templates", c.GetConfig().Template.MountPath)
+}

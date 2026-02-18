@@ -131,7 +131,7 @@ func TestDryRunMode(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Verifying no RebootNode CR is created in dry-run mode")
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		helpers.WaitForNoCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 
 		return ctx
 	})
@@ -247,7 +247,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 		// Delete any existing RebootNode CRs before deleting the node
 		// This allows us to test that no NEW CRs are created after node deletion
 		t.Log("Cleaning up any existing RebootNode CRs before deleting node")
-		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
 		require.NoError(t, err)
 
 		node, err := helpers.GetNodeByName(ctx, client, testCtx.NodeName)
@@ -281,7 +281,7 @@ func TestNodeDeletedDuringDrain(t *testing.T) {
 		t.Log("Waiting beyond deleteAfterTimeout duration (1min + buffer)")
 		time.Sleep(1*time.Minute + 5*time.Second)
 
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		helpers.WaitForNoCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 
 		return ctx
 	})
@@ -529,7 +529,7 @@ func TestManualUncordonPropagation(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Verifying FR never created RebootNode CR (event had no remediation action)")
-		helpers.WaitForNoRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		helpers.WaitForNoCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 
 		return ctx
 	})
@@ -583,7 +583,7 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Waiting for fault remediation to create RebootNode CR (FR)")
-		helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		helpers.WaitForCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 
 		t.Log("Verifying remediation state annotation exists")
 		// Use Eventually because there's a race condition: the annotation is set when the CR is created,
@@ -643,7 +643,7 @@ func TestManualUncordonWithFaultRemediation(t *testing.T) {
 		require.NoError(t, err)
 
 		t.Log("Cleaning up: RebootNode CRs and namespace")
-		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
 		if err != nil {
 			t.Logf("Warning: failed to delete RebootNode CRs: %v", err)
 		}

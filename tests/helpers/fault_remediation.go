@@ -60,7 +60,7 @@ func SetupFaultRemediationTest(
 	}
 
 	t.Log("Cleaning up existing rebootnode CRs")
-	err = DeleteAllRebootNodeCRs(ctx, t, client)
+	err = DeleteAllCRs(ctx, t, client, RebootNodeGVK)
 	require.NoError(t, err)
 
 	nodeName := SelectTestNodeFromUnusedPool(ctx, t, client)
@@ -144,7 +144,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 
 	t.Log("Cleaning up rebootnode CRs")
 
-	err = DeleteAllRebootNodeCRs(ctx, t, client)
+	err = DeleteAllCRs(ctx, t, client, RebootNodeGVK)
 	if err != nil {
 		t.Logf("Warning: Failed to cleanup rebootnode CRs: %v", err)
 	}

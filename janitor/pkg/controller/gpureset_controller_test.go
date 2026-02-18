@@ -99,14 +99,6 @@ var _ = Describe("GPUReset Controller", func() {
 			return []string{gr.Spec.NodeName}
 		})).To(Succeed())
 
-		Expect(mgr.GetFieldIndexer().IndexField(ctx, &batchv1.Job{}, "metadata.controller", func(obj client.Object) []string {
-			owner := metav1.GetControllerOf(obj)
-			if owner == nil || owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != "GPUReset" {
-				return nil
-			}
-			return []string{owner.Name}
-		})).To(Succeed())
-
 		janitorNamespace := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "dgxc-janitor-system",
@@ -670,7 +662,7 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Create(ctx, reset1)).To(Succeed())
 
 			// Ensure a different creation timestamp
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(2 * time.Second)
 
 			By("Creating the second GPUReset for the same node")
 			reset2 := &v1alpha1.GPUReset{

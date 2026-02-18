@@ -21,12 +21,14 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+
 	"tests/helpers"
 )
 
@@ -105,7 +107,7 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 		client, err := c.NewClient()
 		require.NoError(t, err, "failed to create kubernetes client")
 
-		completedRebootNode := helpers.WaitForRebootNodeCR(ctx, t, client, selectedNodeName)
+		completedRebootNode := helpers.WaitForCR(ctx, t, client, selectedNodeName, helpers.RebootNodeGVK)
 		require.NotNil(t, completedRebootNode, "first RebootNode should complete")
 
 		crName := fmt.Sprintf("reboot-%s-third", selectedNodeName)
@@ -117,7 +119,7 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 		)
 		require.NoError(t, err, "third RebootNode CR creation should succeed after first completed")
 
-		completedRebootNode = helpers.WaitForRebootNodeCR(ctx, t, client, selectedNodeName)
+		completedRebootNode = helpers.WaitForCR(ctx, t, client, selectedNodeName, helpers.RebootNodeGVK)
 		assert.NotNil(t, completedRebootNode, "third RebootNode should complete")
 
 		return ctx
@@ -130,7 +132,7 @@ func TestJanitorWebhookRejectsDuplicateReboots(t *testing.T) {
 			return ctx
 		}
 
-		err = helpers.DeleteAllRebootNodeCRs(ctx, t, client)
+		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
 		if err != nil {
 			t.Logf("failed to delete RebootNode CRs: %v", err)
 		}
@@ -172,6 +174,80 @@ func TestJanitorWebhookRejectsNonExistentNode(t *testing.T) {
 
 		assert.Contains(t, err.Error(), "not found",
 			"error message should mention node not found")
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestJanitorNodeLocking(t *testing.T) {
+	feature := features.New("TestJanitorNodeLocking").
+		WithLabel("suite", "node-locking").
+		WithLabel("component", "janitor")
+
+	feature.Assess("RebootNode and GPUReset for same node run sequentially", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		// use a real node for the first RebootNode and GPUReset
+		nodeName, err := helpers.GetRealNodeName(ctx, client)
+		require.NoError(t, err, "failed to get real node")
+		t.Logf("Selected real node for Janitor node-level locking test: %s", nodeName)
+
+		// use a KWOK node for the second RebootNode
+		nodes, err := helpers.GetAllNodesNames(ctx, client)
+		require.NoError(t, err, "failed to get cluster nodes")
+		require.True(t, len(nodes) > 0, "no nodes found in cluster")
+		kwokNodeName := nodes[len(nodes)-1]
+
+		// Create a RebootNode and GPUReset targeting the same node and a second RebootNode targeting a different node
+		rebootNodeCRName := fmt.Sprintf("reboot-%s", nodeName)
+		_, err = helpers.CreateRebootNodeCR(ctx, client, nodeName, rebootNodeCRName)
+		require.NoError(t, err, "RebootNode should be created successfully")
+
+		rebootNodeCRName2 := fmt.Sprintf("reboot-%s", kwokNodeName)
+		_, err = helpers.CreateRebootNodeCR(ctx, client, kwokNodeName, rebootNodeCRName2)
+		require.NoError(t, err, "RebootNode should be created successfully")
+
+		gpuResetCRName := fmt.Sprintf("gpu-reset-%s", nodeName)
+		_, err = helpers.CreateGPUResetCR(ctx, client, nodeName, gpuResetCRName, "GPU-455d8f70-2051-db6c-0430-ffc457bff834")
+		require.NoError(t, err, "GPUReset should be created successfully")
+		t.Logf("Created RebootNodes: %s, %s and GPUReset %s", rebootNodeCRName, rebootNodeCRName2, gpuResetCRName)
+
+		// Wait for all 3 CRs to reach a terminal status
+		rebootNodeCR := helpers.WaitForCR(ctx, t, client, nodeName, helpers.RebootNodeGVK)
+		rebootNodeCR2 := helpers.WaitForCR(ctx, t, client, kwokNodeName, helpers.RebootNodeGVK)
+		gpuResetCR := helpers.WaitForCR(ctx, t, client, nodeName, helpers.GPUResetGVK)
+
+		// Confirm that start and completion times have no overlap for the RebootNode and GPUReset CRs targeting the same
+		// node. The 2 RebootNodes on different nodes should overlap.
+		startTimeReboot, completionTimeReboot, err := helpers.GetStartAndCompletionTimes(rebootNodeCR)
+		require.NoError(t, err)
+		startTimeReboot2, completionTimeReboot2, err := helpers.GetStartAndCompletionTimes(rebootNodeCR2)
+		require.NoError(t, err)
+		startTimeReset, completionTimeReset, err := helpers.GetStartAndCompletionTimes(gpuResetCR)
+		require.NoError(t, err)
+
+		t.Logf("RebootNode startTime: %s completionTime: %s", startTimeReboot.Format(time.RFC3339),
+			completionTimeReboot.Format(time.RFC3339))
+		t.Logf("RebootNode startTime: %s completionTime: %s", startTimeReboot2.Format(time.RFC3339),
+			completionTimeReboot2.Format(time.RFC3339))
+		t.Logf("GPUReset startTime: %s completionTime: %s", startTimeReset.Format(time.RFC3339),
+			completionTimeReset.Format(time.RFC3339))
+
+		periodOverlapsOnNode1 := startTimeReboot.Before(*completionTimeReset) && startTimeReset.Before(*completionTimeReboot)
+		periodOverlapsOnNode1And2 := startTimeReboot.Before(*completionTimeReboot2) && startTimeReboot2.Before(*completionTimeReboot)
+		assert.False(t, periodOverlapsOnNode1, "RebootNode and GPUReset periods should not overlap")
+		assert.True(t, periodOverlapsOnNode1And2, "RebootNode periods on different nodes should overlap")
+
+		// Clean up both CRs
+		err = helpers.DeleteCR(ctx, client, rebootNodeCR)
+		require.NoError(t, err, "RebootNode should be deleted successfully")
+		err = helpers.DeleteCR(ctx, client, rebootNodeCR2)
+		require.NoError(t, err, "RebootNode should be deleted successfully")
+		err = helpers.DeleteCR(ctx, client, gpuResetCR)
+		require.NoError(t, err, "GPUReset should be deleted successfully")
 
 		return ctx
 	})

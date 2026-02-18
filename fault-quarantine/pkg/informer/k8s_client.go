@@ -139,7 +139,16 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 
 	defer mu.(*sync.Mutex).Unlock()
 
-	return retry.OnError(retry.DefaultBackoff, errors.IsConflict, func() error {
+	// Increased retry attempts to handle node update conflicts when multiple modules
+	// attempt concurrent updates, preventing nodes from remaining cordoned with stale annotations.
+	backoff := wait.Backoff{
+		Steps:    10,                    // Increased from default 5
+		Duration: 20 * time.Millisecond, // Increased from default 10ms
+		Factor:   2.0,
+		Jitter:   0.1,
+	}
+
+	return retry.OnError(backoff, isRetryableError, func() error {
 		node, err := c.Clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -158,6 +167,22 @@ func (c *FaultQuarantineClient) UpdateNode(ctx context.Context, nodeName string,
 
 		return nil
 	})
+}
+
+func isRetryableError(err error) bool {
+	if errors.IsConflict(err) {
+		return true
+	}
+
+	if errors.IsServerTimeout(err) || errors.IsTooManyRequests(err) {
+		return true
+	}
+
+	if errors.IsTimeout(err) || errors.IsServiceUnavailable(err) {
+		return true
+	}
+
+	return false
 }
 
 func (c *FaultQuarantineClient) ReadCircuitBreakerState(
@@ -469,16 +494,38 @@ func (c *FaultQuarantineClient) handleUncordon(
 func (c *FaultQuarantineClient) HandleManualUncordonCleanup(
 	ctx context.Context,
 	nodename string,
-	taintsToRemove []config.Taint,
 	annotationsToRemove []string,
 	annotationsToAdd map[string]string,
 	labelsToRemove []string,
 ) error {
 	updateFn := func(node *v1.Node) error {
-		if len(taintsToRemove) > 0 {
-			c.removeNodeTaints(node, taintsToRemove)
+		if len(annotationsToRemove) > 0 || len(annotationsToAdd) > 0 {
+			c.updateNodeAnnotationsForManualUncordon(node, annotationsToRemove, annotationsToAdd)
 		}
 
+		if len(labelsToRemove) > 0 {
+			for _, key := range labelsToRemove {
+				delete(node.Labels, key)
+			}
+		}
+
+		return nil
+	}
+
+	return c.UpdateNode(ctx, nodename, updateFn)
+}
+
+// HandleManualUntaintCleanup atomically removes FQ annotations/taints/labels and adds manual untaint annotation
+// This is used when a node is manually untainted while having FQ quarantine state
+// Also uncordons the node to ensure full cleanup
+func (c *FaultQuarantineClient) HandleManualUntaintCleanup(
+	ctx context.Context,
+	nodename string,
+	annotationsToRemove []string,
+	annotationsToAdd map[string]string,
+	labelsToRemove []string,
+) error {
+	updateFn := func(node *v1.Node) error {
 		if len(annotationsToRemove) > 0 || len(annotationsToAdd) > 0 {
 			c.updateNodeAnnotationsForManualUncordon(node, annotationsToRemove, annotationsToAdd)
 		}

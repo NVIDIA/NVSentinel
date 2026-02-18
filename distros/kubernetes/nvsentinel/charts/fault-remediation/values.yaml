@@ -47,7 +47,7 @@ tolerations:
 # Allows different remediation actions to use different CRDs and operators
 maintenance:
   # Per-action remediation definitions
-  # Key is the RecommendedAction string (e.g., "COMPONENT_RESET", "RESTART_BM") 
+  # Key is the RecommendedAction string (e.g., "COMPONENT_RESET", "RESTART_BM")
   actions:
     COMPONENT_RESET:
       apiGroup: "janitor.dgxc.nvidia.com"
@@ -67,7 +67,7 @@ maintenance:
       completeConditionType: "NodeReady"
       templateFileName: "nvidia-reboot.yaml"
       equivalenceGroup: "restart"
-      
+
     # RESTART_BM is used for bare-metal node restarts.
     RESTART_BM:
       apiGroup: "janitor.dgxc.nvidia.com"

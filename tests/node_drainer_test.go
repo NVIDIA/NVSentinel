@@ -238,7 +238,7 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 			WithEntitiesImpacted([]helpers.EntityImpacted{
 				{
 					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-123",
+					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			})
 		helpers.SendHealthEvent(ctx, t, event)
@@ -291,7 +291,7 @@ func TestNodeDrainerPartialDrain(t *testing.T) {
 			WithEntitiesImpacted([]helpers.EntityImpacted{
 				{
 					EntityType:  "GPU_UUID",
-					EntityValue: "GPU-123",
+					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			})
 		helpers.SendHealthEvent(ctx, t, event)

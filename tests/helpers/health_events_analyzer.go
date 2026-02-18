@@ -179,7 +179,7 @@ func TriggerMultipleRemediationsCycle(ctx context.Context, t *testing.T, client 
 
 	t.Log("Delete any existing RebootNode CR")
 
-	err := DeleteAllRebootNodeCRs(ctx, t, client)
+	err := DeleteAllCRs(ctx, t, client, RebootNodeGVK)
 	require.NoError(t, err, "failed to delete all RebootNode CRs")
 
 	// inject 2 fatal errors and let the remediation cycle finish
@@ -196,7 +196,7 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 		WithRecommendedAction(int(pb.RecommendedAction_RESTART_VM))
 	SendHealthEvent(ctx, t, event)
 
-	rebootNodeCR := WaitForRebootNodeCR(ctx, t, client, nodeName)
+	rebootNodeCR := WaitForCR(ctx, t, client, nodeName, RebootNodeGVK)
 	require.NotNil(t, rebootNodeCR, "RebootNode CR should be created for XID error")
 
 	SendHealthyEvent(ctx, t, nodeName)
@@ -230,7 +230,7 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "node should be fully cleaned up before next remediation cycle")
 
-	err := DeleteRebootNodeCR(ctx, client, rebootNodeCR)
+	err := DeleteCR(ctx, client, rebootNodeCR)
 	require.NoError(t, err, "failed to delete RebootNode CR")
 }
 

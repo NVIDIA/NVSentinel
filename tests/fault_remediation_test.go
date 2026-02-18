@@ -46,7 +46,7 @@ func TestNewCRsAreCreatedAfterFaultsAreRemediated(t *testing.T) {
 
 		// Trigger first fault and wait for CR
 		helpers.TriggerFullRemediationFlow(ctx, t, client, testCtx.NodeName, 15)
-		cr1 := helpers.WaitForRebootNodeCR(ctx, t, client, testCtx.NodeName)
+		cr1 := helpers.WaitForCR(ctx, t, client, testCtx.NodeName, helpers.RebootNodeGVK)
 		t.Logf("First CR created and completed: %s", cr1.GetName())
 
 		// Send healthy event to clear the fault

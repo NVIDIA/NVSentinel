@@ -243,11 +243,13 @@ fault-remediation:
       "COMPONENT_RESET":  # Action 2
         apiGroup: "janitor.dgxc.nvidia.com"
         version: "v1alpha1"
-        kind: "RebootNode"
+        kind: "GPUReset"
         scope: "Cluster"
-        completeConditionType: "NodeReady"
-        templateFileName: "rebootnode-template.yaml"
-        equivalenceGroup: "restart"
+        completeConditionType: "Complete"
+        templateFileName: "gpureset-template.yaml"
+        equivalenceGroup: "reset"
+        supersedingEquivalenceGroups: ["restart"]
+        impactedEntityScope: "GPU_UUID"
       "RESTART_VM":  # Action 15
         apiGroup: "janitor.dgxc.nvidia.com"
         version: "v1alpha1"
@@ -266,11 +268,25 @@ fault-remediation:
         equivalenceGroup: "restart"
 
     templates:
+      "gpureset-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: GPUReset
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+          labels:
+            app.kubernetes.io/managed-by: nvsentinel
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          selector:
+            uuids:
+              - {{ .ImpactedEntityScopeValue }}
       "rebootnode-template.yaml": |
         apiVersion: {{ .ApiGroup }}/{{ .Version }}
         kind: RebootNode
         metadata:
           name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+          labels:
+            app.kubernetes.io/managed-by: nvsentinel
         spec:
           nodeName: {{ .HealthEvent.NodeName }}
 
@@ -3725,7 +3741,7 @@ janitor:
               disabledValue: "false"
         resetJob:
           image:
-            repository: "alpine"
+            repository: "public.ecr.aws/docker/library/alpine"
             tag: "latest"
             imagePullSecrets:
             - name: pull-secret
