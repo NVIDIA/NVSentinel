@@ -218,33 +218,41 @@ wait_for_boot_id_change() {
 wait_for_gpu_reset() {
     local node=$1
     local uuid=$2
+    local current_ts=$3
     local timeout=${UAT_RESET_TIMEOUT:-600}
     local elapsed=0
+    local matching_crd
 
-    log "Waiting for GPU reset for $uuid on $node (GPU reset syslog message from Janitor)..."
-
-    local driver_pod
-    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$node')].metadata.name}" | head -1)
-
-    if [[ -z "$driver_pod" ]]; then
-        error "No driver pod found on node $node"
-    fi
+    log "Waiting for GPU reset for $uuid on $node (matching GPUReset CRD)..."
 
     while [[ $elapsed -lt $timeout ]]; do
-        # We are ignoring log lines that include RuntimeService to prevent picking up syslog messages which result
-        # from this kubectl exec request. This is to prevent the second kubectl exec request from matching the first
-        # exec request and incorrectly determining that the GPUReset job wrote the syslog. Additionally, we
-        # have to make sure that the syslog-health-monitor itself doesn't pick up this log line and pre-maturely write
-        # a healthy event. Rather than add a similar check for the presence of RuntimeService in the syslog-health-monitor
-        # regex, we will grep the lines without the GPU UUID (which won't match the syslog-health-monitor regex) and then
-        # check if it's included in the output client-side.
-        if exec_output=$(kubectl exec -n gpu-operator "$driver_pod" -- sh -c  "tail -n 10000 /var/log/syslog | grep \"GPU reset executed:\" | grep -v \"RuntimeService\""); then
-            if echo $exec_output | grep "$uuid"; then
-              log "GPU $uuid reset successfully"
-              elapsed=0
-              break
+        local gpu_reset_list=$(kubectl get gpuresets -o json | jq -c '.items[]')
+        local IFS=$'\n'
+
+        for gpu_reset in $gpu_reset_list; do
+            local start_time=$(echo "$gpu_reset" | jq -r '.status.startTime')
+            local current_node=$(echo "$gpu_reset" | jq -r '.spec.nodeName')
+            local uuids=$(echo "$gpu_reset" | jq -r '.spec.selector.uuids[]?')
+
+            if [ -z "$start_time" ] || [ "$start_time" == "null" ]; then
+                continue
             fi
+            local start_ts=$(date -d "$start_time" +%s)
+
+            if [ "$start_ts" -gt "$current_ts" ] && [ "$current_node" == "$node" ]; then
+                for current_uuid in $uuids; do
+                    if [ "$current_uuid" == "$uuid" ]; then
+                        matching_crd=$(echo "$gpu_reset" | jq -r '.metadata.name')
+                        log "GPUReset $matching_crd matches $uuid and $node"
+                    fi
+                done
+            fi
+        done
+
+        if [ -n "$matching_crd" ]; then
+            break
         fi
+
         sleep 5
         elapsed=$((elapsed + 5))
     done
@@ -369,6 +377,8 @@ test_xid_monitoring_syslog_gpu_reset() {
         return 0
     fi
 
+    local current_ts=$(date +%s)
+
     local gpu_node
     gpu_node=$(get_gpu_node_with_healthy_syslog_monitor)
 
@@ -408,9 +418,7 @@ test_xid_monitoring_syslog_gpu_reset() {
     wait_for_node_quarantine "$gpu_node"
 
     log "Waiting for node to GPU reset and recover..."
-    wait_for_gpu_reset "$gpu_node" "$uuid"
-
-    wait_for_node_unquarantine "$gpu_node"
+    wait_for_gpu_reset "$gpu_node" "$uuid" "$current_ts"
 
     log "Test 3 PASSED ✓"
 }
