@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fabric-manager-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+data:
+  CHECK_INTERVAL: "30"
+  METRICS_PORT: "9101"
+  BOOT_GRACE_PERIOD: "300"
+  FLAP_WINDOW: "600"
+  FLAP_THRESHOLD: "3"
+  ENABLE_FABRIC_CHECK: "true"
+  ENABLE_PCIE_CHECK: "true"
+  ENABLE_CLOCK_CHECK: "true"
+  ENABLE_NVLINK_CHECK: "true"
+  ENABLE_CUDA_VALIDATION: "false"
+  CUDA_VALIDATION_INTERVAL: "600"
+  DCGM_EXPORTER_URL: "http://localhost:9400"
+  CLOCK_THROTTLE_RATIO: "0.85"
+  LOG_LEVEL: "INFO"

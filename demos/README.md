@@ -73,6 +73,18 @@ Run these locally on your laptop — no GPU hardware needed.
 
 **Best for:** Understanding how NVSentinel's node-drainer can delegate pod eviction to external controllers for custom drain workflows coordinated with HPC schedulers.
 
+### [Fabric Manager Monitor](fabric-manager-monitor/)
+
+**What it shows:** Standalone DaemonSet that detects Fabric Manager failures, PCIe link degradation, NVLink fabric issues, GPU clock throttling, and CUDA context failures — all invisible to DCGM-based monitoring.
+
+**Requirements:** Docker, kubectl, Kubernetes cluster with GPU nodes, Prometheus Operator
+
+**Best for:** Catching GPU infrastructure failures that NVSentinel's existing health monitors miss. Validated on P4d.24xlarge (A100-SXM4) with Amazon Linux 2023.
+
+**Related issue:** [#883](https://github.com/NVIDIA/NVSentinel/issues/883)
+
+**Note:** For native NVSentinel integration (gRPC HealthEvents to platform-connector), see [`health-monitors/fabric-manager-monitor/`](../health-monitors/fabric-manager-monitor/).
+
 
 ### [Local Custom Remediation Demo](local-custom-remediation-demo/)
 

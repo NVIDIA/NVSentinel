@@ -1,0 +1,134 @@
+# ServiceMonitor for Prometheus Operator auto-discovery
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: fabric-manager-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+    release: prometheus  # Required for Prometheus Operator discovery
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fabric-manager-monitor
+      app.kubernetes.io/instance: nvsentinel
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - nvsentinel
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+      scheme: http
+
+---
+# PrometheusRule with alert definitions
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: fabric-manager-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+    release: prometheus
+spec:
+  groups:
+    - name: gpu-node-health
+      rules:
+        # Critical: Fabric Manager down for 5 minutes
+        - alert: FabricManagerDown
+          expr: fabric_manager_up == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: fabric-manager-monitor
+          annotations:
+            summary: "Fabric Manager down on {{ $labels.node }}"
+            description: >-
+              Fabric Manager has been down for more than 5 minutes on node
+              {{ $labels.node }}. NVLink/NVSwitch fabric is non-functional.
+              Multi-GPU workloads will fail silently or hang.
+            runbook: "ssh to node and run: sudo systemctl restart nvidia-fabricmanager"
+
+        # Warning: Fabric Manager flapping (restarting repeatedly)
+        - alert: FabricManagerFlapping
+          expr: rate(fabric_manager_restarts_total[10m]) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            component: fabric-manager-monitor
+          annotations:
+            summary: "Fabric Manager flapping on {{ $labels.node }}"
+            description: >-
+              Fabric Manager is restarting repeatedly on {{ $labels.node }}.
+              Check journalctl -u nvidia-fabricmanager for root cause.
+
+        # Critical: NVLink degraded AND Fabric Manager down (correlated)
+        - alert: NVLinkFabricDegraded
+          expr: nvlink_fabric_healthy == 0 and on(node) fabric_manager_up == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: fabric-manager-monitor
+          annotations:
+            summary: "NVLink fabric degraded on {{ $labels.node }}"
+            description: >-
+              NVLink fabric is degraded AND Fabric Manager is down on
+              {{ $labels.node }}. All multi-GPU communication is broken.
+
+        # Warning: PCIe link downtraining
+        - alert: GPUPCIeLinkDegraded
+          expr: pcie_link_degraded == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: fabric-manager-monitor
+          annotations:
+            summary: "PCIe link degraded on {{ $labels.node }} GPU {{ $labels.gpu }}"
+            description: >-
+              GPU {{ $labels.gpu }} on {{ $labels.node }} has a degraded PCIe link.
+              Current link may be running at reduced width or generation.
+
+        # Warning: GPU clock throttled for 10 minutes
+        - alert: GPUClockThrottled
+          expr: gpu_clock_throttled == 1
+          for: 10m
+          labels:
+            severity: warning
+            component: fabric-manager-monitor
+          annotations:
+            summary: "GPU {{ $labels.gpu }} throttled on {{ $labels.node }}"
+            description: >-
+              GPU {{ $labels.gpu }} on {{ $labels.node }} has been clock-throttled
+              for more than 10 minutes. Check thermal and power conditions.
+
+        # Critical: GPU systemd service down
+        - alert: GPUServiceDown
+          expr: nvidia_service_up == 0
+          for: 3m
+          labels:
+            severity: critical
+            component: fabric-manager-monitor
+          annotations:
+            summary: "{{ $labels.service_name }} down on {{ $labels.node }}"
+            description: >-
+              NVIDIA service {{ $labels.service_name }} has been down for more
+              than 3 minutes on {{ $labels.node }}.
+
+        # Critical: CUDA validation failed
+        - alert: CUDAValidationFailed
+          expr: cuda_validation_passed == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: fabric-manager-monitor
+          annotations:
+            summary: "CUDA validation failed on {{ $labels.node }}"
+            description: >-
+              CUDA context creation or memory test failed on {{ $labels.node }}.
+              One or more GPUs may be in a bad state requiring driver reload or reboot.

@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fabric-manager-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fabric-manager-monitor
+      app.kubernetes.io/instance: nvsentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fabric-manager-monitor
+        app.kubernetes.io/instance: nvsentinel
+        app.kubernetes.io/component: metrics
+    spec:
+      serviceAccountName: fabric-manager-monitor
+      hostPID: true  # Required for nsenter to check host systemd services and nvidia-smi
+      nodeSelector:
+        # Matches any node with NVIDIA GPUs (set by GPU Feature Discovery)
+        feature.node.kubernetes.io/pci-10de.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: monitor
+          image: fabric-manager-monitor:latest
+          envFrom:
+            - configMapRef:
+                name: fabric-manager-monitor
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: metrics
+              containerPort: 9101
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            privileged: true  # Required for nsenter into host mount namespace
+          volumeMounts:
+            - name: host-dbus
+              mountPath: /var/run/dbus
+              readOnly: true
+      volumes:
+        - name: host-dbus
+          hostPath:
+            path: /var/run/dbus
+            type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fabric-manager-monitor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    app.kubernetes.io/name: fabric-manager-monitor
+    app.kubernetes.io/instance: nvsentinel
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: 9101
+      protocol: TCP
+  clusterIP: None  # Headless — each pod scraped individually
