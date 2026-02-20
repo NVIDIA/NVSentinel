@@ -158,6 +158,7 @@ class FabricManagerMonitor:
                                 node, gpu, pcie.link_gen_current, pcie.link_width_current,
                                 pcie.link_gen_max, pcie.link_width_max,
                             )
+                            overall_healthy = False
                 except Exception:
                     logger.exception("PCIe check failed")
                     health_check_errors_total.labels("pcie").inc()

@@ -35,7 +35,12 @@ kubectl apply -f k8s/servicemonitor.yaml
 
 # Verify
 kubectl get ds -n nvsentinel fabric-manager-monitor
-kubectl port-forward -n nvsentinel ds/fabric-manager-monitor 9101:9101
+
+# Port-forward to a specific node's pod
+NODE=<node-name>
+POD=$(kubectl get pod -n nvsentinel -o wide --field-selector spec.nodeName=${NODE} \
+  -l app=fabric-manager-monitor -o jsonpath='{.items[0].metadata.name}')
+kubectl port-forward -n nvsentinel pod/${POD} 9101:9101
 curl -s localhost:9101/metrics | grep fabric_manager_up
 ```
 

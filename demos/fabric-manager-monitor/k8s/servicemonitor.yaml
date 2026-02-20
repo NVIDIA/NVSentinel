@@ -57,7 +57,7 @@ spec:
 
         # Warning: Fabric Manager flapping (restarting repeatedly)
         - alert: FabricManagerFlapping
-          expr: rate(fabric_manager_restarts_total[10m]) > 0.5
+          expr: increase(fabric_manager_restarts_total[10m]) > 3
           for: 5m
           labels:
             severity: warning

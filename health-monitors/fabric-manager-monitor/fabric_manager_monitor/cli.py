@@ -73,7 +73,7 @@ from fabric_manager_monitor.protos import health_event_pb2 as platformconnector_
     default="EXECUTE_REMEDIATION",
     help="Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY",
 )
-@click.option("--verbose", type=bool, default=False, help="Enable debug logging")
+@click.option("--verbose", is_flag=True, default=False, help="Enable debug logging")
 def cli(
     platform_connector_socket,
     port,

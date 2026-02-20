@@ -8,7 +8,7 @@ flag unhealthy -- monitor.py correlates with Fabric Manager status.
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import requests
 
@@ -69,7 +69,7 @@ class NVLinkFabricChecker:
             bandwidth_zero=bandwidth_zero,
         )
 
-    def _fetch_metrics(self) -> Dict[str, float]:
+    def _fetch_metrics(self) -> Dict[str, List[float]]:
         """Fetch and parse Prometheus text format from DCGM exporter."""
         resp = requests.get(
             f"{self._dcgm_url}/metrics",
@@ -78,7 +78,7 @@ class NVLinkFabricChecker:
         resp.raise_for_status()
         return self._parse_prometheus_text(resp.text)
 
-    def _parse_prometheus_text(self, text: str) -> Dict[str, float]:
+    def _parse_prometheus_text(self, text: str) -> Dict[str, List[float]]:
         """Parse Prometheus exposition format into {metric_name: [values]}."""
         metrics: Dict[str, list] = {}
         for line in text.splitlines():

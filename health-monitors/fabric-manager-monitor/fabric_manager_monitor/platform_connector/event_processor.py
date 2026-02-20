@@ -33,8 +33,9 @@ from fabric_manager_monitor.protos import (
 )
 from . import metrics
 
-MAX_RETRIES = 10
-INITIAL_DELAY = 5
+MAX_RETRIES = 5
+INITIAL_DELAY = 2
+MAX_DELAY = 15
 
 
 @dataclasses.dataclass
@@ -153,7 +154,7 @@ class PlatformConnectorEventProcessor(CallbackInterface):
                 except grpc.RpcError as e:
                     log.error(f"Failed to send health event to UDS: {e}")
                     sleep(delay)
-                    delay *= 1.5
+                    delay = min(delay * 1.5, MAX_DELAY)
                     continue
         metrics.events_sent_error.inc()
         log.warning(
