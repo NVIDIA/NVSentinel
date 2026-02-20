@@ -63,7 +63,10 @@ class PlatformConnectorEventProcessor(CallbackInterface):
 
     def _build_cache_key(self, check_name: str, entities_impacted: List[dict]) -> str:
         """Build a cache key from check name and impacted entities."""
-        entity_str = "|".join(f"{e['entityType']}:{e['entityValue']}" for e in sorted(entities_impacted, key=str))
+        entity_str = "|".join(
+            f"{e['entityType']}:{e['entityValue']}"
+            for e in sorted(entities_impacted, key=lambda e: (e["entityType"], e["entityValue"]))
+        )
         return f"{check_name}|{entity_str}"
 
     def _get_recommended_action(self, result: CheckResult) -> int:

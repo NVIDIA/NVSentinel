@@ -85,9 +85,13 @@ class NVLinkFabricChecker:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Lines look like: DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL{gpu="0",...} 1234.0
+            # Lines: metric{labels} value [timestamp]
             try:
-                name_and_labels, value_str = line.rsplit(" ", 1)
+                parts = line.split(" ")
+                if len(parts) < 2:
+                    continue
+                name_and_labels = parts[0]
+                value_str = parts[1]  # value is always the second field
                 name = name_and_labels.split("{")[0]
                 value = float(value_str)
                 metrics.setdefault(name, []).append(value)

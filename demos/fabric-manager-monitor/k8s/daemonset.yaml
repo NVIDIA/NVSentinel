@@ -30,7 +30,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: monitor
-          image: fabric-manager-monitor:latest
+          image: fabric-manager-monitor:0.1.0  # pin to specific version
           envFrom:
             - configMapRef:
                 name: fabric-manager-monitor

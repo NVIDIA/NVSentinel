@@ -40,6 +40,7 @@ _LEVEL_MAP: Final[dict[str, int]] = {
     "warn": logging.WARNING,
     "warning": logging.WARNING,
     "error": logging.ERROR,
+    "critical": logging.CRITICAL,
 }
 
 

@@ -56,6 +56,11 @@ _ERROR_PATTERNS = {
         "timeout",
         "deadline exceeded",
     ],
+    ErrorCategory.GENERAL_ERROR: [
+        "error",
+        "fatal",
+        "failed",
+    ],
 }
 
 

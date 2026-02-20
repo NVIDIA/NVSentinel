@@ -13,9 +13,6 @@
 # limitations under the License.
 
 ARG VERSION="0.1.0"
-# GIT_COMMIT and BUILD_DATE are passed by CI (make/docker.mk) for OCI annotations
-ARG GIT_COMMIT="none"
-ARG BUILD_DATE=$(date -u +%FT%TZ)
 
 FROM public.ecr.aws/docker/library/python:3.10-bookworm AS build
 
@@ -47,8 +44,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        util-linux && \
-    rm -rf /var/lib/apt/lists/*
+        util-linux
 
 ENV PYTHONUNBUFFERED=1
 

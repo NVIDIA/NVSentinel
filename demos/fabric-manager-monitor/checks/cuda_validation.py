@@ -10,8 +10,8 @@ import logging
 import subprocess
 import sys
 import textwrap
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +61,8 @@ class CUDAValidationResult:
     """Result of CUDA validation across all GPUs."""
     passed: bool
     gpu_count: int = 0
-    errors: list = None
+    errors: List[str] = field(default_factory=list)
     error: Optional[str] = None  # check-level error (couldn't run at all)
-
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
 
 
 class CUDAValidator:
