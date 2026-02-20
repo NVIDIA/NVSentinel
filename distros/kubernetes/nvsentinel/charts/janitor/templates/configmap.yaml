@@ -76,6 +76,7 @@ data:
       {{- end }}
       {{- if .Values.config.controllers.gpuReset.resetJob }}
       resetJob:
+        runtimeClassName: "{{ .Values.config.controllers.gpuReset.resetJob.runtimeClassName }}"
         imageConfig:
           image: "{{ .Values.config.controllers.gpuReset.resetJob.image.repository }}:{{ .Values.config.controllers.gpuReset.resetJob.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           {{- with (.Values.config.controllers.gpuReset.resetJob.image.imagePullSecrets | default  (.Values.global).imagePullSecrets) }}

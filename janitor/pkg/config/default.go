@@ -137,7 +137,7 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, runtimeClassName string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	containerResources, err := getResources(resources)
@@ -145,7 +145,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 		return nil, err
 	}
 
-	return &batchv1.JobTemplateSpec{
+	job := &batchv1.JobTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
 		},
@@ -203,5 +203,10 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 				},
 			},
 		},
-	}, nil
+	}
+	if len(runtimeClassName) > 0 {
+		job.Spec.Template.Spec.RuntimeClassName = &runtimeClassName
+	}
+
+	return job, nil
 }

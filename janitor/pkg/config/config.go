@@ -94,8 +94,9 @@ type GPUResetControllerConfig struct {
 }
 
 type ResetJobConfig struct {
-	ImageConfig ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
-	Resources   ResourceRequirements `mapstructure:"resources" json:"resources"`
+	ImageConfig      ImageConfig          `mapstructure:"imageConfig" json:"imageConfig"`
+	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
+	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 }
 
 type ResourceRequirements struct {
@@ -159,7 +160,7 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 
 		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace,
 			config.GPUReset.ResetJob.ImageConfig.Image, config.GPUReset.ResetJob.ImageConfig.ImagePullSecrets,
-			config.GPUReset.ResetJob.Resources)
+			config.GPUReset.ResetJob.Resources, config.GPUReset.ResetJob.RuntimeClassName)
 		if err != nil {
 			return nil, err
 		}
