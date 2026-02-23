@@ -327,7 +327,7 @@ jobs:
         run: go install github.com/fgrosse/go-coverage-report/cmd/go-coverage-report@v1.2.0
 
       - name: Get changed files
-        uses: tj-actions/changed-files@aa08304bd477b800d468db44fe10f6c61f7f7b11
+        uses: tj-actions/changed-files@7dee1b0c1557f278e5c7dc244927139d78c0e22a
         id: changed-files
         with:
           write_output_files: true
