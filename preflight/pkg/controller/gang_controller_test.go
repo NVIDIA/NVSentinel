@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/coordinator"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
@@ -154,7 +155,8 @@ func setupTestEnv(t *testing.T, ctx context.Context, discoverer *mockDiscoverer)
 	require.NoError(t, err, "failed to create manager")
 
 	coord := gang.NewCoordinator(mgr.GetClient(), gang.DefaultCoordinatorConfig())
-	gangCtrl := NewGangController(mgr.GetClient(), coord, discoverer)
+	testCfg := &config.Config{}
+	gangCtrl := NewGangController(testCfg, mgr.GetClient(), coord, discoverer)
 
 	skipValidation := true
 	err = ctrl.NewControllerManagedBy(mgr).

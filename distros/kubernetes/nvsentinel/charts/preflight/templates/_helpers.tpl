@@ -153,3 +153,4 @@ Uses global.socketPath with unix:// prefix
 {{- "unix:///var/run/nvsentinel.sock" }}
 {{- end }}
 {{- end }}
+

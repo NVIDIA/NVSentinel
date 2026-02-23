@@ -60,6 +60,7 @@ declare -a dynamic_images=(
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/metadata-collector:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/node-drainer:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/platform-connectors:${SAFE_REF_NAME}"
+  "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/plugins-slinky-drainer:${SAFE_REF_NAME}"
   "${CONTAINER_REGISTRY}/${CONTAINER_ORG}/nvsentinel/syslog-health-monitor:${SAFE_REF_NAME}"
 )
 

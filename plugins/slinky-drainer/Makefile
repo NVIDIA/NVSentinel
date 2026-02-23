@@ -17,6 +17,10 @@ help:
 	@echo "  undeploy     - Remove deployment from Kubernetes"
 	@echo "  manifests    - Generate all manifests"
 	@echo "  clean        - Clean build artifacts"
+	@echo "  run          - Run the controller locally"
+	@echo "  test         - Run tests"
+	@echo "  lint         - Run golangci-lint"
+	@echo "  lint-test    - Lint and test with coverage (CI)"
 
 .PHONY: build
 build:
@@ -74,4 +78,11 @@ test:
 .PHONY: lint
 lint:
 	golangci-lint run --config ../../.golangci.yml
+
+.PHONY: lint-test
+lint-test: lint
+	go vet ./... && \
+	gotestsum --junitfile report.xml -- -race ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/plugins/slinky-drainer/... && \
+	go tool cover -func coverage.txt && \
+	gocover-cobertura < coverage.txt > coverage.xml
 

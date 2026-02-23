@@ -144,6 +144,7 @@ jobs:
       matrix:
         component:
           - dcgm-diag
+          - nccl-allreduce
           - nccl-loopback
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -193,6 +194,32 @@ jobs:
             ${{ matrix.component }}/coverage.txt
             ${{ matrix.component }}/report.xml
 
+  plugins-lint-test:
+    if: github.repository == 'nvidia/nvsentinel'
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        component:
+          - plugins/slinky-drainer
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-ci-env
+
+      - name: Run lint and test
+        run: make -C ${{ matrix.component }} lint-test
+
+      - name: Upload artifacts
+        uses: ./.github/actions/upload-test-artifacts
+        with:
+          component-name: slinky-drainer
+          file-paths: |
+            ${{ matrix.component }}/coverage.xml
+            ${{ matrix.component }}/coverage.txt
+            ${{ matrix.component }}/report.xml
+
   tilt-modules-lint-test:
     if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16
@@ -223,7 +250,7 @@ jobs:
     if: github.repository == 'nvidia/nvsentinel' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/pull-request/'))
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, tilt-modules-lint-test]
+    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, plugins-lint-test, tilt-modules-lint-test]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -420,7 +447,7 @@ jobs:
     if: github.repository == 'nvidia/nvsentinel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: linux-amd64-cpu16
     timeout-minutes: 15
-    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, tilt-modules-lint-test]
+    needs: [health-monitors-lint-test, preflight-checks-lint-test, modules-lint-test, plugins-lint-test, tilt-modules-lint-test]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 

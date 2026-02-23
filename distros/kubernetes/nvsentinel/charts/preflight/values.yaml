@@ -106,7 +106,7 @@ initContainers:
     #   limits:
     #     memory: 512Mi
 
-  # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
+  # # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
     image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
     env:
@@ -126,20 +126,121 @@ initContainers:
       - name: nvsentinel-socket
         mountPath: /var/run
 
+  # NCCL all-reduce test - validates multi-node GPU communication
+  # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
+  - name: preflight-nccl-allreduce
+    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
+    securityContext:
+      capabilities:
+        add: ["IPC_LOCK"]  # Required for RDMA memory registration
+    env:
+      # Benchmark configuration (fabric-agnostic defaults)
+      - name: BW_THRESHOLD_GBPS
+        value: "100"  # Minimum acceptable bus bandwidth in GB/s
+      - name: MESSAGE_SIZES
+        value: "4G"  # Message size for bandwidth test
+      - name: NCCL_DEBUG
+        value: "INFO"  # Set to WARN after transport selection is validated
+      - name: NCCL_DEBUG_SUBSYS
+        value: "INIT,NET"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+
+# Fabric-specific NCCL configuration.
+#
+# In production, the webhook automatically copies NCCL env vars and volume
+# mounts from the user's main container to preflight init containers using
+# ncclEnvPatterns and volumeMountPatterns. No manual fabric config needed.
+#
+# For standalone testing (busybox main container), use ncclAllreduceExtraEnv
+# and gangCoordination.extraHostPathMounts to provide fabric config explicitly.
+#
+# Tested fabric configurations (for reference):
+#
+#   InfiniBand (Azure NDv4/v5, 166 GB/s):
+#     Env: NCCL_TOPO_FILE=/etc/nccl/topo.xml, NCCL_IB_PCI_RELAXED_ORDERING=1,
+#          NCCL_SOCKET_IFNAME=eth0
+#     Mounts: ncclTopoShape=ndv4 (auto-creates topo ConfigMap)
+#
+#   EFA (AWS H100, 346 GB/s):
+#     Env: FI_EFA_USE_DEVICE_RDMA=1, FI_PROVIDER=efa, NCCL_SOCKET_IFNAME=eth0,
+#          LD_LIBRARY_PATH=/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:...
+#     Mounts: /opt/amazon from host; libefa.so.1 + libibverbs.so.1 bind-mounts
+#     Note: Dockerfile removes /opt/amazon to avoid ABI mismatch with host EFA
+#
+#   MNNVL + EFA (AWS GB200, 689 GB/s):
+#     Env: FI_EFA_USE_DEVICE_RDMA=1, NCCL_MNNVL_ENABLE=1, NCCL_NVLS_ENABLE=0,
+#          NCCL_NET_GDR_LEVEL=PHB, NCCL_P2P_NET_CHUNKSIZE=2097152
+#     Mounts: /opt/amazon-efa-ofi from host
+#     Requires: ComputeDomain DRA claim, Volcano DRA feature gate
+#
+#   TCPXO (GCP H100 A3+, 331 GB/s):
+#     Env: NCCL_SOCKET_IFNAME=eth1-8, NCCL_FASTRAK_*, NCCL_BUFFSIZE=8388608,
+#          NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE, NCCL_TUNER_PLUGIN, etc.
+#     Mounts: nvtcpxo-libraries → /usr/local/nvidia,
+#             nvtcpxo-aperture-devices → /dev/aperture_devices (from GKE webhook)
+
+# Glob patterns for environment variable names to copy from the user's main
+# containers to preflight init containers. Allows automatic inheritance of
+# fabric-specific NCCL config without manual configuration.
+ncclEnvPatterns:
+  - "NCCL_*"
+  - "FI_*"
+  - "LD_LIBRARY_PATH"
+  - "UCX_*"
+  - "TORCH_NCCL_*"
+  - "CUDA_DEVICE_ORDER"
+
+# Glob patterns for volume mount names to copy from the user's main
+# containers to preflight init containers. Allows automatic inheritance of
+# fabric-specific host mounts (EFA libs, TCPXO plugins, etc.).
+volumeMountPatterns:
+  - "host-opt-amazon*"
+  - "host-libefa*"
+  - "host-libibverbs*"
+  - "amazon-efa*"
+  - "nvtcpxo-*"
+  - "nccl-*"
+  - "dev-shm"
+
+# Additional env vars appended to the preflight-nccl-allreduce init container
+# AFTER user-container env vars are copied. Use for standalone testing or
+# to override specific values.
+ncclAllreduceExtraEnv: []
+
 gpuResourceNames:
   - "nvidia.com/gpu"
 
 # Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
 networkResourceNames:
   - "nvidia.com/mlnxnics"
+  - "vpc.amazonaws.com/efa"
+  # GCP multi-network resources (TCPXO)
+  - "networking.gke.io.networks/gpu-nic0"
+  - "networking.gke.io.networks/gpu-nic0.IP"
+  - "networking.gke.io.networks/gpu-nic1"
+  - "networking.gke.io.networks/gpu-nic1.IP"
+  - "networking.gke.io.networks/gpu-nic2"
+  - "networking.gke.io.networks/gpu-nic2.IP"
+  - "networking.gke.io.networks/gpu-nic3"
+  - "networking.gke.io.networks/gpu-nic3.IP"
+  - "networking.gke.io.networks/gpu-nic4"
+  - "networking.gke.io.networks/gpu-nic4.IP"
+  - "networking.gke.io.networks/gpu-nic5"
+  - "networking.gke.io.networks/gpu-nic5.IP"
+  - "networking.gke.io.networks/gpu-nic6"
+  - "networking.gke.io.networks/gpu-nic6.IP"
+  - "networking.gke.io.networks/gpu-nic7"
+  - "networking.gke.io.networks/gpu-nic7.IP"
 
 # Gang discovery configuration for multi-node preflight checks.
 # Default (empty): K8s 1.35+ native WorkloadRef API
 # For PodGroup-based schedulers, set name and other fields:
 gangDiscovery: {}
   # name: "volcano"
-  # annotationKeys: ["volcano.sh/pod-group"]
-  # labelKeys: ["volcano.sh/job-name"]  # optional fallback
+  # annotationKeys: ["scheduling.k8s.io/group-name"]
+  # labelKeys: []  # optional fallback
   # podGroupGVR:
   #   group: "scheduling.volcano.sh"
   #   version: "v1beta1"
@@ -156,6 +257,33 @@ gangCoordination:
   masterPort: 29500
   # Path where gang ConfigMap is mounted in init containers
   configMapMountPath: "/etc/preflight"
+  # NCCL topology ConfigMap name — required for Azure InfiniBand.
+  # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.
+  # Set explicitly to use a pre-existing ConfigMap, or use ncclTopoShape
+  # to auto-create one from the chart's bundled topology files.
+  ncclTopoConfigMap: ""
+  # VM shape for auto-creating the NCCL topology ConfigMap (IB only).
+  # Supported: "ndv4", "ndv5" (files shipped in charts/preflight/files/).
+  # When set, a ConfigMap is created from files/<shape>-topo.xml and
+  # ncclTopoConfigMap is auto-resolved to its name.
+  ncclTopoShape: ""
+
+  # Optional hostPath mounts injected into gang-aware preflight init containers.
+  # Fabric-specific; set via overlay files (e.g. values-mnnvl-efa.yaml).
+  extraHostPathMounts: []
+
+  # Mount pre-existing pod volumes into preflight init containers.
+  # Does NOT create new volumes — only adds volumeMounts for volumes already
+  # present in the pod (e.g. injected by a platform webhook).
+  # Fabric-specific; set via overlay files (e.g. values-tcpxo.yaml).
+  extraVolumeMounts: []
+
+  # Automatically mirror pod-level DRA resource claims (spec.resourceClaims)
+  # to preflight init containers' resources.claims. This ensures init
+  # containers get the same device access as main containers: GPUs, RDMA
+  # NICs, IMEX channels (GB200 MNNVL), etc. See ADR-026 §DRA Integration.
+  # Defaults to true when omitted.
+  # mirrorResourceClaims: true
 
 # Label-based namespace selection
 # Enable preflight in a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled

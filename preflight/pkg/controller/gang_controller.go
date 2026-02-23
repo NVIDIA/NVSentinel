@@ -20,10 +20,13 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -33,18 +36,21 @@ import (
 // GangController reconciles pods to update gang ConfigMaps with peer information.
 type GangController struct {
 	client.Client
+	cfg         *config.Config
 	coordinator *gang.Coordinator
 	discoverer  gang.GangDiscoverer
 }
 
 // NewGangController creates a new gang controller.
 func NewGangController(
+	cfg *config.Config,
 	client client.Client,
 	coordinator *gang.Coordinator,
 	discoverer gang.GangDiscoverer,
 ) *GangController {
 	return &GangController{
 		Client:      client,
+		cfg:         cfg,
 		coordinator: coordinator,
 		discoverer:  discoverer,
 	}
@@ -194,4 +200,60 @@ func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegist
 			"configMap", reg.ConfigMapName,
 			"error", err)
 	}
+
+	// Create NCCL topology ConfigMap in the pod's namespace if topo data
+	// is configured (e.g. Azure IB with ncclTopoShape). The topo XML is
+	// loaded from the webhook's config and written to a ConfigMap that the
+	// init container mounts at /etc/nccl/topo.xml.
+	c.ensureNCCLTopoConfigMap(ctx, reg.Namespace)
+}
+
+func (c *GangController) ensureNCCLTopoConfigMap(ctx context.Context, namespace string) {
+	gcfg := c.cfg.GangCoordination
+	if gcfg.NCCLTopoConfigMap == "" || gcfg.NCCLTopoData == "" {
+		return
+	}
+
+	existing := &corev1.ConfigMap{}
+
+	err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: gcfg.NCCLTopoConfigMap}, existing)
+	if err == nil {
+		return // already exists
+	}
+
+	if !errors.IsNotFound(err) {
+		slog.Error("Failed to check NCCL topo ConfigMap",
+			"namespace", namespace,
+			"configMap", gcfg.NCCLTopoConfigMap,
+			"error", err)
+
+		return
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      gcfg.NCCLTopoConfigMap,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/component": "nccl-topo",
+				"app.kubernetes.io/name":      "nvsentinel",
+			},
+		},
+		Data: map[string]string{
+			"topo.xml": gcfg.NCCLTopoData,
+		},
+	}
+
+	if err := c.Create(ctx, cm); err != nil && !errors.IsAlreadyExists(err) {
+		slog.Error("Failed to create NCCL topo ConfigMap",
+			"namespace", namespace,
+			"configMap", gcfg.NCCLTopoConfigMap,
+			"error", err)
+
+		return
+	}
+
+	slog.Info("Created NCCL topo ConfigMap",
+		"namespace", namespace,
+		"configMap", gcfg.NCCLTopoConfigMap)
 }

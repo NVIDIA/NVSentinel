@@ -221,7 +221,7 @@ wait_for_gpu_reset() {
     local current_ts=$3
     local timeout=${UAT_RESET_TIMEOUT:-600}
     local elapsed=0
-    local matching_crd
+    local matching_crd=""
 
     log "Waiting for GPU reset for $uuid on $node (matching GPUReset CRD)..."
 

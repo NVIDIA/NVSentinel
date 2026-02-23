@@ -130,6 +130,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	coordinator := gang.NewCoordinator(mgr.GetClient(), coordinatorConfig)
 
 	gangController := controller.NewGangController(
+		cfg,
 		mgr.GetClient(),
 		coordinator,
 		discoverer,

@@ -2,4 +2,3 @@ bin/
 dist/
 slinky-drainer
 hack/boilerplate.go.txt
-config/crd/nvsentinel.nvidia.com_drainrequests.yaml

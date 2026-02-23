@@ -25,6 +25,14 @@ data:
       {{- toYaml .Values.gpuResourceNames | nindent 6 }}
     networkResourceNames:
       {{- toYaml .Values.networkResourceNames | nindent 6 }}
+    {{- if .Values.ncclEnvPatterns }}
+    ncclEnvPatterns:
+      {{- toYaml .Values.ncclEnvPatterns | nindent 6 }}
+    {{- end }}
+    {{- if .Values.volumeMountPatterns }}
+    volumeMountPatterns:
+      {{- toYaml .Values.volumeMountPatterns | nindent 6 }}
+    {{- end }}
     dcgm:
       hostengineAddr: {{ include "preflight.dcgmHostengineAddr" . | quote }}
       diagLevel: {{ include "preflight.dcgmDiagLevel" . }}
@@ -37,5 +45,44 @@ data:
       timeout: {{ .Values.gangCoordination.timeout | quote }}
       masterPort: {{ .Values.gangCoordination.masterPort }}
       configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
+      {{- /* Resolve ncclTopoConfigMap: explicit or auto-generated from shape */}}
+      {{- $topoConfigMap := .Values.gangCoordination.ncclTopoConfigMap | default "" }}
+      {{- if and (not $topoConfigMap) .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoConfigMap = printf "%s-nccl-topo" (include "preflight.fullname" .) }}
+      {{- end }}
+      {{- if $topoConfigMap }}
+      ncclTopoConfigMap: {{ $topoConfigMap | quote }}
+      {{- end }}
+      {{- if .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoFile := printf "files/%s-topo.xml" .Values.gangCoordination.ncclTopoShape }}
+      {{- $topoContent := .Files.Get $topoFile }}
+      {{- if not $topoContent }}
+      {{- fail (printf "ncclTopoShape '%s' not found: %s does not exist in chart files/" .Values.gangCoordination.ncclTopoShape $topoFile) }}
+      {{- end }}
+      ncclTopoData: |
+{{ $topoContent | indent 8 }}
+      {{- end }}
+      {{- if .Values.gangCoordination.extraHostPathMounts }}
+      extraHostPathMounts:
+      {{- toYaml .Values.gangCoordination.extraHostPathMounts | nindent 8 }}
+      {{- end }}
+      {{- if .Values.gangCoordination.extraVolumeMounts }}
+      extraVolumeMounts:
+      {{- toYaml .Values.gangCoordination.extraVolumeMounts | nindent 8 }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.gangCoordination.mirrorResourceClaims) }}
+      mirrorResourceClaims: {{ .Values.gangCoordination.mirrorResourceClaims }}
+      {{- end }}
     initContainers:
-      {{- toYaml .Values.initContainers | nindent 6 }}
+      {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
+      {{- $result := list }}
+      {{- range .Values.initContainers }}
+      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
+      {{- $container := deepCopy . }}
+      {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
+      {{- $result = append $result $container }}
+      {{- else }}
+      {{- $result = append $result . }}
+      {{- end }}
+      {{- end }}
+      {{- toYaml $result | nindent 6 }}

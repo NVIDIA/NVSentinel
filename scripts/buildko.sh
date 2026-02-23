@@ -52,6 +52,7 @@ if [ ! -f go.work ]; then
     ./labeler \
     ./node-drainer \
     ./platform-connectors \
+    ./plugins/slinky-drainer \
     ./preflight
 fi
 
@@ -68,6 +69,7 @@ ko build "${KO_FLAGS[@]}" \
   ./labeler \
   ./node-drainer \
   ./platform-connectors \
+  ./plugins/slinky-drainer \
   ./preflight
 
 echo "built refs:"

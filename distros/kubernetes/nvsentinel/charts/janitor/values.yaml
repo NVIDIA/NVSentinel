@@ -147,6 +147,7 @@ config:
       serviceManager:
         name: "gpu-operator"
       resetJob:
+        runtimeClassName: "nvidia"
         # imagePullSecrets can be specified under image.imagePullSecrets, otherwise we will
         # fall back to global.imagePullSecrets.
         image:

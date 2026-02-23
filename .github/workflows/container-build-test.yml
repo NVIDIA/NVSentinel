@@ -68,6 +68,8 @@ jobs:
           # Preflight Checks (Docker-based)
           - component: preflight-dcgm-diag
             make_command: 'make -C preflight-checks/dcgm-diag docker-build'
+          - component: preflight-nccl-allreduce
+            make_command: 'make -C preflight-checks/nccl-allreduce docker-build'
           - component: preflight-nccl-loopback
             make_command: 'make -C preflight-checks/nccl-loopback docker-build'
           # GPU Reset (Docker-based)
@@ -133,6 +135,8 @@ jobs:
           - module: health-monitors/kubernetes-object-monitor
             path: .
           - module: event-exporter
+            path: .
+          - module: plugins/slinky-drainer
             path: .
           - module: preflight
             path: .

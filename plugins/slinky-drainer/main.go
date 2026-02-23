@@ -47,12 +47,14 @@ func main() {
 		drainTimeout     time.Duration
 		metricsAddr      string
 		probeAddr        string
+		slinkyNamespace  string
 	)
 
 	flag.DurationVar(&podCheckInterval, "pod-check-interval", 5*time.Second, "Polling interval for pod conditions")
 	flag.DurationVar(&drainTimeout, "drain-timeout", 30*time.Minute, "Overall drain operation timeout")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address for metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address for health probe endpoint")
+	flag.StringVar(&slinkyNamespace, "slinky-namespace", "slinky", "Namespace where Slinky workload pods run")
 
 	opts := zap.Options{
 		Development: false,
@@ -72,7 +74,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.NewDrainRequestReconciler(mgr, podCheckInterval, drainTimeout).SetupWithManager(mgr); err != nil {
+	if err := controller.NewDrainRequestReconciler(mgr,
+		podCheckInterval,
+		drainTimeout, slinkyNamespace).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Unable to create controller")
 		os.Exit(1)
 	}
@@ -88,7 +92,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting Slinky Drainer controller",
-		"slinkyNamespace", "slinky",
+		"slinkyNamespace", slinkyNamespace,
 		"podCheckInterval", podCheckInterval,
 		"drainTimeout", drainTimeout)
 

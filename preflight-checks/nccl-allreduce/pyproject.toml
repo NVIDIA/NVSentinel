@@ -1,0 +1,71 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[tool.poetry]
+name = "nvsentinel-nccl-allreduce"
+version = "0.1.0"
+description = "Multi-node NCCL all-reduce preflight check"
+authors = ["NVIDIA"]
+packages = [{include = "nccl_allreduce"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+grpcio = "^1.74.0"
+protobuf = ">=6.31.1,<7.0.0"
+structlog = "^25.1.0"
+# torch is provided by the base image, not installed via poetry
+
+[tool.poetry.group.dev.dependencies]
+black = "^26.1.0"
+pytest = "^9.0.0"
+coverage = "^7.13.2"
+ruff = "^0.11.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+nccl-allreduce = "nccl_allreduce.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["nccl_allreduce/tests"]
+pythonpath = ["."]
+
+[tool.black]
+line-length = 120
+exclude = '''
+(
+  /(
+      \.eggs
+    | \.git
+    | \.venv
+    | _build
+    | dist
+  )/
+  | nccl_allreduce/protos
+)
+'''
+
+[tool.ruff]
+line-length = 120
+exclude = ["nccl_allreduce/protos"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM"]
+ignore = ["D100", "D104", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+

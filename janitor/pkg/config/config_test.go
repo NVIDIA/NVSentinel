@@ -147,6 +147,7 @@ gpuResetController:
       critical: "true"
   cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50054
   resetJob:
+    runtimeClassName: "nvidia"
     imageConfig:
       image: "alpine:latest"
       imagePullSecrets:
@@ -232,7 +233,7 @@ gpuResetController:
 		},
 	}
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", imagePullSecrets,
-		resourceRequirements)
+		resourceRequirements, "nvidia")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -299,7 +300,58 @@ gpuResetController:
 	assert.True(t, config.GPUReset.Enabled)
 
 	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
-		ResourceRequirements{})
+		ResourceRequirements{}, "")
+	assert.NoError(t, err)
+	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
+
+	assert.Equal(t, gpuservices.Manager{Name: "gpu-operator"}, config.GPUReset.ServiceManager)
+}
+
+func TestLoadConfig_GPUResetControllerConfigEmptyRuntimeClass(t *testing.T) {
+	// Create a temporary config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "janitor-config.yaml")
+
+	configContent := `
+global:
+  timeout: 30m
+  manualMode: true
+  nodes:
+    exclusions:
+      - matchLabels:
+          environment: production
+          critical: "true"
+  cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50051
+
+rebootNodeController:
+  enabled: true
+
+terminateNodeController:
+  enabled: true
+
+gpuResetController:
+  enabled: true
+  resetJob:
+    runtimeClassName: ""
+    imageConfig:
+      image: "alpine:latest"
+  serviceManager:
+    name: "gpu-operator"
+`
+
+	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	require.NoError(t, err)
+
+	// Load the config
+	config, err := LoadConfig(configPath, testNamespace)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Verify GPUReset config
+	assert.True(t, config.GPUReset.Enabled)
+
+	expectedJobTemplate, err := getDefaultGPUResetJobTemplate(testNamespace, "alpine:latest", nil,
+		ResourceRequirements{}, "")
 	assert.NoError(t, err)
 	assert.Equal(t, expectedJobTemplate, config.GPUReset.ResolvedJobTemplate)
 
@@ -375,6 +427,7 @@ gpuResetController:
       critical: "true"
   cspProviderHost: janitor-provider.nvsentinel.svc.cluster.local:50054
   resetJob:
+	runtimeClassName: "nvidia"
     imageConfig:
       image: "alpine:latest"
       imagePullSecrets:

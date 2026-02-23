@@ -304,6 +304,8 @@ protos-generate: protos-clean ## Generate protobuf files from .proto sources
 	$(MAKE) -C health-monitors/gpu-health-monitor protos-generate
 	# Generate Python protobuf files for dcgm-diag preflight check
 	$(MAKE) -C preflight-checks/dcgm-diag protos-generate
+	# Generate Python protobuf files for nccl-allreduce preflight check
+	$(MAKE) -C preflight-checks/nccl-allreduce protos-generate
 
 # Check protobuf files
 .PHONY: protos-lint

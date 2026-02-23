@@ -1,0 +1,50 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slinky-drain-template
+  namespace: nvsentinel
+  labels:
+    app: slinky-drainer
+    app.kubernetes.io/name: slinky-drainer
+    app.kubernetes.io/component: drain-template
+data:
+  drain-template.yaml: |
+    apiVersion: nvsentinel.nvidia.com/v1alpha1
+    kind: DrainRequest
+    spec:
+      nodeName: {{ .HealthEvent.NodeName }}
+      checkName: {{ .HealthEvent.CheckName }}
+      recommendedAction: {{ .HealthEvent.RecommendedAction.String }}
+      errorCode:
+      {{- range .HealthEvent.ErrorCode }}
+      - "{{ . }}"
+      {{- end }}
+      healthEventID: {{ .EventID }}
+      entitiesImpacted:
+      {{- range .HealthEvent.EntitiesImpacted }}
+      - type: {{ .EntityType }}
+        value: "{{ .EntityValue }}"
+      {{- end }}
+      reason: "{{ .HealthEvent.Message }}"
+      podsToDrain:
+      {{- range $namespace, $pods := .PodsToDrain }}
+        {{ $namespace }}:
+        {{- range $pods }}
+        - {{ . }}
+        {{- end }}
+      {{- end }}
+

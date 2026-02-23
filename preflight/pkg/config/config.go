@@ -37,6 +37,18 @@ type FileConfig struct {
 	DCGM                 DCGMConfig             `yaml:"dcgm"`
 	GangDiscovery        GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination     GangCoordinationConfig `yaml:"gangCoordination"`
+
+	// NCCLEnvPatterns are glob patterns for environment variable names to copy
+	// from the pod's main containers to preflight init containers.
+	// This allows the init container to inherit fabric-specific NCCL config
+	// (e.g. NCCL_*, FI_*, LD_LIBRARY_PATH) from the user's training container.
+	NCCLEnvPatterns []string `yaml:"ncclEnvPatterns,omitempty"`
+
+	// VolumeMountPatterns are glob patterns for volume mount names to copy
+	// from the pod's main containers to preflight init containers.
+	// This allows the init container to inherit fabric-specific mounts
+	// (e.g. host EFA libs, TCPXO plugin volumes) from the user's container.
+	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
 }
 
 type DCGMConfig struct {
@@ -95,6 +107,73 @@ type GangCoordinationConfig struct {
 	// ConfigMapMountPath is the path where gang ConfigMap is mounted in init containers.
 	// Default: /etc/preflight
 	ConfigMapMountPath string `yaml:"configMapMountPath,omitempty"`
+
+	// NCCLTopoConfigMap is the name of the ConfigMap containing the NCCL topology file.
+	// Required for Azure NDv4/v5 - without it, NCCL cannot map GPUs to IB NICs.
+	// If NCCLTopoData is set, the controller auto-creates this ConfigMap in the
+	// pod's namespace; otherwise it must already exist.
+	NCCLTopoConfigMap string `yaml:"ncclTopoConfigMap,omitempty"`
+
+	// NCCLTopoData is the raw NCCL topology XML content.
+	// When set, the controller creates a ConfigMap with this data in the pod's
+	// namespace alongside the gang ConfigMap. This avoids manual ConfigMap
+	// creation per namespace for Azure IB topology files.
+	NCCLTopoData string `yaml:"ncclTopoData,omitempty"`
+
+	// ExtraHostPathMounts defines optional hostPath mounts to inject into
+	// gang-aware preflight init containers. This is useful for environments
+	// where NCCL/OFI/CUDA libraries must be sourced from host paths.
+	ExtraHostPathMounts []HostPathMount `yaml:"extraHostPathMounts,omitempty"`
+
+	// ExtraVolumeMounts references volumes that already exist in the pod
+	// (e.g. injected by another webhook) and adds mounts to init containers.
+	// Unlike ExtraHostPathMounts, this does NOT create new volumes — it only
+	// adds volumeMounts for volumes that are expected to be present.
+	// Primary use-case: GCP TCPXO daemon writes the FastRak NCCL plugin into
+	// a shared emptyDir; this option lets preflight init containers access it.
+	ExtraVolumeMounts []ExtraVolumeMount `yaml:"extraVolumeMounts,omitempty"`
+
+	// MirrorResourceClaims controls whether pod-level DRA resource claims
+	// (spec.resourceClaims) are automatically copied to preflight init
+	// containers' resources.claims. This ensures init containers get the
+	// same device access as the main containers (GPUs, RDMA, IMEX channels).
+	// Defaults to true when gang coordination is enabled.
+	// See ADR-026 §DRA Integration.
+	MirrorResourceClaims *bool `yaml:"mirrorResourceClaims,omitempty"`
+}
+
+// HostPathMount defines a hostPath volume and corresponding container mount.
+type HostPathMount struct {
+	// Name is the Kubernetes volume name.
+	Name string `yaml:"name"`
+
+	// HostPath is the node filesystem path to mount.
+	HostPath string `yaml:"hostPath"`
+
+	// MountPath is the path inside the init container.
+	MountPath string `yaml:"mountPath"`
+
+	// ReadOnly controls whether the mount is read-only. Defaults to true.
+	ReadOnly *bool `yaml:"readOnly,omitempty"`
+
+	// HostPathType is an optional Kubernetes HostPathType string.
+	// Supported values include: Directory, DirectoryOrCreate, File, FileOrCreate,
+	// Socket, CharDevice, and BlockDevice.
+	HostPathType string `yaml:"hostPathType,omitempty"`
+}
+
+// ExtraVolumeMount references an existing pod volume and defines where
+// to mount it inside preflight init containers. The volume itself must
+// already exist in the pod spec (typically injected by a platform webhook).
+type ExtraVolumeMount struct {
+	// Name is the volume name that already exists in the pod spec.
+	Name string `yaml:"name"`
+
+	// MountPath is the path inside the init container.
+	MountPath string `yaml:"mountPath"`
+
+	// ReadOnly controls whether the mount is read-only. Defaults to true.
+	ReadOnly *bool `yaml:"readOnly,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
@@ -151,6 +230,28 @@ func (c *GangCoordinationConfig) setDefaults() {
 
 	if c.ConfigMapMountPath == "" {
 		c.ConfigMapMountPath = "/etc/preflight"
+	}
+
+	// Default to mirroring DRA claims when gang coordination is enabled.
+	// Init containers need the same device access (GPUs, RDMA, IMEX) as
+	// main containers for multi-node NCCL tests.
+	if c.MirrorResourceClaims == nil {
+		t := true
+		c.MirrorResourceClaims = &t
+	}
+
+	trueVal := true
+
+	for i := range c.ExtraHostPathMounts {
+		if c.ExtraHostPathMounts[i].ReadOnly == nil {
+			c.ExtraHostPathMounts[i].ReadOnly = &trueVal
+		}
+	}
+
+	for i := range c.ExtraVolumeMounts {
+		if c.ExtraVolumeMounts[i].ReadOnly == nil {
+			c.ExtraVolumeMounts[i].ReadOnly = &trueVal
+		}
 	}
 }
 

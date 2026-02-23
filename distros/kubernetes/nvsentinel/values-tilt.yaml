@@ -3740,6 +3740,7 @@ janitor:
               enabledValue: "true"
               disabledValue: "false"
         resetJob:
+          runtimeClassName: ""
           image:
             repository: "public.ecr.aws/docker/library/alpine"
             tag: "latest"

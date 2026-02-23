@@ -120,6 +120,9 @@ jobs:
           - component: preflight-dcgm-diag
             make_command: 'make -C preflight-checks/dcgm-diag docker-publish'
             container_name: 'nvsentinel/preflight-dcgm-diag'
+          - component: preflight-nccl-allreduce
+            make_command: 'make -C preflight-checks/nccl-allreduce docker-publish'
+            container_name: 'nvsentinel/preflight-nccl-allreduce'
           - component: preflight-nccl-loopback
             make_command: 'make -C preflight-checks/nccl-loopback docker-publish'
             container_name: 'nvsentinel/preflight-nccl-loopback'

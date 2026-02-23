@@ -43,17 +43,20 @@ type DrainRequestReconciler struct {
 	Scheme           *runtime.Scheme
 	PodCheckInterval time.Duration
 	DrainTimeout     time.Duration
+	SlinkyNamespace  string
 }
 
 func NewDrainRequestReconciler(
 	mgr ctrl.Manager,
 	podCheckInterval, drainTimeout time.Duration,
+	slinkyNamespace string,
 ) *DrainRequestReconciler {
 	return &DrainRequestReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		PodCheckInterval: podCheckInterval,
 		DrainTimeout:     drainTimeout,
+		SlinkyNamespace:  slinkyNamespace,
 	}
 }
 
@@ -177,7 +180,7 @@ func (r *DrainRequestReconciler) getSlinkyPods(ctx context.Context, nodeName str
 	podList := &corev1.PodList{}
 
 	opts := []client.ListOption{
-		client.InNamespace("slinky"),
+		client.InNamespace(r.SlinkyNamespace),
 		client.MatchingFields{"spec.nodeName": nodeName},
 	}
 

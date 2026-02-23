@@ -205,6 +205,22 @@ builds:
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
 
+  - id: plugins-slinky-drainer
+    dir: plugins/slinky-drainer
+    main: .
+    ldflags:
+      - "-s -w"
+    annotations:
+      org.opencontainers.image.description: "Slinky drain plugin for coordinating node drains with Slinky/Slurm workloads"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel Slinky Drainer Plugin"
+      org.opencontainers.image.description: "Slinky drain plugin for coordinating node drains with Slinky/Slurm workloads"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
   - id: kubernetes-object-monitor
     dir: health-monitors/kubernetes-object-monitor
     main: .
