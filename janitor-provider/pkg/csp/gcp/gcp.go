@@ -104,15 +104,34 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 	return reqInfo, nil
 }
 
-// SendRebootSignal resets a GCE node by stopping and starting the instance.
-// nolint:dupl // Similar code pattern as SendTerminateSignal is expected for CSP operations
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) prepareInstanceOp(
+	ctx context.Context, node corev1.Node,
+) (*compute.InstancesClient, *gcpNodeFields, error) {
 	httpClient, err := getAuthenticatedHTTPClient(ctx)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 
 	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nodeFields, err := getNodeFields(node)
+	if err != nil {
+		if cerr := instancesClient.Close(); cerr != nil {
+			slog.Error("failed to close instances client", "error", cerr)
+		}
+
+		return nil, nil, err
+	}
+
+	return instancesClient, nodeFields, nil
+}
+
+// SendRebootSignal resets a GCE node by stopping and starting the instance.
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+	instancesClient, nodeFields, err := c.prepareInstanceOp(ctx, node)
 	if err != nil {
 		return "", err
 	}
@@ -123,20 +142,13 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		}
 	}()
 
-	nodeFields, err := getNodeFields(node)
-	if err != nil {
-		return "", err
-	}
+	slog.Info("Sending reset signal to", "node", nodeFields.instance)
 
-	resetReq := &computepb.ResetInstanceRequest{
+	op, err := instancesClient.Reset(ctx, &computepb.ResetInstanceRequest{
 		Instance: nodeFields.instance,
 		Project:  nodeFields.project,
 		Zone:     nodeFields.zone,
-	}
-
-	slog.Info("Sending reset signal to", "node", nodeFields.instance)
-
-	op, err := instancesClient.Reset(ctx, resetReq)
+	})
 	if err != nil {
 		return "", err
 	}
@@ -186,14 +198,8 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 }
 
 // SendTerminateSignal deletes a GCE node.
-// nolint:dupl // Similar code pattern as SendRebootSignal is expected for CSP operations
 func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (model.TerminateNodeRequestRef, error) {
-	httpClient, err := getAuthenticatedHTTPClient(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
+	instancesClient, nodeFields, err := c.prepareInstanceOp(ctx, node)
 	if err != nil {
 		return "", err
 	}
@@ -204,20 +210,13 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 		}
 	}()
 
-	nodeFields, err := getNodeFields(node)
-	if err != nil {
-		return "", err
-	}
+	slog.Info("Sending delete signal to", "node", nodeFields.instance)
 
-	deleteReq := &computepb.DeleteInstanceRequest{
+	op, err := instancesClient.Delete(ctx, &computepb.DeleteInstanceRequest{
 		Instance: nodeFields.instance,
 		Project:  nodeFields.project,
 		Zone:     nodeFields.zone,
-	}
-
-	slog.Info("Sending delete signal to", "node", nodeFields.instance)
-
-	op, err := instancesClient.Delete(ctx, deleteReq)
+	})
 	if err != nil {
 		return "", err
 	}
