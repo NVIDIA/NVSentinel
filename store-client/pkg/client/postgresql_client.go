@@ -48,47 +48,6 @@ const (
 	frameBoundCurrentRow = "CURRENT ROW"
 )
 
-var exprComparisonOps = map[string]string{
-	opGTE: ">=",
-	opGT:  ">",
-	opLTE: "<=",
-	opLT:  "<",
-	opEQ:  "=",
-	opNE:  "!=",
-}
-
-// exprOperatorHandlers maps MongoDB expression operators to their handler functions.
-// Initialized in init() to break the initialization cycle:
-// exprOperatorHandlers → handler methods → buildExprValue → buildExprOperator → exprOperatorHandlers.
-var exprOperatorHandlers map[string]func(*PostgreSQLClient, interface{}) (string, error)
-
-func init() {
-	exprOperatorHandlers = map[string]func(*PostgreSQLClient, interface{}) (string, error){
-		"$subtract": func(c *PostgreSQLClient, operand interface{}) (string, error) {
-			return c.buildArithmeticExpr("-", operand)
-		},
-		"$divide": func(c *PostgreSQLClient, operand interface{}) (string, error) {
-			return c.buildArithmeticExpr("/", operand)
-		},
-		"$toLong":          (*PostgreSQLClient).buildExprToLong,
-		"$size":            (*PostgreSQLClient).buildExprSize,
-		"$arrayElemAt":     (*PostgreSQLClient).buildExprArrayElemAt,
-		"$ifNull":          (*PostgreSQLClient).buildExprIfNull,
-		"$filter":          (*PostgreSQLClient).buildExprFilter,
-		"$map":             (*PostgreSQLClient).buildExprMap,
-		"$setIntersection": (*PostgreSQLClient).buildExprSetIntersection,
-		opEQ: func(c *PostgreSQLClient, operand interface{}) (string, error) {
-			return c.buildValueComparisonExpr("$eq", "=", operand)
-		},
-		"$in":             (*PostgreSQLClient).buildExprValueIn,
-		"$and":            (*PostgreSQLClient).buildExprValueAnd,
-		"$anyElementTrue": (*PostgreSQLClient).buildExprAnyElementTrue,
-		opLTE: func(c *PostgreSQLClient, operand interface{}) (string, error) {
-			return c.buildValueComparisonExpr("$lte", "<=", operand)
-		},
-	}
-}
-
 // PostgreSQLClient implements DatabaseClient for PostgreSQL
 type PostgreSQLClient struct {
 	db       *sql.DB
@@ -579,21 +538,28 @@ func (c *PostgreSQLClient) Find(ctx context.Context, filter interface{}, opts *F
 	//nolint:gosec // G201: table name from config, whereClause built with parameterized queries
 	query := fmt.Sprintf("SELECT id, document FROM %s WHERE %s", c.table, whereClause)
 
-	if opts != nil && opts.Sort != nil {
-		orderBy, err := c.buildOrderByClause(opts.Sort)
-		if err != nil {
-			return nil, err
+	// Apply options
+	//nolint:nestif // Nested complexity 5: required for handling optional sort/limit/skip
+	if opts != nil {
+		// Sort
+		if opts.Sort != nil {
+			orderBy, err := c.buildOrderByClause(opts.Sort)
+			if err != nil {
+				return nil, err
+			}
+
+			query += " " + orderBy
 		}
 
-		query += " " + orderBy
-	}
+		// Limit
+		if opts.Limit != nil {
+			query += fmt.Sprintf(" LIMIT %d", *opts.Limit)
+		}
 
-	if opts != nil && opts.Limit != nil {
-		query += fmt.Sprintf(" LIMIT %d", *opts.Limit)
-	}
-
-	if opts != nil && opts.Skip != nil {
-		query += fmt.Sprintf(" OFFSET %d", *opts.Skip)
+		// Skip/Offset
+		if opts.Skip != nil {
+			query += fmt.Sprintf(" OFFSET %d", *opts.Skip)
+		}
 	}
 
 	rows, err := c.db.QueryContext(ctx, query, args...)
@@ -664,8 +630,39 @@ func (c *PostgreSQLClient) CountDocuments(ctx context.Context, filter interface{
 // - $count: Count documents
 // - $group: Group and aggregate (limited support)
 // - $setWindowFields: Window functions with sortBy and output specifications
+//
+//nolint:gocyclo,cyclop,gocognit // Complexity 11: handles pipeline type conversion and stage routing - acceptable
 func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) (Cursor, error) {
-	if pipeline == nil {
+	// Convert pipeline to slice of stages
+	var stages []map[string]interface{}
+
+	switch p := pipeline.(type) {
+	case []interface{}:
+		for i, stage := range p {
+			stageMap, ok := stage.(map[string]interface{})
+			if !ok {
+				return nil, datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("pipeline stage %d must be a map", i),
+					fmt.Errorf("got type %T", stage),
+				)
+			}
+
+			stages = append(stages, stageMap)
+		}
+	case []map[string]interface{}:
+		stages = p
+	case datastore.Pipeline:
+		// Convert datastore.Pipeline to []map[string]interface{}
+		for _, doc := range p {
+			stageMap := make(map[string]interface{})
+			for _, elem := range doc {
+				stageMap[elem.Key] = c.convertDatastoreValue(elem.Value)
+			}
+
+			stages = append(stages, stageMap)
+		}
+	default:
 		return nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
 			"pipeline must be []interface{}, []map[string]interface{}, or datastore.Pipeline",
@@ -673,16 +670,13 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) 
 		)
 	}
 
-	stages, err := c.convertPipelineToStages(pipeline)
-	if err != nil {
-		return nil, err
-	}
-
+	// Build SQL query from pipeline stages
 	query, args, err := c.buildAggregationQuery(stages)
 	if err != nil {
 		return nil, err
 	}
 
+	// Execute query
 	rows, err := c.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, datastore.NewQueryError(
@@ -700,26 +694,11 @@ func (c *PostgreSQLClient) Aggregate(ctx context.Context, pipeline interface{}) 
 func (c *PostgreSQLClient) NewChangeStreamWatcher(
 	ctx context.Context, tokenConfig TokenConfig, pipeline interface{},
 ) (ChangeStreamWatcher, error) {
-	stages, err := c.convertPipelineToStages(pipeline)
-	if err != nil {
-		return nil, err
-	}
+	// Convert pipeline to slice of stages
+	var stages []map[string]interface{}
 
-	watcher := &PostgreSQLChangeStreamWatcher{
-		db:          c.db,
-		table:       c.table,
-		tokenConfig: tokenConfig,
-		pipeline:    stages,
-	}
-
-	return watcher, nil
-}
-
-func (c *PostgreSQLClient) convertPipelineToStages(pipeline interface{}) ([]map[string]interface{}, error) {
 	switch p := pipeline.(type) {
 	case []interface{}:
-		stages := make([]map[string]interface{}, 0, len(p))
-
 		for i, stage := range p {
 			stageMap, ok := stage.(map[string]interface{})
 			if !ok {
@@ -732,13 +711,10 @@ func (c *PostgreSQLClient) convertPipelineToStages(pipeline interface{}) ([]map[
 
 			stages = append(stages, stageMap)
 		}
-
-		return stages, nil
 	case []map[string]interface{}:
-		return p, nil
+		stages = p
 	case datastore.Pipeline:
-		stages := make([]map[string]interface{}, 0, len(p))
-
+		// Convert datastore.Pipeline to []map[string]interface{}
 		for _, doc := range p {
 			stageMap := make(map[string]interface{})
 			for _, elem := range doc {
@@ -747,10 +723,9 @@ func (c *PostgreSQLClient) convertPipelineToStages(pipeline interface{}) ([]map[
 
 			stages = append(stages, stageMap)
 		}
-
-		return stages, nil
 	case nil:
-		return []map[string]interface{}{}, nil
+		// Empty pipeline is OK
+		stages = []map[string]interface{}{}
 	default:
 		return nil, datastore.NewValidationError(
 			datastore.ProviderPostgreSQL,
@@ -758,6 +733,15 @@ func (c *PostgreSQLClient) convertPipelineToStages(pipeline interface{}) ([]map[
 			fmt.Errorf("got type %T", pipeline),
 		)
 	}
+
+	watcher := &PostgreSQLChangeStreamWatcher{
+		db:          c.db,
+		table:       c.table,
+		tokenConfig: tokenConfig,
+		pipeline:    stages,
+	}
+
+	return watcher, nil
 }
 
 // PostgreSQL-specific helper methods
@@ -885,6 +869,8 @@ func (c *PostgreSQLClient) buildFieldComparison(
 
 // buildExprCondition converts MongoDB $expr operator to PostgreSQL SQL
 // This handles aggregation expressions used in $match stages
+//
+//nolint:cyclop,gocognit // Complexity acceptable: handles logical and comparison operators in $match $expr
 func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) {
 	exprMap, ok := expr.(map[string]interface{})
 	if !ok {
@@ -895,18 +881,117 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 		)
 	}
 
+	// Handle logical and comparison operators
 	for op, value := range exprMap {
-		if sqlOp, ok := exprComparisonOps[op]; ok {
-			return c.buildComparisonExpr(sqlOp, value)
-		}
-
 		switch op {
 		case "$and":
-			return c.buildLogicalExpr("$and", " AND ", value)
+			// Handle logical AND
+			andArray, ok := value.([]interface{})
+			if !ok {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					"$and operand must be an array",
+					fmt.Errorf("got type %T", value),
+				)
+			}
+
+			if len(andArray) == 0 {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					"$and must have at least one expression",
+					nil,
+				)
+			}
+
+			var conditions []string
+
+			for i, andExpr := range andArray {
+				condition, err := c.buildExprCondition(andExpr)
+				if err != nil {
+					return "", fmt.Errorf("failed to build $and expression %d: %w", i, err)
+				}
+
+				conditions = append(conditions, condition)
+			}
+
+			return fmt.Sprintf("(%s)", strings.Join(conditions, " AND ")), nil
+
 		case "$or":
-			return c.buildLogicalExpr("$or", " OR ", value)
+			// Handle logical OR
+			orArray, ok := value.([]interface{})
+			if !ok {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					"$or operand must be an array",
+					fmt.Errorf("got type %T", value),
+				)
+			}
+
+			if len(orArray) == 0 {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					"$or must have at least one expression",
+					nil,
+				)
+			}
+
+			var conditions []string
+
+			for i, orExpr := range orArray {
+				condition, err := c.buildExprCondition(orExpr)
+				if err != nil {
+					return "", fmt.Errorf("failed to build $or expression %d: %w", i, err)
+				}
+
+				conditions = append(conditions, condition)
+			}
+
+			return fmt.Sprintf("(%s)", strings.Join(conditions, " OR ")), nil
+
+		case "$gte":
+			return c.buildComparisonExpr(">=", value)
+		case "$gt":
+			return c.buildComparisonExpr(">", value)
+		case opLTE:
+			return c.buildComparisonExpr("<=", value)
+		case "$lt":
+			return c.buildComparisonExpr("<", value)
+		case opEQ:
+			return c.buildComparisonExpr("=", value)
+		case "$ne":
+			return c.buildComparisonExpr("!=", value)
 		case "$in":
-			return c.buildInExpr(value)
+			// Handle $in operator for arrays
+			inArray, ok := value.([]interface{})
+			if !ok || len(inArray) != 2 {
+				return "", datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					"$in operator must have exactly 2 operands [field, array]",
+					fmt.Errorf("got %d operands", len(inArray)),
+				)
+			}
+
+			fieldExpr, err := c.buildExprValue(inArray[0])
+			if err != nil {
+				return "", fmt.Errorf("failed to build $in field expression: %w", err)
+			}
+
+			// Build the array expression with special handling for field references
+			// to preserve JSONB type
+			var arrayExpr string
+
+			if fieldRef, ok := inArray[1].(string); ok && strings.HasPrefix(fieldRef, "$") {
+				fieldPath := strings.TrimPrefix(fieldRef, "$")
+				arrayExpr = c.buildJSONPathAsJSONB(fieldPath)
+			} else {
+				arrayExpr, err = c.buildExprValue(inArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $in array expression: %w", err)
+				}
+			}
+
+			return fmt.Sprintf("%s = ANY(SELECT jsonb_array_elements_text(%s))", fieldExpr, arrayExpr), nil
+
 		default:
 			return "", datastore.NewQueryError(
 				datastore.ProviderPostgreSQL,
@@ -921,68 +1006,6 @@ func (c *PostgreSQLClient) buildExprCondition(expr interface{}) (string, error) 
 		"$expr must contain a comparison or logical operator",
 		nil,
 	)
-}
-
-func (c *PostgreSQLClient) buildLogicalExpr(opName, joiner string, value interface{}) (string, error) {
-	array, ok := value.([]interface{})
-	if !ok {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("%s operand must be an array", opName),
-			fmt.Errorf("got type %T", value),
-		)
-	}
-
-	if len(array) == 0 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("%s must have at least one expression", opName),
-			nil,
-		)
-	}
-
-	var conditions []string
-
-	for i, expr := range array {
-		condition, err := c.buildExprCondition(expr)
-		if err != nil {
-			return "", fmt.Errorf("failed to build %s expression %d: %w", opName, i, err)
-		}
-
-		conditions = append(conditions, condition)
-	}
-
-	return fmt.Sprintf("(%s)", strings.Join(conditions, joiner)), nil
-}
-
-func (c *PostgreSQLClient) buildInExpr(value interface{}) (string, error) {
-	inArray, ok := value.([]interface{})
-	if !ok || len(inArray) != 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$in operator must have exactly 2 operands [field, array]",
-			fmt.Errorf("got %d operands", len(inArray)),
-		)
-	}
-
-	fieldExpr, err := c.buildExprValue(inArray[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $in field expression: %w", err)
-	}
-
-	var arrayExpr string
-
-	if fieldRef, ok := inArray[1].(string); ok && strings.HasPrefix(fieldRef, "$") {
-		fieldPath := strings.TrimPrefix(fieldRef, "$")
-		arrayExpr = c.buildJSONPathAsJSONB(fieldPath)
-	} else {
-		arrayExpr, err = c.buildExprValue(inArray[1])
-		if err != nil {
-			return "", fmt.Errorf("failed to build $in array expression: %w", err)
-		}
-	}
-
-	return fmt.Sprintf("%s = ANY(SELECT jsonb_array_elements_text(%s))", fieldExpr, arrayExpr), nil
 }
 
 // buildComparisonExpr builds a comparison expression from an array of [leftExpr, rightExpr]
@@ -1010,31 +1033,466 @@ func (c *PostgreSQLClient) buildComparisonExpr(op string, value interface{}) (st
 }
 
 // buildExprValue converts a MongoDB expression value to SQL
+//
+//nolint:cyclop,gocognit // Complexity acceptable for expression building with many operators
 func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 	switch v := value.(type) {
 	case string:
+		// Field reference like "$healthevent.generatedtimestamp.seconds"
 		if strings.HasPrefix(v, "$") {
 			fieldPath := strings.TrimPrefix(v, "$")
 
+			// Use buildJSONPathWithCast for backward compatibility
+			// This will be overridden in specific operators that need JSONB preservation
 			return c.buildJSONPathWithCast(fieldPath), nil
 		}
 
+		// Plain string literal - return as SQL string literal
+		// This handles cases like {"$in": ["79", "$arrayField"]} where "79" is a literal value
+		// Escape single quotes to prevent SQL injection
 		escaped := strings.ReplaceAll(v, "'", "''")
 
 		return fmt.Sprintf("'%s'", escaped), nil
 	case map[string]interface{}:
-		return c.buildExprOperator(v)
+		// Handle operators like $subtract, $divide, $toLong, $size, $arrayElemAt, etc.
+		for op, operand := range v {
+			slog.Debug("Building expression for operator",
+				"operator", op,
+				"operand", operand)
+
+			switch op {
+			case "$subtract":
+				return c.buildArithmeticExpr("-", operand)
+			case "$divide":
+				return c.buildArithmeticExpr("/", operand)
+			case "$toLong":
+				// $toLong converts to integer, but we need to handle $$NOW specially
+				if operandStr, ok := operand.(string); ok && operandStr == "$$NOW" {
+					return "EXTRACT(EPOCH FROM NOW())::bigint * 1000", nil // MongoDB NOW is in milliseconds
+				}
+
+				return "", datastore.NewQueryError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("unsupported $toLong operand: %v", operand),
+					nil,
+				)
+			case "$size":
+				// $size returns the number of elements in an array
+				// PostgreSQL: jsonb_array_length(expression)
+				// The operand can be either a field reference or a complex expression
+				// Try to build the operand as an expression (could be $setIntersection, $map, etc.)
+				arrayExpr, err := c.buildExprValue(operand)
+				if err != nil {
+					return "", fmt.Errorf("failed to build $size operand: %w", err)
+				}
+
+				sql := fmt.Sprintf("jsonb_array_length(%s)", arrayExpr)
+
+				slog.Debug("Built $size expression",
+					"operand", operand,
+					"sql", sql)
+
+				return sql, nil
+			case "$arrayElemAt":
+				// $arrayElemAt returns element at specified index: [array, index]
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) != 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$arrayElemAt must have exactly 2 operands: [array, index]",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				// Build array expression
+				arrayExpr, err := c.buildExprValue(operandArray[0])
+				if err != nil {
+					return "", fmt.Errorf("failed to build array expression: %w", err)
+				}
+
+				// Build index expression
+				indexExpr, err := c.buildExprValue(operandArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build index expression: %w", err)
+				}
+
+				// PostgreSQL: (array_field->index)::text
+				// Note: PostgreSQL arrays are 0-indexed like MongoDB
+				sql := fmt.Sprintf("(%s->%s)::text", arrayExpr, indexExpr)
+
+				slog.Debug("Built $arrayElemAt expression",
+					"array", operandArray[0],
+					"index", operandArray[1],
+					"sql", sql)
+
+				return sql, nil
+			case "$ifNull":
+				// $ifNull returns first non-null value: [expr, defaultValue]
+				// PostgreSQL: COALESCE(expr, defaultValue)
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) != 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$ifNull must have exactly 2 operands: [expr, defaultValue]",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				// Special handling for field references to preserve JSONB type
+				// If the first operand is a field reference (string starting with $),
+				// use buildJSONPathAsJSONB to avoid casting arrays/objects to bigint
+				var exprSQL string
+
+				var err error
+
+				if fieldRef, ok := operandArray[0].(string); ok && strings.HasPrefix(fieldRef, "$") {
+					fieldPath := strings.TrimPrefix(fieldRef, "$")
+					exprSQL = c.buildJSONPathAsJSONB(fieldPath)
+				} else {
+					exprSQL, err = c.buildExprValue(operandArray[0])
+					if err != nil {
+						return "", fmt.Errorf("failed to build $ifNull expression: %w", err)
+					}
+				}
+
+				defaultSQL, err := c.buildExprValue(operandArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $ifNull default: %w", err)
+				}
+
+				sql := fmt.Sprintf("COALESCE(%s, %s)", exprSQL, defaultSQL)
+
+				slog.Debug("Built $ifNull expression",
+					"expression", operandArray[0],
+					"default", operandArray[1],
+					"sql", sql)
+
+				return sql, nil
+			case "$filter":
+				// $filter filters array elements: {input: array, cond: condition, as: varName}
+				// PostgreSQL: (SELECT jsonb_agg(elem) FROM jsonb_array_elements(input) AS elem WHERE condition)
+				operandMap, ok := operand.(map[string]interface{})
+				if !ok {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$filter must have a map with 'input' and 'cond' fields",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				inputExpr, err := c.buildExprValue(operandMap["input"])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $filter input: %w", err)
+				}
+
+				// The condition uses $$this to reference the current element
+				// We need to replace $$this with the elem variable
+				condExpr, err := c.buildFilterCondition(operandMap["cond"])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $filter condition: %w", err)
+				}
+
+				sql := fmt.Sprintf(
+					"(SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb) FROM jsonb_array_elements(%s) AS elem WHERE %s)",
+					inputExpr, condExpr,
+				)
+
+				slog.Debug("Built $filter expression",
+					"input", operandMap["input"],
+					"cond", operandMap["cond"],
+					"sql", sql)
+
+				return sql, nil
+			case "$map":
+				// $map transforms array elements: {input: array, in: expr, as: varName}
+				// PostgreSQL: (SELECT jsonb_agg(expression) FROM jsonb_array_elements(input) AS elem)
+				operandMap, ok := operand.(map[string]interface{})
+				if !ok {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$map must have a map with 'input' and 'in' fields",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				inputExpr, err := c.buildExprValue(operandMap["input"])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $map input: %w", err)
+				}
+
+				// The 'in' expression uses $$this to reference the current element
+				inExpr, err := c.buildMapExpression(operandMap["in"])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $map 'in' expression: %w", err)
+				}
+
+				sql := fmt.Sprintf(
+					"(SELECT COALESCE(jsonb_agg(%s), '[]'::jsonb) FROM jsonb_array_elements(%s) AS elem)",
+					inExpr, inputExpr,
+				)
+
+				slog.Debug("Built $map expression",
+					"input", operandMap["input"],
+					"in", operandMap["in"],
+					"sql", sql)
+
+				return sql, nil
+			case "$setIntersection":
+				// $setIntersection returns common elements: [array1, array2, ...]
+				// PostgreSQL: We'll use a subquery with array intersection logic
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) < 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$setIntersection must have at least 2 array operands",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				// Build SQL for first array
+				firstSQL, err := c.buildExprValue(operandArray[0])
+				if err != nil {
+					return "", fmt.Errorf("failed to build first $setIntersection array: %w", err)
+				}
+
+				// Build SQL for second array
+				secondSQL, err := c.buildExprValue(operandArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build second $setIntersection array: %w", err)
+				}
+
+				// PostgreSQL: Find intersection using jsonb elements
+				// SELECT jsonb_agg(DISTINCT elem) FROM jsonb_array_elements(array1) AS elem
+				// WHERE elem IN (SELECT jsonb_array_elements(array2))
+				sql := fmt.Sprintf(
+					"(SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb) "+
+						"FROM jsonb_array_elements(%s) AS elem "+
+						"WHERE elem IN (SELECT jsonb_array_elements(%s)))",
+					firstSQL, secondSQL,
+				)
+
+				slog.Debug("Built $setIntersection expression",
+					"arrays", operandArray,
+					"sql", sql)
+
+				return sql, nil
+			case opEQ:
+				// $eq compares two values for equality: [value1, value2]
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) != 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$eq must have exactly 2 operands",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				leftSQL, err := c.buildExprValue(operandArray[0])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $eq left operand: %w", err)
+				}
+
+				rightSQL, err := c.buildExprValue(operandArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $eq right operand: %w", err)
+				}
+
+				sql := fmt.Sprintf("(%s = %s)", leftSQL, rightSQL)
+
+				slog.Debug("Built $eq expression",
+					"left", operandArray[0],
+					"right", operandArray[1],
+					"sql", sql)
+
+				return sql, nil
+			case "$in":
+				// $in checks if a value is in an array: [value, array]
+				// PostgreSQL: value IN (array) or for JSONB: value = ANY(array)
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) != 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$in must have exactly 2 operands: [value, array]",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				// Build the value expression
+				valueSQL, err := c.buildExprValue(operandArray[0])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $in value operand: %w", err)
+				}
+
+				// Build the array expression with special handling for field references
+				// to preserve JSONB type
+				var arraySQL string
+
+				if fieldRef, ok := operandArray[1].(string); ok && strings.HasPrefix(fieldRef, "$") {
+					fieldPath := strings.TrimPrefix(fieldRef, "$")
+					arraySQL = c.buildJSONPathAsJSONB(fieldPath)
+				} else {
+					arraySQL, err = c.buildExprValue(operandArray[1])
+					if err != nil {
+						return "", fmt.Errorf("failed to build $in array operand: %w", err)
+					}
+				}
+
+				// For JSONB arrays, we need to use the @> operator or convert to text array
+				// Using: (array @> to_jsonb(value))
+				// This checks if the JSONB array contains the value
+				sql := fmt.Sprintf("(%s @> to_jsonb(%s))", arraySQL, valueSQL)
+
+				slog.Debug("Built $in expression",
+					"value", operandArray[0],
+					"array", operandArray[1],
+					"sql", sql)
+
+				return sql, nil
+			case "$and":
+				// $and performs logical AND on array of expressions: [expr1, expr2, ...]
+				// PostgreSQL: (expr1 AND expr2 AND ...)
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) < 1 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$and must have at least 1 expression",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				// Build all expressions
+				var expressions []string
+
+				for i, expr := range operandArray {
+					exprSQL, err := c.buildExprValue(expr)
+					if err != nil {
+						return "", fmt.Errorf("failed to build $and expression %d: %w", i, err)
+					}
+
+					expressions = append(expressions, exprSQL)
+				}
+
+				sql := fmt.Sprintf("(%s)", strings.Join(expressions, " AND "))
+
+				slog.Debug("Built $and expression",
+					"operandCount", len(operandArray),
+					"sql", sql)
+
+				return sql, nil
+			case "$anyElementTrue":
+				// $anyElementTrue returns true if any element in array evaluates to true
+				// PostgreSQL: (SELECT bool_or((value)::text::boolean) FROM jsonb_array_elements(<array_expr>) AS value)
+				// Build the array expression
+				arrayExpr, err := c.buildExprValue(operand)
+				if err != nil {
+					return "", fmt.Errorf("failed to build $anyElementTrue array expression: %w", err)
+				}
+
+				// Use bool_or to check if any element is true
+				// We need to convert JSONB elements to text, then to boolean
+				sql := fmt.Sprintf(
+					"(SELECT COALESCE(bool_or((value)::text::boolean), false) "+
+						"FROM jsonb_array_elements(%s) AS value)",
+					arrayExpr,
+				)
+
+				slog.Debug("Built $anyElementTrue expression",
+					"operand", operand,
+					"sql", sql)
+
+				return sql, nil
+			case opLTE:
+				// $lte performs less than or equal comparison: [expr1, expr2]
+				// PostgreSQL: (expr1 <= expr2)
+				operandArray, ok := operand.([]interface{})
+				if !ok || len(operandArray) != 2 {
+					return "", datastore.NewValidationError(
+						datastore.ProviderPostgreSQL,
+						"$lte must have exactly 2 operands",
+						fmt.Errorf("got %v", operand),
+					)
+				}
+
+				leftSQL, err := c.buildExprValue(operandArray[0])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $lte left operand: %w", err)
+				}
+
+				rightSQL, err := c.buildExprValue(operandArray[1])
+				if err != nil {
+					return "", fmt.Errorf("failed to build $lte right operand: %w", err)
+				}
+
+				sql := fmt.Sprintf("(%s <= %s)", leftSQL, rightSQL)
+
+				slog.Debug("Built $lte expression",
+					"left", operandArray[0],
+					"right", operandArray[1],
+					"sql", sql)
+
+				return sql, nil
+			default:
+				slog.Warn("Unsupported expression operator",
+					"operator", op,
+					"operand", operand)
+
+				return "", datastore.NewQueryError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("unsupported expression operator: %s", op),
+					nil,
+				)
+			}
+		}
 	case int, int64, float64:
+		// Literal number
 		return fmt.Sprintf("%v", v), nil
 	case bool:
+		// Literal boolean
 		if v {
 			return "true", nil
 		}
 
 		return "false", nil
 	case []interface{}:
-		return c.buildExprArray(v)
+		// Array literal (e.g., empty array [] or array with values)
+		// Convert to PostgreSQL JSONB array
+		if len(v) == 0 {
+			// Empty array
+			return "'[]'::jsonb", nil
+		}
+
+		// Build array elements
+		var elements []string
+
+		for _, elem := range v {
+			// Handle different element types
+			switch elemVal := elem.(type) {
+			case string:
+				// String literals in arrays - quote them for jsonb_build_array
+				elements = append(elements, fmt.Sprintf("'%s'", elemVal))
+			case map[string]interface{}:
+				// Convert map to JSON string
+				jsonBytes, err := json.Marshal(elemVal)
+				if err != nil {
+					return "", fmt.Errorf("failed to marshal array element: %w", err)
+				}
+
+				elements = append(elements, fmt.Sprintf("'%s'::jsonb", string(jsonBytes)))
+			default:
+				// For other types (numbers, booleans, expressions), try to convert them to expressions
+				elemSQL, err := c.buildExprValue(elem)
+				if err != nil {
+					return "", fmt.Errorf("failed to build array element: %w", err)
+				}
+
+				elements = append(elements, elemSQL)
+			}
+		}
+
+		// Build JSONB array: jsonb_build_array(elem1, elem2, ...)
+		return fmt.Sprintf("jsonb_build_array(%s)", strings.Join(elements, ", ")), nil
 	case nil:
+		// Null value
 		return "NULL", nil
 	}
 
@@ -1043,381 +1501,6 @@ func (c *PostgreSQLClient) buildExprValue(value interface{}) (string, error) {
 		fmt.Sprintf("unsupported expression value type: %T", value),
 		nil,
 	)
-}
-
-func (c *PostgreSQLClient) buildExprOperator(v map[string]interface{}) (string, error) {
-	for op, operand := range v {
-		slog.Debug("Building expression for operator",
-			"operator", op,
-			"operand", operand)
-
-		handler, ok := exprOperatorHandlers[op]
-		if !ok {
-			slog.Warn("Unsupported expression operator",
-				"operator", op,
-				"operand", operand)
-
-			return "", datastore.NewQueryError(
-				datastore.ProviderPostgreSQL,
-				fmt.Sprintf("unsupported expression operator: %s", op),
-				nil,
-			)
-		}
-
-		return handler(c, operand)
-	}
-
-	return "", datastore.NewQueryError(
-		datastore.ProviderPostgreSQL,
-		"empty expression map",
-		nil,
-	)
-}
-
-func (c *PostgreSQLClient) buildExprToLong(operand interface{}) (string, error) {
-	if operandStr, ok := operand.(string); ok && operandStr == "$$NOW" {
-		return "EXTRACT(EPOCH FROM NOW())::bigint * 1000", nil
-	}
-
-	return "", datastore.NewQueryError(
-		datastore.ProviderPostgreSQL,
-		fmt.Sprintf("unsupported $toLong operand: %v", operand),
-		nil,
-	)
-}
-
-func (c *PostgreSQLClient) buildExprSize(operand interface{}) (string, error) {
-	arrayExpr, err := c.buildExprValue(operand)
-	if err != nil {
-		return "", fmt.Errorf("failed to build $size operand: %w", err)
-	}
-
-	sql := fmt.Sprintf("jsonb_array_length(%s)", arrayExpr)
-
-	slog.Debug("Built $size expression",
-		"operand", operand,
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprArrayElemAt(operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) != 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$arrayElemAt must have exactly 2 operands: [array, index]",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	arrayExpr, err := c.buildExprValue(operandArray[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to build array expression: %w", err)
-	}
-
-	indexExpr, err := c.buildExprValue(operandArray[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to build index expression: %w", err)
-	}
-
-	sql := fmt.Sprintf("(%s->%s)::text", arrayExpr, indexExpr)
-
-	slog.Debug("Built $arrayElemAt expression",
-		"array", operandArray[0],
-		"index", operandArray[1],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprIfNull(operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) != 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$ifNull must have exactly 2 operands: [expr, defaultValue]",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	var exprSQL string
-
-	var err error
-
-	if fieldRef, ok := operandArray[0].(string); ok && strings.HasPrefix(fieldRef, "$") {
-		fieldPath := strings.TrimPrefix(fieldRef, "$")
-		exprSQL = c.buildJSONPathAsJSONB(fieldPath)
-	} else {
-		exprSQL, err = c.buildExprValue(operandArray[0])
-		if err != nil {
-			return "", fmt.Errorf("failed to build $ifNull expression: %w", err)
-		}
-	}
-
-	defaultSQL, err := c.buildExprValue(operandArray[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $ifNull default: %w", err)
-	}
-
-	sql := fmt.Sprintf("COALESCE(%s, %s)", exprSQL, defaultSQL)
-
-	slog.Debug("Built $ifNull expression",
-		"expression", operandArray[0],
-		"default", operandArray[1],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprFilter(operand interface{}) (string, error) {
-	operandMap, ok := operand.(map[string]interface{})
-	if !ok {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$filter must have a map with 'input' and 'cond' fields",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	inputExpr, err := c.buildExprValue(operandMap["input"])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $filter input: %w", err)
-	}
-
-	condExpr, err := c.buildFilterCondition(operandMap["cond"])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $filter condition: %w", err)
-	}
-
-	sql := fmt.Sprintf(
-		"(SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb) FROM jsonb_array_elements(%s) AS elem WHERE %s)",
-		inputExpr, condExpr,
-	)
-
-	slog.Debug("Built $filter expression",
-		"input", operandMap["input"],
-		"cond", operandMap["cond"],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprMap(operand interface{}) (string, error) {
-	operandMap, ok := operand.(map[string]interface{})
-	if !ok {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$map must have a map with 'input' and 'in' fields",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	inputExpr, err := c.buildExprValue(operandMap["input"])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $map input: %w", err)
-	}
-
-	inExpr, err := c.buildMapExpression(operandMap["in"])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $map 'in' expression: %w", err)
-	}
-
-	sql := fmt.Sprintf(
-		"(SELECT COALESCE(jsonb_agg(%s), '[]'::jsonb) FROM jsonb_array_elements(%s) AS elem)",
-		inExpr, inputExpr,
-	)
-
-	slog.Debug("Built $map expression",
-		"input", operandMap["input"],
-		"in", operandMap["in"],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprSetIntersection(operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) < 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$setIntersection must have at least 2 array operands",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	firstSQL, err := c.buildExprValue(operandArray[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to build first $setIntersection array: %w", err)
-	}
-
-	secondSQL, err := c.buildExprValue(operandArray[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to build second $setIntersection array: %w", err)
-	}
-
-	sql := fmt.Sprintf(
-		"(SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb) "+
-			"FROM jsonb_array_elements(%s) AS elem "+
-			"WHERE elem IN (SELECT jsonb_array_elements(%s)))",
-		firstSQL, secondSQL,
-	)
-
-	slog.Debug("Built $setIntersection expression",
-		"arrays", operandArray,
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprValueIn(operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) != 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$in must have exactly 2 operands: [value, array]",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	valueSQL, err := c.buildExprValue(operandArray[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to build $in value operand: %w", err)
-	}
-
-	var arraySQL string
-
-	if fieldRef, ok := operandArray[1].(string); ok && strings.HasPrefix(fieldRef, "$") {
-		fieldPath := strings.TrimPrefix(fieldRef, "$")
-		arraySQL = c.buildJSONPathAsJSONB(fieldPath)
-	} else {
-		arraySQL, err = c.buildExprValue(operandArray[1])
-		if err != nil {
-			return "", fmt.Errorf("failed to build $in array operand: %w", err)
-		}
-	}
-
-	sql := fmt.Sprintf("(%s @> to_jsonb(%s))", arraySQL, valueSQL)
-
-	slog.Debug("Built $in expression",
-		"value", operandArray[0],
-		"array", operandArray[1],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprValueAnd(operand interface{}) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) < 1 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			"$and must have at least 1 expression",
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	var expressions []string
-
-	for i, expr := range operandArray {
-		exprSQL, err := c.buildExprValue(expr)
-		if err != nil {
-			return "", fmt.Errorf("failed to build $and expression %d: %w", i, err)
-		}
-
-		expressions = append(expressions, exprSQL)
-	}
-
-	sql := fmt.Sprintf("(%s)", strings.Join(expressions, " AND "))
-
-	slog.Debug("Built $and expression",
-		"operandCount", len(operandArray),
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprAnyElementTrue(operand interface{}) (string, error) {
-	arrayExpr, err := c.buildExprValue(operand)
-	if err != nil {
-		return "", fmt.Errorf("failed to build $anyElementTrue array expression: %w", err)
-	}
-
-	sql := fmt.Sprintf(
-		"(SELECT COALESCE(bool_or((value)::text::boolean), false) "+
-			"FROM jsonb_array_elements(%s) AS value)",
-		arrayExpr,
-	)
-
-	slog.Debug("Built $anyElementTrue expression",
-		"operand", operand,
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildValueComparisonExpr(
-	opName, sqlOp string, operand interface{},
-) (string, error) {
-	operandArray, ok := operand.([]interface{})
-	if !ok || len(operandArray) != 2 {
-		return "", datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("%s must have exactly 2 operands", opName),
-			fmt.Errorf("got %v", operand),
-		)
-	}
-
-	leftSQL, err := c.buildExprValue(operandArray[0])
-	if err != nil {
-		return "", fmt.Errorf("failed to build %s left operand: %w", opName, err)
-	}
-
-	rightSQL, err := c.buildExprValue(operandArray[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to build %s right operand: %w", opName, err)
-	}
-
-	sql := fmt.Sprintf("(%s %s %s)", leftSQL, sqlOp, rightSQL)
-
-	slog.Debug(fmt.Sprintf("Built %s expression", opName),
-		"left", operandArray[0],
-		"right", operandArray[1],
-		"sql", sql)
-
-	return sql, nil
-}
-
-func (c *PostgreSQLClient) buildExprArray(v []interface{}) (string, error) {
-	if len(v) == 0 {
-		return "'[]'::jsonb", nil
-	}
-
-	var elements []string
-
-	for _, elem := range v {
-		switch elemVal := elem.(type) {
-		case string:
-			escaped := strings.ReplaceAll(elemVal, "'", "''")
-			elements = append(elements, fmt.Sprintf("'%s'", escaped))
-		case map[string]interface{}:
-			jsonBytes, err := json.Marshal(elemVal)
-			if err != nil {
-				return "", fmt.Errorf("failed to marshal array element: %w", err)
-			}
-
-			elements = append(elements, fmt.Sprintf("'%s'::jsonb", string(jsonBytes)))
-		default:
-			elemSQL, err := c.buildExprValue(elem)
-			if err != nil {
-				return "", fmt.Errorf("failed to build array element: %w", err)
-			}
-
-			elements = append(elements, elemSQL)
-		}
-	}
-
-	return fmt.Sprintf("jsonb_build_array(%s)", strings.Join(elements, ", ")), nil
 }
 
 // buildArithmeticExpr builds an arithmetic expression
@@ -1740,24 +1823,6 @@ func (c *PostgreSQLClient) buildAggregationQuery(stages []map[string]interface{}
 	return builder.buildFinalQuery(), builder.args, nil
 }
 
-var stageHandlers = map[string]func(*aggregationQueryBuilder, interface{}) error{
-	"$match":           (*aggregationQueryBuilder).processMatch,
-	"$sort":            (*aggregationQueryBuilder).processSort,
-	"$limit":           (*aggregationQueryBuilder).processLimit,
-	"$skip":            (*aggregationQueryBuilder).processSkip,
-	"$count":           (*aggregationQueryBuilder).processCount,
-	"$group":           (*aggregationQueryBuilder).processGroup,
-	"$setWindowFields": (*aggregationQueryBuilder).processSetWindowFields,
-	"$addFields":       (*aggregationQueryBuilder).processAddFields,
-}
-
-var unsupportedStageOperators = map[string]bool{
-	"$project": true,
-	"$lookup":  true,
-	"$unwind":  true,
-	"$facet":   true,
-}
-
 // aggregationQueryBuilder helps build aggregation queries with reduced complexity
 type aggregationQueryBuilder struct {
 	client       *PostgreSQLClient
@@ -1790,6 +1855,7 @@ type windowFieldOutput struct {
 	window   map[string]interface{} // window specification
 }
 
+//nolint:cyclop // Complexity 11: handles multiple aggregation operators - acceptable
 func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]interface{}) error {
 	if len(stage) != 1 {
 		return datastore.NewValidationError(
@@ -1800,23 +1866,36 @@ func (b *aggregationQueryBuilder) processStage(stageIndex int, stage map[string]
 	}
 
 	for operator, value := range stage {
-		if handler, ok := stageHandlers[operator]; ok {
-			return handler(b, value)
-		}
-
-		if unsupportedStageOperators[operator] {
+		switch operator {
+		case "$match":
+			return b.processMatch(value)
+		case "$sort":
+			return b.processSort(value)
+		case "$limit":
+			return b.processLimit(value)
+		case "$skip":
+			return b.processSkip(value)
+		case "$count":
+			return b.processCount(value)
+		case "$group":
+			return b.processGroup(value)
+		case "$setWindowFields":
+			return b.processSetWindowFields(value)
+		case "$addFields":
+			return b.processAddFields(value)
+		case "$project", "$lookup", "$unwind", "$facet":
 			return datastore.NewQueryError(
 				datastore.ProviderPostgreSQL,
 				fmt.Sprintf("aggregation operator %s not yet supported", operator),
 				fmt.Errorf("complex aggregation requires custom SQL implementation"),
 			)
+		default:
+			return datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("unknown aggregation operator: %s", operator),
+				nil,
+			)
 		}
-
-		return datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("unknown aggregation operator: %s", operator),
-			nil,
-		)
 	}
 
 	return nil
@@ -1941,6 +2020,7 @@ func (b *aggregationQueryBuilder) processGroup(value interface{}) error {
 	return nil
 }
 
+//nolint:cyclop // Complexity acceptable for window fields processing
 func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) error {
 	windowMap, ok := value.(map[string]interface{})
 	if !ok {
@@ -1955,12 +2035,14 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 		output: make(map[string]windowFieldOutput),
 	}
 
+	// Parse sortBy
 	if sortBy, hasSortBy := windowMap["sortBy"]; hasSortBy {
 		sortByMap, ok := sortBy.(map[string]interface{})
 		if !ok {
 			return datastore.NewValidationError(
 				datastore.ProviderPostgreSQL,
 				"sortBy must be a map",
+
 				fmt.Errorf("got type %T", sortBy),
 			)
 		}
@@ -1968,6 +2050,7 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 		spec.sortBy = sortByMap
 	}
 
+	// Parse output fields
 	output, hasOutput := windowMap["output"]
 	if !hasOutput {
 		return datastore.NewValidationError(
@@ -1986,10 +2069,53 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 		)
 	}
 
+	// Parse each output field
 	for fieldName, fieldSpec := range outputMap {
-		windowOut, err := parseWindowFieldOutput(fieldName, fieldSpec)
-		if err != nil {
-			return err
+		fieldSpecMap, ok := fieldSpec.(map[string]interface{})
+		if !ok {
+			return datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("output field '%s' must be a map", fieldName),
+				fmt.Errorf("got type %T", fieldSpec),
+			)
+		}
+
+		var windowOut windowFieldOutput
+
+		// Extract window specification
+		if window, hasWindow := fieldSpecMap["window"]; hasWindow {
+			windowSpecMap, ok := window.(map[string]interface{})
+			if !ok {
+				return datastore.NewValidationError(
+					datastore.ProviderPostgreSQL,
+					fmt.Sprintf("window spec for field '%s' must be a map", fieldName),
+					fmt.Errorf("got type %T", window),
+				)
+			}
+
+			windowOut.window = windowSpecMap
+		}
+
+		// Find the operator ($push, $sum, $max, etc.)
+		for op, operand := range fieldSpecMap {
+			if op == "window" {
+				continue // Already processed
+			}
+
+			if strings.HasPrefix(op, "$") {
+				windowOut.operator = op
+				windowOut.operand = operand
+
+				break
+			}
+		}
+
+		if windowOut.operator == "" {
+			return datastore.NewValidationError(
+				datastore.ProviderPostgreSQL,
+				fmt.Sprintf("output field '%s' must have a window function operator ($push, $sum, etc.)", fieldName),
+				nil,
+			)
 		}
 
 		spec.output[fieldName] = windowOut
@@ -1998,55 +2124,6 @@ func (b *aggregationQueryBuilder) processSetWindowFields(value interface{}) erro
 	b.windowFields = spec
 
 	return nil
-}
-
-func parseWindowFieldOutput(fieldName string, fieldSpec interface{}) (windowFieldOutput, error) {
-	fieldSpecMap, ok := fieldSpec.(map[string]interface{})
-	if !ok {
-		return windowFieldOutput{}, datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("output field '%s' must be a map", fieldName),
-			fmt.Errorf("got type %T", fieldSpec),
-		)
-	}
-
-	var windowOut windowFieldOutput
-
-	if window, hasWindow := fieldSpecMap["window"]; hasWindow {
-		windowSpecMap, ok := window.(map[string]interface{})
-		if !ok {
-			return windowFieldOutput{}, datastore.NewValidationError(
-				datastore.ProviderPostgreSQL,
-				fmt.Sprintf("window spec for field '%s' must be a map", fieldName),
-				fmt.Errorf("got type %T", window),
-			)
-		}
-
-		windowOut.window = windowSpecMap
-	}
-
-	for op, operand := range fieldSpecMap {
-		if op == "window" {
-			continue
-		}
-
-		if strings.HasPrefix(op, "$") {
-			windowOut.operator = op
-			windowOut.operand = operand
-
-			break
-		}
-	}
-
-	if windowOut.operator == "" {
-		return windowFieldOutput{}, datastore.NewValidationError(
-			datastore.ProviderPostgreSQL,
-			fmt.Sprintf("output field '%s' must have a window function operator ($push, $sum, etc.)", fieldName),
-			nil,
-		)
-	}
-
-	return windowOut, nil
 }
 
 func (b *aggregationQueryBuilder) processAddFields(value interface{}) error {
@@ -2253,30 +2330,66 @@ func (b *aggregationQueryBuilder) buildGroupQuery() string {
 	return fmt.Sprintf("SELECT %s FROM (%s) as subq", strings.Join(selectFields, ", "), subquery)
 }
 
+//nolint:gocyclo,cyclop // Complexity acceptable for window function SQL generation
 func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
+	// Build the base query with WHERE clause
 	baseQuery := b.query
 
 	if len(b.whereClauses) > 0 {
 		baseQuery += " WHERE " + strings.Join(b.whereClauses, " AND ")
 	}
 
-	orderByClause := b.buildWindowOrderByClause()
+	// Build ORDER BY clause from sortBy
+	var orderByClause string
 
+	if b.windowFields.sortBy != nil {
+		orderByParts := []string{}
+
+		for fieldPath, direction := range b.windowFields.sortBy {
+			jsonPath := b.client.buildJSONPathWithCast(fieldPath)
+
+			dir := "ASC"
+
+			if dirInt, ok := direction.(int); ok && dirInt < 0 {
+				dir = orderDESC
+			}
+
+			if dirFloat, ok := direction.(float64); ok && dirFloat < 0 {
+				dir = orderDESC
+			}
+
+			orderByParts = append(orderByParts, fmt.Sprintf("%s %s", jsonPath, dir))
+		}
+
+		if len(orderByParts) > 0 {
+			orderByClause = "ORDER BY " + strings.Join(orderByParts, ", ")
+		}
+	}
+
+	// Build SELECT clause with window functions
 	selectParts := []string{"id"}
+
+	// Start with the original document, we'll add window function results to it
 	documentExpr := "document"
 
+	// Add each window function field to the document
 	for fieldName, fieldOutput := range b.windowFields.output {
 		windowFuncSQL := b.buildWindowFunction(fieldOutput, orderByClause)
+
+		// Add the window function result to the document JSONB
+		// jsonb_set(document, '{fieldName}', window_function_result)
 		documentExpr = fmt.Sprintf("jsonb_set(%s, '{%s}', %s)",
 			documentExpr, fieldName, windowFuncSQL)
 	}
 
 	selectParts = append(selectParts, fmt.Sprintf("%s as document", documentExpr))
 
+	// Build final query
 	//nolint:gosec // G201: table name from client config, no user input
 	query := fmt.Sprintf("SELECT %s FROM (%s) AS base_query",
 		strings.Join(selectParts, ", "), baseQuery)
 
+	// Apply remaining clauses
 	if b.orderBy != "" {
 		query += " " + b.orderBy
 	}
@@ -2290,36 +2403,6 @@ func (b *aggregationQueryBuilder) buildWindowFieldsQuery() string {
 	}
 
 	return query
-}
-
-func (b *aggregationQueryBuilder) buildWindowOrderByClause() string {
-	if b.windowFields.sortBy == nil {
-		return ""
-	}
-
-	var orderByParts []string
-
-	for fieldPath, direction := range b.windowFields.sortBy {
-		jsonPath := b.client.buildJSONPathWithCast(fieldPath)
-
-		dir := "ASC"
-
-		if dirInt, ok := direction.(int); ok && dirInt < 0 {
-			dir = orderDESC
-		}
-
-		if dirFloat, ok := direction.(float64); ok && dirFloat < 0 {
-			dir = orderDESC
-		}
-
-		orderByParts = append(orderByParts, fmt.Sprintf("%s %s", jsonPath, dir))
-	}
-
-	if len(orderByParts) > 0 {
-		return "ORDER BY " + strings.Join(orderByParts, ", ")
-	}
-
-	return ""
 }
 
 func (b *aggregationQueryBuilder) buildWindowFunction(fieldOutput windowFieldOutput, orderByClause string) string {
@@ -2393,6 +2476,7 @@ func (b *aggregationQueryBuilder) buildWindowFrame(windowSpec map[string]interfa
 	return frameBoundUnbounded
 }
 
+//nolint:cyclop // Complexity acceptable for frame bound building
 func (b *aggregationQueryBuilder) buildFrameBound(bound interface{}, isStart bool) string {
 	switch v := bound.(type) {
 	case string:
@@ -2408,11 +2492,30 @@ func (b *aggregationQueryBuilder) buildFrameBound(bound interface{}, isStart boo
 			return frameBoundCurrentRow
 		}
 	case int:
-		return formatNumericBound(v)
+		if v == 0 {
+			return frameBoundCurrentRow
+		}
+
+		if v < 0 {
+			// Negative offset means PRECEDING
+			return fmt.Sprintf("%d PRECEDING", -v)
+		}
+		// Positive offset means FOLLOWING
+		return fmt.Sprintf("%d FOLLOWING", v)
 	case float64:
-		return formatNumericBound(int(v))
+		intVal := int(v)
+		if intVal == 0 {
+			return frameBoundCurrentRow
+		}
+
+		if intVal < 0 {
+			return fmt.Sprintf("%d PRECEDING", -intVal)
+		}
+
+		return fmt.Sprintf("%d FOLLOWING", intVal)
 	}
 
+	// Default
 	if isStart {
 		return "UNBOUNDED PRECEDING"
 	}
@@ -2420,18 +2523,7 @@ func (b *aggregationQueryBuilder) buildFrameBound(bound interface{}, isStart boo
 	return frameBoundCurrentRow
 }
 
-func formatNumericBound(val int) string {
-	if val == 0 {
-		return frameBoundCurrentRow
-	}
-
-	if val < 0 {
-		return fmt.Sprintf("%d PRECEDING", -val)
-	}
-
-	return fmt.Sprintf("%d FOLLOWING", val)
-}
-
+//nolint:gocyclo // Complexity acceptable for addFields SQL generation
 func (b *aggregationQueryBuilder) buildAddFieldsQuery() string {
 	// Build the base query with WHERE clause
 	baseQuery := b.query

@@ -131,7 +131,7 @@ func (c *Client) deleteAndVerifyContainer(
 	cmd := exec.CommandContext(dockerCtx, "docker", "rm", "-f", containerName)
 
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if dockerCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout while deleting container: %w", err)
 		}
 
@@ -153,7 +153,7 @@ func (c *Client) deleteAndVerifyContainer(
 
 	output, err := cmd.Output()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if dockerCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout while verifying container deletion: %w", err)
 		}
 
