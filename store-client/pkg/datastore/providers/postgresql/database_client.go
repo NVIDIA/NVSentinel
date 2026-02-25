@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -365,8 +366,6 @@ func (c *PostgreSQLDatabaseClient) UpdateManyDocuments(
 
 // convertFilterToWhereClause converts various filter formats to SQL WHERE clause
 // The paramOffset parameter specifies where parameter numbering should start
-//
-//nolint:cyclop,gocognit,nestif,dupl // Acceptable complexity for filter conversion
 func (c *PostgreSQLDatabaseClient) convertFilterToWhereClause(
 	filter interface{}, paramOffset int,
 ) (string, []interface{}, error) {
@@ -420,56 +419,54 @@ func (c *PostgreSQLDatabaseClient) convertUpdateToSetClause(
 	// This handles bson.M (primitive.M) which is essentially map[string]any
 	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
 	updateMap := c.convertFilterToMap(update)
-
-	//nolint:nestif // Update conversion requires nested conditionals for proper operator handling
-	if updateMap != nil {
-		// Handle MongoDB-style update with $set operator
-		var setFields map[string]interface{}
-
-		if setOp, hasSet := updateMap["$set"]; hasSet {
-			// The $set value might also be a bson.M, so use convertFilterToMap
-			setFields = c.convertFilterToMap(setOp)
-			if setFields == nil {
-				return "", nil, fmt.Errorf("$set value must be a map type, got: %T", setOp)
-			}
-
-			slog.Debug("Found $set operator", "setFields", setFields)
-		} else {
-			// Direct field updates (no $set operator)
-			setFields = updateMap
-			slog.Debug("Direct field updates (no $set)", "setFields", setFields)
-		}
-
-		// Build SET clause from fields
-		builder := query.NewUpdate()
-
-		for key, value := range setFields {
-			slog.Debug("Adding field to UpdateBuilder", "key", key, "value", value, "valueType", fmt.Sprintf("%T", value))
-			builder.Set(key, value)
-
-			// For health_events table, also update denormalized columns to keep them in sync
-			// This ensures PostgreSQL changelog triggers capture the correct values
-			if c.tableName == healthEventsTable && key == nodeQuarantinedStatusPath {
-				slog.Debug("Also updating denormalized node_quarantined column", "value", value)
-				builder.Set("node_quarantined", value)
-			}
-
-			// For maintenance_events table, when updating denormalized columns (like status),
-			// also update the corresponding field in the JSONB document to keep them in sync.
-			// This is critical because queries may filter on either the column or the document field.
-			if c.tableName == maintenanceEventTableName && key == "status" {
-				slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
-				// Use a special key format that ToSQL will recognize as a document field update
-				builder.SetDocumentField("status", value)
-			}
-		}
-
-		setClause, updateArgs := builder.ToSQL()
-
-		return setClause, updateArgs, nil
+	if updateMap == nil {
+		return "", nil, fmt.Errorf("unsupported update type: %T", update)
 	}
 
-	return "", nil, fmt.Errorf("unsupported update type: %T", update)
+	// Handle MongoDB-style update with $set operator
+	var setFields map[string]interface{}
+
+	if setOp, hasSet := updateMap["$set"]; hasSet {
+		// The $set value might also be a bson.M, so use convertFilterToMap
+		setFields = c.convertFilterToMap(setOp)
+		if setFields == nil {
+			return "", nil, fmt.Errorf("$set value must be a map type, got: %T", setOp)
+		}
+
+		slog.Debug("Found $set operator", "setFields", setFields)
+	} else {
+		// Direct field updates (no $set operator)
+		setFields = updateMap
+		slog.Debug("Direct field updates (no $set)", "setFields", setFields)
+	}
+
+	// Build SET clause from fields
+	builder := query.NewUpdate()
+
+	for key, value := range setFields {
+		slog.Debug("Adding field to UpdateBuilder", "key", key, "value", value, "valueType", fmt.Sprintf("%T", value))
+		builder.Set(key, value)
+
+		// For health_events table, also update denormalized columns to keep them in sync
+		// This ensures PostgreSQL changelog triggers capture the correct values
+		if c.tableName == healthEventsTable && key == nodeQuarantinedStatusPath {
+			slog.Debug("Also updating denormalized node_quarantined column", "value", value)
+			builder.Set("node_quarantined", value)
+		}
+
+		// For maintenance_events table, when updating denormalized columns (like status),
+		// also update the corresponding field in the JSONB document to keep them in sync.
+		// This is critical because queries may filter on either the column or the document field.
+		if c.tableName == maintenanceEventTableName && key == "status" {
+			slog.Debug("Also updating document.status field to keep in sync with column", "value", value)
+			// Use a special key format that ToSQL will recognize as a document field update
+			builder.SetDocumentField("status", value)
+		}
+	}
+
+	setClause, updateArgs := builder.ToSQL()
+
+	return setClause, updateArgs, nil
 }
 
 // updateDocuments is the internal implementation for update operations
@@ -490,9 +487,7 @@ func (c *PostgreSQLDatabaseClient) updateDocuments(
 		return nil, err
 	}
 
-	// Combine arguments (intentionally creating new slice to preserve original args)
-	//nolint:gocritic // appendAssign: intentional to avoid modifying updateArgs
-	allArgs := append(updateArgs, filterArgs...)
+	allArgs := slices.Concat(updateArgs, filterArgs)
 
 	// Build query
 	//nolint:gosec // G201: table name is controlled internally, not from user input
@@ -611,15 +606,15 @@ func (c *PostgreSQLDatabaseClient) upsertMaintenanceEvent(
 	}, nil
 }
 
-// convertMongoSortToSQL converts MongoDB-style sort options to SQL ORDER BY clause
-//
-//nolint:cyclop // Complexity is acceptable for handling multiple sort direction types
-func convertMongoSortToSQL(sortOptions interface{}) string {
-	const (
-		sqlAsc  = "ASC"
-		sqlDesc = "DESC"
-	)
+var knownColumnMappings = map[string]string{
+	"createdAt": "created_at",
+	"updatedAt": "updated_at",
+	"_id":       "id",
+	"id":        "id",
+}
 
+// convertMongoSortToSQL converts MongoDB-style sort options to SQL ORDER BY clause
+func convertMongoSortToSQL(sortOptions interface{}) string {
 	sortMap, ok := sortOptions.(map[string]interface{})
 	if !ok {
 		return ""
@@ -628,40 +623,15 @@ func convertMongoSortToSQL(sortOptions interface{}) string {
 	var orderByClauses []string
 
 	for field, direction := range sortMap {
-		// Convert MongoDB-style direction (1 for ASC, -1 for DESC) to SQL
-		sqlDirection := sqlAsc
-
-		switch v := direction.(type) {
-		case int:
-			if v < 0 {
-				sqlDirection = sqlDesc
-			}
-		case int64:
-			if v < 0 {
-				sqlDirection = sqlDesc
-			}
-		case float64:
-			if v < 0 {
-				sqlDirection = sqlDesc
-			}
+		sqlDirection := "ASC"
+		if isDescending(direction) {
+			sqlDirection = "DESC"
 		}
 
-		// Handle JSONB field paths
 		var fieldSQL string
 
-		if field == "createdAt" || field == "updatedAt" || field == "_id" || field == "id" {
-			// Use direct column access for known fields
-			// Convert to snake_case for PostgreSQL columns
-			switch field {
-			case "createdAt":
-				fieldSQL = "created_at"
-			case "updatedAt":
-				fieldSQL = "updated_at"
-			case "_id":
-				fieldSQL = "id"
-			default:
-				fieldSQL = field
-			}
+		if colName, ok := knownColumnMappings[field]; ok {
+			fieldSQL = colName
 		} else {
 			// For nested fields, use JSONB operators
 			fieldSQL = fmt.Sprintf("document->>'%s'", field)
@@ -675,6 +645,19 @@ func convertMongoSortToSQL(sortOptions interface{}) string {
 	}
 
 	return ""
+}
+
+func isDescending(direction interface{}) bool {
+	switch v := direction.(type) {
+	case int:
+		return v < 0
+	case int64:
+		return v < 0
+	case float64:
+		return v < 0
+	}
+
+	return false
 }
 
 // convertFilterToMap converts various filter types to map[string]interface{}.
@@ -853,7 +836,7 @@ func (c *PostgreSQLDatabaseClient) processLogicalOperator(operator string, value
 
 // FindOne finds a single document matching the filter
 //
-//nolint:cyclop,gocognit,nestif,dupl // Acceptable complexity for filter conversion with MongoDB operators
+//nolint:dupl // Similar structure to Find is intentional - different return types and options handling
 func (c *PostgreSQLDatabaseClient) FindOne(
 	ctx context.Context, filter interface{}, options *client.FindOneOptions,
 ) (client.SingleResult, error) {
@@ -866,7 +849,6 @@ func (c *PostgreSQLDatabaseClient) FindOne(
 	// This handles bson.M (primitive.M) which is essentially map[string]interface{}
 	filterMap := c.convertFilterToMap(filter)
 
-	//nolint:nestif // Nested complexity required for handling MongoDB-style filters
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
 	} else if filterMap != nil {
@@ -911,7 +893,7 @@ func (c *PostgreSQLDatabaseClient) FindOne(
 
 // Find finds all documents matching the filter
 //
-//nolint:cyclop,gocognit,nestif,dupl // Acceptable complexity for filter conversion with MongoDB operators
+//nolint:dupl // Similar structure to FindOne is intentional - different return types and options handling
 func (c *PostgreSQLDatabaseClient) Find(
 	ctx context.Context, filter interface{}, options *client.FindOptions,
 ) (client.Cursor, error) {
@@ -920,29 +902,14 @@ func (c *PostgreSQLDatabaseClient) Find(
 
 	var args []interface{}
 
-	//nolint:nestif // Nested complexity required for handling MongoDB-style filters
 	if builder, ok := filter.(*query.Builder); ok {
 		whereClause, args = builder.ToSQL()
 	} else {
-		// Try to convert filter to map[string]interface{} if it's a compatible type
-		// This handles bson.M (primitive.M) which is essentially map[string]interface{}
-		// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
-		filterMap := c.convertFilterToMap(filter)
+		var err error
 
-		if filterMap != nil {
-			// For maintenance_events table, transform field names to snake_case
-			if c.tableName == maintenanceEventTableName {
-				filterMap = transformFilterMapForMaintenanceEvents(filterMap)
-			}
-
-			conditions, err := c.filterMapToConditions(filterMap)
-			if err != nil {
-				return nil, err
-			}
-
-			whereClause, args = conditionsToWhereClause(conditions)
-		} else {
-			whereClause = trueString // No filter (filterMap was nil)
+		whereClause, args, err = c.resolveFilterMapForFind(filter)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -962,6 +929,32 @@ func (c *PostgreSQLDatabaseClient) Find(
 	}
 
 	return &postgresqlCursor{rows: rows}, nil
+}
+
+func (c *PostgreSQLDatabaseClient) resolveFilterMapForFind(
+	filter interface{},
+) (string, []interface{}, error) {
+	// Try to convert filter to map[string]interface{} if it's a compatible type
+	// This handles bson.M (primitive.M) which is essentially map[string]interface{}
+	// MongoDB builder factory may be registered as the default, so we may receive MongoDB types
+	filterMap := c.convertFilterToMap(filter)
+	if filterMap == nil {
+		return trueString, nil, nil
+	}
+
+	// For maintenance_events table, transform field names to snake_case
+	if c.tableName == maintenanceEventTableName {
+		filterMap = transformFilterMapForMaintenanceEvents(filterMap)
+	}
+
+	conditions, err := c.filterMapToConditions(filterMap)
+	if err != nil {
+		return "", nil, err
+	}
+
+	whereClause, args := conditionsToWhereClause(conditions)
+
+	return whereClause, args, nil
 }
 
 // CountDocuments counts documents matching the filter

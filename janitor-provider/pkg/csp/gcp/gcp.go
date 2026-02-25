@@ -104,31 +104,6 @@ func getNodeFields(node corev1.Node) (*gcpNodeFields, error) {
 	return reqInfo, nil
 }
 
-func (c *Client) prepareInstanceOp(
-	ctx context.Context, node corev1.Node,
-) (*compute.InstancesClient, *gcpNodeFields, error) {
-	httpClient, err := getAuthenticatedHTTPClient(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nodeFields, err := getNodeFields(node)
-	if err != nil {
-		if cerr := instancesClient.Close(); cerr != nil {
-			slog.Error("failed to close instances client", "error", cerr)
-		}
-
-		return nil, nil, err
-	}
-
-	return instancesClient, nodeFields, nil
-}
-
 // SendRebootSignal resets a GCE node by stopping and starting the instance.
 func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
 	instancesClient, nodeFields, err := c.prepareInstanceOp(ctx, node)
@@ -142,13 +117,15 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		}
 	}()
 
-	slog.Info("Sending reset signal to", "node", nodeFields.instance)
-
-	op, err := instancesClient.Reset(ctx, &computepb.ResetInstanceRequest{
+	resetReq := &computepb.ResetInstanceRequest{
 		Instance: nodeFields.instance,
 		Project:  nodeFields.project,
 		Zone:     nodeFields.zone,
-	})
+	}
+
+	slog.Info("Sending reset signal to", "node", nodeFields.instance)
+
+	op, err := instancesClient.Reset(ctx, resetReq)
 	if err != nil {
 		return "", err
 	}
@@ -210,16 +187,43 @@ func (c *Client) SendTerminateSignal(ctx context.Context, node corev1.Node) (mod
 		}
 	}()
 
-	slog.Info("Sending delete signal to", "node", nodeFields.instance)
-
-	op, err := instancesClient.Delete(ctx, &computepb.DeleteInstanceRequest{
+	deleteReq := &computepb.DeleteInstanceRequest{
 		Instance: nodeFields.instance,
 		Project:  nodeFields.project,
 		Zone:     nodeFields.zone,
-	})
+	}
+
+	slog.Info("Sending delete signal to", "node", nodeFields.instance)
+
+	op, err := instancesClient.Delete(ctx, deleteReq)
 	if err != nil {
 		return "", err
 	}
 
 	return model.TerminateNodeRequestRef(op.Proto().GetName()), nil
+}
+
+func (c *Client) prepareInstanceOp(
+	ctx context.Context, node corev1.Node,
+) (*compute.InstancesClient, *gcpNodeFields, error) {
+	httpClient, err := getAuthenticatedHTTPClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	instancesClient, err := compute.NewInstancesRESTClient(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nodeFields, err := getNodeFields(node)
+	if err != nil {
+		if cerr := instancesClient.Close(); cerr != nil {
+			slog.Error("failed to close instances client", "error", cerr)
+		}
+
+		return nil, nil, err
+	}
+
+	return instancesClient, nodeFields, nil
 }

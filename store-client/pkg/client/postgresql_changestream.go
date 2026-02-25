@@ -78,44 +78,13 @@ func (e *postgresqlEvent) GetRecordUUID() (string, error) {
 	return e.recordID, nil
 }
 
-//nolint:cyclop,gocognit // Complexity acceptable for dual-case field name lookups (MongoDB vs PostgreSQL)
 func (e *postgresqlEvent) GetNodeName() (string, error) {
-	// Try to extract node name from new values (INSERT/UPDATE)
-	//nolint:nestif // Nested complexity 8: required for extracting node name from JSONB structure
-	if e.newValues != nil {
-		if document, ok := e.newValues["document"].(map[string]interface{}); ok {
-			if healthEvent, ok := document["healthevent"].(map[string]interface{}); ok {
-				// Try lowercase first (MongoDB compatibility)
-				if nodeName, ok := healthEvent["nodename"].(string); ok {
-					return nodeName, nil
-				}
-				// Try camelCase (PostgreSQL JSON)
-				if nodeName, ok := healthEvent["nodeName"].(string); ok {
-					return nodeName, nil
-				}
-			}
-			// Also try direct nodeName field
-			if nodeName, ok := document["nodeName"].(string); ok {
-				return nodeName, nil
-			}
-		}
+	if nodeName, ok := extractNodeNameFromValues(e.newValues); ok {
+		return nodeName, nil
 	}
 
-	// Try old values for DELETE operations
-	//nolint:nestif // Nested complexity 6: required for extracting node name from JSONB structure
-	if e.oldValues != nil {
-		if document, ok := e.oldValues["document"].(map[string]interface{}); ok {
-			if healthEvent, ok := document["healthevent"].(map[string]interface{}); ok {
-				// Try lowercase first (MongoDB compatibility)
-				if nodeName, ok := healthEvent["nodename"].(string); ok {
-					return nodeName, nil
-				}
-				// Try camelCase (PostgreSQL JSON)
-				if nodeName, ok := healthEvent["nodeName"].(string); ok {
-					return nodeName, nil
-				}
-			}
-		}
+	if nodeName, ok := extractNodeNameFromValues(e.oldValues); ok {
+		return nodeName, nil
 	}
 
 	return "", datastore.NewValidationError(
@@ -123,6 +92,33 @@ func (e *postgresqlEvent) GetNodeName() (string, error) {
 		"unable to extract node name from event",
 		nil,
 	)
+}
+
+func extractNodeNameFromValues(values map[string]interface{}) (string, bool) {
+	if values == nil {
+		return "", false
+	}
+
+	document, ok := values["document"].(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+
+	if healthEvent, ok := document["healthevent"].(map[string]interface{}); ok {
+		if nodeName, ok := healthEvent["nodename"].(string); ok {
+			return nodeName, true
+		}
+
+		if nodeName, ok := healthEvent["nodeName"].(string); ok {
+			return nodeName, true
+		}
+	}
+
+	if nodeName, ok := document["nodeName"].(string); ok {
+		return nodeName, true
+	}
+
+	return "", false
 }
 
 func (e *postgresqlEvent) GetResumeToken() []byte {
@@ -301,8 +297,6 @@ func (w *PostgreSQLChangeStreamWatcher) pollChangelog(ctx context.Context) {
 }
 
 // fetchAndProcessChanges fetches new changelog entries and processes them
-//
-//nolint:gocyclo,cyclop,gocognit // Complexity 12: handles JSON unmarshaling, filtering, channel ops - acceptable
 func (w *PostgreSQLChangeStreamWatcher) fetchAndProcessChanges(ctx context.Context) {
 	query := `
 		SELECT id, table_name, record_id, operation, old_values, new_values, changed_at
@@ -322,92 +316,90 @@ func (w *PostgreSQLChangeStreamWatcher) fetchAndProcessChanges(ctx context.Conte
 	defer rows.Close()
 
 	for rows.Next() {
-		var (
-			entry                        postgresqlEvent
-			oldValuesJSON, newValuesJSON []byte
-		)
-
-		err := rows.Scan(
-			&entry.changelogID,
-			&entry.tableName,
-			&entry.recordID,
-			&entry.operation,
-			&oldValuesJSON,
-			&newValuesJSON,
-			&entry.changedAt,
-		)
+		entry, err := w.scanChangelogEntry(rows)
 		if err != nil {
-			slog.Error("Failed to scan changelog entry", "error", err)
+			slog.Error("Failed to process changelog entry", "error", err)
 			continue
 		}
 
-		slog.Debug("Scanned changelog entry", "changelogID", entry.changelogID, "operation", entry.operation)
+		w.lastSeenID = entry.changelogID
 
-		// Unmarshal JSON values
-		if oldValuesJSON != nil {
-			if err := json.Unmarshal(oldValuesJSON, &entry.oldValues); err != nil {
-				slog.Error("Failed to unmarshal old_values", "error", err)
-				continue
-			}
+		if !w.matchesPipeline(entry) {
+			continue
 		}
 
-		if newValuesJSON != nil {
-			if err := json.Unmarshal(newValuesJSON, &entry.newValues); err != nil {
-				slog.Error("Failed to unmarshal new_values", "error", err)
-				continue
-			}
-		}
-
-		// Check if event matches pipeline filter
-		if w.matchesPipeline(&entry) {
-			w.lastSeenID = entry.changelogID
-
-			select {
-			case w.eventChan <- &entry:
-				// Event sent successfully
-			case <-ctx.Done():
-				return
-			case <-w.stopChan:
-				return
-			}
-		} else {
-			// Even if not matched, update lastSeenID to avoid reprocessing
-			w.lastSeenID = entry.changelogID
+		select {
+		case w.eventChan <- entry:
+		case <-ctx.Done():
+			return
+		case <-w.stopChan:
+			return
 		}
 	}
 }
 
+func (w *PostgreSQLChangeStreamWatcher) scanChangelogEntry(rows *sql.Rows) (*postgresqlEvent, error) {
+	var (
+		entry                        postgresqlEvent
+		oldValuesJSON, newValuesJSON []byte
+	)
+
+	err := rows.Scan(
+		&entry.changelogID,
+		&entry.tableName,
+		&entry.recordID,
+		&entry.operation,
+		&oldValuesJSON,
+		&newValuesJSON,
+		&entry.changedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan changelog entry: %w", err)
+	}
+
+	slog.Debug("Scanned changelog entry", "changelogID", entry.changelogID, "operation", entry.operation)
+
+	if oldValuesJSON != nil {
+		if err := json.Unmarshal(oldValuesJSON, &entry.oldValues); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal old_values: %w", err)
+		}
+	}
+
+	if newValuesJSON != nil {
+		if err := json.Unmarshal(newValuesJSON, &entry.newValues); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal new_values: %w", err)
+		}
+	}
+
+	return &entry, nil
+}
+
 // matchesPipeline checks if an event matches the pipeline filter
 func (w *PostgreSQLChangeStreamWatcher) matchesPipeline(entry *postgresqlEvent) bool {
-	// If no pipeline, accept all events
 	if len(w.pipeline) == 0 {
 		return true
 	}
 
-	// Process $match stages in pipeline
 	for _, stage := range w.pipeline {
-		//nolint:nestif // Nested complexity 7: required for pipeline filter matching
-		if matchFilter, ok := stage["$match"]; ok {
-			matchMap, ok := matchFilter.(map[string]interface{})
-			if !ok {
-				continue
-			}
+		matchFilter, ok := stage["$match"]
+		if !ok {
+			continue
+		}
 
-			// Check operation type filter
-			if opType, ok := matchMap["operationType"]; ok {
-				// Map PostgreSQL operations to MongoDB operation types
-				expectedOp := w.mapOperationType(opType)
-				if expectedOp != "" && entry.operation != expectedOp {
-					return false
-				}
-			}
+		matchMap, ok := matchFilter.(map[string]interface{})
+		if !ok {
+			continue
+		}
 
-			// Check fullDocument filters (for new values)
-			if entry.newValues != nil {
-				if !w.matchesFilters(matchMap, entry.newValues) {
-					return false
-				}
+		if opType, ok := matchMap["operationType"]; ok {
+			expectedOp := w.mapOperationType(opType)
+			if expectedOp != "" && entry.operation != expectedOp {
+				return false
 			}
+		}
+
+		if entry.newValues != nil && !w.matchesFilters(matchMap, entry.newValues) {
+			return false
 		}
 	}
 
@@ -464,24 +456,12 @@ func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
 	return true
 }
 
-// extractValue extracts a value from nested map using dot notation
-func (w *PostgreSQLChangeStreamWatcher) extractValue(data map[string]interface{}, path string) interface{} {
-	// Handle simple paths like "fullDocument.healthevent.isfatal"
-	// Split by dots and navigate
-	parts := []string{}
-	for _, part := range []string{path} {
-		if len(parts) == 0 {
-			// First split
-			for _, p := range []string{part} {
-				if p != "" {
-					parts = append(parts, p)
-				}
-			}
-		}
-	}
-
-	// For now, simple implementation - just return nil if not found
-	// A full implementation would recursively navigate the map
+// extractValue extracts a value from nested map using dot notation (e.g., "fullDocument.healthevent.isfatal").
+// TODO: implement dot-notation traversal; currently always returns nil, so matchesFilters
+// rejects any pipeline filter key beyond "operationType".
+func (w *PostgreSQLChangeStreamWatcher) extractValue(
+	data map[string]interface{}, path string,
+) interface{} {
 	return nil
 }
 

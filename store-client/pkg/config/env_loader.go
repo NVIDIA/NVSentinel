@@ -190,14 +190,14 @@ func NewDatabaseConfigWithCollection(
 	}
 
 	// Load required MongoDB environment variables
-	connectionURI := os.Getenv(EnvMongoDBURI)
-	if connectionURI == "" {
-		return nil, fmt.Errorf("required environment variable %s is not set", EnvMongoDBURI)
+	connectionURI, err := getRequiredEnv(EnvMongoDBURI)
+	if err != nil {
+		return nil, err
 	}
 
-	databaseName := os.Getenv(EnvMongoDBDatabaseName)
-	if databaseName == "" {
-		return nil, fmt.Errorf("required environment variable %s is not set", EnvMongoDBDatabaseName)
+	databaseName, err := getRequiredEnv(EnvMongoDBDatabaseName)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine which collection environment variable to use
@@ -240,50 +240,27 @@ func NewDatabaseConfigWithCollection(
 
 // newPostgreSQLCompatibleConfig creates a PostgreSQL-compatible database config
 // using DATASTORE_* environment variables instead of MONGODB_* variables
-//
-//nolint:cyclop // Config validation requires checking multiple environment variables
 func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable string) (DatabaseConfig, error) {
-	host := os.Getenv("DATASTORE_HOST")
-	if host == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_HOST is not set")
+	host, err := getRequiredEnv("DATASTORE_HOST")
+	if err != nil {
+		return nil, err
 	}
 
-	port := os.Getenv("DATASTORE_PORT")
-	if port == "" {
-		port = "5432" // Default PostgreSQL port
+	database, err := getRequiredEnv("DATASTORE_DATABASE")
+	if err != nil {
+		return nil, err
 	}
 
-	database := os.Getenv("DATASTORE_DATABASE")
-	if database == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_DATABASE is not set")
+	username, err := getRequiredEnv("DATASTORE_USERNAME")
+	if err != nil {
+		return nil, err
 	}
 
-	username := os.Getenv("DATASTORE_USERNAME")
-	if username == "" {
-		return nil, fmt.Errorf("required environment variable DATASTORE_USERNAME is not set")
-	}
-
-	// Build PostgreSQL connection URI
-	// Format: "host=%s port=%s dbname=%s user=%s sslmode=require ..."
-	sslmode := os.Getenv("DATASTORE_SSLMODE")
-	if sslmode == "" {
-		sslmode = "require"
-	}
-
-	sslcert := os.Getenv("DATASTORE_SSLCERT")
-	if sslcert == "" {
-		sslcert = filepath.Join(certMountPath, "tls.crt")
-	}
-
-	sslkey := os.Getenv("DATASTORE_SSLKEY")
-	if sslkey == "" {
-		sslkey = filepath.Join(certMountPath, "tls.key")
-	}
-
-	sslrootcert := os.Getenv("DATASTORE_SSLROOTCERT")
-	if sslrootcert == "" {
-		sslrootcert = filepath.Join(certMountPath, "ca.crt")
-	}
+	port := getEnvWithDefault("DATASTORE_PORT", "5432")
+	sslmode := getEnvWithDefault("DATASTORE_SSLMODE", "require")
+	sslcert := getEnvWithDefault("DATASTORE_SSLCERT", filepath.Join(certMountPath, "tls.crt"))
+	sslkey := getEnvWithDefault("DATASTORE_SSLKEY", filepath.Join(certMountPath, "tls.key"))
+	sslrootcert := getEnvWithDefault("DATASTORE_SSLROOTCERT", filepath.Join(certMountPath, "ca.crt"))
 
 	// Build connection URI in PostgreSQL format
 	connectionURI := fmt.Sprintf("host=%s port=%s dbname=%s user=%s sslmode=%s sslcert=%s sslkey=%s sslrootcert=%s",
@@ -325,6 +302,23 @@ func newPostgreSQLCompatibleConfig(certMountPath, tableEnvVar, defaultTable stri
 		timeoutConfig:  timeoutConfig,
 		appName:        os.Getenv("APP_NAME"),
 	}, nil
+}
+
+func getRequiredEnv(name string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return "", fmt.Errorf("required environment variable %s is not set", name)
+	}
+
+	return value, nil
+}
+
+func getEnvWithDefault(name, defaultValue string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+
+	return defaultValue
 }
 
 // loadTimeoutConfigFromEnv loads timeout configuration from environment variables
@@ -440,14 +434,14 @@ func getPositiveIntEnvVarWithFallback(preferredName, legacyName string, defaultV
 
 // TokenConfigFromEnv creates token configuration from environment variables
 func TokenConfigFromEnv(clientName string) (TokenConfig, error) {
-	tokenDatabase := os.Getenv(EnvMongoDBDatabaseName)
-	if tokenDatabase == "" {
-		return TokenConfig{}, fmt.Errorf("required environment variable %s is not set", EnvMongoDBDatabaseName)
+	tokenDatabase, err := getRequiredEnv(EnvMongoDBDatabaseName)
+	if err != nil {
+		return TokenConfig{}, err
 	}
 
-	tokenCollection := os.Getenv(EnvMongoDBTokenCollectionName)
-	if tokenCollection == "" {
-		return TokenConfig{}, fmt.Errorf("required environment variable %s is not set", EnvMongoDBTokenCollectionName)
+	tokenCollection, err := getRequiredEnv(EnvMongoDBTokenCollectionName)
+	if err != nil {
+		return TokenConfig{}, err
 	}
 
 	return TokenConfig{

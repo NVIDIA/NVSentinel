@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -90,61 +91,41 @@ func (l *LegacyDatabaseConfigAdapter) GetCollectionName() string {
 }
 
 // buildPostgreSQLConnectionString builds a PostgreSQL connection string from DataStoreConfig
-//
-//nolint:cyclop // Complex but clear connection string building logic
 func (l *LegacyDatabaseConfigAdapter) buildPostgreSQLConnectionString() string {
 	conn := l.dsConfig.Connection
-	params := []string{}
 
-	if conn.Host != "" {
-		params = append(params, "host="+conn.Host)
+	candidates := []struct {
+		key   string
+		value string
+	}{
+		{"host", conn.Host},
+		{"port", formatPort(conn.Port)},
+		{"dbname", conn.Database},
+		{"user", conn.Username},
+		{"password", conn.Password},
+		{"sslmode", conn.SSLMode},
+		{"sslcert", conn.SSLCert},
+		{"sslkey", conn.SSLKey},
+		{"sslrootcert", conn.SSLRootCert},
 	}
 
-	if conn.Port > 0 {
-		params = append(params, fmt.Sprintf("port=%d", conn.Port))
-	}
+	var params []string
 
-	if conn.Database != "" {
-		params = append(params, "dbname="+conn.Database)
-	}
-
-	if conn.Username != "" {
-		params = append(params, "user="+conn.Username)
-	}
-
-	if conn.Password != "" {
-		params = append(params, "password="+conn.Password)
-	}
-
-	if conn.SSLMode != "" {
-		params = append(params, "sslmode="+conn.SSLMode)
-	}
-
-	if conn.SSLCert != "" {
-		params = append(params, "sslcert="+conn.SSLCert)
-	}
-
-	if conn.SSLKey != "" {
-		params = append(params, "sslkey="+conn.SSLKey)
-	}
-
-	if conn.SSLRootCert != "" {
-		params = append(params, "sslrootcert="+conn.SSLRootCert)
-	}
-
-	// Join all parameters with spaces
-
-	result := ""
-
-	for i, param := range params {
-		if i > 0 {
-			result += " "
+	for _, c := range candidates {
+		if c.value != "" {
+			params = append(params, c.key+"="+c.value)
 		}
-
-		result += param
 	}
 
-	return result
+	return strings.Join(params, " ")
+}
+
+func formatPort(port int) string {
+	if port > 0 {
+		return fmt.Sprintf("%d", port)
+	}
+
+	return ""
 }
 
 func (l *LegacyDatabaseConfigAdapter) GetCertConfig() config.CertificateConfig {

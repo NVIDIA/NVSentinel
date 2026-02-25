@@ -90,21 +90,23 @@ func CopyStructFields(dst, src reflect.Value) {
 			continue
 		}
 
-		//nolint //reason: ignoring complex nested blocks
-		if dstField.CanSet() {
-			if dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr {
-				if srcField.IsNil() {
-					dstField.Set(reflect.Zero(dstField.Type()))
-				} else {
-					dstField.Set(reflect.New(dstField.Type().Elem()))
-					CopyStructFields(dstField.Elem(), srcField.Elem())
-				}
-			} else if dstField.Kind() == reflect.Struct && srcField.Kind() == reflect.Struct {
-				// Recursively copy nested structs
-				CopyStructFields(dstField, srcField)
-			} else if dstField.Kind() == srcField.Kind() {
-				dstField.Set(srcField)
+		if !dstField.CanSet() {
+			continue
+		}
+
+		switch {
+		case dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr:
+			if srcField.IsNil() {
+				dstField.Set(reflect.Zero(dstField.Type()))
+			} else {
+				dstField.Set(reflect.New(dstField.Type().Elem()))
+				CopyStructFields(dstField.Elem(), srcField.Elem())
 			}
+		case dstField.Kind() == reflect.Struct && srcField.Kind() == reflect.Struct:
+			// Recursively copy nested structs
+			CopyStructFields(dstField, srcField)
+		case dstField.Kind() == srcField.Kind():
+			dstField.Set(srcField)
 		}
 	}
 }
