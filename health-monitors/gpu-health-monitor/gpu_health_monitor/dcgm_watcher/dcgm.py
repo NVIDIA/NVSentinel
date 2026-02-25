@@ -54,7 +54,6 @@ class DCGMWatcher:
         for var in dir(dcgm_structs):
             if (
                 var.startswith("DCGM_HEALTH_WATCH")
-                and not var.endswith("ALL")
                 and not "_COUNT_" in var
                 and not "DCGM_GROUP_MAX_ENTITIES" in var
                 and not "DCGM_HEALTH_WATCH_MAX_INCIDENTS" in var
@@ -176,12 +175,36 @@ class DCGMWatcher:
             # Temporary dict to accumulate multiple failures per GPU
             gpu_failures_accumulator = {}
 
+            log.debug(
+                f"Health check returned: overallHealth={health_details.overallHealth}, "
+                f"incidentCount={health_details.incidentCount}"
+            )
+
             for i in range(health_details.incidentCount):
                 incident = health_details.incidents[i]
-                watch_name = self._health_watches[incident.system]
+                log.debug(
+                    f"Incident[{i}]: system={incident.system} (known={incident.system in self._health_watches}), "
+                    f"health={incident.health}, error.code={incident.error.code}, "
+                    f"entityGroupId={incident.entityInfo.entityGroupId}, "
+                    f"entityId={incident.entityInfo.entityId}, "
+                    f"error.msg={incident.error.msg}"
+                )
+
+                watch_name = self._health_watches.get(incident.system)
+                if watch_name is None:
+                    log.warning(
+                        f"Unknown health watch system value {incident.system} "
+                        f"for entity {incident.entityInfo.entityId}, skipping incident"
+                    )
+                    metrics.dcgm_health_check_unknown_system_skipped.inc()
+                    continue
+
                 health_status[watch_name].status = types.HealthStatus(int(incident.health))
                 gpu_id = incident.entityInfo.entityId
-                error_code = self._error_codes[incident.error.code]
+                fallback_error_code = self._error_codes.get(dcgm_errors.DCGM_FR_UNKNOWN, "DCGM_FR_UNKNOWN")
+                error_code = self._error_codes.get(incident.error.code, fallback_error_code)
+                if error_code == fallback_error_code:
+                    log.warning(f"Unknown DCGM error code {incident.error.code} for entity {gpu_id}")
                 error_msg = incident.error.msg
 
                 log.debug(f"incident.error.code is {incident.error.code} and error msg is {error_msg}")

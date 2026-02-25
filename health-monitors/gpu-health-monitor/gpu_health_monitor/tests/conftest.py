@@ -39,7 +39,7 @@ class MockDCGMModule:
     DCGM_HEALTH_WATCH_DRIVER = 10
     DCGM_HEALTH_WATCH_NVSWITCH = 11
     DCGM_HEALTH_WATCH_CPUSET = 12
-    DCGM_HEALTH_WATCH_ALL = 65535
+    DCGM_HEALTH_WATCH_ALL = 4294967295  # This is 0xFFFFFFFF in hex.
     DCGM_HEALTH_WATCH_MAX_INCIDENTS = 128
 
     # Health result constants
@@ -155,12 +155,13 @@ class MockDCGMErrors:
     """Mock DCGM errors module for testing."""
 
     # Sample error codes used in tests
+    DCGM_FR_UNKNOWN = 0
     DCGM_FR_PCI_REPLAY_RATE = 1
     DCGM_FR_NVLINK_DOWN = 2
     DCGM_FR_THERMAL_VIOLATIONS = 3
 
-    # Add more error codes as needed by tests
-    for i in range(4, 113):  # Mock 112 error codes total as expected by tests (3 manual + 109 generated = 112)
+    # Add more error codes as needed by tests (4 manual + 109 generated = 113 total)
+    for i in range(4, 113):
         locals()[f"DCGM_FR_ERROR_{i}"] = i
 
 

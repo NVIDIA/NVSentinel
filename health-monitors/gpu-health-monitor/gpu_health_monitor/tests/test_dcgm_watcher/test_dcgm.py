@@ -57,7 +57,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         health_watches = watcher._get_available_health_watches()
-        assert len(health_watches) == 12
+        assert len(health_watches) == 13
 
     def test_get_available_error_codes(self):
         watcher = dcgm.DCGMWatcher(
@@ -67,7 +67,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         error_codes = watcher._get_available_error_codes()
-        assert len(error_codes) == 112
+        assert len(error_codes) == 113
 
     def test_get_available_fields(self):
         watcher = dcgm.DCGMWatcher(
@@ -87,7 +87,7 @@ class TestDCGMHealthChecks:
             dcgm_k8s_service_enabled=False,
         )
         health_status_dict = watcher._get_health_status_dict()
-        assert len(health_status_dict) == 12
+        assert len(health_status_dict) == 13
         for _, val in health_status_dict.items():
             assert val.status == dcgm.types.HealthStatus.PASS
             assert val.entity_failures == {}
@@ -399,6 +399,74 @@ class TestDCGMHealthChecks:
 
         assert response == expected_response  # Should return empty health status
         assert connectivity_success == False  # Should indicate connectivity failure
+
+    def test_perform_health_check_watch_all_incident(self):
+        """Test that DCGM_HEALTH_WATCH_ALL incidents are processed correctly."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        mock_response.incidentCount = 1
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_ALL
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_FAIL
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = "XID 95 detected on GPU 0"
+        incident.error.code = dcgm_errors.DCGM_FR_PCI_REPLAY_RATE
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityId = 0
+        mock_response.incidents[0] = incident
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        assert connectivity_success == True
+        assert response["DCGM_HEALTH_WATCH_ALL"].status == dcgm.types.HealthStatus.FAIL
+        assert 0 in response["DCGM_HEALTH_WATCH_ALL"].entity_failures
+        assert response["DCGM_HEALTH_WATCH_ALL"].entity_failures[0].message == "XID 95 detected on GPU 0"
+
+    def test_perform_health_check_unknown_error_code(self):
+        """Test that incidents with unknown error codes use DCGM_FR_UNKNOWN fallback."""
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+        dcgm_group_mock = MagicMock()
+        mock_response = dcgm_structs.c_dcgmHealthResponse_v4
+        mock_response.version = dcgm_structs.dcgmHealthResponse_version4
+        mock_response.overallHealth = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        mock_response.incidentCount = 1
+        mock_response.incidents = (dcgm_structs.c_dcgmIncidentInfo_t * dcgm_structs.DCGM_HEALTH_WATCH_MAX_INCIDENTS)()
+
+        incident = dcgm_structs.c_dcgmIncidentInfo_t()
+        incident.system = dcgm_structs.DCGM_HEALTH_WATCH_PCIE
+        incident.health = dcgm_structs.DCGM_HEALTH_RESULT_WARN
+        incident.error = dcgm_structs.c_dcgmDiagErrorDetail_t()
+        incident.error.msg = "Some future error"
+        incident.error.code = 99999
+        incident.entityInfo = dcgm_structs.c_dcgmGroupEntityPair_t()
+        incident.entityInfo.entityGroupId = 0
+        incident.entityInfo.entityId = 1
+        mock_response.incidents[0] = incident
+        dcgm_group_mock.health.Check.return_value = mock_response()
+
+        response, connectivity_success = watcher._perform_health_check(dcgm_group_mock)
+
+        assert connectivity_success == True
+        assert response["DCGM_HEALTH_WATCH_PCIE"].status == dcgm.types.HealthStatus.WARN
+        assert 1 in response["DCGM_HEALTH_WATCH_PCIE"].entity_failures
+        assert response["DCGM_HEALTH_WATCH_PCIE"].entity_failures[1].code == "DCGM_FR_UNKNOWN"
 
     @patch("pydcgm.DcgmHandle")
     @patch("pydcgm.DcgmGroup")

@@ -188,12 +188,20 @@ These metrics track the internal ring buffer workqueue performance:
 
 These metrics track GPU health events detected via DCGM (Data Center GPU Manager):
 
-| Metric Name | Type | Labels | Description |
-|------------|------|--------|-------------|
-| `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name` | Amount of time spent in publishing DCGM health events on the gRPC channel |
-| `health_events_insertion_to_uds_succeed` | Counter | - | Total number of successful insertions of health events to UDS |
-| `health_events_insertion_to_uds_error` | Counter | - | Total number of failed insertions of health events to UDS |
-| `dcgm_health_active_events` | Gauge | `event_type`, `gpu_id`, `severity` | Total number of active health events at any given time by severity. Severity values: `fatal`, `non_fatal` |
+| Metric Name                                       | Type      | Labels                             | Description                                                                                               |
+|---------------------------------------------------|-----------|------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
+| `health_events_insertion_to_uds_succeed`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
+| `health_events_insertion_to_uds_error`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `severity` | Total number of active health events at any given time by severity. Severity values: `fatal`, `non_fatal` |
+| `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
+| `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
+| `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
+| `number_of_fields`                                | Gauge     | -                                  | Number of available DCGM fields to monitor                                                                |
+| `callback_failures`                               | Counter   | `class_name`, `func_name`          | Number of times a callback function has thrown an exception                                               |
+| `callback_success`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
+| `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
+| `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
 
 ---
 
