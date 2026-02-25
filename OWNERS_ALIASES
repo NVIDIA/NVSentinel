@@ -1,0 +1,52 @@
+# See the OWNERS docs: https://k8s.dev/docs/guide/owners
+#
+# This file defines aliases for groups of people.
+# Aliases can be used in OWNERS files to reference multiple people at once.
+#
+# Format:
+#   alias-name:
+#     - github-username1
+#     - github-username2
+#
+# Example usage in OWNERS file:
+#   approvers:
+#     - sig-core-infra  # This alias references all members below
+
+# Project-wide aliases
+# Add aliases for different areas of the project as defined in GOVERNANCE.md
+
+# Core Infrastructure team (Platform connectors, store client, data models)
+# sig-core-infra:
+#   - approver1
+#   - approver2
+
+# Health Monitors team (GPU, syslog, CSP, Kubernetes object monitors)
+# sig-health-monitors:
+#   - approver1
+#   - approver2
+
+# Fault Management team (Fault quarantine, node drainer, fault remediation)
+# sig-fault-management:
+#   - approver1
+#   - approver2
+
+# Supporting Services team (Janitor, labeler, metadata collector, log collector)
+# sig-supporting-services:
+#   - approver1
+#   - approver2
+
+# Distribution team (Helm charts, Kubernetes manifests, deployment tooling)
+# sig-distribution:
+#   - approver1
+#   - approver2
+
+# Documentation team
+# sig-documentation:
+#   - approver1
+#   - approver2
+
+# All Maintainers (cross-cutting responsibility)
+sig-maintainers:
+  - lalitadithya
+  - dims
+#   - maintainer3

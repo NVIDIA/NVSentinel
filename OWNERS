@@ -1,0 +1,41 @@
+# See the OWNERS docs: https://k8s.dev/docs/guide/owners
+#
+# This file defines the approvers and reviewers for the NVSentinel project.
+# OWNERS files are used by automation tools like Prow, Tide, and GitHub Actions
+# to automatically assign reviewers and require approvals for pull requests.
+#
+# For more information, see GOVERNANCE.md
+#
+# Aliases can be defined in OWNERS_ALIASES and referenced here.
+
+approvers:
+  # Maintainers - have approval authority across the project
+  # Add GitHub usernames of project Maintainers here
+  # You can also use aliases from OWNERS_ALIASES (e.g., sig-maintainers)
+  # Example:
+  # - maintainer1
+  # - maintainer2
+  - sig-maintainers  # Using alias from OWNERS_ALIASES
+
+reviewers:
+  # Reviewers - can review pull requests
+  # Add GitHub usernames of project Reviewers here
+  # You can also use aliases from OWNERS_ALIASES
+  # Example:
+  # - reviewer1
+  # - reviewer2
+  - sig-reviewers  # Using alias from OWNERS_ALIASES
+
+labels:
+  # Labels to automatically apply to PRs in this directory
+  - area/nvsentinel
+
+# Optional: Former approvers/reviewers who are no longer active
+# emeritus_approvers:
+#   - former-approver1
+# emeritus_reviewers:
+#   - former-reviewer1
+
+# Optional: Configuration options
+# options:
+#   no_parent_owners: false  # Set to true to exclude parent OWNERS files

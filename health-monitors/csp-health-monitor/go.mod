@@ -18,7 +18,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.19.0
-	google.golang.org/api v0.267.0
+	google.golang.org/api v0.268.0
 	google.golang.org/genproto v0.0.0-20260128011058-8636f8732409
 	google.golang.org/genproto/googleapis/api v0.0.0-20260128011058-8636f8732409
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260203192932-546029d2fa20
