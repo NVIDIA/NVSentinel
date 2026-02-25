@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cloud-native/dcgm:4.2.0-1-ubuntu22.04
+# Match DCGM_VERSION used in gpu-health-monitor and preflight dcgm-diag Dockerfiles
+ARG DCGM_VERSION=4.4.2-1-ubuntu22.04
+FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION}
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -21,7 +23,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates && \
     apt-get update && apt list -a datacenter-gpu-manager-4-dev && \
     apt-get install -y --no-install-recommends \
-        datacenter-gpu-manager-4-dev=1:4.2.0 && \
+        datacenter-gpu-manager-4-dev=1:4.4.2-1 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY gpu-spec.yaml /gpu-spec.yaml

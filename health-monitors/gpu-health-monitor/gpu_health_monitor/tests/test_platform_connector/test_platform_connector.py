@@ -126,6 +126,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
 
         temp_file_path = metadata_file()
 
@@ -264,6 +265,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
 
         temp_file_path = metadata_file()
 
@@ -384,6 +386,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
@@ -519,6 +522,7 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
         dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
+        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
 
         temp_file_path = metadata_file()
 
@@ -775,6 +779,7 @@ class TestPlatformConnectors(unittest.TestCase):
                 "DCGM_HEALTH_WATCH_PMU": "Fatal",
                 "DCGM_HEALTH_WATCH_CPUSET": "NonFatal",
                 "DCGM_HEALTH_WATCH_NVSWITCH": "Fatal",
+                "DCGM_HEALTH_WATCH_ALL": "Fatal",
             }
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
