@@ -67,7 +67,14 @@ func TestReconcile_FullDrainCycle(t *testing.T) {
 
 	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 GPU:0 - GPU has fallen off the bus")
 
-	markPodDrainReady(t, tc, pod.Name, pod.Namespace)
+	// Simulate DRAINING state: Slurm accepted drain but jobs still running.
+	markPodDraining(t, tc, pod.Name, pod.Namespace)
+
+	// Pod must NOT be deleted while in DRAINING state (busy).
+	assertPodNotDeleted(t, tc, pod.Name, pod.Namespace, 3*time.Second)
+
+	// Simulate transition to DRAINED state: jobs finished, node is idle.
+	markPodDrained(t, tc, pod.Name, pod.Namespace)
 
 	waitForDrainComplete(t, tc, "drain-full-cycle", "default")
 	waitForPodDeletion(t, tc, pod.Name, pod.Namespace)
@@ -95,6 +102,30 @@ func TestReconcile_PreExistingAnnotationPreserved(t *testing.T) {
 
 	waitForDrainComplete(t, tc, "drain-preexisting", "default")
 	assertNodeAnnotation(t, tc, node.Name, "Manual drain by operator")
+}
+
+func TestReconcile_DrainingPodNotDeleted(t *testing.T) {
+	tc := setupTestEnv(t, "drain-still-draining")
+
+	node := createNode(t, tc, "test-node-draining", nil, map[string]string{
+		nvsentinelStateLabelKey: "draining",
+	})
+	pod := createSlinkyPod(t, tc, node.Name)
+	markPodReady(t, tc, pod.Name, pod.Namespace)
+	createDrainRequest(t, tc, "drain-still-draining", drainv1alpha1.DrainRequestSpec{
+		NodeName:  node.Name,
+		ErrorCode: []string{"79"},
+		Reason:    "GPU has fallen off the bus",
+	})
+
+	assertNodeAnnotation(t, tc, node.Name, "[J] [NVSentinel] 79 - GPU has fallen off the bus")
+
+	// Set pod to DRAINING: Drain flag set but node is still busy (Allocated).
+	markPodDraining(t, tc, pod.Name, pod.Namespace)
+
+	// Verify pod is NOT deleted and DrainRequest is NOT completed while draining.
+	assertPodNotDeleted(t, tc, pod.Name, pod.Namespace, 5*time.Second)
+	assertDrainNotComplete(t, tc, "drain-still-draining", "default")
 }
 
 // ---------------------------------------------------------------------------
@@ -235,24 +266,43 @@ func createFailedPod(t *testing.T, tc *testEnvContext, nodeName string) {
 func markPodReady(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
 	t.Helper()
 
-	pod := &corev1.Pod{}
-	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, pod))
+	var pod corev1.Pod
+
+	require.Eventually(t, func() bool {
+		return tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod) == nil
+	}, testTimeout, testPollInterval, "Pod %s/%s should exist", podNamespace, podName)
 
 	pod.Status.Phase = corev1.PodRunning
 	pod.Status.Conditions = []corev1.PodCondition{
 		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 	}
-	require.NoError(t, tc.client.Status().Update(tc.ctx, pod))
+	require.NoError(t, tc.client.Status().Update(tc.ctx, &pod))
 }
 
-func markPodDrainReady(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
+func markPodDraining(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
 	t.Helper()
 
 	pod := &corev1.Pod{}
 	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, pod))
 
 	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 		{Type: slurmNodeStateDrainConditionType, Status: corev1.ConditionTrue},
+		{Type: slurmNodeStateAllocatedConditionType, Status: corev1.ConditionTrue},
+	}
+	require.NoError(t, tc.client.Status().Update(tc.ctx, pod))
+}
+
+func markPodDrained(t *testing.T, tc *testEnvContext, podName, podNamespace string) {
+	t.Helper()
+
+	pod := &corev1.Pod{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, pod))
+
+	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+		{Type: slurmNodeStateDrainConditionType, Status: corev1.ConditionTrue},
+		{Type: "SlurmNodeStateIdle", Status: corev1.ConditionTrue},
 	}
 	require.NoError(t, tc.client.Status().Update(tc.ctx, pod))
 }
@@ -326,6 +376,32 @@ func waitForAnnotationRemoved(t *testing.T, tc *testEnvContext, nodeName string)
 
 		return !exists
 	}, testTimeout, testPollInterval, "Annotation on node %s should be removed", nodeName)
+}
+
+func assertPodNotDeleted(t *testing.T, tc *testEnvContext, podName, podNamespace string, waitDuration time.Duration) {
+	t.Helper()
+
+	assert.Never(t, func() bool {
+		p := &corev1.Pod{}
+		if err := tc.client.Get(tc.ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, p); err != nil {
+			return apierrors.IsNotFound(err)
+		}
+
+		return p.DeletionTimestamp != nil
+	}, waitDuration, testPollInterval, "Pod %s/%s should NOT be deleted while draining", podNamespace, podName)
+}
+
+func assertDrainNotComplete(t *testing.T, tc *testEnvContext, drName, drNamespace string) {
+	t.Helper()
+
+	dr := &drainv1alpha1.DrainRequest{}
+	require.NoError(t, tc.client.Get(tc.ctx, types.NamespacedName{Name: drName, Namespace: drNamespace}, dr))
+
+	for _, c := range dr.Status.Conditions {
+		if c.Type == drainCompleteConditionType && c.Status == metav1.ConditionTrue {
+			t.Fatalf("DrainRequest %s/%s should NOT have DrainComplete=True while pods are still draining", drNamespace, drName)
+		}
+	}
 }
 
 func assertNodeAnnotation(t *testing.T, tc *testEnvContext, nodeName, expectedValue string) {

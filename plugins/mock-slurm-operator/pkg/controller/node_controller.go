@@ -32,6 +32,7 @@ import (
 const (
 	annotationKey           = "nodeset.slinky.slurm.net/node-cordon-reason"
 	slurmDrainConditionType = "SlurmNodeStateDrain"
+	slurmIdleConditionType  = "SlurmNodeStateIdle"
 )
 
 type NodeReconciler struct {
@@ -127,13 +128,22 @@ func (r *NodeReconciler) listSlinkyPodsOnNode(ctx context.Context, nodeName stri
 }
 
 func (r *NodeReconciler) updatePodDrainCondition(ctx context.Context, pod *corev1.Pod, reason string) error {
-	pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
-		Type:               slurmDrainConditionType,
-		Status:             corev1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
-		Reason:             "NodeCordonedBySlinkyDrainer",
-		Message:            reason,
-	})
+	pod.Status.Conditions = append(pod.Status.Conditions,
+		corev1.PodCondition{
+			Type:               slurmDrainConditionType,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "NodeCordonedBySlinkyDrainer",
+			Message:            reason,
+		},
+		corev1.PodCondition{
+			Type:               slurmIdleConditionType,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "NodeDrained",
+			Message:            "Node is idle after drain",
+		},
+	)
 
 	return r.Status().Update(ctx, pod)
 }
