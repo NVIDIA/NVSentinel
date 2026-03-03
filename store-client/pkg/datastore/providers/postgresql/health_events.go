@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -878,25 +880,31 @@ func (p *PostgreSQLHealthEventStore) UpdateHealthEventsByQuery(ctx context.Conte
 	setClause, setArgs := updateBuilder.ToSQL()
 
 	// Combine arguments (SET args come first, then WHERE args)
-	//nolint:gocritic // allArgs is a new combined slice, not reassigning
-	allArgs := append(setArgs, whereArgs...)
+	var allArgs []interface{}
 
-	// Adjust WHERE clause parameter numbers
+	allArgs = append(allArgs, setArgs...)
+	allArgs = append(allArgs, whereArgs...)
 
-	// SET clause uses $1, $2, etc., so WHERE clause needs to start after those
-	adjustedWhereClause := whereClause
+	// Adjust WHERE clause parameter numbers.
+	// SET clause uses $1..$len(setArgs), so WHERE placeholders must shift by len(setArgs).
+	// Single-pass regex: match all $N placeholders and rewrite each by adding len(setArgs).
+	paramRe := regexp.MustCompile(`\$(\d+)`)
+	setLen := len(setArgs)
 
-	for i := len(setArgs); i >= 1; i-- {
-		oldParam := fmt.Sprintf("$%d", i)
-		newParam := fmt.Sprintf("$%d", i+len(setArgs))
-		adjustedWhereClause = strings.ReplaceAll(adjustedWhereClause, oldParam, newParam)
-	}
+	adjustedWhereClause := paramRe.ReplaceAllStringFunc(whereClause, func(match string) string {
+		n, err := strconv.Atoi(match[1:])
+		if err != nil {
+			return match
+		}
+
+		return fmt.Sprintf("$%d", n+setLen)
+	})
 
 	// Build the full UPDATE query
 	//nolint:gosec // G202 false positive - using parameterized query with placeholders
 	query := `
 		UPDATE health_events
-		SET ` + setClause + `, updatedAt = NOW()
+		SET ` + setClause + `, updated_at = NOW()
 		WHERE ` + adjustedWhereClause
 
 	result, err := p.db.ExecContext(ctx, query, allArgs...)

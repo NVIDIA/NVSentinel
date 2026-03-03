@@ -9,9 +9,9 @@ This demo showcases the end-to-end custom drain workflow where node-drainer dele
 **Custom Drain Flow:**
 1. Health event injected → Platform Connectors → MongoDB
 2. Node-drainer detects issue → Creates DrainRequest CR (custom drain)
-3. Slinky-drainer watches DrainRequest → Annotates node
+3. Slinky-drainer watches DrainRequest → Annotates node (if not already set)
 4. Mock-slurm-operator watches node annotation → Updates pod conditions
-5. Slinky-drainer waits for conditions → Deletes pods → Marks CR complete
+5. Slinky-drainer waits for conditions → Deletes pods → Removes annotation → Marks CR complete
 6. Node-drainer sees completion → Marks drain successful
 
 **Key Concepts:**
@@ -76,7 +76,7 @@ make verify-drain
 
 Checks:
 - DrainRequest CR created and completed
-- Node annotation set by slinky-drainer
+- Node annotation set by slinky-drainer (and cleaned up after drain)
 - Pod conditions updated by mock-slurm-operator
 - Pods successfully deleted
 - Drain marked successful in health event status
@@ -113,12 +113,14 @@ Deletes the KIND cluster and cleans up local Docker images.
 │                         │              │              │         │
 │                         v              v              v         │
 │                   Annotates Node   Waits for     Deletes Pods  │
-│                         │         Conditions          │         │
-│                         v              ^              v         │
-│              Mock Slurm Operator       │        Pod Deletion   │
-│              (watches annotation)      │                        │
-│                         │              │                        │
-│                         └─────► Updates Pod Conditions          │
+│                   (if not set)    Conditions          │         │
+│                         │              ^              v         │
+│              Mock Slurm Operator       │      Removes Annotation│
+│              (watches annotation)      │     (if set by us)     │
+│                         │              │              │         │
+│                         └─────► Updates Pod Conditions │         │
+│                                                       v         │
+│                                              Marks DR Complete  │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -135,9 +137,10 @@ Deletes the KIND cluster and cleans up local Docker images.
 
 1. **Slinky Drainer** (`plugins/slinky-drainer/`)
    - Watches DrainRequest CRs
-   - Annotates nodes with cordon reason
+   - Annotates nodes with cordon reason (skips if already set by another controller)
    - Waits for scheduler signals (pod conditions)
    - Deletes pods after confirmation
+   - Removes annotation if it was set by slinky-drainer (identified by `[J] [NVSentinel]` prefix)
    - Updates CR status
 
 2. **Mock Slurm Operator** (`plugins/mock-slurm-operator/`)

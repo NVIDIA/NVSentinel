@@ -33,9 +33,14 @@ verify_node_annotation() {
     local annotation=$(kubectl get node ${CLUSTER_NAME}-worker \
         -o jsonpath='{.metadata.annotations.nodeset\.slinky\.slurm\.net/node-cordon-reason}' 2>/dev/null || echo "")
     
+    local drain_complete=$(kubectl get drainrequests -n "$NAMESPACE" -o jsonpath='{.items[0].status.conditions[?(@.type=="DrainComplete")].status}' 2>/dev/null || echo "")
+    
     if [ -n "$annotation" ]; then
-        echo "✅ Node annotation is set:"
+        echo "✅ Node annotation is set (drain in progress):"
         echo "   $annotation"
+        return 0
+    elif [ "$drain_complete" = "True" ]; then
+        echo "✅ Node annotation was set and cleaned up after drain completed"
         return 0
     else
         echo "❌ Node annotation NOT set"
@@ -141,16 +146,6 @@ show_final_status() {
     local pods_ready=false  
     local drain_complete=false
     
-    if kubectl get node ${CLUSTER_NAME}-worker \
-        -o jsonpath='{.metadata.annotations.nodeset\.slinky\.slurm\.net/node-cordon-reason}' 2>/dev/null | grep -q .; then
-        annotation_set=true
-    fi
-    
-    local pod_count=$(kubectl get pods -n "$SLINKY_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$pod_count" -eq 0 ]; then
-        pods_ready=true
-    fi
-    
     local drain_request=$(kubectl get drainrequests -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     if [ -n "$drain_request" ]; then
         local status=$(kubectl get drainrequest "$drain_request" -n "$NAMESPACE" \
@@ -160,9 +155,24 @@ show_final_status() {
         fi
     fi
     
+    local annotation_val=$(kubectl get node ${CLUSTER_NAME}-worker \
+        -o jsonpath='{.metadata.annotations.nodeset\.slinky\.slurm\.net/node-cordon-reason}' 2>/dev/null || echo "")
+    if [ -n "$annotation_val" ] || $drain_complete; then
+        annotation_set=true
+    fi
+    
+    local pod_count=$(kubectl get pods -n "$SLINKY_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$pod_count" -eq 0 ]; then
+        pods_ready=true
+    fi
+    
     echo "Workflow Steps:"
     if $annotation_set; then
-        echo "  ✅ 1. Node annotation set"
+        if [ -z "$annotation_val" ] && $drain_complete; then
+            echo "  ✅ 1. Node annotation set and cleaned up"
+        else
+            echo "  ✅ 1. Node annotation set"
+        fi
     else
         echo "  ❌ 1. Node annotation NOT set"
     fi
@@ -190,7 +200,8 @@ show_final_status() {
         echo "  4. Mock Slurm set SlurmNodeStateDrain=True on all pods"
         echo "  5. Slinky Drainer waited for pod conditions"
         echo "  6. Slinky Drainer deleted all pods"
-        echo "  7. Slinky Drainer marked DrainComplete=True"
+        echo "  7. Slinky Drainer removed node annotation (cleanup)"
+        echo "  8. Slinky Drainer marked DrainComplete=True"
         echo ""
         echo "This demonstrates how NVSentinel's custom drain framework enables"
         echo "integration with external orchestrators like Slurm!"

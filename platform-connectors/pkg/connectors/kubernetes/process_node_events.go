@@ -32,6 +32,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -41,12 +43,55 @@ const (
 	truncationSuffix   = "..."
 )
 
-//nolint:cyclop, gocognit
-func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []*protos.HealthEvent) error {
-	sortedHealthEvents := slices.Clone(healthEvents)
+// updateNodeConditions updates node conditions for a single node.
+// All healthEvents must belong to the same node; callers must partition by NodeName.
+func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []*protos.HealthEvent) (bool, error) {
+	sortedHealthEvents := sortHealthEventsByTimestamp(healthEvents)
+	conditionEventsMap := buildConditionEventsMap(sortedHealthEvents)
 
-	// sort in ascending order
-	slices.SortFunc(sortedHealthEvents, func(a, b *protos.HealthEvent) int {
+	if len(conditionEventsMap) == 0 {
+		return false, nil
+	}
+
+	nodeName := healthEvents[0].NodeName
+
+	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return apierrors.IsConflict(err) || isTemporaryError(err)
+	}, func() error {
+		node, err := r.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		for conditionType, events := range conditionEventsMap {
+			r.processNodeCondition(node, conditionType, events)
+		}
+
+		_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+
+		return err
+	})
+	if err != nil {
+		conditionTypes := make([]string, 0, len(conditionEventsMap))
+		for ct := range conditionEventsMap {
+			conditionTypes = append(conditionTypes, string(ct))
+		}
+
+		slog.Error("Failed to update node conditions",
+			"node", nodeName,
+			"conditionTypes", conditionTypes,
+			"error", err)
+
+		return true, fmt.Errorf("failed to update node %s conditions: %w", nodeName, err)
+	}
+
+	return true, nil
+}
+
+func sortHealthEventsByTimestamp(events []*protos.HealthEvent) []*protos.HealthEvent {
+	sorted := slices.Clone(events)
+
+	slices.SortFunc(sorted, func(a, b *protos.HealthEvent) int {
 		ti := a.GeneratedTimestamp
 		tj := b.GeneratedTimestamp
 
@@ -62,125 +107,114 @@ func (r *K8sConnector) updateNodeConditions(ctx context.Context, healthEvents []
 			return 1
 		}
 
-		timeA := ti.AsTime()
-		timeB := tj.AsTime()
-
-		if timeA.Before(timeB) {
-			return -1
-		} else if timeA.After(timeB) {
-			return 1
-		}
-
-		return 0
+		return ti.AsTime().Compare(tj.AsTime())
 	})
 
-	conditionToHealthEventsMap := make(map[corev1.NodeConditionType][]*protos.HealthEvent)
+	return sorted
+}
 
-	for _, event := range sortedHealthEvents {
+func buildConditionEventsMap(events []*protos.HealthEvent) map[corev1.NodeConditionType][]*protos.HealthEvent {
+	conditionMap := make(map[corev1.NodeConditionType][]*protos.HealthEvent)
+
+	for _, event := range events {
 		if !event.IsHealthy && !event.IsFatal {
 			continue
 		}
 
 		conditionType := corev1.NodeConditionType(string(event.CheckName))
-		conditionToHealthEventsMap[conditionType] = append(conditionToHealthEventsMap[conditionType], event)
+		conditionMap[conditionType] = append(conditionMap[conditionType], event)
 	}
 
-	err := retry.OnError(retry.DefaultRetry, func(err error) bool {
-		return apierrors.IsConflict(err) || isTemporaryError(err)
-	}, func() error {
-		node, err := r.clientset.CoreV1().Nodes().Get(ctx, healthEvents[0].NodeName, metav1.GetOptions{})
-		if err != nil {
-			slog.Error("Error getting node", "error", err)
-			return fmt.Errorf("failed to get node %s: %w", healthEvents[0].NodeName, err)
-		}
-
-		for conditionType, events := range conditionToHealthEventsMap {
-			var matchedCondition *corev1.NodeCondition
-
-			var conditionIndex int
-
-			conditionExists := false
-
-			// search for existing condition
-			for i, c := range node.Status.Conditions {
-				if c.Type == conditionType {
-					matchedCondition = &c
-					conditionIndex = i
-					conditionExists = true
-
-					break
-				}
-			}
-
-			// Initialize condition if it doesn't exist
-			if !conditionExists {
-				matchedCondition = &corev1.NodeCondition{
-					Type:               conditionType,
-					LastHeartbeatTime:  metav1.NewTime(events[len(events)-1].GeneratedTimestamp.AsTime()),
-					LastTransitionTime: metav1.NewTime(events[len(events)-1].GeneratedTimestamp.AsTime()),
-				}
-			}
-
-			// split messages by ";" in condition
-			messages := r.parseMessages(matchedCondition.Message)
-
-			// aggregate messages from all health events for the associated condition
-			for _, event := range events {
-				if !event.IsHealthy {
-					// add the new message if it doesn't exist
-					messages = r.addMessageIfNotExist(messages, event)
-				} else {
-					// remove messages that include any of the entities in entitiesImpacted, else if
-					// empty then clear all the messages for all entities
-					if len(event.EntitiesImpacted) > 0 {
-						messages = r.removeImpactedEntitiesMessages(messages, event.EntitiesImpacted)
-					} else {
-						messages = []string{}
-					}
-				}
-			}
-
-			if len(messages) > 0 {
-				matchedCondition.Message = r.truncateNodeConditionMessage(messages)
-				matchedCondition.Status = corev1.ConditionTrue
-				matchedCondition.Reason = r.updateHealthEventReason(events[len(events)-1].CheckName, false)
-			} else {
-				matchedCondition.Message = NoHealthFailureMsg
-				matchedCondition.Status = corev1.ConditionFalse
-				matchedCondition.Reason = r.updateHealthEventReason(events[len(events)-1].CheckName, true)
-			}
-
-			matchedCondition.LastHeartbeatTime = metav1.NewTime(events[len(events)-1].GeneratedTimestamp.AsTime())
-
-			// update transition time if status has changed
-			if conditionExists && matchedCondition.Status != node.Status.Conditions[conditionIndex].Status {
-				matchedCondition.LastTransitionTime = matchedCondition.LastHeartbeatTime
-			}
-
-			// updates to the node conditions
-			if conditionExists {
-				node.Status.Conditions[conditionIndex] = *matchedCondition
-			} else {
-				node.Status.Conditions = append(node.Status.Conditions, *matchedCondition)
-			}
-		}
-
-		_, err = r.clientset.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
-		if err != nil {
-			for conditionType := range conditionToHealthEventsMap {
-				slog.Info("Node condition update failed", "conditionType", conditionType, "error", err)
-			}
-
-			return fmt.Errorf("failed to update node %s status: %w", node.Name, err)
-		}
-
-		return nil
-	})
-
-	return err
+	return conditionMap
 }
 
-func (r *K8sConnector) parseMessages(message string) []string {
+func (r *K8sConnector) processNodeCondition(node *corev1.Node, conditionType corev1.NodeConditionType,
+	events []*protos.HealthEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	latestEvent := events[len(events)-1]
+	latestTime := metav1.NewTime(safeTimestamp(latestEvent.GeneratedTimestamp))
+
+	matchedCondition, conditionIndex, conditionExists := findNodeCondition(node, conditionType)
+
+	if !conditionExists {
+		matchedCondition = corev1.NodeCondition{
+			Type:               conditionType,
+			LastHeartbeatTime:  latestTime,
+			LastTransitionTime: latestTime,
+		}
+	}
+
+	messages := parseMessages(matchedCondition.Message)
+	messages = r.aggregateEventMessages(messages, events)
+
+	if len(messages) > 0 {
+		matchedCondition.Message = r.truncateNodeConditionMessage(messages)
+		matchedCondition.Status = corev1.ConditionTrue
+		matchedCondition.Reason = r.updateHealthEventReason(latestEvent.CheckName, false)
+	} else {
+		matchedCondition.Message = NoHealthFailureMsg
+		matchedCondition.Status = corev1.ConditionFalse
+		matchedCondition.Reason = r.updateHealthEventReason(latestEvent.CheckName, true)
+	}
+
+	matchedCondition.LastHeartbeatTime = latestTime
+
+	// node.Status.Conditions[conditionIndex].Status is the pre-update value here because
+	// matchedCondition is a copy and hasn't been written back yet (write-back happens below).
+	if conditionExists && matchedCondition.Status != node.Status.Conditions[conditionIndex].Status {
+		matchedCondition.LastTransitionTime = latestTime
+	}
+
+	if conditionExists {
+		node.Status.Conditions[conditionIndex] = matchedCondition
+	} else {
+		node.Status.Conditions = append(node.Status.Conditions, matchedCondition)
+	}
+}
+
+func safeTimestamp(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		slog.Warn("HealthEvent has nil GeneratedTimestamp, falling back to current time")
+
+		return time.Now()
+	}
+
+	return ts.AsTime()
+}
+
+func findNodeCondition(node *corev1.Node,
+	conditionType corev1.NodeConditionType) (corev1.NodeCondition, int, bool) {
+	for i, c := range node.Status.Conditions {
+		if c.Type == conditionType {
+			return c, i, true
+		}
+	}
+
+	return corev1.NodeCondition{}, 0, false
+}
+
+// aggregateEventMessages builds the consolidated message list for a node condition.
+// Events are pre-filtered by buildConditionEventsMap to IsHealthy || IsFatal,
+// so !IsHealthy here implies IsFatal && !IsHealthy (a fatal fault event).
+func (r *K8sConnector) aggregateEventMessages(messages []string, events []*protos.HealthEvent) []string {
+	for _, event := range events {
+		switch {
+		case !event.IsHealthy:
+			messages = r.addMessageIfNotExist(messages, event)
+		case len(event.EntitiesImpacted) > 0:
+			messages = r.removeImpactedEntitiesMessages(messages, event.EntitiesImpacted)
+		default: // healthy event with no impacted entities — full recovery, clear all messages
+			messages = []string{}
+		}
+	}
+
+	return messages
+}
+
+func parseMessages(message string) []string {
 	var messages []string
 
 	if message != "" && message != NoHealthFailureMsg {
@@ -346,6 +380,8 @@ func filterProcessableEvents(healthEvents *protos.HealthEvents) []*protos.Health
 
 // createK8sEvent creates a Kubernetes event from a health event.
 func (r *K8sConnector) createK8sEvent(healthEvent *protos.HealthEvent) *corev1.Event {
+	ts := safeTimestamp(healthEvent.GeneratedTimestamp)
+
 	return &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s.%x", healthEvent.NodeName, metav1.Now().UnixNano()),
@@ -365,8 +401,8 @@ func (r *K8sConnector) createK8sEvent(healthEvent *protos.HealthEvent) *corev1.E
 			Component: healthEvent.Agent,
 			Host:      healthEvent.NodeName,
 		},
-		FirstTimestamp: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-		LastTimestamp:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
+		FirstTimestamp: metav1.NewTime(ts),
+		LastTimestamp:  metav1.NewTime(ts),
 		Type:           healthEvent.CheckName,
 	}
 }
@@ -374,31 +410,18 @@ func (r *K8sConnector) createK8sEvent(healthEvent *protos.HealthEvent) *corev1.E
 func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *protos.HealthEvents) error {
 	processableEvents := filterProcessableEvents(healthEvents)
 
-	var nodeConditions []corev1.NodeCondition
+	eventsByNode := groupEventsByNode(processableEvents)
 
-	for _, healthEvent := range processableEvents {
-		if healthEvent.IsHealthy || healthEvent.IsFatal {
-			nodeConditions = append(nodeConditions, corev1.NodeCondition{
-				Type:               corev1.NodeConditionType(healthEvent.CheckName),
-				LastHeartbeatTime:  metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-				LastTransitionTime: metav1.NewTime(healthEvent.GeneratedTimestamp.AsTime()),
-				Message:            r.fetchHealthEventMessage(healthEvent),
-			})
+	var firstErr error
+
+	for nodeName, nodeEvents := range eventsByNode {
+		if err := r.processNodeConditionUpdates(ctx, nodeEvents); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			} else {
+				slog.Error("Failed to process node condition updates", "node", nodeName, "error", err)
+			}
 		}
-	}
-
-	if len(nodeConditions) > 0 {
-		start := time.Now()
-		err := r.updateNodeConditions(ctx, processableEvents)
-
-		nodeConditionUpdateDuration.Observe(float64(time.Since(start).Milliseconds()))
-
-		if err != nil {
-			nodeConditionUpdateCounter.WithLabelValues(StatusFailed).Inc()
-			return fmt.Errorf("failed to update node conditions: %w", err)
-		}
-
-		nodeConditionUpdateCounter.WithLabelValues(StatusSuccess).Inc()
 	}
 
 	for _, healthEvent := range processableEvents {
@@ -409,10 +432,45 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 			nodeEventUpdateCreateDuration.Observe(float64(time.Since(start).Milliseconds()))
 
 			if err != nil {
-				return fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("failed to write node event for %s: %w", healthEvent.NodeName, err)
+				} else {
+					slog.Error("Failed to write node event", "node", healthEvent.NodeName, "error", err)
+				}
 			}
 		}
 	}
+
+	return firstErr
+}
+
+func groupEventsByNode(events []*protos.HealthEvent) map[string][]*protos.HealthEvent {
+	grouped := make(map[string][]*protos.HealthEvent)
+
+	for _, e := range events {
+		grouped[e.NodeName] = append(grouped[e.NodeName], e)
+	}
+
+	return grouped
+}
+
+func (r *K8sConnector) processNodeConditionUpdates(ctx context.Context,
+	events []*protos.HealthEvent) error {
+	start := time.Now()
+	conditionsProcessed, err := r.updateNodeConditions(ctx, events)
+
+	if !conditionsProcessed {
+		return err
+	}
+
+	if err != nil {
+		nodeConditionUpdateCounter.WithLabelValues(StatusFailed).Inc()
+
+		return err
+	}
+
+	nodeConditionUpdateDuration.Observe(float64(time.Since(start).Milliseconds()))
+	nodeConditionUpdateCounter.WithLabelValues(StatusSuccess).Inc()
 
 	return nil
 }

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/util/retry"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+	"github.com/nvidia/nvsentinel/fault-remediation/pkg/annotation"
 )
 
 type RemediationTestContextKey int
@@ -77,7 +79,6 @@ func SetupFaultRemediationTest(
 	return ctx, testCtx
 }
 
-//nolint:cyclop // Test teardown function with multiple cleanup steps
 func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	t.Helper()
 
@@ -108,25 +109,7 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 			return getErr
 		}
 
-		modified := false
-
-		if node.Labels != nil {
-			if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
-				delete(node.Labels, statemanager.NVSentinelStateLabelKey)
-
-				modified = true
-			}
-		}
-
-		if node.Annotations != nil {
-			if _, exists := node.Annotations["latestFaultRemediationState"]; exists {
-				delete(node.Annotations, "latestFaultRemediationState")
-
-				modified = true
-			}
-		}
-
-		if modified {
+		if cleanNodeMetadata(node) {
 			return client.Resources().Update(ctx, node)
 		}
 
@@ -150,6 +133,28 @@ func TeardownFaultRemediation(ctx context.Context, t *testing.T, c *envconf.Conf
 	}
 
 	return ctx
+}
+
+func cleanNodeMetadata(node *v1.Node) bool {
+	modified := false
+
+	if node.Labels != nil {
+		if _, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
+			delete(node.Labels, statemanager.NVSentinelStateLabelKey)
+
+			modified = true
+		}
+	}
+
+	if node.Annotations != nil {
+		if _, exists := node.Annotations[annotation.AnnotationKey]; exists {
+			delete(node.Annotations, annotation.AnnotationKey)
+
+			modified = true
+		}
+	}
+
+	return modified
 }
 
 // GetRebootNodeCRsForNode returns all RebootNode CR names for a specific node

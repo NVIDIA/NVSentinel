@@ -380,30 +380,16 @@ func TestParseMessages(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{"", []string{}},
+		{"", nil},
 		{"message1;", []string{"message1"}},
 		{"message1;message2;", []string{"message1", "message2"}},
 		{"message1;message2;...", []string{"message1", "message2"}},
 	}
 
 	for i, test := range tests {
-		result := k8sConnector.parseMessages(test.input)
-		if !equalStringSlices(result, test.expected) {
-			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
-		}
+		result := parseMessages(test.input)
+		assert.Equal(t, test.expected, result, "Test %d", i)
 	}
-}
-
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func TestAddMessageIfNotExist(t *testing.T) {
@@ -469,9 +455,7 @@ func TestAddMessageIfNotExist(t *testing.T) {
 
 	for i, test := range tests {
 		result := k8sConnector.addMessageIfNotExist(test.messages, test.event)
-		if !equalStringSlices(result, test.expected) {
-			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
-		}
+		assert.Equal(t, test.expected, result, "Test %d", i)
 	}
 }
 
@@ -537,9 +521,7 @@ func TestRemoveImpactedEntitiesMessages(t *testing.T) {
 
 	for i, test := range tests {
 		result := k8sConnector.removeImpactedEntitiesMessages(test.messages, convertToEntityPointers(test.EntitiesImpacted))
-		if !equalStringSlices(result, test.expected) {
-			t.Errorf("Test %d failed: expected %v, got %v", i, test.expected, result)
-		}
+		assert.Equal(t, test.expected, result, "Test %d", i)
 	}
 }
 
@@ -634,7 +616,7 @@ func TestUpdateNodeCondition_StatusChange(t *testing.T) {
 
 		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
+		_, err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -725,7 +707,7 @@ func TestUpdateNodeCondition_NewCondition(t *testing.T) {
 		conditionType := corev1.NodeConditionType(healthEvent.CheckName)
 		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
+		_, err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -846,7 +828,7 @@ func TestUpdateNodeCondition_AddMessage(t *testing.T) {
 
 		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, testCase.healthEvent)
-		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
+		_, err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("updateNodeCondition failed: %v", err)
 		}
@@ -939,7 +921,7 @@ func TestUpdateNodeCondition_RemoveMessages(t *testing.T) {
 		healthEvents := protos.HealthEvents{Version: 1, Events: make([]*protos.HealthEvent, 0)}
 		healthEvents.Events = append(healthEvents.Events, healthEvent)
 
-		err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
+		_, err = k8sConnector.updateNodeConditions(ctx, healthEvents.Events)
 		if err != nil {
 			t.Errorf("testcase %d updateNodeCondition failed: %v", index+1, err)
 		}
@@ -1315,6 +1297,7 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
+				IsFatal:            true,
 				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -1329,6 +1312,7 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
+				IsFatal:            true,
 				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -1343,6 +1327,7 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 			healthEvent: &protos.HealthEvent{
 				CheckName:          "GpuXidError",
 				IsHealthy:          false,
+				IsFatal:            true,
 				EntitiesImpacted:   []*protos.Entity{{EntityType: "GPU", EntityValue: "0"}},
 				ErrorCode:          []string{"48"},
 				GeneratedTimestamp: timestamppb.New(time.Now()),
@@ -1378,7 +1363,7 @@ func TestUpdateNodeConditions_ErrorHandling(t *testing.T) {
 				Events: []*protos.HealthEvent{tt.healthEvent},
 			}
 
-			err := connector.updateNodeConditions(localCtx, healthEvents.Events)
+			_, err := connector.updateNodeConditions(localCtx, healthEvents.Events)
 
 			if tt.expectError {
 				require.Error(t, err)

@@ -95,7 +95,7 @@ func (f *PipelineFilter) parseStage(stage interface{}) error {
 	}
 
 	// Currently only support $match stages
-	if matchValue, ok := stageMap["$match"]; ok {
+	if matchValue, ok := stageMap[opMatch]; ok {
 		conditions, err := f.parseMatchConditions(matchValue)
 		if err != nil {
 			return fmt.Errorf("failed to parse $match conditions: %w", err)
@@ -165,10 +165,10 @@ func (f *PipelineFilter) matchesStage(event map[string]interface{}, conditions m
 func (f *PipelineFilter) matchesCondition(event map[string]interface{}, key string, expectedValue interface{}) bool {
 	// Handle MongoDB operators
 	switch key {
-	case "$or":
+	case opOr:
 		result := f.matchesOr(event, expectedValue)
 		return result
-	case "$and":
+	case opAnd:
 		result := f.matchesAnd(event, expectedValue)
 		return result
 	default:
@@ -256,8 +256,6 @@ func (f *PipelineFilter) matchesAnd(event map[string]interface{}, andConditions 
 }
 
 // matchesValue checks if an actual value matches an expected value (with operator support)
-//
-//nolint:cyclop // Value matching requires type-specific comparisons
 func (f *PipelineFilter) matchesValue(actualValue interface{}, expectedValue interface{}) bool {
 	// Handle MongoDB operators and nested field matching in expectedValue
 	if expectedMap, ok := expectedValue.(map[string]interface{}); ok {
@@ -310,22 +308,21 @@ func (f *PipelineFilter) matchesMapValue(actualValue interface{}, expectedMap ma
 
 // matchesOperators processes MongoDB operator expressions
 func (f *PipelineFilter) matchesOperators(actualValue interface{}, operators map[string]interface{}) bool {
-	//nolint:goconst // MongoDB operator strings are clear as literals
 	for op, opValue := range operators {
 		switch op {
-		case "$in":
+		case opIn:
 			return f.matchesIn(actualValue, opValue)
-		case "$ne":
+		case opNe:
 			return !f.matchesEqual(actualValue, opValue)
-		case "$eq":
+		case opEq:
 			return f.matchesEqual(actualValue, opValue)
-		case "$gt":
+		case opGt:
 			return f.matchesGreaterThan(actualValue, opValue)
-		case "$gte":
+		case opGte:
 			return f.matchesGreaterThanOrEqual(actualValue, opValue)
 		case opLt:
 			return f.matchesLessThan(actualValue, opValue)
-		case "$lte":
+		case opLte:
 			return f.matchesLessThanOrEqual(actualValue, opValue)
 		default:
 			slog.Warn("Unsupported operator", "operator", op)
@@ -407,15 +404,11 @@ func (f *PipelineFilter) matchesIn(actualValue interface{}, inArray interface{})
 }
 
 // matchesEqual checks if two values are equal
-//
-//nolint:cyclop // Boolean type checking and conversions require branching
 func (f *PipelineFilter) matchesEqual(actual, expected interface{}) bool {
-	// Handle NULL values
 	if actual == nil || expected == nil {
 		return f.matchesNullValues(actual, expected)
 	}
 
-	// Handle type conversions
 	actualStr, actualIsStr := actual.(string)
 	expectedStr, expectedIsStr := expected.(string)
 
@@ -423,22 +416,10 @@ func (f *PipelineFilter) matchesEqual(actual, expected interface{}) bool {
 		return actualStr == expectedStr
 	}
 
-	// Handle boolean
-	actualBool, actualIsBool := actual.(bool)
-	expectedBool, expectedIsBool := expected.(bool)
-
-	if actualIsBool && expectedIsBool {
-		return actualBool == expectedBool
+	if result, handled := f.matchesBoolValues(actual, expected); handled {
+		return result
 	}
 
-	// Check if we're comparing boolean with non-boolean (type mismatch)
-	if actualIsBool || expectedIsBool {
-		slog.Debug("Boolean type mismatch in comparison", "actualIsBool", actualIsBool, "expectedIsBool", expectedIsBool)
-
-		return false
-	}
-
-	// Handle numbers (int, float64, etc.)
 	actualNum, actualIsNum := toFloat64(actual)
 	expectedNum, expectedIsNum := toFloat64(expected)
 
@@ -446,8 +427,24 @@ func (f *PipelineFilter) matchesEqual(actual, expected interface{}) bool {
 		return actualNum == expectedNum
 	}
 
-	// Direct comparison
 	return actual == expected
+}
+
+func (f *PipelineFilter) matchesBoolValues(actual, expected interface{}) (result bool, handled bool) {
+	actualBool, actualIsBool := actual.(bool)
+	expectedBool, expectedIsBool := expected.(bool)
+
+	if actualIsBool && expectedIsBool {
+		return actualBool == expectedBool, true
+	}
+
+	if actualIsBool || expectedIsBool {
+		slog.Debug("Boolean type mismatch in comparison", "actualIsBool", actualIsBool, "expectedIsBool", expectedIsBool)
+
+		return false, true
+	}
+
+	return false, false
 }
 
 // matchesNullValues handles NULL value comparisons

@@ -21,12 +21,10 @@ import (
 	"log/slog"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 type EventWatcher struct {
@@ -246,26 +244,27 @@ func EmitNodeRemediationDuration(status *model.Status, healthEventWithStatus *mo
 
 func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, docIDs []string) {
 	seen := make(map[string]struct{}, len(docIDs))
+
 	for _, id := range docIDs {
 		if id == "" {
 			continue
 		}
+
 		if _, dup := seen[id]; dup {
 			continue
 		}
+
 		seen[id] = struct{}{}
 		w.emitRemediationDurationFromDocID(ctx, id)
 	}
 }
 
 func (w *EventWatcher) emitRemediationDurationFromDocID(ctx context.Context, id string) {
-	objectID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		slog.Warn("emitRemediationDurationFromDocID: invalid ObjectID", "id", id, "error", err)
-		return
-	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 
-	result, err := w.databaseClient.FindOne(ctx, bson.M{"_id": objectID}, nil)
+	defer cancel()
+
+	result, err := w.databaseClient.FindOne(lookupCtx, query.Eq("_id", id).ToMongo(), nil)
 	if err != nil {
 		slog.Warn("emitRemediationDurationFromDocID: FindOne failed", "id", id, "error", err)
 		return
@@ -317,9 +316,11 @@ func emitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Ti
 	if qft != nil && dft != nil {
 		drainDuration := dft.Sub(*qft).Seconds()
 		endToEnd := now.Sub(genTs).Seconds()
+
 		if durationExcludingDrain := endToEnd - drainDuration; durationExcludingDrain > 0 {
 			metrics.NodeRemediationDurationExcludingDrainSeconds.Observe(durationExcludingDrain)
-			slog.Info("Node remediation duration (excluding drain)", "node", nodeName, "duration_seconds", durationExcludingDrain)
+			slog.Info("Node remediation duration (excluding drain)",
+				"node", nodeName, "duration_seconds", durationExcludingDrain)
 		}
 	}
 }

@@ -33,16 +33,14 @@ type MongoDBConfig struct {
 	Collection          string                     `env:"MONGODB_COLLECTION_NAME,required"`
 	ClientTLSCertConfig MongoDBClientTLSCertConfig `envPrefix:""`
 
-	TotalPingTimeoutSeconds  int `env:"MONGODB_PING_TIMEOUT_TOTAL_SECONDS" envDefault:"300"` //nolint:lll
-	TotalPingIntervalSeconds int `env:"MONGODB_PING_INTERVAL_SECONDS" envDefault:"5"`        //nolint:lll
+	TotalPingTimeoutSeconds  int `env:"MONGODB_PING_TIMEOUT_TOTAL_SECONDS" envDefault:"300"`
+	TotalPingIntervalSeconds int `env:"MONGODB_PING_INTERVAL_SECONDS" envDefault:"5"`
 
-	TotalCACertTimeoutSeconds  int `env:"CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS" envDefault:"360"` //nolint:lll
-	TotalCACertIntervalSeconds int `env:"CA_CERT_READ_INTERVAL_SECONDS" envDefault:"5"`         //nolint:lll
+	TotalCACertTimeoutSeconds  int `env:"CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS" envDefault:"360"`
+	TotalCACertIntervalSeconds int `env:"CA_CERT_READ_INTERVAL_SECONDS" envDefault:"5"`
 
-	ChangeStreamRetryDeadlineSeconds int `env:"MONGODB_CHANGE_STREAM_RETRY_DEADLINE_SECONDS" envDefault:"300"` //nolint:lll
-	ChangeStreamRetryIntervalSeconds int `env:"MONGODB_CHANGE_STREAM_RETRY_INTERVAL_SECONDS" envDefault:"5"`   //nolint:lll
-
-	UnprocessedEventsMetricUpdateIntervalSeconds int `env:"UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS" envDefault:"25"` //nolint:lll
+	ChangeStreamRetryDeadlineSeconds int `env:"MONGODB_CHANGE_STREAM_RETRY_DEADLINE_SECONDS" envDefault:"300"`
+	ChangeStreamRetryIntervalSeconds int `env:"MONGODB_CHANGE_STREAM_RETRY_INTERVAL_SECONDS" envDefault:"5"`
 
 	// AppName is used to identify the client in database connection tracking
 	AppName string `env:"APP_NAME"`

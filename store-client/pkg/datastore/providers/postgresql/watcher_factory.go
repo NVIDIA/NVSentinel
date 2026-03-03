@@ -32,8 +32,6 @@ func NewPostgreSQLWatcherFactory() watcher.WatcherFactory {
 }
 
 // CreateChangeStreamWatcher creates a PostgreSQL change stream watcher.
-//
-//nolint:cyclop // Function has clear linear flow, splitting would reduce readability
 func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 	ctx context.Context,
 	ds datastore.DataStore,

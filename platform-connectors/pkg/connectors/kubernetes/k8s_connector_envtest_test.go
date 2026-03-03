@@ -286,7 +286,7 @@ func TestK8sConnector_WithEnvtest_AddMessages(t *testing.T) {
 		},
 	}
 
-	err = connector.updateNodeConditions(ctx, healthEvents)
+	_, err = connector.updateNodeConditions(ctx, healthEvents)
 	require.NoError(t, err)
 
 	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -344,7 +344,7 @@ func TestK8sConnector_WithEnvtest_RemoveMessages(t *testing.T) {
 		},
 	}
 
-	err = connector.updateNodeConditions(ctx, healthEvents)
+	_, err = connector.updateNodeConditions(ctx, healthEvents)
 	require.NoError(t, err)
 
 	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
@@ -477,7 +477,7 @@ func TestK8sConnector_WithEnvtest_TransitionTimeUpdates(t *testing.T) {
 		},
 	}
 
-	err = connector.updateNodeConditions(ctx, healthEvents)
+	_, err = connector.updateNodeConditions(ctx, healthEvents)
 	require.NoError(t, err)
 
 	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})

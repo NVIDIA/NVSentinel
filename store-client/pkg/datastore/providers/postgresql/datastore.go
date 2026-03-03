@@ -123,79 +123,15 @@ func (p *PostgreSQLDataStore) GetDB() *sql.DB {
 
 // NewChangeStreamWatcher creates a new change stream watcher for the PostgreSQL datastore
 // This method makes PostgreSQL compatible with the datastore abstraction layer
-//
-//nolint:cyclop // Watcher setup requires multiple configuration checks
 func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	ctx context.Context, config interface{},
 ) (datastore.ChangeStreamWatcher, error) {
-	// Convert the generic config to PostgreSQL-specific parameters
-	var clientName, tableName string
-
-	var hasPipeline bool
-
-	// Handle different config types that might be passed
-
-	switch c := config.(type) {
-	case map[string]interface{}:
-		// Support generic config format from factory
-		if clientNameVal, ok := c["ClientName"].(string); ok {
-			clientName = clientNameVal
-		}
-
-		if tableNameVal, ok := c["TableName"].(string); ok {
-			tableName = tableNameVal
-		}
-
-		// Also support MongoDB-style CollectionName for compatibility
-		if collectionName, ok := c["CollectionName"].(string); ok {
-			tableName = collectionName
-		}
-
-		// Check if pipeline was provided (for warning purposes)
-		if pipeline, ok := c["Pipeline"]; ok && pipeline != nil {
-			hasPipeline = true
-		}
-	default:
-		return nil, fmt.Errorf("unsupported config type: %T", config)
+	clientName, tableName, pipeline, err := parseWatcherConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
-	// Validate required parameters
-	if clientName == "" {
-		return nil, fmt.Errorf("ClientName is required")
-	}
-
-	if tableName == "" {
-		return nil, fmt.Errorf("TableName (or CollectionName) is required")
-	}
-
-	// Create pipeline filter if pipeline was provided
-	// Two-layer filtering for optimal performance:
-	// 1. Server-side: SQL WHERE clause (built from raw pipeline in fetchNewChanges)
-	// 2. Application-side: PipelineFilter (handles edge cases SQL can't express)
-	var pipelineFilter *PipelineFilter
-
-	var pipeline interface{}
-
-	if hasPipeline {
-		if c, ok := config.(map[string]interface{}); ok {
-			pipeline = c["Pipeline"]
-		}
-
-		filter, err := NewPipelineFilter(pipeline)
-		if err != nil {
-			slog.Warn("Failed to parse MongoDB pipeline for PostgreSQL filtering",
-				"error", err,
-				"tableName", tableName,
-				"clientName", clientName,
-				"action", "all events will be returned without filtering")
-		} else if filter != nil {
-			pipelineFilter = filter
-			slog.Info("PostgreSQL change stream will filter events using parsed MongoDB pipeline",
-				"tableName", tableName,
-				"clientName", clientName,
-				"stages", len(filter.stages))
-		}
-	}
+	pipelineFilter := buildPipelineFilter(pipeline, tableName, clientName)
 
 	// Convert PascalCase table name to snake_case for PostgreSQL compatibility
 	snakeCaseTableName := toSnakeCase(tableName)
@@ -208,11 +144,72 @@ func (p *PostgreSQLDataStore) NewChangeStreamWatcher(
 	// Create and return PostgreSQL change stream watcher
 	// Default to hybrid mode for best performance and reliability
 	watcher := NewPostgreSQLChangeStreamWatcher(p.db, clientName, snakeCaseTableName, p.connString, ModeHybrid)
-	watcher.pipeline = pipeline             // Store raw pipeline for SQL filter building
-	watcher.pipelineFilter = pipelineFilter // Application-side filter as fallback
+	watcher.pipeline = pipeline
+	watcher.pipelineFilter = pipelineFilter
 
 	// Wrap the watcher to provide Unwrap() support for backward compatibility
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(watcher), nil
+}
+
+func parseWatcherConfig(config interface{}) (string, string, interface{}, error) {
+	configMap, ok := config.(map[string]interface{})
+	if !ok {
+		return "", "", nil, fmt.Errorf("unsupported config type: %T", config)
+	}
+
+	var clientName, tableName string
+
+	if val, ok := configMap["ClientName"].(string); ok {
+		clientName = val
+	}
+
+	if val, ok := configMap["TableName"].(string); ok {
+		tableName = val
+	}
+
+	// Also support MongoDB-style CollectionName for compatibility
+	if val, ok := configMap["CollectionName"].(string); ok {
+		tableName = val
+	}
+
+	if clientName == "" {
+		return "", "", nil, fmt.Errorf("ClientName is required")
+	}
+
+	if tableName == "" {
+		return "", "", nil, fmt.Errorf("TableName (or CollectionName) is required")
+	}
+
+	return clientName, tableName, configMap["Pipeline"], nil
+}
+
+// buildPipelineFilter creates a two-layer pipeline filter for optimal performance:
+// 1. Server-side: SQL WHERE clause (built from raw pipeline in fetchNewChanges)
+// 2. Application-side: PipelineFilter (handles edge cases SQL can't express)
+func buildPipelineFilter(pipeline interface{}, tableName, clientName string) *PipelineFilter {
+	if pipeline == nil {
+		return nil
+	}
+
+	filter, err := NewPipelineFilter(pipeline)
+	if err != nil {
+		slog.Warn("Failed to parse MongoDB pipeline for PostgreSQL filtering",
+			"error", err,
+			"tableName", tableName,
+			"clientName", clientName,
+			"action", "all events will be returned without filtering")
+
+		return nil
+	}
+
+	if filter != nil {
+		slog.Info("PostgreSQL change stream will filter events using parsed MongoDB pipeline",
+			"tableName", tableName,
+			"clientName", clientName,
+			"stages", len(filter.stages))
+	}
+
+	return filter
 }
 
 // --- Backward Compatibility Methods for MongoDB-style Type Assertions ---

@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -722,6 +723,11 @@ func TestKataLabelOverride(t *testing.T) {
 			wantLabels: []string{KataRuntimeDefaultLabel},
 		},
 		{
+			name:       "override equals default",
+			override:   KataRuntimeDefaultLabel,
+			wantLabels: []string{KataRuntimeDefaultLabel},
+		},
+		{
 			name:       "with custom override",
 			override:   "custom.io/kata-enabled",
 			wantLabels: []string{KataRuntimeDefaultLabel, "custom.io/kata-enabled"},
@@ -755,12 +761,25 @@ func TestKataLabelOverride(t *testing.T) {
 				t.Fatal("NewLabeler() returned nil labeler")
 			}
 
-			// Verify labeler was created successfully
-			// The actual kataLabels field is private, but we can verify
-			// no panic occurred and the instance is valid
-			t.Logf("Successfully created labeler with override: %q", tt.override)
+			require.Equal(t, tt.wantLabels, l.kataLabels, "kataLabels mismatch for override %q", tt.override)
 		})
 	}
+}
+
+func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+
+	t.Run("invalid pod label selector", func(t *testing.T) {
+		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create pod informer")
+	})
+
+	t.Run("invalid GKE installer label selector", func(t *testing.T) {
+		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create GKE installer informer")
+	})
 }
 
 // TestKataLabelOverrideIsolation verifies that creating multiple labeler instances

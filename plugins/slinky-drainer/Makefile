@@ -71,9 +71,12 @@ undeploy:
 clean:
 	rm -rf bin/ dist/ slinky-drainer
 
+SETUP_ENVTEST_COMMAND := go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
+	eval $$(setup-envtest use --use-env -p env) &&
+
 .PHONY: test
 test:
-	go test ./... -v
+	$(SETUP_ENVTEST_COMMAND) go test ./... -v
 
 .PHONY: lint
 lint:
@@ -81,7 +84,7 @@ lint:
 
 .PHONY: lint-test
 lint-test: lint
-	go vet ./... && \
+	$(SETUP_ENVTEST_COMMAND) go vet ./... && \
 	gotestsum --junitfile report.xml -- -race ./... -coverprofile=coverage.txt -covermode atomic -coverpkg=github.com/nvidia/nvsentinel/plugins/slinky-drainer/... && \
 	go tool cover -func coverage.txt && \
 	gocover-cobertura < coverage.txt > coverage.xml

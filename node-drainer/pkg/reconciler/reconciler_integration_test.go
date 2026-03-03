@@ -1763,6 +1763,14 @@ func TestReconciler_MultipleEventsOnNodeCancelledByUnQuarantine(t *testing.T) {
 	assert.Nil(t, pod2.DeletionTimestamp, "pod-2 should not be deleted")
 }
 
+func TestReconciler_HandleCancellation_UnknownStatus_LogsWarning(t *testing.T) {
+	setup := setupDirectTest(t, nil, false)
+
+	require.NotPanics(t, func() {
+		setup.reconciler.HandleCancellation("evt-1", "node-1", model.Status("SomeUnknownStatus"))
+	})
+}
+
 func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 	customDrainCfg := config.CustomDrainConfig{
 		Enabled:               true,

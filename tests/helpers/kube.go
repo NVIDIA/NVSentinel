@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -164,21 +165,68 @@ intended sequence rather than starting without the label value. This is required
 between the end of the TestScaleHealthEvents where a node may have the remediation-succeeded when the test completes.
 This workaround can be removed after KACE-1703 is completed.
 */
-//nolint:cyclop,gocognit // Test helper with complex state machine logic
 func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, nodeName string,
 	labelValueSequence []string, waitForLabelRemoval bool, success chan bool) error {
-	currentLabelIndex := 0
-	prevLabelValue := ""
+	if len(labelValueSequence) == 0 {
+		return fmt.Errorf("labelValueSequence must not be empty")
+	}
+
+	state := newLabelWatcherState(ctx, t, c, nodeName, labelValueSequence, waitForLabelRemoval)
+
+	t.Logf("[LabelWatcher] Starting watcher for node %s, expecting sequence: %v (starting at index %d)",
+		nodeName, labelValueSequence, state.currentLabelIndex)
+
+	// Safe to send directly via sendNodeLabelResult (not s.sendResult) because the
+	// watch has not started yet, so there is no concurrent handleUpdate that could race.
+	if state.currentLabelIndex == len(labelValueSequence) && !waitForLabelRemoval {
+		t.Logf("[LabelWatcher] Node %s already at final label state, sending SUCCESS immediately", nodeName)
+
+		go sendNodeLabelResult(ctx, success, true)
+
+		return nil
+	}
+
+	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
+		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
+		WithUpdateFunc(func(updated interface{}) {
+			state.handleUpdate(t, ctx, updated, success)
+		}).Start(ctx)
+}
+
+type labelWatcherState struct {
+	// Lock to prevent concurrent access to currentLabelIndex/prevLabelValue.
+	// Sends to the success channel will be blocked on the test runner reading the result
+	// in TestFatalHealthEventEndToEnd. The UpdateFunc thread which has acquired the lock
+	// will be waiting for the main thread to read from the success channel. This is the
+	// desired behavior because we only want to have 1 UpdateFunc thread write true/false.
+	mu                  sync.Mutex
+	currentLabelIndex   int
+	prevLabelValue      string
+	labelValueSequence  []string
+	nodeName            string
+	waitForLabelRemoval bool
+	resultSent          bool
+}
+
+func newLabelWatcherState(ctx context.Context, t *testing.T, c klient.Client,
+	nodeName string, labelValueSequence []string, waitForLabelRemoval bool) *labelWatcherState {
+	state := &labelWatcherState{
+		labelValueSequence:  labelValueSequence,
+		nodeName:            nodeName,
+		waitForLabelRemoval: waitForLabelRemoval,
+	}
 
 	node, err := GetNodeByName(ctx, c, nodeName)
-	if err == nil {
+	if err != nil {
+		t.Logf("[LabelWatcher] Failed to get node %s for initial state: %v, starting from index 0", nodeName, err)
+	} else {
 		if currentValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]; exists {
 			for i, expected := range labelValueSequence {
 				if currentValue == expected {
 					t.Logf("[LabelWatcher] Node %s already has label=%s (index %d), adjusting start position",
 						nodeName, currentValue, i)
-					currentLabelIndex = i + 1 // Start watching for the NEXT label
-					prevLabelValue = currentValue
+					state.currentLabelIndex = i + 1
+					state.prevLabelValue = currentValue
 
 					break
 				}
@@ -186,116 +234,136 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 		}
 	}
 
-	// Lock to prevent concurrent access to currentLabelIndex/prevLabelValue/foundInvalidSequence.
-	// Note that sends to the success channel will be blocked on the test runner reading the result of this label sequence
-	// in TestFatalHealthEventEndToEnd. The UpdateFunc thread which has acquired the lock will be waiting for the main
-	// thead to read from the success channel. This is the desired behavior because we only want to have 1 UpdateFunc
-	// thread write true/false.
-	var lock sync.Mutex
+	return state
+}
 
-	t.Logf("[LabelWatcher] Starting watcher for node %s, expecting sequence: %v (starting at index %d)",
-		nodeName, labelValueSequence, currentLabelIndex)
+func (s *labelWatcherState) handleUpdate(t *testing.T, ctx context.Context, updated interface{}, success chan bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
-		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
-		WithUpdateFunc(func(updated interface{}) {
-			lock.Lock()
-			defer lock.Unlock()
+	node, ok := updated.(*v1.Node)
+	if !ok || node == nil {
+		t.Logf("[LabelWatcher] unexpected update type %T for node %s, skipping", updated, s.nodeName)
+		return
+	}
 
-			node := updated.(*v1.Node)
+	actualValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
 
-			actualValue, exists := node.Labels[statemanager.NVSentinelStateLabelKey]
-			if exists && currentLabelIndex < len(labelValueSequence) { //nolint:nestif // Complex label state tracking logic
-				expectedValue := labelValueSequence[currentLabelIndex]
-				t.Logf("[LabelWatcher] Node %s update: %s=%s (progress: %d/%d, expected: %s, prev: %s)",
-					nodeName, statemanager.NVSentinelStateLabelKey, actualValue,
-					currentLabelIndex, len(labelValueSequence), expectedValue, prevLabelValue)
-				//nolint:gocritic // Complex boolean logic appropriate for state transitions
-				if currentLabelIndex < len(labelValueSequence) && actualValue == labelValueSequence[currentLabelIndex] {
-					t.Logf("[LabelWatcher] ✓ MATCHED expected label [%d]: %s", currentLabelIndex, actualValue)
-					prevLabelValue = labelValueSequence[currentLabelIndex]
+	if exists && s.currentLabelIndex < len(s.labelValueSequence) {
+		s.handleLabelPresent(t, ctx, actualValue, success)
+	} else if !exists {
+		s.handleLabelAbsent(t, ctx, success)
+	}
+	// Label exists but sequence already complete: deliberate no-op.
+	// The watcher is either waiting for label removal (handled by
+	// handleLabelAbsent on a future update) or has already sent a result.
+}
 
-					currentLabelIndex++
-					if currentLabelIndex == len(labelValueSequence) {
-						if !waitForLabelRemoval {
-							t.Logf("[LabelWatcher] ✓ All labels observed, not waiting for removal. Sending SUCCESS to channel")
-							sendNodeLabelResult(ctx, success, true)
-						}
+func (s *labelWatcherState) handleLabelPresent(t *testing.T, ctx context.Context,
+	actualValue string, success chan bool) {
+	expectedValue := s.labelValueSequence[s.currentLabelIndex]
+	t.Logf("[LabelWatcher] Node %s update: %s=%s (progress: %d/%d, expected: %s, prev: %s)",
+		s.nodeName, statemanager.NVSentinelStateLabelKey, actualValue,
+		s.currentLabelIndex, len(s.labelValueSequence), expectedValue, s.prevLabelValue)
 
-						t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(labelValueSequence))
-					}
-				} else if actualValue != labelValueSequence[currentLabelIndex] && prevLabelValue != actualValue {
-					// Check if the actual label appears later in the sequence (skipped intermediate states)
-					// This can happen with fast state transitions, especially with PostgreSQL LISTEN/NOTIFY
-					foundLaterInSequence := false
-					skippedIndex := -1
+	switch {
+	case actualValue == expectedValue:
+		s.handleMatchedLabel(t, ctx, actualValue, success)
+	case actualValue != s.prevLabelValue:
+		s.handleOutOfSequenceLabel(t, ctx, actualValue, success)
+	default:
+		t.Logf("[LabelWatcher] Ignoring duplicate update for label: %s", actualValue)
+	}
+}
 
-					for i := currentLabelIndex + 1; i < len(labelValueSequence); i++ {
-						if actualValue == labelValueSequence[i] {
-							foundLaterInSequence = true
-							skippedIndex = i
+func (s *labelWatcherState) handleMatchedLabel(t *testing.T, ctx context.Context,
+	actualValue string, success chan bool) {
+	t.Logf("[LabelWatcher] ✓ MATCHED expected label [%d]: %s", s.currentLabelIndex, actualValue)
+	s.prevLabelValue = s.labelValueSequence[s.currentLabelIndex]
+	s.currentLabelIndex++
 
-							break
-						}
-					}
+	if s.currentLabelIndex == len(s.labelValueSequence) {
+		if !s.waitForLabelRemoval {
+			t.Logf("[LabelWatcher] ✓ All labels observed, not waiting for removal. Sending SUCCESS to channel")
+			s.sendResult(ctx, success, true)
+		} else {
+			t.Logf("[LabelWatcher] ✓ All %d labels matched! Waiting for label removal...", len(s.labelValueSequence))
+		}
+	}
+}
 
-					if foundLaterInSequence {
-						// We skipped intermediate states - log warning but continue
-						skippedLabels := labelValueSequence[currentLabelIndex:skippedIndex]
-						t.Logf(
-							"[LabelWatcher] ⚠ SKIPPED intermediate labels: %v (jumped from '%s' to '%s')",
-							skippedLabels, prevLabelValue, actualValue,
-						)
-						t.Logf("[LabelWatcher] ⚠ This is expected with fast state transitions (PostgreSQL LISTEN/NOTIFY)")
+func (s *labelWatcherState) handleOutOfSequenceLabel(t *testing.T, ctx context.Context,
+	actualValue string, success chan bool) {
+	// Check if the actual label appears later in the sequence (skipped intermediate states).
+	// This can happen with fast state transitions, especially with PostgreSQL LISTEN/NOTIFY.
+	skippedIndex := -1
 
-						// Update state to the current label
-						prevLabelValue = actualValue
-						currentLabelIndex = skippedIndex + 1
+	for i := s.currentLabelIndex + 1; i < len(s.labelValueSequence); i++ {
+		if actualValue == s.labelValueSequence[i] {
+			skippedIndex = i
 
-						if currentLabelIndex == len(labelValueSequence) {
-							t.Logf("[LabelWatcher] ✓ Reached final state despite skipped labels! Waiting for label removal...")
-						}
-					} else if currentLabelIndex == 0 {
-						// First label doesn't match and isn't in sequence - missed early labels
-						t.Logf(
-							"[LabelWatcher] ✗ MISSED early labels: First label received is '%s', "+
-								"but expected to start with '%s' (index 0)",
-							actualValue, labelValueSequence[0],
-						)
-						t.Logf("[LabelWatcher] Sending FAILURE to channel (missed early labels)")
-						sendNodeLabelResult(ctx, success, false)
-					} else {
-						// Completely unexpected transition (not in sequence at all)
-						t.Logf("[LabelWatcher] ✗ UNEXPECTED label transition: got '%s', expected '%s' (prev: '%s')",
-							actualValue, labelValueSequence[currentLabelIndex], prevLabelValue)
-						t.Logf("[LabelWatcher] ✗ Label '%s' is not in expected sequence", actualValue)
-						t.Logf("[LabelWatcher] Sending FAILURE to channel")
-						sendNodeLabelResult(ctx, success, false)
-					}
-				} else if actualValue == prevLabelValue {
-					t.Logf("[LabelWatcher] Ignoring duplicate update for label: %s", actualValue)
-				}
+			break
+		}
+	}
+
+	switch {
+	case skippedIndex >= 0:
+		skippedLabels := s.labelValueSequence[s.currentLabelIndex:skippedIndex]
+		t.Logf("[LabelWatcher] ⚠ SKIPPED intermediate labels: %v (jumped from '%s' to '%s')",
+			skippedLabels, s.prevLabelValue, actualValue)
+		t.Logf("[LabelWatcher] ⚠ This is expected with fast state transitions (PostgreSQL LISTEN/NOTIFY)")
+
+		s.prevLabelValue = actualValue
+		s.currentLabelIndex = skippedIndex + 1
+
+		if s.currentLabelIndex == len(s.labelValueSequence) {
+			if !s.waitForLabelRemoval {
+				t.Logf("[LabelWatcher] ✓ Reached final state despite skipped labels. Sending SUCCESS to channel")
+				s.sendResult(ctx, success, true)
 			} else {
-				t.Logf("[LabelWatcher] Node %s update: %s label doesn't exist (progress: %d/%d)",
-					nodeName, statemanager.NVSentinelStateLabelKey, currentLabelIndex, len(labelValueSequence))
-
-				switch {
-				case currentLabelIndex == len(labelValueSequence):
-					t.Logf("[LabelWatcher] ✓ All labels observed and now removed. Sending SUCCESS to channel")
-					sendNodeLabelResult(ctx, success, true)
-				case currentLabelIndex != 0:
-					t.Logf("[LabelWatcher] ✗ Label removed prematurely (only saw %d/%d labels). Sending FAILURE to channel",
-						currentLabelIndex, len(labelValueSequence))
-					sendNodeLabelResult(ctx, success, false)
-				default:
-					t.Logf("[LabelWatcher] Waiting for first label to appear...")
-				}
+				t.Logf("[LabelWatcher] ✓ Reached final state despite skipped labels! Waiting for label removal...")
 			}
-			// Do nothing if the label exists and the actualValue equals the previous label value, if the first label
-			// observed doesn't match yet, or if we already found all the expected labels and we're waiting for the
-			// label to be removed. Additionally, do nothing if the label doesn't exist and we still haven't seen the
-			// label added.
-		}).Start(ctx)
+		}
+	case s.currentLabelIndex == 0:
+		t.Logf("[LabelWatcher] ✗ MISSED early labels: First label received is '%s', "+
+			"but expected to start with '%s' (index 0)",
+			actualValue, s.labelValueSequence[0])
+		t.Logf("[LabelWatcher] Sending FAILURE to channel (missed early labels)")
+		s.sendResult(ctx, success, false)
+	default:
+		t.Logf("[LabelWatcher] ✗ UNEXPECTED label transition: got '%s', expected '%s' (prev: '%s')",
+			actualValue, s.labelValueSequence[s.currentLabelIndex], s.prevLabelValue)
+		t.Logf("[LabelWatcher] ✗ Label '%s' is not in expected sequence", actualValue)
+		t.Logf("[LabelWatcher] Sending FAILURE to channel")
+		s.sendResult(ctx, success, false)
+	}
+}
+
+func (s *labelWatcherState) handleLabelAbsent(t *testing.T, ctx context.Context, success chan bool) {
+	t.Logf("[LabelWatcher] Node %s update: %s label doesn't exist (progress: %d/%d)",
+		s.nodeName, statemanager.NVSentinelStateLabelKey, s.currentLabelIndex, len(s.labelValueSequence))
+
+	switch {
+	case s.currentLabelIndex == len(s.labelValueSequence):
+		t.Logf("[LabelWatcher] ✓ All labels observed and now removed. Sending SUCCESS to channel")
+		s.sendResult(ctx, success, true)
+	case s.currentLabelIndex != 0:
+		t.Logf("[LabelWatcher] ✗ Label removed prematurely (only saw %d/%d labels). Sending FAILURE to channel",
+			s.currentLabelIndex, len(s.labelValueSequence))
+		s.sendResult(ctx, success, false)
+	default:
+		t.Logf("[LabelWatcher] Waiting for first label to appear...")
+	}
+}
+
+func (s *labelWatcherState) sendResult(ctx context.Context, success chan bool, result bool) {
+	if s.resultSent {
+		return
+	}
+
+	s.resultSent = true
+
+	sendNodeLabelResult(ctx, success, result)
 }
 
 func sendNodeLabelResult(ctx context.Context, success chan bool, result bool) {
@@ -1065,7 +1133,8 @@ func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, n
 	})
 }
 
-//nolint:cyclop,gocognit // Test helper with complex deployment rollout logic
+// WaitForDeploymentRollout blocks until the named Deployment's rollout is complete
+// (all replicas ready and the current ReplicaSet has ready pods) or ctx is cancelled.
 func WaitForDeploymentRollout(
 	ctx context.Context, t *testing.T, c klient.Client, name, namespace string,
 ) {
@@ -1079,125 +1148,28 @@ func WaitForDeploymentRollout(
 			return false
 		}
 
-		// Check all conditions for a successful rollout (same as kubectl rollout status)
-		if deployment.Spec.Replicas == nil {
-			t.Logf("Deployment spec replicas is nil")
+		expectedReplicas, replicasReady := checkDeploymentReplicaStatus(t, deployment)
+		if !replicasReady {
 			return false
 		}
 
-		expectedReplicas := *deployment.Spec.Replicas
+		if expectedReplicas == 0 {
+			t.Logf("Rollout complete: deployment %s/%s scaled to zero", deployment.Namespace, deployment.Name)
+			return true
+		}
 
-		if deployment.Status.UpdatedReplicas != expectedReplicas {
-			t.Logf("Waiting: UpdatedReplicas=%d, Expected=%d", deployment.Status.UpdatedReplicas, expectedReplicas)
+		selector := buildMatchLabelSelector(t, deployment)
+		if selector == "" {
+			t.Logf("Deployment %s/%s has empty or invalid selector", deployment.Namespace, deployment.Name)
 			return false
 		}
 
-		if deployment.Status.ReadyReplicas != expectedReplicas {
-			t.Logf("Waiting: ReadyReplicas=%d, Expected=%d", deployment.Status.ReadyReplicas, expectedReplicas)
+		currentRS, foundReplicaSet := findCurrentReplicaSet(ctx, t, c, selector, deployment, namespace)
+		if !foundReplicaSet {
 			return false
 		}
 
-		if deployment.Status.AvailableReplicas != expectedReplicas {
-			t.Logf("Waiting: AvailableReplicas=%d, Expected=%d", deployment.Status.AvailableReplicas, expectedReplicas)
-			return false
-		}
-
-		if deployment.Status.ObservedGeneration < deployment.Generation {
-			t.Logf("Waiting: ObservedGeneration=%d, Generation=%d", deployment.Status.ObservedGeneration, deployment.Generation)
-			return false
-		}
-
-		// Find the current ReplicaSet (highest revision) to verify we're checking the right pods
-		rsList := &appsv1.ReplicaSetList{}
-		rsLabelSelector := ""
-
-		rsLabels := []string{}
-		for k, v := range deployment.Spec.Selector.MatchLabels {
-			rsLabels = append(rsLabels, fmt.Sprintf("%s=%s", k, v))
-		}
-
-		rsLabelSelector = strings.Join(rsLabels, ",")
-
-		if err := c.Resources(namespace).List(ctx, rsList, resources.WithLabelSelector(rsLabelSelector)); err != nil {
-			t.Logf("Error listing ReplicaSets: %v", err)
-			return false
-		}
-
-		// Find the ReplicaSet with highest revision (current one)
-		var currentRS *appsv1.ReplicaSet
-
-		highestRevision := int64(-1)
-
-		for i := range rsList.Items {
-			rs := &rsList.Items[i]
-			if rs.Annotations == nil {
-				continue
-			}
-
-			revisionStr := rs.Annotations["deployment.kubernetes.io/revision"]
-			if revisionStr == "" {
-				continue
-			}
-
-			revision := int64(0)
-			if _, err := fmt.Sscanf(revisionStr, "%d", &revision); err != nil {
-				// Skip this replica set if revision parsing fails
-				continue
-			}
-
-			if revision > highestRevision {
-				highestRevision = revision
-				currentRS = rs
-			}
-		}
-
-		if currentRS == nil {
-			t.Logf("Could not find current ReplicaSet")
-			return false
-		}
-
-		currentPodTemplateHash := currentRS.Labels["pod-template-hash"]
-		t.Logf("Current ReplicaSet: %s (revision: %d, hash: %s)", currentRS.Name, highestRevision, currentPodTemplateHash)
-
-		// Now verify at least one pod from the current ReplicaSet is ready
-		labelSelector := ""
-
-		labels := []string{}
-		for k, v := range deployment.Spec.Selector.MatchLabels {
-			labels = append(labels, fmt.Sprintf("%s=%s", k, v))
-		}
-
-		labelSelector = strings.Join(labels, ",")
-
-		pods := &v1.PodList{}
-		if err := c.Resources(namespace).List(ctx, pods, resources.WithLabelSelector(labelSelector)); err != nil {
-			t.Logf("Error listing pods: %v", err)
-			return false
-		}
-
-		readyPodFound := false
-
-		for _, pod := range pods.Items {
-			if pod.DeletionTimestamp != nil {
-				continue
-			}
-
-			podHash := pod.Labels["pod-template-hash"]
-			if podHash != currentPodTemplateHash {
-				t.Logf("Skipping pod %s from old ReplicaSet (hash: %s)", pod.Name, podHash)
-				continue
-			}
-
-			if pod.Status.Phase == v1.PodRunning && IsPodReady(pod) {
-				t.Logf("Found ready pod from current ReplicaSet: %s", pod.Name)
-
-				readyPodFound = true
-
-				break
-			}
-		}
-
-		if !readyPodFound {
+		if !hasReadyPodFromReplicaSet(ctx, t, c, selector, namespace, currentRS) {
 			return false
 		}
 
@@ -1207,6 +1179,161 @@ func WaitForDeploymentRollout(
 	}, EventuallyWaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
 
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
+}
+
+func checkDeploymentReplicaStatus(t *testing.T, deployment *appsv1.Deployment) (int32, bool) {
+	t.Helper()
+
+	if deployment.Spec.Replicas == nil {
+		t.Logf("Deployment %s/%s has nil Spec.Replicas, will retry", deployment.Namespace, deployment.Name)
+		return 0, false
+	}
+
+	expectedReplicas := *deployment.Spec.Replicas
+
+	if deployment.Status.UpdatedReplicas != expectedReplicas {
+		t.Logf("Waiting: UpdatedReplicas=%d, Expected=%d", deployment.Status.UpdatedReplicas, expectedReplicas)
+		return 0, false
+	}
+
+	if deployment.Status.ReadyReplicas != expectedReplicas {
+		t.Logf("Waiting: ReadyReplicas=%d, Expected=%d", deployment.Status.ReadyReplicas, expectedReplicas)
+		return 0, false
+	}
+
+	if deployment.Status.AvailableReplicas != expectedReplicas {
+		t.Logf("Waiting: AvailableReplicas=%d, Expected=%d", deployment.Status.AvailableReplicas, expectedReplicas)
+		return 0, false
+	}
+
+	if deployment.Status.ObservedGeneration < deployment.Generation {
+		t.Logf("Waiting: ObservedGeneration=%d, Generation=%d", deployment.Status.ObservedGeneration, deployment.Generation)
+		return 0, false
+	}
+
+	return expectedReplicas, true
+}
+
+func findCurrentReplicaSet(ctx context.Context, t *testing.T, c klient.Client,
+	selector string, deployment *appsv1.Deployment, namespace string) (*appsv1.ReplicaSet, bool) {
+	t.Helper()
+
+	rsList := &appsv1.ReplicaSetList{}
+	if err := c.Resources(namespace).List(ctx, rsList,
+		resources.WithLabelSelector(selector)); err != nil {
+		t.Logf("Error listing ReplicaSets: %v", err)
+		return nil, false
+	}
+
+	currentRS, highestRevision := highestRevisionRS(rsList, deployment)
+
+	if currentRS == nil {
+		t.Logf("Could not find current ReplicaSet")
+		return nil, false
+	}
+
+	hashLabel, ok := currentRS.Labels["pod-template-hash"]
+	if !ok || hashLabel == "" {
+		t.Logf("Current ReplicaSet %s missing pod-template-hash label", currentRS.Name)
+		return nil, false
+	}
+
+	t.Logf("Current ReplicaSet: %s (revision: %d, hash: %s)",
+		currentRS.Name, highestRevision, hashLabel)
+
+	return currentRS, true
+}
+
+func highestRevisionRS(rsList *appsv1.ReplicaSetList, owner *appsv1.Deployment) (*appsv1.ReplicaSet, int64) {
+	var currentRS *appsv1.ReplicaSet
+
+	highest := int64(-1)
+
+	for i := range rsList.Items {
+		rs := &rsList.Items[i]
+
+		if !metav1.IsControlledBy(rs, owner) {
+			continue
+		}
+
+		if rs.Annotations == nil {
+			continue
+		}
+
+		revisionStr := rs.Annotations["deployment.kubernetes.io/revision"]
+		if revisionStr == "" {
+			continue
+		}
+
+		revision, err := strconv.ParseInt(revisionStr, 10, 64)
+		if err != nil {
+			continue
+		}
+
+		if revision > highest {
+			highest = revision
+			currentRS = rs
+		}
+	}
+
+	return currentRS, highest
+}
+
+// buildMatchLabelSelector converts the deployment's label selector to a string.
+// Returns "" if the selector is nil or invalid.
+func buildMatchLabelSelector(t *testing.T, deployment *appsv1.Deployment) string {
+	t.Helper()
+
+	if deployment.Spec.Selector == nil {
+		return ""
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	if err != nil {
+		t.Logf("Deployment %s/%s has invalid label selector: %v",
+			deployment.Namespace, deployment.Name, err)
+
+		return ""
+	}
+
+	return selector.String()
+}
+
+func hasReadyPodFromReplicaSet(ctx context.Context, t *testing.T, c klient.Client,
+	selector, namespace string, currentRS *appsv1.ReplicaSet) bool {
+	t.Helper()
+
+	currentPodTemplateHash, ok := currentRS.Labels["pod-template-hash"]
+	if !ok || currentPodTemplateHash == "" {
+		t.Logf("Current ReplicaSet %s missing pod-template-hash label", currentRS.Name)
+		return false
+	}
+
+	pods := &v1.PodList{}
+	if err := c.Resources(namespace).List(ctx, pods,
+		resources.WithLabelSelector(selector)); err != nil {
+		t.Logf("Error listing pods: %v", err)
+		return false
+	}
+
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+
+		podHash, exists := pod.Labels["pod-template-hash"]
+		if !exists || podHash != currentPodTemplateHash {
+			t.Logf("Skipping pod %s from old ReplicaSet (hash: %s)", pod.Name, podHash)
+			continue
+		}
+
+		if pod.Status.Phase == v1.PodRunning && IsPodReady(pod) {
+			t.Logf("Found ready pod from current ReplicaSet: %s", pod.Name)
+			return true
+		}
+	}
+
+	return false
 }
 
 // RestartDeployment triggers a rolling restart of the specified deployment by updating

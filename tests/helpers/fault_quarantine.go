@@ -373,7 +373,9 @@ func checkAnnotation(t *testing.T, nodeName string, check AnnotationCheck, annot
 	return true
 }
 
-func AssertQuarantineState( //nolint:cyclop,gocognit // Test helper with complex validation logic
+// AssertQuarantineState asserts that a node reaches the expected quarantine state
+// (cordon, taints, annotations) within EventuallyWaitTimeout, failing the test otherwise.
+func AssertQuarantineState(
 	ctx context.Context, t *testing.T, client klient.Client, nodeName string, expected QuarantineAssertion,
 ) {
 	t.Helper()
@@ -387,54 +389,52 @@ func AssertQuarantineState( //nolint:cyclop,gocognit // Test helper with complex
 			return false
 		}
 
-		if expected.ExpectCordoned {
-			if !node.Spec.Unschedulable {
-				t.Logf("waiting for node %s to be cordoned", nodeName)
-				return false
-			}
-		} else {
-			if node.Spec.Unschedulable {
-				t.Logf("node %s is cordoned but shouldn't be", nodeName)
-				return false
-			}
-		}
+		cordoned := checkCordonState(t, node, nodeName, expected.ExpectCordoned)
+		tainted := checkTaintState(t, node, nodeName, expected.ExpectTaint)
+		annotated := checkAnnotationStates(t, node, nodeName, expected.AnnotationChecks)
 
-		if expected.ExpectTaint != nil {
-			found := false
-
-			for _, taint := range node.Spec.Taints {
-				if taint.Key == expected.ExpectTaint.Key &&
-					taint.Value == expected.ExpectTaint.Value &&
-					taint.Effect == expected.ExpectTaint.Effect {
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				t.Logf("waiting for taint %s=%s:%s on node %s",
-					expected.ExpectTaint.Key, expected.ExpectTaint.Value, expected.ExpectTaint.Effect, nodeName)
-
-				return false
-			}
-		}
-
-		// Process all annotation checks
-		for _, check := range expected.AnnotationChecks {
-			annotationValue := ""
-			if node.Annotations != nil {
-				annotationValue = node.Annotations[check.Key]
-			}
-
-			if !checkAnnotation(t, nodeName, check, annotationValue) {
-				return false
-			}
-		}
-
-		return true
+		return cordoned && tainted && annotated
 	}, EventuallyWaitTimeout, WaitInterval)
 
 	t.Logf("Assertion passed for node %s", nodeName)
+}
+
+func checkTaintState(t *testing.T, node *v1.Node, nodeName string, expectTaint *v1.Taint) bool {
+	t.Helper()
+
+	if expectTaint == nil {
+		return true
+	}
+
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == expectTaint.Key &&
+			taint.Value == expectTaint.Value &&
+			taint.Effect == expectTaint.Effect {
+			return true
+		}
+	}
+
+	t.Logf("waiting for taint %s=%s:%s on node %s",
+		expectTaint.Key, expectTaint.Value, expectTaint.Effect, nodeName)
+
+	return false
+}
+
+func checkAnnotationStates(t *testing.T, node *v1.Node, nodeName string, checks []AnnotationCheck) bool {
+	t.Helper()
+
+	for _, check := range checks {
+		annotationValue := ""
+		if node.Annotations != nil {
+			annotationValue = node.Annotations[check.Key]
+		}
+
+		if !checkAnnotation(t, nodeName, check, annotationValue) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func SetCircuitBreakerState(ctx context.Context, t *testing.T, c *envconf.Config, state, cursorMode string) {

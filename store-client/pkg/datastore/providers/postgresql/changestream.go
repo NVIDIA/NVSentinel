@@ -723,8 +723,6 @@ func (w *PostgreSQLChangeStreamWatcher) buildEventDocument(
 }
 
 // addDocumentDataToEvent adds document data to event based on operation type
-//
-//nolint:cyclop,gocognit,nestif // Event processing requires operation-specific handling
 func (w *PostgreSQLChangeStreamWatcher) addDocumentDataToEvent(
 	event map[string]interface{},
 	recordID string,
@@ -733,103 +731,117 @@ func (w *PostgreSQLChangeStreamWatcher) addDocumentDataToEvent(
 ) {
 	switch operation {
 	case "INSERT":
-		if newValues.Valid {
-			var doc map[string]interface{}
-			if err := json.Unmarshal([]byte(newValues.String), &doc); err == nil {
-				// For health_events table, extract the inner document field
-				if w.tableName == healthEventsTable {
-					if innerDoc, ok := doc["document"].(map[string]interface{}); ok {
-						// Add the record ID from the database column (not from JSONB document)
-						innerDoc["id"] = recordID
-
-						event["fullDocument"] = innerDoc
-					} else {
-						event["fullDocument"] = doc
-					}
-				} else {
-					event["fullDocument"] = doc
-				}
+		if doc, innerExtracted, ok := w.parseDocumentValues(newValues); ok {
+			if innerExtracted {
+				doc["id"] = recordID
 			}
+
+			event["fullDocument"] = doc
 		}
 	case "UPDATE":
-		// For UPDATE operations, add both fullDocument and updateDescription
-		if newValues.Valid {
-			var newDoc map[string]interface{}
-			if err := json.Unmarshal([]byte(newValues.String), &newDoc); err == nil {
-				// For health_events table, extract the inner document field for comparison
-				var newDocForEvent, newDocForComparison map[string]interface{}
-
-				if w.tableName == healthEventsTable {
-					if innerDoc, ok := newDoc["document"].(map[string]interface{}); ok {
-						// Use innerDoc AS-IS for comparison (without top-level id)
-						newDocForComparison = innerDoc
-
-						// Create a copy with id for fullDocument
-						newDocForEvent = make(map[string]interface{})
-						for k, v := range innerDoc {
-							newDocForEvent[k] = v
-						}
-
-						// Add the record ID from the database column (not from JSONB document)
-						newDocForEvent["id"] = recordID
-					} else {
-						newDocForEvent = newDoc
-						newDocForComparison = newDoc
-					}
-				} else {
-					newDocForEvent = newDoc
-					newDocForComparison = newDoc
-				}
-
-				event["fullDocument"] = newDocForEvent
-
-				// Add updateDescription to match MongoDB changestream format
-				if oldValues.Valid {
-					var oldDoc map[string]interface{}
-					if err := json.Unmarshal([]byte(oldValues.String), &oldDoc); err == nil {
-						// For health_events table, extract the inner document field for comparison
-						var oldDocForComparison map[string]interface{}
-
-						if w.tableName == healthEventsTable {
-							if innerDoc, ok := oldDoc["document"].(map[string]interface{}); ok {
-								oldDocForComparison = innerDoc
-							} else {
-								oldDocForComparison = oldDoc
-							}
-						} else {
-							oldDocForComparison = oldDoc
-						}
-
-						updatedFields := w.findUpdatedFields(oldDocForComparison, newDocForComparison)
-
-						if len(updatedFields) > 0 {
-							event["updateDescription"] = map[string]interface{}{
-								"updatedFields": updatedFields,
-							}
-						} else {
-							slog.Debug("No updatedFields found", "client", w.clientName, "recordID", recordID)
-						}
-					}
-				}
-			}
-		}
+		w.handleUpdateEvent(event, recordID, oldValues, newValues)
 	case "DELETE":
-		if oldValues.Valid {
-			var doc map[string]interface{}
-			if err := json.Unmarshal([]byte(oldValues.String), &doc); err == nil {
-				// For health_events table, extract the inner document field
-				if w.tableName == healthEventsTable {
-					if innerDoc, ok := doc["document"].(map[string]interface{}); ok {
-						event["fullDocumentBeforeChange"] = innerDoc
-					} else {
-						event["fullDocumentBeforeChange"] = doc
-					}
-				} else {
-					event["fullDocumentBeforeChange"] = doc
-				}
+		if doc, innerExtracted, ok := w.parseDocumentValues(oldValues); ok {
+			if innerExtracted {
+				doc["id"] = recordID
 			}
+
+			event["fullDocumentBeforeChange"] = doc
 		}
 	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) handleUpdateEvent(
+	event map[string]interface{},
+	recordID string,
+	oldValues, newValues sql.NullString,
+) {
+	newDoc, innerExtracted, ok := w.parseDocumentValues(newValues)
+	if !ok {
+		return
+	}
+
+	// Shallow copy: newDocForEvent gets the record ID while newDoc stays unmodified
+	// for comparison in addUpdateDescription → findUpdatedFields (read-only contract).
+	newDocForEvent := make(map[string]interface{})
+	for k, v := range newDoc {
+		newDocForEvent[k] = v
+	}
+
+	if innerExtracted {
+		newDocForEvent["id"] = recordID
+	}
+
+	event["fullDocument"] = newDocForEvent
+
+	w.addUpdateDescription(event, oldValues, newDoc, recordID)
+}
+
+func (w *PostgreSQLChangeStreamWatcher) addUpdateDescription(
+	event map[string]interface{},
+	oldValues sql.NullString,
+	newDocForComparison map[string]interface{},
+	recordID string,
+) {
+	oldDoc, _, ok := w.parseDocumentValues(oldValues)
+	if !ok {
+		return
+	}
+
+	updatedFields := w.findUpdatedFields(oldDoc, newDocForComparison)
+	if len(updatedFields) > 0 {
+		event["updateDescription"] = map[string]interface{}{
+			"updatedFields": updatedFields,
+		}
+	} else {
+		slog.Debug("No updatedFields found", "client", w.clientName, "recordID", recordID)
+	}
+}
+
+// parseDocumentValues unmarshals a SQL NullString into a document map,
+// extracting the inner "document" field for health_events table rows.
+// innerExtracted is true only when a health_events inner "document" was
+// successfully unwrapped; callers use this to decide whether to inject
+// the record ID.
+func (w *PostgreSQLChangeStreamWatcher) parseDocumentValues(
+	values sql.NullString,
+) (doc map[string]interface{}, innerExtracted bool, ok bool) {
+	if !values.Valid {
+		return nil, false, false
+	}
+
+	if err := json.Unmarshal([]byte(values.String), &doc); err != nil {
+		slog.Error("Failed to unmarshal document values",
+			"client", w.clientName, "table", w.tableName, "error", err)
+
+		return nil, false, false
+	}
+
+	doc, innerExtracted = w.extractInnerDocument(doc)
+
+	return doc, innerExtracted, true
+}
+
+func (w *PostgreSQLChangeStreamWatcher) extractInnerDocument(
+	doc map[string]interface{},
+) (map[string]interface{}, bool) {
+	if w.tableName != healthEventsTable {
+		return doc, false
+	}
+
+	if innerDoc, ok := doc["document"].(map[string]interface{}); ok {
+		return innerDoc, true
+	}
+
+	keys := make([]string, 0, len(doc))
+	for k := range doc {
+		keys = append(keys, k)
+	}
+
+	slog.Warn("health_events row missing expected 'document' field",
+		"client", w.clientName, "keys", keys)
+
+	return doc, false
 }
 
 // findUpdatedFields compares old and new documents to find changed fields
@@ -894,60 +906,59 @@ func (w *PostgreSQLChangeStreamWatcher) flattenMap(
 	}
 }
 
-// valuesEqual compares two values for equality
-//
-//nolint:cyclop,gocognit,nestif // Deep equality comparison requires type checking
+// valuesEqual compares two values for equality, recursing into maps and slices.
 func (w *PostgreSQLChangeStreamWatcher) valuesEqual(v1, v2 interface{}) bool {
-	// Handle nil cases
-	if v1 == nil && v2 == nil {
-		return true
-	}
-
 	if v1 == nil || v2 == nil {
-		return false
+		return v1 == v2
 	}
 
-	// For maps, do deep comparison
-	if m1, ok1 := v1.(map[string]interface{}); ok1 {
-		if m2, ok2 := v2.(map[string]interface{}); ok2 {
-			if len(m1) != len(m2) {
-				return false
-			}
-
-			for k, val1 := range m1 {
-				val2, exists := m2[k]
-				if !exists || !w.valuesEqual(val1, val2) {
-					return false
-				}
-			}
-
-			return true
+	switch val1 := v1.(type) {
+	case map[string]interface{}:
+		val2, ok := v2.(map[string]interface{})
+		if !ok {
+			return false
 		}
 
-		return false
-	}
-
-	// For slices, do deep comparison
-	if s1, ok1 := v1.([]interface{}); ok1 {
-		if s2, ok2 := v2.([]interface{}); ok2 {
-			if len(s1) != len(s2) {
-				return false
-			}
-
-			for i, val1 := range s1 {
-				if !w.valuesEqual(val1, s2[i]) {
-					return false
-				}
-			}
-
-			return true
+		return w.mapsEqual(val1, val2)
+	case []interface{}:
+		val2, ok := v2.([]interface{})
+		if !ok {
+			return false
 		}
 
+		return w.slicesEqual(val1, val2)
+	default:
+		return v1 == v2
+	}
+}
+
+func (w *PostgreSQLChangeStreamWatcher) mapsEqual(m1, m2 map[string]interface{}) bool {
+	if len(m1) != len(m2) {
 		return false
 	}
 
-	// For primitive types, use direct comparison
-	return v1 == v2
+	for k, val1 := range m1 {
+		val2, exists := m2[k]
+		if !exists || !w.valuesEqual(val1, val2) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (w *PostgreSQLChangeStreamWatcher) slicesEqual(s1, s2 []interface{}) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+
+	for i, val1 := range s1 {
+		if !w.valuesEqual(val1, s2[i]) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // extractEventTimestamp extracts the timestamp from an event's clusterTime field.
@@ -971,8 +982,6 @@ func (w *PostgreSQLChangeStreamWatcher) extractEventTimestamp(
 // sendEventsToChannel sends events to the channel
 // Sends each event to the events channel sequentially
 // If a pipeline filter is configured, events are filtered before sending
-//
-//nolint:cyclop // Event processing requires sequential steps
 func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	ctx context.Context,
 	events []datastore.EventWithToken,
@@ -982,37 +991,16 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 
 	for _, event := range events {
 		// Extract event ID and timestamp from event for tracking
-		// CRITICAL FIX: Update position BEFORE filtering to prevent deadlock
-		// This ensures the changestream position advances even for filtered events,
-		// matching MongoDB's behavior where resume tokens advance independently of filtering.
-		eventIDStr := string(event.ResumeToken)
+		// CRITICAL FIX: Update position BEFORE filtering to prevent deadlock.
+		// This matches MongoDB's behavior where resume tokens advance independently of filtering.
+		eventID := w.advancePosition(event)
 
-		eventID, parseErr := strconv.ParseInt(eventIDStr, 10, 64)
-		if parseErr != nil {
-			slog.Error("Failed to parse event ID from resume token", "client", w.clientName, "error", parseErr)
-		}
+		if w.pipelineFilter != nil && !w.pipelineFilter.MatchesEvent(event) {
+			slog.Debug("Event filtered out by pipeline", "client", w.clientName, "eventID", eventID)
 
-		// Update position if we successfully parsed the event ID
-		if parseErr == nil {
-			eventTimestamp := w.extractEventTimestamp(event.Event, eventID)
+			filteredCount++
 
-			w.mu.Lock()
-			w.lastEventID = eventID
-			w.lastTimestamp = eventTimestamp
-			w.mu.Unlock()
-
-			slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
-		}
-
-		// Apply pipeline filter if configured
-		if w.pipelineFilter != nil {
-			if !w.pipelineFilter.MatchesEvent(event) {
-				slog.Debug("Event filtered out by pipeline", "client", w.clientName, "eventID", eventID)
-
-				filteredCount++
-
-				continue // Skip events that don't match the pipeline
-			}
+			continue
 		}
 
 		select {
@@ -1042,6 +1030,35 @@ func (w *PostgreSQLChangeStreamWatcher) sendEventsToChannel(
 	}
 
 	return nil
+}
+
+// advancePosition parses the event's resume token and updates the watcher's
+// position so the changestream advances even for filtered events.
+func (w *PostgreSQLChangeStreamWatcher) advancePosition(event datastore.EventWithToken) int64 {
+	eventIDStr := string(event.ResumeToken)
+
+	eventID, err := strconv.ParseInt(eventIDStr, 10, 64)
+	if err != nil {
+		w.mu.RLock()
+		current := w.lastEventID
+		w.mu.RUnlock()
+
+		slog.Error("Failed to parse event ID from resume token",
+			"client", w.clientName, "error", err, "currentEventID", current)
+
+		return current
+	}
+
+	eventTimestamp := w.extractEventTimestamp(event.Event, eventID)
+
+	w.mu.Lock()
+	w.lastEventID = eventID
+	w.lastTimestamp = eventTimestamp
+	w.mu.Unlock()
+
+	slog.Debug("Advanced position before filtering", "client", w.clientName, "eventID", eventID)
+
+	return eventID
 }
 
 // parseTimestampFromToken extracts the timestamp from a resume token map.
@@ -1081,8 +1098,6 @@ func parseEventIDFromToken(token map[string]interface{}) (int64, bool) {
 
 // loadResumePosition loads the last processed position from resume tokens table
 // Uses timestamp-based resume (like MongoDB) for reliable replay of time-window events
-//
-//nolint:cyclop // Resume position loading has necessary complexity for backward compatibility
 func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) error {
 	query := `SELECT resume_token FROM resume_tokens WHERE client_name = $1`
 
@@ -1319,21 +1334,28 @@ func (e *PostgreSQLEventAdapter) GetRecordUUID() (string, error) {
 
 // GetNodeName extracts the node name from the event's fullDocument
 func (e *PostgreSQLEventAdapter) GetNodeName() (string, error) {
-	//nolint:nestif // Nested complexity required for dual-case field name lookups
-	if fullDoc, ok := e.eventData["fullDocument"].(map[string]interface{}); ok {
-		if healthEvent, ok := fullDoc["healthevent"].(map[string]interface{}); ok {
-			// Try lowercase first (MongoDB compatibility)
-			if nodeName, ok := healthEvent["nodename"].(string); ok {
-				return nodeName, nil
-			}
-			// Try camelCase (PostgreSQL JSON)
-			if nodeName, ok := healthEvent["nodeName"].(string); ok {
-				return nodeName, nil
-			}
-		}
+	errNotFound := errors.New("node name not found in event")
+
+	fullDoc, ok := e.eventData["fullDocument"].(map[string]interface{})
+	if !ok {
+		return "", errNotFound
 	}
 
-	return "", fmt.Errorf("node name not found in event")
+	healthEvent, ok := fullDoc["healthevent"].(map[string]interface{})
+	if !ok {
+		return "", errNotFound
+	}
+
+	// Try lowercase first (MongoDB compatibility), then camelCase (PostgreSQL JSON)
+	if nodeName, ok := healthEvent["nodename"].(string); ok {
+		return nodeName, nil
+	}
+
+	if nodeName, ok := healthEvent["nodeName"].(string); ok {
+		return nodeName, nil
+	}
+
+	return "", errNotFound
 }
 
 // GetResumeToken returns the resume token for this event

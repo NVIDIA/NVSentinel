@@ -36,7 +36,6 @@ spec:
         - --slinky-namespace=slinky
         - --metrics-bind-address=:8080
         - --health-probe-bind-address=:8081
-        - --zap-encoder=json
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

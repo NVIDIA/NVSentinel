@@ -97,7 +97,7 @@ watch_event_flow() {
     echo "  4. DrainRequest CR (automatically created by node-drainer)"
     echo "  5. Slinky Drainer (processes DrainRequest)"
     echo "  6. Mock Slurm (sets pod conditions)"
-    echo "  7. Slinky Drainer (deletes pods, marks complete)"
+    echo "  7. Slinky Drainer (deletes pods, removes annotation, marks complete)"
     echo ""
     
     log "Waiting 5 seconds for event to propagate..."
@@ -155,9 +155,10 @@ The AUTOMATIC E2E workflow is now in progress:
 
 ⧗ Phase 3: Custom Drain (WILL START)
    - Slinky Drainer detects DrainRequest
-   - Sets node annotation
+   - Sets node annotation (if not already set)
    - Waits for Slurm acknowledgment
    - Deletes pods
+   - Removes node annotation (cleanup)
    - Marks CR complete
 
 This process takes 20-40 seconds depending on polling intervals.

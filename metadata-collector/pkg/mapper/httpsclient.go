@@ -32,7 +32,7 @@ import (
 const (
 	kubeSecurePort      = "10250"
 	kubeletHostName     = "localhost"
-	bearerTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec
+	bearerTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // not a credential
 	listPodsURLTemplate = "https://%s:%s/pods"
 )
 
@@ -51,10 +51,13 @@ type kubeletHTTPSClient struct {
 	listPodsURI       string
 }
 
+// NewKubeletHTTPSClient creates an HTTPS client configured to communicate with the local
+// kubelet. The provided ctx is used for the lifetime of list-pods requests made through the client.
 func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true, //nolint:gosec // kubelet cert SAN does not cover localhost
 		},
 		TLSHandshakeTimeout:   30 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
@@ -112,32 +115,39 @@ func (client *kubeletHTTPSClient) ListPods() ([]corev1.Pod, error) {
 		return nil, err
 	}
 
-	var resp *http.Response
-
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
 	req.Header.Add("Accept", "application/json")
 
+	var podBytes []byte
+
 	err = retry.OnError(retry.DefaultRetry, retryAllErrors, func() error {
-		resp, err = client.httpRoundTripper.RoundTrip(req) //nolint:bodyclose // response body is closed outside OnError
+		resp, err := client.httpRoundTripper.RoundTrip(req)
 		if err != nil {
 			return fmt.Errorf("got an error making HTTP request to /pods endpoint: %w", err)
 		}
+		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			snippet := make([]byte, 512)
+			n, _ := resp.Body.Read(snippet)
+
+			if n > 0 {
+				return fmt.Errorf("got a non-200 response code from /pods endpoint: %d, body: %s",
+					resp.StatusCode, string(snippet[:n]))
+			}
+
 			return fmt.Errorf("got a non-200 response code from /pods endpoint: %d", resp.StatusCode)
+		}
+
+		podBytes, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("got an error reading response body from /pods endpoint: %w", err)
 		}
 
 		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	defer resp.Body.Close()
-
-	podBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("got an error reading response body from /pods endpoint: %w", err)
 	}
 
 	pods := corev1.PodList{}

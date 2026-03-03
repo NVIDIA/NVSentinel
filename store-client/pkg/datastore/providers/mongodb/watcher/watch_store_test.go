@@ -1219,6 +1219,21 @@ func TestCopyStructFields(t *testing.T) {
 
 		require.Nil(t, dst.Value)
 	})
+
+	t.Run("copy non-nil pointer to primitive", func(t *testing.T) {
+		type TestStruct struct {
+			Value *string
+		}
+
+		val := "hello"
+		src := TestStruct{Value: &val}
+		dst := TestStruct{}
+
+		CopyStructFields(reflect.ValueOf(&dst).Elem(), reflect.ValueOf(&src).Elem())
+
+		require.NotNil(t, dst.Value)
+		require.Equal(t, "hello", *dst.Value)
+	})
 }
 
 func TestGetUnprocessedEventCount(t *testing.T) {

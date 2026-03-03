@@ -5380,14 +5380,18 @@ func TestSourceDocIDsFromAnnotation(t *testing.T) {
 			}
 
 			createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, false)
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_ = e2eTestClient.CoreV1().Nodes().Delete(cleanupCtx, nodeName, metav1.DeleteOptions{})
+			})
 
 			r, _, _, _ := setupE2EReconciler(t, ctx, config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"}, nil)
 
-			if len(tc.expectedIDs) > 0 {
-				require.Eventually(t, func() bool {
-					return len(r.sourceDocIDsFromAnnotation(nodeName)) == len(tc.expectedIDs)
-				}, eventuallyTimeout, statusCheckPollInterval, "informer should sync and return expected doc IDs")
-			}
+			require.Eventually(t, func() bool {
+				_, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+				return err == nil
+			}, eventuallyTimeout, statusCheckPollInterval, "informer should observe test node")
 
 			ids := r.sourceDocIDsFromAnnotation(nodeName)
 			assert.ElementsMatch(t, tc.expectedIDs, ids)

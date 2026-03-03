@@ -22,32 +22,15 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// UnmarshalEvent takes in an event and a pointer to a variable of any type, and unmarshals the event into the variable
+// UnmarshalFullDocumentFromEvent unmarshals the fullDocument from event directly into result.
 func UnmarshalFullDocumentFromEvent[T any](event Event, result *T) error {
-	fullDocument, ok := event["fullDocument"]
-	if !ok {
-		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
-	}
-
-	// Convert to bson.M for internal processing, handling both bson.M and map[string]interface{}
-	var document bson.M
-
-	switch v := fullDocument.(type) {
-	case bson.M:
-		document = v
-	case map[string]interface{}:
-		document = bson.M(v)
-	default:
-		return fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)
-	}
-
-	bsonBytes, err := bson.Marshal(document)
+	bsonBytes, err := marshalFullDocument(event)
 	if err != nil {
-		return fmt.Errorf("error marshaling BSON for event %+v: %w", document, err)
+		return err
 	}
 
 	if err := bson.Unmarshal(bsonBytes, result); err != nil {
-		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", document, result, err)
+		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", event, result, err)
 	}
 
 	return nil
@@ -98,39 +81,64 @@ func CopyStructFields(dst, src reflect.Value) {
 		dstFieldType := dstType.Field(i)
 
 		srcField := src.FieldByName(dstFieldType.Name)
-		if !srcField.IsValid() {
+		if !srcField.IsValid() || !dstField.CanSet() {
 			continue
 		}
 
-		//nolint //reason: ignoring complex nested blocks
-		if dstField.CanSet() {
-			if dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr {
-				if srcField.IsNil() {
-					dstField.Set(reflect.Zero(dstField.Type()))
-				} else {
-					dstField.Set(reflect.New(dstField.Type().Elem()))
-					CopyStructFields(dstField.Elem(), srcField.Elem())
-				}
-			} else if dstField.Kind() == reflect.Struct && srcField.Kind() == reflect.Struct {
-				// Recursively copy nested structs
-				CopyStructFields(dstField, srcField)
-			} else if dstField.Kind() == srcField.Kind() {
-				dstField.Set(srcField)
-			}
+		switch {
+		case dstField.Kind() == reflect.Ptr && srcField.Kind() == reflect.Ptr:
+			copyPtrField(dstField, srcField)
+		case dstField.Kind() == reflect.Struct && srcField.Kind() == reflect.Struct:
+			CopyStructFields(dstField, srcField)
+		case dstField.Kind() == srcField.Kind():
+			dstField.Set(srcField)
 		}
 	}
 }
 
-// Unmarshalls from the mongodb fullDocument to Json tagged struct by internally converting
-// json tags for fields to bson tags
-func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
-	bsonTaggedType reflect.Type, result *T) error {
-	fullDocument, ok := event["fullDocument"]
-	if !ok {
-		return fmt.Errorf("error extracting fullDocument from event: %+v", event)
+func copyPtrField(dstField, srcField reflect.Value) {
+	if srcField.IsNil() {
+		dstField.Set(reflect.Zero(dstField.Type()))
+
+		return
 	}
 
-	// Convert to bson.M for internal processing, handling both bson.M and map[string]interface{}
+	dstField.Set(reflect.New(dstField.Type().Elem()))
+
+	if dstField.Type().Elem().Kind() == reflect.Struct && srcField.Type().Elem().Kind() == reflect.Struct {
+		CopyStructFields(dstField.Elem(), srcField.Elem())
+	} else {
+		dstField.Elem().Set(srcField.Elem())
+	}
+}
+
+// UnmarshalFullDocumentToJsonTaggedStructFromEvent unmarshals the MongoDB fullDocument from
+// event into result using the caller-provided bsonTaggedType (created via CreateBsonTaggedStructType)
+// to bridge JSON-tagged Go structs with BSON-encoded MongoDB documents.
+func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
+	bsonTaggedType reflect.Type, result *T) error {
+	bsonBytes, err := marshalFullDocument(event)
+	if err != nil {
+		return err
+	}
+
+	bsonTaggedResult := reflect.New(bsonTaggedType).Interface()
+
+	if err := bson.Unmarshal(bsonBytes, bsonTaggedResult); err != nil {
+		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", event, result, err)
+	}
+
+	CopyStructFields(reflect.ValueOf(result).Elem(), reflect.ValueOf(bsonTaggedResult).Elem())
+
+	return nil
+}
+
+func marshalFullDocument(event Event) ([]byte, error) {
+	fullDocument, ok := event["fullDocument"]
+	if !ok {
+		return nil, fmt.Errorf("error extracting fullDocument from event: %+v", event)
+	}
+
 	var document bson.M
 
 	switch v := fullDocument.(type) {
@@ -139,22 +147,13 @@ func UnmarshalFullDocumentToJsonTaggedStructFromEvent[T any](event Event,
 	case map[string]interface{}:
 		document = bson.M(v)
 	default:
-		return fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)
+		return nil, fmt.Errorf("unsupported fullDocument type %T: %+v", fullDocument, fullDocument)
 	}
 
 	bsonBytes, err := bson.Marshal(document)
 	if err != nil {
-		return fmt.Errorf("error marshaling BSON for event %+v: %w", document, err)
+		return nil, fmt.Errorf("error marshaling BSON for event %+v: %w", document, err)
 	}
 
-	bsonTaggedResult := reflect.New(bsonTaggedType).Interface()
-
-	if err := bson.Unmarshal(bsonBytes, bsonTaggedResult); err != nil {
-		return fmt.Errorf("error unmarshaling BSON for event %+v into type %T: %w", document, result, err)
-	}
-
-	// Copy the values from the bson tagged result to the original result
-	CopyStructFields(reflect.ValueOf(result).Elem(), reflect.ValueOf(bsonTaggedResult).Elem())
-
-	return nil
+	return bsonBytes, nil
 }

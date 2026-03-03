@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package benchmark provides runners for executing NCCL loopback benchmarks
+// and parsing their output.
 package benchmark
 
 import (
@@ -49,7 +51,7 @@ type Runner struct {
 	binaryPath string
 }
 
-// NewRunner creates a new benchmark runner.
+// NewRunner creates a new benchmark runner with the given binary path.
 func NewRunner(binaryPath string) *Runner {
 	return &Runner{binaryPath: binaryPath}
 }
@@ -67,8 +69,8 @@ func (r *Runner) Run(ctx context.Context, numGPUs, testSizeMB int) (*Result, err
 
 	sizeArg := fmt.Sprintf("%dM", testSizeMB)
 
-	//nolint:gosec // Validated binary path
-	cmd := exec.CommandContext(ctx, r.binaryPath,
+	// G204: binaryPath validated via config.FromEnv (parseBinaryPath → validateExecutable)
+	cmd := exec.CommandContext(ctx, r.binaryPath, //nolint:gosec
 		"-b", sizeArg,
 		"-e", sizeArg,
 		"-g", strconv.Itoa(numGPUs),

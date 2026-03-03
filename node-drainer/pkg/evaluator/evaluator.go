@@ -53,8 +53,6 @@ func NewNodeDrainEvaluator(
 // EvaluateEvent method has been removed - use EvaluateEventWithDatabase instead
 
 // EvaluateEventWithDatabase evaluates using the new database-agnostic interface
-//
-//nolint:cyclop
 func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	database queue.DataStore, healthEventStore datastore.HealthEventStore) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
@@ -85,26 +83,9 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		}, nil
 	}
 
-	if statusPtr != nil && *statusPtr == model.AlreadyQuarantined {
-		isDrained, err := e.isNodeAlreadyDrained(ctx, healthEvent.HealthEvent.Id, partialDrainEntity,
-			nodeName, healthEventStore)
-		if err != nil {
-			slog.Error("Failed to check if node is already drained",
-				"node", nodeName,
-				"error", err)
-
-			return &DrainActionResult{
-				Action:    ActionWait,
-				WaitDelay: time.Minute,
-			}, nil
-		}
-
-		if isDrained {
-			return &DrainActionResult{
-				Action: ActionMarkAlreadyDrained,
-				Status: model.AlreadyDrained,
-			}, nil
-		}
+	result := e.handleAlreadyQuarantined(ctx, statusPtr, healthEvent, partialDrainEntity, healthEventStore)
+	if result != nil {
+		return result, nil
 	}
 
 	if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
@@ -112,6 +93,38 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	}
 
 	return e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
+}
+
+func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusPtr *model.Status,
+	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity,
+	healthEventStore datastore.HealthEventStore) *DrainActionResult {
+	if statusPtr == nil || *statusPtr != model.AlreadyQuarantined {
+		return nil
+	}
+
+	nodeName := healthEvent.HealthEvent.NodeName
+
+	isDrained, err := e.isNodeAlreadyDrained(ctx, healthEvent.HealthEvent.Id, partialDrainEntity,
+		nodeName, healthEventStore)
+	if err != nil {
+		slog.Error("Failed to check if node is already drained",
+			"node", nodeName,
+			"error", err)
+
+		return &DrainActionResult{
+			Action:    ActionWait,
+			WaitDelay: time.Minute,
+		}
+	}
+
+	if isDrained {
+		return &DrainActionResult{
+			Action: ActionMarkAlreadyDrained,
+			Status: model.AlreadyDrained,
+		}
+	}
+
+	return nil
 }
 
 func (e *NodeDrainEvaluator) evaluateUserNamespaceActions(ctx context.Context,
@@ -371,7 +384,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 
 	return &DrainActionResult{
 		Action: ActionMarkAlreadyDrained,
-		Status: "AlreadyDrained",
+		Status: model.AlreadyDrained,
 	}, nil
 }
 

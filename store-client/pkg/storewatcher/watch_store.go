@@ -56,7 +56,8 @@ type ChangeStreamWatcher struct {
 	closeOnce sync.Once
 }
 
-// nolint: cyclop
+// NewChangeStreamWatcher creates a ChangeStreamWatcher that listens for changes on a MongoDB
+// collection via a change stream, persists resume tokens, and emits events on a channel.
 func NewChangeStreamWatcher(
 	ctx context.Context,
 	mongoConfig MongoDBConfig,
@@ -73,20 +74,10 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
 
-	if mongoConfig.TotalPingTimeoutSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping timeout value, value must be a positive integer")
+	totalTimeout, interval, err := validatePingConfig(mongoConfig)
+	if err != nil {
+		return nil, err
 	}
-
-	if mongoConfig.TotalPingIntervalSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping interval value, value must be a positive integer")
-	}
-
-	if mongoConfig.TotalPingIntervalSeconds >= mongoConfig.TotalPingTimeoutSeconds {
-		return nil, fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
-	}
-
-	totalTimeout := time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second
-	interval := time.Duration(mongoConfig.TotalPingIntervalSeconds) * time.Second
 
 	// Confirm connectivity to the target database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoConfig.Database,
@@ -95,56 +86,36 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
-	// Decide read preference for the change stream after determining whether a resume token exists.
-
 	// Confirm connectivity to the token database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, tokenConfig.TokenDatabase,
 		tokenConfig.TokenCollection, totalTimeout, interval)
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to database: %w", err)
+		return nil, fmt.Errorf("error connecting to token database: %w", err)
 	}
 
-	// Use majority write concern for resume tokens to ensure consistency across replicas
-	// This is critical when reading change streams from secondaries
-	wc := writeconcern.Majority()
-	rc := readconcern.Majority()
-	// Use Primary read preference for resume tokens to ensure consistency
-	// Even though change streams use SecondaryPreferred, resume tokens must be read from primary
-	rp := readpref.Primary()
-	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
+	// Use majority write/read concern and Primary read preference for resume tokens
+	// to ensure consistency, even though change streams use SecondaryPreferred
+	tokenCollOpts := options.Collection().
+		SetWriteConcern(writeconcern.Majority()).
+		SetReadConcern(readconcern.Majority()).
+		SetReadPreference(readpref.Primary())
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
 	// Change stream options
 	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
 
-	var storedToken TokenDoc
-
-	hasResumeToken := false
-
-	// Check if the resume token exists
-	err = tokenColl.FindOne(ctx, bson.M{"clientName": tokenConfig.ClientName}).Decode(&storedToken)
-	if err == nil {
-		if len(storedToken.ResumeToken) > 0 {
-			slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
-			opts.SetResumeAfter(storedToken.ResumeToken)
-
-			hasResumeToken = true
-		} else {
-			slog.Info("No valid resume token found, starting stream from the beginning..")
-		}
-	} else if !errors.Is(err, mongo.ErrNoDocuments) {
-		// if no document was found, it is a normal case if it's the first time the client is connecting
+	hasResumeToken, err := lookupResumeToken(ctx, tokenColl, tokenConfig.ClientName, opts)
+	if err != nil {
 		return nil, fmt.Errorf("error retrieving resume token from DB %s and collection %s: %w",
 			tokenConfig.TokenDatabase, tokenConfig.TokenCollection, err)
 	}
 
-	// Open the change stream with appropriate read preference based on resume token presence
 	cs, err := openChangeStream(ctx, client, mongoConfig, pipeline, opts, hasResumeToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open change stream: %w", err)
 	}
 
-	watcher := &ChangeStreamWatcher{
+	return &ChangeStreamWatcher{
 		client:                    client,
 		changeStream:              cs,
 		eventChannel:              make(chan bson.M),
@@ -154,9 +125,54 @@ func NewChangeStreamWatcher(
 		resumeTokenUpdateInterval: interval,
 		database:                  mongoConfig.Database,
 		collection:                mongoConfig.Collection,
+	}, nil
+}
+
+func validatePingConfig(mongoConfig MongoDBConfig) (time.Duration, time.Duration, error) {
+	if mongoConfig.TotalPingTimeoutSeconds <= 0 {
+		return 0, 0, fmt.Errorf("invalid ping timeout value")
 	}
 
-	return watcher, nil
+	if mongoConfig.TotalPingIntervalSeconds <= 0 {
+		return 0, 0, fmt.Errorf("invalid ping interval value")
+	}
+
+	if mongoConfig.TotalPingIntervalSeconds >= mongoConfig.TotalPingTimeoutSeconds {
+		return 0, 0, fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
+	}
+
+	return time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second,
+		time.Duration(mongoConfig.TotalPingIntervalSeconds) * time.Second,
+		nil
+}
+
+func lookupResumeToken(
+	ctx context.Context,
+	tokenColl *mongo.Collection,
+	clientName string,
+	opts *options.ChangeStreamOptions,
+) (bool, error) {
+	var storedToken TokenDoc
+
+	err := tokenColl.FindOne(ctx, bson.M{"clientName": clientName}).Decode(&storedToken)
+	if err == nil {
+		if len(storedToken.ResumeToken) > 0 {
+			slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
+			opts.SetResumeAfter(storedToken.ResumeToken)
+
+			return true, nil
+		}
+
+		slog.Info("No valid resume token found, starting stream from the beginning..")
+
+		return false, nil
+	}
+
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, err
+	}
+
+	return false, nil
 }
 
 // openChangeStream opens a change stream with the appropriate read preference based on whether
@@ -430,6 +446,8 @@ func confirmConnectivityWithDBAndCollection(ctx context.Context, client *mongo.C
 	return nil
 }
 
+// GetCollectionClient connects to MongoDB and returns a *mongo.Collection
+// configured with majority write/read concern and Primary read preference.
 func GetCollectionClient(
 	ctx context.Context,
 	mongoConfig MongoDBConfig,
@@ -444,34 +462,22 @@ func GetCollectionClient(
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
 
-	if mongoConfig.TotalPingTimeoutSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping timeout value, value must be a positive integer")
+	totalTimeout, interval, err := validatePingConfig(mongoConfig)
+	if err != nil {
+		return nil, fmt.Errorf("NewChangeStreamWatcher: %w", err)
 	}
 
-	if mongoConfig.TotalPingIntervalSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping interval value, value must be a positive integer")
-	}
-
-	if mongoConfig.TotalPingIntervalSeconds >= mongoConfig.TotalPingTimeoutSeconds {
-		return nil, fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
-	}
-
-	totalTimeout := time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second
-	interval := time.Duration(mongoConfig.TotalPingIntervalSeconds) * time.Second
-
-	// Confirm connectivity to the target database and collection
 	err = confirmConnectivityWithDBAndCollection(ctx, client, mongoConfig.Database,
 		mongoConfig.Collection, totalTimeout, interval)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to database: %w", err)
 	}
 
-	// For strong consistency, we need the majority of replicas to ack reads and writes
-	wc := writeconcern.Majority()
-	rc := readconcern.Majority()
-	// Use Primary read preference for strong consistency guarantees
-	rp := readpref.Primary()
-	collOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
+	// Use majority write/read concern and Primary read preference for strong consistency
+	collOpts := options.Collection().
+		SetWriteConcern(writeconcern.Majority()).
+		SetReadConcern(readconcern.Majority()).
+		SetReadPreference(readpref.Primary())
 
 	return client.Database(mongoConfig.Database).Collection(mongoConfig.Collection, collOpts), nil
 }
