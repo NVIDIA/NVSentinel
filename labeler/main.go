@@ -128,8 +128,9 @@ func parseFlags() (
 		fmt.Sprintf("Custom node label to check for Kata Containers support. If empty, uses default '%s'",
 			labeler.KataRuntimeDefaultLabel))
 	assumeDriverInstalled = flag.Bool("assume-driver-installed", false,
-		"Assume GPU drivers are pre-installed on all nodes. Sets driver.installed=true unconditionally, "+
-			"skipping driver pod detection. Use for clusters with host-installed drivers.")
+		"Assume GPU drivers are pre-installed on GPU nodes (nvidia.com/gpu.present=true). "+
+			"Sets driver.installed=true unconditionally for those nodes, skipping driver pod detection. "+
+			"Use for clusters with host-installed drivers.")
 
 	flag.Parse()
 
