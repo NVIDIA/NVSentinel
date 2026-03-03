@@ -626,6 +626,8 @@ func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Con
 	m.ProcessEventCallbackFn = callback
 }
 
+func (m *MockEventWatcher) SetFetchDocIDsFn(_ func(nodeName string) []string) {}
+
 func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
 		return m.CancelLatestQuarantiningEventsFn(ctx, nodeName)
@@ -5299,4 +5301,96 @@ func TestMetrics_NodeQuarantineDuration(t *testing.T) {
 		"NodeQuarantineDuration histogram should record at least one observation")
 
 	t.Log("NodeQuarantineDuration metric recorded successfully")
+}
+
+func buildAnnotationWithIDs(t *testing.T, nodeID string, entries []struct{ id, checkName string }) string {
+	t.Helper()
+
+	healthEventsMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	for _, e := range entries {
+		evt := &protos.HealthEvent{
+			Id:             e.id,
+			NodeName:       nodeID,
+			CheckName:      e.checkName,
+			Agent:          "test-agent",
+			ComponentClass: "GPU",
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "0"},
+			},
+		}
+		healthEventsMap.AddOrUpdateEvent(evt)
+	}
+
+	raw, err := json.Marshal(healthEventsMap)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func TestSourceDocIDsFromAnnotation(t *testing.T) {
+	tests := []struct {
+		name        string
+		entries     []struct{ id, checkName string }
+		expectedIDs []string
+	}{
+		{
+			name:        "no annotation returns nil",
+			entries:     nil,
+			expectedIDs: nil,
+		},
+		{
+			name:        "single event returns its ID",
+			entries:     []struct{ id, checkName string }{{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"}},
+			expectedIDs: []string{"507f1f77bcf86cd799439011"},
+		},
+		{
+			name: "multiple events with unique IDs returns all IDs",
+			entries: []struct{ id, checkName string }{
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"},
+				{id: "507f1f77bcf86cd799439012", checkName: "GpuMemWatch"},
+			},
+			expectedIDs: []string{"507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"},
+		},
+		{
+			name: "duplicate IDs across events are deduplicated",
+			entries: []struct{ id, checkName string }{
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"},
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuMemWatch"},
+			},
+			expectedIDs: []string{"507f1f77bcf86cd799439011"},
+		},
+		{
+			name:        "events with empty ID are skipped",
+			entries:     []struct{ id, checkName string }{{id: "", checkName: "GpuXidError"}},
+			expectedIDs: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(e2eTestContext, 10*time.Second)
+			defer cancel()
+
+			nodeName := "src-doc-ids-" + generateShortTestID()
+
+			var annotations map[string]string
+			if tc.entries != nil {
+				annotations = map[string]string{
+					common.QuarantineHealthEventAnnotationKey: buildAnnotationWithIDs(t, nodeName, tc.entries),
+				}
+			}
+
+			createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, false)
+
+			r, _, _, _ := setupE2EReconciler(t, ctx, config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"}, nil)
+
+			if len(tc.expectedIDs) > 0 {
+				require.Eventually(t, func() bool {
+					return len(r.sourceDocIDsFromAnnotation(nodeName)) == len(tc.expectedIDs)
+				}, eventuallyTimeout, statusCheckPollInterval, "informer should sync and return expected doc IDs")
+			}
+
+			ids := r.sourceDocIDsFromAnnotation(nodeName)
+			assert.ElementsMatch(t, tc.expectedIDs, ids)
+		})
+	}
 }
