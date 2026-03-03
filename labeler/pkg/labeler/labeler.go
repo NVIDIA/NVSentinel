@@ -393,9 +393,25 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	return false
 }
 
+const gpuPresentLabel = "nvidia.com/gpu.present"
+
+func (l *Labeler) isGPUNode(nodeName string) bool {
+	obj, exists, err := l.nodeInformer.GetStore().GetByKey(nodeName)
+	if err != nil || !exists {
+		return false
+	}
+
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return false
+	}
+
+	return node.Labels[gpuPresentLabel] == LabelValueTrue
+}
+
 // getDriverLabelForNode returns the expected driver label value for a specific node
 func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
-	if l.assumeDriverInstalled {
+	if l.assumeDriverInstalled && l.isGPUNode(nodeName) {
 		return LabelValueTrue, nil
 	}
 
@@ -487,7 +503,7 @@ func (l *Labeler) getDCGMVersionForNodeExcluding(nodeName string, excludePod *v1
 // getDriverLabelForNodeExcluding returns the expected driver label value for a specific node,
 // excluding a specific pod from consideration (used for delete events)
 func (l *Labeler) getDriverLabelForNodeExcluding(nodeName string, excludePod *v1.Pod) (string, error) {
-	if l.assumeDriverInstalled {
+	if l.assumeDriverInstalled && l.isGPUNode(nodeName) {
 		return LabelValueTrue, nil
 	}
 

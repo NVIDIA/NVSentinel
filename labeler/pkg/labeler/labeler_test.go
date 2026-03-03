@@ -1208,25 +1208,39 @@ func TestAssumeDriverInstalled(t *testing.T) {
 		shouldHaveDriverLabel bool
 	}{
 		{
-			name:                  "assume-driver-installed sets label without driver pods",
+			name:                  "assume-driver-installed sets label on GPU node without driver pods",
 			assumeDriverInstalled: true,
 			existingNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   "gpu-node",
-					Labels: map[string]string{},
+					Name: "gpu-node",
+					Labels: map[string]string{
+						"nvidia.com/gpu.present": "true",
+					},
 				},
 			},
 			expectedDriverLabel:   "true",
 			shouldHaveDriverLabel: true,
 		},
 		{
-			name:                  "assume-driver-installed preserves label on reconciliation",
+			name:                  "assume-driver-installed skips non-GPU node",
+			assumeDriverInstalled: true,
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "control-plane-node",
+					Labels: map[string]string{},
+				},
+			},
+			shouldHaveDriverLabel: false,
+		},
+		{
+			name:                  "assume-driver-installed preserves label on GPU node reconciliation",
 			assumeDriverInstalled: true,
 			existingNode: &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "gpu-node",
 					Labels: map[string]string{
-						DriverInstalledLabel: "true",
+						"nvidia.com/gpu.present": "true",
+						DriverInstalledLabel:     "true",
 					},
 				},
 			},
