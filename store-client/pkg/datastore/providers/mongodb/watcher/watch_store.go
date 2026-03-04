@@ -355,6 +355,7 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 					}
 				} else if csErr != nil {
 					slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
+					return
 				}
 			}
 		}
