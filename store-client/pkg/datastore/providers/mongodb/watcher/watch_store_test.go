@@ -1855,3 +1855,126 @@ func TestChangeStreamWatcher_SendOnClosedChannelPrevention(t *testing.T) {
 		// If there's a race condition, the race detector will catch it
 	})
 }
+
+func TestChangeStreamWatcher_Reconnect(t *testing.T) {
+	mtOpts := mtest.NewOptions().ClientType(mtest.Mock).DatabaseName("testdb")
+	mt := mtest.New(t, mtOpts)
+
+	mt.Run("returns false when context is cancelled", func(mt *mtest.T) {
+		// Use cursor ID 0 (exhausted) so Close() is a no-op
+		mt.AddMockResponses(
+			mtest.CreateCursorResponse(0, "testdb.testcollection", mtest.FirstBatch),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		watcher := &ChangeStreamWatcher{
+			client:         mt.Client,
+			changeStream:   changeStream,
+			eventChannel:   make(chan Event, 10),
+			resumeTokenCol: mt.Client.Database("tokendb").Collection("tokencollection"),
+			clientName:     "testclient",
+			done:           make(chan struct{}),
+			mongoConfig:    MongoDBConfig{Database: "testdb", Collection: "testcollection"},
+			pipeline:       mongo.Pipeline{},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		start := time.Now()
+		result := watcher.reconnect(ctx)
+
+		require.False(mt, result)
+		require.Less(mt, time.Since(start), 500*time.Millisecond,
+			"should exit quickly when context is already cancelled")
+	})
+
+	mt.Run("succeeds without resume token", func(mt *mtest.T) {
+		mt.AddMockResponses(
+			// Initial change stream
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			// killCursors for Close
+			mtest.CreateSuccessResponse(),
+			// FindOne for resume token: no documents
+			mtest.CreateCursorResponse(0, "tokendb.tokencollection", mtest.FirstBatch),
+			// New change stream via openChangeStream
+			mtest.CreateCursorResponse(2, "testdb.testcollection", mtest.FirstBatch),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		originalCS := changeStream
+
+		watcher := &ChangeStreamWatcher{
+			client:         mt.Client,
+			changeStream:   changeStream,
+			eventChannel:   make(chan Event, 10),
+			resumeTokenCol: mt.Client.Database("tokendb").Collection("tokencollection"),
+			clientName:     "testclient",
+			done:           make(chan struct{}),
+			mongoConfig:    MongoDBConfig{Database: "testdb", Collection: "testcollection"},
+			pipeline:       mongo.Pipeline{},
+		}
+
+		result := watcher.reconnect(context.Background())
+
+		require.True(mt, result)
+		require.NotSame(mt, originalCS, watcher.changeStream, "change stream should be swapped")
+
+		// Clean up new change stream
+		mt.AddMockResponses(mtest.CreateSuccessResponse())
+		watcher.changeStream.Close(context.Background())
+	})
+
+	mt.Run("succeeds with stored resume token", func(mt *mtest.T) {
+		resumeToken := bson.D{
+			{Key: "ts", Value: int64(1)},
+			{Key: "t", Value: int32(1)},
+		}
+
+		mt.AddMockResponses(
+			// Initial change stream
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			// killCursors for Close
+			mtest.CreateSuccessResponse(),
+			// FindOne for resume token: returns stored token
+			mtest.CreateCursorResponse(0, "tokendb.tokencollection", mtest.FirstBatch, bson.D{
+				{Key: "clientName", Value: "testclient"},
+				{Key: "resumeToken", Value: resumeToken},
+			}),
+			// New change stream via openChangeStream (hasResumeToken=true path)
+			mtest.CreateCursorResponse(2, "testdb.testcollection", mtest.FirstBatch),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		originalCS := changeStream
+
+		watcher := &ChangeStreamWatcher{
+			client:         mt.Client,
+			changeStream:   changeStream,
+			eventChannel:   make(chan Event, 10),
+			resumeTokenCol: mt.Client.Database("tokendb").Collection("tokencollection"),
+			clientName:     "testclient",
+			done:           make(chan struct{}),
+			mongoConfig:    MongoDBConfig{Database: "testdb", Collection: "testcollection"},
+			pipeline:       mongo.Pipeline{},
+		}
+
+		result := watcher.reconnect(context.Background())
+
+		require.True(mt, result)
+		require.NotSame(mt, originalCS, watcher.changeStream, "change stream should be swapped")
+
+		// Clean up new change stream
+		mt.AddMockResponses(mtest.CreateSuccessResponse())
+		watcher.changeStream.Close(context.Background())
+	})
+}

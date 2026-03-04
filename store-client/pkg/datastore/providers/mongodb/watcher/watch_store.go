@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
@@ -96,6 +97,9 @@ type ChangeStreamWatcher struct {
 	done chan struct{}
 	// cancel cancels the internal context to stop the event loop
 	cancel context.CancelFunc
+	// Fields needed for change stream reconnection after transient errors
+	mongoConfig MongoDBConfig
+	pipeline    mongo.Pipeline
 }
 
 // nolint: cyclop
@@ -197,6 +201,8 @@ func NewChangeStreamWatcher(
 		database:                  mongoConfig.Database,
 		collection:                mongoConfig.Collection,
 		done:                      make(chan struct{}),
+		mongoConfig:               mongoConfig,
+		pipeline:                  pipeline,
 	}
 
 	return watcher, nil
@@ -298,6 +304,7 @@ func openChangeStreamWithRetry(
 	}
 }
 
+// nolint: cyclop
 func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 	// Create a child context that we can cancel on Close()
 	watchCtx, cancel := context.WithCancel(ctx)
@@ -354,11 +361,88 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 						// Event sent successfully
 					}
 				} else if csErr != nil {
-					slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
+					slog.Error("Change stream error, attempting reconnect", "client", w.clientName, "error", csErr)
+
+					if !w.reconnect(watchCtx) {
+						return
+					}
 				}
 			}
 		}
 	}()
+}
+
+// reconnect closes the dead change stream and reopens it with exponential backoff.
+// Returns true if reconnection succeeded, false if the context was cancelled.
+func (w *ChangeStreamWatcher) reconnect(ctx context.Context) bool {
+	// Close the dead change stream
+	w.closeMu.Lock()
+
+	if err := w.changeStream.Close(ctx); err != nil {
+		slog.Warn("Failed to close dead change stream", "client", w.clientName, "error", err)
+	}
+
+	w.closeMu.Unlock()
+
+	const (
+		initialBackoff = 1 * time.Second
+		maxBackoff     = 30 * time.Second
+		backoffFactor  = 2.0
+		jitterFraction = 0.3
+	)
+
+	backoff := initialBackoff
+
+	for {
+		// Add jitter to avoid thundering herd when multiple watchers reconnect simultaneously
+		jitter := time.Duration(rand.Float64() * jitterFraction * float64(backoff)) //nolint:gosec
+		select {
+		case <-ctx.Done():
+			slog.Info("Context cancelled during reconnect, stopping", "client", w.clientName)
+			return false
+		case <-time.After(backoff + jitter):
+		}
+
+		// Build change stream options with resume token if available
+		opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+
+		var hasResumeToken bool
+
+		var storedToken TokenDoc
+
+		err := w.resumeTokenCol.FindOne(ctx, bson.M{"clientName": w.clientName}).Decode(&storedToken)
+		if err == nil && len(storedToken.ResumeToken) > 0 {
+			opts.SetResumeAfter(storedToken.ResumeToken)
+
+			hasResumeToken = true
+
+			slog.Info("Reconnecting with resume token", "client", w.clientName)
+		} else {
+			slog.Info("Reconnecting without resume token", "client", w.clientName)
+		}
+
+		cs, err := openChangeStream(ctx, w.client, w.mongoConfig, w.pipeline, opts, hasResumeToken)
+		if err != nil {
+			slog.Warn("Failed to reopen change stream, retrying",
+				"client", w.clientName, "backoff", backoff, "error", err)
+
+			backoff = time.Duration(float64(backoff) * backoffFactor)
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+
+			continue
+		}
+
+		// Swap in the new change stream
+		w.closeMu.Lock()
+		w.changeStream = cs
+		w.closeMu.Unlock()
+
+		slog.Info("Successfully reconnected change stream", "client", w.clientName)
+
+		return true
+	}
 }
 
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
