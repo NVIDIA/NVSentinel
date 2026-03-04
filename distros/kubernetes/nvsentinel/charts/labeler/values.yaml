@@ -36,6 +36,12 @@ podAnnotations: {}
 # Note: The input label value must be truthy (case-insensitive): "true", "enabled", "1", or "yes"
 kataLabelOverride: ""
 
+# Pre-installed driver configuration
+# When enabled, the labeler unconditionally sets nvsentinel.dgxc.nvidia.com/driver.installed=true
+# on all GPU nodes, skipping driver pod detection. Use this for clusters where NVIDIA drivers
+# are installed directly on the host rather than via GPU Operator driver containers.
+assumeDriverInstalled: false
+
 resources:
   requests:
     cpu: 100m

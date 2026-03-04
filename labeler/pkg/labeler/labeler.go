@@ -56,13 +56,14 @@ var (
 
 // Labeler manages node labeling based on pod information
 type Labeler struct {
-	clientset            kubernetes.Interface
-	podInformer          cache.SharedIndexInformer
-	nodeInformer         cache.SharedIndexInformer
-	gkeInstallerInformer cache.SharedIndexInformer
-	informersSynced      []cache.InformerSynced
-	ctx                  context.Context
-	kataLabels           []string
+	clientset             kubernetes.Interface
+	podInformer           cache.SharedIndexInformer
+	nodeInformer          cache.SharedIndexInformer
+	gkeInstallerInformer  cache.SharedIndexInformer
+	informersSynced       []cache.InformerSynced
+	ctx                   context.Context
+	kataLabels            []string
+	assumeDriverInstalled bool
 }
 
 func (l *Labeler) allInformersSynced() bool {
@@ -77,7 +78,7 @@ func (l *Labeler) allInformersSynced() bool {
 
 // NewLabeler creates a new Labeler instance
 func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string) (*Labeler, error) {
+	dcgmApp, driverApp, gkeInstallerApp, kataLabelOverride string, assumeDriverInstalled bool) (*Labeler, error) {
 	podInformer, err := createPodInformer(clientset, resyncPeriod, dcgmApp, driverApp)
 	if err != nil {
 		return nil, fmt.Errorf("create pod informer: %w", err)
@@ -100,8 +101,9 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 			nodeInformer.HasSynced,
 			gkeInstallerInformer.HasSynced,
 		},
-		ctx:        context.Background(),
-		kataLabels: buildKataLabels(kataLabelOverride),
+		ctx:                   context.Background(),
+		kataLabels:            buildKataLabels(kataLabelOverride),
+		assumeDriverInstalled: assumeDriverInstalled,
 	}
 
 	if err := l.registerPodEventHandlers(); err != nil {
@@ -110,6 +112,10 @@ func NewLabeler(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	if err := l.registerNodeEventHandlers(); err != nil {
 		return nil, fmt.Errorf("register node event handlers: %w", err)
+	}
+
+	if assumeDriverInstalled {
+		slog.Info("Labeler configured to assume drivers are pre-installed on all GPU nodes")
 	}
 
 	slog.Info("Labeler created, watching DCGM and driver pods, and nodes for kata detection")
@@ -387,8 +393,28 @@ func hasReadyDriverPod(objs []any, excludePod *v1.Pod) bool {
 	return false
 }
 
+const gpuPresentLabel = "nvidia.com/gpu.present"
+
+func (l *Labeler) isGPUNode(nodeName string) bool {
+	obj, exists, err := l.nodeInformer.GetStore().GetByKey(nodeName)
+	if err != nil || !exists {
+		return false
+	}
+
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return false
+	}
+
+	return node.Labels[gpuPresentLabel] == LabelValueTrue
+}
+
 // getDriverLabelForNode returns the expected driver label value for a specific node
 func (l *Labeler) getDriverLabelForNode(nodeName string) (string, error) {
+	if l.assumeDriverInstalled && l.isGPUNode(nodeName) {
+		return LabelValueTrue, nil
+	}
+
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
@@ -477,6 +503,10 @@ func (l *Labeler) getDCGMVersionForNodeExcluding(nodeName string, excludePod *v1
 // getDriverLabelForNodeExcluding returns the expected driver label value for a specific node,
 // excluding a specific pod from consideration (used for delete events)
 func (l *Labeler) getDriverLabelForNodeExcluding(nodeName string, excludePod *v1.Pod) (string, error) {
+	if l.assumeDriverInstalled && l.isGPUNode(nodeName) {
+		return LabelValueTrue, nil
+	}
+
 	objs, err := l.podInformer.GetIndexer().ByIndex(NodeDriverIndex, nodeName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get driver pods by node index for node %s: %w", nodeName, err)
@@ -619,18 +649,28 @@ func (l *Labeler) reconcileNodeLabelsInPlace(node *v1.Node, driverLabel, dcgmVer
 		return needsUpdate
 	}
 
-	if driverLabel == "" && node.Labels[DriverInstalledLabel] != "" {
+	if node.Labels[DriverInstalledLabel] != driverLabel {
 		needsUpdate = true
 
-		delete(node.Labels, DriverInstalledLabel)
-		slog.Info("Removing stale driver installed label from node", "node", node.Name)
+		if driverLabel == "" {
+			delete(node.Labels, DriverInstalledLabel)
+			slog.Info("Removing stale driver installed label from node", "node", node.Name)
+		} else {
+			node.Labels[DriverInstalledLabel] = driverLabel
+			slog.Info("Setting driver installed label on node", "node", node.Name)
+		}
 	}
 
-	if dcgmVersion == "" && node.Labels[DCGMVersionLabel] != "" {
+	if node.Labels[DCGMVersionLabel] != dcgmVersion {
 		needsUpdate = true
 
-		delete(node.Labels, DCGMVersionLabel)
-		slog.Info("Removing stale DCGM version label from node", "node", node.Name)
+		if dcgmVersion == "" {
+			delete(node.Labels, DCGMVersionLabel)
+			slog.Info("Removing stale DCGM version label from node", "node", node.Name)
+		} else {
+			node.Labels[DCGMVersionLabel] = dcgmVersion
+			slog.Info("Setting DCGM version label on node", "node", node.Name, "version", dcgmVersion)
+		}
 	}
 
 	return needsUpdate
