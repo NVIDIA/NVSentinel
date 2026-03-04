@@ -396,6 +396,7 @@ func (w *ChangeStreamWatcher) reconnect(ctx context.Context) bool {
 	for {
 		// Add jitter to avoid thundering herd when multiple watchers reconnect simultaneously
 		jitter := time.Duration(rand.Float64() * jitterFraction * float64(backoff)) //nolint:gosec
+
 		select {
 		case <-ctx.Done():
 			slog.Info("Context cancelled during reconnect, stopping", "client", w.clientName)
@@ -403,22 +404,14 @@ func (w *ChangeStreamWatcher) reconnect(ctx context.Context) bool {
 		case <-time.After(backoff + jitter):
 		}
 
-		// Build change stream options with resume token if available
-		opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+		opts, hasResumeToken, err := w.loadResumeTokenOpts(ctx)
+		if err != nil {
+			slog.Warn("Failed to load resume token, retrying reconnect",
+				"client", w.clientName, "error", err)
 
-		var hasResumeToken bool
+			backoff = nextBackoff(backoff, backoffFactor, maxBackoff)
 
-		var storedToken TokenDoc
-
-		err := w.resumeTokenCol.FindOne(ctx, bson.M{"clientName": w.clientName}).Decode(&storedToken)
-		if err == nil && len(storedToken.ResumeToken) > 0 {
-			opts.SetResumeAfter(storedToken.ResumeToken)
-
-			hasResumeToken = true
-
-			slog.Info("Reconnecting with resume token", "client", w.clientName)
-		} else {
-			slog.Info("Reconnecting without resume token", "client", w.clientName)
+			continue
 		}
 
 		cs, err := openChangeStream(ctx, w.client, w.mongoConfig, w.pipeline, opts, hasResumeToken)
@@ -426,10 +419,7 @@ func (w *ChangeStreamWatcher) reconnect(ctx context.Context) bool {
 			slog.Warn("Failed to reopen change stream, retrying",
 				"client", w.clientName, "backoff", backoff, "error", err)
 
-			backoff = time.Duration(float64(backoff) * backoffFactor)
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
+			backoff = nextBackoff(backoff, backoffFactor, maxBackoff)
 
 			continue
 		}
@@ -445,6 +435,42 @@ func (w *ChangeStreamWatcher) reconnect(ctx context.Context) bool {
 	}
 }
 
+// loadResumeTokenOpts builds change stream options with a resume token if one is stored.
+// Returns an error if the token lookup fails for reasons other than ErrNoDocuments.
+func (w *ChangeStreamWatcher) loadResumeTokenOpts(
+	ctx context.Context,
+) (*options.ChangeStreamOptions, bool, error) {
+	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+
+	var storedToken TokenDoc
+
+	err := w.resumeTokenCol.FindOne(ctx, bson.M{"clientName": w.clientName}).Decode(&storedToken)
+
+	switch {
+	case err == nil && len(storedToken.ResumeToken) > 0:
+		opts.SetResumeAfter(storedToken.ResumeToken)
+
+		slog.Info("Reconnecting with resume token", "client", w.clientName)
+
+		return opts, true, nil
+	case err == nil || errors.Is(err, mongo.ErrNoDocuments):
+		slog.Info("Reconnecting without resume token", "client", w.clientName)
+
+		return opts, false, nil
+	default:
+		return nil, false, err
+	}
+}
+
+func nextBackoff(current time.Duration, factor float64, max time.Duration) time.Duration {
+	next := time.Duration(float64(current) * factor)
+	if next > max {
+		next = max
+	}
+
+	return next
+}
+
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	// Use the change stream resume token if the passed token is empty
 	// This handles the common case where callers pass empty byte slices
@@ -452,9 +478,12 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 	if len(token) == 0 {
 		// Get the current resume token from the change stream
-		// Note: ResumeToken() is thread-safe for reads - no lock needed
-		// This prevents deadlock with the sender goroutine which may be blocked in Next()
-		currentResumeToken := w.changeStream.ResumeToken()
+		// Acquire closeMu to prevent the pointer from being swapped by reconnect()
+		w.closeMu.RLock()
+		cs := w.changeStream
+		w.closeMu.RUnlock()
+
+		currentResumeToken := cs.ResumeToken()
 
 		if currentResumeToken == nil {
 			slog.Warn("No resume token available from change stream", "client", w.clientName)
