@@ -272,8 +272,6 @@ func (b *SQLFilterBuilder) fieldToSQL(field string, value interface{}) (string, 
 }
 
 // valueToSQL converts a value to SQL condition.
-//
-//nolint:cyclop // Switch statement with multiple cases is clearer than splitting
 func (b *SQLFilterBuilder) valueToSQL(jsonPath string, value interface{}) (string, error) {
 	switch v := value.(type) {
 	case bool:
@@ -477,8 +475,6 @@ func (b *SQLFilterBuilder) convertFieldName(name string) string {
 }
 
 // handleOperators handles MongoDB operators like $ne, $in, $exists.
-//
-//nolint:cyclop // Switch statement with multiple operator cases is clearer than splitting
 func (b *SQLFilterBuilder) handleOperators(jsonPath string, ops map[string]interface{}) (string, error) {
 	var conditions []string
 

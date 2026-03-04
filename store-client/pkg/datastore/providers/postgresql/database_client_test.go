@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//nolint:goconst // Test file with intentional string repetition for clarity
-
 package postgresql
 
 import (
@@ -25,7 +23,6 @@ import (
 )
 
 func TestFindOneFilterGeneration(t *testing.T) {
-	//nolint:goconst // Test operator strings are clear as literals
 	tests := []struct {
 		name         string
 		filter       map[string]interface{}
@@ -47,7 +44,7 @@ func TestFindOneFilterGeneration(t *testing.T) {
 			name: "single operator - $in",
 			filter: map[string]interface{}{
 				"healtheventstatus.nodequarantined": map[string]interface{}{
-					"$in": []interface{}{"Quarantined", "UnQuarantined"},
+					opIn: []interface{}{"Quarantined", "UnQuarantined"},
 				},
 			},
 			expectedSQL: "COALESCE(document->'healtheventstatus'->>'nodequarantined', " +
@@ -59,7 +56,7 @@ func TestFindOneFilterGeneration(t *testing.T) {
 			name: "single operator - $gte",
 			filter: map[string]interface{}{
 				"createdAt": map[string]interface{}{
-					"$gte": time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+					opGte: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 				},
 			},
 			expectedSQL:  "created_at >= $1",
@@ -71,10 +68,10 @@ func TestFindOneFilterGeneration(t *testing.T) {
 			filter: map[string]interface{}{
 				"healthevent.nodename": "test-node-1",
 				"healtheventstatus.nodequarantined": map[string]interface{}{
-					"$in": []interface{}{"Quarantined", "AlreadyQuarantined"},
+					opIn: []interface{}{"Quarantined", "AlreadyQuarantined"},
 				},
 				"createdAt": map[string]interface{}{
-					"$gte": time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+					opGte: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 				},
 			},
 			// Note: The actual SQL will have conditions in map iteration order
@@ -88,7 +85,7 @@ func TestFindOneFilterGeneration(t *testing.T) {
 			filter: map[string]interface{}{
 				"healthevent.nodename": "kwok-kata-test-node-1",
 				"healtheventstatus.nodequarantined": map[string]interface{}{
-					"$in": []interface{}{"Quarantined", "UnQuarantined"},
+					opIn: []interface{}{"Quarantined", "UnQuarantined"},
 				},
 			},
 			// Check for COALESCE in the output for dual-case support
@@ -119,21 +116,20 @@ func TestFindOneFilterGeneration(t *testing.T) {
 					for op, opValue := range valueMap {
 						var cond query.Condition
 
-						//nolint:goconst // Test MongoDB operator strings are clear as literals
-						switch op {
-						case "$ne":
-							cond = query.Ne(key, opValue)
-						case "$eq":
-							cond = query.Eq(key, opValue)
-						case "$gt":
-							cond = query.Gt(key, opValue)
-						case "$gte":
-							cond = query.Gte(key, opValue)
-						case "$lt":
-							cond = query.Lt(key, opValue)
-						case "$lte":
-							cond = query.Lte(key, opValue)
-						case "$in":
+					switch op {
+					case opNe:
+						cond = query.Ne(key, opValue)
+					case opEq:
+						cond = query.Eq(key, opValue)
+					case opGt:
+						cond = query.Gt(key, opValue)
+					case opGte:
+						cond = query.Gte(key, opValue)
+					case opLt:
+						cond = query.Lt(key, opValue)
+					case opLte:
+						cond = query.Lte(key, opValue)
+					case opIn:
 							if inValues, ok := opValue.([]interface{}); ok {
 								cond = query.In(key, inValues)
 							} else {
