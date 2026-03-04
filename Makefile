@@ -278,7 +278,7 @@ health-monitors-lint-test-all:
 
 # Generate protobuf files
 .PHONY: protos-generate
-protos-generate: protos-clean ## Generate protobuf files from .proto sources
+protos-generate: vendor-proto protos-clean ## Ensure vendor dir, then generate protobuf files from .proto sources
 	@echo "Generating protobuf files in data-models (Go) and gpu-health-monitor (Python)..."
 	@echo "=== Tool Versions ==="
 	@echo "Go: $$(go version)"
@@ -316,6 +316,7 @@ protos-lint: protos-generate ## Generate and check protobuf files are up to date
 	@echo "Checking if protobuf files are up to date..."
 	test -z "$$(git status --porcelain --untracked-files=no)"
 
+
 # Clean generated protobuf files
 .PHONY: protos-clean
 protos-clean: ## Remove all generated protobuf files
@@ -325,6 +326,11 @@ protos-clean: ## Remove all generated protobuf files
 	@echo "Removing Python protobuf files (*_pb2.py, *_pb2_grpc.py, *_pb2.pyi)..."
 	find . \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete
 	@echo "All generated protobuf files have been removed."
+
+# Ensure vendor directory and proto dependencies are present before generating protobufs
+.PHONY: vendor-proto
+vendor-proto:
+	$(MAKE) -C data-models vendor-proto
 
 # Check license headers
 .PHONY: license-headers-lint
@@ -345,6 +351,7 @@ license-headers-lint: ## Check license headers in source files
 		-ignore '**/*.toml' \
 		-ignore '**/*lock.hcl' \
 		-ignore '**/*pb2*' \
+		-ignore '**/vendor/**' \
 		.
 
 # Check go.mod files for proper replace directives
@@ -407,6 +414,10 @@ python-lint-test-all:
 	done
 
 # Individual non-health-monitor Go module lint-test targets
+.PHONY: lint-test-api
+lint-test-api:
+	@echo "Linting and testing api (using standardized Makefile)..."
+	$(MAKE) -C api lint-test
 
 .PHONY: lint-test-platform-connectors
 lint-test-platform-connectors:

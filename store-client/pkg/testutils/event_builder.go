@@ -129,8 +129,8 @@ func (e *testEvent) UnmarshalDocument(v interface{}) error {
 	// Create the health event structure that modules expect
 	healthEvent := &model.HealthEventWithStatus{
 		CreatedAt: time.Now(),
-		HealthEventStatus: model.HealthEventStatus{
-			NodeQuarantined: &e.quarantineStatus,
+		HealthEventStatus: &protos.HealthEventStatus{
+			NodeQuarantined: string(e.quarantineStatus),
 		},
 		HealthEvent: &protos.HealthEvent{
 			NodeName:         e.nodeName,

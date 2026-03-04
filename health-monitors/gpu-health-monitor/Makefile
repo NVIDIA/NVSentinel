@@ -228,14 +228,32 @@ protos-generate: protos-clean
 	# Generate Python protobuf files
 	@echo "Generating Python protobuf files for $(MODULE_NAME)..."
 	@mkdir -p gpu_health_monitor/protos
-	python3 -m grpc_tools.protoc -I ../../data-models/protobufs/ --python_out=gpu_health_monitor/protos --pyi_out=gpu_health_monitor/protos --grpc_python_out=gpu_health_monitor/protos ../../data-models/protobufs/health_event.proto
+	python3 -m grpc_tools.protoc -I ../../data-models/protobufs/ -I ../../data-models/vendor/ --python_out=gpu_health_monitor/protos --pyi_out=gpu_health_monitor/protos --grpc_python_out=gpu_health_monitor/protos ../../data-models/protobufs/health_event.proto
+	# health_event.proto imports crd.proto (needed for CRD generation via protoc-gen-crd).
+	# protoc propagates that import into the generated Python code, but the Go-style module path
+	# (github.com/yandex/...) is unresolvable in Python. To fix this we:
+	#   1. Generate crd_pb2.py from the vendored crd.proto using the vendor root as -I
+	#      so the file descriptor name matches what health_event_pb2.py expects.
+	#   2. Move crd_pb2.py from the nested output path into protos/ as a flat sibling.
+	#   3. Rewrite the import in health_event_pb2.py to a relative import (from . import crd_pb2).
+	python3 -m grpc_tools.protoc \
+		-I ../../data-models/vendor/ \
+		--python_out=gpu_health_monitor/protos \
+		--pyi_out=gpu_health_monitor/protos \
+		github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
+	mv gpu_health_monitor/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.py gpu_health_monitor/protos/crd_pb2.py
+	mv gpu_health_monitor/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.pyi gpu_health_monitor/protos/crd_pb2.pyi 2>/dev/null || true
+	rm -rf gpu_health_monitor/protos/github
 	# Fix relative imports in generated gRPC files
 	@if command -v gsed >/dev/null 2>&1; then \
 		gsed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \
+		gsed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' gpu_health_monitor/protos/health_event_pb2.py; \
 	elif [ "$$(uname)" = "Darwin" ]; then \
 		sed -i '' 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \
+		sed -i '' 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' gpu_health_monitor/protos/health_event_pb2.py; \
 	else \
 		sed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' gpu_health_monitor/protos/health_event_pb2_grpc.py; \
+		sed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' gpu_health_monitor/protos/health_event_pb2.py; \
 	fi
 	@touch gpu_health_monitor/protos/__init__.py
 	# Format generated protobuf files with Black
@@ -243,8 +261,11 @@ protos-generate: protos-clean
 	poetry run black gpu_health_monitor/protos/ || true
 
 # Clean generated protobuf files
+vendor-proto:
+	$(MAKE) -C ../../data-models vendor-proto
+
 .PHONY: protos-clean
-protos-clean:
+protos-clean: vendor-proto
 	@echo "Cleaning generated protobuf files in $(MODULE_NAME)..."
 	@echo "Removing Python protobuf files (*_pb2.py, *_pb2_grpc.py, *_pb2.pyi)..."
 	find gpu_health_monitor/protos/ \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete 2>/dev/null || true

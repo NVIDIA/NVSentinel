@@ -22,8 +22,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
 // TestHealthEventStatusSerialization verifies that HealthEventStatus serializes
@@ -37,7 +41,7 @@ import (
 func TestHealthEventStatusSerialization(t *testing.T) {
 	tests := []struct {
 		name              string
-		status            model.HealthEventStatus
+		status            *protos.HealthEventStatus
 		expectJSONOmit    []string // Fields that should be omitted in JSON
 		expectBSONOmit    []string // Fields that should be omitted in BSON
 		expectJSONInclude []string // Fields that should be included in JSON
@@ -45,50 +49,50 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 	}{
 		{
 			name: "nil NodeQuarantined - should be omitted in both JSON and BSON",
-			status: model.HealthEventStatus{
-				NodeQuarantined: nil,
-				UserPodsEvictionStatus: model.OperationStatus{
-					Status:  model.StatusNotStarted,
+			status: &protos.HealthEventStatus{
+				NodeQuarantined: "",
+				UserPodsEvictionStatus: &protos.OperationStatus{
+					Status:  string(model.StatusNotStarted),
 					Message: "test",
 				},
 				FaultRemediated:          nil,
 				LastRemediationTimestamp: nil,
 			},
-			expectJSONOmit:    []string{"nodequarantined", "faultremediated", "lastremediationtimestamp"},
-			expectJSONInclude: []string{"userpodsevictionstatus"},
+			expectJSONOmit:    []string{"nodeQuarantined", "faultRemediated", "lastRemediationTimestamp"},
+			expectJSONInclude: []string{"userPodsEvictionStatus"},
 			expectBSONInclude: []string{"userpodsevictionstatus"},
 		},
 		{
 			name: "non-nil NodeQuarantined - should be included",
-			status: model.HealthEventStatus{
-				NodeQuarantined: func() *model.Status { s := model.Quarantined; return &s }(),
-				UserPodsEvictionStatus: model.OperationStatus{
-					Status: model.StatusInProgress,
+			status: &protos.HealthEventStatus{
+				NodeQuarantined: string(model.Quarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{
+					Status: string(model.StatusInProgress),
 				},
-				FaultRemediated: func() *bool { b := true; return &b }(),
+				FaultRemediated: wrapperspb.Bool(true),
 			},
-			expectJSONInclude: []string{"nodequarantined", "userpodsevictionstatus", "faultremediated"},
+			expectJSONInclude: []string{"nodeQuarantined", "userPodsEvictionStatus", "faultRemediated"},
 			expectBSONInclude: []string{"nodequarantined", "userpodsevictionstatus", "faultremediated"},
 		},
 		{
 			name: "all fields populated",
-			status: model.HealthEventStatus{
-				NodeQuarantined: func() *model.Status { s := model.UnQuarantined; return &s }(),
-				UserPodsEvictionStatus: model.OperationStatus{
-					Status:  model.StatusSucceeded,
+			status: &protos.HealthEventStatus{
+				NodeQuarantined: string(model.UnQuarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{
+					Status:  string(model.StatusSucceeded),
 					Message: "completed",
 				},
-				FaultRemediated: func() *bool { b := false; return &b }(),
-				LastRemediationTimestamp: func() *time.Time {
+				FaultRemediated: wrapperspb.Bool(false),
+				LastRemediationTimestamp: func() *timestamppb.Timestamp {
 					t := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-					return &t
+					return timestamppb.New(t)
 				}(),
 			},
 			expectJSONInclude: []string{
-				"nodequarantined",
-				"userpodsevictionstatus",
-				"faultremediated",
-				"lastremediationtimestamp",
+				"nodeQuarantined",
+				"userPodsEvictionStatus",
+				"faultRemediated",
+				"lastRemediationTimestamp",
 			},
 			expectBSONInclude: []string{
 				"nodequarantined",
@@ -123,17 +127,17 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 				}
 
 				// Verify round-trip: unmarshal and check nil fields remain nil
-				var unmarshaled model.HealthEventStatus
+				var unmarshaled protos.HealthEventStatus
 				err = json.Unmarshal(jsonData, &unmarshaled)
 				require.NoError(t, err, "JSON unmarshal should succeed")
 
 				// For nil pointer fields, both should be nil after round-trip
-				if tt.status.NodeQuarantined == nil {
-					assert.Nil(t, unmarshaled.NodeQuarantined,
-						"NodeQuarantined should remain nil after JSON round-trip")
+				if tt.status.NodeQuarantined == "" {
+					assert.Equal(t, "", unmarshaled.NodeQuarantined,
+						"NodeQuarantined should remain empty after JSON round-trip")
 				} else {
-					require.NotNil(t, unmarshaled.NodeQuarantined)
-					assert.Equal(t, *tt.status.NodeQuarantined, *unmarshaled.NodeQuarantined)
+					assert.Equal(t, tt.status.NodeQuarantined, unmarshaled.NodeQuarantined,
+						"NodeQuarantined should match after JSON round-trip")
 				}
 
 				if tt.status.FaultRemediated == nil {
@@ -141,7 +145,7 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 						"FaultRemediated should remain nil after JSON round-trip")
 				} else {
 					require.NotNil(t, unmarshaled.FaultRemediated)
-					assert.Equal(t, *tt.status.FaultRemediated, *unmarshaled.FaultRemediated)
+					assert.True(t, proto.Equal(tt.status.FaultRemediated, unmarshaled.FaultRemediated))
 				}
 			})
 
@@ -167,17 +171,17 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 				}
 
 				// Verify round-trip: unmarshal and check nil fields remain nil
-				var unmarshaled model.HealthEventStatus
+				var unmarshaled protos.HealthEventStatus
 				err = bson.Unmarshal(bsonData, &unmarshaled)
 				require.NoError(t, err, "BSON unmarshal should succeed")
 
 				// For nil pointer fields, both should be nil after round-trip
-				if tt.status.NodeQuarantined == nil {
-					assert.Nil(t, unmarshaled.NodeQuarantined,
-						"NodeQuarantined should remain nil after BSON round-trip")
+				if tt.status.NodeQuarantined == "" {
+					assert.Equal(t, "", unmarshaled.NodeQuarantined,
+						"NodeQuarantined should remain empty after BSON round-trip")
 				} else {
-					require.NotNil(t, unmarshaled.NodeQuarantined)
-					assert.Equal(t, *tt.status.NodeQuarantined, *unmarshaled.NodeQuarantined)
+					assert.Equal(t, tt.status.NodeQuarantined, unmarshaled.NodeQuarantined,
+						"NodeQuarantined should match after BSON round-trip")
 				}
 
 				if tt.status.FaultRemediated == nil {
@@ -185,7 +189,7 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 						"FaultRemediated should remain nil after BSON round-trip")
 				} else {
 					require.NotNil(t, unmarshaled.FaultRemediated)
-					assert.Equal(t, *tt.status.FaultRemediated, *unmarshaled.FaultRemediated)
+					assert.True(t, proto.Equal(tt.status.FaultRemediated, unmarshaled.FaultRemediated))
 				}
 			})
 		})
@@ -201,10 +205,10 @@ func TestHealthEventStatusSerialization(t *testing.T) {
 // - When deserialized, this would remain as nil pointer (not the same as omitted field)
 // - This test ensures both backends behave identically
 func TestJSONAndBSONConsistency(t *testing.T) {
-	status := model.HealthEventStatus{
-		NodeQuarantined: nil, // This is the key test case - nil should behave the same
-		UserPodsEvictionStatus: model.OperationStatus{
-			Status:  model.StatusNotStarted,
+	status := &protos.HealthEventStatus{
+		NodeQuarantined: "", // This is the key test case - nil should behave the same
+		UserPodsEvictionStatus: &protos.OperationStatus{
+			Status:  string(model.StatusNotStarted),
 			Message: "",
 		},
 		FaultRemediated:          nil,
@@ -215,7 +219,7 @@ func TestJSONAndBSONConsistency(t *testing.T) {
 	jsonData, err := json.Marshal(status)
 	require.NoError(t, err)
 
-	var jsonUnmarshaled model.HealthEventStatus
+	var jsonUnmarshaled protos.HealthEventStatus
 	err = json.Unmarshal(jsonData, &jsonUnmarshaled)
 	require.NoError(t, err)
 
@@ -223,14 +227,14 @@ func TestJSONAndBSONConsistency(t *testing.T) {
 	bsonData, err := bson.Marshal(status)
 	require.NoError(t, err)
 
-	var bsonUnmarshaled model.HealthEventStatus
+	var bsonUnmarshaled protos.HealthEventStatus
 	err = bson.Unmarshal(bsonData, &bsonUnmarshaled)
 	require.NoError(t, err)
 
 	// Both should have nil NodeQuarantined after round-trip
-	assert.Nil(t, jsonUnmarshaled.NodeQuarantined,
+	assert.Empty(t, jsonUnmarshaled.NodeQuarantined,
 		"JSON: NodeQuarantined should be nil after round-trip")
-	assert.Nil(t, bsonUnmarshaled.NodeQuarantined,
+	assert.Empty(t, bsonUnmarshaled.NodeQuarantined,
 		"BSON: NodeQuarantined should be nil after round-trip")
 
 	// Both should have nil FaultRemediated after round-trip
@@ -243,8 +247,8 @@ func TestJSONAndBSONConsistency(t *testing.T) {
 	var jsonMap map[string]interface{}
 	err = json.Unmarshal(jsonData, &jsonMap)
 	require.NoError(t, err)
-	assert.NotContains(t, jsonMap, "nodequarantined",
-		"JSON should not contain nodequarantined field when nil")
-	assert.NotContains(t, jsonMap, "faultremediated",
-		"JSON should not contain faultremediated field when nil")
+	assert.NotContains(t, jsonMap, "nodeQuarantined",
+		"JSON should not contain nodeQuarantined field when nil")
+	assert.NotContains(t, jsonMap, "faultRemediated",
+		"JSON should not contain faultRemediated field when nil")
 }

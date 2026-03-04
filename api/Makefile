@@ -50,7 +50,7 @@ PROTOC_GEN_GO_GRPC_VERSION      := $(shell $(YQ) '.protobuf.protoc_gen_go_grpc' 
 # ==============================================================================
 
 .PHONY: all
-all: protos-generate build
+all: protos-generate build lint-test
 
 ##@ General
 
@@ -99,6 +99,25 @@ protos-clean: ## Remove generated code.
 	rm -rf $(GEN_DIR)
 	@echo "Done."
 
+##@ Quality
+
+.PHONY: lint
+lint: ## Run golangci-lint on all Go files.
+	@echo "Running golangci-lint..."
+	@golangci-lint run ./...
+
+.PHONY: test
+test: ## Run Go unit tests.
+	@echo "Running tests..."
+	@go test -v ./...
+
+.PHONY: lint-test
+lint-test: lint test ## Run lint and tests.
+	@echo "Lint and tests completed."
+
+.PHONY: clean
+clean: protos-clean ## Remove generated code.
+
 ##@ Build Dependencies
 
 $(PROTOC_GEN_GO):
@@ -123,3 +142,4 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
+

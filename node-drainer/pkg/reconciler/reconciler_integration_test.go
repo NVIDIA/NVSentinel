@@ -27,6 +27,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1387,12 +1388,15 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 	eventID := opts.nodeName + "-event"
 	// Return just the fullDocument content, as the event watcher extracts this
 	// from the change stream before passing to the reconciler
+	// NOTE: Always use a pointer for proto structs (e.g., *protos.HealthEventStatus)!
+	// Proto-generated structs may embed sync.Mutex or other non-copyable fields.
+	// Using a value type can cause unsafe copies and subtle bugs (see Go linter: copylocksdefault).
 	return map[string]interface{}{
 		"_id":         eventID,
 		"healthevent": healthEvent,
-		"healtheventstatus": model.HealthEventStatus{
-			NodeQuarantined:        &opts.nodeQuarantined,
-			UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusInProgress},
+		"healtheventstatus": &protos.HealthEventStatus{
+			NodeQuarantined:        string(opts.nodeQuarantined),
+			UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusInProgress)},
 		},
 		"createdAt": time.Now(),
 	}
@@ -1963,8 +1967,8 @@ func TestMetrics_PodEvictionDuration(t *testing.T) {
 		nodeQuarantined: model.Quarantined,
 	})
 
-	if status, ok := event["healtheventstatus"].(model.HealthEventStatus); ok {
-		status.QuarantineFinishTimestamp = &quarantineFinishedAt
+	if status, ok := event["healtheventstatus"].(*protos.HealthEventStatus); ok {
+		status.QuarantineFinishTimestamp = timestamppb.New(quarantineFinishedAt)
 		event["healtheventstatus"] = status
 	}
 

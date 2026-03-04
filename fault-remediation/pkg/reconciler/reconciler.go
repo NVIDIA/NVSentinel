@@ -42,6 +42,7 @@ import (
 	nvstoreclient "github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ReconcilerConfig struct {
@@ -117,10 +118,8 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeName := healthEventWithStatus.HealthEvent.NodeName
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	if nodeQuarantined != nil {
-		if *nodeQuarantined == model.UnQuarantined || *nodeQuarantined == model.Cancelled {
-			return r.handleCancellationEvent(ctx, nodeName, *nodeQuarantined, r.Watcher, event.ResumeToken)
-		}
+	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
+		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, event.ResumeToken)
 	}
 
 	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
@@ -138,8 +137,8 @@ func (r *FaultRemediationReconciler) shouldSkipEvent(ctx context.Context,
 		return true
 	}
 
-	if healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
-		*healthEventWithStatus.HealthEventStatus.FaultRemediated {
+	if healthEventWithStatus.HealthEventStatus != nil && healthEventWithStatus.HealthEventStatus.FaultRemediated != nil &&
+		healthEventWithStatus.HealthEventStatus.FaultRemediated.GetValue() {
 		return true
 	}
 
@@ -444,7 +443,7 @@ func (r *FaultRemediationReconciler) updateNodeRemediatedStatus(
 	// If remediation was successful, set the timestamp
 	if nodeRemediatedStatus {
 		now := time.Now().UTC()
-		status.LastRemediationTimestamp = &now
+		status.LastRemediationTimestamp = timestamppb.New(now)
 	}
 
 	// Use the healthEventStore to update the status with retries

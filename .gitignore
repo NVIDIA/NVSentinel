@@ -28,6 +28,7 @@ go.work.sum
 
 # Dependency directories
 # vendor/
+vendor/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

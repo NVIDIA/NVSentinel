@@ -24,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
@@ -363,9 +362,9 @@ func TestPerformRemediationWithUnsupportedAction(t *testing.T) {
 				NodeName:          "node1",
 				RecommendedAction: protos.RecommendedAction_UNKNOWN,
 			},
-			HealthEventStatus: model.HealthEventStatus{
-				NodeQuarantined:        ptr.To(model.Quarantined),
-				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined:        string(model.Quarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
 				FaultRemediated:        nil,
 			},
 		},
@@ -415,9 +414,9 @@ func TestPerformRemediationWithSuccess(t *testing.T) {
 				NodeName:          "node1",
 				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: model.HealthEventStatus{
-				NodeQuarantined:        ptr.To(model.Quarantined),
-				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined:        string(model.Quarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
 				FaultRemediated:        nil,
 			},
 		},
@@ -474,9 +473,9 @@ func TestPerformRemediationWithFailure(t *testing.T) {
 				NodeName:          "node1",
 				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: model.HealthEventStatus{
-				NodeQuarantined:        ptr.To(model.Quarantined),
-				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined:        string(model.Quarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
 				FaultRemediated:        nil,
 			},
 		},
@@ -521,9 +520,9 @@ func TestPerformRemediationWithUpdateNodeStateLabelFailures(t *testing.T) {
 				NodeName:          "node1",
 				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
-			HealthEventStatus: model.HealthEventStatus{
-				NodeQuarantined:        ptr.To(model.Quarantined),
-				UserPodsEvictionStatus: model.OperationStatus{Status: model.StatusSucceeded},
+			HealthEventStatus: &protos.HealthEventStatus{
+				NodeQuarantined:        string(model.Quarantined),
+				UserPodsEvictionStatus: &protos.OperationStatus{Status: string(model.StatusSucceeded)},
 				FaultRemediated:        nil,
 			},
 		},

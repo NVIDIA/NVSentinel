@@ -256,8 +256,8 @@ func (c *FaultRemediationClient) createMaintenanceCR(ctx context.Context, select
 		}
 
 		return "", fmt.Errorf("failed to create maintenance CR: %w", err)
-	} else if healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
-		duration := time.Since(*healthEventData.HealthEventStatus.DrainFinishTimestamp).Seconds()
+	} else if healthEventData.HealthEventStatus != nil && healthEventData.HealthEventStatus.DrainFinishTimestamp != nil {
+		duration := time.Since(healthEventData.HealthEventStatus.DrainFinishTimestamp.AsTime()).Seconds()
 		if duration > 0 {
 			slog.Info("Fault remediation CR generation duration",
 				"duration", duration,

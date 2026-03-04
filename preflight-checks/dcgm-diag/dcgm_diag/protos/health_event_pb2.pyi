@@ -2,6 +2,8 @@ import datetime
 
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf import empty_pb2 as _empty_pb2
+from google.protobuf import wrappers_pb2 as _wrappers_pb2
+from github.com.yandex.protoc_gen_crd.library.go.k8s.protoc_gen_crd.proto import crd_pb2 as _crd_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
@@ -40,6 +42,40 @@ RESTART_BM: RecommendedAction
 REPLACE_VM: RecommendedAction
 RUN_DCGMEUD: RecommendedAction
 UNKNOWN: RecommendedAction
+
+class OperationStatus(_message.Message):
+    __slots__ = ("status", "message")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    status: str
+    message: str
+    def __init__(self, status: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class HealthEventStatus(_message.Message):
+    __slots__ = ("nodeQuarantined", "quarantineFinishTimestamp", "userPodsEvictionStatus", "drainFinishTimestamp", "faultRemediated", "lastRemediationTimestamp")
+    NODEQUARANTINED_FIELD_NUMBER: _ClassVar[int]
+    QUARANTINEFINISHTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    USERPODSEVICTIONSTATUS_FIELD_NUMBER: _ClassVar[int]
+    DRAINFINISHTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    FAULTREMEDIATED_FIELD_NUMBER: _ClassVar[int]
+    LASTREMEDIATIONTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    nodeQuarantined: str
+    quarantineFinishTimestamp: _timestamp_pb2.Timestamp
+    userPodsEvictionStatus: OperationStatus
+    drainFinishTimestamp: _timestamp_pb2.Timestamp
+    faultRemediated: _wrappers_pb2.BoolValue
+    lastRemediationTimestamp: _timestamp_pb2.Timestamp
+    def __init__(self, nodeQuarantined: _Optional[str] = ..., quarantineFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., userPodsEvictionStatus: _Optional[_Union[OperationStatus, _Mapping]] = ..., drainFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., faultRemediated: _Optional[_Union[_wrappers_pb2.BoolValue, _Mapping]] = ..., lastRemediationTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class HealthEventWithStatus(_message.Message):
+    __slots__ = ("createdAt", "healthEvent", "healthEventStatus")
+    CREATEDAT_FIELD_NUMBER: _ClassVar[int]
+    HEALTHEVENT_FIELD_NUMBER: _ClassVar[int]
+    HEALTHEVENTSTATUS_FIELD_NUMBER: _ClassVar[int]
+    createdAt: _timestamp_pb2.Timestamp
+    healthEvent: HealthEvent
+    healthEventStatus: HealthEventStatus
+    def __init__(self, createdAt: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., healthEvent: _Optional[_Union[HealthEvent, _Mapping]] = ..., healthEventStatus: _Optional[_Union[HealthEventStatus, _Mapping]] = ...) -> None: ...
 
 class HealthEvents(_message.Message):
     __slots__ = ("version", "events")
@@ -109,3 +145,11 @@ class BehaviourOverrides(_message.Message):
     force: bool
     skip: bool
     def __init__(self, force: bool = ..., skip: bool = ...) -> None: ...
+
+class HealthEventResource(_message.Message):
+    __slots__ = ("spec", "status")
+    SPEC_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    spec: HealthEvent
+    status: HealthEventStatus
+    def __init__(self, spec: _Optional[_Union[HealthEvent, _Mapping]] = ..., status: _Optional[_Union[HealthEventStatus, _Mapping]] = ...) -> None: ...

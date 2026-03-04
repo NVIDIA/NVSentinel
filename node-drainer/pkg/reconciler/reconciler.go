@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -147,7 +148,8 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 	slog.Debug("Preprocessing event", "node", nodeName, "nodeQuarantined", nodeQuarantined)
 
 	// Skip if already in terminal state
-	if isTerminalStatus(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status) {
+	if healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus != nil &&
+		isTerminalStatus(model.Status(healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status)) {
 		slog.Debug("Skipping event - already in terminal state",
 			"node", healthEventWithStatus.HealthEvent.NodeName,
 			"status", healthEventWithStatus.HealthEventStatus.UserPodsEvictionStatus.Status)
@@ -162,7 +164,7 @@ func (r *Reconciler) PreprocessAndEnqueueEvent(ctx context.Context, event client
 
 	// Handle cancellation logic (Cancelled/UnQuarantined events)
 	if shouldSkip := r.handleEventCancellation(
-		documentID, nodeName, healthEventWithStatus.HealthEventStatus.NodeQuarantined); shouldSkip {
+		documentID, nodeName, (*model.Status)(&healthEventWithStatus.HealthEventStatus.NodeQuarantined)); shouldSkip {
 		slog.Debug("Event skipped due to cancellation", "node", nodeName)
 
 		return nil
@@ -291,7 +293,7 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	nodeQuarantinedStatus := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
-	if r.isEventCancelled(eventID, nodeName, nodeQuarantinedStatus) {
+	if r.isEventCancelled(eventID, nodeName, (*model.Status)(&nodeQuarantinedStatus)) {
 		slog.Info("Event was cancelled, performing cleanup", "node", nodeName, "eventID", eventID)
 
 		return r.handleCancelledEvent(ctx, nodeName, &healthEventWithStatus, event, database, eventID)
@@ -377,10 +379,16 @@ func (r *Reconciler) executeSkip(ctx context.Context,
 	event datastore.Event, database queue.DataStore) error {
 	slog.Info("Skipping event for node", "node", nodeName)
 
-	if statusPtr := healthEvent.HealthEventStatus.NodeQuarantined; statusPtr != nil &&
-		*statusPtr == model.UnQuarantined {
-		podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-		podsEvictionStatus.Status = model.StatusSucceeded
+	if healthEvent.HealthEventStatus.NodeQuarantined == string(model.UnQuarantined) {
+		if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+			slog.Error("HealthEventStatus is missing UserPodsEvictionStatus",
+				"node", nodeName)
+
+			return errors.New("missing UserPodsEvictionStatus")
+		}
+
+		podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+		podsEvictionStatus.Status = string(model.StatusSucceeded)
 
 		if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
 			metrics.DrainStatusCancelled); err != nil {
@@ -512,8 +520,16 @@ func (r *Reconciler) executeCheckCompletion(ctx context.Context, action *evaluat
 func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 	healthEvent model.HealthEventWithStatus, event datastore.Event, database queue.DataStore, status model.Status) error {
 	nodeName := healthEvent.HealthEvent.NodeName
-	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = status // expect AlreadyDrained
+
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		slog.Error("HealthEventStatus is missing UserPodsEvictionStatus",
+			"node", nodeName)
+
+		return errors.New("missing UserPodsEvictionStatus")
+	}
+
+	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = string(status)
 
 	return r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus,
 		nodeName, metrics.DrainStatusSkipped)
@@ -522,8 +538,16 @@ func (r *Reconciler) executeMarkAlreadyDrained(ctx context.Context,
 func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.HealthEventWithStatus,
 	event datastore.Event, database queue.DataStore, status model.Status) error {
 	nodeName := healthEvent.HealthEvent.NodeName
-	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = status // expect StatusSucceeded or StatusFailed
+
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		slog.Error("HealthEventStatus is missing UserPodsEvictionStatus",
+			"node", nodeName)
+
+		return errors.New("missing UserPodsEvictionStatus")
+	}
+
+	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = string(status) // expect StatusSucceeded or StatusFailed
 
 	nodeDrainLabelValue := statemanager.DrainSucceededLabelValue
 	if status == model.StatusFailed {
@@ -545,11 +569,7 @@ func (r *Reconciler) executeUpdateStatus(ctx context.Context, healthEvent model.
 
 func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 	nodeName string, healthEvent *model.HealthEventWithStatus, isDraining bool) {
-	if healthEvent.HealthEventStatus.NodeQuarantined == nil {
-		return
-	}
-
-	if *healthEvent.HealthEventStatus.NodeQuarantined == model.UnQuarantined {
+	if healthEvent.HealthEventStatus.NodeQuarantined == string(model.UnQuarantined) {
 		if _, err := r.Config.StateManager.UpdateNVSentinelStateNodeLabel(ctx,
 			nodeName, statemanager.DrainingLabelValue, true); err != nil {
 			slog.Error("Failed to remove draining label for unquarantined node",
@@ -572,7 +592,7 @@ func (r *Reconciler) updateNodeDrainStatus(ctx context.Context,
 }
 
 func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, database queue.DataStore,
-	event datastore.Event, userPodsEvictionStatus *model.OperationStatus,
+	event datastore.Event, userPodsEvictionStatus *protos.OperationStatus,
 	nodeName string, drainStatus string) error {
 	// Extract the document ID (preserving native type for MongoDB)
 	documentID, err := utils.ExtractDocumentIDNative(event)
@@ -580,15 +600,20 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		return fmt.Errorf("failed to extract document ID: %w", err)
 	}
 
+	// Explicitly construct the eviction status map, always setting all fields
+	evictionStatusMap := map[string]interface{}{
+		"status":  userPodsEvictionStatus.GetStatus(),
+		"message": userPodsEvictionStatus.GetMessage(),
+	}
+
 	updateFields := map[string]any{
-		"healtheventstatus.userpodsevictionstatus": *userPodsEvictionStatus,
+		"healtheventstatus.userpodsevictionstatus": evictionStatusMap,
 	}
 
 	// Set DrainFinishTimestamp when drain completes successfully
-	if userPodsEvictionStatus.Status == model.StatusSucceeded ||
-		userPodsEvictionStatus.Status == model.AlreadyDrained {
-		now := time.Now().UTC()
-		updateFields["healtheventstatus.drainfinishtimestamp"] = now
+	if userPodsEvictionStatus.Status == string(model.StatusSucceeded) ||
+		userPodsEvictionStatus.Status == string(model.AlreadyDrained) {
+		updateFields["healtheventstatus.drainfinishtimestamp"] = timestamppb.Now()
 	}
 
 	filter := map[string]any{"_id": documentID}
@@ -600,18 +625,7 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 		return fmt.Errorf("error updating document with ID: %v, error: %w", documentID, err)
 	}
 
-	if userPodsEvictionStatus.Status == model.StatusSucceeded {
-		if healthEvent, parseErr := eventutil.ParseHealthEventFromEvent(event); parseErr == nil &&
-			healthEvent.HealthEventStatus.QuarantineFinishTimestamp != nil {
-			evictionDuration := time.Since(*healthEvent.HealthEventStatus.QuarantineFinishTimestamp).Seconds()
-
-			slog.Info("Node drainer evictionDuration is", "evictionDuration", evictionDuration)
-
-			if evictionDuration > 0 {
-				metrics.PodEvictionDuration.Observe(evictionDuration)
-			}
-		}
-	}
+	r.observeEvictionDurationIfSucceeded(event, userPodsEvictionStatus)
 
 	slog.Info("Health event status has been updated",
 		"documentID", documentID,
@@ -619,6 +633,26 @@ func (r *Reconciler) updateNodeUserPodsEvictedStatus(ctx context.Context, databa
 	metrics.EventsProcessed.WithLabelValues(drainStatus, nodeName).Inc()
 
 	return nil
+}
+
+// observeEvictionDurationIfSucceeded observes eviction duration metric if status is succeeded and timestamp is present
+func (r *Reconciler) observeEvictionDurationIfSucceeded(event datastore.Event,
+	userPodsEvictionStatus *protos.OperationStatus) {
+	if userPodsEvictionStatus.Status != string(model.StatusSucceeded) {
+		return
+	}
+
+	healthEvent, parseErr := eventutil.ParseHealthEventFromEvent(event)
+	if parseErr != nil || healthEvent.HealthEventStatus.QuarantineFinishTimestamp == nil {
+		return
+	}
+
+	evictionDuration := time.Since(healthEvent.HealthEventStatus.QuarantineFinishTimestamp.AsTime()).Seconds()
+	slog.Info("Node drainer evictionDuration is", "evictionDuration", evictionDuration)
+
+	if evictionDuration > 0 {
+		metrics.PodEvictionDuration.Observe(evictionDuration)
+	}
 }
 
 // parseHealthEventFromEvent extracts and parses health event from a document
@@ -776,8 +810,15 @@ func (r *Reconciler) handleCancelledEvent(ctx context.Context, nodeName string,
 	eventID string) error {
 	r.clearEventStatus(eventID, nodeName)
 
-	podsEvictionStatus := &healthEvent.HealthEventStatus.UserPodsEvictionStatus
-	podsEvictionStatus.Status = model.Cancelled
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		slog.Error("HealthEventStatus is missing UserPodsEvictionStatus",
+			"node", nodeName)
+
+		return errors.New("missing UserPodsEvictionStatus")
+	}
+
+	podsEvictionStatus := healthEvent.HealthEventStatus.UserPodsEvictionStatus
+	podsEvictionStatus.Status = string(model.Cancelled)
 
 	if err := r.updateNodeUserPodsEvictedStatus(ctx, database, event, podsEvictionStatus, nodeName,
 		metrics.DrainStatusCancelled); err != nil {
@@ -938,8 +979,8 @@ func (r *Reconciler) setDrainFailedStatus(
 
 	update := map[string]any{
 		"$set": map[string]any{
-			"healtheventstatus.userpodsevictionstatus": model.OperationStatus{
-				Status:  model.StatusFailed,
+			"healtheventstatus.userpodsevictionstatus": protos.OperationStatus{
+				Status:  string(model.StatusFailed),
 				Message: reason,
 			},
 		},

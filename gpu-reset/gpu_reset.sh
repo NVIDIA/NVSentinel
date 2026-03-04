@@ -107,12 +107,14 @@ log "INFO: Pre-reset persistence mode (PM) management complete."
 log "INFO: Resetting GPUs..."
 
 if nvidia-smi --gpu-reset -i "${TARGET_UUIDS}" > "$RESET_OUTPUT_FILE" 2>&1; then
+  # shellcheck disable=SC2002
   cat "$RESET_OUTPUT_FILE" | grep -v "All done." | sed -e 's/\.$//' -e 's/^/  /'
   log "INFO: GPU reset complete."
 else
   RESET_STATUS=$?
   FINAL_EXIT_STATUS=$RESET_STATUS
   log "ERROR: Reset failed. See details below:"
+  # shellcheck disable=SC2002
   cat "$RESET_OUTPUT_FILE" | grep -v "All done." | sed 's/\.$//' | grep .
 fi
 

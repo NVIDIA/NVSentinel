@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 )
@@ -61,14 +62,18 @@ func TestBuildStructFieldUpdates(t *testing.T) {
 		now := time.Now().UTC()
 		status := datastore.HealthEventStatus{
 			FaultRemediated:          &faultRemediated,
-			LastRemediationTimestamp: &now,
+			LastRemediationTimestamp: timestamppb.New(now),
 		}
 
 		result := c.buildStructFieldUpdates("healtheventstatus", status)
 
 		expected := bson.M{
-			"healtheventstatus.faultremediated":          true,
-			"healtheventstatus.lastremediationtimestamp": now,
+			"healtheventstatus.faultremediated": map[string]interface{}{
+				"value": true,
+			},
+			"healtheventstatus.lastremediationtimestamp": map[string]interface{}{
+				"seconds": now.Unix(), "nanos": int32(now.Nanosecond()), //nolint:gosec // Nanosecond() returns 0-999999999, fits int32
+			},
 		}
 
 		assert.Equal(t, expected, result)
@@ -85,7 +90,7 @@ func TestBuildStructFieldUpdates(t *testing.T) {
 				Message: "test message",
 			},
 			FaultRemediated:          &faultRemediated,
-			LastRemediationTimestamp: &now,
+			LastRemediationTimestamp: timestamppb.New(now),
 		}
 
 		result := c.buildStructFieldUpdates("healtheventstatus", status)
@@ -94,8 +99,12 @@ func TestBuildStructFieldUpdates(t *testing.T) {
 			"healtheventstatus.nodequarantined":                string(datastore.Quarantined),
 			"healtheventstatus.userpodsevictionstatus.status":  string(datastore.StatusSucceeded),
 			"healtheventstatus.userpodsevictionstatus.message": "test message",
-			"healtheventstatus.faultremediated":                true,
-			"healtheventstatus.lastremediationtimestamp":       now,
+			"healtheventstatus.faultremediated": map[string]interface{}{
+				"value": true,
+			},
+			"healtheventstatus.lastremediationtimestamp": map[string]interface{}{
+				"seconds": now.Unix(), "nanos": int32(now.Nanosecond()), //nolint:gosec // Nanosecond() returns 0-999999999, fits int32
+			},
 		}
 
 		assert.Equal(t, expected, result)

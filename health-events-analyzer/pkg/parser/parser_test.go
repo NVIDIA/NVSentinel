@@ -20,6 +20,7 @@ import (
 
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestParseSequenceString(t *testing.T) {
@@ -44,9 +45,8 @@ func TestParseSequenceString(t *testing.T) {
 					NodeName: "gpu-node-1",
 					IsFatal:  true,
 				},
-				HealthEventStatus: datamodels.HealthEventStatus{
-					FaultRemediated: &remediated,
-				},
+				HealthEventStatus: &protos.HealthEventStatus{
+					FaultRemediated: wrapperspb.Bool(remediated)},
 			},
 			want: map[string]interface{}{
 				"healtheventstatus.faultremediated": true,
@@ -109,9 +109,9 @@ func TestParseSequenceString(t *testing.T) {
 					IsHealthy: false,
 					Agent:     "gpu-health-monitor",
 				},
-				HealthEventStatus: datamodels.HealthEventStatus{
-					UserPodsEvictionStatus: datamodels.OperationStatus{
-						Status:  datamodels.StatusInProgress,
+				HealthEventStatus: &protos.HealthEventStatus{
+					UserPodsEvictionStatus: &protos.OperationStatus{
+						Status:  string(datamodels.StatusInProgress),
 						Message: "Evicting pods from node",
 					},
 				},
@@ -122,7 +122,7 @@ func TestParseSequenceString(t *testing.T) {
 				"healthevent.checkname":                           "GpuXidError",
 				"healthevent.nodename":                            "node2",
 				"healthevent.agent":                               "gpu-health-monitor",
-				"healtheventstatus.userpodsevictionstatus.status": datamodels.StatusInProgress,
+				"healtheventstatus.userpodsevictionstatus.status": string(datamodels.StatusInProgress),
 			},
 			wantErr: false,
 		},
@@ -350,7 +350,7 @@ func TestParseSequenceStage(t *testing.T) {
 }
 
 func TestGetValueFromPath(t *testing.T) {
-	remediated := true
+	remediated := wrapperspb.Bool(true)
 
 	tests := []struct {
 		name    string
@@ -396,11 +396,11 @@ func TestGetValueFromPath(t *testing.T) {
 			name: "nested struct field",
 			path: "healtheventstatus.faultremediated",
 			event: datamodels.HealthEventWithStatus{
-				HealthEventStatus: datamodels.HealthEventStatus{
-					FaultRemediated: &remediated,
+				HealthEventStatus: &protos.HealthEventStatus{
+					FaultRemediated: remediated,
 				},
 			},
-			want:    &remediated,
+			want:    remediated,
 			wantErr: false,
 		},
 		{
@@ -416,18 +416,19 @@ func TestGetValueFromPath(t *testing.T) {
 			want:    "GPU-456",
 			wantErr: false,
 		},
+		//	UserPodsEvictionStatus: &protos.OperationStatus{Status: &protos.Status{Value: string(model.StatusSucceeded)}},
 		{
 			name: "deeply nested field",
 			path: "healtheventstatus.userpodsevictionstatus.status",
 			event: datamodels.HealthEventWithStatus{
-				HealthEventStatus: datamodels.HealthEventStatus{
-					UserPodsEvictionStatus: datamodels.OperationStatus{
-						Status:  datamodels.StatusSucceeded,
+				HealthEventStatus: &protos.HealthEventStatus{
+					UserPodsEvictionStatus: &protos.OperationStatus{
+						Status:  string(datamodels.StatusSucceeded),
 						Message: "Done",
 					},
 				},
 			},
-			want:    datamodels.StatusSucceeded,
+			want:    string(datamodels.StatusSucceeded),
 			wantErr: false,
 		},
 		{
