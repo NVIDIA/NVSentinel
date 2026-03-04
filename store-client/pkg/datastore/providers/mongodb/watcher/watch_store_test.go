@@ -194,6 +194,47 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		err = watcher.Close(ctx)
 		require.NoError(t, err)
 	})
+
+	mt.Run("Start exits goroutine on change stream error", func(mt *mtest.T) {
+		mt.AddMockResponses(
+			// Initial change stream cursor
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			// getMore returns an error
+			mtest.CreateCommandErrorResponse(mtest.CommandError{Code: 123, Message: "stream error"}),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		watcher := &ChangeStreamWatcher{
+			client:       mt.Client,
+			changeStream: changeStream,
+			eventChannel: make(chan Event, 1),
+			clientName:   "testclient-error",
+			done:         make(chan struct{}),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		watcher.Start(ctx)
+
+		// The goroutine should exit and close the event channel
+		select {
+		case <-watcher.done:
+			// Goroutine exited as expected
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for goroutine to exit on change stream error")
+		}
+
+		// Event channel should be closed
+		_, open := <-watcher.eventChannel
+		require.False(t, open, "event channel should be closed after stream error")
+
+		// Close the change stream to release the mtest session
+		_ = watcher.changeStream.Close(context.Background())
+	})
 }
 
 func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
