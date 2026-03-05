@@ -87,9 +87,9 @@ func (c *DatabaseCertConfig) GetCertPath() string {
 		return newPath
 	}
 
-	// If neither exists, return the resolved path (original behavior)
-	slog.Warn("Certificate file not found at any expected location, using resolved path",
-		"resolved_path", c.ResolvedCertPath)
+	// If neither exists, return empty to indicate no TLS certs are available.
+	// Callers should check for empty and skip TLS configuration.
+	slog.Info("No certificate found at any expected location, TLS will be disabled")
 
-	return c.ResolvedCertPath
+	return ""
 }

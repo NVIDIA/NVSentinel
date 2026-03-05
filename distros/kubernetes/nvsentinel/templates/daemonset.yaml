@@ -114,9 +114,13 @@ spec:
           - "--config=/etc/config/config.json"
           - "--metrics-port={{ .Values.global.metricsPort }}"
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}"
+          {{- end }}
           {{- else }}
+          {{- if .Values.platformConnector.mongodbStore.clientCertMountPath }}
           - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
+          {{- end }}
           {{- end }}
           - "--socket={{ .Values.socketPath }}"
           resources:
@@ -127,13 +131,17 @@ spec:
             - name: platform-connector-configmap
               mountPath: /etc/config/
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
             - name: client-certs-fixed
               mountPath: {{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}
               readOnly: true
+            {{- end }}
             {{- else }}
+            {{- if .Values.platformConnector.mongodbStore.clientCertMountPath }}
             - name: mongo-app-client-cert
               mountPath: {{ .Values.platformConnector.mongodbStore.clientCertMountPath }}
               readOnly: true
+            {{- end }}
             {{- end }}
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
@@ -157,11 +165,15 @@ spec:
             {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
             {{- end }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+            {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: {{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}
+            {{- end }}
             {{- else }}
+            {{- if .Values.platformConnector.mongodbStore.clientCertMountPath }}
             - name: MONGODB_CLIENT_CERT_MOUNT_PATH
               value: {{ .Values.platformConnector.mongodbStore.clientCertMountPath }}
+            {{- end }}
             {{- end }}
           envFrom:
             - configMapRef:
@@ -176,18 +188,22 @@ spec:
           configMap:
             name: {{ include "nvsentinel.fullname" . }}
         {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+        {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
         - name: postgresql-client-cert-original
           secret:
             secretName: postgresql-client-cert
             optional: false
         - name: client-certs-fixed
           emptyDir: {}
+        {{- end }}
         {{- else }}
+        {{- if .Values.platformConnector.mongodbStore.clientCertMountPath }}
         - name: mongo-app-client-cert
           secret:
             secretName: {{ include "nvsentinel.certificates.secretName" . }}
             {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
             optional: true
+        {{- end }}
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}

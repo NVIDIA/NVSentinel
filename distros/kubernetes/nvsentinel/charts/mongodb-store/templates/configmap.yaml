@@ -21,9 +21,17 @@ data:
   DATASTORE_PROVIDER: "mongodb"
   # Legacy MongoDB configuration (maintained for backward compatibility)
 {{- if .Values.usePerconaOperator }}
+  {{- if .Values.mongodb.tls.enabled }}
   MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  {{- else }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  {{- end }}
 {{- else }}
+  {{- if .Values.mongodb.tls.enabled }}
   MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  {{- else }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  {{- end }}
 {{- end }}
   MONGODB_DATABASE_NAME: "HealthEventsDatabase"
   MONGODB_COLLECTION_NAME: "HealthEvents"

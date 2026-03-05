@@ -241,18 +241,22 @@ spec:
             echo "MONGODB_COLLECTION_NAME: $MONGODB_COLLECTION_NAME"
             echo "MONGODB_TOKEN_COLLECTION_NAME: $MONGODB_TOKEN_COLLECTION_NAME"
 
+            {{- if .Values.mongodb.tls.enabled }}
             cat /certs/tls.crt /certs/tls.key > /tmp/tls.pem
+            {{- end }}
 
             echo "=============================="
-            echo "Connecting to mongodb and creating X.509 user..."
+            echo "Connecting to mongodb..."
             echo "=============================="
 
             until mongosh "$MONGODB_URI" \
               --authenticationMechanism SCRAM-SHA-256 \
               --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              {{- if .Values.mongodb.tls.enabled }}
               --tls \
               --tlsCAFile /certs/ca.crt \
               --tlsCertificateKeyFile /tmp/tls.pem \
+              {{- end }}
                               --eval "
                   db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
                   
@@ -299,7 +303,8 @@ spec:
                     'healthevent.entitiesimpacted.entityvalue': 1,
                     'healthevent.generatedtimestamp.seconds': 1
                   });
-                // Check if user exists before creating
+                {{- if .Values.mongodb.tls.enabled }}
+                // Check if user exists before creating (X.509 users, TLS only)
                 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
                 if (userExists) {
                   print('User already exists, skipping creation.');
@@ -322,7 +327,8 @@ spec:
                     roles: [{ role: 'read', db: '$MONGODB_DATABASE_NAME' }]
                   });
                   print('Dgxcops user created successfully.');
-                }"
+                }
+                {{- end }}"
             do
               echo "Waiting for mongodb to be ready...";
               sleep 5;
@@ -356,15 +362,19 @@ spec:
         envFrom:
           - configMapRef:
               name: mongodb-config
+        {{- if .Values.mongodb.tls.enabled }}
         volumeMounts:
           - name: mongo-certificates
             mountPath: /certs
             readOnly: true
+        {{- end }}
+      {{- if .Values.mongodb.tls.enabled }}
       volumes:
         - name: mongo-certificates
           secret:
             secretName: {{ include "nvsentinel.certificates.secretName" . }}
             {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
+      {{- end }}
       # Job scheduling configuration with backward-compatible fallback
       # Prefers: job.nodeSelector -> Falls back to: mongodb.nodeSelector
       {{- $jobNodeSelector := .Values.mongodb.nodeSelector }}
