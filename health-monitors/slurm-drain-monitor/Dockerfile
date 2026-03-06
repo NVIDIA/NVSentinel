@@ -33,7 +33,7 @@ COPY data-models/ data-models/
 COPY commons/ commons/
 
 RUN cd health-monitors/slurm-drain-monitor && \
-	go build -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
+	CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
 	-o slurm-drain-monitor .
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
