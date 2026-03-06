@@ -1,0 +1,27 @@
+# Example configuration for slurm-drain-monitor.
+# Copy to /etc/nvsentinel/config/slurm-drain-monitor.toml and adjust.
+#
+# The monitor watches NodeSet pods for external Slurm drain conditions
+# (SlurmNodeStateDrain=True, Message not starting with "slurm-operator:"),
+# parses the reason string with split+regex, and publishes health events
+# to the NVSentinel API.
+
+namespace = "slurm"
+labelSelector = "app.kubernetes.io/name=slurmd,app.kubernetes.io/component=worker"
+reasonDelimiter = "; "
+
+[[patterns]]
+name = "slurm-healthcheck"
+regex = '^\[HC\]'
+checkName = "SlurmHealthCheck"
+componentClass = "NODE"
+isFatal = false
+recommendedAction = "CONTACT_SUPPORT"
+
+[[patterns]]
+name = "slurm-not-responding"
+regex = 'Not responding'
+checkName = "SlurmNotResponding"
+componentClass = "NODE"
+isFatal = true
+recommendedAction = "REPLACE_VM"
