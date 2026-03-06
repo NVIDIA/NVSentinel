@@ -28,28 +28,50 @@ IMAGE_NAME := preflight-dcgm-diag
 .PHONY: all
 all: lint-test
 
+vendor-proto:
+	$(MAKE) -C ../../data-models vendor-proto
+
 .PHONY: protos-clean
-protos-clean:
+protos-clean: vendor-proto
 	@echo "Cleaning generated protobuf files in $(MODULE_NAME)..."
 	find $(PYTHON_PACKAGE_NAME)/protos/ \( -name "*_pb2.py" -o -name "*_pb2_grpc.py" -o -name "*_pb2.pyi" \) -type f -delete 2>/dev/null || true
 
 .PHONY: protos-generate
-protos-generate: protos-clean
+protos-generate: vendor-proto protos-clean
 	@echo "Generating protobuf files for $(MODULE_NAME)..."
 	@mkdir -p $(PYTHON_PACKAGE_NAME)/protos
 	python3 -m grpc_tools.protoc \
 		-I $(REPO_ROOT)/data-models/protobufs/ \
+		-I $(REPO_ROOT)/data-models/vendor/ \
 		--python_out=$(PYTHON_PACKAGE_NAME)/protos \
 		--pyi_out=$(PYTHON_PACKAGE_NAME)/protos \
 		--grpc_python_out=$(PYTHON_PACKAGE_NAME)/protos \
 		$(REPO_ROOT)/data-models/protobufs/health_event.proto
-	@# Fix relative imports in generated gRPC files
+	@# health_event.proto imports crd.proto (needed for CRD generation via protoc-gen-crd).
+	@# protoc propagates that import into the generated Python code, but the Go-style module path
+	@# (github.com/yandex/...) is unresolvable in Python. To fix this we:
+	@#   1. Generate crd_pb2.py from the vendored crd.proto using the vendor root as -I
+	@#      so the file descriptor name matches what health_event_pb2.py expects.
+	@#   2. Move crd_pb2.py from the nested output path into protos/ as a flat sibling.
+	@#   3. Rewrite the import in health_event_pb2.py to a relative import (from . import crd_pb2).
+	python3 -m grpc_tools.protoc \
+		-I $(REPO_ROOT)/data-models/vendor/ \
+		--python_out=$(PYTHON_PACKAGE_NAME)/protos \
+		--pyi_out=$(PYTHON_PACKAGE_NAME)/protos \
+		github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
+	mv $(PYTHON_PACKAGE_NAME)/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.py $(PYTHON_PACKAGE_NAME)/protos/crd_pb2.py
+	mv $(PYTHON_PACKAGE_NAME)/protos/github/com/yandex/protoc_gen_crd/library/go/k8s/protoc_gen_crd/proto/crd_pb2.pyi $(PYTHON_PACKAGE_NAME)/protos/crd_pb2.pyi 2>/dev/null || true
+	rm -rf $(PYTHON_PACKAGE_NAME)/protos/github
+	@# Fix relative imports in generated files
 	@if command -v gsed >/dev/null 2>&1; then \
 		gsed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		gsed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
 	elif [ "$$(uname)" = "Darwin" ]; then \
 		sed -i '' 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		sed -i '' 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
 	else \
 		sed -i 's/^import health_event_pb2 as health__event__pb2$$/from . import health_event_pb2 as health__event__pb2/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2_grpc.py; \
+		sed -i 's/^from github\.com\.yandex\.protoc_gen_crd\.library\.go\.k8s\.protoc_gen_crd\.proto import crd_pb2 as \(.*\)$$/from . import crd_pb2 as \1/' $(PYTHON_PACKAGE_NAME)/protos/health_event_pb2.py; \
 	fi
 	@touch $(PYTHON_PACKAGE_NAME)/protos/__init__.py
 

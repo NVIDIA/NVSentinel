@@ -57,13 +57,30 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	database queue.DataStore, healthEventStore datastore.HealthEventStore) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 
-	statusPtr := healthEvent.HealthEventStatus.NodeQuarantined
+	// Helper for returning ActionWait with a log
+	actionWaitWithLog := func(msg, nodeName string) *DrainActionResult {
+		slog.Warn(msg, "node", nodeName)
 
-	if statusPtr != nil && *statusPtr == model.UnQuarantined {
+		return &DrainActionResult{
+			Action:    ActionWait,
+			WaitDelay: time.Minute,
+		}
+	}
+
+	if healthEvent.HealthEventStatus == nil {
+		return actionWaitWithLog("HealthEventStatus is nil, cannot evaluate event", nodeName), nil
+	}
+
+	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
+	if statusStr == "" || statusStr == string(model.UnQuarantined) {
 		return &DrainActionResult{Action: ActionSkip}, nil
 	}
 
-	if isTerminalStatus(healthEvent.HealthEventStatus.UserPodsEvictionStatus.Status) {
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		return actionWaitWithLog("HealthEventStatus is missing UserPodsEvictionStatus", nodeName), nil
+	}
+
+	if isTerminalStatus(model.Status(healthEvent.HealthEventStatus.UserPodsEvictionStatus.Status)) {
 		slog.Info("Event for node is in terminal state, skipping", "node", nodeName)
 
 		return &DrainActionResult{
@@ -83,7 +100,7 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		}, nil
 	}
 
-	result := e.handleAlreadyQuarantined(ctx, statusPtr, healthEvent, partialDrainEntity, healthEventStore)
+	result := e.handleAlreadyQuarantined(ctx, statusStr, healthEvent, partialDrainEntity, healthEventStore)
 	if result != nil {
 		return result, nil
 	}
@@ -95,10 +112,10 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	return e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
 }
 
-func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusPtr *model.Status,
+func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusStr string,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity,
 	healthEventStore datastore.HealthEventStore) *DrainActionResult {
-	if statusPtr == nil || *statusPtr != model.AlreadyQuarantined {
+	if statusStr != string(model.AlreadyQuarantined) {
 		return nil
 	}
 

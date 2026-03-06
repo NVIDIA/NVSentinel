@@ -37,7 +37,7 @@ data:
       '''
       {
         "$match": {
-          "healtheventstatus.faultremediated": true,
+          "healtheventstatus.faultremediated.value": true,
           "healthevent.nodename": "this.healthevent.nodename",
           "healthevent.isfatal": "this.healthevent.isfatal"
         }

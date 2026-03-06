@@ -210,7 +210,7 @@ func createHealthEventBSON(eventID string, nodeName, checkName string, isHealthy
 		"fullDocument": datastore.Event{
 			"_id": eventID,
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": quarantineStatus,
+				"nodequarantined": string(quarantineStatus),
 			},
 			"healthevent": datastore.Event{
 				"nodename":         nodeName,
@@ -1456,7 +1456,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 		"fullDocument": datastore.Event{
 			"_id": generateTestID(),
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":       nodeName,
@@ -1496,7 +1496,7 @@ func TestE2E_SyslogMultipleEntityTypes(t *testing.T) {
 		"fullDocument": datastore.Event{
 			"_id": generateTestID(),
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":         nodeName,
@@ -2236,7 +2236,7 @@ func TestE2E_NodeAlreadyQuarantinedStillUnhealthy(t *testing.T) {
 		"fullDocument": datastore.Event{
 			"_id": generateTestID(),
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":       nodeName,
@@ -2317,7 +2317,7 @@ func TestE2E_NodeAlreadyQuarantinedBecomesHealthy(t *testing.T) {
 		"fullDocument": datastore.Event{
 			"_id": generateTestID(),
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":       nodeName,
@@ -2901,7 +2901,7 @@ func TestE2E_QuarantineOverridesForce(t *testing.T) {
 		"fullDocument": datastore.Event{
 			"_id": eventID1,
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":       nodeName,
@@ -3416,8 +3416,9 @@ func TestE2E_ForceQuarantineOnAlreadyQuarantinedNode(t *testing.T) {
 		"operationType": "insert",
 		"fullDocument": datastore.Event{
 			"_id": eventID1,
+
 			"healtheventstatus": datastore.Event{
-				"nodequarantined": model.StatusInProgress,
+				"nodequarantined": string(model.StatusInProgress),
 			},
 			"healthevent": datastore.Event{
 				"nodename":       nodeName,

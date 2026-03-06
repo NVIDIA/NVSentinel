@@ -234,11 +234,20 @@ func EmitNodeRemediationDuration(status *model.Status, healthEventWithStatus *mo
 		return
 	}
 
+	var qft, dft *time.Time
+	if ts := healthEventWithStatus.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
+		t := ts.AsTime()
+		qft = &t
+	}
+	if ts := healthEventWithStatus.HealthEventStatus.DrainFinishTimestamp; ts != nil {
+		t := ts.AsTime()
+		dft = &t
+	}
 	emitRemediationDuration(
 		healthEventWithStatus.HealthEvent.NodeName,
 		healthEventWithStatus.HealthEvent.GetGeneratedTimestamp().AsTime(),
-		healthEventWithStatus.HealthEventStatus.QuarantineFinishTimestamp,
-		healthEventWithStatus.HealthEventStatus.DrainFinishTimestamp,
+		qft,
+		dft,
 	)
 }
 
@@ -279,8 +288,14 @@ func (w *EventWatcher) emitRemediationDurationFromDocID(ctx context.Context, id 
 			} `bson:"generatedtimestamp"`
 		} `bson:"healthevent"`
 		HealthEventStatus struct {
-			QuarantineFinishTimestamp *time.Time `bson:"quarantinefinishtimestamp,omitempty"`
-			DrainFinishTimestamp      *time.Time `bson:"drainfinishtimestamp,omitempty"`
+			QuarantineFinishTimestamp *struct {
+				Seconds int64 `bson:"seconds"`
+				Nanos   int32 `bson:"nanos"`
+			} `bson:"quarantinefinishtimestamp,omitempty"`
+			DrainFinishTimestamp *struct {
+				Seconds int64 `bson:"seconds"`
+				Nanos   int32 `bson:"nanos"`
+			} `bson:"drainfinishtimestamp,omitempty"`
 		} `bson:"healtheventstatus"`
 	}
 
@@ -297,11 +312,21 @@ func (w *EventWatcher) emitRemediationDurationFromDocID(ctx context.Context, id 
 	genTs := time.Unix(doc.HealthEvent.GeneratedTimestamp.Seconds,
 		int64(doc.HealthEvent.GeneratedTimestamp.Nanos))
 
+	var qft, dft *time.Time
+	if ts := doc.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
+		t := time.Unix(ts.Seconds, int64(ts.Nanos))
+		qft = &t
+	}
+	if ts := doc.HealthEventStatus.DrainFinishTimestamp; ts != nil {
+		t := time.Unix(ts.Seconds, int64(ts.Nanos))
+		dft = &t
+	}
+
 	emitRemediationDuration(
 		doc.HealthEvent.NodeName,
 		genTs,
-		doc.HealthEventStatus.QuarantineFinishTimestamp,
-		doc.HealthEventStatus.DrainFinishTimestamp,
+		qft,
+		dft,
 	)
 }
 
@@ -399,9 +424,15 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 			} `bson:"generatedtimestamp"`
 		} `bson:"healthevent"`
 		HealthEventStatus struct {
-			NodeQuarantined           *model.Status `bson:"nodequarantined"`
-			QuarantineFinishTimestamp *time.Time    `bson:"quarantinefinishtimestamp,omitempty"`
-			DrainFinishTimestamp      *time.Time    `bson:"drainfinishtimestamp,omitempty"`
+			NodeQuarantined           string `bson:"nodequarantined"`
+			QuarantineFinishTimestamp *struct {
+				Seconds int64 `bson:"seconds"`
+				Nanos   int32 `bson:"nanos"`
+			} `bson:"quarantinefinishtimestamp,omitempty"`
+			DrainFinishTimestamp *struct {
+				Seconds int64 `bson:"seconds"`
+				Nanos   int32 `bson:"nanos"`
+			} `bson:"drainfinishtimestamp,omitempty"`
 		} `bson:"healtheventstatus"`
 	}
 
@@ -436,8 +467,8 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"status", latestEvent.HealthEventStatus.NodeQuarantined)
 
 	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
-	if latestEvent.HealthEventStatus.NodeQuarantined == nil ||
-		*latestEvent.HealthEventStatus.NodeQuarantined != model.Quarantined {
+	if latestEvent.HealthEventStatus.NodeQuarantined == "" ||
+		latestEvent.HealthEventStatus.NodeQuarantined != string(model.Quarantined) {
 		slog.Debug("Latest event is not Quarantined, no events to cancel", "node", nodeName)
 
 		return nil
@@ -455,7 +486,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 	update := map[string]interface{}{
 		"$set": map[string]interface{}{
-			"healtheventstatus.nodequarantined": model.Cancelled,
+			"healtheventstatus.nodequarantined": string(model.Cancelled),
 		},
 	}
 
@@ -472,11 +503,22 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	if latestEvent.HealthEvent.GeneratedTimestamp != nil {
 		genTs := time.Unix(latestEvent.HealthEvent.GeneratedTimestamp.Seconds,
 			int64(latestEvent.HealthEvent.GeneratedTimestamp.Nanos))
+
+		var qft, dft *time.Time
+		if ts := latestEvent.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
+			t := time.Unix(ts.Seconds, int64(ts.Nanos))
+			qft = &t
+		}
+		if ts := latestEvent.HealthEventStatus.DrainFinishTimestamp; ts != nil {
+			t := time.Unix(ts.Seconds, int64(ts.Nanos))
+			dft = &t
+		}
+
 		emitRemediationDuration(
 			latestEvent.HealthEvent.NodeName,
 			genTs,
-			latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
-			latestEvent.HealthEventStatus.DrainFinishTimestamp,
+			qft,
+			dft,
 		)
 	} else {
 		slog.Warn("Cannot emit remediation duration: generatedTimestamp missing in latest event", "node", nodeName)

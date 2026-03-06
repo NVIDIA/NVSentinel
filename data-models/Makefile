@@ -41,9 +41,70 @@ include ../make/go.mk
 # MODULE-SPECIFIC TARGETS
 # =============================================================================
 
+
+# =============================================================================
+# CRD GENERATION (protoc-gen-crd)
+# =============================================================================
+
+# Where local version of protoc-gen-crd module is stored
+LOCAL_PATH ?= ..
+# Where compiled local plugin is stored
+LOCAL_PROTOC_GEN_CRD ?= $(LOCAL_PATH)/cmd/protoc-gen-crd/protoc-gen-crd
+# Where installed protoc-gen-crd is stored
+PROTOC_GEN_CRD ?= $(shell which protoc-gen-crd || echo "$(GOPATH)/bin/protoc-gen-crd")
+# protoc-gen-crd version to install (read from repo root .versions.yaml)
+PROTOC_GEN_CRD_VERSION ?= $(shell yq '.protobuf.protoc_gen_crd' ../.versions.yaml)
+
+# Path to output generated CRD YAML files (relative to repo root)
+CRD_OUT_DIR = ../distros/kubernetes/nvsentinel/charts/k8s-datastore/crds
+CRD_FILE = $(CRD_OUT_DIR)/health_event.crd.yaml
+
+# Path to vendored crd.proto
+PROTO_OPTIONS = vendor/github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto
+
+# Command to invoke protoc for CRD generation
+PROTOC_COMMAND = protoc --plugin=protoc-gen-crd=$(PROTOC_GEN_CRD) -I=protobufs -I=vendor --crd_out=paths=source_relative:$(CRD_OUT_DIR)
+
+# Install protoc-gen-crd from github (default)
+.PHONY: install-plugin-remote
+install-plugin-remote:
+	@echo "Installing protoc-gen-crd from github..."
+	GO111MODULE=on go install github.com/yandex/protoc-gen-crd/cmd/protoc-gen-crd@$(PROTOC_GEN_CRD_VERSION)
+
+# Install protoc-gen-crd from local source (if developing plugin)
+.PHONY: install-plugin-local
+install-plugin-local:
+	cd $(LOCAL_PATH)/cmd/protoc-gen-crd && go build
+	cp $(LOCAL_PATH)/cmd/protoc-gen-crd/protoc-gen-crd $(GOPATH)/bin/
+
+$(PROTO_OPTIONS):
+	$(GO) mod vendor
+	@if [ ! -f $(PROTO_OPTIONS) ]; then \
+		echo "ERROR: crd.proto not found in vendor. Check tools.go and go.mod setup."; \
+		exit 1; \
+	fi
+
+.PHONY: vendor-proto
+vendor-proto: $(PROTO_OPTIONS)
+
+# Generate CRD YAML for health_event.proto directly in Helm chart directory
+$(CRD_FILE): vendor-proto protobufs/health_event.proto install-plugin-remote
+	@echo "Generating CRD YAML at $(CRD_FILE)..."
+	mkdir -p $(CRD_OUT_DIR)
+	$(PROTOC_COMMAND) health_event.proto
+	@ls -l $(CRD_FILE) || (echo "CRD file not generated!" && exit 1)
+
+.PHONY: compile-crd-server
+compile-crd-server: $(CRD_FILE)
+
+# Clean generated CRD YAML
+.PHONY: crd-clean
+crd-clean:
+	rm -f $(CRD_FILE)
+
 # Generate Go protobuf files for data-models (shared across all Go modules)
 .PHONY: protos-generate
-protos-generate: protos-clean
+protos-generate: vendor-proto protos-clean compile-crd-server
 	@echo "Generating Go protobuf files for data-models..."
 	@echo "=== Tool Versions ==="
 	@echo "Go: $$(go version)"
@@ -52,14 +113,14 @@ protos-generate: protos-clean
 	@echo "protoc-gen-go-grpc: $$(protoc-gen-go-grpc --version)"
 	@echo "========================"
 	# Generate Go protobuf files (shared by all Go modules)
-	protoc -I protobufs/ \
+	protoc -I protobufs/ -I vendor/ \
 		--go_out=pkg/protos/ --go_opt=paths=source_relative \
 		--go-grpc_out=pkg/protos/ --go-grpc_opt=paths=source_relative \
 		protobufs/health_event.proto
 
 # Clean generated Go protobuf files
 .PHONY: protos-clean
-protos-clean:
+protos-clean: crd-clean
 	@echo "Cleaning generated Go protobuf files in data-models..."
 	@echo "Removing Go protobuf files (.pb.go)..."
 	find pkg/protos/ -name "*.pb.go" -type f -delete 2>/dev/null || true

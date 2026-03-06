@@ -27,6 +27,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -1767,7 +1768,7 @@ func TestMetrics_CRGenerationDuration(t *testing.T) {
 	drainFinishTime := time.Now().Add(-5 * time.Second)
 	if fullDoc, ok := event1["fullDocument"].(map[string]interface{}); ok {
 		if status, ok := fullDoc["healtheventstatus"].(map[string]interface{}); ok {
-			status["drainfinishtimestamp"] = drainFinishTime
+			status["drainfinishtimestamp"] = timestamppb.New(drainFinishTime)
 		}
 	}
 

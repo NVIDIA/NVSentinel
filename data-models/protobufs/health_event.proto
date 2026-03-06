@@ -15,10 +15,40 @@
 syntax = "proto3";
 package datamodels;
 
+
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+import "github.com/yandex/protoc-gen-crd/library/go/k8s/protoc_gen_crd/proto/crd.proto";
 
 option go_package = "github.com/nvidia/nvsentinel/data-models/pkg/protos";
+
+
+// Common status string constants (for documentation/reference):
+// NotStarted, InProgress, Failed, Succeeded, AlreadyDrained, UnQuarantined, Quarantined, AlreadyQuarantined, Cancelled
+
+// OperationStatus represents the status and message for an operation.
+message OperationStatus {
+  string status = 1;
+  string message = 2;
+}
+
+// HealthEventStatus represents the status fields for a health event.
+message HealthEventStatus {
+  string nodeQuarantined = 1;
+  google.protobuf.Timestamp quarantineFinishTimestamp = 2;
+  OperationStatus userPodsEvictionStatus = 3;
+  google.protobuf.Timestamp drainFinishTimestamp = 4;
+  google.protobuf.BoolValue faultRemediated = 5;
+  google.protobuf.Timestamp lastRemediationTimestamp = 6;
+}
+
+// HealthEventWithStatus combines HealthEvent and HealthEventStatus for CRD generation.
+message HealthEventWithStatus {
+  google.protobuf.Timestamp createdAt = 1;
+  HealthEvent healthEvent = 2;
+  HealthEventStatus healthEventStatus = 3;
+}
 
 service PlatformConnector {
   rpc HealthEventOccurredV1(HealthEvents) returns (google.protobuf.Empty) {}
@@ -83,4 +113,18 @@ message HealthEvent {
 message BehaviourOverrides {
   bool force = 1;
   bool skip = 2;
+}
+
+// HealthEventResource is the root type for CRD generation.
+// This will map to Kubernetes .spec and .status fields.
+message HealthEventResource {
+  option (protoc_gen_crd.k8s_crd) = {
+    api_group: "healthevents.dgxc.nvidia.com",
+    kind: "HealthEventResource",
+    plural: "healtheventresources",
+    singular: "healtheventresource",
+    categories: ["nvidia", "gpu"]
+  };
+  HealthEvent spec = 1;
+  HealthEventStatus status = 2;
 }
