@@ -72,7 +72,12 @@ func InitializeAll(ctx context.Context, params Params) (*Components, error) {
 		return nil, err
 	}
 
-	cacheOpts := buildCacheOptions(cfg, params.ResyncPeriod)
+	cacheOpts, err := buildCacheOptions(cfg, params.ResyncPeriod)
+	if err != nil {
+		conn.Close()
+
+		return nil, err
+	}
 
 	mgrOpts := ctrl.Options{
 		Metrics:                server.Options{BindAddress: params.MetricsBindAddress},
@@ -175,14 +180,14 @@ func validateRecommendedActions(cfg *config.Config) error {
 	return nil
 }
 
-func buildCacheOptions(cfg *config.Config, resyncPeriod time.Duration) cache.Options {
+func buildCacheOptions(cfg *config.Config, resyncPeriod time.Duration) (cache.Options, error) {
 	opts := cache.Options{
 		SyncPeriod: &resyncPeriod,
 	}
 
 	sel, err := parseLabelSelector(cfg.LabelSelector)
 	if err != nil {
-		slog.Error("Invalid label selector, proceeding without label filter", "error", err)
+		return cache.Options{}, err
 	}
 
 	if sel != nil || cfg.Namespace != "" {
@@ -200,7 +205,7 @@ func buildCacheOptions(cfg *config.Config, resyncPeriod time.Duration) cache.Opt
 		}
 	}
 
-	return opts
+	return opts, nil
 }
 
 func parseLabelSelector(s string) (labels.Selector, error) {
