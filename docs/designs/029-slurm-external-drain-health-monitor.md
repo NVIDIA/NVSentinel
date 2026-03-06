@@ -24,7 +24,7 @@ Add a **health monitor** that watches NodeSet pod conditions for external Slurm 
 
 **Parsing (pkg/parser):**
 - **Split** `Message` by configurable delimiter (if omitted, the full message is treated as a single segment) → list of segments.
-- **Match** each segment against configurable regex rules. Each rule: `regex`, `check_name`, `component_class`, optional `message`, `recommended_action`, `is_fatal`. If multiple rules match one segment, produce one structured reason per match.
+- **Match** each segment against configurable regex rules. Each rule: `regex`, `checkName`, `componentClass`, optional `message`, `recommendedAction`, `isFatal`. If multiple rules match one segment, produce one structured reason per match.
 
 **Health event mapping:**
 - Build `pb.HealthEvent` per matched reason: `Agent` = `"slurm-drain-monitor"`, `CheckName`, `Message`, `IsFatal`, `RecommendedAction`, `EntitiesImpacted` = pod (v1/Pod GVK + namespace/name) and node name (from `pod.Spec.NodeName`). Same protos as other monitors.
@@ -39,7 +39,7 @@ Add a **health monitor** that watches NodeSet pod conditions for external Slurm 
 
 **Startup:** Re-scan all matching pods on startup and reconcile against current conditions. Publishing is idempotent so re-publishing existing drains on restart is acceptable.
 
-**Config (TOML):** Namespace/selector for NodeSet pods, `reason_delimiter`, list of `patterns` (regex + optional fields), `platform_connector_socket`, `processing_strategy` (config or flag).
+**Config (TOML):** `namespace`/`labelSelector` for NodeSet pods, `reasonDelimiter`, list of `patterns` (regex + optional fields). Flags: `--platform-connector-socket`, `--processing-strategy`.
 
 ### 2. NVSentinel pipeline (downstream)
 
