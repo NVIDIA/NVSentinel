@@ -20,6 +20,37 @@ import (
 	"time"
 )
 
+func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
+	pipeline := []map[string]interface{}{
+		{"$match": map[string]interface{}{
+			"operationType":                 "delete",
+			"document.healthevent.nodename": "node-1",
+		}},
+	}
+	w := &PostgreSQLChangeStreamWatcher{pipeline: pipeline}
+
+	t.Run("falls back to oldValues when newValues is nil", func(t *testing.T) {
+		entry := &postgresqlEvent{
+			operation: "DELETE",
+			oldValues: map[string]interface{}{
+				"document": map[string]interface{}{
+					"healthevent": map[string]interface{}{"nodename": "node-1"},
+				},
+			},
+		}
+		if !w.matchesPipeline(entry) {
+			t.Error("expected match using oldValues fallback")
+		}
+	})
+
+	t.Run("rejects when both newValues and oldValues are nil", func(t *testing.T) {
+		entry := &postgresqlEvent{operation: "DELETE"}
+		if w.matchesPipeline(entry) {
+			t.Error("expected rejection when both values are nil")
+		}
+	})
+}
+
 func Test_postgresqlEvent_GetDocumentID(t *testing.T) {
 	tests := []struct {
 		name        string

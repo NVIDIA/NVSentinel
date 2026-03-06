@@ -98,13 +98,16 @@ type ChangeStreamWatcher struct {
 	cancel context.CancelFunc
 }
 
-// nolint: cyclop
 func NewChangeStreamWatcher(
 	ctx context.Context,
 	mongoConfig MongoDBConfig,
 	tokenConfig TokenConfig,
 	pipeline mongo.Pipeline,
 ) (*ChangeStreamWatcher, error) {
+	if err := validatePingConfig(mongoConfig); err != nil {
+		return nil, err
+	}
+
 	clientOpts, err := constructMongoClientOptions(mongoConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error creating mongoDB clientOpts: %w", err)
@@ -113,18 +116,6 @@ func NewChangeStreamWatcher(
 	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
-	}
-
-	if mongoConfig.TotalPingTimeoutSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping timeout value, value must be a positive integer")
-	}
-
-	if mongoConfig.TotalPingIntervalSeconds <= 0 {
-		return nil, fmt.Errorf("invalid ping interval value, value must be a positive integer")
-	}
-
-	if mongoConfig.TotalPingIntervalSeconds >= mongoConfig.TotalPingTimeoutSeconds {
-		return nil, fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
 	}
 
 	totalTimeout := time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second
@@ -200,6 +191,22 @@ func NewChangeStreamWatcher(
 	}
 
 	return watcher, nil
+}
+
+func validatePingConfig(config MongoDBConfig) error {
+	if config.TotalPingTimeoutSeconds <= 0 {
+		return fmt.Errorf("invalid ping timeout value, value must be a positive integer")
+	}
+
+	if config.TotalPingIntervalSeconds <= 0 {
+		return fmt.Errorf("invalid ping interval value, value must be a positive integer")
+	}
+
+	if config.TotalPingIntervalSeconds >= config.TotalPingTimeoutSeconds {
+		return fmt.Errorf("invalid ping interval value, value must be less than ping timeout")
+	}
+
+	return nil
 }
 
 // openChangeStream opens a change stream with the appropriate read preference based on whether

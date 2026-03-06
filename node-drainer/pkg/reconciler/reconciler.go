@@ -287,6 +287,12 @@ func (r *Reconciler) ProcessEventGeneric(ctx context.Context,
 
 	eventID := utils.ExtractEventID(event)
 
+	if healthEventWithStatus.HealthEvent != nil && healthEventWithStatus.HealthEvent.Id == "" {
+		if docID, err := utils.ExtractDocumentID(event); err == nil {
+			healthEventWithStatus.HealthEvent.Id = docID
+		}
+	}
+
 	slog.Debug("Processing event", "node", nodeName, "eventID", eventID)
 
 	metrics.TotalEventsReceived.Inc()

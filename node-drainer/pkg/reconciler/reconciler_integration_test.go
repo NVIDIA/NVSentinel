@@ -1367,6 +1367,7 @@ func createPod(ctx context.Context, t *testing.T, client kubernetes.Interface, n
 
 type healthEventOptions struct {
 	nodeName          string
+	eventID           string
 	nodeQuarantined   model.Status
 	drainForce        bool
 	recommendedAction protos.RecommendedAction
@@ -1374,8 +1375,14 @@ type healthEventOptions struct {
 }
 
 func createHealthEvent(opts healthEventOptions) map[string]interface{} {
+	eventID := opts.nodeName + "-event"
+	if opts.eventID != "" {
+		eventID = opts.eventID
+	}
+
 	healthEvent := &protos.HealthEvent{
 		NodeName:          opts.nodeName,
+		Id:                eventID,
 		CheckName:         "test-check",
 		RecommendedAction: opts.recommendedAction,
 		EntitiesImpacted:  opts.entitiesImpacted,
@@ -1385,12 +1392,6 @@ func createHealthEvent(opts healthEventOptions) map[string]interface{} {
 		healthEvent.DrainOverrides = &protos.BehaviourOverrides{Force: true}
 	}
 
-	eventID := opts.nodeName + "-event"
-	// Return just the fullDocument content, as the event watcher extracts this
-	// from the change stream before passing to the reconciler
-	// NOTE: Always use a pointer for proto structs (e.g., *protos.HealthEventStatus)!
-	// Proto-generated structs may embed sync.Mutex or other non-copyable fields.
-	// Using a value type can cause unsafe copies and subtle bugs (see Go linter: copylocksdefault).
 	return map[string]interface{}{
 		"_id":         eventID,
 		"healthevent": healthEvent,
@@ -1861,6 +1862,100 @@ func TestReconciler_CustomDrainHappyPath(t *testing.T) {
 		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crName, metav1.GetOptions{})
 		return errors.IsNotFound(err)
 	}, 10*time.Second, 500*time.Millisecond, "CR should be deleted after drain completes")
+}
+
+func TestReconciler_CustomDrainMultipleEventsOnSameNode(t *testing.T) {
+	customDrainCfg := config.CustomDrainConfig{
+		Enabled:               true,
+		TemplateMountPath:     "../customdrain/testdata",
+		TemplateFileName:      "drain-template.yaml",
+		Namespace:             "default",
+		ApiGroup:              "drain.example.com",
+		Version:               "v1alpha1",
+		Kind:                  "DrainRequest",
+		StatusConditionType:   "Complete",
+		StatusConditionStatus: "True",
+		Timeout:               config.Duration{Duration: 30 * time.Minute},
+	}
+
+	setup := setupCustomDrainTest(t, customDrainCfg)
+
+	nodeName := "multi-event-node"
+	createNode(setup.ctx, t, setup.client, nodeName)
+	createNamespace(setup.ctx, t, setup.client, "default")
+
+	gvr := schema.GroupVersionResource{
+		Group:    "drain.example.com",
+		Version:  "v1alpha1",
+		Resource: "drainrequests",
+	}
+
+	eventA := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "event-aaa",
+		nodeQuarantined: model.Quarantined,
+	})
+	eventB := createHealthEvent(healthEventOptions{
+		nodeName:        nodeName,
+		eventID:         "event-bbb",
+		nodeQuarantined: model.Quarantined,
+	})
+
+	setup.mockDB.storeEvent(nodeName, eventB)
+
+	// Process Event A — should create its own DrainRequest CR
+	err := setup.reconciler.ProcessEventGeneric(setup.ctx, eventA, setup.mockDB, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+
+	crNameA := customdrain.GenerateCRName(nodeName, "event-aaa")
+	crNameB := customdrain.GenerateCRName(nodeName, "event-bbb")
+
+	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
+	require.NoError(t, err, "DrainRequest for Event A should exist")
+
+	// Process Event B — should create a separate DrainRequest CR
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventB, setup.mockDB, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for custom drain CR to complete")
+
+	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameB, metav1.GetOptions{})
+	require.NoError(t, err, "DrainRequest for Event B should exist")
+
+	// Retry Event A while CR is incomplete — should poll Event A's CR, not Event B's
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventA, setup.mockDB, setup.healthEventStore, nodeName)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for retry delay",
+		"Event A should be waiting on its own CR, not trying to create a new one")
+
+	// Complete Event A's DrainRequest
+	crA, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
+	require.NoError(t, err)
+	err = unstructured.SetNestedField(crA.Object, []any{
+		map[string]any{
+			"type":               "Complete",
+			"status":             "True",
+			"lastTransitionTime": time.Now().Format(time.RFC3339),
+			"reason":             "DrainSucceeded",
+			"message":            "All pods drained",
+		},
+	}, "status", "conditions")
+	require.NoError(t, err)
+	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(setup.ctx, crA, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	// Process Event A again — should detect completion and mark AlreadyDrained
+	err = setup.reconciler.ProcessEventGeneric(setup.ctx, eventA, setup.mockDB, setup.healthEventStore, nodeName)
+	require.NoError(t, err, "Event A should complete successfully after its CR is done")
+
+	require.Eventually(t, func() bool {
+		_, err := setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameA, metav1.GetOptions{})
+		return errors.IsNotFound(err)
+	}, 10*time.Second, 500*time.Millisecond, "Event A's CR should be cleaned up")
+
+	// Event B's CR should still exist independently
+	_, err = setup.dynamicClient.Resource(gvr).Namespace("default").Get(setup.ctx, crNameB, metav1.GetOptions{})
+	require.NoError(t, err, "Event B's CR should still exist — it hasn't been completed yet")
 }
 
 func TestReconciler_CustomDrainCRDNotFound(t *testing.T) {

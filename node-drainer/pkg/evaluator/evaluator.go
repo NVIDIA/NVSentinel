@@ -28,10 +28,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
-	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 const (
@@ -106,7 +104,7 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	}
 
 	if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
-		return e.evaluateCustomDrain(ctx, healthEvent, database, partialDrainEntity)
+		return e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
 	}
 
 	return e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
@@ -322,19 +320,12 @@ func isTerminalStatus(status model.Status) bool {
 }
 
 func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEvent model.HealthEventWithStatus,
-	database queue.DataStore, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
+	eventID := healthEvent.HealthEvent.Id
 
-	eventID, err := getEventID(ctx, database, nodeName)
-	if err != nil {
-		slog.Error("Failed to get event ID for custom drain",
-			"node", nodeName,
-			"error", err)
-
-		return &DrainActionResult{
-			Action:    ActionWait,
-			WaitDelay: customDrainPollInterval,
-		}, nil
+	if eventID == "" {
+		return nil, fmt.Errorf("health event for node %s is missing Id, cannot generate DrainRequest CR name", nodeName)
 	}
 
 	crName := customdrain.GenerateCRName(nodeName, eventID)
@@ -403,33 +394,6 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		Action: ActionMarkAlreadyDrained,
 		Status: model.AlreadyDrained,
 	}, nil
-}
-
-func getEventID(ctx context.Context, database queue.DataStore, nodeName string) (string, error) {
-	opts := &client.FindOneOptions{
-		Sort: map[string]any{"_id": -1},
-	}
-
-	filter := map[string]any{
-		"healthevent.nodename": nodeName,
-	}
-
-	result, err := database.FindDocument(ctx, filter, opts)
-	if err != nil {
-		return "", fmt.Errorf("failed to query database for node %s: %w", nodeName, err)
-	}
-
-	var document map[string]any
-	if err := result.Decode(&document); err != nil {
-		return "", fmt.Errorf("failed to decode health event for node %s: %w", nodeName, err)
-	}
-
-	eventID, err := utils.ExtractDocumentID(document)
-	if err != nil {
-		return "", fmt.Errorf("failed to extract document ID for node %s: %w", nodeName, err)
-	}
-
-	return eventID, nil
 }
 
 /*

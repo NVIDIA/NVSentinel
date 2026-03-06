@@ -235,14 +235,17 @@ func EmitNodeRemediationDuration(status *model.Status, healthEventWithStatus *mo
 	}
 
 	var qft, dft *time.Time
+
 	if ts := healthEventWithStatus.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
 		t := ts.AsTime()
 		qft = &t
 	}
+
 	if ts := healthEventWithStatus.HealthEventStatus.DrainFinishTimestamp; ts != nil {
 		t := ts.AsTime()
 		dft = &t
 	}
+
 	emitRemediationDuration(
 		healthEventWithStatus.HealthEvent.NodeName,
 		healthEventWithStatus.HealthEvent.GetGeneratedTimestamp().AsTime(),
@@ -254,6 +257,7 @@ func EmitNodeRemediationDuration(status *model.Status, healthEventWithStatus *mo
 func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, docIDs []string) {
 	seen := make(map[string]struct{}, len(docIDs))
 
+	uniqueIDs := make([]interface{}, 0, len(docIDs))
 	for _, id := range docIDs {
 		if id == "" {
 			continue
@@ -264,70 +268,83 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 		}
 
 		seen[id] = struct{}{}
-		w.emitRemediationDurationFromDocID(ctx, id)
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	if len(uniqueIDs) == 0 {
+		return
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	filter := query.In("_id", uniqueIDs).ToMongo()
+
+	cursor, err := w.databaseClient.Find(lookupCtx, filter, nil)
+	if err != nil {
+		slog.Warn("emitRemediationDurationFromDocIDs: Find failed", "error", err)
+		return
+	}
+
+	defer cursor.Close(lookupCtx)
+
+	for cursor.Next(lookupCtx) {
+		var doc remediationDoc
+		if err := cursor.Decode(&doc); err != nil {
+			slog.Warn("emitRemediationDurationFromDocIDs: Decode failed", "error", err)
+			continue
+		}
+
+		if doc.HealthEvent.GeneratedTimestamp == nil {
+			slog.Warn("emitRemediationDurationFromDocIDs: generatedTimestamp missing",
+				"node", doc.HealthEvent.NodeName)
+
+			continue
+		}
+
+		genTs := time.Unix(doc.HealthEvent.GeneratedTimestamp.Seconds,
+			int64(doc.HealthEvent.GeneratedTimestamp.Nanos))
+
+		qft := protoTsToTimePtr(doc.HealthEventStatus.QuarantineFinishTimestamp)
+		dft := protoTsToTimePtr(doc.HealthEventStatus.DrainFinishTimestamp)
+
+		emitRemediationDuration(
+			doc.HealthEvent.NodeName,
+			genTs,
+			qft,
+			dft,
+		)
+	}
+
+	if err := cursor.Err(); err != nil {
+		slog.Warn("emitRemediationDurationFromDocIDs: cursor error", "error", err)
 	}
 }
 
-func (w *EventWatcher) emitRemediationDurationFromDocID(ctx context.Context, id string) {
-	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+type remediationDoc struct {
+	HealthEvent struct {
+		NodeName           string         `bson:"nodename"`
+		GeneratedTimestamp *bsonTimestamp `bson:"generatedtimestamp"`
+	} `bson:"healthevent"`
+	HealthEventStatus struct {
+		QuarantineFinishTimestamp *bsonTimestamp `bson:"quarantinefinishtimestamp,omitempty"`
+		DrainFinishTimestamp      *bsonTimestamp `bson:"drainfinishtimestamp,omitempty"`
+	} `bson:"healtheventstatus"`
+}
 
-	defer cancel()
+type bsonTimestamp struct {
+	Seconds int64 `bson:"seconds"`
+	Nanos   int32 `bson:"nanos"`
+}
 
-	result, err := w.databaseClient.FindOne(lookupCtx, query.Eq("_id", id).ToMongo(), nil)
-	if err != nil {
-		slog.Warn("emitRemediationDurationFromDocID: FindOne failed", "id", id, "error", err)
-		return
+func protoTsToTimePtr(ts *bsonTimestamp) *time.Time {
+	if ts == nil {
+		return nil
 	}
 
-	var doc struct {
-		HealthEvent struct {
-			NodeName           string `bson:"nodename"`
-			GeneratedTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"generatedtimestamp"`
-		} `bson:"healthevent"`
-		HealthEventStatus struct {
-			QuarantineFinishTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"quarantinefinishtimestamp,omitempty"`
-			DrainFinishTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"drainfinishtimestamp,omitempty"`
-		} `bson:"healtheventstatus"`
-	}
+	t := time.Unix(ts.Seconds, int64(ts.Nanos))
 
-	if err := result.Decode(&doc); err != nil {
-		slog.Warn("emitRemediationDurationFromDocID: Decode failed", "id", id, "error", err)
-		return
-	}
-
-	if doc.HealthEvent.GeneratedTimestamp == nil {
-		slog.Warn("emitRemediationDurationFromDocID: generatedTimestamp missing", "id", id)
-		return
-	}
-
-	genTs := time.Unix(doc.HealthEvent.GeneratedTimestamp.Seconds,
-		int64(doc.HealthEvent.GeneratedTimestamp.Nanos))
-
-	var qft, dft *time.Time
-	if ts := doc.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
-		t := time.Unix(ts.Seconds, int64(ts.Nanos))
-		qft = &t
-	}
-	if ts := doc.HealthEventStatus.DrainFinishTimestamp; ts != nil {
-		t := time.Unix(ts.Seconds, int64(ts.Nanos))
-		dft = &t
-	}
-
-	emitRemediationDuration(
-		doc.HealthEvent.NodeName,
-		genTs,
-		qft,
-		dft,
-	)
+	return &t
 }
 
 func emitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Time) {
@@ -417,22 +434,13 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		ID          string    `bson:"_id"`
 		CreatedAt   time.Time `bson:"createdAt"`
 		HealthEvent struct {
-			NodeName           string `bson:"nodename"`
-			GeneratedTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"generatedtimestamp"`
+			NodeName           string         `bson:"nodename"`
+			GeneratedTimestamp *bsonTimestamp `bson:"generatedtimestamp"`
 		} `bson:"healthevent"`
 		HealthEventStatus struct {
-			NodeQuarantined           string `bson:"nodequarantined"`
-			QuarantineFinishTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"quarantinefinishtimestamp,omitempty"`
-			DrainFinishTimestamp *struct {
-				Seconds int64 `bson:"seconds"`
-				Nanos   int32 `bson:"nanos"`
-			} `bson:"drainfinishtimestamp,omitempty"`
+			NodeQuarantined           string         `bson:"nodequarantined"`
+			QuarantineFinishTimestamp *bsonTimestamp `bson:"quarantinefinishtimestamp,omitempty"`
+			DrainFinishTimestamp      *bsonTimestamp `bson:"drainfinishtimestamp,omitempty"`
 		} `bson:"healtheventstatus"`
 	}
 
@@ -500,29 +508,33 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"firstEventId", latestEvent.ID,
 		"documentsUpdated", updateResult.ModifiedCount)
 
-	if latestEvent.HealthEvent.GeneratedTimestamp != nil {
-		genTs := time.Unix(latestEvent.HealthEvent.GeneratedTimestamp.Seconds,
-			int64(latestEvent.HealthEvent.GeneratedTimestamp.Nanos))
-
-		var qft, dft *time.Time
-		if ts := latestEvent.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
-			t := time.Unix(ts.Seconds, int64(ts.Nanos))
-			qft = &t
-		}
-		if ts := latestEvent.HealthEventStatus.DrainFinishTimestamp; ts != nil {
-			t := time.Unix(ts.Seconds, int64(ts.Nanos))
-			dft = &t
-		}
-
-		emitRemediationDuration(
-			latestEvent.HealthEvent.NodeName,
-			genTs,
-			qft,
-			dft,
-		)
-	} else {
-		slog.Warn("Cannot emit remediation duration: generatedTimestamp missing in latest event", "node", nodeName)
-	}
+	emitCancelledRemediationDuration(
+		latestEvent.HealthEvent.NodeName,
+		latestEvent.HealthEvent.GeneratedTimestamp,
+		latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
+		latestEvent.HealthEventStatus.DrainFinishTimestamp,
+		nodeName,
+	)
 
 	return nil
+}
+
+func emitCancelledRemediationDuration(
+	nodeName string,
+	genTS, qfTS, dfTS *bsonTimestamp,
+	logNode string,
+) {
+	if genTS == nil {
+		slog.Warn("Cannot emit remediation duration: generatedTimestamp missing in latest event", "node", logNode)
+		return
+	}
+
+	genTs := time.Unix(genTS.Seconds, int64(genTS.Nanos))
+
+	emitRemediationDuration(
+		nodeName,
+		genTs,
+		protoTsToTimePtr(qfTS),
+		protoTsToTimePtr(dfTS),
+	)
 }
