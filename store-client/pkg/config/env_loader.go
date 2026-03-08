@@ -141,10 +141,16 @@ const (
 	CollectionTypeTokens            = "tokens"
 )
 
-// NewDatabaseConfigFromEnv loads database configuration from environment variables
-// This consolidates the duplicated configuration loading from all modules
+// NewDatabaseConfigFromEnv loads database configuration from environment variables.
+// When MONGODB_CLIENT_CERT_MOUNT_PATH (or POSTGRESQL_CLIENT_CERT_MOUNT_PATH) is
+// set, uses that for cert paths. Otherwise passes empty (no TLS) rather than
+// defaulting to a hardcoded path.
 func NewDatabaseConfigFromEnv() (DatabaseConfig, error) {
-	return NewDatabaseConfigFromEnvWithDefaults(DefaultCertMountPath)
+	certMountPath := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH")
+	if certMountPath == "" {
+		certMountPath = os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH")
+	}
+	return NewDatabaseConfigFromEnvWithDefaults(certMountPath)
 }
 
 // NewDatabaseConfigFromEnvWithDefaults allows custom certificate mount path
@@ -221,11 +227,18 @@ func NewDatabaseConfigWithCollection(
 		return nil, fmt.Errorf("failed to load timeout configuration: %w", err)
 	}
 
-	// Build certificate configuration
-	certConfig := &StandardCertificateConfig{
-		certPath:   filepath.Join(certMountPath, "tls.crt"),
-		keyPath:    filepath.Join(certMountPath, "tls.key"),
-		caCertPath: filepath.Join(certMountPath, "ca.crt"),
+	// Build certificate configuration. When certMountPath is empty (TLS
+	// disabled), leave cert paths empty so downstream TLS construction
+	// is skipped rather than falling back to default paths.
+	var certConfig *StandardCertificateConfig
+	if certMountPath != "" {
+		certConfig = &StandardCertificateConfig{
+			certPath:   filepath.Join(certMountPath, "tls.crt"),
+			keyPath:    filepath.Join(certMountPath, "tls.key"),
+			caCertPath: filepath.Join(certMountPath, "ca.crt"),
+		}
+	} else {
+		certConfig = &StandardCertificateConfig{}
 	}
 
 	return &StandardDatabaseConfig{

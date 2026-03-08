@@ -128,6 +128,66 @@ func TestDatabaseCertConfig_GetCertPath(t *testing.T) {
 	}
 }
 
+func TestDatabaseCertConfig_TLSDisabled_ResolveCertPath(t *testing.T) {
+	config := &DatabaseCertConfig{
+		TLSEnabled:                  false,
+		DatabaseClientCertMountPath: "/etc/ssl/database-client",
+		LegacyMongoCertPath:         "/etc/ssl/mongo-client",
+	}
+
+	certPath := config.ResolveCertPath()
+	assert.Empty(t, certPath, "ResolveCertPath should return empty when TLS is disabled")
+}
+
+func TestDatabaseCertConfig_TLSDisabled_GetCertPath(t *testing.T) {
+	// Even when cert files exist, GetCertPath should return empty when TLS is disabled
+	tempDir, err := os.MkdirTemp("", "cert_test_tls_disabled")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	certDir := filepath.Join(tempDir, "certs")
+	require.NoError(t, os.MkdirAll(certDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(certDir, "ca.crt"), []byte("test cert"), 0644))
+
+	config := &DatabaseCertConfig{
+		TLSEnabled:   false,
+		ResolvedCertPath: certDir,
+	}
+
+	certPath := config.GetCertPath()
+	assert.Empty(t, certPath, "GetCertPath should return empty when TLS is disabled, even if certs exist")
+}
+
+func TestDatabaseCertConfig_TLSEnabled_GetCertPath(t *testing.T) {
+	// When TLS is enabled and certs exist, should return the path
+	tempDir, err := os.MkdirTemp("", "cert_test_tls_enabled")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	certDir := filepath.Join(tempDir, "certs")
+	require.NoError(t, os.MkdirAll(certDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(certDir, "ca.crt"), []byte("test cert"), 0644))
+
+	config := &DatabaseCertConfig{
+		TLSEnabled:   true,
+		ResolvedCertPath: certDir,
+	}
+
+	certPath := config.GetCertPath()
+	assert.Equal(t, certDir, certPath, "GetCertPath should return cert path when TLS is enabled and certs exist")
+}
+
+func TestDatabaseCertConfig_TLSEnabled_NoCerts_ReturnsEmpty(t *testing.T) {
+	// When TLS is enabled but no certs exist anywhere, should return empty
+	config := &DatabaseCertConfig{
+		TLSEnabled:   true,
+		ResolvedCertPath: "/nonexistent/path/that/does/not/exist",
+	}
+
+	certPath := config.GetCertPath()
+	assert.Empty(t, certPath, "GetCertPath should return empty when TLS is enabled but no certs exist")
+}
+
 func TestDatabaseCertConfig_GetCertPath_WithRealPaths(t *testing.T) {
 	tests := []struct {
 		name         string
