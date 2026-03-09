@@ -145,7 +145,7 @@ func (r *DrainReconciler) handleNoExternalDrain(
 		metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
 		slog.Error("Failed to publish healthy event", "pod", key, "node", nn, "error", err)
 
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to publish healthy event for pod %s: %w", key, err)
 	}
 
 	r.mu.Lock()
@@ -186,7 +186,7 @@ func (r *DrainReconciler) handleExternalDrain(
 			metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
 			slog.Error("Failed to publish healthy event before re-match", "pod", key, "node", prev.nodeName, "error", err)
 
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("failed to publish healthy event before re-match for pod %s: %w", key, err)
 		}
 
 		slog.Info("Published healthy event for previous drain before re-match", "pod", key, "node", prev.nodeName)
@@ -203,7 +203,7 @@ func (r *DrainReconciler) handleExternalDrain(
 		metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
 		slog.Error("Failed to publish drain events", "pod", key, "node", nodeName, "error", err)
 
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to publish unhealthy events for pod %s: %w", key, err)
 	}
 
 	r.mu.Lock()
@@ -226,7 +226,7 @@ func (r *DrainReconciler) publishHealthyAndClear(
 		metrics.HealthEventsPublishErrors.WithLabelValues("grpc_error").Inc()
 		slog.Error("Failed to publish healthy event", "pod", key, "node", nn, "error", err)
 
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to publish healthy event for pod %s: %w", key, err)
 	}
 
 	r.mu.Lock()
