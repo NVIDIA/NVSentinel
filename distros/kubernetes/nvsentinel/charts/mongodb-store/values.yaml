@@ -154,7 +154,6 @@ mongodb:
           echo "MongoDB credentials initialization completed."
           echo "=============================="
 
-    {{- if .Values.tls.enabled }}
     - name: create-certmanager-resources
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
@@ -163,6 +162,10 @@ mongodb:
         - -c
         - |
           set -e
+          {{- if not .Values.tls.enabled }}
+          echo "TLS is disabled, skipping cert-manager resource creation."
+          exit 0
+          {{- end }}
           secret=$(kubectl get secret mongo-ca-secret -n {{ .Release.Namespace }} --ignore-not-found)
           if [ -z "$secret" ]; then
             echo "Secret mongo-ca-secret does not exist, creating it..."
@@ -196,7 +199,6 @@ mongodb:
           echo "=============================="
           echo "cert-manager resources creation completed."
           echo "=============================="
-    {{- end }}
 
   auth:
     enabled: true

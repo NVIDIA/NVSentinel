@@ -64,6 +64,9 @@ mongodb-store:
     extraFlags:
       - "--setParameter"
       - "authenticationMechanisms=SCRAM-SHA-256"
+    # The cert-manager init container and metrics exporter URI are
+    # automatically adjusted when tls.enabled is false (via tpl conditionals
+    # in the mongodb-store subchart values.yaml).
 
 # Disable cert mounts on all NVSentinel components so the Go binaries
 # connect without TLS (clientCertMountPath="" skips cert volume mounts
