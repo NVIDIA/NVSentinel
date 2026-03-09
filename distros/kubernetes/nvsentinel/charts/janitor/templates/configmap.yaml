@@ -56,6 +56,9 @@ data:
       {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.insecure }}
       cspProviderInsecure: true
       {{- end }}
+      {{- if and .Values.config.cspProvider .Values.config.cspProvider.auth .Values.config.cspProvider.auth.enabled }}
+      cspProviderTokenPath: /var/run/secrets/nvsentinel/csp-provider/token
+      {{- end }}
 
     rebootNodeController:
       enabled: {{ if (hasKey .Values.config.controllers.rebootNode "enabled") }}{{ .Values.config.controllers.rebootNode.enabled }}{{ else }}true{{ end }}

@@ -338,8 +338,21 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	if !r.Config.CSPProviderInsecure {
-		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(grpcclient.DefaultSATokenPath)))
+		tokenPath := r.Config.CSPProviderTokenPath
+		if tokenPath == "" {
+			tokenPath = grpcclient.DefaultSATokenPath
+		}
+
+		dialOpts = append(dialOpts,
+			grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
+
+		slog.Info("CSP provider gRPC auth enabled",
+			"tokenPath", tokenPath)
 	}
+
+	slog.Info("Connecting to CSP provider",
+		"host", r.Config.CSPProviderHost,
+		"insecure", r.Config.CSPProviderInsecure)
 
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
 	if err != nil {
