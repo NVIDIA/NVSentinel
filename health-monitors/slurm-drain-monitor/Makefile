@@ -18,6 +18,7 @@
 # =============================================================================
 
 IS_GO_MODULE := 1
+IS_KO_MODULE := 1
 CLEAN_EXTRA_FILES := slurm-drain-monitor
 
 # =============================================================================
@@ -46,4 +47,12 @@ all: lint-test
 .PHONY: help
 help:
 	@echo "slurm-drain-monitor - Watches NodeSet pod conditions for external Slurm drains, publishes health events to NVSentinel API"
+	@echo ""
 	@echo "Main targets: all, lint-test, build, test, lint, clean"
+	@echo "Ko targets: ko-build, ko-publish"
+	@echo ""
+	@echo "Build notes:"
+	@echo "  - Container images are built using ko"
+	@echo "  - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)"
+	@echo "  - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)"
+	@echo "  - Platforms configured in .ko.yaml (linux/amd64, linux/arm64)"

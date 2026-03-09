@@ -237,3 +237,20 @@ builds:
       org.opencontainers.image.version: "{{.Env.VERSION}}"
       org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
       org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
+
+  - id: slurm-drain-monitor
+    dir: health-monitors/slurm-drain-monitor
+    main: .
+    ldflags:
+      - "-s -w"
+      - "-X main.version={{.Env.VERSION}} -X main.commit={{.Env.GIT_COMMIT}} -X main.date={{.Env.BUILD_DATE}}"
+    annotations:
+      org.opencontainers.image.description: "Slurm drain monitor for detecting external Slurm drains and publishing health events"
+    labels:
+      org.opencontainers.image.source: "https://github.com/nvidia/nvsentinel"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.title: "NVSentinel Slurm Drain Monitor"
+      org.opencontainers.image.description: "Slurm drain monitor for detecting external Slurm drains and publishing health events"
+      org.opencontainers.image.version: "{{.Env.VERSION}}"
+      org.opencontainers.image.revision: "{{.Env.GIT_COMMIT}}"
+      org.opencontainers.image.created: "{{.Env.BUILD_DATE}}"
