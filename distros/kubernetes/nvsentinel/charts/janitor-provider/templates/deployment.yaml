@@ -63,6 +63,19 @@ spec:
             # Cloud Service Provider configuration
             - name: CSP
               value: {{ .Values.csp.provider | default "kind" | quote }}
+            {{- if eq (.Values.csp.provider | default "kind") "generic" }}
+            # Generic provider environment variables
+            - name: GENERIC_REBOOT_IMAGE
+              value: {{ .Values.csp.generic.rebootImage | quote }}
+            - name: GENERIC_REBOOT_JOB_NAMESPACE
+              value: {{ .Values.csp.generic.rebootJobNamespace | default .Release.Namespace | quote }}
+            - name: GENERIC_REBOOT_JOB_TTL
+              value: {{ .Values.csp.generic.rebootJobTTLSeconds | quote }}
+            {{- if .Values.csp.generic.imagePullSecrets }}
+            - name: GENERIC_REBOOT_IMAGE_PULL_SECRETS
+              value: {{ .Values.csp.generic.imagePullSecrets | quote }}
+            {{- end }}
+            {{- end }}
             {{- if eq (.Values.csp.provider | default "kind") "aws" }}
             # AWS-specific environment variables
             {{- if .Values.csp.aws.region }}

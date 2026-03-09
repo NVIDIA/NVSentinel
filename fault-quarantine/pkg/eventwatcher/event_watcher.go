@@ -305,8 +305,8 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 		genTs := time.Unix(doc.HealthEvent.GeneratedTimestamp.Seconds,
 			int64(doc.HealthEvent.GeneratedTimestamp.Nanos))
 
-		qft := protoTsToTimePtr(doc.HealthEventStatus.QuarantineFinishTimestamp)
-		dft := protoTsToTimePtr(doc.HealthEventStatus.DrainFinishTimestamp)
+		qft := protoTsToTimePtr(doc.HealthEventStatus.QuarantineFinishTimestamp, doc.HealthEvent.NodeName)
+		dft := protoTsToTimePtr(doc.HealthEventStatus.DrainFinishTimestamp, doc.HealthEvent.NodeName)
 
 		emitRemediationDuration(
 			doc.HealthEvent.NodeName,
@@ -337,8 +337,10 @@ type bsonTimestamp struct {
 	Nanos   int32 `bson:"nanos"`
 }
 
-func protoTsToTimePtr(ts *bsonTimestamp) *time.Time {
+func protoTsToTimePtr(ts *bsonTimestamp, nodeName string) *time.Time {
 	if ts == nil {
+		slog.Warn("protoTsToTimePtr: received nil timestamp", "node", nodeName)
+
 		return nil
 	}
 
@@ -534,7 +536,7 @@ func emitCancelledRemediationDuration(
 	emitRemediationDuration(
 		nodeName,
 		genTs,
-		protoTsToTimePtr(qfTS),
-		protoTsToTimePtr(dfTS),
+		protoTsToTimePtr(qfTS, nodeName),
+		protoTsToTimePtr(dfTS, nodeName),
 	)
 }

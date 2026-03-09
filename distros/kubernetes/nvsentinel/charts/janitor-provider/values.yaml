@@ -73,7 +73,7 @@ extraEnv: []
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment
 csp:
-  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius)
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci, nebius, generic)
   # - kind: For local development with kind clusters (simulated reboots)
   # - kwok: For testing with kwok (simulated nodes)
   # - aws: For AWS EKS clusters
@@ -81,7 +81,19 @@ csp:
   # - azure: For Microsoft Azure AKS clusters
   # - oci: For Oracle Cloud Infrastructure OKE clusters
   # - nebius: For Nebius Managed Kubernetes (MK8s) clusters
+  # - generic: For bare-metal / on-premises clusters (reboots via privileged Job running chroot /host reboot)
   provider: "kind"
+
+  # Generic provider configuration (only used when provider=generic)
+  generic:
+    # Container image used for the reboot Job
+    rebootImage: "public.ecr.aws/docker/library/busybox:1.37.0"
+    # Namespace for reboot Jobs (defaults to the janitor-provider's namespace)
+    rebootJobNamespace: ""
+    # TTL in seconds for completed reboot Jobs (auto-cleanup)
+    rebootJobTTLSeconds: 3600
+    # Comma-separated image pull secret names for the reboot Job (optional)
+    imagePullSecrets: ""
 
   # AWS-specific configuration (only required when provider=aws)
   aws:
