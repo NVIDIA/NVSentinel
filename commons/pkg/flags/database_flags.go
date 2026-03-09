@@ -106,5 +106,6 @@ func (c *DatabaseCertConfig) GetCertPath() string {
 	// If neither exists, return empty to indicate no TLS certs are available.
 	// Callers should check for empty and skip TLS configuration.
 	slog.Info("No certificate found at any expected location, TLS will be disabled")
+
 	return ""
 }

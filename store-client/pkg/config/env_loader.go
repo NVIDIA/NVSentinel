@@ -142,13 +142,17 @@ const (
 )
 
 // NewDatabaseConfigFromEnv loads database configuration from environment variables.
-// When MONGODB_CLIENT_CERT_MOUNT_PATH (or POSTGRESQL_CLIENT_CERT_MOUNT_PATH) is
-// set, uses that for cert paths. Otherwise passes empty (no TLS) rather than
-// defaulting to a hardcoded path.
+// Uses MONGODB_CLIENT_CERT_MOUNT_PATH or POSTGRESQL_CLIENT_CERT_MOUNT_PATH if set,
+// otherwise falls back to DefaultCertMountPath for backward compatibility.
+// The no-TLS path uses NewDatabaseConfigFromEnvWithDefaults("") directly via
+// the --tls-enabled flag, bypassing this function.
 func NewDatabaseConfigFromEnv() (DatabaseConfig, error) {
 	certMountPath := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH")
 	if certMountPath == "" {
 		certMountPath = os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH")
+	}
+	if certMountPath == "" {
+		certMountPath = DefaultCertMountPath
 	}
 	return NewDatabaseConfigFromEnvWithDefaults(certMountPath)
 }
