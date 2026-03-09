@@ -12,28 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package controller
+package controller_test
 
 import (
 	"context"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/config"
+	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/controller"
 	"github.com/nvidia/nvsentinel/health-monitors/slurm-drain-monitor/pkg/parser"
 )
 
-// mockDrainPublisher records PublishDrainEvents calls for tests.
+// To run these tests, you need to install and setup envtest:
+//
+//	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+//	source <(setup-envtest use -p env)
+//
+// Then run the tests:
+//
+//	go test -v ./pkg/controller/...
+
 type mockDrainPublisher struct {
 	mu      sync.Mutex
 	calls   []publishCall
@@ -70,29 +80,87 @@ func (m *mockDrainPublisher) reset() {
 	m.calls = nil
 }
 
-func TestReconciler_ExternalDrain_PublishesUnhealthy(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHealthCheck", ComponentClass: "NODE"},
-	}
+type testSetup struct {
+	ctx        context.Context
+	k8sClient  client.Client
+	reconciler *controller.DrainReconciler
+	publisher  *mockDrainPublisher
+}
+
+func setupTest(t *testing.T, patterns []config.Pattern, pub *mockDrainPublisher) *testSetup {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	testEnv := &envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err, "failed to start envtest")
+	t.Cleanup(func() {
+		assert.NoError(t, testEnv.Stop())
+	})
+
+	k8sClient, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+
 	pr, err := parser.New("; ", patterns)
 	require.NoError(t, err)
-	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+
+	reconciler := controller.NewDrainReconciler(k8sClient, pr, pub)
+
+	return &testSetup{
+		ctx:        ctx,
+		k8sClient:  k8sClient,
+		reconciler: reconciler,
+		publisher:  pub,
+	}
+}
+
+func defaultPatterns() []config.Pattern {
+	return []config.Pattern{
+		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHealthCheck", ComponentClass: "NODE"},
+	}
+}
+
+func createPodWithDrainCondition(t *testing.T, setup *testSetup, namespace, name, nodeName, message string) {
+	t.Helper()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	_ = setup.k8sClient.Create(setup.ctx, ns)
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Spec: corev1.PodSpec{
+			NodeName:   nodeName,
+			Containers: []corev1.Container{{Name: "slurmd", Image: "slurmd:latest"}},
 		},
 	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	require.NoError(t, setup.k8sClient.Create(setup.ctx, pod))
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	pod.Status.Conditions = []corev1.PodCondition{
+		{
+			Type:    corev1.PodConditionType("SlurmNodeStateDrain"),
+			Status:  corev1.ConditionTrue,
+			Message: message,
+		},
+	}
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
+}
+
+func reconcile(t *testing.T, setup *testSetup, namespace, name string) (ctrl.Result, error) {
+	t.Helper()
+	return setup.reconciler.Reconcile(setup.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: namespace, Name: name},
+	})
+}
+
+func TestReconciler_ExternalDrain_PublishesUnhealthy(t *testing.T) {
+	mockPub := &mockDrainPublisher{}
+	setup := setupTest(t, defaultPatterns(), mockPub)
+
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
+
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	calls := mockPub.getCalls()
@@ -107,108 +175,64 @@ func TestReconciler_ExternalDrain_PublishesUnhealthy(t *testing.T) {
 }
 
 func TestReconciler_OperatorPrefixed_Skipped(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "slurm-operator: cordon"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "slurm-operator: cordon")
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
-	calls := mockPub.getCalls()
-	assert.Len(t, calls, 0)
+	assert.Len(t, mockPub.getCalls(), 0)
 }
 
 func TestReconciler_DrainCleared_PublishesHealthy(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
-	calls := mockPub.getCalls()
-	require.Len(t, calls, 1)
-	assert.False(t, calls[0].IsHealthy)
+	_, _ = reconcile(t, setup, "default", "slurmd-0")
+	require.Len(t, mockPub.getCalls(), 1)
+	assert.False(t, mockPub.getCalls()[0].IsHealthy)
 	mockPub.reset()
 
-	// Clear drain condition
-	pod2 := &corev1.Pod{}
-	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod2))
-	pod2.Status.Conditions = nil
-	require.NoError(t, cl.Status().Update(context.Background(), pod2))
+	pod := &corev1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod))
+	pod.Status.Conditions = nil
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
-	calls = mockPub.getCalls()
+	calls := mockPub.getCalls()
 	require.Len(t, calls, 1)
 	assert.True(t, calls[0].IsHealthy)
 	assert.Equal(t, "node-1", calls[0].NodeName)
-	// Healthy event should carry the previously matched reasons for per-check correlation.
 	require.Len(t, calls[0].Reasons, 1)
-	assert.Equal(t, "SlurmHC", calls[0].Reasons[0].CheckName)
+	assert.Equal(t, "SlurmHealthCheck", calls[0].Reasons[0].CheckName)
+}
+
+func forceDeletePod(t *testing.T, setup *testSetup, namespace, name string) {
+	t.Helper()
+	pod := &corev1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: namespace, Name: name}, pod))
+	zero := int64(0)
+	require.NoError(t, setup.k8sClient.Delete(setup.ctx, pod, &client.DeleteOptions{GracePeriodSeconds: &zero}))
 }
 
 func TestReconciler_PodDeleted_PublishesHealthy(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, _ = reconcile(t, setup, "default", "slurmd-0")
 	mockPub.reset()
 
-	require.NoError(t, cl.Delete(context.Background(), pod))
+	forceDeletePod(t, setup, "default", "slurmd-0")
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	calls := mockPub.getCalls()
@@ -216,44 +240,27 @@ func TestReconciler_PodDeleted_PublishesHealthy(t *testing.T) {
 	assert.True(t, calls[0].IsHealthy)
 	assert.Equal(t, "node-1", calls[0].NodeName)
 	require.Len(t, calls[0].Reasons, 1)
-	assert.Equal(t, "SlurmHC", calls[0].Reasons[0].CheckName)
+	assert.Equal(t, "SlurmHealthCheck", calls[0].Reasons[0].CheckName)
 }
 
 func TestReconciler_MessageChangesToNonMatching_PublishesHealthy(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, _ = reconcile(t, setup, "default", "slurmd-0")
 	require.Len(t, mockPub.getCalls(), 1)
 	mockPub.reset()
 
-	// Change message to something that doesn't match any pattern
-	pod2 := &corev1.Pod{}
-	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod2))
-	pod2.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "some unrecognized reason"},
+	pod := &corev1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod))
+	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodConditionType("SlurmNodeStateDrain"), Status: corev1.ConditionTrue, Message: "some unrecognized reason"},
 	}
-	require.NoError(t, cl.Status().Update(context.Background(), pod2))
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	calls := mockPub.getCalls()
@@ -261,142 +268,84 @@ func TestReconciler_MessageChangesToNonMatching_PublishesHealthy(t *testing.T) {
 	assert.True(t, calls[0].IsHealthy)
 	assert.Equal(t, "node-1", calls[0].NodeName)
 	require.Len(t, calls[0].Reasons, 1)
-	assert.Equal(t, "SlurmHC", calls[0].Reasons[0].CheckName)
+	assert.Equal(t, "SlurmHealthCheck", calls[0].Reasons[0].CheckName)
 
-	// Verify state is cleared — re-reconcile should not publish again
 	mockPub.reset()
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err = reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 	assert.Len(t, mockPub.getCalls(), 0)
 }
 
 func TestReconciler_UnchangedMessage_NoPublish(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, _ = reconcile(t, setup, "default", "slurmd-0")
 	require.Len(t, mockPub.getCalls(), 1)
 	mockPub.reset()
 
-	// Re-reconcile same pod (no change)
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	assert.Len(t, mockPub.getCalls(), 0)
 }
 
 func TestReconciler_PublishError_PreservesState(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
-
 	publishErr := fmt.Errorf("gRPC unavailable")
 	callCount := 0
 	mockPub := &mockDrainPublisher{
 		publish: func(_ context.Context, _ []parser.MatchedReason, _ string, _ bool, _, _ string) error {
 			callCount++
-			// First call succeeds (unhealthy publish), second call fails (healthy publish)
 			if callCount == 1 {
 				return nil
 			}
 			return publishErr
 		},
 	}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	// First reconcile: publishes unhealthy (succeeds)
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
-	// Delete the pod
-	require.NoError(t, cl.Delete(context.Background(), pod))
+	forceDeletePod(t, setup, "default", "slurmd-0")
 
-	// Second reconcile: pod deleted, tries to publish healthy (fails)
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err = reconcile(t, setup, "default", "slurmd-0")
 	require.Error(t, err)
 
-	// State should be preserved for retry
-	reconciler.mu.RLock()
-	_, stillTracked := reconciler.matchStates["default/slurmd-0"]
-	reconciler.mu.RUnlock()
-	assert.True(t, stillTracked, "matchStates should preserve state on publish failure")
+	// Verify state is preserved: reconciling again should attempt publish again (callCount increments)
+	prevCallCount := callCount
+	_, err = reconcile(t, setup, "default", "slurmd-0")
+	require.Error(t, err)
+	assert.Greater(t, callCount, prevCallCount, "reconciler should retry publish, proving state was preserved")
 }
 
 func TestReconciler_MessageChangeBetweenMatchingPatterns(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
-	patterns := []config.Pattern{
-		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
-	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, defaultPatterns(), mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC")
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
-	calls := mockPub.getCalls()
-	require.Len(t, calls, 1)
-	assert.False(t, calls[0].IsHealthy)
+	require.Len(t, mockPub.getCalls(), 1)
+	assert.False(t, mockPub.getCalls()[0].IsHealthy)
 	mockPub.reset()
 
-	// Change message to different reason that still matches
-	pod2 := &corev1.Pod{}
-	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod2))
-	pod2.Status.Conditions = []corev1.PodCondition{
-		{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] Memory Error"},
+	pod := &corev1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod))
+	pod.Status.Conditions = []corev1.PodCondition{
+		{Type: corev1.PodConditionType("SlurmNodeStateDrain"), Status: corev1.ConditionTrue, Message: "[HC] Memory Error"},
 	}
-	require.NoError(t, cl.Status().Update(context.Background(), pod2))
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err = reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
-	// Should get healthy (for old reasons) then unhealthy (for new reasons)
-	calls = mockPub.getCalls()
+	calls := mockPub.getCalls()
 	require.Len(t, calls, 2)
 	assert.True(t, calls[0].IsHealthy, "first call should be healthy for previous match")
 	assert.False(t, calls[1].IsHealthy, "second call should be unhealthy for new match")
@@ -405,29 +354,16 @@ func TestReconciler_MessageChangeBetweenMatchingPatterns(t *testing.T) {
 }
 
 func TestReconciler_MultiPatternMatch(t *testing.T) {
-	s := newTestScheme()
-	cl := fake.NewClientBuilder().WithScheme(s).Build()
 	patterns := []config.Pattern{
 		{Name: "hc", Regex: `^\[HC\]`, CheckName: "SlurmHC", ComponentClass: "NODE"},
 		{Name: "notresp", Regex: `Not responding`, CheckName: "SlurmNotResponding", ComponentClass: "NODE"},
 	}
-	pr, err := parser.New("; ", patterns)
-	require.NoError(t, err)
 	mockPub := &mockDrainPublisher{}
-	reconciler := NewDrainReconciler(cl, pr, mockPub)
+	setup := setupTest(t, patterns, mockPub)
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "slurmd-0"},
-		Spec:       corev1.PodSpec{NodeName: "node-1"},
-		Status: corev1.PodStatus{
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodConditionType(ConditionTypeDrain), Status: corev1.ConditionTrue, Message: "[HC] GPU ECC; Not responding"},
-			},
-		},
-	}
-	require.NoError(t, cl.Create(context.Background(), pod))
+	createPodWithDrainCondition(t, setup, "default", "slurmd-0", "node-1", "[HC] GPU ECC; Not responding")
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err := reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	calls := mockPub.getCalls()
@@ -438,13 +374,12 @@ func TestReconciler_MultiPatternMatch(t *testing.T) {
 	assert.Equal(t, "SlurmNotResponding", calls[0].Reasons[1].CheckName)
 	mockPub.reset()
 
-	// Clear drain — healthy event should carry both previous reasons
-	pod2 := &corev1.Pod{}
-	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod2))
-	pod2.Status.Conditions = nil
-	require.NoError(t, cl.Status().Update(context.Background(), pod2))
+	pod := &corev1.Pod{}
+	require.NoError(t, setup.k8sClient.Get(setup.ctx, types.NamespacedName{Namespace: "default", Name: "slurmd-0"}, pod))
+	pod.Status.Conditions = nil
+	require.NoError(t, setup.k8sClient.Status().Update(setup.ctx, pod))
 
-	_, err = reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "slurmd-0"}})
+	_, err = reconcile(t, setup, "default", "slurmd-0")
 	require.NoError(t, err)
 
 	calls = mockPub.getCalls()
@@ -453,11 +388,4 @@ func TestReconciler_MultiPatternMatch(t *testing.T) {
 	require.Len(t, calls[0].Reasons, 2)
 	assert.Equal(t, "SlurmHC", calls[0].Reasons[0].CheckName)
 	assert.Equal(t, "SlurmNotResponding", calls[0].Reasons[1].CheckName)
-}
-
-func newTestScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = corev1.AddToScheme(s)
-
-	return s
 }
