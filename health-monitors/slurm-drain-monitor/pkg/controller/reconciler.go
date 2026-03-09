@@ -189,6 +189,9 @@ func (r *DrainReconciler) handleExternalDrain(
 			return ctrl.Result{}, fmt.Errorf("failed to publish healthy event before re-match for pod %s: %w", key, err)
 		}
 
+		r.mu.Lock()
+		delete(r.matchStates, key)
+		r.mu.Unlock()
 		slog.Info("Published healthy event for previous drain before re-match", "pod", key, "node", prev.nodeName)
 	}
 
