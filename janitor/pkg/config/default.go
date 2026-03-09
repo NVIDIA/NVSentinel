@@ -30,7 +30,7 @@ const (
 	HostDevVolumeName     = "host-dev"
 	HostDevPath           = "/dev"
 	HostDevLogVolumeName  = "dev-log"
-	HostDevLogPath        = "/dev/log"
+	HostDevLogPath        = "/run/systemd/journal/dev-log"
 )
 
 func applyConfigDefaults(config *Config) {

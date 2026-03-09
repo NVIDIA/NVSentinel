@@ -123,6 +123,36 @@ wait_for_node_condition() {
     error "Timeout waiting for node condition '$condition_type' on node $node"
 }
 
+wait_for_any_node_condition() {
+    local node=$1
+    shift
+    local conditions=("$@")
+    local timeout=${UAT_CONDITION_TIMEOUT:-60}
+    local elapsed=0
+
+    log "Waiting for any node condition [${conditions[*]}] on node $node..."
+
+    local jq_filter
+    jq_filter=$(printf ' or .type == "%s"' "${conditions[@]}")
+    jq_filter=".status.conditions[] | select((${jq_filter# or }) and .status == \"True\") | .type"
+
+    while [[ $elapsed -lt $timeout ]]; do
+        local matched
+        matched=$(kubectl get node "$node" -o json | jq -r "$jq_filter" | head -1)
+
+        if [[ -n "$matched" ]]; then
+            log "Node condition '$matched' found ✓"
+            return 0
+        fi
+
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    error "Timeout waiting for any node condition [${conditions[*]}] on node $node"
+}
+
+
 wait_for_node_quarantine() {
     local node=$1
     local timeout=${UAT_QUARANTINE_TIMEOUT:-120}
@@ -313,10 +343,12 @@ test_gpu_monitoring_dcgm() {
     fi
     log "Node event verified: GpuPowerWatch is non-fatal, appears in events ✓"
 
-    # XID 95 results in A DCGM_FR_UNCONTAINED_ERROR from GpuMemWatch which requires a RESTART_VM action
+    # XID 95 results in DCGM_FR_UNCONTAINED_ERROR which requires a RESTART_VM action.
+    # DCGM 4.2.x maps this to DCGM_HEALTH_WATCH_MEM (GpuMemWatch).
+    # DCGM 4.4.x+ reclassified it as a "devastating" XID under DCGM_HEALTH_WATCH_ALL (GpuAllWatch).
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 230 -v 95
 
-    wait_for_node_condition "$gpu_node" "GpuMemWatch"
+    wait_for_any_node_condition "$gpu_node" "GpuAllWatch" "GpuMemWatch"
 
     wait_for_node_quarantine "$gpu_node"
 
