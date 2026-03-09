@@ -101,6 +101,11 @@ spec:
               mountPath: {{ .Values.metrics.tls.certDir }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.enabled }}
+            - name: csp-ca
+              mountPath: /etc/nvsentinel/janitor/csp-ca
+              readOnly: true
+            {{- end }}
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
             {{- end }}
@@ -124,6 +129,15 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+            defaultMode: 420
+        {{- end }}
+        {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.enabled }}
+        - name: csp-ca
+          secret:
+            secretName: {{ .Values.config.cspProvider.tls.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
             defaultMode: 420
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}

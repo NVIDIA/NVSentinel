@@ -102,6 +102,15 @@ config:
   timeout: "25m"
   # host where the provider is running
   cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+  # CSP provider gRPC connection TLS settings
+  cspProvider:
+    tls:
+      # Enable TLS for gRPC connection to CSP provider
+      enabled: false
+      # Name of the Secret containing the CA certificate (key: ca.crt)
+      caSecretName: ""
+      # Skip TLS verification (for local development only)
+      insecure: false
   # Manual mode - if true, controllers won't send actual reboot/terminate signals
   manualMode: false
   # HTTP endpoint port for exposing runtime configuration
