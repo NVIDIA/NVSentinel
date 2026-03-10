@@ -239,9 +239,10 @@ result, err := k8sClient.AuthenticationV1().TokenReviews().Create(
 
 The server checks `result.Status.Authenticated` and logs the authenticated user.
 
-**Safety constraint**: Auth requires TLS to be enabled. Sending tokens over an
-unencrypted channel would expose them to interception. The server refuses to start
-if `AUTH_AUDIENCES` is set without TLS.
+TLS and auth are independently configurable. In environments where a service mesh
+already provides transport encryption, auth can be enabled without TLS at the
+application layer. When neither TLS nor a mesh is present, enabling both is
+recommended to avoid sending tokens over an unencrypted channel.
 
 ### Helm Chart Configuration
 
@@ -251,11 +252,11 @@ if `AUTH_AUDIENCES` is set without TLS.
 config:
   cspProvider:
     tls:
-      enabled: false
-      caSecretName: ""      # Secret containing ca.crt
+      enabled: true
+      caSecretName: "janitor-provider-grpc-cert"  # Matches provider's cert secret
       insecure: false       # For local dev only
     auth:
-      enabled: false
+      enabled: true
       audience: "nvsentinel-csp-provider"
       expirationSeconds: 3600
 ```
@@ -268,12 +269,12 @@ ServiceAccount token volume with the configured audience and expiration.
 
 ```yaml
 tls:
-  enabled: false
+  enabled: true
   certDir: "/etc/nvsentinel/janitor-provider/tls"
   issuerName: "janitor-selfsigned-issuer"
 
 auth:
-  enabled: false
+  enabled: true
   audiences:
     - "nvsentinel-csp-provider"
 ```
