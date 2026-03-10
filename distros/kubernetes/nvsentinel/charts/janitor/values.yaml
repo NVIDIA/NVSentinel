@@ -106,14 +106,15 @@ config:
   cspProvider:
     tls:
       # Enable TLS for gRPC connection to CSP provider
-      enabled: false
-      # Name of the Secret containing the CA certificate (key: ca.crt)
-      caSecretName: ""
+      enabled: true
+      # Name of the Secret containing the CA certificate (key: ca.crt).
+      # Defaults to the janitor-provider's cert secret name.
+      caSecretName: "janitor-provider-grpc-cert"
       # Skip TLS verification (for local development only)
       insecure: false
     auth:
       # Enable SA token authentication for gRPC connection to CSP provider
-      enabled: false
+      enabled: true
       # Audience for the projected service account token.
       # The provider validates this audience in TokenReview.
       audience: "nvsentinel-csp-provider"

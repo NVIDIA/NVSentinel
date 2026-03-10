@@ -169,10 +169,6 @@ func run() error {
 	}
 
 	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
-		if !tlsEnabled {
-			return fmt.Errorf("AUTH_AUDIENCES requires TLS to be enabled (set TLS_CERT_PATH and TLS_KEY_PATH)")
-		}
-
 		parts := strings.Split(audiences, ",")
 		auds := make([]string, 0, len(parts))
 		for _, a := range parts {

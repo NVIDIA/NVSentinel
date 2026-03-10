@@ -49,11 +49,11 @@ func TokenReviewInterceptor(
 	) (any, error) {
 		token, err := extractBearerToken(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("extracting bearer token: %w", err)
 		}
 
 		if err := validateToken(ctx, k8sClient, token, audiences); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("validating token: %w", err)
 		}
 
 		return handler(ctx, req)
