@@ -5,7 +5,7 @@
 The janitor controller communicates with the janitor-provider over gRPC to execute
 CSP operations (reboot, terminate, readiness checks):
 
-```
+```text
 janitor controller → gRPC :50051 → janitor-provider
 ```
 
@@ -60,7 +60,7 @@ branch. The sections below describe that implementation in detail.
 
 ### Architecture
 
-```
+```text
 ┌──────────────────────────────────┐          ┌──────────────────────────────────────┐
 │  janitor controller              │          │  janitor-provider                    │
 │                                  │          │                                      │
@@ -375,7 +375,9 @@ flag preserves this:
   case.
 - **Audience scoping** — Projected SA tokens are scoped to a specific audience
   (`nvsentinel-csp-provider`), so a token stolen from another volume mount cannot be
-  replayed against the provider.
+  replayed against the provider. Note that audience scoping prevents cross-service
+  token replay but does not prevent a pod with its own projected volume targeting the
+  same audience — RBAC controls on pod creation are the primary gate for that.
 
 ## Consequences
 
