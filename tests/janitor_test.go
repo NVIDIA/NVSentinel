@@ -214,7 +214,7 @@ func TestJanitorRebootWithTLSAuth(t *testing.T) {
 		_, err = helpers.CreateRebootNodeCR(ctx, client, selectedNodeName, crName)
 		require.NoError(t, err, "RebootNode CR creation should succeed")
 
-		completedCR := helpers.WaitForCR(ctx, t, client, selectedNodeName, helpers.RebootNodeGVK)
+		completedCR := helpers.WaitForCRByName(ctx, t, client, crName, helpers.RebootNodeGVK)
 		require.NotNil(t, completedCR, "RebootNode should complete")
 
 		// Verify SignalSent condition is True (proves the gRPC call over TLS+auth succeeded)
@@ -222,9 +222,10 @@ func TestJanitorRebootWithTLSAuth(t *testing.T) {
 		require.NotNil(t, signalSent, "SignalSent condition should exist")
 		assert.Equal(t, "True", signalSent["status"], "SignalSent should be True")
 
-		// Verify NodeReady condition exists (reboot completed)
+		// Verify NodeReady condition is True (reboot completed successfully)
 		nodeReady := helpers.GetCRCondition(completedCR, "NodeReady")
 		require.NotNil(t, nodeReady, "NodeReady condition should exist")
+		assert.Equal(t, "True", nodeReady["status"], "NodeReady should be True")
 
 		return ctx
 	})

@@ -151,7 +151,14 @@ func run() error {
 
 	var serverOpts []grpc.ServerOption
 
-	if certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH"); certPath != "" && keyPath != "" {
+	certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
+	tlsEnabled := certPath != "" && keyPath != ""
+
+	if certPath != "" != (keyPath != "") {
+		return fmt.Errorf("both TLS_CERT_PATH and TLS_KEY_PATH must be set, got cert=%q key=%q", certPath, keyPath)
+	}
+
+	if tlsEnabled {
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return fmt.Errorf("failed to load TLS key pair: %w", err)
@@ -162,7 +169,17 @@ func run() error {
 	}
 
 	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
-		auds := strings.Split(audiences, ",")
+		if !tlsEnabled {
+			return fmt.Errorf("AUTH_AUDIENCES requires TLS to be enabled (set TLS_CERT_PATH and TLS_KEY_PATH)")
+		}
+
+		parts := strings.Split(audiences, ",")
+		auds := make([]string, 0, len(parts))
+		for _, a := range parts {
+			if trimmed := strings.TrimSpace(a); trimmed != "" {
+				auds = append(auds, trimmed)
+			}
+		}
 		serverOpts = append(serverOpts,
 			grpc.UnaryInterceptor(
 				auth.TokenReviewInterceptor(k8sClient, auds)))

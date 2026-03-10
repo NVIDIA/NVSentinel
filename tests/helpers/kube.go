@@ -677,6 +677,45 @@ func WaitForCR(ctx context.Context, t *testing.T, c klient.Client, nodeName stri
 	return resultCR
 }
 
+// WaitForCRByName waits for a specific CR (by metadata.name) to reach completionTime.
+func WaitForCRByName(ctx context.Context, t *testing.T, c klient.Client, crName string,
+	groupVersionKind schema.GroupVersionKind) *unstructured.Unstructured {
+	t.Helper()
+
+	var resultCR *unstructured.Unstructured
+
+	require.Eventually(t, func() bool {
+		crList, err := ListAllCRs(ctx, c, groupVersionKind)
+		if err != nil {
+			t.Logf("failed to list CRs: %v", err)
+			return false
+		}
+
+		for i := range crList.Items {
+			item := &crList.Items[i]
+			if item.GetName() != crName {
+				continue
+			}
+
+			completionTime, found, err := unstructured.NestedString(item.Object, "status", "completionTime")
+			if err != nil || !found || completionTime == "" {
+				t.Logf("CR %s: waiting for completion", crName)
+				return false
+			}
+
+			t.Logf("CR %s completed at %s", crName, completionTime)
+			resultCR = item
+			return true
+		}
+
+		t.Logf("CR %s not found yet", crName)
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"CR %s should be created and complete", crName)
+
+	return resultCR
+}
+
 func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersionKind schema.GroupVersionKind) error {
 	crList, err := ListAllCRs(ctx, c, groupVersionKind)
 	if err != nil {
