@@ -71,6 +71,9 @@ mongodb-store:
 # Disable cert mounts on all NVSentinel components so the Go binaries
 # connect without TLS (clientCertMountPath="" skips cert volume mounts
 # and passes --tls-enabled=false where supported).
+event-exporter:
+  mongodbStore:
+    clientCertMountPath: ""
 fault-quarantine:
   clientCertMountPath: ""
 fault-remediation:

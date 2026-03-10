@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -155,6 +156,18 @@ func initializeDatastore(ctx context.Context) (*helper.DatastoreClientBundle, bo
 	return bundle, hasResumeToken, nil
 }
 
+func tokenDatabaseCertMountPath(datastoreConfig *datastore.DataStoreConfig) string {
+	if datastoreConfig == nil || datastoreConfig.Connection.TLSConfig == nil {
+		return ""
+	}
+
+	if datastoreConfig.Connection.TLSConfig.CAPath == "" {
+		return ""
+	}
+
+	return filepath.Dir(datastoreConfig.Connection.TLSConfig.CAPath)
+}
+
 func checkResumeTokenExists(ctx context.Context) (bool, error) {
 	tokenConfig, err := storeconfig.TokenConfigFromEnv("event-exporter")
 	if err != nil {
@@ -166,8 +179,12 @@ func checkResumeTokenExists(ctx context.Context) (bool, error) {
 		"collection", tokenConfig.TokenCollection,
 		"clientName", tokenConfig.ClientName)
 
-	// Use dynamic cert mount path based on provider (PostgreSQL or MongoDB)
-	certMountPath := storeconfig.GetCertMountPath()
+	datastoreConfig, err := datastore.LoadDatastoreConfig()
+	if err != nil {
+		return false, fmt.Errorf("failed to load datastore config for token lookup: %w", err)
+	}
+
+	certMountPath := tokenDatabaseCertMountPath(datastoreConfig)
 
 	dbConfig, err := storeconfig.NewDatabaseConfigForCollectionType(
 		certMountPath,

@@ -64,6 +64,9 @@ psmdb-db:
     mode: disabled
 
 # Disable cert mounts on all NVSentinel components
+event-exporter:
+  mongodbStore:
+    clientCertMountPath: ""
 fault-quarantine:
   clientCertMountPath: ""
 fault-remediation:

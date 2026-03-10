@@ -37,6 +37,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
 	mongoOptions "go.mongodb.org/mongo-driver/mongo/options"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 )
 
 func TestConfirmConnectivityWithDBAndCollection(t *testing.T) {
@@ -766,6 +767,127 @@ func TestConstructMongoClientOptions_NoTLS(t *testing.T) {
 	}
 	if opts == nil {
 		t.Fatal("Expected non-nil client options")
+	}
+	if opts.TLSConfig != nil {
+		t.Fatal("Expected nil TLS config when CA cert path is empty")
+	}
+	if opts.Auth != nil {
+		t.Fatal("Expected nil auth when TLS is disabled")
+	}
+}
+
+func TestConstructMongoClientOptions_DynamicClientCertificateUsesX509Auth(t *testing.T) {
+	caCertPEM, caKeyPEM, err := generateCA()
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	clientCertPEM, clientKeyPEM, err := generateClientCert(caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("GenerateClientCert failed: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "tls_test_dynamic_auth")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cleanup, err := writeCertFiles(tempDir, caCertPEM, clientCertPEM, clientKeyPEM)
+	if err != nil {
+		t.Fatalf("WriteCertFiles failed: %v", err)
+	}
+	defer cleanup()
+
+	certWatcher, err := certwatcher.New(filepath.Join(tempDir, "tls.crt"), filepath.Join(tempDir, "tls.key"))
+	if err != nil {
+		t.Fatalf("Failed to create cert watcher: %v", err)
+	}
+
+	mongoConfig := MongoDBConfig{
+		URI:                        "mongodb://localhost:27017",
+		Database:                   "test",
+		Collection:                 "test",
+		TotalPingTimeoutSeconds:    5,
+		TotalPingIntervalSeconds:   1,
+		TotalCACertTimeoutSeconds:  2,
+		TotalCACertIntervalSeconds: 1,
+		ClientTLSCertConfig: MongoDBClientTLSCertConfig{
+			TlsCertPath: filepath.Join(tempDir, "tls.crt"),
+			TlsKeyPath:  filepath.Join(tempDir, "tls.key"),
+			CaCertPath:  filepath.Join(tempDir, "ca.crt"),
+		},
+		CertWatcher: certWatcher,
+	}
+
+	opts, err := constructMongoClientOptions(mongoConfig)
+	if err != nil {
+		t.Fatalf("constructMongoClientOptions returned error: %v", err)
+	}
+	if opts.TLSConfig == nil {
+		t.Fatal("Expected TLS config when using certificate watcher")
+	}
+	if opts.TLSConfig.GetClientCertificate == nil {
+		t.Fatal("Expected dynamic client certificate callback")
+	}
+	if opts.Auth == nil {
+		t.Fatal("Expected X.509 auth when using dynamic client certificate")
+	}
+	if opts.Auth.AuthMechanism != "MONGODB-X509" {
+		t.Fatalf("Unexpected auth mechanism: %q", opts.Auth.AuthMechanism)
+	}
+	if opts.Auth.AuthSource != "$external" {
+		t.Fatalf("Unexpected auth source: %q", opts.Auth.AuthSource)
+	}
+}
+
+func TestConstructMongoClientOptions_CAOnlyTLSDoesNotUseX509Auth(t *testing.T) {
+	caCertPEM, _, err := generateCA()
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "tls_test_ca_only_auth")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	caCertPath := filepath.Join(tempDir, "ca.crt")
+	if err := os.WriteFile(caCertPath, caCertPEM, 0644); err != nil {
+		t.Fatalf("Failed to write CA cert: %v", err)
+	}
+
+	mongoConfig := MongoDBConfig{
+		URI:                        "mongodb://localhost:27017",
+		Database:                   "test",
+		Collection:                 "test",
+		TotalPingTimeoutSeconds:    5,
+		TotalPingIntervalSeconds:   1,
+		TotalCACertTimeoutSeconds:  2,
+		TotalCACertIntervalSeconds: 1,
+		ClientTLSCertConfig: MongoDBClientTLSCertConfig{
+			TlsCertPath: filepath.Join(tempDir, "tls.crt"),
+			TlsKeyPath:  filepath.Join(tempDir, "tls.key"),
+			CaCertPath:  caCertPath,
+		},
+	}
+
+	opts, err := constructMongoClientOptions(mongoConfig)
+	if err != nil {
+		t.Fatalf("constructMongoClientOptions returned error: %v", err)
+	}
+	if opts.TLSConfig == nil {
+		t.Fatal("Expected TLS config when CA certificate is available")
+	}
+	if len(opts.TLSConfig.Certificates) != 0 {
+		t.Fatalf("Expected no static client certificates, got %d", len(opts.TLSConfig.Certificates))
+	}
+	if opts.TLSConfig.GetClientCertificate != nil {
+		t.Fatal("Did not expect dynamic client certificate callback for CA-only TLS")
+	}
+	if opts.Auth != nil {
+		t.Fatal("Expected nil auth when TLS uses only a CA certificate")
 	}
 }
 
