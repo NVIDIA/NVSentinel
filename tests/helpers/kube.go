@@ -706,6 +706,27 @@ func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructure
 	return nil
 }
 
+// GetCRCondition returns the condition map for a given condition type from an unstructured CR's
+// status.conditions array, or nil if the condition is not found.
+func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]interface{} {
+	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
+	if err != nil || !found {
+		return nil
+	}
+
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if cond["type"] == conditionType {
+			return cond
+		}
+	}
+
+	return nil
+}
+
 func GetStartAndCompletionTimes(maintenanceCR *unstructured.Unstructured) (*time.Time, *time.Time, error) {
 	startTimeStr, found, err := unstructured.NestedString(maintenanceCR.Object, "status", "startTime")
 	if err != nil || !found {

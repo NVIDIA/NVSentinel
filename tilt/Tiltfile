@@ -204,7 +204,8 @@ else:
 # Cert-manager resources vary based on datastore
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
-    'janitor-selfsigned-issuer:issuer'
+    'janitor-selfsigned-issuer:issuer',
+    'janitor-provider-grpc-cert:certificate'
 ]
 if use_postgresql:
     cert_manager_objects.extend([
@@ -238,14 +239,20 @@ local_resource(
     resource_deps=['cert-manager-resources'],
 )
 
+local_resource(
+    'wait-for-janitor-provider-cert',
+    cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-provider-grpc-cert -n nvsentinel',
+    resource_deps=['cert-manager-resources'],
+)
+
 k8s_resource(
     'janitor',
-    resource_deps=['wait-for-janitor-cert'],
+    resource_deps=['wait-for-janitor-cert', 'wait-for-janitor-provider-cert'],
 )
 
 k8s_resource(
     'janitor-provider',
-    resource_deps=['janitor'],
+    resource_deps=['janitor', 'wait-for-janitor-provider-cert'],
 )
 
 if use_percona:

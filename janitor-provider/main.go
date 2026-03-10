@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -148,6 +150,16 @@ func run() error {
 	}
 
 	var serverOpts []grpc.ServerOption
+
+	if certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH"); certPath != "" && keyPath != "" {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS key pair: %w", err)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		slog.Info("gRPC TLS enabled", "certPath", certPath)
+	}
 
 	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
 		auds := strings.Split(audiences, ",")

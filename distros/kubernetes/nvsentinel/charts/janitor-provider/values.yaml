@@ -69,6 +69,15 @@ service:
 
 extraEnv: []
 
+# gRPC TLS configuration for the provider server
+tls:
+  # Enable TLS for the gRPC server
+  enabled: false
+  # Directory where the TLS cert and key are mounted
+  certDir: "/etc/nvsentinel/janitor-provider/tls"
+  # cert-manager Issuer name (uses the janitor's self-signed issuer by default)
+  issuerName: "janitor-selfsigned-issuer"
+
 # gRPC authentication configuration
 # When enabled, the provider validates incoming requests using
 # Kubernetes TokenReview API against projected SA tokens.
