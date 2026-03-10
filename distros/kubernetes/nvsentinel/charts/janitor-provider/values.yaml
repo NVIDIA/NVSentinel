@@ -69,6 +69,17 @@ service:
 
 extraEnv: []
 
+# gRPC authentication configuration
+# When enabled, the provider validates incoming requests using
+# Kubernetes TokenReview API against projected SA tokens.
+auth:
+  # Enable TokenReview-based authentication for incoming gRPC requests
+  enabled: false
+  # Audiences to validate in the TokenReview.
+  # Must match the audience configured on the janitor's projected SA token volume.
+  audiences:
+    - "nvsentinel-csp-provider"
+
 # Cloud Service Provider (CSP) Configuration
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment

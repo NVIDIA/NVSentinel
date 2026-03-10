@@ -137,6 +137,10 @@ spec:
               value: {{ .Values.csp.nebius.iamToken | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: AUTH_AUDIENCES
+              value: {{ .Values.auth.audiences | join "," | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

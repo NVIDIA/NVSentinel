@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
@@ -38,6 +39,7 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/auth"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
@@ -145,7 +147,19 @@ func run() error {
 		return fmt.Errorf("failed to create csp client: %w", err)
 	}
 
-	svr := grpc.NewServer()
+	var serverOpts []grpc.ServerOption
+
+	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
+		auds := strings.Split(audiences, ",")
+		serverOpts = append(serverOpts,
+			grpc.UnaryInterceptor(
+				auth.TokenReviewInterceptor(k8sClient, auds)))
+
+		slog.Info("gRPC TokenReview auth enabled",
+			"audiences", auds)
+	}
+
+	svr := grpc.NewServer(serverOpts...)
 	cspv1alpha1.RegisterCSPProviderServiceServer(svr, &janitorProviderServer{
 		cspClient: cspClient,
 		k8sClient: k8sClient,

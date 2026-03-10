@@ -26,3 +26,11 @@ rules:
       - get
       - list
       - watch
+  {{- if .Values.auth.enabled }}
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  {{- end }}
