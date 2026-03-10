@@ -250,8 +250,10 @@ spec:
             echo "=============================="
 
             until mongosh "$MONGODB_URI" \
+              {{- if .Values.mongodb.auth.enabled }}
               --authenticationMechanism SCRAM-SHA-256 \
               --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              {{- end }}
               {{- if .Values.mongodb.tls.enabled }}
               --tls \
               --tlsCAFile /certs/ca.crt \
