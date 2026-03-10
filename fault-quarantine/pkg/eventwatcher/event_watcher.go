@@ -273,7 +273,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		ID                string    `bson:"_id"`
 		CreatedAt         time.Time `bson:"createdAt"`
 		HealthEventStatus struct {
-			NodeQuarantined *model.Status `bson:"nodequarantined"`
+			NodeQuarantined string `bson:"nodequarantined"`
 		} `bson:"healtheventstatus"`
 	}
 
@@ -308,8 +308,8 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"status", latestEvent.HealthEventStatus.NodeQuarantined)
 
 	// Only cancel if latest status is Quarantined (not if already UnQuarantined by healthy event)
-	if latestEvent.HealthEventStatus.NodeQuarantined == nil ||
-		*latestEvent.HealthEventStatus.NodeQuarantined != model.Quarantined {
+	if latestEvent.HealthEventStatus.NodeQuarantined == "" ||
+		latestEvent.HealthEventStatus.NodeQuarantined != string(model.Quarantined) {
 		slog.Debug("Latest event is not Quarantined, no events to cancel", "node", nodeName)
 
 		return nil
@@ -327,7 +327,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 	update := map[string]interface{}{
 		"$set": map[string]interface{}{
-			"healtheventstatus.nodequarantined": model.Cancelled,
+			"healtheventstatus.nodequarantined": string(model.Cancelled),
 		},
 	}
 

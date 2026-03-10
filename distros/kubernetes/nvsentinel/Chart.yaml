@@ -70,3 +70,6 @@ dependencies:
   - name: preflight
     version: "0.1.0"
     condition: global.preflight.enabled
+  - name: k8sdatastore-crds
+    version: "0.1.0"
+    condition: global.k8sdatastoreCrds.enabled

@@ -156,6 +156,7 @@ jobs:
         if: always() && steps.cluster.outcome != 'skipped' && env.SKIP_DELETE != 'true'
         shell: bash
         env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CLUSTER_PREFIX: ${{ env.PREFIX }}
         run: |
           set -euxo pipefail

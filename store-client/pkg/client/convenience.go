@@ -21,6 +21,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers/mongodb/watcher"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Common operations that consolidate patterns found across all modules
@@ -43,7 +44,7 @@ func UpdateHealthEventNodeQuarantineStatus(ctx context.Context, client DatabaseC
 	}
 
 	if status == "Quarantined" || status == "AlreadyQuarantined" {
-		fields["healtheventstatus.quarantinefinishtimestamp"] = time.Now()
+		fields["healtheventstatus.quarantinefinishtimestamp"] = timestamppb.Now()
 	}
 
 	return client.UpdateDocumentStatusFields(ctx, eventID, fields)

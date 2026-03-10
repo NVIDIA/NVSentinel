@@ -624,7 +624,7 @@ func TestLabeler_handlePodEvent(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "")
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
 			require.NoError(t, err)
 			go func() {
 				require.NoError(t, labeler.Run(ctx), "failed to run labeler")
@@ -751,6 +751,7 @@ func TestKataLabelOverride(t *testing.T) {
 				"nvidia-driver-daemonset",
 				"nvidia-driver-installer",
 				tt.override,
+				false,
 			)
 
 			if err != nil {
@@ -770,13 +771,13 @@ func TestNewLabeler_InvalidLabelSelectors_ReturnsError(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 
 	t.Run("invalid pod label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "")
+		_, err := NewLabeler(clientset, time.Minute, "invalid(value", "driver", "gke", "", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create pod informer")
 	})
 
 	t.Run("invalid GKE installer label selector", func(t *testing.T) {
-		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "")
+		_, err := NewLabeler(clientset, time.Minute, "dcgm", "driver", "invalid(value", "", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create GKE installer informer")
 	})
@@ -801,6 +802,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-daemonset",
 		"nvidia-driver-installer",
 		"first.io/kata",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(first) error = %v", err)
@@ -814,6 +816,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-daemonset",
 		"nvidia-driver-installer",
 		"second.io/kata",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(second) error = %v", err)
@@ -827,6 +830,7 @@ func TestKataLabelOverrideIsolation(t *testing.T) {
 		"nvidia-driver-daemonset",
 		"nvidia-driver-installer",
 		"",
+		false,
 	)
 	if err != nil {
 		t.Fatalf("NewLabeler(empty) error = %v", err)
@@ -952,7 +956,7 @@ func TestKataLabelDetection(t *testing.T) {
 			require.NoError(t, err, "failed to create node")
 
 			// Create labeler with kata override if specified
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride)
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", tt.kataOverride, false)
 			require.NoError(t, err, "failed to create labeler")
 
 			// Start labeler
@@ -1118,7 +1122,7 @@ func TestStaleLabelsRemoval(t *testing.T) {
 				require.NoError(t, err, "failed to update pod status")
 			}
 
-			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "")
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
 			require.NoError(t, err, "failed to create labeler")
 
 			labelerCtx, labelerCancel := context.WithCancel(ctx)
@@ -1191,6 +1195,121 @@ func TestStaleLabelsRemoval(t *testing.T) {
 
 				return true
 			}, 15*time.Second, 500*time.Millisecond, "labels not set correctly on node %s", tt.existingNode.Name)
+		})
+	}
+}
+
+func TestAssumeDriverInstalled(t *testing.T) {
+	tests := []struct {
+		name                  string
+		assumeDriverInstalled bool
+		existingNode          *corev1.Node
+		expectedDriverLabel   string
+		shouldHaveDriverLabel bool
+	}{
+		{
+			name:                  "assume-driver-installed sets label on GPU node without driver pods",
+			assumeDriverInstalled: true,
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "gpu-node",
+					Labels: map[string]string{
+						"nvidia.com/gpu.present": "true",
+					},
+				},
+			},
+			expectedDriverLabel:   "true",
+			shouldHaveDriverLabel: true,
+		},
+		{
+			name:                  "assume-driver-installed skips non-GPU node",
+			assumeDriverInstalled: true,
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "control-plane-node",
+					Labels: map[string]string{},
+				},
+			},
+			shouldHaveDriverLabel: false,
+		},
+		{
+			name:                  "assume-driver-installed preserves label on GPU node reconciliation",
+			assumeDriverInstalled: true,
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "gpu-node",
+					Labels: map[string]string{
+						"nvidia.com/gpu.present": "true",
+						DriverInstalledLabel:     "true",
+					},
+				},
+			},
+			expectedDriverLabel:   "true",
+			shouldHaveDriverLabel: true,
+		},
+		{
+			name:                  "without flag stale label is removed when no driver pods",
+			assumeDriverInstalled: false,
+			existingNode: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "gpu-node",
+					Labels: map[string]string{
+						DriverInstalledLabel: "true",
+					},
+				},
+			},
+			shouldHaveDriverLabel: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			testEnv := envtest.Environment{}
+			cfg, err := testEnv.Start()
+			require.NoError(t, err, "failed to setup envtest")
+			defer func() { _ = testEnv.Stop() }()
+
+			cli, err := kubernetes.NewForConfig(cfg)
+			require.NoError(t, err, "failed to create kubernetes client")
+
+			_, err = cli.CoreV1().Nodes().Create(ctx, tt.existingNode, metav1.CreateOptions{})
+			require.NoError(t, err, "failed to create node")
+
+			labeler, err := NewLabeler(cli, time.Minute, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", tt.assumeDriverInstalled)
+			require.NoError(t, err, "failed to create labeler")
+
+			labelerCtx, labelerCancel := context.WithCancel(ctx)
+			defer labelerCancel()
+
+			go func() {
+				_ = labeler.Run(labelerCtx)
+			}()
+
+			require.Eventually(t, func() bool {
+				return labeler.allInformersSynced()
+			}, 10*time.Second, 100*time.Millisecond, "labeler informers did not sync")
+
+			err = labeler.handleNodeEvent(tt.existingNode)
+			require.NoError(t, err, "failed to handle node event")
+
+			require.Eventually(t, func() bool {
+				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
+				if err != nil {
+					t.Logf("Failed to get node: %v", err)
+					return false
+				}
+
+				driverLabel, driverExists := node.Labels[DriverInstalledLabel]
+				t.Logf("Node labels: driver=%q (exists=%v)", driverLabel, driverExists)
+
+				if tt.shouldHaveDriverLabel {
+					return driverExists && driverLabel == tt.expectedDriverLabel
+				}
+				return !driverExists
+			}, 15*time.Second, 500*time.Millisecond, "driver label not set correctly on node %s", tt.existingNode.Name)
 		})
 	}
 }

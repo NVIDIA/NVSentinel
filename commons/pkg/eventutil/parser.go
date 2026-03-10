@@ -69,9 +69,8 @@ func ParseHealthEventFromEvent(event datastore.Event) (model.HealthEventWithStat
 	}
 
 	// Set default value for NodeQuarantined if nil (e.g., for new events)
-	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == nil {
-		defaultStatus := model.StatusNotStarted
-		healthEventWithStatus.HealthEventStatus.NodeQuarantined = &defaultStatus
+	if healthEventWithStatus.HealthEventStatus.NodeQuarantined == "" {
+		healthEventWithStatus.HealthEventStatus.NodeQuarantined = string(model.StatusNotStarted)
 	}
 
 	return healthEventWithStatus, nil

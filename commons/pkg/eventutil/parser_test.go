@@ -52,7 +52,7 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
 				assert.Equal(t, "test-node", result.HealthEvent.NodeName)
 				assert.Equal(t, "GpuXidError", result.HealthEvent.CheckName)
-				assert.Equal(t, quarantined, *result.HealthEventStatus.NodeQuarantined)
+				assert.EqualValues(t, quarantined, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
 		{
@@ -71,7 +71,7 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
 				assert.Equal(t, "test-node-2", result.HealthEvent.NodeName)
 				assert.Equal(t, "NvLinkDown", result.HealthEvent.CheckName)
-				assert.Equal(t, quarantined, *result.HealthEventStatus.NodeQuarantined)
+				assert.EqualValues(t, quarantined, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
 		{
@@ -104,7 +104,7 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
 				assert.Equal(t, "postgres-node", result.HealthEvent.NodeName)
 				assert.Equal(t, "GpuXidError", result.HealthEvent.CheckName)
-				assert.Equal(t, quarantined, *result.HealthEventStatus.NodeQuarantined)
+				assert.EqualValues(t, quarantined, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
 		{
@@ -114,7 +114,7 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 				"fullDocument": map[string]interface{}{
 					"document": map[string]interface{}{
 						"healtheventstatus": map[string]interface{}{
-							"nodequarantined": nil,
+							"nodequarantined": "",
 						},
 						"healthevent": map[string]interface{}{
 							"nodename":       "new-event-node",
@@ -128,8 +128,8 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
 				assert.Equal(t, "new-event-node", result.HealthEvent.NodeName)
 				assert.Equal(t, "GpuXidError", result.HealthEvent.CheckName)
-				assert.NotNil(t, result.HealthEventStatus.NodeQuarantined)
-				assert.Equal(t, model.StatusNotStarted, *result.HealthEventStatus.NodeQuarantined)
+				assert.NotEmpty(t, result.HealthEventStatus.NodeQuarantined)
+				assert.EqualValues(t, model.StatusNotStarted, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
 		{
@@ -150,8 +150,8 @@ func TestParseHealthEventFromEvent(t *testing.T) {
 			expectError: false,
 			checkResult: func(t *testing.T, result model.HealthEventWithStatus) {
 				assert.Equal(t, "missing-status-node", result.HealthEvent.NodeName)
-				assert.NotNil(t, result.HealthEventStatus.NodeQuarantined)
-				assert.Equal(t, model.StatusNotStarted, *result.HealthEventStatus.NodeQuarantined)
+				assert.NotEmpty(t, result.HealthEventStatus.NodeQuarantined)
+				assert.EqualValues(t, model.StatusNotStarted, result.HealthEventStatus.NodeQuarantined)
 			},
 		},
 	}

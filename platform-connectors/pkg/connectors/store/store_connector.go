@@ -182,6 +182,9 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 		healthEventWithStatusObj := model.HealthEventWithStatus{
 			CreatedAt:   time.Now().UTC(),
 			HealthEvent: clonedHealthEvent,
+			HealthEventStatus: &protos.HealthEventStatus{
+				UserPodsEvictionStatus: &protos.OperationStatus{},
+			},
 		}
 		healthEventWithStatusList = append(healthEventWithStatusList, healthEventWithStatusObj)
 	}

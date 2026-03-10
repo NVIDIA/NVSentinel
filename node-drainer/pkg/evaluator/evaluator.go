@@ -28,10 +28,8 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/config"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/customdrain"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/queue"
-	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/query"
-	"github.com/nvidia/nvsentinel/store-client/pkg/utils"
 )
 
 const (
@@ -57,13 +55,30 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 	database queue.DataStore, healthEventStore datastore.HealthEventStore) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
 
-	statusPtr := healthEvent.HealthEventStatus.NodeQuarantined
+	// Helper for returning ActionWait with a log
+	actionWaitWithLog := func(msg, nodeName string) *DrainActionResult {
+		slog.Warn(msg, "node", nodeName)
 
-	if statusPtr != nil && *statusPtr == model.UnQuarantined {
+		return &DrainActionResult{
+			Action:    ActionWait,
+			WaitDelay: time.Minute,
+		}
+	}
+
+	if healthEvent.HealthEventStatus == nil {
+		return actionWaitWithLog("HealthEventStatus is nil, cannot evaluate event", nodeName), nil
+	}
+
+	statusStr := healthEvent.HealthEventStatus.NodeQuarantined
+	if statusStr == "" || statusStr == string(model.UnQuarantined) {
 		return &DrainActionResult{Action: ActionSkip}, nil
 	}
 
-	if isTerminalStatus(healthEvent.HealthEventStatus.UserPodsEvictionStatus.Status) {
+	if healthEvent.HealthEventStatus.UserPodsEvictionStatus == nil {
+		return actionWaitWithLog("HealthEventStatus is missing UserPodsEvictionStatus", nodeName), nil
+	}
+
+	if isTerminalStatus(model.Status(healthEvent.HealthEventStatus.UserPodsEvictionStatus.Status)) {
 		slog.Info("Event for node is in terminal state, skipping", "node", nodeName)
 
 		return &DrainActionResult{
@@ -83,22 +98,22 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		}, nil
 	}
 
-	result := e.handleAlreadyQuarantined(ctx, statusPtr, healthEvent, partialDrainEntity, healthEventStore)
+	result := e.handleAlreadyQuarantined(ctx, statusStr, healthEvent, partialDrainEntity, healthEventStore)
 	if result != nil {
 		return result, nil
 	}
 
 	if e.config.CustomDrain.Enabled && e.customDrainClient != nil {
-		return e.evaluateCustomDrain(ctx, healthEvent, database, partialDrainEntity)
+		return e.evaluateCustomDrain(ctx, healthEvent, partialDrainEntity)
 	}
 
 	return e.evaluateUserNamespaceActions(ctx, healthEvent, partialDrainEntity)
 }
 
-func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusPtr *model.Status,
+func (e *NodeDrainEvaluator) handleAlreadyQuarantined(ctx context.Context, statusStr string,
 	healthEvent model.HealthEventWithStatus, partialDrainEntity *protos.Entity,
 	healthEventStore datastore.HealthEventStore) *DrainActionResult {
-	if statusPtr == nil || *statusPtr != model.AlreadyQuarantined {
+	if statusStr != string(model.AlreadyQuarantined) {
 		return nil
 	}
 
@@ -305,19 +320,12 @@ func isTerminalStatus(status model.Status) bool {
 }
 
 func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEvent model.HealthEventWithStatus,
-	database queue.DataStore, partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
+	partialDrainEntity *protos.Entity) (*DrainActionResult, error) {
 	nodeName := healthEvent.HealthEvent.NodeName
+	eventID := healthEvent.HealthEvent.Id
 
-	eventID, err := getEventID(ctx, database, nodeName)
-	if err != nil {
-		slog.Error("Failed to get event ID for custom drain",
-			"node", nodeName,
-			"error", err)
-
-		return &DrainActionResult{
-			Action:    ActionWait,
-			WaitDelay: customDrainPollInterval,
-		}, nil
+	if eventID == "" {
+		return nil, fmt.Errorf("health event for node %s is missing Id, cannot generate DrainRequest CR name", nodeName)
 	}
 
 	crName := customdrain.GenerateCRName(nodeName, eventID)
@@ -386,33 +394,6 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		Action: ActionMarkAlreadyDrained,
 		Status: model.AlreadyDrained,
 	}, nil
-}
-
-func getEventID(ctx context.Context, database queue.DataStore, nodeName string) (string, error) {
-	opts := &client.FindOneOptions{
-		Sort: map[string]any{"_id": -1},
-	}
-
-	filter := map[string]any{
-		"healthevent.nodename": nodeName,
-	}
-
-	result, err := database.FindDocument(ctx, filter, opts)
-	if err != nil {
-		return "", fmt.Errorf("failed to query database for node %s: %w", nodeName, err)
-	}
-
-	var document map[string]any
-	if err := result.Decode(&document); err != nil {
-		return "", fmt.Errorf("failed to decode health event for node %s: %w", nodeName, err)
-	}
-
-	eventID, err := utils.ExtractDocumentID(document)
-	if err != nil {
-		return "", fmt.Errorf("failed to extract document ID for node %s: %w", nodeName, err)
-	}
-
-	return eventID, nil
 }
 
 /*

@@ -124,15 +124,23 @@ kubectl get node $NODE_NAME -L dgxc.nvidia.com/nvsentinel-state -w
 
 ### 4d. If State is `remediation-succeeded`
 
-This means the CR was created successfully. However, the actual remediation operation (e.g., reboot) may still be in progress or may have failed.
+This means the CR was created successfully. However, the actual remediation operation (e.g. reboot or reset) may still be in progress or may have failed.
 
 Check if the remediation CR exists and its status:
 
 ```bash
-# Find the CR name
-kubectl get rebootnodes | grep maintenance-$NODE_NAME
+kubectl get node $NODE_NAME -o jsonpath='{.metadata.annotations.latestFaultRemediationState}' | jq > /tmp/$NODE_NAME-remediation-state.json
 
-# Check CR status
+cat /tmp/$NODE_NAME-remediation-state.json
+```
+
+For COMPONENT_RESET actions:
+```bash
+kubectl get gpureset <CR_NAME> -o yaml
+```
+
+For RESTART_VM and RESTART_BM actions:
+```bash
 kubectl get rebootnode <CR_NAME> -o yaml
 ```
 
@@ -157,11 +165,129 @@ kubectl uncordon $NODE_NAME
 
 **If CR shows failure or is stuck:**
 
-Manually remediate the node based on the recommended action.
+**GPUReset:**
 
-Monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+When processing a GPUReset request, Janitor executes the following steps exposed through status conditions:
+- Ready: check that there are no in-progress GPUReset CRs executing against the same node.
+- ServicesTornDown: remove gpu-operator services including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
+- ResetJobCreated: create a privileged job against the given node with the GPU needing reset.
+- ResetJobCompleted: wait for the pod from the privileged job to disable persistence mode, reset the target GPU using nvidia-smi, re-enable persistence mode, and write a syslog event indicating the GPU has been reset. 
+- ServicesRestored: restore gpu-operator services including the nvidia-device-plugin-daemonset, nvidia-dcgm, and nvidia-dcgm-exporter.
+- Complete: complete reconciling of the GPUReset CR.
 
-### 5. Handling False Positives
+```bash
+status:
+  completionTime: "2026-03-03T22:54:24Z"
+  conditions:
+  - lastTransitionTime: "2026-03-03T22:53:04Z"
+    message: Node ready for GPU reset
+    reason: ReadyForReset
+    status: "True"
+    type: Ready
+  - lastTransitionTime: "2026-03-03T22:53:06Z"
+    message: gpu-operator managed services have been removed
+    reason: ServiceTeardownSucceeded
+    status: "True"
+    type: ServicesTornDown
+  - lastTransitionTime: "2026-03-03T22:53:06Z"
+    message: GPU reset job created
+    reason: ResetJobCreationSucceeded
+    status: "True"
+    type: ResetJobCreated
+  - lastTransitionTime: "2026-03-03T22:54:14Z"
+    message: GPU(s) reset successfully
+    reason: ResetJobSucceeded
+    status: "True"
+    type: ResetJobCompleted
+  - lastTransitionTime: "2026-03-03T22:54:24Z"
+    message: gpu-operator managed services are Ready
+    reason: ServiceRestoreSucceeded
+    status: "True"
+    type: ServicesRestored
+  - lastTransitionTime: "2026-03-03T22:54:24Z"
+    message: GPU(s) reset successfully
+    reason: GPUResetSucceeded
+    status: "True"
+    type: Complete
+  jobRef:
+    kind: Job
+    name: maintenance-10.0.6.34-69a7664f5ecd6c9af129dc2f-reset-job
+    namespace: dgxc-janitor-system
+  phase: Succeeded
+  startTime: "2026-03-03T22:53:04Z"
+```
+
+Check Janitor controller-manager logs for why the ServicesTornDown, ResetJobCreated, or ServicesRestored steps failed during processing of a GPUReset. If the ResetJobCompleted step fails, check the logs for the reset pod:
+```bash
+kubectl get pods -n <JANITOR_NAMESPACE> | grep <CR_NAME>
+ 
+kubectl logs <RESET_POD_NAME> -n <JANITOR_NAMESPACE>
+```
+
+**RebootNode:** 
+
+When processing a RebootNode request, Janitor executes the following steps exposed through status conditions:
+- SignalSent: issue a reboot request against the node for the given CSP.
+- NodeReady: wait for the node to return to a Ready status after a reboot is triggered.
+
+```bash
+status:
+  completionTime: "2026-03-02T23:30:01Z"
+  conditions:
+  - lastTransitionTime: "2026-03-02T22:48:01Z"
+    message: "2026-03-02T22:48:01Z"
+    reason: Succeeded
+    status: "True"
+    type: SignalSent
+  - lastTransitionTime: "2026-03-02T23:30:01Z"
+    message: Node reached ready state post-reboot
+    reason: Succeeded
+    status: "True"
+    type: NodeReady
+  startTime: "2026-03-02T22:48:01Z"
+```
+Check Janitor controller-manager logs for why the SignalSent or NodeReady steps failed during processing of a RebootNode.
+
+### 5. Manual remediations
+
+If a remediation action needs to be retried or executed manually (for example if the given health event published a CONTACT_SUPPORT recommended action), it might be required to manually create a RebootNode or GPUReset CR outside of NVSentinel.
+
+**WARNING:**
+- If a node progressed through the `draining` -> `drain-succeeded` -> `remediating` -> `remediation-succeeded` states but was not automatically uncordoned, it is safe to manually create a new RebootNode CR for the RESTART_VM or RESTART_BM actions because the node was already fully drained. Similarly, it is safe to create a new GPUReset CR, targeting the same node and GPU pair, for COMPONENT_RESET actions because the GPU needing reset was drained of any workload pods assigned to that GPU.  
+- If an operator wants to remediate the given node with a RebootNode CR and the previous remediation action which failed was a GPUReset, the operator will need to ensure that the node is fully drained because NVSentinel would have only partially drained the node for pods which were assigned to the individual GPU needing reset. Follow the same steps outlined in 4a for handling the `drain-failed` state to manually execute a full drain against the node prior to creating a RebootNode.
+- If an operator wants to remediate a different GPU compared to what was targeted in the initial GPUReset CR, the operator will need to ensure that all pods leveraging the given GPU are drained or else the reset can fail because processes could still have a handle on the GPU.
+
+To manually trigger a reboot:
+```bash
+NODE=<NODE_NAME> && cat <<EOF | kubectl apply -f -
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: maintenance-$NODE
+spec:
+  nodeName: $NODE
+  force: true
+EOF
+```
+
+To manually trigger a GPU reset:
+```bash
+NODE=<NODE_NAME> && GPU_UUID=<GPU_UUID> && cat <<EOF | kubectl apply -f -
+apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: GPUReset
+metadata:
+  name: maintenance-$NODE
+spec:
+  nodeName: $NODE
+  selector:
+    uuids:
+    - $GPU_UUID
+EOF
+```
+
+After creating the maintenance CR, monitor if the health check starts passing. If it does, the node should be automatically uncordoned. If the health check doesn't pass, investigate with your organization's support team.
+
+### 6. Handling False Positives
 
 If you believe the health event is a false positive, review the details saved earlier:
 
@@ -181,7 +307,7 @@ kubectl label node $NODE_NAME k8saas.nvidia.com/ManagedByNVSentinel=false
 
 Report the issue to your organization's support team for investigation.
 
-### 6. Verify Node Recovery
+### 7. Verify Node Recovery
 
 After remediation, monitor node status:
 

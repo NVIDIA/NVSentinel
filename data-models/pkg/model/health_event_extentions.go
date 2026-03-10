@@ -37,25 +37,8 @@ const (
 	Cancelled          Status = "Cancelled"
 )
 
-type OperationStatus struct {
-	Status  Status `bson:"status" json:"status"`
-	Message string `bson:"message,omitempty" json:"message,omitempty"`
-}
-
-type HealthEventStatus struct {
-	NodeQuarantined *Status `bson:"nodequarantined" json:"nodequarantined,omitempty"`
-	//nolint:lll // Long line due to struct tags for both bson and json serialization
-	QuarantineFinishTimestamp *time.Time      `bson:"quarantinefinishtimestamp,omitempty" json:"quarantinefinishtimestamp,omitempty"`
-	UserPodsEvictionStatus    OperationStatus `bson:"userpodsevictionstatus" json:"userpodsevictionstatus"`
-	//nolint:lll // Long line due to struct tags for both bson and json serialization
-	DrainFinishTimestamp *time.Time `bson:"drainfinishtimestamp,omitempty" json:"drainfinishtimestamp,omitempty"`
-	FaultRemediated      *bool      `bson:"faultremediated" json:"faultremediated,omitempty"`
-	//nolint:lll // Long line due to struct tags for both bson and json serialization
-	LastRemediationTimestamp *time.Time `bson:"lastremediationtimestamp,omitempty" json:"lastremediationtimestamp,omitempty"`
-}
-
 type HealthEventWithStatus struct {
-	CreatedAt         time.Time           `bson:"createdAt"`
-	HealthEvent       *protos.HealthEvent `bson:"healthevent,omitempty"`
-	HealthEventStatus HealthEventStatus   `bson:"healtheventstatus"`
+	CreatedAt         time.Time                 `bson:"createdAt"`
+	HealthEvent       *protos.HealthEvent       `bson:"healthevent,omitempty"`
+	HealthEventStatus *protos.HealthEventStatus `bson:"healtheventstatus"`
 }

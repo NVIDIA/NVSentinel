@@ -27,6 +27,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // PostgreSQLHealthEventStore implements HealthEventStore for PostgreSQL
@@ -41,12 +42,12 @@ func NewPostgreSQLHealthEventStore(db *sql.DB) *PostgreSQLHealthEventStore {
 
 // formatTimeRFC3339 formats t as RFC3339Nano with "Z" for JSONB document storage.
 // Ensures timestamps parse correctly in Go (RFC3339) and other consumers; PostgreSQL to_jsonb(timestamp) can omit "Z".
-func formatTimeRFC3339(t *time.Time) string {
+func formatTimeRFC3339(t *timestamppb.Timestamp) string {
 	if t == nil {
 		return ""
 	}
 
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.AsTime().UTC().Format(time.RFC3339Nano)
 }
 
 // InsertHealthEvents inserts health events into the database

@@ -61,7 +61,6 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 }
 
 // SendTerminateSignal simulates terminating a kind node by removing the docker container
-// nolint:funlen,gocyclo,cyclop // Complex docker interaction logic
 func (c *Client) SendTerminateSignal(
 	ctx context.Context,
 	node corev1.Node,
@@ -108,53 +107,73 @@ func (c *Client) SendTerminateSignal(
 		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	// nolint:nestif // Complex docker interaction logic migrated from old code
-	// If container exists, delete it
-	if strings.Contains(string(output), containerName) {
-		slog.Info("Found container, attempting deletion", "container", containerName)
+	found := false
 
-		// nolint:gosec // G204: Command args are derived from kubernetes API, not user input
-		cmd = exec.CommandContext(dockerCtx, "docker", "rm", "-f", containerName)
-
-		if err := cmd.Run(); err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("timeout while deleting container: %w", err)
-			}
-
-			return "", fmt.Errorf("failed to delete container: %w", err)
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == containerName {
+			found = true
+			break
 		}
-
-		// Verify container is actually gone
-		// nolint:gosec // G204: Command args are derived from kubernetes API, not user input
-		cmd = exec.CommandContext(
-			dockerCtx,
-			"docker",
-			"ps",
-			"-a",
-			"--filter",
-			fmt.Sprintf("name=^%s$", containerName),
-			"--format",
-			"{{.Names}}",
-		)
-
-		output, err = cmd.Output()
-		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("timeout while verifying container deletion: %w", err)
-			}
-
-			return "", fmt.Errorf("failed to verify container deletion: %w", err)
-		}
-
-		if strings.Contains(string(output), containerName) {
-			return model.TerminateNodeRequestRef(""),
-				fmt.Errorf("container %s still exists after deletion attempt", containerName)
-		}
-
-		slog.Info("Successfully deleted container", "container", containerName)
-	} else {
-		slog.Info("Container not found, assuming already deleted", "container", containerName)
 	}
 
+	if !found {
+		slog.Info("Container not found, assuming already deleted", "container", containerName)
+
+		return model.TerminateNodeRequestRef(""), nil
+	}
+
+	slog.Info("Found container, attempting deletion", "container", containerName)
+
+	if err := c.deleteAndVerifyContainer(ctx, dockerCtx, containerName); err != nil {
+		return "", err
+	}
+
+	slog.Info("Successfully deleted container", "container", containerName)
+
 	return model.TerminateNodeRequestRef(""), nil
+}
+
+func (c *Client) deleteAndVerifyContainer(
+	ctx, dockerCtx context.Context, containerName string,
+) error {
+	// nolint:gosec // G204: Command args are derived from kubernetes API, not user input
+	cmd := exec.CommandContext(dockerCtx, "docker", "rm", "-f", containerName)
+
+	if err := cmd.Run(); err != nil {
+		if dockerCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("timeout while deleting container: %w", err)
+		}
+
+		return fmt.Errorf("failed to delete container: %w", err)
+	}
+
+	// Verify container is actually gone
+	// nolint:gosec // G204: Command args are derived from kubernetes API, not user input
+	cmd = exec.CommandContext(
+		dockerCtx,
+		"docker",
+		"ps",
+		"-a",
+		"--filter",
+		fmt.Sprintf("name=^%s$", containerName),
+		"--format",
+		"{{.Names}}",
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		if dockerCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("timeout while verifying container deletion: %w", err)
+		}
+
+		return fmt.Errorf("failed to verify container deletion: %w", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == containerName {
+			return fmt.Errorf("container %s still exists after deletion attempt", containerName)
+		}
+	}
+
+	return nil
 }

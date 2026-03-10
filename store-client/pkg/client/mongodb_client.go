@@ -553,20 +553,34 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 		}
 	}
 
+	// Timestamps and bools are stored in protobuf-compatible format so they can be
+	// deserialized into the proto types used by model.HealthEventWithStatus
+	// (timestamppb.Timestamp expects {seconds, nanos}; wrapperspb.BoolValue expects {value}).
 	if healthStatus.QuarantineFinishTimestamp != nil {
-		updateFields[basePath+".quarantinefinishtimestamp"] = *healthStatus.QuarantineFinishTimestamp
+		updateFields[basePath+".quarantinefinishtimestamp"] = map[string]interface{}{
+			"seconds": healthStatus.QuarantineFinishTimestamp.Seconds,
+			"nanos":   healthStatus.QuarantineFinishTimestamp.Nanos,
+		}
 	}
 
 	if healthStatus.DrainFinishTimestamp != nil {
-		updateFields[basePath+".drainfinishtimestamp"] = *healthStatus.DrainFinishTimestamp
+		updateFields[basePath+".drainfinishtimestamp"] = map[string]interface{}{
+			"seconds": healthStatus.DrainFinishTimestamp.Seconds,
+			"nanos":   healthStatus.DrainFinishTimestamp.Nanos,
+		}
 	}
 
 	if healthStatus.FaultRemediated != nil {
-		updateFields[basePath+".faultremediated"] = *healthStatus.FaultRemediated
+		updateFields[basePath+".faultremediated"] = map[string]interface{}{
+			"value": *healthStatus.FaultRemediated,
+		}
 	}
 
 	if healthStatus.LastRemediationTimestamp != nil {
-		updateFields[basePath+".lastremediationtimestamp"] = *healthStatus.LastRemediationTimestamp
+		updateFields[basePath+".lastremediationtimestamp"] = map[string]interface{}{
+			"seconds": healthStatus.LastRemediationTimestamp.Seconds,
+			"nanos":   healthStatus.LastRemediationTimestamp.Nanos,
+		}
 	}
 
 	return updateFields

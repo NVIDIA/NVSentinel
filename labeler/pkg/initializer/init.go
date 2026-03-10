@@ -28,11 +28,12 @@ import (
 )
 
 type InitializationParams struct {
-	KubeconfigPath       string
-	DCGMAppLabel         string
-	DriverAppLabel       string
-	GKEInstallerAppLabel string
-	KataLabel            string
+	KubeconfigPath        string
+	DCGMAppLabel          string
+	DriverAppLabel        string
+	GKEInstallerAppLabel  string
+	KataLabel             string
+	AssumeDriverInstalled bool
 }
 
 type Components struct {
@@ -56,6 +57,7 @@ func InitializeAll(params InitializationParams) (*Components, error) {
 		params.DriverAppLabel,
 		params.GKEInstallerAppLabel,
 		params.KataLabel,
+		params.AssumeDriverInstalled,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating labeler instance: %w", err)

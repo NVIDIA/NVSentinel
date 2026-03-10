@@ -53,6 +53,9 @@ protobuf:
   protoc_gen_go: 'v1.36.10'
   protoc_gen_go_grpc: 'v1.5.1'
   grpcio_tools: '1.75.1'
+  # CRD/Protoc-gen-crd
+  protoc_gen_crd: 'v1.1.0'
+
 
 # Linting & Validation
 linting:

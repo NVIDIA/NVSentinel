@@ -226,7 +226,7 @@ var (
 			},
 			NodeName: "node1",
 		},
-		HealthEventStatus: datamodels.HealthEventStatus{},
+		HealthEventStatus: &protos.HealthEventStatus{},
 	}
 )
 
