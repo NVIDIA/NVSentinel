@@ -282,6 +282,71 @@ When `tls.enabled=true`, the chart creates a cert-manager `Certificate` resource
 and mounts the resulting Secret. The `issuerName` defaults to the janitor's existing
 self-signed Issuer, reusing NVSentinel's existing PKI infrastructure.
 
+### Certificate Rotation
+
+cert-manager automatically rotates certificates before expiry. The current reference
+implementation loads certificates once at startup — neither the server's TLS cert
+nor the client's CA bundle is reloaded at runtime. This means a cert rotation by
+cert-manager would not take effect until the affected pod restarts.
+
+For SA tokens, rotation is already handled: the client interceptor re-reads the
+token file on every gRPC call, so kubelet's automatic token refresh is picked up
+immediately.
+
+#### Server-Side Cert Rotation
+
+The janitor-provider loads its TLS key pair once via `tls.LoadX509KeyPair()` in
+`main.go`. When cert-manager rotates the server certificate, the provider continues
+serving the old cert until restarted.
+
+**Recommended fix**: Use the `certwatcher` package from `controller-runtime`, which
+watches certificate files for changes and hot-reloads them via the
+`tls.Config.GetCertificate` callback. This is the same pattern already used in the
+janitor for webhook and metrics TLS:
+
+```go
+// Existing pattern in janitor/main.go for webhook certs:
+watcher, err := certwatcher.New(certPath, keyPath)
+mgr.Add(watcher)  // starts filesystem watch
+
+tlsConfig := &tls.Config{
+    GetCertificate: watcher.GetCertificate,
+    MinVersion:     tls.VersionTLS12,
+}
+```
+
+The janitor-provider does not use `controller-runtime`'s manager, so it would need
+to either:
+
+1. Start the `certwatcher` goroutine manually (it implements `Runnable` with a
+   `Start(ctx)` method)
+2. Use a standalone filesystem watcher (e.g., `fsnotify`) to reload the key pair
+
+Option 1 is preferred since it reuses the same well-tested package.
+
+#### Client-Side CA Bundle Rotation
+
+The janitor controller loads the CA bundle once in `NewCSPProviderDialOptions()` and
+builds a static `x509.CertPool`. If the CA itself rotates (e.g., the self-signed
+Issuer regenerates its CA key), the client will reject the new server cert because
+its cert pool is stale.
+
+In practice, CA rotation is infrequent — cert-manager rotates leaf certificates
+but the CA key typically remains stable. However, for robustness:
+
+**Option A — Periodic reload**: A background goroutine re-reads the CA bundle file
+on an interval (e.g., every 5 minutes) and swaps the `RootCAs` cert pool atomically.
+
+**Option B — File watcher**: Use `fsnotify` or `certwatcher` to watch the CA bundle
+file and reload on change.
+
+**Option C — Accept restart-on-CA-rotation**: Since CA rotation is rare and
+typically planned, accept that the janitor pod needs a restart when the CA changes.
+This is the simplest approach and may be sufficient for most deployments.
+
+The reference implementation currently follows option C implicitly. Options A or B
+can be added if CA rotation without downtime becomes a requirement.
+
 ### Test Compatibility
 
 Existing unit tests use `bufconn` with insecure credentials. The `CSPProviderInsecure`
