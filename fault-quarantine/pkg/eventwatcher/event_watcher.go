@@ -278,7 +278,7 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	filter := query.In("_id", uniqueIDs).ToMongo()
+	filter := query.New().Build(query.In("_id", uniqueIDs))
 
 	cursor, err := w.databaseClient.Find(lookupCtx, filter, nil)
 	if err != nil {
@@ -323,21 +323,21 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 
 type remediationDoc struct {
 	HealthEvent struct {
-		NodeName           string         `bson:"nodename"`
-		GeneratedTimestamp *bsonTimestamp `bson:"generatedtimestamp"`
-	} `bson:"healthevent"`
+		NodeName           string       `bson:"nodename" json:"nodeName"`
+		GeneratedTimestamp *dbTimestamp `bson:"generatedtimestamp" json:"generatedTimestamp"`
+	} `bson:"healthevent" json:"healthEvent"`
 	HealthEventStatus struct {
-		QuarantineFinishTimestamp *bsonTimestamp `bson:"quarantinefinishtimestamp,omitempty"`
-		DrainFinishTimestamp      *bsonTimestamp `bson:"drainfinishtimestamp,omitempty"`
-	} `bson:"healtheventstatus"`
+		QuarantineFinishTimestamp *dbTimestamp `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"`
+		DrainFinishTimestamp      *dbTimestamp `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
+	} `bson:"healtheventstatus" json:"healthEventStatus"`
 }
 
-type bsonTimestamp struct {
-	Seconds int64 `bson:"seconds"`
-	Nanos   int32 `bson:"nanos"`
+type dbTimestamp struct {
+	Seconds int64 `bson:"seconds" json:"seconds"`
+	Nanos   int32 `bson:"nanos" json:"nanos"`
 }
 
-func protoTsToTimePtr(ts *bsonTimestamp, nodeName string) *time.Time {
+func protoTsToTimePtr(ts *dbTimestamp, nodeName string) *time.Time {
 	if ts == nil {
 		slog.Warn("protoTsToTimePtr: received nil timestamp", "node", nodeName)
 
@@ -421,29 +421,28 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	nodeName string,
 ) error {
 	// Find the latest Quarantined or UnQuarantined event to check current state of node
-	filter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
-		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []interface{}{model.Quarantined, model.UnQuarantined},
-		},
-	}
+	filter := query.New().Build(query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.In("healtheventstatus.nodequarantined",
+			[]interface{}{string(model.Quarantined), string(model.UnQuarantined)}),
+	))
 
 	findOptions := &client.FindOneOptions{
 		Sort: map[string]interface{}{"createdAt": -1},
 	}
 
 	var latestEvent struct {
-		ID          string    `bson:"_id"`
-		CreatedAt   time.Time `bson:"createdAt"`
+		ID          string    `bson:"_id" json:"_id"`
+		CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
 		HealthEvent struct {
-			NodeName           string         `bson:"nodename"`
-			GeneratedTimestamp *bsonTimestamp `bson:"generatedtimestamp"`
-		} `bson:"healthevent"`
+			NodeName           string       `bson:"nodename" json:"nodeName"`
+			GeneratedTimestamp *dbTimestamp `bson:"generatedtimestamp" json:"generatedTimestamp"`
+		} `bson:"healthevent" json:"healthEvent"`
 		HealthEventStatus struct {
-			NodeQuarantined           string         `bson:"nodequarantined"`
-			QuarantineFinishTimestamp *bsonTimestamp `bson:"quarantinefinishtimestamp,omitempty"`
-			DrainFinishTimestamp      *bsonTimestamp `bson:"drainfinishtimestamp,omitempty"`
-		} `bson:"healtheventstatus"`
+			NodeQuarantined           string       `bson:"nodequarantined" json:"nodeQuarantined"`
+			QuarantineFinishTimestamp *dbTimestamp `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"`
+			DrainFinishTimestamp      *dbTimestamp `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
+		} `bson:"healtheventstatus" json:"healthEventStatus"`
 	}
 
 	result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
@@ -486,13 +485,12 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 	// Update all events from the current quarantine session (Quarantined + AlreadyQuarantined)
 	// This includes the first event and all subsequent events that occurred after it
-	updateFilter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
-		"createdAt":            map[string]interface{}{"$gte": latestEvent.CreatedAt},
-		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []interface{}{model.Quarantined, model.AlreadyQuarantined},
-		},
-	}
+	updateFilter := query.New().Build(query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.Gte("createdAt", latestEvent.CreatedAt),
+		query.In("healtheventstatus.nodequarantined",
+			[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+	))
 
 	update := map[string]interface{}{
 		"$set": map[string]interface{}{
@@ -523,7 +521,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 func emitCancelledRemediationDuration(
 	nodeName string,
-	genTS, qfTS, dfTS *bsonTimestamp,
+	genTS, qfTS, dfTS *dbTimestamp,
 	logNode string,
 ) {
 	if genTS == nil {

@@ -98,6 +98,26 @@ get_gpu_node_with_healthy_syslog_monitor() {
     get_gpu_node_with_healthy_monitor "syslog-health-monitor"
 }
 
+# Verify a running driver pod exists on the given node (gpu-operator or kube-system).
+verify_gpu_driver_pod_exists() {
+    local node=$1
+    local pod phase
+    pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset --field-selector=status.phase=Running \
+        -o jsonpath="{.items[?(@.spec.nodeName=='$node')].metadata.name}" 2>/dev/null | head -1)
+    if [[ -n "$pod" ]]; then
+        log "Driver pod running: gpu-operator/$pod"
+        return
+    fi
+    pod=$(kubectl get pods -n kube-system -l k8s-app=nvidia-driver-installer --field-selector=status.phase=Running \
+        -o jsonpath="{.items[?(@.spec.nodeName=='$node')].metadata.name}" 2>/dev/null | head -1)
+    if [[ -n "$pod" ]]; then
+        log "Driver pod running: kube-system/$pod"
+        return
+    fi
+    log "WARN: No running driver pod found on node $node (checked gpu-operator and kube-system namespaces)."
+}
+
+
 wait_for_node_condition() {
     local node=$1
     local condition_type=$2
@@ -308,6 +328,8 @@ test_gpu_monitoring_dcgm() {
 
     log "Selected GPU node: $gpu_node"
 
+    verify_gpu_driver_pod_exists "$gpu_node"
+
     local original_boot_id
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
@@ -354,7 +376,7 @@ test_gpu_monitoring_dcgm() {
 
     log "Waiting for node to reboot and recover..."
     wait_for_boot_id_change "$gpu_node" "$original_boot_id"
-
+    
     log "Test 1 PASSED ✓"
 }
 
@@ -376,15 +398,15 @@ test_xid_monitoring_syslog() {
     original_boot_id=$(get_boot_id "$gpu_node")
     log "Original boot ID: $original_boot_id"
 
-    local driver_pod
-    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
-
-    if [[ -z "$driver_pod" ]]; then
-        error "No driver pod found on node $gpu_node"
+    local dcgm_pod
+    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm \
+        -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
+    if [[ -z "$dcgm_pod" ]]; then
+        error "No DCGM pod found on node $gpu_node"
     fi
 
-    log "Injecting XID 79 message via logger on pod: $driver_pod"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus."
+    log "Injecting XID 79 via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
+    kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c 'echo "<3>[6085126.134786] NVRM: Xid (PCI:0002:00:00): 79, pid=1582259, name=nvc:[driver], GPU has fallen off the bus." > /dev/kmsg'
 
     wait_for_node_condition "$gpu_node" "SysLogsXIDError"
 
@@ -420,16 +442,17 @@ test_xid_monitoring_syslog_gpu_reset() {
 
     log "Selected GPU node: $gpu_node (has healthy syslog-health-monitor)"
 
-    local driver_pod
-    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
 
-    if [[ -z "$driver_pod" ]]; then
-        error "No driver pod found on node $gpu_node"
+    local dcgm_pod
+    dcgm_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-dcgm \
+        -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
+    if [[ -z "$dcgm_pod" ]]; then
+        error "No DCGM pod found on node $gpu_node"
     fi
 
-    log "Fetching GPU UUID and PCI from nvidia-smi in driver pod to construct syslog message"
+    log "Fetching GPU UUID and PCI from nvidia-smi on gpu-operator/$dcgm_pod"
 
-    uuid_pci=$(kubectl exec -n gpu-operator "$driver_pod" -- sh -c  "nvidia-smi --query-gpu=uuid,pci.bus_id --format=csv,noheader | head -n 1")
+    uuid_pci=$(kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c "nvidia-smi --query-gpu=uuid,pci.bus_id --format=csv,noheader | head -n 1")
 
     if [[ -z "$uuid_pci" ]]; then
         error "No nvidia-smi query output on node $gpu_node"
@@ -442,8 +465,8 @@ test_xid_monitoring_syslog_gpu_reset() {
     fi
     log "Resetting GPU UUID $uuid on PCI $pci"
 
-    log "Injecting XID 119 message on GPU $uuid via logger on pod: $driver_pod"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8)."
+    log "Injecting XID 119 on GPU $uuid via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
+    kubectl exec -n "gpu-operator" "$dcgm_pod" -- sh -c "echo '<3>[6085126.134786] NVRM: Xid (PCI:$pci): 119, pid=1582259, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).' > /dev/kmsg"
 
     wait_for_node_condition "$gpu_node" "SysLogsXIDError"
 
@@ -508,17 +531,11 @@ test_sxid_monitoring_syslog() {
         fi
     fi
 
-    local driver_pod
-    driver_pod=$(kubectl get pods -n gpu-operator -l app=nvidia-driver-daemonset -o jsonpath="{.items[?(@.spec.nodeName=='$gpu_node')].metadata.name}" | head -1)
 
-    if [[ -z "$driver_pod" ]]; then
-        error "No driver pod found on node $gpu_node"
-    fi
-
-    log "Injecting SXID error messages via logger on pod: $driver_pod"
+    log "Injecting SXID error messages via /dev/kmsg on pod: gpu-operator/$dcgm_pod"
 
     log "  - SXID 28002 (Non-fatal): Therm Warn Deactivated on Link $link_number"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated"
+    kubectl exec -n gpu-operator "$dcgm_pod" -- sh -c "echo '<3>nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated' > /dev/kmsg"
 
     local max_wait=30
     local waited=0
@@ -541,7 +558,7 @@ test_sxid_monitoring_syslog() {
     log "Node event verified: SysLogsSXIDError ✓"
 
     log "  - SXID 20034 (Fatal): LTSSM Fault Up on Link $link_number"
-    kubectl exec -n gpu-operator "$driver_pod" -- logger -p daemon.err "nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up"
+    kubectl exec -n gpu-operator "$dcgm_pod" -- sh -c "echo '<3>nvidia-nvswitch3: SXid (PCI:${pci_id}): 20034, Fatal, Link ${link_number} LTSSM Fault Up' > /dev/kmsg"
 
     wait_for_node_condition "$gpu_node" "SysLogsSXIDError"
 
@@ -555,7 +572,7 @@ test_sxid_monitoring_syslog() {
 
 main() {
     log "Starting NVSentinel UAT tests..."
-    
+
     log "Checking if circuit breaker is TRIPPED..."
     if kubectl get cm circuit-breaker -n nvsentinel -o jsonpath='{.data.status}' | grep -q "TRIPPED"; then
         error "Circuit breaker is TRIPPED, please reset it manually"
