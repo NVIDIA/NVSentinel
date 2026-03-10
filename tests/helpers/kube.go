@@ -704,11 +704,14 @@ func WaitForCRByName(ctx context.Context, t *testing.T, c klient.Client, crName 
 			}
 
 			t.Logf("CR %s completed at %s", crName, completionTime)
+
 			resultCR = item
+
 			return true
 		}
 
 		t.Logf("CR %s not found yet", crName)
+
 		return false
 	}, EventuallyWaitTimeout, WaitInterval,
 		"CR %s should be created and complete", crName)
@@ -758,6 +761,7 @@ func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[str
 		if !ok {
 			continue
 		}
+
 		if cond["type"] == conditionType {
 			return cond
 		}
