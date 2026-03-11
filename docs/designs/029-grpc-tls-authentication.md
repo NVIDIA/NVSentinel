@@ -53,9 +53,6 @@ with **Kubernetes ServiceAccount token authentication** (auth option A). The cli
 SA token as a Bearer token in gRPC metadata on every call. The server
 (janitor-provider) validates the token against the Kubernetes TokenReview API.
 
-A reference implementation of this approach exists on the `feature/grpc-tls-auth`
-branch. The sections below describe that implementation in detail.
-
 ## Implementation
 
 ### Architecture
