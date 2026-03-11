@@ -40,7 +40,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "csp-health-monitor.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
@@ -75,14 +75,14 @@ spec:
           items:
           - key: config.toml
             path: config.toml
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else }}
+      {{- else if .Values.clientCertMountPath }}
       - name: mongo-app-client-cert
         secret:
           secretName: {{ include "nvsentinel.certificates.secretName" . }}
@@ -105,7 +105,11 @@ spec:
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
+          {{- if .Values.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- else }}
+          - "--database-client-cert-mount-path="
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -131,11 +135,11 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
-          {{- else }}
+          {{- else if .Values.clientCertMountPath }}
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
@@ -163,7 +167,11 @@ spec:
             {{- end }}
           args:
           - "--config=/etc/config/config.toml"
+          {{- if .Values.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- else }}
+          - "--database-client-cert-mount-path="
+          {{- end }}
           - "--uds-path=/run/nvsentinel/nvsentinel.sock"
           - "--metrics-port=2113"
           - "--processing-strategy={{ .Values.processingStrategy }}"
@@ -192,11 +200,11 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
-          {{- else }}
+          {{- else if .Values.clientCertMountPath }}
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true

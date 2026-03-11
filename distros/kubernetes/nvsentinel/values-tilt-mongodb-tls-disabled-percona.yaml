@@ -75,6 +75,8 @@ node-drainer:
   clientCertMountPath: ""
 health-events-analyzer:
   clientCertMountPath: ""
+csp-health-monitor:
+  clientCertMountPath: ""
 platformConnector:
   mongodbStore:
     clientCertMountPath: ""
