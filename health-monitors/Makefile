@@ -11,7 +11,8 @@ GOCOVER_COBERTURA := gocover-cobertura
 GO_HEALTH_MONITORS := \
 	syslog-health-monitor \
 	csp-health-monitor \
-	kubernetes-object-monitor
+	kubernetes-object-monitor \
+	slurm-drain-monitor
 
 PYTHON_HEALTH_MONITORS := \
 	gpu-health-monitor
@@ -59,6 +60,10 @@ lint-test-gpu-health-monitor:
 lint-test-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor lint-test
 
+.PHONY: lint-test-slurm-drain-monitor
+lint-test-slurm-drain-monitor:
+	$(MAKE) -C slurm-drain-monitor lint-test
+
 # Build targets for health monitors (delegate to module Makefiles)
 .PHONY: build-all
 build-all:
@@ -87,6 +92,10 @@ build-gpu-health-monitor:
 build-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor build
 
+.PHONY: build-slurm-drain-monitor
+build-slurm-drain-monitor:
+	$(MAKE) -C slurm-drain-monitor build
+
 # Clean targets (delegate to module Makefiles)
 .PHONY: clean-all
 clean-all:
@@ -114,6 +123,10 @@ clean-gpu-health-monitor:
 .PHONY: clean-kubernetes-object-monitor
 clean-kubernetes-object-monitor:
 	$(MAKE) -C kubernetes-object-monitor clean
+
+.PHONY: clean-slurm-drain-monitor
+clean-slurm-drain-monitor:
+	$(MAKE) -C slurm-drain-monitor clean
 
 # Help target
 .PHONY: help

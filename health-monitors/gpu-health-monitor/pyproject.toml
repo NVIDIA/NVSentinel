@@ -16,7 +16,7 @@ googleapis-common-protos = ">=1.56.0"
 structlog = "^25.1.0"
 
 [tool.poetry.group.dev.dependencies]
-black = "^26.1.0"
+black = "^26.3.0"
 coverage = "^7.13.4"
 pytest = "^9.0.2"
 

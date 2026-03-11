@@ -67,7 +67,8 @@ global:
     compress: true  # Compress rotated log files
 
   nodeSelector: {}
-  tolerations: []
+  tolerations:
+    - operator: Exists
   affinity: {}
   systemNodeSelector: {}
   systemNodeTolerations: []

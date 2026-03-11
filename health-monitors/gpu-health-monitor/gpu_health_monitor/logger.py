@@ -99,6 +99,7 @@ def set_default_structured_logger_with_level(module: str, version: str, level: s
                 structlog.stdlib.ExtraAdder(),
                 structlog.processors.TimeStamper(fmt="iso"),
                 inject_module_version,
+                structlog.processors.format_exc_info,
             ],
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,

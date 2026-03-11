@@ -33,9 +33,12 @@ INITIAL_DELAY = 5
 
 
 @dataclasses.dataclass
-class CachedEntityState:
-    isFatal: bool
-    isHealthy: bool
+class EntityCacheEntry:
+    active_errors: set[str] = dataclasses.field(default_factory=set)
+
+    @property
+    def is_healthy(self) -> bool:
+        return not self.active_errors
 
 
 class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
@@ -46,7 +49,6 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         exit: Event,
         dcgm_errors_info_dict: dict[str, str],
         state_file_path: str,
-        dcgm_health_conditions_categorization_mapping_config: dict[str, str],
         metadata_path: str,
         processing_strategy: platformconnector_pb2.ProcessingStrategy,
     ) -> None:
@@ -60,8 +62,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         self.state_file_path = state_file_path
         self.node_bootid_path = "/proc/sys/kernel/random/boot_id"
         self.old_bootid = self.read_old_system_bootid_from_state_file()
-        self.entity_cache: dict[str, CachedEntityState] = {}
-        self.dcgm_health_conditions_categorization_mapping_config = dcgm_health_conditions_categorization_mapping_config
+        self.entity_cache: dict[str, EntityCacheEntry] = {}
         self._metadata_reader = MetadataReader(metadata_path)
         self._processing_strategy = processing_strategy
 
@@ -94,7 +95,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         check_name = "GpuDcgmConnectivityFailure"
 
         key = self._build_cache_key(check_name, "DCGM", "ALL")
-        if key not in self.entity_cache or not self.entity_cache[key].isHealthy:
+        entry = self.entity_cache.get(key)
+        if entry is None or not entry.is_healthy:
             event_metadata = {}
             chassis_serial = self._metadata_reader.get_chassis_serial()
             if chassis_serial:
@@ -121,10 +123,9 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
         if len(health_events):
             try:
                 if self.send_health_event_with_retries(health_events):
-                    # Only update cache after successful send
-                    self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
-                    log.info(f"Updated cache for key {key} after successful send")
-                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="", severity="fatal").set(0)
+                    self.entity_cache[key] = EntityCacheEntry()
+                    log.info(f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send")
+                    metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(0)
             except Exception as e:
                 log.error(f"Exception while sending DCGM connectivity restored events: {e}")
                 raise
@@ -142,8 +143,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
             health_events = []
             # Collect pending cache and metric updates to apply only after successful send
-            pending_cache_updates: dict[str, CachedEntityState] = {}
-            pending_metric_updates: list[tuple[str, int, str, int]] = []  # (event_type, gpu_id, severity, value)
+            pending_cache_updates: dict[str, EntityCacheEntry] = {}
+            pending_metric_updates: list[tuple[str, int, int]] = []  # (event_type, gpu_id, value)
 
             for watch_name, details in health_details.items():
                 check_name = self._convert_dcgm_watch_name_to_check_name(watch_name)
@@ -178,27 +179,16 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
 
                         entities_impacted_supports_component_reset = pci_address and gpu_uuid
 
+                        recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+                        isHealthy = False
+                        isFatal = recommended_action != platformconnector_pb2.NONE
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-                        isFatal = False
-                        isHealthy = True
-                        if details.status == dcgmtypes.HealthStatus.PASS:
-                            isFatal = False
-                            isHealthy = True
-                        else:
-                            isFatal = (
-                                False
-                                if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal"
-                                else True
-                            )
-                            isHealthy = False
-                        if (
-                            key not in self.entity_cache
-                            or self.entity_cache[key].isFatal != isFatal
-                            or self.entity_cache[key].isHealthy != isHealthy
-                        ):
-                            # Defer cache update until after successful send
-                            pending_cache_updates[key] = CachedEntityState(isFatal=isFatal, isHealthy=isHealthy)
-                            recommended_action = self.get_recommended_action_from_dcgm_error_map(failure_details.code)
+
+                        entry = self.entity_cache.get(key)
+                        if entry is None or failure_details.code not in entry.active_errors:
+                            existing_errors = set(entry.active_errors) if entry else set()
+                            existing_errors.add(failure_details.code)
+                            pending_cache_updates[key] = EntityCacheEntry(active_errors=existing_errors)
 
                             # The COMPONENT_RESET recommended action requires that the GPU_UUID is present on the
                             # unhealthy HealthEvent. Sending an event with COMPONENT_RESET that is missing the GPU_UUID
@@ -244,13 +234,7 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                                     processingStrategy=self._processing_strategy,
                                 )
                             )
-                            severity = (
-                                "non_fatal"
-                                if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal"
-                                else "fatal"
-                            )
-                            # Defer metric update until after successful send
-                            pending_metric_updates.append((check_name, gpu_id, severity, 1))
+                            pending_metric_updates.append((check_name, gpu_id, 1))
                     else:
 
                         entity = platformconnector_pb2.Entity(entityType=self._component_class, entityValue=str(gpu_id))
@@ -270,51 +254,37 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                             )
 
                         key = self._build_cache_key(check_name, entity.entityType, entity.entityValue)
-                        if (
-                            key not in self.entity_cache
-                            or self.entity_cache[key].isFatal
-                            or not self.entity_cache[key].isHealthy
-                        ):
-                            # Don't send health events for non-fatal health conditions when they are healthy
-                            # they will get published as node conditions which we don't want to do to have
-                            # consistency in the health events publishing logic
-                            if self.dcgm_health_conditions_categorization_mapping_config[watch_name] == "NonFatal":
-                                log.debug(f"Skipping non-fatal health event for watch {watch_name}")
-                                # For non-fatal events that are not sent, update cache immediately
-                                # (no race condition since nothing is being sent)
-                                self.entity_cache[key] = CachedEntityState(isFatal=False, isHealthy=True)
-                                log.info(f"Updated cache for key {key} with value {self.entity_cache[key]}")
-                                metrics.dcgm_health_active_events.labels(
-                                    event_type=check_name, gpu_id=gpu_id, severity="non_fatal"
-                                ).set(0)
-                            else:
-                                # Defer cache update until after successful send
-                                pending_cache_updates[key] = CachedEntityState(isFatal=False, isHealthy=True)
-                                event_metadata = {}
-                                chassis_serial = self._metadata_reader.get_chassis_serial()
-                                if chassis_serial:
-                                    event_metadata["chassis_serial"] = chassis_serial
+                        entry = self.entity_cache.get(key)
 
-                                health_events.append(
-                                    platformconnector_pb2.HealthEvent(
-                                        version=self._version,
-                                        agent=self._agent,
-                                        componentClass=self._component_class,
-                                        checkName=check_name,
-                                        generatedTimestamp=timestamp,
-                                        isFatal=False,
-                                        isHealthy=True,
-                                        errorCode=[],
-                                        entitiesImpacted=entities_impacted,
-                                        message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
-                                        recommendedAction=platformconnector_pb2.NONE,
-                                        nodeName=self._node_name,
-                                        metadata=event_metadata,
-                                        processingStrategy=self._processing_strategy,
-                                    )
+                        if entry is None or not entry.is_healthy:
+                            had_errors = entry is not None and not entry.is_healthy
+                            pending_cache_updates[key] = EntityCacheEntry()
+
+                            event_metadata = {}
+                            chassis_serial = self._metadata_reader.get_chassis_serial()
+                            if chassis_serial:
+                                event_metadata["chassis_serial"] = chassis_serial
+
+                            health_events.append(
+                                platformconnector_pb2.HealthEvent(
+                                    version=self._version,
+                                    agent=self._agent,
+                                    componentClass=self._component_class,
+                                    checkName=check_name,
+                                    generatedTimestamp=timestamp,
+                                    isFatal=False,
+                                    isHealthy=True,
+                                    errorCode=[],
+                                    entitiesImpacted=entities_impacted,
+                                    message=f"GPU {self._get_dcgm_watch(watch_name)} watch reported no errors",
+                                    recommendedAction=platformconnector_pb2.NONE,
+                                    nodeName=self._node_name,
+                                    metadata=event_metadata,
+                                    processingStrategy=self._processing_strategy,
                                 )
-                                # Defer metric update until after successful send
-                                pending_metric_updates.append((check_name, gpu_id, "fatal", 0))
+                            )
+                            if had_errors:
+                                pending_metric_updates.append((check_name, gpu_id, 0))
             log.debug(f"dcgm health event is {health_events}")
             if len(health_events):
                 try:
@@ -322,11 +292,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
                         # Only update cache and metrics after successful send
                         for key, state in pending_cache_updates.items():
                             self.entity_cache[key] = state
-                            log.info(f"Updated cache for key {key} with value {state} after successful send")
-                        for event_type, gpu_id, severity, value in pending_metric_updates:
-                            metrics.dcgm_health_active_events.labels(
-                                event_type=event_type, gpu_id=gpu_id, severity=severity
-                            ).set(value)
+                            log.info(
+                                f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
+                            )
+                        for event_type, gpu_id, value in pending_metric_updates:
+                            metrics.dcgm_health_active_events.labels(event_type=event_type, gpu_id=gpu_id).set(value)
                 except Exception as e:
                     log.error(f"Exception while sending health events: {e}")
 
@@ -376,7 +346,8 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             health_events = []
             check_name = "GpuDcgmConnectivityFailure"
             key = self._build_cache_key(check_name, "DCGM", "ALL")
-            if key not in self.entity_cache or self.entity_cache[key].isHealthy:
+            entry = self.entity_cache.get(key)
+            if entry is None or entry.is_healthy:
                 event_metadata = {}
                 chassis_serial = self._metadata_reader.get_chassis_serial()
                 if chassis_serial:
@@ -403,12 +374,11 @@ class PlatformConnectorEventProcessor(dcgmtypes.CallbackInterface):
             if len(health_events):
                 try:
                     if self.send_health_event_with_retries(health_events):
-                        # Only update cache after successful send
-                        self.entity_cache[key] = CachedEntityState(isFatal=True, isHealthy=False)
-                        log.info(f"Updated cache for key {key} after successful send")
-                        metrics.dcgm_health_active_events.labels(
-                            event_type=check_name, gpu_id="", severity="fatal"
-                        ).set(1)
+                        self.entity_cache[key] = EntityCacheEntry(active_errors={"DCGM_CONNECTIVITY_ERROR"})
+                        log.info(
+                            f"Updated cache for key {key} with value {self.entity_cache[key]} after successful send"
+                        )
+                        metrics.dcgm_health_active_events.labels(event_type=check_name, gpu_id="").set(1)
                 except Exception as e:
                     log.error(f"Exception while sending DCGM connectivity failure events: {e}")
                     raise
