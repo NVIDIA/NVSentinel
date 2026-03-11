@@ -32,7 +32,6 @@ def _init_event_processor(
     exit: Event,
     dcgm_errors_info_dict: dict[str, str],
     state_file_path: str,
-    dcgm_health_conditions_categorization_mapping_config: dict[str, str],
     metadata_path: str,
     processing_strategy: platformconnector_pb2.ProcessingStrategy,
 ):
@@ -45,7 +44,6 @@ def _init_event_processor(
                 exit=exit,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
-                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path=metadata_path,
                 processing_strategy=processing_strategy,
             )
@@ -106,7 +104,6 @@ def cli(
         sys.exit(1)
 
     dcgm_errors_info_dict: dict[str, str] = {}
-    dcgm_health_conditions_categorization_mapping_config = config["DCGMHealthConditionsCategorizationMapping"]
 
     # Initialize structured JSON logging
     # Version is read from package metadata (set at build time via poetry version)
@@ -143,7 +140,6 @@ def cli(
                 exit,
                 dcgm_errors_info_dict,
                 state_file_path,
-                dcgm_health_conditions_categorization_mapping_config,
                 metadata_path,
                 processing_strategy_value,
             )

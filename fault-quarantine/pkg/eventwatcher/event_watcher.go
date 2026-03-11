@@ -223,37 +223,6 @@ func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *mod
 	}
 }
 
-func EmitNodeRemediationDuration(status *model.Status, healthEventWithStatus *model.HealthEventWithStatus) {
-	if status == nil || (*status != model.UnQuarantined && *status != model.Cancelled) {
-		return
-	}
-
-	if healthEventWithStatus == nil ||
-		healthEventWithStatus.HealthEvent == nil ||
-		healthEventWithStatus.HealthEvent.GetGeneratedTimestamp() == nil {
-		return
-	}
-
-	var qft, dft *time.Time
-
-	if ts := healthEventWithStatus.HealthEventStatus.QuarantineFinishTimestamp; ts != nil {
-		t := ts.AsTime()
-		qft = &t
-	}
-
-	if ts := healthEventWithStatus.HealthEventStatus.DrainFinishTimestamp; ts != nil {
-		t := ts.AsTime()
-		dft = &t
-	}
-
-	emitRemediationDuration(
-		healthEventWithStatus.HealthEvent.NodeName,
-		healthEventWithStatus.HealthEvent.GetGeneratedTimestamp().AsTime(),
-		qft,
-		dft,
-	)
-}
-
 func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, docIDs []string) {
 	seen := make(map[string]struct{}, len(docIDs))
 
@@ -308,7 +277,7 @@ func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, do
 		qft := protoTsToTimePtr(doc.HealthEventStatus.QuarantineFinishTimestamp, doc.HealthEvent.NodeName)
 		dft := protoTsToTimePtr(doc.HealthEventStatus.DrainFinishTimestamp, doc.HealthEvent.NodeName)
 
-		emitRemediationDuration(
+		EmitRemediationDuration(
 			doc.HealthEvent.NodeName,
 			genTs,
 			qft,
@@ -349,7 +318,7 @@ func protoTsToTimePtr(ts *dbTimestamp, nodeName string) *time.Time {
 	return &t
 }
 
-func emitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Time) {
+func EmitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Time) {
 	now := time.Now()
 
 	if duration := now.Sub(genTs).Seconds(); duration > 0 {
@@ -531,7 +500,7 @@ func emitCancelledRemediationDuration(
 
 	genTs := time.Unix(genTS.Seconds, int64(genTS.Nanos))
 
-	emitRemediationDuration(
+	EmitRemediationDuration(
 		nodeName,
 		genTs,
 		protoTsToTimePtr(qfTS, nodeName),

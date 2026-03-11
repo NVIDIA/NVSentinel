@@ -40,8 +40,9 @@ const (
 	opLT  = "$lt"
 	opNE  = "$ne"
 
-	// SQL order direction
-	orderDESC = "DESC"
+	// SQL constants
+	orderDESC     = "DESC"
+	sqlTrueClause = "TRUE"
 
 	// SQL window frame bounds
 	frameBoundUnbounded  = "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
@@ -746,20 +747,30 @@ func (c *PostgreSQLClient) NewChangeStreamWatcher(
 
 // PostgreSQL-specific helper methods
 
+func resolveSQLFilter(filter interface{}) (string, []interface{}, bool) {
+	b, ok := filter.(interface {
+		ToSQL() (string, []interface{})
+	})
+	if !ok {
+		return "", nil, false
+	}
+
+	sql, args := b.ToSQL()
+	if sql == "" {
+		return sqlTrueClause, []interface{}{}, true
+	}
+
+	return sql, args, true
+}
+
 // buildWhereClause converts filters to a PostgreSQL WHERE clause.
 // Accepts a *query.Builder (via ToSQL interface) or a legacy map[string]interface{} filter.
 func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []interface{}, error) {
 	if filter == nil {
-		return "TRUE", []interface{}{}, nil
+		return sqlTrueClause, []interface{}{}, nil
 	}
 
-	// Handle *query.Builder (or any type implementing ToSQL)
-	if b, ok := filter.(interface{ ToSQL() (string, []interface{}) }); ok {
-		sql, args := b.ToSQL()
-		if sql == "" {
-			return "TRUE", []interface{}{}, nil
-		}
-
+	if sql, args, ok := resolveSQLFilter(filter); ok {
 		return sql, args, nil
 	}
 
@@ -773,7 +784,7 @@ func (c *PostgreSQLClient) buildWhereClause(filter interface{}) (string, []inter
 	}
 
 	if len(filterMap) == 0 {
-		return "TRUE", []interface{}{}, nil
+		return sqlTrueClause, []interface{}{}, nil
 	}
 
 	var (
