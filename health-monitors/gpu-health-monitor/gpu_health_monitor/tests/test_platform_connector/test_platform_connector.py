@@ -111,23 +111,6 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict["DCGM_FR_CORRUPT_INFOROM"] = "COMPONENT_RESET"
         dcgm_errors_info_dict["DCGM_HEALTH_WATCH_INFOROM"] = "NONE"
 
-        dcgm_health_conditions_categorization_mapping_config = {}
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
-
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
@@ -136,7 +119,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit,
             dcgm_errors_info_dict,
             "statefile",
-            dcgm_health_conditions_categorization_mapping_config,
             temp_file_path,
             platformconnector_pb2.STORE_ONLY,
         )
@@ -150,10 +132,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 )
             },
         )
-        fatal_dcgm_health_events_length = 0
-        for watch_name in dcgm_health_events.keys():
-            if dcgm_health_conditions_categorization_mapping_config[watch_name] == "Fatal":
-                fatal_dcgm_health_events_length += 1
 
         gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
@@ -166,7 +144,7 @@ class TestPlatformConnectors(unittest.TestCase):
             else:
                 assert event.isHealthy == True
                 assert event.checkName != ""
-                assert fatal_dcgm_health_events_length * len(gpu_ids) == len(health_events)
+        assert len(dcgm_health_events) * len(gpu_ids) == len(health_events)
 
         # check if cache is not updated with change no in event
         dcgm_health_events["DCGM_HEALTH_WATCH_INFOROM"] = dcgmtypes.HealthDetails(
@@ -180,22 +158,15 @@ class TestPlatformConnectors(unittest.TestCase):
         )
 
         check_name = platform_connector_test._convert_dcgm_watch_name_to_check_name("DCGM_HEALTH_WATCH_INFOROM")
-        dcgm_health_event_key = platform_connector_test._build_cache_key(
-            check_name,
-            "GPU",
-            "0",
-        )
+        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
         before_insertion_cache_value = platform_connector_test.entity_cache[dcgm_health_event_key]
         cache_length = len(platform_connector_test.entity_cache)
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
         health_events = healthEventProcessor.health_events
         assert len(platform_connector_test.entity_cache) == cache_length
         assert (
-            platform_connector_test.entity_cache[dcgm_health_event_key].isFatal == before_insertion_cache_value.isFatal
-        )
-        assert (
-            platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy
-            == before_insertion_cache_value.isHealthy
+            platform_connector_test.entity_cache[dcgm_health_event_key].active_errors
+            == before_insertion_cache_value.active_errors
         )
 
         # check if cache is updated with change in event
@@ -207,15 +178,9 @@ class TestPlatformConnectors(unittest.TestCase):
         cache_length = len(platform_connector_test.entity_cache)
         platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
 
-        # Verify healthy event was added to cache with correct message format
-        dcgm_health_event_key = platform_connector_test._build_cache_key(
-            check_name,
-            "GPU",
-            "0",
-        )
+        dcgm_health_event_key = platform_connector_test._build_cache_key(check_name, "GPU", "0")
         assert dcgm_health_event_key in platform_connector_test.entity_cache
-        assert platform_connector_test.entity_cache[dcgm_health_event_key].isFatal == False
-        assert platform_connector_test.entity_cache[dcgm_health_event_key].isHealthy == True
+        assert platform_connector_test.entity_cache[dcgm_health_event_key].is_healthy
 
         server.stop(0)
         os.unlink(temp_file_path)
@@ -250,23 +215,6 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict = {}
         dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "COMPONENT_RESET"
 
-        dcgm_health_conditions_categorization_mapping_config = {}
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
-
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
@@ -275,7 +223,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit,
             dcgm_errors_info_dict,
             "statefile",
-            dcgm_health_conditions_categorization_mapping_config,
             temp_file_path,
             platformconnector_pb2.STORE_ONLY,
         )
@@ -342,7 +289,13 @@ class TestPlatformConnectors(unittest.TestCase):
         os.unlink(temp_file_path)
 
     def test_health_event_multiple_gpus_multiple_failures_each(self):
-        """Test that multiple NvLink failures across multiple GPUs are properly published to gRPC."""
+        """Test full lifecycle of NvLink failures across multiple GPUs:
+        Phase 1: Both GPU 0 and GPU 1 fail -> both events published, cache tracks each independently
+        Phase 2: Same errors persist -> no re-publish (idempotent)
+        Phase 3: GPU 0 recovers, GPU 1 stays unhealthy -> healthy event only for GPU 0
+        Phase 4: GPU 1 recovers -> healthy event only for GPU 1
+        Phase 5: All healthy, steady state -> no events sent
+        """
         healthEventProcessor = PlatformConnectorServicer()
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
         platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
@@ -371,30 +324,12 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict = {}
         dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "COMPONENT_RESET"
 
-        dcgm_health_conditions_categorization_mapping_config = {}
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
-
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
             socket_path,
             node_name,
             exit,
             dcgm_errors_info_dict,
             "statefile",
-            dcgm_health_conditions_categorization_mapping_config,
             "/tmp/test_metadata.json",
             platformconnector_pb2.STORE_ONLY,
         )
@@ -475,6 +410,86 @@ class TestPlatformConnectors(unittest.TestCase):
         assert gpu1_event.message == gpu1_message
         assert gpu1_event.processingStrategy == platformconnector_pb2.STORE_ONLY
 
+        gpu0_cache_key = platform_connector_test._build_cache_key("GpuNvlinkWatch", "GPU", "0")
+        gpu1_cache_key = platform_connector_test._build_cache_key("GpuNvlinkWatch", "GPU", "1")
+        assert "DCGM_FR_NVLINK_DOWN" in platform_connector_test.entity_cache[gpu0_cache_key].active_errors
+        assert not platform_connector_test.entity_cache[gpu0_cache_key].is_healthy
+        assert "DCGM_FR_NVLINK_DOWN" in platform_connector_test.entity_cache[gpu1_cache_key].active_errors
+        assert not platform_connector_test.entity_cache[gpu1_cache_key].is_healthy
+
+        # --- Phase 2: Same errors persist -> no re-publish ---
+        healthEventProcessor.health_events = None
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        assert healthEventProcessor.health_events is None, "Duplicate errors should not be re-published"
+
+        # --- Phase 3: GPU 0 recovers, GPU 1 stays unhealthy ---
+        dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.FAIL,
+            entity_failures={
+                1: dcgm.types.ErrorDetails(
+                    code="DCGM_FR_NVLINK_DOWN",
+                    message=gpu1_message,
+                ),
+            },
+        )
+
+        healthEventProcessor.health_events = None
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        recovery_events = healthEventProcessor.health_events
+
+        gpu0_recovery = None
+        gpu1_unexpected_recovery = None
+        gpu1_unexpected_failure = None
+        for event in recovery_events:
+            if event.checkName == "GpuNvlinkWatch":
+                if event.entitiesImpacted[0].entityValue == "0" and event.isHealthy:
+                    gpu0_recovery = event
+                elif event.entitiesImpacted[0].entityValue == "1" and event.isHealthy:
+                    gpu1_unexpected_recovery = event
+                elif event.entitiesImpacted[0].entityValue == "1" and not event.isHealthy:
+                    gpu1_unexpected_failure = event
+
+        assert gpu0_recovery is not None, "Healthy event should be sent for GPU 0 recovery"
+        assert gpu0_recovery.isHealthy == True
+        assert gpu0_recovery.isFatal == False
+        assert gpu1_unexpected_recovery is None, "GPU 1 should NOT get a healthy event (still failing)"
+        assert gpu1_unexpected_failure is None, "GPU 1 should NOT get a duplicate failure event"
+
+        assert platform_connector_test.entity_cache[gpu0_cache_key].is_healthy
+        assert not platform_connector_test.entity_cache[gpu1_cache_key].is_healthy
+        assert "DCGM_FR_NVLINK_DOWN" in platform_connector_test.entity_cache[gpu1_cache_key].active_errors
+
+        # --- Phase 4: GPU 1 also recovers ---
+        dcgm_health_events["DCGM_HEALTH_WATCH_NVLINK"] = dcgmtypes.HealthDetails(
+            status=dcgmtypes.HealthStatus.PASS,
+            entity_failures={},
+        )
+
+        healthEventProcessor.health_events = None
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        final_recovery_events = healthEventProcessor.health_events
+
+        gpu1_recovery = None
+        gpu0_dup_recovery = None
+        for event in final_recovery_events:
+            if event.checkName == "GpuNvlinkWatch" and event.isHealthy:
+                if event.entitiesImpacted[0].entityValue == "1":
+                    gpu1_recovery = event
+                elif event.entitiesImpacted[0].entityValue == "0":
+                    gpu0_dup_recovery = event
+
+        assert gpu1_recovery is not None, "Healthy event should be sent for GPU 1 recovery"
+        assert gpu1_recovery.isHealthy == True
+        assert gpu0_dup_recovery is None, "GPU 0 should NOT get a duplicate healthy event (already recovered)"
+
+        assert platform_connector_test.entity_cache[gpu0_cache_key].is_healthy
+        assert platform_connector_test.entity_cache[gpu1_cache_key].is_healthy
+
+        # --- Phase 5: Steady state -> no events ---
+        healthEventProcessor.health_events = None
+        platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+        assert healthEventProcessor.health_events is None, "No events should be sent when all cached as healthy"
+
         server.stop(0)
 
     def test_health_event_multiple_recommended_action_override(self):
@@ -507,23 +522,6 @@ class TestPlatformConnectors(unittest.TestCase):
         dcgm_errors_info_dict = {}
         dcgm_errors_info_dict["DCGM_FR_NVLINK_DOWN"] = "COMPONENT_RESET"
 
-        dcgm_health_conditions_categorization_mapping_config = {}
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVLINK"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PCIE"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MEM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_INFOROM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_MCU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_DRIVER"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_FATAL"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_SM"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_THERMAL"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_POWER"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_PMU"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_CPUSET"] = "NonFatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_NVSWITCH"] = "Fatal"
-        dcgm_health_conditions_categorization_mapping_config["DCGM_HEALTH_WATCH_ALL"] = "Fatal"
-
         temp_file_path = metadata_file()
 
         platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
@@ -532,7 +530,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit,
             dcgm_errors_info_dict,
             "statefile",
-            dcgm_health_conditions_categorization_mapping_config,
             temp_file_path,
             platformconnector_pb2.STORE_ONLY,
         )
@@ -646,10 +643,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit = Event()
 
             dcgm_errors_info_dict = {}
-            dcgm_health_conditions_categorization_mapping_config = {
-                "DCGM_HEALTH_WATCH_PCIE": "Fatal",
-                "DCGM_HEALTH_WATCH_NVLINK": "Fatal",
-            }
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=socket_path,
@@ -657,7 +650,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 exit=exit,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
-                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path="/tmp/test_metadata.json",
                 processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
@@ -697,9 +689,6 @@ class TestPlatformConnectors(unittest.TestCase):
         exit = Event()
 
         dcgm_errors_info_dict = {}
-        dcgm_health_conditions_categorization_mapping_config = {
-            "DCGM_HEALTH_WATCH_PCIE": "Fatal",
-        }
 
         platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
             socket_path=socket_path,
@@ -707,7 +696,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit=exit,
             dcgm_errors_info_dict=dcgm_errors_info_dict,
             state_file_path="statefile",
-            dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
             metadata_path="/tmp/test_metadata.json",
             processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
         )
@@ -739,6 +727,441 @@ class TestPlatformConnectors(unittest.TestCase):
 
         server.stop(0)
 
+    def test_nonfatal_event_lifecycle_downgrade_and_native(self):
+        """Test the full lifecycle of non-fatal events from two sources:
+        1. MEM watch with DCGM_FR_XID_ERROR (recommendedAction=NONE → non-fatal)
+        2. THERMAL watch with DCGM_FR_TEMP_VIOLATION (recommendedAction=NONE → non-fatal)
+        Both should be published on state change and suppressed when unchanged.
+        On recovery, healthy events are sent for all watches to clear state in
+        the platform connector.
+        """
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+        exit = Event()
+        dcgm_errors_info_dict = {
+            "DCGM_FR_XID_ERROR": "NONE",
+            "DCGM_FR_TEMP_VIOLATION": "NONE",
+        }
+
+        temp_file_path = metadata_file()
+
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            exit,
+            dcgm_errors_info_dict,
+            "statefile",
+            temp_file_path,
+            platformconnector_pb2.STORE_ONLY,
+        )
+
+        try:
+            # --- Phase 1: Both watches go unhealthy ---
+            # MEM fails with DCGM_FR_XID_ERROR (recommendedAction=NONE → non-fatal)
+            # THERMAL fails with DCGM_FR_TEMP_VIOLATION (recommendedAction=NONE → non-fatal)
+            dcgm_health_events = watcher._get_health_status_dict()
+            dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    4: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_XID_ERROR",
+                        message="ErrorCode:DCGM_FR_XID_ERROR GPU:4 PCI:0000:c4:00.0 "
+                        "Detected XID 31 for GPU 4 .Recommended Action=NONE;",
+                    )
+                },
+            )
+            dcgm_health_events["DCGM_HEALTH_WATCH_THERMAL"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    2: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_TEMP_VIOLATION",
+                        message="GPU 2 temperature exceeds threshold",
+                    )
+                },
+            )
+
+            gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            health_events = healthEventProcessor.health_events
+
+            # Verify non-fatal (MEM watch, GPU 4, recommendedAction=NONE)
+            mem_failure = None
+            for event in health_events:
+                if (
+                    event.checkName == "GpuMemWatch"
+                    and not event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "4"
+                ):
+                    mem_failure = event
+                    break
+
+            assert mem_failure is not None, "GpuMemWatch failure event for GPU 4 not found"
+            assert not mem_failure.isFatal, "Event with recommendedAction=NONE should be non-fatal"
+            assert mem_failure.errorCode[0] == "DCGM_FR_XID_ERROR"
+            assert mem_failure.recommendedAction == platformconnector_pb2.NONE
+
+            mem_cache_key = platform_connector_test._build_cache_key("GpuMemWatch", "GPU", "4")
+            assert "DCGM_FR_XID_ERROR" in platform_connector_test.entity_cache[mem_cache_key].active_errors
+            assert not platform_connector_test.entity_cache[mem_cache_key].is_healthy
+
+            # Verify non-fatal (THERMAL watch, GPU 2, recommendedAction=NONE)
+            thermal_failure = None
+            for event in health_events:
+                if (
+                    event.checkName == "GpuThermalWatch"
+                    and not event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "2"
+                ):
+                    thermal_failure = event
+                    break
+
+            assert thermal_failure is not None, "GpuThermalWatch failure event for GPU 2 not found"
+            assert not thermal_failure.isFatal, "Event with recommendedAction=NONE should be non-fatal"
+            assert thermal_failure.errorCode[0] == "DCGM_FR_TEMP_VIOLATION"
+            assert thermal_failure.recommendedAction == platformconnector_pb2.NONE
+
+            thermal_cache_key = platform_connector_test._build_cache_key("GpuThermalWatch", "GPU", "2")
+            assert "DCGM_FR_TEMP_VIOLATION" in platform_connector_test.entity_cache[thermal_cache_key].active_errors
+            assert not platform_connector_test.entity_cache[thermal_cache_key].is_healthy
+
+            # --- Phase 2: Same errors persist — should NOT be re-published (no state change) ---
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            assert (
+                healthEventProcessor.health_events is None
+            ), "Non-fatal unhealthy events should not be re-published when cache state unchanged"
+
+            # --- Phase 3: Both watches recover ---
+            # Both MEM and THERMAL have recommendedAction=NONE → non-fatal
+            # Healthy events are sent for all recoveries to clear the state in platform connector
+            dcgm_health_events["DCGM_HEALTH_WATCH_MEM"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+            dcgm_health_events["DCGM_HEALTH_WATCH_THERMAL"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            recovery_events = healthEventProcessor.health_events
+
+            mem_recovery = None
+            thermal_recovery = None
+            for event in recovery_events:
+                if (
+                    event.checkName == "GpuMemWatch"
+                    and event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "4"
+                ):
+                    mem_recovery = event
+                if (
+                    event.checkName == "GpuThermalWatch"
+                    and event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "2"
+                ):
+                    thermal_recovery = event
+
+            assert mem_recovery is not None, "Healthy event must be sent for MEM recovery"
+            assert thermal_recovery is not None, "Healthy event must be sent for THERMAL recovery"
+
+            assert platform_connector_test.entity_cache[mem_cache_key].is_healthy
+            assert platform_connector_test.entity_cache[thermal_cache_key].is_healthy
+
+            # --- Phase 4: Steady state — no events sent (all cached as healthy) ---
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            assert (
+                healthEventProcessor.health_events is None
+            ), "No events should be sent when all watches are healthy and cached"
+        finally:
+            server.stop(0)
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
+    def test_fatal_error_lifecycle_when_recommended_action_requires_remediation(self):
+        """Test that an error with recommendedAction != NONE is treated as fatal.
+
+        DCGM_FR_POWER_UNREADABLE maps to RESTART_VM (not NONE), so isFatal=True
+        and the event creates a node condition. On recovery, a healthy event is
+        sent to clear the condition.
+        """
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+        exit = Event()
+        dcgm_errors_info_dict = {
+            "DCGM_FR_POWER_UNREADABLE": "RESTART_VM",
+        }
+
+        temp_file_path = metadata_file()
+
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            exit,
+            dcgm_errors_info_dict,
+            "statefile",
+            temp_file_path,
+            platformconnector_pb2.STORE_ONLY,
+        )
+
+        try:
+            dcgm_health_events = watcher._get_health_status_dict()
+            dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    3: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_POWER_UNREADABLE",
+                        message="GPU 3 power reading is unavailable",
+                    )
+                },
+            )
+
+            gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            health_events = healthEventProcessor.health_events
+
+            power_failure = None
+            for event in health_events:
+                if (
+                    event.checkName == "GpuPowerWatch"
+                    and not event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "3"
+                ):
+                    power_failure = event
+                    break
+
+            assert power_failure is not None, "GpuPowerWatch failure event for GPU 3 not found"
+            assert power_failure.isFatal, "Event with recommendedAction=RESTART_VM should be fatal"
+            assert power_failure.errorCode[0] == "DCGM_FR_POWER_UNREADABLE"
+            assert power_failure.recommendedAction == platformconnector_pb2.RESTART_VM
+
+            cache_key = platform_connector_test._build_cache_key("GpuPowerWatch", "GPU", "3")
+            assert "DCGM_FR_POWER_UNREADABLE" in platform_connector_test.entity_cache[cache_key].active_errors
+            assert not platform_connector_test.entity_cache[cache_key].is_healthy
+
+            # Recovery: since it was fatal (recommendedAction!=NONE), healthy event IS sent via gRPC
+            dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            recovery_events = healthEventProcessor.health_events
+
+            power_recovery = None
+            for event in recovery_events:
+                if (
+                    event.checkName == "GpuPowerWatch"
+                    and event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "3"
+                ):
+                    power_recovery = event
+                    break
+
+            assert power_recovery is not None, "Healthy event must be sent for fatal watch to clear node condition"
+            assert platform_connector_test.entity_cache[cache_key].is_healthy
+        finally:
+            server.stop(0)
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
+    def test_multiple_error_codes_accumulate_and_single_pass_clears_all(self):
+        """Test that different error codes on the same (watch, GPU) accumulate independently
+        in active_errors, and a single PASS wipes them all.
+
+        Scenario (GpuPowerWatch, GPU 3):
+          Phase 1: DCGM_FR_CLOCK_THROTTLE_POWER (action=NONE -> non-fatal) -> published
+          Phase 2: DCGM_FR_POWER_UNREADABLE (action=RESTART_VM -> fatal) -> published (new error code)
+                   Cache now has both error codes in active_errors
+          Phase 3: DCGM_FR_POWER_UNREADABLE again -> NOT re-published (already cached)
+          Phase 4: PASS -> single healthy event clears both errors
+          Phase 5: PASS again -> no event (already healthy)
+        """
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        watcher = dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+        exit = Event()
+        dcgm_errors_info_dict = {
+            "DCGM_FR_CLOCK_THROTTLE_POWER": "NONE",
+            "DCGM_FR_POWER_UNREADABLE": "RESTART_VM",
+        }
+
+        temp_file_path = metadata_file()
+
+        platform_connector_test = platform_connector.PlatformConnectorEventProcessor(
+            socket_path,
+            node_name,
+            exit,
+            dcgm_errors_info_dict,
+            "statefile",
+            temp_file_path,
+            platformconnector_pb2.STORE_ONLY,
+        )
+
+        cache_key = platform_connector_test._build_cache_key("GpuPowerWatch", "GPU", "3")
+
+        try:
+            # --- Phase 1: Non-fatal error ---
+            dcgm_health_events = watcher._get_health_status_dict()
+            dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    3: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_CLOCK_THROTTLE_POWER",
+                        message="GPU 3 clock throttled due to power",
+                    )
+                },
+            )
+
+            gpu_ids = [0, 1, 2, 3, 4, 5, 6, 7]
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            health_events = healthEventProcessor.health_events
+
+            throttle_event = None
+            for event in health_events:
+                if (
+                    event.checkName == "GpuPowerWatch"
+                    and not event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "3"
+                ):
+                    throttle_event = event
+                    break
+
+            assert throttle_event is not None, "Non-fatal power throttle event should be published"
+            assert not throttle_event.isFatal, "DCGM_FR_CLOCK_THROTTLE_POWER (action=NONE) should be non-fatal"
+            assert throttle_event.errorCode[0] == "DCGM_FR_CLOCK_THROTTLE_POWER"
+
+            assert cache_key in platform_connector_test.entity_cache
+            assert platform_connector_test.entity_cache[cache_key].active_errors == {"DCGM_FR_CLOCK_THROTTLE_POWER"}
+            assert not platform_connector_test.entity_cache[cache_key].is_healthy
+
+            # --- Phase 2: Different fatal error on same (watch, GPU) ---
+            dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.FAIL,
+                entity_failures={
+                    3: dcgm.types.ErrorDetails(
+                        code="DCGM_FR_POWER_UNREADABLE",
+                        message="GPU 3 power reading is unavailable",
+                    )
+                },
+            )
+
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            health_events = healthEventProcessor.health_events
+
+            power_event = None
+            for event in health_events:
+                if (
+                    event.checkName == "GpuPowerWatch"
+                    and not event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "3"
+                ):
+                    power_event = event
+                    break
+
+            assert power_event is not None, "Fatal power unreadable event should be published (new error code)"
+            assert power_event.isFatal, "DCGM_FR_POWER_UNREADABLE (action=RESTART_VM) should be fatal"
+            assert power_event.errorCode[0] == "DCGM_FR_POWER_UNREADABLE"
+
+            assert platform_connector_test.entity_cache[cache_key].active_errors == {
+                "DCGM_FR_CLOCK_THROTTLE_POWER",
+                "DCGM_FR_POWER_UNREADABLE",
+            }, "Both error codes should be accumulated in active_errors"
+
+            # --- Phase 3: Same fatal error again -> should NOT re-publish ---
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+
+            if healthEventProcessor.health_events:
+                power_duplicate = None
+                for event in healthEventProcessor.health_events:
+                    if (
+                        event.checkName == "GpuPowerWatch"
+                        and not event.isHealthy
+                        and event.entitiesImpacted[0].entityValue == "3"
+                    ):
+                        power_duplicate = event
+                        break
+                assert power_duplicate is None, "Same error code should not be re-published"
+
+            # --- Phase 4: PASS -> single healthy event clears both errors ---
+            dcgm_health_events["DCGM_HEALTH_WATCH_POWER"] = dcgmtypes.HealthDetails(
+                status=dcgmtypes.HealthStatus.PASS,
+                entity_failures={},
+            )
+
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+            recovery_events = healthEventProcessor.health_events
+
+            power_recovery = None
+            for event in recovery_events:
+                if (
+                    event.checkName == "GpuPowerWatch"
+                    and event.isHealthy
+                    and event.entitiesImpacted[0].entityValue == "3"
+                ):
+                    power_recovery = event
+                    break
+
+            assert power_recovery is not None, "Healthy event must be sent to clear both errors"
+            assert platform_connector_test.entity_cache[cache_key].is_healthy
+            assert platform_connector_test.entity_cache[cache_key].active_errors == set()
+
+            # --- Phase 5: PASS again -> no event (already healthy) ---
+            healthEventProcessor.health_events = None
+            platform_connector_test.health_event_occurred(dcgm_health_events, gpu_ids)
+
+            if healthEventProcessor.health_events:
+                power_dup_recovery = None
+                for event in healthEventProcessor.health_events:
+                    if (
+                        event.checkName == "GpuPowerWatch"
+                        and event.isHealthy
+                        and event.entitiesImpacted[0].entityValue == "3"
+                    ):
+                        power_dup_recovery = event
+                        break
+                assert power_dup_recovery is None, "Healthy event should not be re-sent when already healthy"
+        finally:
+            server.stop(0)
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
     def test_event_retry_and_cache_cleanup_when_platform_connector_down(self) -> None:
         """Test when platform connector goes down and comes back up."""
         import tempfile
@@ -764,23 +1187,6 @@ class TestPlatformConnectors(unittest.TestCase):
             exit = Event()
 
             dcgm_errors_info_dict = {"DCGM_FR_CORRUPT_INFOROM": "COMPONENT_RESET"}
-            dcgm_health_conditions_categorization_mapping_config = {
-                "DCGM_HEALTH_WATCH_INFOROM": "Fatal",
-                "DCGM_HEALTH_WATCH_THERMAL": "NonFatal",
-                "DCGM_HEALTH_WATCH_POWER": "NonFatal",
-                "DCGM_HEALTH_WATCH_NVLINK": "Fatal",
-                "DCGM_HEALTH_WATCH_SM": "Fatal",
-                "DCGM_HEALTH_WATCH_MEM": "Fatal",
-                "DCGM_HEALTH_WATCH_MCU": "Fatal",
-                "DCGM_HEALTH_WATCH_DRIVER": "Fatal",
-                "DCGM_HEALTH_WATCH_NVSWITCH_FATAL": "Fatal",
-                "DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL": "NonFatal",
-                "DCGM_HEALTH_WATCH_PCIE": "Fatal",
-                "DCGM_HEALTH_WATCH_PMU": "Fatal",
-                "DCGM_HEALTH_WATCH_CPUSET": "NonFatal",
-                "DCGM_HEALTH_WATCH_NVSWITCH": "Fatal",
-                "DCGM_HEALTH_WATCH_ALL": "Fatal",
-            }
 
             platform_connector_processor = platform_connector.PlatformConnectorEventProcessor(
                 socket_path=socket_path,
@@ -788,7 +1194,6 @@ class TestPlatformConnectors(unittest.TestCase):
                 exit=exit,
                 dcgm_errors_info_dict=dcgm_errors_info_dict,
                 state_file_path=state_file_path,
-                dcgm_health_conditions_categorization_mapping_config=dcgm_health_conditions_categorization_mapping_config,
                 metadata_path="/tmp/test_metadata.json",
                 processing_strategy=platformconnector_pb2.STORE_ONLY,
             )
@@ -844,8 +1249,11 @@ class TestPlatformConnectors(unittest.TestCase):
             assert (
                 dcgm_failure_cache_key in platform_connector_processor.entity_cache
             ), "Cache should be updated after successful send"
-            assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isFatal == True
-            assert platform_connector_processor.entity_cache[dcgm_failure_cache_key].isHealthy == False
+            assert not platform_connector_processor.entity_cache[dcgm_failure_cache_key].is_healthy
+            assert (
+                "DCGM_CONNECTIVITY_ERROR"
+                in platform_connector_processor.entity_cache[dcgm_failure_cache_key].active_errors
+            )
 
             # Verify DCGM failure event was sent
             health_events = healthEventProcessor.health_events
@@ -866,7 +1274,7 @@ class TestPlatformConnectors(unittest.TestCase):
             time.sleep(1)
             assert platform_connector_processor.entity_cache[
                 dcgm_failure_cache_key
-            ].isHealthy, "Cache should be updated after successful send"
+            ].is_healthy, "Cache should be updated after successful send"
 
             # Verify DCGM restored event was sent
             health_events = healthEventProcessor.health_events
@@ -885,8 +1293,11 @@ class TestPlatformConnectors(unittest.TestCase):
             assert (
                 gpu_health_cache_key in platform_connector_processor.entity_cache
             ), "Cache should be updated after successful send"
-            assert platform_connector_processor.entity_cache[gpu_health_cache_key].isFatal == True
-            assert platform_connector_processor.entity_cache[gpu_health_cache_key].isHealthy == False
+            assert not platform_connector_processor.entity_cache[gpu_health_cache_key].is_healthy
+            assert (
+                "DCGM_FR_CORRUPT_INFOROM"
+                in platform_connector_processor.entity_cache[gpu_health_cache_key].active_errors
+            )
 
             # Verify GPU health event was sent
             health_events = healthEventProcessor.health_events

@@ -29,10 +29,11 @@ spec:
       {{- include "nvsentinel.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.platformConnector.podAnnotations }}
       annotations:
+        {{- with .Values.platformConnector.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "nvsentinel.selectorLabels" . | nindent 8 }}
     spec:

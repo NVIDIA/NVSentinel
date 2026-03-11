@@ -35,19 +35,4 @@ data:
     [cli]
     EnabledEventProcessors = PlatformConnectorEventProcessor
 
-    [DCGMHealthConditionsCategorizationMapping]
-    DCGM_HEALTH_WATCH_THERMAL=NonFatal
-    DCGM_HEALTH_WATCH_POWER=NonFatal
-    DCGM_HEALTH_WATCH_NVLINK=Fatal
-    DCGM_HEALTH_WATCH_SM=Fatal
-    DCGM_HEALTH_WATCH_MEM=Fatal
-    DCGM_HEALTH_WATCH_INFOROM=Fatal
-    DCGM_HEALTH_WATCH_MCU=Fatal
-    DCGM_HEALTH_WATCH_DRIVER=Fatal
-    DCGM_HEALTH_WATCH_NVSWITCH_FATAL=Fatal
-    DCGM_HEALTH_WATCH_NVSWITCH_NONFATAL=NonFatal
-    DCGM_HEALTH_WATCH_PCIE=Fatal
-    DCGM_HEALTH_WATCH_PMU=Fatal
-    DCGM_HEALTH_WATCH_ALL=Fatal
-
 {{ (.Files.Glob "files/dcgmerrorsmapping.csv").AsConfig | indent 2 }}

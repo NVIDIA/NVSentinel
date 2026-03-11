@@ -30,6 +30,6 @@ health_events_insertion_to_uds_error = Counter(
 
 dcgm_health_active_events = Gauge(
     "dcgm_health_active_events",
-    "Total number of active health events at any given time by severity",
-    labelnames=["event_type", "gpu_id", "severity"],
+    "Active health events by watch type and GPU",
+    labelnames=["event_type", "gpu_id"],
 )
