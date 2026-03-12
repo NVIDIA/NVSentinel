@@ -61,6 +61,11 @@ helm_resource(
     ],
 )
 
+local_resource(
+    'kai-scheduler',
+    cmd='helm upgrade --install kai-scheduler oci://ghcr.io/nvidia/kai-scheduler/kai-scheduler --version v0.12.10 --create-namespace -n kai-scheduler --wait',
+)
+
 helm_repo('sigs-kwok', 'https://kwok.sigs.k8s.io/charts/')
 helm_resource(
     'kwok',
@@ -129,6 +134,7 @@ include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
 include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
+include('../preflight/Tiltfile')
 include('../gpu-reset/Tiltfile')
 values_files = [
     '../distros/kubernetes/nvsentinel/values.yaml',
@@ -201,11 +207,20 @@ if use_postgresql:
 else:
     datastore_resource = 'mongodb' if not use_percona else 'create-mongodb-database'
 
-# Cert-manager resources vary based on datastore
+# Cert-manager resources: pulled out of auto-grouped workload resources so they
+# get applied after CRDs exist (otherwise Tilt fails to apply the whole group).
+preflight_enabled = effective_values.get('global', {}).get('preflight', {}).get('enabled', False)
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
     'janitor-selfsigned-issuer:issuer'
 ]
+if preflight_enabled:
+    cert_manager_objects.extend([
+        'nvsentinel-preflight-webhook-cert:certificate',
+        'nvsentinel-preflight-ca:certificate',
+        'nvsentinel-preflight-selfsigned:issuer',
+        'nvsentinel-preflight-ca-issuer:issuer',
+    ])
 if use_postgresql:
     cert_manager_objects.extend([
         'postgresql-root-ca:certificate',

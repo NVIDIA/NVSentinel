@@ -380,6 +380,16 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 
 			eventwatcher.EmitNodeQuarantineDuration(status, &healthEventWithStatus)
 
+			if status != nil && *status == model.UnQuarantined {
+				if genTs := healthEventWithStatus.HealthEvent.GetGeneratedTimestamp(); genTs != nil {
+					eventwatcher.EmitRemediationDuration(
+						healthEventWithStatus.HealthEvent.GetNodeName(),
+						genTs.AsTime(),
+						nil, nil,
+					)
+				}
+			}
+
 			statusMu.Lock()
 			eventStatuses[eventID] = status
 			statusMu.Unlock()
@@ -5420,7 +5430,9 @@ func TestMetrics_NodeRemediationDuration(t *testing.T) {
 		return status != nil && *status == model.UnQuarantined
 	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
 
-	eventwatcher.EmitRemediationDuration(nodeName, generatedTime, nil, nil)
+	require.Eventually(t, func() bool {
+		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationCount
+	}, statusCheckTimeout, statusCheckPollInterval, "NodeRemediationDurationSeconds should be recorded")
 
 	afterRemediationCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
 	afterRemediationSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationSeconds)
@@ -5632,10 +5644,9 @@ func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
 		beforeCordonsRemoved+1, "CordonsRemoved should increment")
 
 	// --- Phase 3: Remediation duration ---
-	eventwatcher.EmitRemediationDuration(nodeName, generatedTime, nil, nil)
-
-	assert.Equal(t, beforeRemediationDuration+1,
-		getHistogramCount(t, metrics.NodeRemediationDurationSeconds),
+	require.Eventually(t, func() bool {
+		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationDuration
+	}, statusCheckTimeout, statusCheckPollInterval,
 		"NodeRemediationDurationSeconds should be recorded after unquarantine")
 
 	t.Log("Full quarantine → unquarantine metrics flow verified successfully")

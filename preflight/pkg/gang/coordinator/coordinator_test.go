@@ -15,10 +15,18 @@
 package coordinator
 
 import (
+	"context"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestConfigMapName(t *testing.T) {
@@ -239,4 +247,193 @@ func TestGetRank(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Tests with fake client ---
+
+func newFakeCoordinator(objects ...client.Object) *Coordinator {
+	c := fake.NewClientBuilder().WithObjects(objects...).Build()
+	return NewCoordinator(c, DefaultCoordinatorConfig())
+}
+
+func getConfigMap(t *testing.T, c client.Client, namespace, name string) *corev1.ConfigMap {
+	t.Helper()
+	cm := &corev1.ConfigMap{}
+	err := c.Get(context.Background(), client.ObjectKey{Namespace: namespace, Name: name}, cm)
+	require.NoError(t, err)
+	return cm
+}
+
+// TestEnsureConfigMap covers idempotent ConfigMap creation: creates when
+// missing, no-ops when already present, handles concurrent create races.
+func TestEnsureConfigMap(t *testing.T) {
+	t.Run("creates ConfigMap when missing", func(t *testing.T) {
+		coord := newFakeCoordinator()
+
+		err := coord.EnsureConfigMap(context.Background(), "default", "test-gang", 4)
+		require.NoError(t, err)
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("test-gang"))
+		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount])
+		assert.Equal(t, strconv.Itoa(DefaultMasterPort), cm.Data[DataKeyMasterPort])
+		assert.Equal(t, "", cm.Data[DataKeyPeers])
+		assert.Equal(t, "", cm.Data[DataKeyMasterAddr])
+		assert.Equal(t, "test-gang", cm.Data[DataKeyGangID])
+		assert.Equal(t, "preflight", cm.Labels[ConfigMapLabelManagedBy])
+	})
+
+	t.Run("noop when ConfigMap already exists", func(t *testing.T) {
+		cmName := ConfigMapName("existing-gang")
+		existing := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cmName,
+				Namespace: "default",
+			},
+			Data: map[string]string{DataKeyPeers: "pod-0;10.0.0.1;0"},
+		}
+		coord := newFakeCoordinator(existing)
+
+		err := coord.EnsureConfigMap(context.Background(), "default", "existing-gang", 2)
+		require.NoError(t, err)
+
+		cm := getConfigMap(t, coord.client, "default", cmName)
+		assert.Equal(t, "pod-0;10.0.0.1;0", cm.Data[DataKeyPeers], "existing data should be unchanged")
+	})
+
+	t.Run("idempotent on repeated calls", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2))
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "idempotent-gang", 2))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("idempotent-gang"))
+		assert.NotNil(t, cm)
+	})
+}
+
+// TestRegisterPeer covers peer registration: first peer + master election,
+// alphabetical sorting, IP updates without duplication, empty IP skipping,
+// and expected_count backfill from skeleton ConfigMaps.
+func TestRegisterPeer(t *testing.T) {
+	t.Run("registers first peer and sets master", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		gangInfo := &types.GangInfo{GangID: "test-gang", ExpectedMinCount: 2}
+		peer := types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}
+
+		err := coord.RegisterPeer(ctx, "default", gangInfo, peer)
+		require.NoError(t, err)
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("test-gang"))
+		peers := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, peers, 1)
+		assert.Equal(t, "pod-0", peers[0].PodName)
+		assert.Equal(t, "10.0.0.1", peers[0].PodIP)
+		assert.Equal(t, "10.0.0.1", cm.Data[DataKeyMasterAddr])
+	})
+
+	t.Run("registers second peer sorted alphabetically", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+		gangInfo := &types.GangInfo{GangID: "sort-gang", ExpectedMinCount: 2}
+
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-b", PodIP: "10.0.0.2"}))
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-a", PodIP: "10.0.0.1"}))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("sort-gang"))
+		peers := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, peers, 2)
+		assert.Equal(t, "pod-a", peers[0].PodName, "should be sorted alphabetically")
+		assert.Equal(t, "pod-b", peers[1].PodName)
+		assert.Equal(t, "10.0.0.1", cm.Data[DataKeyMasterAddr], "rank-0 (pod-a) should be master")
+	})
+
+	t.Run("updates existing peer IP without duplicating", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+		gangInfo := &types.GangInfo{GangID: "update-gang", ExpectedMinCount: 2}
+
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.99"}))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("update-gang"))
+		peers := ParsePeers(cm.Data[DataKeyPeers])
+		require.Len(t, peers, 1, "should not duplicate")
+		assert.Equal(t, "10.0.0.99", peers[0].PodIP, "IP should be updated")
+	})
+
+	t.Run("peer with empty IP is skipped", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+		gangInfo := &types.GangInfo{GangID: "empty-ip", ExpectedMinCount: 2}
+
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: ""}))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("empty-ip"))
+		peers := ParsePeers(cm.Data[DataKeyPeers])
+		assert.Empty(t, peers)
+	})
+
+	t.Run("expected count updated from skeleton", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "skeleton-gang", 0))
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("skeleton-gang"))
+		assert.Equal(t, "0", cm.Data[DataKeyExpectedCount])
+
+		gangInfo := &types.GangInfo{GangID: "skeleton-gang", ExpectedMinCount: 4}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+
+		cm = getConfigMap(t, coord.client, "default", ConfigMapName("skeleton-gang"))
+		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount])
+	})
+
+	t.Run("expected count not overwritten when already set", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "preset-gang", 4))
+		gangInfo := &types.GangInfo{GangID: "preset-gang", ExpectedMinCount: 2}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("preset-gang"))
+		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount], "should not be overwritten")
+	})
+}
+
+// TestUpdateMasterAddr covers master address selection: rank-0 is
+// alphabetically first, empty peer list is a no-op, rank-0 with
+// empty IP doesn't overwrite.
+func TestUpdateMasterAddr(t *testing.T) {
+	t.Run("rank 0 is alphabetically first", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		cm := &corev1.ConfigMap{Data: map[string]string{
+			DataKeyPeers: "pod-c;10.0.0.3;0\npod-a;10.0.0.1;1\npod-b;10.0.0.2;2",
+		}}
+		coord.updateMasterAddr(cm)
+		assert.Equal(t, "10.0.0.1", cm.Data[DataKeyMasterAddr])
+	})
+
+	t.Run("empty peers no change", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		cm := &corev1.ConfigMap{Data: map[string]string{
+			DataKeyPeers:      "",
+			DataKeyMasterAddr: "old-addr",
+		}}
+		coord.updateMasterAddr(cm)
+		assert.Equal(t, "old-addr", cm.Data[DataKeyMasterAddr])
+	})
+
+	t.Run("rank 0 empty IP no update", func(t *testing.T) {
+		coord := newFakeCoordinator()
+		cm := &corev1.ConfigMap{Data: map[string]string{
+			DataKeyPeers:      "pod-a;;0\npod-b;10.0.0.2;1",
+			DataKeyMasterAddr: "",
+		}}
+		coord.updateMasterAddr(cm)
+		assert.Equal(t, "", cm.Data[DataKeyMasterAddr])
+	})
 }
