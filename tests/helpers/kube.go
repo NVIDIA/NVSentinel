@@ -762,29 +762,50 @@ func CountSchedulableNodes(nodeList v1.NodeList) int {
 	return count
 }
 
-// GetRealNodeName returns a real (non-KWOK) worker node name from the cluster.
+// GetRealNodeNames returns up to count distinct real (non-KWOK) worker node names.
 // Prefers schedulable workers, falls back to unschedulable workers if needed.
-func GetRealNodeName(ctx context.Context, c klient.Client) (string, error) {
+func GetRealNodeNames(ctx context.Context, c klient.Client, count int) ([]string, error) {
 	var nodeList v1.NodeList
 
 	err := c.Resources().List(ctx, &nodeList,
 		resources.WithLabelSelector("type!=kwok,!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/agent"))
 	if err != nil {
-		return "", fmt.Errorf("failed to list nodes: %w", err)
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	if len(nodeList.Items) == 0 {
-		return "", fmt.Errorf("no real worker nodes found in cluster")
-	}
+	var names []string
 
 	for _, node := range nodeList.Items {
 		if !node.Spec.Unschedulable {
-			return node.Name, nil
+			names = append(names, node.Name)
 		}
 	}
 
-	return nodeList.Items[0].Name, nil
+	for _, node := range nodeList.Items {
+		if node.Spec.Unschedulable {
+			names = append(names, node.Name)
+		}
+	}
+
+	if len(names) < count {
+		return nil, fmt.Errorf(
+			"need %d real worker nodes but found %d", count, len(names),
+		)
+	}
+
+	return names[:count], nil
 }
+
+// GetRealNodeName returns a single real (non-KWOK) worker node name.
+func GetRealNodeName(ctx context.Context, c klient.Client) (string, error) {
+	names, err := GetRealNodeNames(ctx, c, 1)
+	if err != nil {
+		return "", err
+	}
+
+	return names[0], nil
+}
+
 func CreatePodsAndWaitTillRunning(
 	ctx context.Context, t *testing.T, c klient.Client, nodeNames []string, podTemplate *v1.Pod,
 ) {
