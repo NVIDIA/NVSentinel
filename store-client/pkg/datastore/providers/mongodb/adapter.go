@@ -248,8 +248,11 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 	return a.eventChan
 }
 
-// Start starts the watcher
+// Start starts the watcher. It initializes the relay goroutine first to
+// ensure there is a reader on the underlying watcher's unbuffered event
+// channel before the MongoDB change stream goroutine begins sending.
 func (a *AdaptedChangeStreamWatcher) Start(ctx context.Context) {
+	_ = a.Events() // Ensure relay goroutine is running before watcher sends.
 	a.watcher.Start(ctx)
 }
 

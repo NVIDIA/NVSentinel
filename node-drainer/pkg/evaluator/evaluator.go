@@ -86,6 +86,21 @@ func (e *NodeDrainEvaluator) EvaluateEventWithDatabase(ctx context.Context, heal
 		}, nil
 	}
 
+	// Honor DrainOverrides.Skip: mark drain as already completed so
+	// fault-remediation can proceed immediately without waiting for pods.
+	// This is used by ergatos debug events where drain is intentionally
+	// skipped to test the Slack notification pipeline.
+	if healthEvent.HealthEvent.DrainOverrides != nil &&
+		healthEvent.HealthEvent.DrainOverrides.Skip {
+		slog.Info("DrainOverrides.Skip is true, skipping drain for node",
+			"node", nodeName)
+
+		return &DrainActionResult{
+			Action: ActionMarkAlreadyDrained,
+			Status: model.AlreadyDrained,
+		}, nil
+	}
+
 	partialDrainEntity, err := e.shouldExecutePartialDrain(healthEvent.HealthEvent)
 	if err != nil {
 		slog.Error("Failed to check if node should be partially drained",
