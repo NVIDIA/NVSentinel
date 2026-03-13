@@ -726,7 +726,7 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 	}
 
 	for _, item := range crList.Items {
-		err = DeleteCR(ctx, c, &item)
+		err = DeleteCR(ctx, t, c, &item, false)
 		if err != nil {
 			return fmt.Errorf("failed to delete CR: %w", err)
 		}
@@ -735,7 +735,8 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 	return nil
 }
 
-func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructured) error {
+func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructured.Unstructured,
+	waitForRemoval bool) error {
 	err := c.Resources().Delete(ctx, cr)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -743,6 +744,13 @@ func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructure
 		}
 
 		return fmt.Errorf("failed to delete CR %s: %w", cr.GetName(), err)
+	}
+
+	if waitForRemoval {
+		require.Eventually(t, func() bool {
+			err := c.Resources().Get(ctx, cr.GetName(), cr.GetNamespace(), cr)
+			return err != nil && apierrors.IsNotFound(err)
+		}, EventuallyWaitTimeout, WaitInterval, "CR %s should be removed from API", cr.GetName())
 	}
 
 	return nil

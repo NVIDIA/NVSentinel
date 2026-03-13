@@ -148,7 +148,7 @@ func TestFatalHealthEvent(t *testing.T) {
 
 		rebootNode := helpers.WaitForCR(ctx, t, client, nodeName, helpers.RebootNodeGVK)
 
-		err = helpers.DeleteCR(ctx, client, rebootNode)
+		err = helpers.DeleteCR(ctx, t, client, rebootNode, false)
 		assert.NoError(t, err, "failed to delete RebootNode CR")
 
 		return ctx
