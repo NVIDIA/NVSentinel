@@ -146,23 +146,46 @@ Key design choices:
 
 #### Controller Integration (`rebootnode_controller.go`, `terminatenode_controller.go`)
 
-Both controllers build dial options in `SetupWithManager()`:
+Each controller creates a fresh gRPC connection per reconciliation. This ensures
+the CA bundle and SA token are read from disk on every call, so certificate and
+token rotation are picked up automatically without watchers or caching (see
+[Client-Side CA Bundle Rotation](#client-side-ca-bundle-rotation)).
 
 ```go
-dialOpts, err := grpcclient.NewCSPProviderDialOptions(
-    r.Config.CSPProviderCAPath,
-    r.Config.CSPProviderInsecure)
-
-if !r.Config.CSPProviderInsecure {
-    tokenPath := r.Config.CSPProviderTokenPath
-    if tokenPath == "" {
-        tokenPath = grpcclient.DefaultSATokenPath
+func (r *RebootNodeReconciler) dialProvider(ctx context.Context) (pb.CSPProviderClient, func(), error) {
+    dialOpts, err := grpcclient.NewCSPProviderDialOptions(
+        r.Config.CSPProviderCAPath,
+        r.Config.CSPProviderInsecure)
+    if err != nil {
+        return nil, nil, fmt.Errorf("create dial options: %w", err)
     }
-    dialOpts = append(dialOpts,
-        grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
-}
 
-conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
+    if !r.Config.CSPProviderInsecure {
+        tokenPath := r.Config.CSPProviderTokenPath
+        if tokenPath == "" {
+            tokenPath = grpcclient.DefaultSATokenPath
+        }
+        dialOpts = append(dialOpts,
+            grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
+    }
+
+    conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
+    if err != nil {
+        return nil, nil, fmt.Errorf("dial csp-provider: %w", err)
+    }
+
+    return pb.NewCSPProviderClient(conn), func() { conn.Close() }, nil
+}
+```
+
+The caller uses the returned cleanup function to close the connection after use:
+
+```go
+client, cleanup, err := r.dialProvider(ctx)
+if err != nil { ... }
+defer cleanup()
+
+resp, err := client.RebootNode(ctx, req)
 ```
 
 Auth is only added when not in insecure mode, preserving the development workflow.
