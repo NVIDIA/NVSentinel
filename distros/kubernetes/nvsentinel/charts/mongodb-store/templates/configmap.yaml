@@ -20,10 +20,22 @@ data:
   # Datastore provider configuration for new abstraction layer
   DATASTORE_PROVIDER: "mongodb"
   # Legacy MongoDB configuration (maintained for backward compatibility)
+  # When TLS is disabled and SCRAM auth is needed, override MONGODB_URI in your
+  # Helm values to include credentials: mongodb://user:pass@host:port/?replicaSet=rs0
+  # ConfigMaps cannot reference Secret values, so credentials must be provided
+  # via values override or a separate Secret-backed env var.
 {{- if .Values.usePerconaOperator }}
+  {{- if .Values.mongodb.tls.enabled }}
   MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  {{- else }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-rs0.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  {{- end }}
 {{- else }}
+  {{- if .Values.mongodb.tls.enabled }}
   MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0&tls=true" .Release.Namespace }}
+  {{- else }}
+  MONGODB_URI: {{ printf "mongodb://mongodb-headless.%s.svc.cluster.local:27017/?replicaSet=rs0" .Release.Namespace }}
+  {{- end }}
 {{- end }}
   MONGODB_DATABASE_NAME: "HealthEventsDatabase"
   MONGODB_COLLECTION_NAME: "HealthEvents"

@@ -156,9 +156,28 @@ func (l *LegacyCertConfigAdapter) getCertPath() string {
 		return l.certMountPath
 	}
 
+	if l.dsConfig.Connection.TLSConfig != nil {
+		if l.dsConfig.Connection.TLSConfig.CertPath != "" {
+			return filepath.Dir(l.dsConfig.Connection.TLSConfig.CertPath)
+		}
+
+		if l.dsConfig.Connection.TLSConfig.CAPath != "" {
+			return filepath.Dir(l.dsConfig.Connection.TLSConfig.CAPath)
+		}
+	}
+
 	// If SSL paths are set in the config, prefer those
 	if l.dsConfig.Connection.SSLCert != "" {
 		return filepath.Dir(l.dsConfig.Connection.SSLCert)
+	}
+
+	if l.dsConfig.Connection.SSLRootCert != "" {
+		return filepath.Dir(l.dsConfig.Connection.SSLRootCert)
+	}
+
+	// For MongoDB, an empty TLS config means TLS is intentionally disabled.
+	if l.dsConfig.Provider == datastore.ProviderMongoDB {
+		return ""
 	}
 
 	// Check if ca.crt exists at the legacy mongo-client path first (most common)
@@ -187,7 +206,12 @@ func (l *LegacyCertConfigAdapter) GetCertPath() string {
 		return l.dsConfig.Connection.SSLCert
 	}
 
-	return filepath.Join(l.getCertPath(), "tls.crt")
+	certPath := l.getCertPath()
+	if certPath == "" {
+		return ""
+	}
+
+	return filepath.Join(certPath, "tls.crt")
 }
 
 func (l *LegacyCertConfigAdapter) GetKeyPath() string {
@@ -200,7 +224,12 @@ func (l *LegacyCertConfigAdapter) GetKeyPath() string {
 		return l.dsConfig.Connection.SSLKey
 	}
 
-	return filepath.Join(l.getCertPath(), "tls.key")
+	certPath := l.getCertPath()
+	if certPath == "" {
+		return ""
+	}
+
+	return filepath.Join(certPath, "tls.key")
 }
 
 func (l *LegacyCertConfigAdapter) GetCACertPath() string {
@@ -213,7 +242,12 @@ func (l *LegacyCertConfigAdapter) GetCACertPath() string {
 		return l.dsConfig.Connection.SSLRootCert
 	}
 
-	return filepath.Join(l.getCertPath(), "ca.crt")
+	certPath := l.getCertPath()
+	if certPath == "" {
+		return ""
+	}
+
+	return filepath.Join(certPath, "ca.crt")
 }
 
 // LegacyTimeoutConfigAdapter provides default timeout configuration

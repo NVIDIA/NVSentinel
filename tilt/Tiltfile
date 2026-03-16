@@ -26,11 +26,17 @@ update_settings(
 num_gpu_nodes = int(os.getenv('NUM_GPU_NODES', '50'))
 num_kata_test_nodes = int(os.getenv('NUM_KATA_TEST_NODES', '5'))
 use_postgresql = os.getenv('USE_POSTGRESQL', '0') == '1'
+disable_tls = os.getenv('DISABLE_TLS', '0') == '1'
+use_percona_env = os.getenv('USE_PERCONA', '0') == '1'
 user_values_file = os.getenv('NVSENTINEL_VALUES_FILE', '')
 print_values = os.getenv('PRINT_HELM_VALUES', '0') == '1'
 
 if use_postgresql:
     print("Using PostgreSQL as datastore (USE_POSTGRESQL=1)")
+elif disable_tls and use_percona_env:
+    print("Using Percona MongoDB without TLS (DISABLE_TLS=1, USE_PERCONA=1)")
+elif disable_tls:
+    print("Using MongoDB without TLS (DISABLE_TLS=1)")
 else:
     print("Using MongoDB as datastore (default). Set USE_POSTGRESQL=1 to use PostgreSQL.")
 
@@ -146,6 +152,10 @@ values_files = [
 # Add datastore-specific values
 if use_postgresql:
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-postgresql.yaml')
+elif disable_tls and use_percona_env:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb-tls-disabled-percona.yaml')
+elif disable_tls:
+    values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb-tls-disabled.yaml')
 else:
     values_files.append('../distros/kubernetes/nvsentinel/values-tilt-mongodb.yaml')
 
@@ -208,8 +218,9 @@ if use_postgresql:
 else:
     datastore_resource = 'mongodb' if not use_percona else 'create-mongodb-database'
 
-# Cert-manager resources: pulled out of auto-grouped workload resources so they
-# get applied after CRDs exist (otherwise Tilt fails to apply the whole group).
+# Cert-manager resources vary based on datastore and TLS configuration.
+# Pulled out of auto-grouped workload resources so they get applied after
+# CRDs exist (otherwise Tilt fails to apply the whole group).
 preflight_enabled = effective_values.get('global', {}).get('preflight', {}).get('enabled', False)
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
@@ -230,7 +241,8 @@ if use_postgresql:
         'postgresql-server-cert:certificate',
         'postgresql-client-cert:certificate'
     ])
-else:
+elif not disable_tls:
+    # MongoDB cert-manager resources only needed when TLS is enabled
     if use_percona:
         cert_manager_objects.append('mongo-app-client-cert:certificate')
     else:

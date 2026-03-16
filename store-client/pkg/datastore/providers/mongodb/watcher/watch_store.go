@@ -616,24 +616,35 @@ func constructMongoClientOptions(
 		}
 	}
 
-	credential := options.Credential{
-		AuthMechanism: "MONGODB-X509",
-		AuthSource:    "$external",
-	}
-
 	// Set server selection timeout to allow MongoDB time to become ready
 	// This uses the same timeout as the ping timeout for consistency
 	serverSelectionTimeout := time.Duration(mongoConfig.TotalPingTimeoutSeconds) * time.Second
 
 	clientOpts := options.Client().
 		ApplyURI(mongoConfig.URI).
-		SetTLSConfig(tlsConfig).
-		SetAuth(credential).
 		SetServerSelectionTimeout(serverSelectionTimeout)
 
 	// Set AppName for MongoDB connection tracking if provided
 	if mongoConfig.AppName != "" {
 		clientOpts.SetAppName(mongoConfig.AppName)
+	}
+
+	// Only set TLS when TLS config was successfully built.
+	// Only set X.509 auth when client certificate is available (CA-only
+	// TLS should not attempt X.509 auth since there's no client cert).
+	// When certificate rotation is enabled, the client certificate is
+	// provided dynamically via GetClientCertificate rather than the
+	// Certificates slice.
+	if tlsConfig != nil {
+		clientOpts.SetTLSConfig(tlsConfig)
+
+		if len(tlsConfig.Certificates) > 0 || tlsConfig.GetClientCertificate != nil {
+			credential := options.Credential{
+				AuthMechanism: "MONGODB-X509",
+				AuthSource:    "$external",
+			}
+			clientOpts.SetAuth(credential)
+		}
 	}
 
 	return clientOpts, nil
@@ -646,6 +657,11 @@ func constructDynamicTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 	caCertPool, err := loadCACertPool(mongoConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	// No CA cert available — TLS disabled
+	if caCertPool == nil {
+		return nil, nil
 	}
 
 	return &tls.Config{
@@ -682,6 +698,11 @@ func loadCACertPool(mongoConfig MongoDBConfig) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 	}
 
+	// No certs available (TLS disabled)
+	if caCert == nil {
+		return nil, nil
+	}
+
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return nil, fmt.Errorf("failed to append CA certificate to pool")
@@ -699,10 +720,26 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 		return nil, err
 	}
 
-	// Load client certificate and key
+	// No CA cert available — TLS disabled
+	if caCertPool == nil {
+		return nil, nil
+	}
+
+	// Load client certificate and key. If the files don't exist, fall back
+	// to CA-only TLS (server verification without client cert) rather than
+	// failing — the cert mount may not be present.
 	clientCert, err := tls.LoadX509KeyPair(mongoConfig.ClientTLSCertConfig.TlsCertPath,
 		mongoConfig.ClientTLSCertConfig.TlsKeyPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
+				"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
+				"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
+			return &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -713,9 +750,19 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 	}, nil
 }
 
+// ConstructClientTLSConfig builds a TLS configuration from certificates at the
+// given mount path. Returns (nil, nil) when clientCertMountPath is empty,
+// indicating TLS is intentionally disabled. Returns a non-nil *tls.Config with
+// RootCAs and client certificates when certs are found. Returns an error for
+// invalid cert paths, unreadable files, or malformed certificates.
 func ConstructClientTLSConfig(
 	totalCACertTimeoutSeconds int, intervalCACertSeconds int, clientCertMountPath string,
 ) (*tls.Config, error) {
+	if clientCertMountPath == "" {
+		slog.Info("No client cert mount path configured, skipping TLS")
+		return nil, nil
+	}
+
 	clientCertPath := filepath.Join(clientCertMountPath, "tls.crt")
 	clientKeyPath := filepath.Join(clientCertMountPath, "tls.key")
 	mongoCACertPath := filepath.Join(clientCertMountPath, "ca.crt")
@@ -729,14 +776,28 @@ func ConstructClientTLSConfig(
 		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 	}
 
+	// No CA cert available — TLS disabled
+	if caCert == nil {
+		return nil, nil
+	}
+
 	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return nil, fmt.Errorf("failed to append CA certificate to pool")
 	}
 
-	// Load client certificate and key
+	// Load client certificate and key. If the files don't exist, fall back
+	// to CA-only TLS (server verification without client cert).
 	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
+				"certPath", clientCertPath, "keyPath", clientKeyPath)
+			return &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -749,6 +810,15 @@ func ConstructClientTLSConfig(
 
 func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.Duration,
 	pingInterval time.Duration) ([]byte, error) {
+	if certPath == "" {
+		slog.Info("No CA cert path configured, TLS will be disabled")
+		return nil, nil
+	}
+	if !filepath.IsAbs(certPath) {
+		return nil, fmt.Errorf("CA cert path %q is not absolute — this is likely a misconfiguration. "+
+			"Use --tls-enabled=false to explicitly disable TLS, or provide an absolute cert mount path", certPath)
+	}
+
 	timeout := time.Now().Add(timeoutInterval) // total timeout
 
 	var err error

@@ -80,11 +80,11 @@ func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffe
 }
 
 func createClientFactory(databaseClientCertMountPath string) (*factory.ClientFactory, error) {
-	if databaseClientCertMountPath != "" {
-		return factory.NewClientFactoryFromEnvWithCertPath(databaseClientCertMountPath)
-	}
-
-	return factory.NewClientFactoryFromEnv()
+	// Always pass the cert path through explicitly. NewClientFactoryFromEnv()
+	// falls back to DefaultCertMountPath even when TLS is disabled, causing
+	// infinite cert polling. Using the explicit path variant ensures an empty
+	// string (TLS disabled) propagates correctly.
+	return factory.NewClientFactoryFromEnvWithCertPath(databaseClientCertMountPath)
 }
 
 func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context) {

@@ -34,6 +34,10 @@ resources:
 # You must create this secret manually before deploying this chart
 oidcSecretName: "event-exporter-oidc-secret"
 
+# Set to an empty string to disable MongoDB TLS client certificate mounts.
+mongodbStore:
+  clientCertMountPath: /etc/ssl/mongo-client
+
 # Event exporter configuration
 exporter:
   # Metadata configuration

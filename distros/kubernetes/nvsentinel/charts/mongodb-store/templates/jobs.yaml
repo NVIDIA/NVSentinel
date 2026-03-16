@@ -58,6 +58,8 @@ metadata:
   name: create-mongodb-database
   annotations:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   activeDeadlineSeconds: 600
   template:
@@ -241,18 +243,24 @@ spec:
             echo "MONGODB_COLLECTION_NAME: $MONGODB_COLLECTION_NAME"
             echo "MONGODB_TOKEN_COLLECTION_NAME: $MONGODB_TOKEN_COLLECTION_NAME"
 
+            {{- if .Values.mongodb.tls.enabled }}
             cat /certs/tls.crt /certs/tls.key > /tmp/tls.pem
+            {{- end }}
 
             echo "=============================="
-            echo "Connecting to mongodb and creating X.509 user..."
+            echo "Connecting to mongodb..."
             echo "=============================="
 
             until mongosh "$MONGODB_URI" \
+              {{- if .Values.mongodb.auth.enabled }}
               --authenticationMechanism SCRAM-SHA-256 \
               --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              {{- end }}
+              {{- if .Values.mongodb.tls.enabled }}
               --tls \
               --tlsCAFile /certs/ca.crt \
               --tlsCertificateKeyFile /tmp/tls.pem \
+              {{- end }}
                               --eval "
                   db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
                   
@@ -299,30 +307,47 @@ spec:
                     'healthevent.entitiesimpacted.entityvalue': 1,
                     'healthevent.generatedtimestamp.seconds': 1
                   });
-                // Check if user exists before creating
+                {{- if .Values.mongodb.tls.enabled }}
+                // Create X.509 users (TLS only)
                 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
                 if (userExists) {
                   print('User already exists, skipping creation.');
                 } else {
-                  print('Creating new user...');
+                  print('Creating new X.509 user...');
                   db.getSiblingDB('\$external').runCommand({
                     createUser: '$MONGODB_APPLICATION_USER_DN',
                     roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
                   });
-                  print('User created successfully.');
+                  print('X.509 user created successfully.');
                 }
-                // Check if dgxcops user exists before creating
                 var dgxcopsUserExists = db.getSiblingDB('\$external').getUser('$MONGODB_DGXCOPS_USER_DN');
                 if (dgxcopsUserExists) {
                   print('Dgxcops user already exists, skipping creation.');
                 } else {
-                  print('Creating new dgxcops user...');
+                  print('Creating new dgxcops X.509 user...');
                   db.getSiblingDB('\$external').runCommand({
                     createUser: '$MONGODB_DGXCOPS_USER_DN',
                     roles: [{ role: 'read', db: '$MONGODB_DATABASE_NAME' }]
                   });
-                  print('Dgxcops user created successfully.');
-                }"
+                  print('Dgxcops X.509 user created successfully.');
+                }
+                {{- else }}
+                // Create SCRAM application user (non-TLS mode)
+                var scramUser = db.getUser('$MONGODB_SCRAM_APP_USERNAME');
+                if (scramUser) {
+                  print('SCRAM application user already exists, updating password...');
+                  db.changeUserPassword('$MONGODB_SCRAM_APP_USERNAME', '$MONGODB_SCRAM_APP_PASSWORD');
+                  print('SCRAM application user password updated.');
+                } else {
+                  print('Creating SCRAM application user...');
+                  db.createUser({
+                    user: '$MONGODB_SCRAM_APP_USERNAME',
+                    pwd: '$MONGODB_SCRAM_APP_PASSWORD',
+                    roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('SCRAM application user created successfully.');
+                }
+                {{- end }}"
             do
               echo "Waiting for mongodb to be ready...";
               sleep 5;
@@ -353,18 +378,32 @@ spec:
             value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
           - name: MONGODB_DGXCOPS_USER_DN
             value: "CN=mongo-dgxcops-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
+          {{- if not .Values.mongodb.tls.enabled }}
+          - name: MONGODB_SCRAM_APP_USERNAME
+            value: {{ .Values.scramAppUser.username | default "nvsentinel" | quote }}
+          - name: MONGODB_SCRAM_APP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.scramAppUser.existingSecret | default $passwordSecretName }}
+                key: {{ .Values.scramAppUser.passwordKey | default "mongodb-app-password" }}
+                optional: true
+          {{- end }}
         envFrom:
           - configMapRef:
               name: mongodb-config
+        {{- if .Values.mongodb.tls.enabled }}
         volumeMounts:
           - name: mongo-certificates
             mountPath: /certs
             readOnly: true
+        {{- end }}
+      {{- if .Values.mongodb.tls.enabled }}
       volumes:
         - name: mongo-certificates
           secret:
             secretName: {{ include "nvsentinel.certificates.secretName" . }}
             {{- include "nvsentinel.certificates.volumeItems" . | nindent 12 }}
+      {{- end }}
       # Job scheduling configuration with backward-compatible fallback
       # Prefers: job.nodeSelector -> Falls back to: mongodb.nodeSelector
       {{- $jobNodeSelector := .Values.mongodb.nodeSelector }}

@@ -117,9 +117,9 @@ spec:
           - name: client-certs-fixed
             mountPath: /etc/ssl/client-certs
             readOnly: true
-          {{- else }}
+          {{- else if .Values.mongodbStore.clientCertMountPath }}
           - name: mongo-app-client-cert
-            mountPath: /etc/ssl/mongo-client
+            mountPath: {{ .Values.mongodbStore.clientCertMountPath }}
             readOnly: true
           {{- end }}
           - name: var-run-vol
@@ -131,13 +131,13 @@ spec:
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: "/etc/ssl/client-certs"
-            {{- else }}
+            {{- else if .Values.mongodbStore.clientCertMountPath }}
             - name: MONGODB_CLIENT_CERT_PATH
-              value: "/etc/ssl/mongo-client/tls.crt"
+              value: {{ printf "%s/tls.crt" .Values.mongodbStore.clientCertMountPath | quote }}
             - name: MONGODB_CLIENT_KEY_PATH
-              value: "/etc/ssl/mongo-client/tls.key"
+              value: {{ printf "%s/tls.key" .Values.mongodbStore.clientCertMountPath | quote }}
             - name: MONGODB_CA_CERT_PATH
-              value: "/etc/ssl/mongo-client/ca.crt"
+              value: {{ printf "%s/ca.crt" .Values.mongodbStore.clientCertMountPath | quote }}
             {{- end }}
           envFrom:
             - configMapRef:
@@ -165,7 +165,7 @@ spec:
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else }}
+      {{- else if .Values.mongodbStore.clientCertMountPath }}
       - name: mongo-app-client-cert
         secret:
           secretName: {{ include "nvsentinel.certificates.secretName" . }}

@@ -41,7 +41,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "health-events-analyzer.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
@@ -77,7 +77,9 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           args:
           - "--metrics-port={{ .Values.global.metricsPort }}"
+          {{- if .Values.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- end }}
           - "--processing-strategy={{ .Values.processingStrategy }}"
           ports:
             - name: metrics
@@ -109,6 +111,7 @@ spec:
           - name: config-volume
             mountPath: /etc/config/config.toml
             subPath: config.toml
+          {{- if .Values.clientCertMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
             mountPath: {{ .Values.clientCertMountPath }}
@@ -118,6 +121,7 @@ spec:
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
           {{- end }}
+          {{- end }}
           - name: var-run-vol
             mountPath: /var/run/
           env:
@@ -126,12 +130,14 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
+            {{- if .Values.clientCertMountPath }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
               value: {{ .Values.clientCertMountPath }}
             {{- else }}
             - name: MONGODB_CLIENT_CERT_MOUNT_PATH
               value: {{ .Values.clientCertMountPath }}
+            {{- end }}
             {{- end }}
           envFrom:
             - configMapRef:
@@ -148,6 +154,7 @@ spec:
         hostPath:
           path: /var/run/nvsentinel
           type: Directory
+      {{- if .Values.clientCertMountPath }}
       {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
@@ -161,6 +168,7 @@ spec:
           secretName: {{ include "nvsentinel.certificates.secretName" . }}
           {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
           optional: true
+      {{- end }}
       {{- end }}
       restartPolicy: Always
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}

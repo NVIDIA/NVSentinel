@@ -1,0 +1,91 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# MongoDB-specific values for Tilt development WITHOUT TLS
+# This file is automatically included when DISABLE_TLS=1 is set
+# Example: DISABLE_TLS=1 tilt up
+
+global:
+  dryRun: false
+  kubeVersion: 1.31.0
+  clusterType: standalone
+
+  # Keep legacy resource naming for Tilt compatibility
+  useLegacyResourceNames: true
+
+  # No certificate rotation needed without TLS
+  certificateRotationEnabled: false
+
+  # Configure MongoDB as the datastore provider (no TLS)
+  datastore:
+    provider: "mongodb"
+    connection:
+      host: "mongodb-headless.nvsentinel.svc.cluster.local"
+      port: 27017
+      database: "HealthEventsDatabase"
+      collection: "HealthEvents"
+      tokenCollection: "ResumeTokens"
+      extraParams:
+        replicaSet: "rs0"
+        # No tls param — plaintext connection
+    options:
+      maxConnections: "25"
+      maxIdleConnections: "10"
+      connectionMaxLifetime: "1h"
+      pollInterval: "5s"
+
+  # Enable MongoDB store
+  mongodbStore:
+    enabled: true
+
+# Disable PostgreSQL subchart
+postgresql:
+  enabled: false
+
+# MongoDB subchart configuration — TLS and auth disabled
+mongodb-store:
+  mongodb:
+    enabled: true
+    tls:
+      enabled: false
+    auth:
+      enabled: false
+    extraFlags:
+      - "--setParameter"
+      - "authenticationMechanisms=SCRAM-SHA-256"
+    # The cert-manager init container and metrics exporter URI are
+    # automatically adjusted when tls.enabled is false (via tpl conditionals
+    # in the mongodb-store subchart values.yaml).
+
+# Disable cert mounts on all NVSentinel components so the Go binaries
+# connect without TLS (clientCertMountPath="" skips cert volume mounts
+# and passes --tls-enabled=false where supported).
+event-exporter:
+  mongodbStore:
+    clientCertMountPath: ""
+fault-quarantine:
+  clientCertMountPath: ""
+fault-remediation:
+  clientCertMountPath: ""
+node-drainer:
+  clientCertMountPath: ""
+health-events-analyzer:
+  clientCertMountPath: ""
+csp-health-monitor:
+  clientCertMountPath: ""
+platformConnector:
+  mongodbStore:
+    clientCertMountPath: ""
+  postgresqlStore:
+    clientCertMountPath: ""

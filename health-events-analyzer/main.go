@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/flags"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -54,24 +55,6 @@ func main() {
 	}
 }
 
-// getCertPath checks if the certificate exists at the new path, falls back to legacy path
-func getCertPath(databaseClientCertMountPath string) string {
-	// Check if ca.crt exists at the new path
-	if _, err := os.Stat(databaseClientCertMountPath + "/ca.crt"); err == nil {
-		return databaseClientCertMountPath
-	}
-
-	// Fall back to legacy mongo-client path
-	legacyPath := "/etc/ssl/mongo-client"
-	if _, err := os.Stat(legacyPath + "/ca.crt"); err == nil {
-		slog.Info("Using legacy certificate path for backward compatibility", "path", legacyPath)
-		return legacyPath
-	}
-
-	// If neither exists, return the new path (original behavior)
-	return databaseClientCertMountPath
-}
-
 func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStoreConfig, error) {
 	// Load using the new unified datastore configuration
 	config, err := datastore.LoadDatastoreConfig()
@@ -79,12 +62,13 @@ func loadDatabaseConfig(databaseClientCertMountPath string) (*datastore.DataStor
 		return nil, fmt.Errorf("failed to load datastore config: %w", err)
 	}
 
-	// Override SSL cert path if provided via command line
+	// Override SSL cert path if provided via command line.
+	// When TLS is disabled, databaseClientCertMountPath is empty — skip overrides
+	// so the datastore connects without TLS.
 	if databaseClientCertMountPath != "" && config.Connection.SSLCert == "" {
-		certPath := getCertPath(databaseClientCertMountPath)
-		config.Connection.SSLCert = certPath + "/tls.crt"
-		config.Connection.SSLKey = certPath + "/tls.key"
-		config.Connection.SSLRootCert = certPath + "/ca.crt"
+		config.Connection.SSLCert = databaseClientCertMountPath + "/tls.crt"
+		config.Connection.SSLKey = databaseClientCertMountPath + "/tls.key"
+		config.Connection.SSLRootCert = databaseClientCertMountPath + "/ca.crt"
 	}
 
 	return config, nil
@@ -116,14 +100,13 @@ func run() error {
 	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
 	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml", "path to TOML config file")
-	databaseClientCertMountPath := flag.String("database-client-cert-mount-path", "/etc/ssl/database-client",
-		"path where the database client cert is mounted")
+	certConfig := flags.RegisterDatabaseCertFlags()
 	processingStrategyFlag := flag.String("processing-strategy", "EXECUTE_REMEDIATION",
 		"Event processing strategy for analyzer output: EXECUTE_REMEDIATION or STORE_ONLY")
 
 	flag.Parse()
 
-	databaseConfig, err := loadDatabaseConfig(*databaseClientCertMountPath)
+	databaseConfig, err := loadDatabaseConfig(certConfig.ResolveCertPath())
 	if err != nil {
 		return err
 	}
