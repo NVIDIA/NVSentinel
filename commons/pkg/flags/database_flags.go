@@ -105,8 +105,8 @@ func (c *DatabaseCertConfig) GetCertPath() string {
 
 	// If neither exists, return empty to indicate no TLS certs are available.
 	// Callers should check for empty and skip TLS configuration.
-	slog.Info("No certificate found at any expected location, TLS will be disabled. "+
-		"Use --tls-enabled=false to explicitly disable TLS, or provide certificates at "+
+	slog.Info("No certificate found at any expected location, TLS will be disabled. " +
+		"Use --tls-enabled=false to explicitly disable TLS, or provide certificates at " +
 		"--database-client-cert-mount-path or --mongo-client-cert-mount-path")
 
 	return ""
