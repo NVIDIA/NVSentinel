@@ -426,7 +426,7 @@ flag preserves this:
 
 ### Positive
 
-- gRPC channel encrypted with TLS 1.2+ — satisfies OCI security requirement
+- gRPC channel encrypted with TLS 1.2+
 - Client identity verified on every request via K8s-native TokenReview
 - Token rotation handled automatically by Kubernetes (default 1h expiry,
   kubelet refreshes at 80% lifetime)
