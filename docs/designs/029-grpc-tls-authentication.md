@@ -204,16 +204,21 @@ Three fields added to `GlobalConfig`, cascaded to controller-specific configs:
 
 #### TLS Server (`janitor-provider/main.go`)
 
-Loads the TLS certificate and key from environment variables:
+Uses `certwatcher` from `controller-runtime` to watch the TLS certificate and key
+files, enabling hot-reload when cert-manager rotates the certificate (see
+[Server-Side Cert Rotation](#server-side-cert-rotation)):
 
 ```go
 certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
 
 if tlsEnabled {
-    cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+    watcher, err := certwatcher.New(certPath, keyPath)
+    // ... error handling ...
+    go watcher.Start(ctx)
+
     tlsCfg := &tls.Config{
-        Certificates: []tls.Certificate{cert},
-        MinVersion:   tls.VersionTLS12,
+        GetCertificate: watcher.GetCertificate,
+        MinVersion:     tls.VersionTLS12,
     }
     serverOpts = append(serverOpts,
         grpc.Creds(credentials.NewTLS(tlsCfg)))
@@ -377,27 +382,10 @@ This works well because:
   projected token file on every gRPC call (see above), so a per-call connection
   model is consistent with the auth approach.
 
-```go
-// Each controller reconciliation creates a fresh connection:
-func (r *RebootNodeReconciler) callProvider(ctx context.Context, req *pb.RebootRequest) error {
-    dialOpts, err := client.NewCSPProviderDialOptions(r.config.CSPProviderCAPath, r.config.CSPProviderInsecure)
-    if err != nil {
-        return fmt.Errorf("create dial options: %w", err)
-    }
-    dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(
-        client.TokenInterceptor(r.config.CSPProviderTokenPath),
-    ))
-
-    conn, err := grpc.NewClient(r.config.CSPProviderHost, dialOpts...)
-    if err != nil {
-        return fmt.Errorf("dial csp-provider: %w", err)
-    }
-    defer conn.Close()
-
-    _, err = pb.NewCSPProviderClient(conn).RebootNode(ctx, req)
-    return err
-}
-```
+See the `dialProvider()` helper in [Controller Integration](#controller-integration-rebootnode_controllergo-terminatenode_controllergo)
+for the full implementation. Each reconciliation calls `dialProvider()`, which reads
+the CA bundle and SA token fresh from disk, dials the provider, and returns a client
+with a cleanup function.
 
 If profiling later shows that connection overhead is a concern (unlikely given the
 call frequency), a connection pool or persistent connection with a CA watcher can be
