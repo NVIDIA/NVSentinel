@@ -273,6 +273,7 @@ cd "${REPO_ROOT}"
 GO_VERSION=$(yq '.languages.go' .versions.yaml)
 PYTHON_VERSION=$(yq '.languages.python' .versions.yaml)
 POETRY_VERSION=$(yq '.build_tools.poetry' .versions.yaml)
+POETRY_PLUGIN_EXPORT_VERSION=$(yq '.build_tools.poetry_plugin_export' .versions.yaml)
 GOLANGCI_LINT_VERSION=$(yq '.go_tools.golangci_lint' .versions.yaml)
 PROTOBUF_VERSION=$(yq '.protobuf.protobuf' .versions.yaml)
 PROTOC_GEN_GO_VERSION=$(yq '.protobuf.protoc_gen_go' .versions.yaml)
@@ -366,10 +367,20 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
     if command_exists poetry; then
         POETRY_INSTALLED=$(poetry --version | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
         log_success "Poetry installed: ${POETRY_INSTALLED}"
-        
+
         if [[ "${POETRY_INSTALLED}" != "${POETRY_VERSION}"* ]]; then
             log_warning "Poetry version mismatch (current: ${POETRY_INSTALLED}, target: ${POETRY_VERSION})"
-            log_info "Consider updating: pip install --upgrade poetry==${POETRY_VERSION}"
+            log_info "Consider updating: pip install --upgrade poetry==${POETRY_VERSION} poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}"
+        fi
+
+        # Check poetry-plugin-export
+        EXPORT_INSTALLED=$(poetry self show plugins 2>/dev/null | grep -i 'poetry-plugin-export' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1 || echo "")
+        if [[ -z "${EXPORT_INSTALLED}" ]]; then
+            log_warning "poetry-plugin-export not found (required for poetry export)"
+            log_info "Consider installing: poetry self add poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}"
+        elif [[ "${EXPORT_INSTALLED}" != "${POETRY_PLUGIN_EXPORT_VERSION}" ]]; then
+            log_warning "poetry-plugin-export version mismatch (current: ${EXPORT_INSTALLED}, target: ${POETRY_PLUGIN_EXPORT_VERSION})"
+            log_info "Consider updating: poetry self add poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}"
         fi
     else
         log_warning "Poetry not found"
@@ -377,10 +388,10 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
         
         if prompt_continue; then
             if [[ "${OS}" == "darwin" ]]; then
-                pip3 install poetry=="${POETRY_VERSION}"
+                pip3 install poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}"
             elif [[ "${OS}" == "linux" ]]; then
-                python3 -m pip install --break-system-packages poetry=="${POETRY_VERSION}" || \
-                    python3 -m pip install --user poetry=="${POETRY_VERSION}"
+                python3 -m pip install --break-system-packages poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}" || \
+                    python3 -m pip install --user poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}"
             fi
             log_success "Poetry installed"
         fi

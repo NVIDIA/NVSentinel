@@ -270,6 +270,10 @@ platformConnector:
     # If the node condition message is longer than this value, it will be truncated
     # This is to prevent the node condition message from being too long and causing the Kubernetes node status to be too large
     maxNodeConditionMessageLength: 1024
+    # Maximum length of the compacted message prefix (before Recommended Action) per health event.
+    # Controls how much of the ErrorCode and entity identifiers (GPU, PCI, etc.) are preserved
+    # when messages are compacted to fit within maxNodeConditionMessageLength.
+    compactedHealthEventMsgLen: 72
     # Enable Kubernetes status updates
     enabled: true
     # Rate limiting for Kubernetes API calls

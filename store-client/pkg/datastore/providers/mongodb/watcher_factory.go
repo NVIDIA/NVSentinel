@@ -50,7 +50,7 @@ func (f *MongoWatcherFactory) CreateChangeStreamWatcher(
 	}
 
 	// Create the change stream watcher using the existing factory
-	watcher, err := mongoStore.CreateChangeStreamWatcher(ctx, "watcher-factory", mongoPipeline)
+	watcher, err := mongoStore.CreateChangeStreamWatcher(ctx, config.ClientName, mongoPipeline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MongoDB change stream watcher: %w", err)
 	}

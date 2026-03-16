@@ -48,11 +48,13 @@ fi
 GO_VERSION=$(yq '.languages.go' "${VERSIONS_FILE}")
 PYTHON_VERSION=$(yq '.languages.python' "${VERSIONS_FILE}")
 POETRY_VERSION=$(yq '.build_tools.poetry' "${VERSIONS_FILE}")
+POETRY_PLUGIN_EXPORT_VERSION=$(yq '.build_tools.poetry_plugin_export' "${VERSIONS_FILE}")
 
 echo "=== Dockerfile Version Update Tool ==="
-echo "Go version:     ${GO_VERSION}"
-echo "Python version: ${PYTHON_VERSION}"
-echo "Poetry version: ${POETRY_VERSION}"
+echo "Go version:                ${GO_VERSION}"
+echo "Python version:            ${PYTHON_VERSION}"
+echo "Poetry version:            ${POETRY_VERSION}"
+echo "Poetry plugin export:      ${POETRY_PLUGIN_EXPORT_VERSION}"
 echo ""
 
 # Determine mode
@@ -122,15 +124,24 @@ while IFS= read -r dockerfile; do
     # Check for Poetry installations
     if grep -q "pip install poetry==" "${dockerfile}"; then
         CURRENT_POETRY=$(grep "pip install poetry==" "${dockerfile}" | sed -E 's/.*poetry==([0-9.]+).*/\1/' | head -1)
-        
-        if [[ "${CURRENT_POETRY}" != "${POETRY_VERSION}" ]]; then
+        CURRENT_EXPORT=$(sed -nE 's/.*poetry-plugin-export==([0-9.]+).*/\1/p' "${dockerfile}" | head -1)
+
+        if [[ "${CURRENT_POETRY}" != "${POETRY_VERSION}" ]] || [[ "${CURRENT_EXPORT}" != "${POETRY_PLUGIN_EXPORT_VERSION}" ]]; then
             echo "📝 ${RELATIVE_PATH}"
-            echo "   Poetry: ${CURRENT_POETRY} → ${POETRY_VERSION}"
+            [[ "${CURRENT_POETRY}" != "${POETRY_VERSION}" ]] && echo "   Poetry: ${CURRENT_POETRY} → ${POETRY_VERSION}"
+            [[ "${CURRENT_EXPORT}" != "${POETRY_PLUGIN_EXPORT_VERSION}" ]] && echo "   Poetry plugin export: ${CURRENT_EXPORT:-missing} → ${POETRY_PLUGIN_EXPORT_VERSION}"
             CHANGED=true
-            
+
             if [[ "${DRY_RUN}" == "false" ]]; then
                 # Update Poetry version in pip install commands
                 sed -i.bak -E "s/(pip install poetry==)[0-9]+\.[0-9]+(\.[0-9]+)?/\1${POETRY_VERSION}/g" "${dockerfile}"
+                rm "${dockerfile}.bak"
+                # Update or insert poetry-plugin-export
+                if grep -q "poetry-plugin-export==" "${dockerfile}"; then
+                    sed -i.bak -E "s/(poetry-plugin-export==)[0-9]+\.[0-9]+(\.[0-9]+)?/\1${POETRY_PLUGIN_EXPORT_VERSION}/g" "${dockerfile}"
+                else
+                    sed -i.bak -E "s/(pip install poetry==[0-9]+\.[0-9]+(\.[0-9]+)?)/\1 poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}/g" "${dockerfile}"
+                fi
                 rm "${dockerfile}.bak"
             fi
         fi

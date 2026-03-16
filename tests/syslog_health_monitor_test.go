@@ -171,15 +171,29 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 			truncationSuffix          = "..."
 		)
 
+		// We need 10+ unique node condition entries to exceed 1024 bytes after per-message
+		// compaction (each compacted message is ~110 bytes). The burst test already created 3
+		// entries (XIDs 119, 94, 145), so we inject 7 more across all 4 GPU PCI addresses.
+		// The last message is a duplicate of XID 119 on PCI:0002:00:00 (already present from
+		// the burst test) to verify identity-based dedup replaces rather than duplicates.
 		additionalXidMessages := []string{
-			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=15822500, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+			// XID 119 on remaining GPUs (0002:00:00 already exists from burst test)
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 119, pid=15822501, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:17:00): 119, pid=15822502, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU0 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 119, pid=15822503, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU3 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
+			// XID 79 on all GPUs
 			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 79, pid=123457, name=test-again, GPU has fallen off the bus.",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 79, pid=123458, name=test-again, GPU has fallen off the bus.",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:17:00): 79, pid=123459, name=test-again, GPU has fallen off the bus.",
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0000:19:00): 79, pid=123460, name=test-again, GPU has fallen off the bus.",
+			// Duplicate: XID 119 on PCI:0002:00:00 already exists from burst test
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0002:00:00): 119, pid=9999999, name=nvc:[driver], Timeout after 6s of waiting for RPC response from GPU1 GSP! Expected function 76 (GSP_RM_CONTROL) (0x20802a02 0x8).",
 		}
 
-		t.Logf("Injecting %d additional XID messages to exceed 1KB limit", len(additionalXidMessages))
+		t.Logf("Injecting %d additional XID messages (includes 1 duplicate) to exceed 1KB limit", len(additionalXidMessages))
 		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, additionalXidMessages)
 
-		t.Log("Verifying node condition message is truncated to 1KB limit with exactly one truncation suffix")
+		t.Log("Verifying compaction and dedup: message <= 1KB, no '...' suffix, no duplicate entries")
 		require.Eventually(t, func() bool {
 			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
 				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
@@ -190,27 +204,65 @@ func TestSyslogHealthMonitorXIDDetection(t *testing.T) {
 
 			messageLen := len(condition.Message)
 
+			if !strings.Contains(condition.Message, "ErrorCode:79") {
+				t.Logf("Waiting for all messages to be processed (%d bytes so far)", messageLen)
+				return false
+			}
+
 			if messageLen > maxConditionMessageLength {
 				t.Logf("FAIL: Message length %d exceeds max %d", messageLen, maxConditionMessageLength)
 				return false
 			}
 
-			if !strings.HasSuffix(condition.Message, truncationSuffix) {
-				t.Logf("FAIL: Message should end with truncation suffix '%s'", truncationSuffix)
+			if strings.HasSuffix(condition.Message, truncationSuffix) {
+				t.Logf("Waiting for dedup to settle (%d bytes, still has '%s')", messageLen, truncationSuffix)
 				return false
 			}
 
-			if !strings.Contains(condition.Message, "ErrorCode:119") {
-				t.Logf("FAIL: Message should contain ErrorCode:119 from first inject")
+			// Verify dedup: ErrorCode:119 + PCI:0002:00:00 should appear exactly once
+			parts := strings.Split(condition.Message, ";")
+			count := 0
+
+			for _, part := range parts {
+				if strings.Contains(part, "ErrorCode:119") && strings.Contains(part, "PCI:0002:00:00") {
+					count++
+				}
+			}
+
+			if count != 1 {
+				t.Logf("FAIL: Expected exactly 1 entry for ErrorCode:119 PCI:0002:00:00, found %d", count)
 				return false
 			}
 
-			t.Logf("Message truncated correctly: %d bytes (at 1KB limit) with suffix '%s'", messageLen, truncationSuffix)
+			t.Logf("PASS: %d bytes, compacted without hard truncation, dedup verified", messageLen)
 			return true
 		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
-			"Node condition message should be truncated to 1KB with exactly one truncation suffix")
+			"10 compacted entries should fit within 1KB without hard truncation")
 
-		t.Log("Truncation test PASSED: Message correctly truncated to 1KB limit")
+		return ctx
+	})
+
+	feature.Assess("Inject one more XID to trigger hard truncation", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keySyslogNodeName).(string)
+
+		helpers.InjectSyslogMessages(t, helpers.StubJournalHTTPPort, []string{
+			"kernel: [16450076.435595] NVRM: Xid (PCI:0001:00:00): 94, pid=789101, name=process, Contained ECC error.",
+		})
+
+		require.Eventually(t, func() bool {
+			condition, err := helpers.CheckNodeConditionExists(ctx, client, nodeName,
+				"SysLogsXIDError", "SysLogsXIDErrorIsNotHealthy")
+			if err != nil || condition == nil {
+				return false
+			}
+
+			return len(condition.Message) <= 1024 && strings.HasSuffix(condition.Message, "...")
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval,
+			"11th entry should trigger hard truncation with '...' suffix")
+
 		return ctx
 	})
 

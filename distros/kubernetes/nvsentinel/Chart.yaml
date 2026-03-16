@@ -73,3 +73,6 @@ dependencies:
   - name: k8sdatastore-crds
     version: "0.1.0"
     condition: global.k8sdatastoreCrds.enabled
+  - name: slurm-drain-monitor
+    version: "0.1.0"
+    condition: global.slurmDrainMonitor.enabled

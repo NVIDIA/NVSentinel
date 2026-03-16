@@ -90,6 +90,9 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  slurmDrainMonitor:
+    enabled: true
+
   eventExporter:
     enabled: true
 
@@ -3820,6 +3823,7 @@ platformConnector:
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
+    compactedHealthEventMsgLen: 72
     qps: 5.0
     burst: 10
   

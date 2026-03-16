@@ -33,6 +33,9 @@ type WatcherConfig struct {
 	// Resume token for continuing from a specific point
 	ResumeToken []byte `json:"resumeToken,omitempty"`
 
+	// Client name for logging and identification
+	ClientName string `json:"clientName"`
+
 	// Provider-specific options
 	Options map[string]interface{} `json:"options,omitempty"`
 }
@@ -67,6 +70,10 @@ func CreateChangeStreamWatcher(
 	ds datastore.DataStore,
 	config WatcherConfig,
 ) (datastore.ChangeStreamWatcher, error) {
+	if config.ClientName == "" {
+		return nil, fmt.Errorf("ClientName is required in WatcherConfig")
+	}
+
 	// Determine the provider from the datastore config
 	provider, err := getProviderFromDataStore(ds)
 	if err != nil {

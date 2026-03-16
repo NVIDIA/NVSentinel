@@ -110,6 +110,8 @@ global:
     enabled: false
   k8sdatastoreCrds:
     enabled: false
+  slurmDrainMonitor:
+    enabled: false
     
 # Network policy configuration
 # The metrics-access network policy restricts ingress to metrics ports only.
@@ -149,6 +151,8 @@ platformConnector:
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
+    # Max length of the compacted message prefix (before Recommended Action) per health event
+    compactedHealthEventMsgLen: 72
     qps: 5.0
     burst: 10
 

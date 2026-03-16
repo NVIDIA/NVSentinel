@@ -586,6 +586,17 @@ func (c *MongoDBClient) buildStructFieldUpdates(basePath string, status interfac
 	return updateFields
 }
 
+// resolveMongoFilter converts a *query.Builder (or any type implementing ToMongo())
+// to a MongoDB filter map so the driver can BSON-marshal it correctly.
+// Plain map[string]interface{} filters pass through unchanged.
+func resolveMongoFilter(filter interface{}) interface{} {
+	if b, ok := filter.(interface{ ToMongo() map[string]interface{} }); ok {
+		return b.ToMongo()
+	}
+
+	return filter
+}
+
 // UpdateDocument performs a general update operation
 func (c *MongoDBClient) UpdateDocument(
 	ctx context.Context, filter interface{}, update interface{},
@@ -682,7 +693,7 @@ func (c *MongoDBClient) FindOne(ctx context.Context, filter interface{}, opts *F
 		}
 	}
 
-	result := c.mongoCol.FindOne(ctx, filter, mongoOpts)
+	result := c.mongoCol.FindOne(ctx, resolveMongoFilter(filter), mongoOpts)
 
 	return &mongoSingleResult{result: result}, nil
 }
@@ -705,13 +716,15 @@ func (c *MongoDBClient) Find(ctx context.Context, filter interface{}, opts *Find
 		}
 	}
 
-	cursor, err := c.mongoCol.Find(ctx, filter, mongoOpts)
+	resolvedFilter := resolveMongoFilter(filter)
+
+	cursor, err := c.mongoCol.Find(ctx, resolvedFilter, mongoOpts)
 	if err != nil {
 		return nil, datastore.NewQueryError(
 			datastore.ProviderMongoDB,
 			"failed to execute find query",
 			err,
-		).WithMetadata("filter", filter)
+		).WithMetadata("filter", resolvedFilter)
 	}
 
 	return &mongoCursor{cursor: cursor}, nil
@@ -731,13 +744,15 @@ func (c *MongoDBClient) CountDocuments(ctx context.Context, filter interface{}, 
 		}
 	}
 
-	count, err := c.mongoCol.CountDocuments(ctx, filter, mongoOpts)
+	resolvedFilter := resolveMongoFilter(filter)
+
+	count, err := c.mongoCol.CountDocuments(ctx, resolvedFilter, mongoOpts)
 	if err != nil {
 		return 0, datastore.NewQueryError(
 			datastore.ProviderMongoDB,
 			"failed to count documents",
 			err,
-		).WithMetadata("filter", filter)
+		).WithMetadata("filter", resolvedFilter)
 	}
 
 	return count, nil
