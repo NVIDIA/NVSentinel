@@ -81,7 +81,10 @@ SA token as a Bearer token in gRPC metadata on every call. The server
 
 #### TLS Credentials (`janitor/pkg/client/grpc_tls.go`)
 
-Loads the CA bundle from disk and creates TLS transport credentials:
+Reads the CA bundle from disk and creates TLS transport credentials. Because the
+client creates a fresh gRPC connection for each CSP operation (see
+[Client-Side CA Bundle Rotation](#client-side-ca-bundle-rotation)), the CA bundle
+is read fresh every time — no watcher or caching needed.
 
 ```go
 func NewCSPProviderDialOptions(caPath string, insecureMode bool) ([]grpc.DialOption, error) {
@@ -269,6 +272,7 @@ tls:
   enabled: true
   certDir: "/etc/nvsentinel/janitor-provider/tls"
   issuerName: "janitor-selfsigned-issuer"
+  secretName: ""  # Name of the TLS Secret; defaults to "<fullname>-grpc-cert" if empty
 
 auth:
   enabled: true
@@ -278,7 +282,12 @@ auth:
 
 When `tls.enabled=true`, the chart creates a cert-manager `Certificate` resource
 and mounts the resulting Secret. The `issuerName` defaults to the janitor's existing
-self-signed Issuer, reusing NVSentinel's existing PKI infrastructure.
+self-signed Issuer, reusing NVSentinel's existing PKI infrastructure. The `secretName`
+field allows overriding the name of the TLS Secret created by the `Certificate`
+resource (or referencing a pre-existing Secret when using externally managed
+certificates). This keeps the server-side Secret name in sync with the client's
+`caSecretName` — without it, users who bring their own certificates would have no
+way to tell janitor-provider which Secret to mount.
 
 ### Certificate Rotation
 
@@ -326,22 +335,50 @@ The client needs to trust the CA that signed the server's certificate. If the CA
 itself rotates (e.g., the self-signed Issuer regenerates its CA key), the client
 must pick up the new CA bundle or it will reject the new server cert.
 
-In practice, CA rotation is infrequent — cert-manager rotates leaf certificates but
-the CA key typically remains stable. Three approaches for handling CA bundle updates:
+Rather than introducing a file watcher or periodic reload goroutine, this design
+takes a simpler approach: **create a fresh gRPC connection for each CSP operation**.
+Each call to `NewCSPProviderDialOptions` reads the CA bundle from disk, so the
+client naturally picks up any rotated CA bundle without additional machinery.
 
-**Option A — Periodic reload**: A background goroutine re-reads the CA bundle file
-on an interval (e.g., every 5 minutes) and swaps the `RootCAs` cert pool atomically.
+This works well because:
 
-**Option B — File watcher**: Use `fsnotify` or `certwatcher` to watch the CA bundle
-file and reload on change.
+- **CSP operations are infrequent** — reboot and terminate reconciliations happen on
+  the order of minutes, not milliseconds. The overhead of a new TLS handshake per
+  call is negligible relative to the CSP operation itself.
+- **No persistent connection to manage** — no need to handle reconnection logic,
+  connection health checks, or stale connection cleanup.
+- **CA rotation is automatic** — when cert-manager rotates the CA and the kubelet
+  updates the mounted Secret, the next reconciliation reads the new CA bundle. No
+  watcher, no atomic swap, no goroutines.
+- **SA token is already read per-call** — the token interceptor re-reads the
+  projected token file on every gRPC call (see above), so a per-call connection
+  model is consistent with the auth approach.
 
-**Option C — Accept restart-on-CA-rotation**: Since CA rotation is rare and
-typically planned, accept that the janitor pod needs a restart when the CA changes.
-This is the simplest approach and may be sufficient for most deployments.
+```go
+// Each controller reconciliation creates a fresh connection:
+func (r *RebootNodeReconciler) callProvider(ctx context.Context, req *pb.RebootRequest) error {
+    dialOpts, err := client.NewCSPProviderDialOptions(r.config.CSPProviderCAPath, r.config.CSPProviderInsecure)
+    if err != nil {
+        return fmt.Errorf("create dial options: %w", err)
+    }
+    dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(
+        client.TokenInterceptor(r.config.CSPProviderTokenPath),
+    ))
 
-This design recommends **Option C** as the initial approach, given that CA rotation
-is an infrequent, planned event. Options A or B can be adopted later if zero-downtime
-CA rotation becomes a requirement.
+    conn, err := grpc.NewClient(r.config.CSPProviderHost, dialOpts...)
+    if err != nil {
+        return fmt.Errorf("dial csp-provider: %w", err)
+    }
+    defer conn.Close()
+
+    _, err = pb.NewCSPProviderClient(conn).RebootNode(ctx, req)
+    return err
+}
+```
+
+If profiling later shows that connection overhead is a concern (unlikely given the
+call frequency), a connection pool or persistent connection with a CA watcher can be
+introduced as an optimization. For now, simplicity wins.
 
 ### Test Compatibility
 
