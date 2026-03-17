@@ -541,10 +541,17 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		assert.NoError(t, err)
 		assert.True(t, shouldCreateCR, "Should allow retry after CR failed")
 
-		// Verify annotation was cleaned up
-		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
-		require.NoError(t, err)
-		assert.NotContains(t, state.EquivalenceGroups, "restart", "Failed CR should be removed from annotation")
+		// Verify annotation was cleaned up.
+		// Use Eventually because RemoveGroupsFromState writes to the API server but
+		// GetRemediationState reads from the informer cache, which syncs asynchronously.
+		assert.Eventually(t, func() bool {
+			state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
+			if err != nil {
+				return false
+			}
+			_, exists := state.EquivalenceGroups["restart"]
+			return !exists
+		}, 5*time.Second, 100*time.Millisecond, "Failed CR should be removed from annotation")
 
 		// Event 2: Create retry CR
 		event2 := &events.HealthEventDoc{
@@ -566,7 +573,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Verify new annotation
-		state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 		require.NoError(t, err)
 		assert.Contains(t, state.EquivalenceGroups, "restart")
 		assert.Equal(t, secondCRName, state.EquivalenceGroups["restart"].MaintenanceCR)
@@ -1046,11 +1053,18 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
 		"COMPONENT_RESET that completed)")
 
-	// Verify annotation removed for CR-2 but not CR-3
-	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
-	require.NoError(t, err)
-	assert.Equal(t, "", state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
-	assert.Equal(t, crName3, state.EquivalenceGroups["reset-GPU-927d8f70-2051-db6c-0430-ffc457bff834"].MaintenanceCR)
+	// Verify annotation removed for CR-2 but not CR-3.
+	// Use Eventually because RemoveGroupsFromState writes to the API server but
+	// GetRemediationState reads from the informer cache, which syncs asynchronously.
+	assert.Eventually(t, func() bool {
+		state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
+		if err != nil {
+			return false
+		}
+		_, cr2GroupExists := state.EquivalenceGroups["reset-GPU-455d8f70-2051-db6c-0430-ffc457bff834"]
+		cr3Group, cr3GroupExists := state.EquivalenceGroups["reset-GPU-927d8f70-2051-db6c-0430-ffc457bff834"]
+		return !cr2GroupExists && cr3GroupExists && cr3Group.MaintenanceCR == crName3
+	}, 5*time.Second, 100*time.Millisecond, "Expected CR-2 group to be removed and CR-3 group to remain")
 
 	// Event 9: COMPONENT_RESET missing GPU_UUID should result in a nvsentinel-state label having value remediation-failed.
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)

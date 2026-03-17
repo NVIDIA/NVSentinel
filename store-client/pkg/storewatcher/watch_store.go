@@ -485,56 +485,9 @@ func GetCollectionClient(
 func constructMongoClientOptions(
 	mongoConfig MongoDBConfig,
 ) (*options.ClientOptions, error) {
-	timeout := mongoConfig.TotalCACertTimeoutSeconds
-	if timeout == 0 {
-		timeout = 600 // 10 minutes by default
-	}
-
-	totalCertTimeout := time.Duration(timeout) * time.Second
-
-	interval := mongoConfig.TotalCACertIntervalSeconds
-	if interval == 0 {
-		interval = 5 // 5 seconds by default
-	}
-
-	intervalCert := time.Duration(interval) * time.Second
-
-	// load CA certificate
-	caCert, err := pollTillCACertIsMountedSuccessfully(mongoConfig.ClientTLSCertConfig.CaCertPath,
-		totalCertTimeout, intervalCert)
+	tlsConfig, err := buildTLSConfig(mongoConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read CA certificate with error: %w", err)
-	}
-
-	// Build TLS config only when CA cert is available
-	var tlsConfig *tls.Config
-	if caCert != nil {
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to append CA certificate to pool")
-		}
-
-		// Load client certificate and key. If the files don't exist, proceed
-		// with CA-only TLS rather than failing.
-		clientCert, err := tls.LoadX509KeyPair(mongoConfig.ClientTLSCertConfig.TlsCertPath,
-			mongoConfig.ClientTLSCertConfig.TlsKeyPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				slog.Warn("Client certificate or key not found, skipping mTLS",
-					"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
-					"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
-			} else {
-				return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
-			}
-		}
-
-		tlsConfig = &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS12,
-		}
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{clientCert}
-		}
+		return nil, err
 	}
 
 	clientOpts := options.Client().ApplyURI(mongoConfig.URI)
@@ -559,6 +512,62 @@ func constructMongoClientOptions(
 	}
 
 	return clientOpts, nil
+}
+
+func buildTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
+	timeout := mongoConfig.TotalCACertTimeoutSeconds
+	if timeout == 0 {
+		timeout = 600 // 10 minutes by default
+	}
+
+	totalCertTimeout := time.Duration(timeout) * time.Second
+
+	interval := mongoConfig.TotalCACertIntervalSeconds
+	if interval == 0 {
+		interval = 5 // 5 seconds by default
+	}
+
+	intervalCert := time.Duration(interval) * time.Second
+
+	caCert, err := pollTillCACertIsMountedSuccessfully(mongoConfig.ClientTLSCertConfig.CaCertPath,
+		totalCertTimeout, intervalCert)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA certificate with error: %w", err)
+	}
+
+	if caCert == nil {
+		return nil, nil
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to append CA certificate to pool")
+	}
+
+	// Load client certificate and key. If the files don't exist, proceed
+	// with CA-only TLS rather than failing.
+	clientCert, err := tls.LoadX509KeyPair(mongoConfig.ClientTLSCertConfig.TlsCertPath,
+		mongoConfig.ClientTLSCertConfig.TlsKeyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("Client certificate or key not found, skipping mTLS",
+				"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
+				"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
+
+			return &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			}, nil
+		}
+
+		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // ConstructClientTLSConfig builds a TLS configuration from certificates at the
@@ -615,6 +624,7 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 		slog.Info("No CA cert path configured, TLS will be disabled")
 		return nil, nil
 	}
+
 	if !filepath.IsAbs(certPath) {
 		return nil, fmt.Errorf("CA cert path %q is not absolute — this is likely a misconfiguration. "+
 			"Use --tls-enabled=false to explicitly disable TLS, or provide an absolute cert mount path", certPath)

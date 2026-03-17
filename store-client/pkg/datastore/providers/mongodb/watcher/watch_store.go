@@ -307,7 +307,7 @@ func openChangeStreamWithRetry(
 
 func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 	// Create a child context that we can cancel on Close()
-	watchCtx, cancel := context.WithCancel(ctx)
+	watchCtx, cancel := context.WithCancel(ctx) //nolint:gosec // G118 - cancel is stored in w.cancel and called in Close()
 	w.cancel = cancel
 
 	go func() {
@@ -735,11 +735,13 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
 				"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
 				"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
+
 			return &tls.Config{
 				RootCAs:    caCertPool,
 				MinVersion: tls.VersionTLS12,
 			}, nil
 		}
+
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -793,11 +795,13 @@ func ConstructClientTLSConfig(
 		if os.IsNotExist(err) {
 			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
 				"certPath", clientCertPath, "keyPath", clientKeyPath)
+
 			return &tls.Config{
 				RootCAs:    caCertPool,
 				MinVersion: tls.VersionTLS12,
 			}, nil
 		}
+
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -814,6 +818,7 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 		slog.Info("No CA cert path configured, TLS will be disabled")
 		return nil, nil
 	}
+
 	if !filepath.IsAbs(certPath) {
 		return nil, fmt.Errorf("CA cert path %q is not absolute — this is likely a misconfiguration. "+
 			"Use --tls-enabled=false to explicitly disable TLS, or provide an absolute cert mount path", certPath)

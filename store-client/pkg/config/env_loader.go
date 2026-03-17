@@ -151,9 +151,11 @@ func NewDatabaseConfigFromEnv() (DatabaseConfig, error) {
 	if certMountPath == "" {
 		certMountPath = os.Getenv("POSTGRESQL_CLIENT_CERT_MOUNT_PATH")
 	}
+
 	if certMountPath == "" {
 		certMountPath = DefaultCertMountPath
 	}
+
 	return NewDatabaseConfigFromEnvWithDefaults(certMountPath)
 }
 

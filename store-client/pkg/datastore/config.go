@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,7 @@ import (
 // LoadDatastoreConfig loads datastore configuration from environment variables and YAML
 func LoadDatastoreConfig() (*DataStoreConfig, error) {
 	provider := os.Getenv("DATASTORE_PROVIDER")
+	//nolint:gosec // G706 - structured slog value, safely escaped by handler
 	slog.Info("Loading datastore config", "provider", provider)
 
 	if provider != "" {
@@ -211,7 +213,7 @@ func loadDefaultConfig() *DataStoreConfig {
 
 // loadDatastoreConfigFromYAMLFile loads configuration from a YAML file
 func loadDatastoreConfigFromYAMLFile(yamlPath string) (*DataStoreConfig, error) {
-	data, err := os.ReadFile(yamlPath)
+	data, err := os.ReadFile(filepath.Clean(yamlPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read datastore config file %s: %w", yamlPath, err)
 	}

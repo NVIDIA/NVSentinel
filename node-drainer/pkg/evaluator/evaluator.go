@@ -83,6 +83,7 @@ func checkPreconditions(healthEvent model.HealthEventWithStatus) *DrainActionRes
 		healthEvent.HealthEvent.DrainOverrides.Skip {
 		slog.Info("DrainOverrides.Skip is true, skipping drain for node",
 			"node", nodeName)
+
 		return &DrainActionResult{Action: ActionMarkAlreadyDrained, Status: model.AlreadyDrained}
 	}
 

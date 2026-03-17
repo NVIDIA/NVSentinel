@@ -64,6 +64,7 @@ func NewMongoDBDataStore(ctx context.Context, config datastore.DataStoreConfig) 
 		slog.Info("Extracted cert directory from TLSConfig", "certDir", certDir)
 	} else if envPath := os.Getenv("MONGODB_CLIENT_CERT_MOUNT_PATH"); envPath != "" {
 		certMountPath = &envPath
+		//nolint:gosec // G706 - structured slog value, safely escaped by handler
 		slog.Info("Using MONGODB_CLIENT_CERT_MOUNT_PATH from environment", "envPath", envPath)
 	} else {
 		slog.Warn("No certificate path found in TLSConfig or environment")

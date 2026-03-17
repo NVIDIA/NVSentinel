@@ -167,6 +167,7 @@ func createStandardizedFactory(config DatastoreClientConfig) (*factory.ClientFac
 	}
 
 	if envCertPath != "" {
+		//nolint:gosec // G706 - structured slog values, safely escaped by handler
 		slog.Debug("Using environment config with cert path from env var",
 			"module", config.ModuleName,
 			"certPath", envCertPath,

@@ -590,6 +590,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 		  )`
 
 	// Append server-side filter if available
+	//nolint:gosec // G202 - sqlFilterClause uses parameterized $N placeholders, not raw user input
 	query := baseQuery + sqlFilterClause + `
 		ORDER BY changed_at ASC, id ASC
 		LIMIT 100
