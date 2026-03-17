@@ -1,6 +1,6 @@
 # NVSentinel Roadmap
 
-NVSentinel is evolving from an **Experimental** prototype toward Alpha, Beta, and ultimately Production Stable releases.
+NVSentinel has reached **Beta / Stable** status with v1.0.0. The project is recommended for production testing and use, and continues to evolve toward General Availability.
 
 For the most current and detailed tracking, please refer to the [Project Roadmap Board](https://github.com/orgs/NVIDIA/projects/133/views/1?template_dialog_tab=all&layout_template=board).
 

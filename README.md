@@ -4,13 +4,13 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-1.25+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Helm](https://img.shields.io/badge/Helm-3.0+-0F1689.svg?logo=helm&logoColor=white)](https://helm.sh/)
 
-**GPU Node Resilience System for Kubernetes**
+**GPU Fault Detection and Remediation for Kubernetes**
 
-NVSentinel is a comprehensive collection of Kubernetes services that automatically detect, classify, and remediate hardware and software faults in GPU nodes. Designed for GPU clusters, it ensures maximum uptime and seamless fault recovery in high-performance computing environments.
+NVSentinel automatically detects, classifies, and remediates hardware and software faults in GPU nodes. It monitors GPU health, system logs, and cloud provider maintenance events, then takes action: cordoning faulty nodes, draining workloads, and triggering break-fix workflows.
 
-> [!WARNING]
-> **Experimental Preview Release**
-> This is an experimental/preview release of NVSentinel. Use at your own risk in production environments. The software is provided "as is" without warranties of any kind. Features, APIs, and configurations may change without notice in future releases. For production deployments, thoroughly test in non-critical environments first.
+> [!NOTE]
+> **Beta / Stable**
+> NVSentinel is ready for production testing and use. APIs, configurations, and features may change between releases. If you encounter issues, please [open an issue](https://github.com/NVIDIA/NVSentinel/issues) or [start a discussion](https://github.com/NVIDIA/NVSentinel/discussions).
 
 ## 🚀 Quick Start
 
@@ -23,7 +23,7 @@ NVSentinel is a comprehensive collection of Kubernetes services that automatical
 ### Installation
 
 ```bash
-NVSENTINEL_VERSION=v0.9.0
+NVSENTINEL_VERSION=v1.0.0
 # Install from GitHub Container Registry
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --version "$NVSENTINEL_VERSION" \
@@ -76,7 +76,7 @@ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
 ### 3. Install NVSentinel
 
 ```bash
-NVSENTINEL_VERSION=v0.9.0
+NVSENTINEL_VERSION=v1.0.0
 
 helm upgrade --install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --namespace nvsentinel --create-namespace \
