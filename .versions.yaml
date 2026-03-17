@@ -36,7 +36,8 @@ languages:
 
 # Build & Package Management
 build_tools:
-  poetry: '1.8.2'
+  poetry: '2.2.1'
+  poetry_plugin_export: '1.10.0'
 
 # Go Development Tools
 go_tools:
@@ -61,7 +62,7 @@ protobuf:
 linting:
   shellcheck: 'v0.11.0'
   addlicense: 'v1.2.0'
-  black: '25.9.0'
+  black: '26.3.1'
 
 # Container Tools
 container_tools:

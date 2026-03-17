@@ -380,6 +380,16 @@ func setupE2EReconcilerWithOptions(t *testing.T, ctx context.Context, cfg E2ERec
 
 			eventwatcher.EmitNodeQuarantineDuration(status, &healthEventWithStatus)
 
+			if status != nil && *status == model.UnQuarantined {
+				if genTs := healthEventWithStatus.HealthEvent.GetGeneratedTimestamp(); genTs != nil {
+					eventwatcher.EmitRemediationDuration(
+						healthEventWithStatus.HealthEvent.GetNodeName(),
+						genTs.AsTime(),
+						nil, nil,
+					)
+				}
+			}
+
 			statusMu.Lock()
 			eventStatuses[eventID] = status
 			statusMu.Unlock()
@@ -625,6 +635,8 @@ func (m *MockEventWatcher) Start(ctx context.Context) error {
 func (m *MockEventWatcher) SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status) {
 	m.ProcessEventCallbackFn = callback
 }
+
+func (m *MockEventWatcher) SetFetchDocIDsFn(_ func(nodeName string) []string) {}
 
 func (m *MockEventWatcher) CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error {
 	if m.CancelLatestQuarantiningEventsFn != nil {
@@ -5300,4 +5312,438 @@ func TestMetrics_NodeQuarantineDuration(t *testing.T) {
 		"NodeQuarantineDuration histogram should record at least one observation")
 
 	t.Log("NodeQuarantineDuration metric recorded successfully")
+}
+
+func getHistogramSampleSum(t *testing.T, histogram prometheus.Histogram) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	err := histogram.Write(metric)
+	require.NoError(t, err)
+	return metric.Histogram.GetSampleSum()
+}
+
+// TestMetrics_NodeRemediationDuration verifies that NodeRemediationDurationSeconds metric
+// is recorded when EmitRemediationDuration is called after a node is unquarantined.
+func TestMetrics_NodeRemediationDuration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "metrics-remediation-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-critical-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	beforeRemediationCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeRemediationSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationSeconds)
+
+	generatedTime := time.Now().Add(-10 * time.Second)
+
+	t.Log("Sending unhealthy event to quarantine node")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID1,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "gpu-health-monitor",
+				"componentclass": "GPU",
+				"checkname":      "GpuXidError",
+				"version":        uint32(1),
+				"ishealthy":      false,
+				"isfatal":        true,
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	t.Log("Waiting for node to be quarantined")
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
+
+	t.Log("Sending healthy event to unquarantine node")
+	eventID2 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID2,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "gpu-health-monitor",
+				"componentclass": "GPU",
+				"checkname":      "GpuXidError",
+				"version":        uint32(1),
+				"ishealthy":      true,
+				"isfatal":        false,
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	t.Log("Waiting for node to be unquarantined")
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID2)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationCount
+	}, statusCheckTimeout, statusCheckPollInterval, "NodeRemediationDurationSeconds should be recorded")
+
+	afterRemediationCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	afterRemediationSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationSeconds)
+
+	assert.Equal(t, beforeRemediationCount+1, afterRemediationCount,
+		"NodeRemediationDurationSeconds histogram should record exactly one observation")
+	assert.Greater(t, afterRemediationSum, beforeRemediationSum,
+		"NodeRemediationDurationSeconds sample sum should increase")
+
+	observedDuration := afterRemediationSum - beforeRemediationSum
+	assert.GreaterOrEqual(t, observedDuration, float64(10),
+		"Remediation duration should be >= 10s (event generated 10s ago)")
+
+	t.Logf("NodeRemediationDurationSeconds recorded: %.2fs", observedDuration)
+}
+
+// TestMetrics_NodeRemediationDurationExcludingDrain verifies that
+// NodeRemediationDurationExcludingDrainSeconds is recorded when both
+// quarantine and drain finish timestamps are provided.
+func TestMetrics_NodeRemediationDurationExcludingDrain(t *testing.T) {
+	beforeEndToEndCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	beforeExclDrainSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+
+	genTs := time.Now().Add(-60 * time.Second)
+	quarantineFinish := time.Now().Add(-50 * time.Second)
+	drainFinish := time.Now().Add(-20 * time.Second)
+
+	eventwatcher.EmitRemediationDuration("test-drain-node", genTs, &quarantineFinish, &drainFinish)
+
+	afterEndToEndCount := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	afterExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	afterExclDrainSum := getHistogramSampleSum(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+
+	assert.Equal(t, beforeEndToEndCount+1, afterEndToEndCount,
+		"NodeRemediationDurationSeconds should record one observation")
+	assert.Equal(t, beforeExclDrainCount+1, afterExclDrainCount,
+		"NodeRemediationDurationExcludingDrainSeconds should record one observation")
+
+	observedExclDrain := afterExclDrainSum - beforeExclDrainSum
+	// drain took 30s (from -50s to -20s), total ~60s, so excluding drain ~30s
+	assert.GreaterOrEqual(t, observedExclDrain, float64(25),
+		"Duration excluding drain should be roughly end-to-end minus drain (~30s)")
+	assert.LessOrEqual(t, observedExclDrain, float64(65),
+		"Duration excluding drain should not exceed total end-to-end duration")
+
+	t.Logf("NodeRemediationDurationExcludingDrainSeconds recorded: %.2fs", observedExclDrain)
+}
+
+// TestMetrics_NodeRemediationDuration_NoDrainTimestamps verifies that
+// NodeRemediationDurationExcludingDrainSeconds is NOT recorded when
+// quarantine/drain finish timestamps are nil.
+func TestMetrics_NodeRemediationDuration_NoDrainTimestamps(t *testing.T) {
+	beforeExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+
+	genTs := time.Now().Add(-15 * time.Second)
+	eventwatcher.EmitRemediationDuration("test-no-drain-node", genTs, nil, nil)
+
+	afterExclDrainCount := getHistogramCount(t, metrics.NodeRemediationDurationExcludingDrainSeconds)
+	assert.Equal(t, beforeExclDrainCount, afterExclDrainCount,
+		"NodeRemediationDurationExcludingDrainSeconds should not be recorded without drain timestamps")
+}
+
+// TestMetrics_FullQuarantineUnquarantineMetricsFlow verifies that the complete
+// quarantine → unquarantine lifecycle emits all expected metrics.
+func TestMetrics_FullQuarantineUnquarantineMetricsFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(e2eTestContext, 30*time.Second)
+	defer cancel()
+
+	nodeName := "metrics-full-flow-" + generateShortTestID()
+	createE2ETestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = e2eTestClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	tomlConfig := config.TomlConfig{
+		LabelPrefix: "k8s.nvidia.com/",
+		RuleSets: []config.RuleSet{
+			{
+				Name:     "gpu-xid-critical-errors",
+				Version:  "1",
+				Priority: 10,
+				Match: config.Match{
+					Any: []config.Rule{
+						{Kind: "HealthEvent", Expression: "event.checkName == 'GpuXidError' && event.isFatal == true"},
+					},
+				},
+				Taint:  config.Taint{Key: "nvidia.com/gpu-xid-error", Value: "true", Effect: "NoSchedule"},
+				Cordon: config.Cordon{ShouldCordon: true},
+			},
+		},
+	}
+
+	_, mockWatcher, getStatus, _ := setupE2EReconciler(t, ctx, tomlConfig, nil)
+
+	// Snapshot all metrics before the flow
+	beforeQuarantined := getCounterVecValue(t, metrics.TotalNodesQuarantined, nodeName)
+	beforeUnquarantined := getCounterVecValue(t, metrics.TotalNodesUnquarantined, nodeName)
+	beforeQuarantineDuration := getHistogramCount(t, metrics.NodeQuarantineDuration)
+	beforeRemediationDuration := getHistogramCount(t, metrics.NodeRemediationDurationSeconds)
+	beforeTaintsApplied := getCounterVecValue(t, metrics.TaintsApplied, "nvidia.com/gpu-xid-error", "NoSchedule")
+	beforeCordonsApplied := getCounterValue(t, metrics.CordonsApplied)
+	beforeTaintsRemoved := getCounterVecValue(t, metrics.TaintsRemoved, "nvidia.com/gpu-xid-error", "NoSchedule")
+	beforeCordonsRemoved := getCounterValue(t, metrics.CordonsRemoved)
+
+	// --- Phase 1: Quarantine ---
+	generatedTime := time.Now().Add(-5 * time.Second)
+
+	t.Log("Phase 1: Sending unhealthy event")
+	eventID1 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID1,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "gpu-health-monitor",
+				"componentclass": "GPU",
+				"checkname":      "GpuXidError",
+				"version":        uint32(1),
+				"ishealthy":      false,
+				"isfatal":        true,
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return node.Spec.Unschedulable && node.Annotations[common.QuarantineHealthEventAnnotationKey] != ""
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be quarantined")
+
+	// Verify quarantine metrics
+	require.Eventually(t, func() bool {
+		return getHistogramCount(t, metrics.NodeQuarantineDuration) > beforeQuarantineDuration
+	}, statusCheckTimeout, statusCheckPollInterval, "NodeQuarantineDuration should be recorded")
+
+	assert.Equal(t, beforeQuarantined+1, getCounterVecValue(t, metrics.TotalNodesQuarantined, nodeName),
+		"TotalNodesQuarantined should increment")
+	assert.Equal(t, float64(1), getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName),
+		"CurrentQuarantinedNodes should be 1")
+	assert.GreaterOrEqual(t, getCounterVecValue(t, metrics.TaintsApplied, "nvidia.com/gpu-xid-error", "NoSchedule"),
+		beforeTaintsApplied+1, "TaintsApplied should increment")
+	assert.GreaterOrEqual(t, getCounterValue(t, metrics.CordonsApplied),
+		beforeCordonsApplied+1, "CordonsApplied should increment")
+
+	// --- Phase 2: Unquarantine ---
+	t.Log("Phase 2: Sending healthy event")
+	eventID2 := generateTestID()
+	mockWatcher.EventsChan <- &TestEvent{Data: datastore.Event{
+		"operationType": "insert",
+		"fullDocument": datastore.Event{
+			"_id": eventID2,
+			"healtheventstatus": datastore.Event{
+				"nodequarantined": model.StatusInProgress,
+			},
+			"healthevent": datastore.Event{
+				"nodename":       nodeName,
+				"agent":          "gpu-health-monitor",
+				"componentclass": "GPU",
+				"checkname":      "GpuXidError",
+				"version":        uint32(1),
+				"ishealthy":      true,
+				"isfatal":        false,
+				"generatedtimestamp": datastore.Event{
+					"seconds": generatedTime.Unix(),
+					"nanos":   int32(generatedTime.Nanosecond()),
+				},
+				"entitiesimpacted": []interface{}{
+					datastore.Event{"entitytype": "GPU", "entityvalue": "0"},
+				},
+			},
+		},
+	}}
+
+	require.Eventually(t, func() bool {
+		status := getStatus(eventID2)
+		return status != nil && *status == model.UnQuarantined
+	}, statusCheckTimeout, statusCheckPollInterval, "Status should be UnQuarantined")
+
+	require.Eventually(t, func() bool {
+		node, err := e2eTestClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		return !node.Spec.Unschedulable
+	}, eventuallyTimeout, eventuallyPollInterval, "Node should be uncordoned")
+
+	// Verify unquarantine metrics
+	assert.Equal(t, beforeUnquarantined+1, getCounterVecValue(t, metrics.TotalNodesUnquarantined, nodeName),
+		"TotalNodesUnquarantined should increment")
+	assert.Equal(t, float64(0), getGaugeVecValue(t, metrics.CurrentQuarantinedNodes, nodeName),
+		"CurrentQuarantinedNodes should be 0")
+	assert.GreaterOrEqual(t, getCounterVecValue(t, metrics.TaintsRemoved, "nvidia.com/gpu-xid-error", "NoSchedule"),
+		beforeTaintsRemoved+1, "TaintsRemoved should increment")
+	assert.GreaterOrEqual(t, getCounterValue(t, metrics.CordonsRemoved),
+		beforeCordonsRemoved+1, "CordonsRemoved should increment")
+
+	// --- Phase 3: Remediation duration ---
+	require.Eventually(t, func() bool {
+		return getHistogramCount(t, metrics.NodeRemediationDurationSeconds) > beforeRemediationDuration
+	}, statusCheckTimeout, statusCheckPollInterval,
+		"NodeRemediationDurationSeconds should be recorded after unquarantine")
+
+	t.Log("Full quarantine → unquarantine metrics flow verified successfully")
+}
+
+func buildAnnotationWithIDs(t *testing.T, nodeID string, entries []struct{ id, checkName string }) string {
+	t.Helper()
+
+	healthEventsMap := healthEventsAnnotation.NewHealthEventsAnnotationMap()
+	for _, e := range entries {
+		evt := &protos.HealthEvent{
+			Id:             e.id,
+			NodeName:       nodeID,
+			CheckName:      e.checkName,
+			Agent:          "test-agent",
+			ComponentClass: "GPU",
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "0"},
+			},
+		}
+		healthEventsMap.AddOrUpdateEvent(evt)
+	}
+
+	raw, err := json.Marshal(healthEventsMap)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func TestSourceDocIDsFromAnnotation(t *testing.T) {
+	tests := []struct {
+		name        string
+		entries     []struct{ id, checkName string }
+		expectedIDs []string
+	}{
+		{
+			name:        "no annotation returns nil",
+			entries:     nil,
+			expectedIDs: nil,
+		},
+		{
+			name:        "single event returns its ID",
+			entries:     []struct{ id, checkName string }{{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"}},
+			expectedIDs: []string{"507f1f77bcf86cd799439011"},
+		},
+		{
+			name: "multiple events with unique IDs returns all IDs",
+			entries: []struct{ id, checkName string }{
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"},
+				{id: "507f1f77bcf86cd799439012", checkName: "GpuMemWatch"},
+			},
+			expectedIDs: []string{"507f1f77bcf86cd799439011", "507f1f77bcf86cd799439012"},
+		},
+		{
+			name: "duplicate IDs across events are deduplicated",
+			entries: []struct{ id, checkName string }{
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuXidError"},
+				{id: "507f1f77bcf86cd799439011", checkName: "GpuMemWatch"},
+			},
+			expectedIDs: []string{"507f1f77bcf86cd799439011"},
+		},
+		{
+			name:        "events with empty ID are skipped",
+			entries:     []struct{ id, checkName string }{{id: "", checkName: "GpuXidError"}},
+			expectedIDs: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(e2eTestContext, 10*time.Second)
+			defer cancel()
+
+			nodeName := "src-doc-ids-" + generateShortTestID()
+
+			var annotations map[string]string
+			if tc.entries != nil {
+				annotations = map[string]string{
+					common.QuarantineHealthEventAnnotationKey: buildAnnotationWithIDs(t, nodeName, tc.entries),
+				}
+			}
+
+			createE2ETestNode(ctx, t, nodeName, annotations, nil, nil, false)
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_ = e2eTestClient.CoreV1().Nodes().Delete(cleanupCtx, nodeName, metav1.DeleteOptions{})
+			})
+
+			r, _, _, _ := setupE2EReconciler(t, ctx, config.TomlConfig{LabelPrefix: "k8s.nvidia.com/"}, nil)
+
+			require.Eventually(t, func() bool {
+				_, err := r.k8sClient.NodeInformer.GetNode(nodeName)
+				return err == nil
+			}, eventuallyTimeout, statusCheckPollInterval, "informer should observe test node")
+
+			ids := r.sourceDocIDsFromAnnotation(nodeName)
+			assert.ElementsMatch(t, tc.expectedIDs, ids)
+		})
+	}
 }

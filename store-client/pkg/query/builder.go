@@ -497,10 +497,10 @@ func mongoFieldToJSONB(fieldPath string) string {
 	for i, part := range parts {
 		if i < len(parts)-1 {
 			// Intermediate path: use -> to keep as JSONB
-			jsonbPath.WriteString(fmt.Sprintf("->'%s'", part))
+			fmt.Fprintf(&jsonbPath, "->'%s'", part)
 		} else {
 			// Final path: use ->> to extract as text
-			jsonbPath.WriteString(fmt.Sprintf("->>'%s'", part))
+			fmt.Fprintf(&jsonbPath, "->>'%s'", part)
 		}
 	}
 
@@ -536,7 +536,7 @@ func buildDualCaseJSONBPath(parts []string) string {
 
 	// Build the base path up to the last element
 	for i := 0; i < len(parts)-1; i++ {
-		basePath.WriteString(fmt.Sprintf("->'%s'", parts[i]))
+		fmt.Fprintf(&basePath, "->'%s'", parts[i])
 	}
 
 	lastField := parts[len(parts)-1]

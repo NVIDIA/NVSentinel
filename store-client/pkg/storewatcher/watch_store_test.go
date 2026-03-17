@@ -681,6 +681,77 @@ func TestConstructClientTLSConfig_InvalidClientKey(t *testing.T) {
 	}
 }
 
+func TestConstructClientTLSConfig_EmptyPath_DisablesTLS(t *testing.T) {
+	tlsConfig, err := ConstructClientTLSConfig(5, 1, "")
+	if err != nil {
+		t.Fatalf("ConstructClientTLSConfig returned error for empty path: %v", err)
+	}
+	if tlsConfig != nil {
+		t.Fatal("Expected nil TLS config when cert mount path is empty")
+	}
+}
+
+func TestPollTillCACert_EmptyPath_ReturnsNil(t *testing.T) {
+	caCert, err := pollTillCACertIsMountedSuccessfully("", 5*time.Second, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Expected nil error for empty path, got: %v", err)
+	}
+	if caCert != nil {
+		t.Fatal("Expected nil CA cert for empty path")
+	}
+}
+
+func TestPollTillCACert_NonAbsolutePath_ReturnsError(t *testing.T) {
+	_, err := pollTillCACertIsMountedSuccessfully("ca.crt", 5*time.Second, 1*time.Second)
+	if err == nil {
+		t.Fatal("Expected error for non-absolute path, got nil")
+	}
+	if !strings.Contains(err.Error(), "not absolute") {
+		t.Fatalf("Expected 'not absolute' in error message, got: %v", err)
+	}
+}
+
+func TestConstructMongoClientOptions_NoTLS(t *testing.T) {
+	mongoConfig := MongoDBConfig{
+		URI:                      "mongodb://localhost:27017",
+		Database:                 "test",
+		Collection:               "test",
+		TotalPingTimeoutSeconds:  5,
+		TotalPingIntervalSeconds: 1,
+		ClientTLSCertConfig: MongoDBClientTLSCertConfig{
+			CaCertPath: "",
+		},
+	}
+
+	opts, err := constructMongoClientOptions(mongoConfig)
+	if err != nil {
+		t.Fatalf("constructMongoClientOptions returned error: %v", err)
+	}
+	if opts == nil {
+		t.Fatal("Expected non-nil client options")
+	}
+}
+
+func TestConstructMongoClientOptions_NonAbsoluteCertPath_ReturnsError(t *testing.T) {
+	mongoConfig := MongoDBConfig{
+		URI:                        "mongodb://localhost:27017",
+		Database:                   "test",
+		Collection:                 "test",
+		TotalPingTimeoutSeconds:    5,
+		TotalPingIntervalSeconds:   1,
+		TotalCACertTimeoutSeconds:  2,
+		TotalCACertIntervalSeconds: 1,
+		ClientTLSCertConfig: MongoDBClientTLSCertConfig{
+			CaCertPath: "ca.crt",
+		},
+	}
+
+	_, err := constructMongoClientOptions(mongoConfig)
+	if err == nil {
+		t.Fatal("Expected error for non-absolute cert path")
+	}
+}
+
 func TestConstructClientTLSConfig_CAReadTimeout(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "tls_test_ca_timeout")
 	if err != nil {

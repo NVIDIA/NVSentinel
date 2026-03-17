@@ -16,6 +16,8 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +32,10 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
-const defaultMaxNodeConditionMessageLength = int64(1024)
+var defaultConnectorConfig = K8sConnectorConfig{
+	MaxNodeConditionMessageLength: 1024,
+	CompactedHealthEventMsgLen:    72,
+}
 
 // go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 // source <(setup-envtest use -p env)
@@ -64,7 +69,7 @@ func TestK8sConnector_WithEnvtest_NodeConditionUpdate(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -146,7 +151,7 @@ func TestK8sConnector_WithEnvtest_NodeConditionClear(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -203,7 +208,7 @@ func TestK8sConnector_WithEnvtest_NodeEventCreation(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -272,7 +277,7 @@ func TestK8sConnector_WithEnvtest_AddMessages(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := []*protos.HealthEvent{
 		{
@@ -332,7 +337,7 @@ func TestK8sConnector_WithEnvtest_RemoveMessages(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := []*protos.HealthEvent{
 		{
@@ -378,7 +383,7 @@ func TestK8sConnector_WithEnvtest_MultipleEventsForSameNode(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEventsProto := &protos.HealthEvents{
 		Events: []*protos.HealthEvent{
@@ -463,7 +468,7 @@ func TestK8sConnector_WithEnvtest_TransitionTimeUpdates(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := []*protos.HealthEvent{
 		{
@@ -511,7 +516,7 @@ func TestK8sConnector_WithEnvtest_EventCountIncrement(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	defer close(stopCh)
-	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvent := &protos.HealthEvent{
 		CheckName:          "GpuThermalWatch",
@@ -563,7 +568,7 @@ func TestK8sConnector_WithEnvtest_NodeNotFound(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -607,7 +612,7 @@ func TestK8sConnector_WithEnvtest_EmptyHealthEvents(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -636,7 +641,7 @@ func TestK8sConnector_WithEnvtest_MultipleEntities(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -700,7 +705,7 @@ func TestK8sConnector_WithEnvtest_SpecialCharactersInMessage(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,
@@ -738,6 +743,151 @@ func TestK8sConnector_WithEnvtest_SpecialCharactersInMessage(t *testing.T) {
 	assert.True(t, conditionFound, "node condition with special characters was not created")
 }
 
+// TestK8sConnector_WithEnvtest_CompactionAndDeduplication verifies the full real-world flow:
+// health events are appended one by one to the same node condition. Once the accumulated
+// message exceeds 1024 bytes, compaction fires and the result must contain no two entries
+// with identical compacted text. A duplicate event (same entity + same Recommended Action,
+// different diagnostic text) must collapse to a single entry, not accumulate.
+func TestK8sConnector_WithEnvtest_CompactionAndDeduplication(t *testing.T) {
+	ctx := context.Background()
+	testEnv, cli := setupEnvtest(t)
+	defer testEnv.Stop()
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}
+	_, err := cli.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	require.NoError(t, err, "failed to create node")
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	connector := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
+
+	// Send 5 health events for 5 distinct GPUs. Each message is ~197 bytes;
+	// 5 messages total ~990 bytes < 1024 — no compaction should fire yet.
+	// The timestamp is embedded in the diagnostic text and falls within the
+	// 72-byte compacted prefix, so it distinguishes entries after compaction.
+	for i := 0; i < 5; i++ {
+		events := []*protos.HealthEvent{
+			{
+				CheckName: "GpuXidError",
+				IsHealthy: false,
+				Message: fmt.Sprintf(
+					"kernel: [16450076.00000%d] NVRM: Xid (PCI:0000:0%d:00.0): 119, pid=10000%d, name=proc, Timeout after 6s waiting for GPU GSP response",
+					i+1, i, i+1),
+				EntitiesImpacted: []*protos.Entity{
+					{EntityType: "GPU", EntityValue: fmt.Sprintf("%d", i)},
+					{EntityType: "PCI", EntityValue: fmt.Sprintf("0000:0%d:00.0", i)},
+				},
+				ErrorCode:          []string{"119"},
+				IsFatal:            true,
+				GeneratedTimestamp: timestamppb.New(time.Now()),
+				RecommendedAction:  protos.RecommendedAction_COMPONENT_RESET,
+				NodeName:           "test-node",
+			},
+		}
+		_, err = connector.updateNodeConditions(ctx, events)
+		require.NoError(t, err, "failed to process event for GPU:%d", i)
+	}
+
+	// Verify: 5 entries, no compaction yet.
+	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+	require.NoError(t, err)
+	var condMsg string
+	for _, c := range node.Status.Conditions {
+		if c.Type == "GpuXidError" {
+			condMsg = c.Message
+			break
+		}
+	}
+	require.NotEmpty(t, condMsg, "GpuXidError condition not found after 5 events")
+	assert.Less(t, len(condMsg), 1024, "5 messages should not yet exceed 1024 bytes")
+	assert.NotContains(t, condMsg, truncationSuffix, "compaction must not have fired yet")
+
+	// Send a duplicate event for GPU:0 (same GPU/PCI entities + same Recommended Action,
+	// different timestamp in diagnostic text). This pushes the total to ~1188 bytes > 1024,
+	// triggering Tier 1 compaction. deduplicateMessagesByIdentity drops the old GPU:0 entry
+	// and keeps this fresher one; all 5 surviving entries are then compacted to ~555 bytes.
+	dupEvent := []*protos.HealthEvent{
+		{
+			CheckName: "GpuXidError",
+			IsHealthy: false,
+			Message:   "kernel: [16450077.000001] NVRM: Xid (PCI:0000:00:00.0): 119, pid=9999999, name=proc, Timeout after 6s waiting for GPU GSP response",
+			EntitiesImpacted: []*protos.Entity{
+				{EntityType: "GPU", EntityValue: "0"},
+				{EntityType: "PCI", EntityValue: "0000:00:00.0"},
+			},
+			ErrorCode:          []string{"119"},
+			IsFatal:            true,
+			GeneratedTimestamp: timestamppb.New(time.Now()),
+			RecommendedAction:  protos.RecommendedAction_COMPONENT_RESET,
+			NodeName:           "test-node",
+		},
+	}
+	_, err = connector.updateNodeConditions(ctx, dupEvent)
+	require.NoError(t, err, "failed to process duplicate event for GPU:0")
+
+	node, err = cli.CoreV1().Nodes().Get(ctx, "test-node", metav1.GetOptions{})
+	require.NoError(t, err)
+	condMsg = ""
+	for _, c := range node.Status.Conditions {
+		if c.Type == "GpuXidError" {
+			condMsg = c.Message
+			break
+		}
+	}
+	require.NotEmpty(t, condMsg, "GpuXidError condition not found after duplicate event")
+
+	// 1. Condition message must be within the 1024-byte Kubernetes limit.
+	assert.LessOrEqual(t, len(condMsg), 1024,
+		"condition message must not exceed 1024 bytes after compaction")
+
+	// 2. Entries must be in compacted form (free-text truncated at 72 bytes).
+	assert.Contains(t, condMsg, truncationSuffix,
+		"entries must be in compacted form after limit was exceeded")
+
+	// 3. No two compacted entries in the condition message may have identical text.
+	//    If dedup and compaction are working correctly, each entry originates from a
+	//    different entity and carries a distinct 72-byte prefix.
+	parts := strings.Split(condMsg, ";")
+	var entries []string
+	for _, p := range parts {
+		if p != "" && p != truncationSuffix {
+			entries = append(entries, p)
+		}
+	}
+	seen := make(map[string]int)
+	for _, e := range entries {
+		seen[e]++
+	}
+	for entry, count := range seen {
+		assert.Equal(t, 1, count,
+			"compacted entry appears %d times (expected 1): %q", count, entry)
+	}
+
+	// 4. GPU:0 must appear exactly once — the old entry replaced by the fresh one.
+	gpu0Count := 0
+	for _, e := range entries {
+		if strings.Contains(e, "GPU:0") && strings.Contains(e, "PCI:0000:00:00.0") {
+			gpu0Count++
+		}
+	}
+	assert.Equal(t, 1, gpu0Count,
+		"GPU:0 must appear exactly once after dedup+compaction")
+
+	// 5. Old GPU:0 entry must be gone; the fresh one must survive.
+	//    The timestamp "16450076.000001" falls within the 72-byte compacted prefix,
+	//    so its absence confirms the old entry was dropped.
+	assert.NotContains(t, condMsg, "16450076.000001",
+		"old GPU:0 entry (timestamp 16450076.000001) must be dropped")
+	assert.Contains(t, condMsg, "16450077.000001",
+		"fresh GPU:0 entry (timestamp 16450077.000001) must survive in compacted prefix")
+
+	// 6. All other GPU entries (1–4) must still be present after compaction.
+	for i := 1; i < 5; i++ {
+		assert.Contains(t, condMsg, fmt.Sprintf("GPU:%d", i),
+			"GPU:%d entry must survive compaction", i)
+	}
+}
+
 // TestK8sConnector_WithEnvtest_MultipleCheckTypes tests multiple different check types on same node
 func TestK8sConnector_WithEnvtest_MultipleCheckTypes(t *testing.T) {
 	ctx := context.Background()
@@ -756,7 +906,7 @@ func TestK8sConnector_WithEnvtest_MultipleCheckTypes(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultMaxNodeConditionMessageLength)
+	k8sConn := NewK8sConnector(cli, nil, stopCh, ctx, defaultConnectorConfig)
 
 	healthEvents := &protos.HealthEvents{
 		Version: 1,

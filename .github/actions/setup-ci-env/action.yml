@@ -32,6 +32,7 @@ runs:
         echo "go_version=$(yq '.languages.go' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "python_version=$(yq '.languages.python' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "poetry_version=$(yq '.build_tools.poetry' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "poetry_plugin_export_version=$(yq '.build_tools.poetry_plugin_export' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "golangci_lint_version=$(yq '.go_tools.golangci_lint' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "protobuf_version=$(yq '.protobuf.protobuf' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "protoc_gen_go_version=$(yq '.protobuf.protoc_gen_go' .versions.yaml)" >> $GITHUB_OUTPUT
@@ -74,7 +75,7 @@ runs:
     - name: Install Poetry
       shell: bash
       run: |
-        pip install --break-system-packages poetry==${{ steps.versions.outputs.poetry_version }} || pip install poetry==${{ steps.versions.outputs.poetry_version }}
+        pip install --break-system-packages poetry==${{ steps.versions.outputs.poetry_version }} poetry-plugin-export==${{ steps.versions.outputs.poetry_plugin_export_version }} || pip install poetry==${{ steps.versions.outputs.poetry_version }} poetry-plugin-export==${{ steps.versions.outputs.poetry_plugin_export_version }}
 
     - name: Install Helm
       uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1

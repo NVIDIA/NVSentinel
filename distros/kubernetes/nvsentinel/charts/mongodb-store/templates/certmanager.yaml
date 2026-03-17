@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- if .Values.mongodb.tls.enabled }}
 {{- if .Values.usePerconaOperator }}
 ---
 apiVersion: cert-manager.io/v1
@@ -121,4 +122,5 @@ spec:
   issuerRef:
     name: selfsigned-ca-issuer
     kind: Issuer
+{{- end }}
 {{- end }}

@@ -23,6 +23,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/coordinator"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
+	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -118,6 +119,158 @@ func TestGangController_TerminatingPodSkipped(t *testing.T) {
 	te.assertNoConfigMaps(t, ctx, "default")
 }
 
+func TestGangController_WebhookRegistration(t *testing.T) {
+	t.Run("creates skeleton ConfigMap", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		te := setupTestEnv(t, ctx, newGangDiscoverer("rp-gang", 2))
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		ctrl := NewGangController(
+			&config.Config{},
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("rp-gang", 2),
+		)
+
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       "worker-0",
+			GangID:        "rp-gang",
+			ConfigMapName: coordinator.ConfigMapName("rp-gang"),
+		})
+
+		cmName := coordinator.ConfigMapName("rp-gang")
+		require.Eventually(t, func() bool {
+			cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmName, metav1.GetOptions{})
+			return err == nil && cm != nil
+		}, 10*time.Second, 200*time.Millisecond, "ConfigMap should be created")
+
+		cm, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(ctx, cmName, metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, "0", cm.Data["expected_count"], "skeleton ConfigMap should have expected_count=0")
+	})
+
+	t.Run("RegisterPod then reconcile fills peers", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		disc := newGangDiscoverer("full-gang", 2)
+		te := setupTestEnv(t, ctx, disc)
+		defer te.teardown()
+
+		te.createNamespace(t, ctx, "default")
+
+		gangCtrl := NewGangController(
+			&config.Config{},
+			te.mgr.GetClient(),
+			gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+			disc,
+		)
+
+		gangCtrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       "worker-0",
+			GangID:        "full-gang",
+			ConfigMapName: coordinator.ConfigMapName("full-gang"),
+		})
+
+		// Now create a pod with IP — the controller should reconcile and register the peer
+		te.createPodWithIP(t, ctx, newGangPod("worker-0", "default", "10.0.0.1"))
+		te.assertConfigMapWithPeer(t, ctx, "default", "full-gang", "worker-0", "10.0.0.1")
+	})
+}
+
+
+// Verifies that topology configmap are created upon pod registration and is idempotent upon subsequent registrations.
+func TestGangController_EnsureNCCLTopoConfigMap(t *testing.T) {
+	const (
+		gangID       = "topo-gang"
+		topoName     = "nccl-topo"
+		topoData     = "<topology>test</topology>"
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	te := setupTestEnv(t, ctx, newGangDiscoverer(gangID, 2))
+	defer te.teardown()
+
+	te.createNamespace(t, ctx, "default")
+
+	cfg := &config.Config{
+		FileConfig: config.FileConfig{
+			GangCoordination: config.GangCoordinationConfig{
+				NCCLTopoConfigMap: topoName,
+				NCCLTopoData:      topoData,
+			},
+		},
+	}
+	gangCtrl := NewGangController(
+		cfg, te.mgr.GetClient(),
+		gang.NewCoordinator(te.mgr.GetClient(), gang.DefaultCoordinatorConfig()),
+		newGangDiscoverer(gangID, 2),
+	)
+
+	registerPod := func(podName string) {
+		gangCtrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:     "default",
+			PodName:       podName,
+			GangID:        gangID,
+			ConfigMapName: coordinator.ConfigMapName(gangID),
+		})
+	}
+
+	t.Run("creates topo ConfigMap with correct content", func(t *testing.T) {
+		registerPod("w-0")
+
+		te.assertConfigMapData(t, ctx, "default", topoName, "topo.xml", topoData)
+	})
+
+	t.Run("second RegisterPod does not duplicate or overwrite", func(t *testing.T) {
+		registerPod("w-1")
+
+		te.assertConfigMapData(t, ctx, "default", topoName, "topo.xml", topoData)
+	})
+}
+
+func TestGangController_MultipleGangsIndependent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Discoverer that routes pods to different gangs by name prefix.
+	disc := &multiGangDiscoverer{
+		gangs: map[string]types.GangInfo{
+			"worker-a": {GangID: "gang-a", ExpectedMinCount: 1},
+			"worker-b": {GangID: "gang-b", ExpectedMinCount: 1},
+		},
+	}
+	te := setupTestEnv(t, ctx, disc)
+	defer te.teardown()
+
+	te.createNamespace(t, ctx, "default")
+
+	// Create two gang pods — each belongs to a different gang.
+	te.createPodWithIP(t, ctx, newGangPod("worker-a", "default", "10.0.0.1"))
+	te.createPodWithIP(t, ctx, newGangPod("worker-b", "default", "10.0.0.2"))
+
+	// Each pod should register into its own gang's ConfigMap.
+	te.assertConfigMapWithPeer(t, ctx, "default", "gang-a", "worker-a", "10.0.0.1")
+	te.assertConfigMapWithPeer(t, ctx, "default", "gang-b", "worker-b", "10.0.0.2")
+
+	// Verify the ConfigMaps are truly separate — gang-a has no trace of worker-b.
+	cmA, err := te.kubeClient.CoreV1().ConfigMaps("default").Get(
+		ctx, coordinator.ConfigMapName("gang-a"), metav1.GetOptions{})
+	require.NoError(t, err)
+	for _, p := range coordinator.ParsePeers(cmA.Data["peers"]) {
+		assert.NotEqual(t, "worker-b", p.PodName, "gang-a ConfigMap should not contain worker-b")
+	}
+}
+
+
 type mockDiscoverer struct {
 	canHandle bool
 	gangID    string
@@ -131,6 +284,32 @@ func (m *mockDiscoverer) DiscoverPeers(_ context.Context, _ *corev1.Pod) (*types
 	return m.gangInfo, nil
 }
 
+// multiGangDiscoverer routes pods to different gangs based on pod name.
+type multiGangDiscoverer struct {
+	gangs map[string]types.GangInfo // pod name -> gang info
+}
+
+func (m *multiGangDiscoverer) Name() string { return "multi-mock" }
+
+func (m *multiGangDiscoverer) CanHandle(pod *corev1.Pod) bool {
+	_, ok := m.gangs[pod.Name]
+	return ok
+}
+
+func (m *multiGangDiscoverer) ExtractGangID(pod *corev1.Pod) string {
+	if info, ok := m.gangs[pod.Name]; ok {
+		return info.GangID
+	}
+	return ""
+}
+
+func (m *multiGangDiscoverer) DiscoverPeers(_ context.Context, pod *corev1.Pod) (*types.GangInfo, error) {
+	if info, ok := m.gangs[pod.Name]; ok {
+		return &info, nil
+	}
+	return nil, nil
+}
+
 type testEnv struct {
 	env        *envtest.Environment
 	cfg        *rest.Config
@@ -139,7 +318,7 @@ type testEnv struct {
 	cancel     context.CancelFunc
 }
 
-func setupTestEnv(t *testing.T, ctx context.Context, discoverer *mockDiscoverer) *testEnv {
+func setupTestEnv(t *testing.T, ctx context.Context, discoverer gang.GangDiscoverer) *testEnv {
 	t.Helper()
 
 	env := &envtest.Environment{}
@@ -227,6 +406,18 @@ func (te *testEnv) assertConfigMapWithPeer(t *testing.T, ctx context.Context, na
 		t.Logf("Peer %s/%s not found in ConfigMap", podName, podIP)
 		return false
 	}, 10*time.Second, 200*time.Millisecond, "peer not registered in ConfigMap")
+}
+
+func (te *testEnv) assertConfigMapData(t *testing.T, ctx context.Context, namespace, name, key, wantValue string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		cm, err := te.kubeClient.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Logf("ConfigMap %q not found: %v", name, err)
+			return false
+		}
+		return cm.Data[key] == wantValue
+	}, 10*time.Second, 200*time.Millisecond, "ConfigMap %s[%s] should be %q", name, key, wantValue)
 }
 
 func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespace string) {

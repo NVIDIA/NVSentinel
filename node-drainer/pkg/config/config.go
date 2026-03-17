@@ -211,13 +211,11 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	}, nil
 }
 
-// NewDatabaseConfig creates a database configuration from environment config and certificate paths
+// NewDatabaseConfig creates a database configuration from environment config and certificate paths.
+// When databaseClientCertMountPath is empty (TLS disabled), passes empty through to avoid
+// reintroducing default cert paths.
 func NewDatabaseConfig(databaseClientCertMountPath string) (config.DatabaseConfig, error) {
-	if databaseClientCertMountPath != "" {
-		return config.NewDatabaseConfigFromEnvWithDefaults(databaseClientCertMountPath)
-	}
-
-	return config.NewDatabaseConfigFromEnv()
+	return config.NewDatabaseConfigFromEnvWithDefaults(databaseClientCertMountPath)
 }
 
 // NewTokenConfig is DEPRECATED and should not be used.

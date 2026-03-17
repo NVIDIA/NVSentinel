@@ -42,7 +42,7 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 		return nil, fmt.Errorf("expected PostgreSQL datastore, got %T", ds)
 	}
 
-	clientName := f.extractClientName(config)
+	clientName := config.ClientName
 	tableName := config.CollectionName
 
 	if tableName == "" {
@@ -67,17 +67,6 @@ func (f *PostgreSQLWatcherFactory) CreateChangeStreamWatcher(
 	f.applyPipelineFilter(changeStreamWatcher, config.Pipeline, tableName)
 
 	return NewPostgreSQLChangeStreamWatcherWithUnwrap(changeStreamWatcher), nil
-}
-
-// extractClientName extracts client name from config options.
-func (f *PostgreSQLWatcherFactory) extractClientName(config watcher.WatcherConfig) string {
-	if config.Options != nil {
-		if name, ok := config.Options["ClientName"].(string); ok && name != "" {
-			return name
-		}
-	}
-
-	return "watcher-factory"
 }
 
 // applyPipelineFilter applies pipeline filter to the watcher if provided.

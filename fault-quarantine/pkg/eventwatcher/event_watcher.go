@@ -24,6 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/metrics"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
+	"github.com/nvidia/nvsentinel/store-client/pkg/query"
 )
 
 type EventWatcher struct {
@@ -33,6 +34,7 @@ type EventWatcher struct {
 		ctx context.Context,
 		event *model.HealthEventWithStatus,
 	) *model.Status
+	fetchDocIDsFn                         func(nodeName string) []string
 	unprocessedEventsMetricUpdateInterval time.Duration
 	lastProcessedObjectID                 LastProcessedObjectIDStore
 }
@@ -45,6 +47,7 @@ type LastProcessedObjectIDStore interface {
 type EventWatcherInterface interface {
 	Start(ctx context.Context) error
 	SetProcessEventCallback(callback func(ctx context.Context, event *model.HealthEventWithStatus) *model.Status)
+	SetFetchDocIDsFn(fn func(nodeName string) []string)
 	CancelLatestQuarantiningEvents(ctx context.Context, nodeName string) error
 }
 
@@ -65,6 +68,10 @@ func NewEventWatcher(
 func (w *EventWatcher) SetProcessEventCallback(callback func(ctx context.Context,
 	event *model.HealthEventWithStatus) *model.Status) {
 	w.processEventCallback = callback
+}
+
+func (w *EventWatcher) SetFetchDocIDsFn(fn func(nodeName string) []string) {
+	w.fetchDocIDsFn = fn
 }
 
 func (w *EventWatcher) Start(ctx context.Context) error {
@@ -169,6 +176,12 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 
 	startTime := time.Now()
 
+	var sourceDocIDs []string
+
+	if healthEventWithStatus.HealthEvent.GetIsHealthy() && w.fetchDocIDsFn != nil {
+		sourceDocIDs = w.fetchDocIDsFn(healthEventWithStatus.HealthEvent.GetNodeName())
+	}
+
 	status := w.processEventCallback(ctx, &healthEventWithStatus)
 	if status != nil {
 		if err := w.updateNodeQuarantineStatus(ctx, recordUUID, status); err != nil {
@@ -179,6 +192,10 @@ func (w *EventWatcher) processEvent(ctx context.Context, event client.Event) err
 		}
 
 		EmitNodeQuarantineDuration(status, &healthEventWithStatus)
+
+		if *status == model.UnQuarantined {
+			w.emitRemediationDurationFromDocIDs(ctx, sourceDocIDs)
+		}
 	}
 
 	duration := time.Since(startTime).Seconds()
@@ -203,6 +220,121 @@ func EmitNodeQuarantineDuration(status *model.Status, healthEventWithStatus *mod
 
 	if duration > 0 {
 		metrics.NodeQuarantineDuration.Observe(duration)
+	}
+}
+
+func (w *EventWatcher) emitRemediationDurationFromDocIDs(ctx context.Context, docIDs []string) {
+	seen := make(map[string]struct{}, len(docIDs))
+
+	uniqueIDs := make([]interface{}, 0, len(docIDs))
+	for _, id := range docIDs {
+		if id == "" {
+			continue
+		}
+
+		if _, dup := seen[id]; dup {
+			continue
+		}
+
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	if len(uniqueIDs) == 0 {
+		return
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	filter := query.New().Build(query.In("_id", uniqueIDs))
+
+	cursor, err := w.databaseClient.Find(lookupCtx, filter, nil)
+	if err != nil {
+		slog.Warn("emitRemediationDurationFromDocIDs: Find failed", "error", err)
+		return
+	}
+
+	defer cursor.Close(lookupCtx)
+
+	for cursor.Next(lookupCtx) {
+		var doc remediationDoc
+		if err := cursor.Decode(&doc); err != nil {
+			slog.Warn("emitRemediationDurationFromDocIDs: Decode failed", "error", err)
+			continue
+		}
+
+		if doc.HealthEvent.GeneratedTimestamp == nil {
+			slog.Warn("emitRemediationDurationFromDocIDs: generatedTimestamp missing",
+				"node", doc.HealthEvent.NodeName)
+
+			continue
+		}
+
+		genTs := time.Unix(doc.HealthEvent.GeneratedTimestamp.Seconds,
+			int64(doc.HealthEvent.GeneratedTimestamp.Nanos))
+
+		qft := protoTsToTimePtr(doc.HealthEventStatus.QuarantineFinishTimestamp, doc.HealthEvent.NodeName)
+		dft := protoTsToTimePtr(doc.HealthEventStatus.DrainFinishTimestamp, doc.HealthEvent.NodeName)
+
+		EmitRemediationDuration(
+			doc.HealthEvent.NodeName,
+			genTs,
+			qft,
+			dft,
+		)
+	}
+
+	if err := cursor.Err(); err != nil {
+		slog.Warn("emitRemediationDurationFromDocIDs: cursor error", "error", err)
+	}
+}
+
+type remediationDoc struct {
+	HealthEvent struct {
+		NodeName           string       `bson:"nodename" json:"nodeName"`
+		GeneratedTimestamp *dbTimestamp `bson:"generatedtimestamp" json:"generatedTimestamp"`
+	} `bson:"healthevent" json:"healthEvent"`
+	HealthEventStatus struct {
+		QuarantineFinishTimestamp *dbTimestamp `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"`
+		DrainFinishTimestamp      *dbTimestamp `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
+	} `bson:"healtheventstatus" json:"healthEventStatus"`
+}
+
+type dbTimestamp struct {
+	Seconds int64 `bson:"seconds" json:"seconds"`
+	Nanos   int32 `bson:"nanos" json:"nanos"`
+}
+
+func protoTsToTimePtr(ts *dbTimestamp, nodeName string) *time.Time {
+	if ts == nil {
+		slog.Warn("protoTsToTimePtr: received nil timestamp", "node", nodeName)
+
+		return nil
+	}
+
+	t := time.Unix(ts.Seconds, int64(ts.Nanos))
+
+	return &t
+}
+
+func EmitRemediationDuration(nodeName string, genTs time.Time, qft, dft *time.Time) {
+	now := time.Now()
+
+	if duration := now.Sub(genTs).Seconds(); duration > 0 {
+		metrics.NodeRemediationDurationSeconds.Observe(duration)
+		slog.Info("Node remediation duration (end-to-end)", "node", nodeName, "duration_seconds", duration)
+	}
+
+	if qft != nil && dft != nil {
+		drainDuration := dft.Sub(*qft).Seconds()
+		endToEnd := now.Sub(genTs).Seconds()
+
+		if durationExcludingDrain := endToEnd - drainDuration; durationExcludingDrain > 0 {
+			metrics.NodeRemediationDurationExcludingDrainSeconds.Observe(durationExcludingDrain)
+			slog.Info("Node remediation duration (excluding drain)",
+				"node", nodeName, "duration_seconds", durationExcludingDrain)
+		}
 	}
 }
 
@@ -258,23 +390,28 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 	nodeName string,
 ) error {
 	// Find the latest Quarantined or UnQuarantined event to check current state of node
-	filter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
-		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []interface{}{model.Quarantined, model.UnQuarantined},
-		},
-	}
+	filter := query.New().Build(query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.In("healtheventstatus.nodequarantined",
+			[]interface{}{string(model.Quarantined), string(model.UnQuarantined)}),
+	))
 
 	findOptions := &client.FindOneOptions{
 		Sort: map[string]interface{}{"createdAt": -1},
 	}
 
 	var latestEvent struct {
-		ID                string    `bson:"_id"`
-		CreatedAt         time.Time `bson:"createdAt"`
+		ID          string    `bson:"_id" json:"_id"`
+		CreatedAt   time.Time `bson:"createdAt" json:"createdAt"`
+		HealthEvent struct {
+			NodeName           string       `bson:"nodename" json:"nodeName"`
+			GeneratedTimestamp *dbTimestamp `bson:"generatedtimestamp" json:"generatedTimestamp"`
+		} `bson:"healthevent" json:"healthEvent"`
 		HealthEventStatus struct {
-			NodeQuarantined string `bson:"nodequarantined"`
-		} `bson:"healtheventstatus"`
+			NodeQuarantined           string       `bson:"nodequarantined" json:"nodeQuarantined"`
+			QuarantineFinishTimestamp *dbTimestamp `bson:"quarantinefinishtimestamp,omitempty" json:"quarantineFinishTimestamp"`
+			DrainFinishTimestamp      *dbTimestamp `bson:"drainfinishtimestamp,omitempty" json:"drainFinishTimestamp"`
+		} `bson:"healtheventstatus" json:"healthEventStatus"`
 	}
 
 	result, err := w.databaseClient.FindOne(ctx, filter, findOptions)
@@ -317,13 +454,12 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 
 	// Update all events from the current quarantine session (Quarantined + AlreadyQuarantined)
 	// This includes the first event and all subsequent events that occurred after it
-	updateFilter := map[string]interface{}{
-		"healthevent.nodename": nodeName,
-		"createdAt":            map[string]interface{}{"$gte": latestEvent.CreatedAt},
-		"healtheventstatus.nodequarantined": map[string]interface{}{
-			"$in": []interface{}{model.Quarantined, model.AlreadyQuarantined},
-		},
-	}
+	updateFilter := query.New().Build(query.And(
+		query.Eq("healthevent.nodename", nodeName),
+		query.Gte("createdAt", latestEvent.CreatedAt),
+		query.In("healtheventstatus.nodequarantined",
+			[]interface{}{string(model.Quarantined), string(model.AlreadyQuarantined)}),
+	))
 
 	update := map[string]interface{}{
 		"$set": map[string]interface{}{
@@ -341,5 +477,33 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		"firstEventId", latestEvent.ID,
 		"documentsUpdated", updateResult.ModifiedCount)
 
+	emitCancelledRemediationDuration(
+		latestEvent.HealthEvent.NodeName,
+		latestEvent.HealthEvent.GeneratedTimestamp,
+		latestEvent.HealthEventStatus.QuarantineFinishTimestamp,
+		latestEvent.HealthEventStatus.DrainFinishTimestamp,
+		nodeName,
+	)
+
 	return nil
+}
+
+func emitCancelledRemediationDuration(
+	nodeName string,
+	genTS, qfTS, dfTS *dbTimestamp,
+	logNode string,
+) {
+	if genTS == nil {
+		slog.Warn("Cannot emit remediation duration: generatedTimestamp missing in latest event", "node", logNode)
+		return
+	}
+
+	genTs := time.Unix(genTS.Seconds, int64(genTS.Nanos))
+
+	EmitRemediationDuration(
+		nodeName,
+		genTs,
+		protoTsToTimePtr(qfTS, nodeName),
+		protoTsToTimePtr(dfTS, nodeName),
+	)
 }

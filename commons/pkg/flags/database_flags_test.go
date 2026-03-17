@@ -57,6 +57,7 @@ func TestDatabaseCertConfig_ResolveCertPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &DatabaseCertConfig{
+				TLSEnabled:                  true,
 				DatabaseClientCertMountPath: tt.databaseClientCertMountPath,
 				LegacyMongoCertPath:         tt.legacyMongoCertPath,
 			}
@@ -102,46 +103,133 @@ func TestDatabaseCertConfig_GetCertPath(t *testing.T) {
 			description:  "When resolved path has ca.crt, it should be used",
 		},
 		{
-			name:         "resolved path missing fallback to legacy",
+			name:         "resolved path missing no fallback returns empty",
 			resolvedPath: filepath.Join(tempDir, "nonexistent"),
-			expectedPath: "/etc/ssl/mongo-client", // Falls back to hardcoded legacy path
-			description:  "When resolved path missing, should fallback to legacy path",
+			expectedPath: "",
+			description:  "When resolved path and all fallback paths are missing, should return empty",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &DatabaseCertConfig{
+				TLSEnabled:       true,
 				ResolvedCertPath: tt.resolvedPath,
 			}
 
 			certPath := config.GetCertPath()
-
-			if tt.expectedPath == "/etc/ssl/mongo-client" {
-				// For fallback cases, just check it's using the fallback logic
-				assert.True(t, certPath == "/etc/ssl/mongo-client" || certPath == "/etc/ssl/database-client" || certPath == tt.resolvedPath,
-					"Should use fallback logic when resolved path doesn't exist")
-			} else {
-				assert.Equal(t, tt.expectedPath, certPath, tt.description)
-			}
+			assert.Equal(t, tt.expectedPath, certPath, tt.description)
 		})
 	}
+
+	// Test fallback to legacy path when resolved path is missing.
+	// GetCertPath has hardcoded fallback paths, so this can only run
+	// in environments where /etc/ssl/mongo-client/ca.crt exists.
+	t.Run("resolved path missing fallback to legacy", func(t *testing.T) {
+		if _, err := os.Stat("/etc/ssl/mongo-client/ca.crt"); err != nil {
+			t.Skip("Skipping fallback test: /etc/ssl/mongo-client/ca.crt not present on this host")
+		}
+
+		config := &DatabaseCertConfig{
+			TLSEnabled:       true,
+			ResolvedCertPath: filepath.Join(tempDir, "nonexistent"),
+		}
+
+		certPath := config.GetCertPath()
+		assert.Equal(t, "/etc/ssl/mongo-client", certPath,
+			"When resolved path is missing, should fallback to legacy path")
+	})
+}
+
+func TestDatabaseCertConfig_TLSDisabled_ResolveCertPath(t *testing.T) {
+	config := &DatabaseCertConfig{
+		TLSEnabled:                  false,
+		DatabaseClientCertMountPath: "/etc/ssl/database-client",
+		LegacyMongoCertPath:         "/etc/ssl/mongo-client",
+	}
+
+	certPath := config.ResolveCertPath()
+	assert.Empty(t, certPath, "ResolveCertPath should return empty when TLS is disabled")
+}
+
+func TestDatabaseCertConfig_TLSDisabled_GetCertPath(t *testing.T) {
+	// Even when cert files exist, GetCertPath should return empty when TLS is disabled
+	tempDir, err := os.MkdirTemp("", "cert_test_tls_disabled")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	certDir := filepath.Join(tempDir, "certs")
+	require.NoError(t, os.MkdirAll(certDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(certDir, "ca.crt"), []byte("test cert"), 0644))
+
+	config := &DatabaseCertConfig{
+		TLSEnabled:       false,
+		ResolvedCertPath: certDir,
+	}
+
+	certPath := config.GetCertPath()
+	assert.Empty(t, certPath, "GetCertPath should return empty when TLS is disabled, even if certs exist")
+}
+
+func TestDatabaseCertConfig_TLSEnabled_GetCertPath(t *testing.T) {
+	// When TLS is enabled and certs exist, should return the path
+	tempDir, err := os.MkdirTemp("", "cert_test_tls_enabled")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	certDir := filepath.Join(tempDir, "certs")
+	require.NoError(t, os.MkdirAll(certDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(certDir, "ca.crt"), []byte("test cert"), 0644))
+
+	config := &DatabaseCertConfig{
+		TLSEnabled:       true,
+		ResolvedCertPath: certDir,
+	}
+
+	certPath := config.GetCertPath()
+	assert.Equal(t, certDir, certPath, "GetCertPath should return cert path when TLS is enabled and certs exist")
+}
+
+func TestDatabaseCertConfig_TLSEnabled_NoCerts_ReturnsEmpty(t *testing.T) {
+	// When TLS is enabled but no certs exist anywhere, should return empty
+	config := &DatabaseCertConfig{
+		TLSEnabled:       true,
+		ResolvedCertPath: "/nonexistent/path/that/does/not/exist",
+	}
+
+	certPath := config.GetCertPath()
+	assert.Empty(t, certPath, "GetCertPath should return empty when TLS is enabled but no certs exist")
 }
 
 func TestDatabaseCertConfig_GetCertPath_WithRealPaths(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "cert_test_real_paths")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	legacyPath := filepath.Join(tempDir, "mongo-client")
+	newPath := filepath.Join(tempDir, "database-client")
+
+	require.NoError(t, os.MkdirAll(legacyPath, 0755))
+	require.NoError(t, os.MkdirAll(newPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(legacyPath, "ca.crt"), []byte("legacy cert"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(newPath, "ca.crt"), []byte("new cert"), 0644))
+
 	tests := []struct {
 		name         string
 		resolvedPath string
+		expectedPath string
 		description  string
 	}{
 		{
 			name:         "legacy path preference",
-			resolvedPath: "/etc/ssl/mongo-client",
+			resolvedPath: legacyPath,
+			expectedPath: legacyPath,
 			description:  "Should handle legacy path correctly",
 		},
 		{
 			name:         "new path preference",
-			resolvedPath: "/etc/ssl/database-client",
+			resolvedPath: newPath,
+			expectedPath: newPath,
 			description:  "Should handle new path correctly",
 		},
 	}
@@ -149,16 +237,16 @@ func TestDatabaseCertConfig_GetCertPath_WithRealPaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			config := &DatabaseCertConfig{
+				TLSEnabled:       true,
 				ResolvedCertPath: tt.resolvedPath,
 			}
 
 			certPath := config.GetCertPath()
 
-			// Since we can't guarantee these paths exist in test environment,
-			// just verify the function returns a reasonable path
 			assert.NotEmpty(t, certPath, "GetCertPath should return a non-empty path")
-			assert.Contains(t, []string{"/etc/ssl/mongo-client", "/etc/ssl/database-client", tt.resolvedPath},
+			assert.Contains(t, []string{legacyPath, newPath, tt.resolvedPath},
 				certPath, "Should return one of the expected paths")
+			assert.Equal(t, tt.expectedPath, certPath, tt.description)
 		})
 	}
 }

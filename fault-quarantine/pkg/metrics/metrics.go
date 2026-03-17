@@ -140,6 +140,24 @@ var (
 		},
 	)
 
+	// Node Remediation Duration (end-to-end) Metrics
+	NodeRemediationDurationSeconds = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_node_remediation_duration_seconds",
+			Help:    "Node remediation time from health event generation to node unquarantine.",
+			Buckets: prometheus.ExponentialBuckets(10, 1.5, 27),
+		},
+	)
+
+	// Node Remediation Duration (excluding node-drainer time) Metrics
+	NodeRemediationDurationExcludingDrainSeconds = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_node_remediation_duration_excluding_drain_seconds",
+			Help:    "Node Remediation time excluding node-drainer duration.",
+			Buckets: prometheus.ExponentialBuckets(10, 1.5, 19),
+		},
+	)
+
 	// Event Processing Metrics
 	EventBacklogSize = promauto.NewGauge(
 		prometheus.GaugeOpts{

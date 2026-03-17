@@ -216,6 +216,8 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		},
 	)
 
+	r.eventWatcher.SetFetchDocIDsFn(r.sourceDocIDsFromAnnotation)
+
 	if err := r.eventWatcher.Start(ctx); err != nil {
 		return fmt.Errorf("event watcher failed: %w", err)
 	}
@@ -546,6 +548,32 @@ func (r *Reconciler) hasExistingQuarantine(nodeName string) (map[string]string, 
 	annotationVal, exists := annotations[common.QuarantineHealthEventAnnotationKey]
 
 	return annotations, exists && annotationVal != ""
+}
+
+func (r *Reconciler) sourceDocIDsFromAnnotation(nodeName string) []string {
+	healthEventsMap, _, err := r.getHealthEventsFromAnnotation(&protos.HealthEvent{NodeName: nodeName})
+
+	if err != nil || healthEventsMap == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(healthEventsMap.Events))
+	ids := make([]string, 0, len(healthEventsMap.Events))
+
+	for _, evt := range healthEventsMap.Events {
+		if evt.Id == "" {
+			continue
+		}
+
+		if _, dup := seen[evt.Id]; dup {
+			continue
+		}
+
+		seen[evt.Id] = struct{}{}
+		ids = append(ids, evt.Id)
+	}
+
+	return ids
 }
 
 // handleAlreadyQuarantinedNode handles events for nodes that are already quarantined

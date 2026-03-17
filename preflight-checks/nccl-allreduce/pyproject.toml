@@ -27,7 +27,7 @@ structlog = "^25.1.0"
 # torch is provided by the base image, not installed via poetry
 
 [tool.poetry.group.dev.dependencies]
-black = "^26.1.0"
+black = "^26.3.1"
 pytest = "^9.0.0"
 coverage = "^7.13.2"
 ruff = "^0.11.0"

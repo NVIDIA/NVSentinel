@@ -117,13 +117,24 @@ func initializeK8sConnector(
 			config["MaxNodeConditionMessageLength"])
 	}
 
+	compactedEventMsgLen, ok := config["CompactedHealthEventMsgLen"].(int64)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert CompactedHealthEventMsgLen to int64: %v",
+			config["CompactedHealthEventMsgLen"])
+	}
+
 	burst, ok := config["K8sConnectorBurst"].(int64)
 	if !ok {
 		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
 	}
 
+	k8sConnectorCfg := kubernetes.K8sConnectorConfig{
+		MaxNodeConditionMessageLength: maxNodeConditionMessageLength,
+		CompactedHealthEventMsgLen:    compactedEventMsgLen,
+	}
+
 	k8sConnector, _, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst),
-		stopCh, maxNodeConditionMessageLength)
+		stopCh, k8sConnectorCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
 	}

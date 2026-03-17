@@ -31,6 +31,19 @@
 useBitnami: true
 usePerconaOperator: false
 
+# SCRAM application user (created when mongodb.tls.enabled is false).
+# Instead of X.509 cert-based users, the Job creates a SCRAM-SHA-256 user
+# with readWrite access to the NVSentinel database.
+# NOTE: This only provisions the user in MongoDB. To use it, configure
+# MONGODB_URI with the SCRAM credentials (e.g. mongodb://nvsentinel:pass@host/db).
+scramAppUser:
+  username: nvsentinel
+  # Secret and key containing the application user password.
+  # Defaults to the MongoDB root password for out-of-the-box functionality.
+  # For production, set a dedicated secret with a separate password.
+  existingSecret: ""
+  passwordKey: "mongodb-root-password"
+
 # Common Job configuration (applies to both Bitnami and Percona)
 # If not set, falls back to mongodb.jobTolerations and mongodb.nodeSelector for backward compatibility
 job:
@@ -140,7 +153,7 @@ mongodb:
           
           echo "MongoDB credentials initialization completed."
           echo "=============================="
-    
+
     - name: create-certmanager-resources
       image: "{{ .Values.helperImages.kubectl.repository }}:{{ .Values.helperImages.kubectl.tag }}"
       imagePullPolicy: "{{ .Values.helperImages.kubectl.pullPolicy }}"
@@ -149,6 +162,10 @@ mongodb:
         - -c
         - |
           set -e
+          {{- if not .Values.tls.enabled }}
+          echo "TLS is disabled, skipping cert-manager resource creation."
+          exit 0
+          {{- end }}
           secret=$(kubectl get secret mongo-ca-secret -n {{ .Release.Namespace }} --ignore-not-found)
           if [ -z "$secret" ]; then
             echo "Secret mongo-ca-secret does not exist, creating it..."
@@ -237,7 +254,11 @@ mongodb:
     args:
       - |
         export HOSTNAME=$(hostname)
+        {{- if .Values.tls.enabled }}
         /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?tls=true&tlsCertificateKeyFile=/certs/mongodb.pem&tlsCAFile=/certs/mongodb-ca-cert&authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
+        {{- else }}
+        /bin/mongodb_exporter --collector.diagnosticdata --collector.replicasetstatus --compatible-mode --mongodb.direct-connect --mongodb.global-conn-pool --web.listen-address ":9216" --mongodb.uri "mongodb://$MONGODB_ROOT_USER:$(echo $MONGODB_ROOT_PASSWORD | sed -r "s/@/%40/g;s/:/%3A/g")@${HOSTNAME}.mongodb-headless.nvsentinel.svc.cluster.local:27017/admin?authMechanism=SCRAM-SHA-256&connectTimeoutMS=30000&serverSelectionTimeoutMS=30000"
+        {{- end }}
 
 # =============================================================================
 # Percona MongoDB Operator Configuration (used when usePerconaOperator=true)

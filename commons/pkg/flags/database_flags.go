@@ -22,6 +22,7 @@ import (
 
 // DatabaseCertConfig holds the configuration for database client certificate paths
 type DatabaseCertConfig struct {
+	TLSEnabled                  bool
 	DatabaseClientCertMountPath string
 	LegacyMongoCertPath         string
 	ResolvedCertPath            string
@@ -32,6 +33,9 @@ type DatabaseCertConfig struct {
 // across multiple modules.
 func RegisterDatabaseCertFlags() *DatabaseCertConfig {
 	config := &DatabaseCertConfig{}
+
+	flag.BoolVar(&config.TLSEnabled, "tls-enabled", true,
+		"enable TLS for database connections (set to false to connect without TLS)")
 
 	flag.StringVar(&config.DatabaseClientCertMountPath, "database-client-cert-mount-path", "/etc/ssl/database-client",
 		"path where the database client cert is mounted")
@@ -44,8 +48,13 @@ func RegisterDatabaseCertFlags() *DatabaseCertConfig {
 }
 
 // ResolveCertPath resolves the actual certificate path to use based on flag values and file existence.
-// This implements the backward compatibility logic that was duplicated across multiple modules.
+// Returns empty string when TLS is explicitly disabled via --tls-enabled=false.
 func (c *DatabaseCertConfig) ResolveCertPath() string {
+	if !c.TLSEnabled {
+		slog.Info("TLS explicitly disabled via --tls-enabled flag")
+		return ""
+	}
+
 	// If new flag is still default and legacy flag is provided, use legacy flag value
 	if c.DatabaseClientCertMountPath == "/etc/ssl/database-client" {
 		c.ResolvedCertPath = c.LegacyMongoCertPath
@@ -62,8 +71,15 @@ func (c *DatabaseCertConfig) ResolveCertPath() string {
 	return c.ResolvedCertPath
 }
 
-// GetCertPath checks if the certificate exists at the resolved path, with fallback logic
+// GetCertPath checks if the certificate exists at the resolved path, with fallback logic.
+// Returns empty string when TLS is explicitly disabled via --tls-enabled=false or
+// when no certificate files are found at any expected path.
 func (c *DatabaseCertConfig) GetCertPath() string {
+	if !c.TLSEnabled {
+		slog.Info("TLS explicitly disabled via --tls-enabled flag")
+		return ""
+	}
+
 	if c.ResolvedCertPath == "" {
 		c.ResolveCertPath()
 	}
@@ -87,9 +103,11 @@ func (c *DatabaseCertConfig) GetCertPath() string {
 		return newPath
 	}
 
-	// If neither exists, return the resolved path (original behavior)
-	slog.Warn("Certificate file not found at any expected location, using resolved path",
-		"resolved_path", c.ResolvedCertPath)
+	// If neither exists, return empty to indicate no TLS certs are available.
+	// Callers should check for empty and skip TLS configuration.
+	slog.Info("No certificate found at any expected location, TLS will be disabled. " +
+		"Use --tls-enabled=false to explicitly disable TLS, or provide certificates at " +
+		"--database-client-cert-mount-path or --mongo-client-cert-mount-path")
 
-	return c.ResolvedCertPath
+	return ""
 }

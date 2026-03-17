@@ -34,35 +34,46 @@ hence it is complex to test this. Hence, ignoring this initilization part for no
 Hence, ignoring this file as part of unit testing for now.
 */
 
-type K8sConnector struct {
-	// clientset is the Kubernetes client
-	clientset kubernetes.Interface
-	// ringBuffer are client for pushing data to the resource count sink
-	ringBuffer                    *ringbuffer.RingBuffer
-	stopCh                        <-chan struct{}
-	ctx                           context.Context
-	maxNodeConditionMessageLength int64
+// K8sConnectorConfig holds tunable parameters for the K8sConnector.
+type K8sConnectorConfig struct {
+	MaxNodeConditionMessageLength int64
+	CompactedHealthEventMsgLen    int64
 }
 
+type K8sConnector struct {
+	clientset  kubernetes.Interface
+	ringBuffer *ringbuffer.RingBuffer
+	stopCh     <-chan struct{}
+	ctx        context.Context
+	config     K8sConnectorConfig
+}
+
+// NewK8sConnector creates a K8sConnector with the given Kubernetes client, ring buffer, and configuration.
 func NewK8sConnector(
 	client kubernetes.Interface,
 	ringBuffer *ringbuffer.RingBuffer,
-	stopCh <-chan struct{}, ctx context.Context, maxNodeConditionMessageLength int64) *K8sConnector {
+	stopCh <-chan struct{}, ctx context.Context,
+	cfg K8sConnectorConfig) *K8sConnector {
 	return &K8sConnector{
-		clientset:                     client,
-		ringBuffer:                    ringBuffer,
-		stopCh:                        stopCh,
-		ctx:                           ctx,
-		maxNodeConditionMessageLength: maxNodeConditionMessageLength,
+		clientset:  client,
+		ringBuffer: ringBuffer,
+		stopCh:     stopCh,
+		ctx:        ctx,
+		config:     cfg,
 	}
 }
 
 func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuffer,
-	qps float32, burst int, stopCh <-chan struct{}, maxNodeConditionMessageLength int64,
+	qps float32, burst int, stopCh <-chan struct{}, cfg K8sConnectorConfig,
 ) (*K8sConnector, kubernetes.Interface, error) {
-	if maxNodeConditionMessageLength <= 0 {
+	if cfg.MaxNodeConditionMessageLength <= 0 {
 		return nil, nil, fmt.Errorf("maxNodeConditionMessageLength must be greater than 0, got %d",
-			maxNodeConditionMessageLength)
+			cfg.MaxNodeConditionMessageLength)
+	}
+
+	if cfg.CompactedHealthEventMsgLen <= 0 {
+		return nil, nil, fmt.Errorf("CompactedHealthEventMsgLen must be greater than 0, got %d",
+			cfg.CompactedHealthEventMsgLen)
 	}
 
 	// Create the in-cluster config
@@ -83,7 +94,7 @@ func InitializeK8sConnector(ctx context.Context, ringbuffer *ringbuffer.RingBuff
 		return nil, nil, fmt.Errorf("error creating kubernetes clientset: %w", err)
 	}
 
-	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx, maxNodeConditionMessageLength)
+	kubernetesConnector := NewK8sConnector(clientSet, ringbuffer, stopCh, ctx, cfg)
 
 	return kubernetesConnector, clientSet, nil
 }

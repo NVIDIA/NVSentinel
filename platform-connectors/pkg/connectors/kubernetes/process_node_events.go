@@ -38,9 +38,10 @@ import (
 )
 
 const (
-	DefaultNamespace   = "default"
-	NoHealthFailureMsg = "No Health Failures"
-	truncationSuffix   = "..."
+	DefaultNamespace        = "default"
+	NoHealthFailureMsg      = "No Health Failures"
+	truncationSuffix        = "..."
+	recommendedActionMarker = "Recommended Action="
 )
 
 // updateNodeConditions updates node conditions for a single node.
@@ -239,6 +240,81 @@ func (r *K8sConnector) addMessageIfNotExist(messages []string, healthEvent *prot
 	}
 
 	return append(messages, newMessage[:len(newMessage)-1])
+}
+
+// extractMessageIdentity parses ErrorCodes, entity tokens (GPU, PCI, GPU_UUID),
+// and Recommended Action from a node condition message. Works on both full and
+// compacted messages.
+func extractMessageIdentity(msg string) (errorCodes []string, entities []string, recommendedAction string) {
+	raIdx := strings.LastIndex(msg, recommendedActionMarker)
+	if raIdx >= 0 {
+		recommendedAction = strings.TrimRight(msg[raIdx:], " ")
+	}
+
+	prefix := msg
+	if raIdx >= 0 {
+		prefix = msg[:raIdx]
+	}
+
+	for _, token := range strings.Fields(prefix) {
+		switch {
+		case strings.HasPrefix(token, "ErrorCode:"):
+			errorCodes = append(errorCodes, token)
+		case strings.HasPrefix(token, "GPU:") ||
+			strings.HasPrefix(token, "PCI:"):
+			entities = append(entities, token)
+		}
+	}
+
+	return errorCodes, entities, recommendedAction
+}
+
+// messagesMatchByIdentity returns true if two messages represent the same fault:
+// same ErrorCodes, same Recommended Action, and at least one shared entity
+// (GPU, PCI, or GPU_UUID). Entity any-match handles the case where GPU_UUID is
+// truncated by compaction but GPU or PCI identifiers still match.
+func messagesMatchByIdentity(a, b string) bool {
+	aErr, aEnt, aRA := extractMessageIdentity(a)
+	bErr, bEnt, bRA := extractMessageIdentity(b)
+
+	if aRA != bRA || !slices.Equal(aErr, bErr) {
+		return false
+	}
+
+	for _, ae := range aEnt {
+		for _, be := range bEnt {
+			if ae == be {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// deduplicateMessagesByIdentity removes identity-duplicate messages, keeping the
+// last (freshest) occurrence. This is only called when total message length
+// exceeds the node condition limit, to reclaim space before compaction.
+func deduplicateMessagesByIdentity(messages []string) []string {
+	var result []string
+
+	for i, msg := range messages {
+		duplicate := false
+
+		for j := i + 1; j < len(messages); j++ {
+			if messagesMatchByIdentity(msg, messages[j]) {
+				duplicate = true
+
+				break
+			}
+		}
+
+		if !duplicate {
+			result = append(result, msg)
+		}
+	}
+
+	return result
 }
 
 func (r *K8sConnector) removeImpactedEntitiesMessages(messages []string,
@@ -629,30 +705,93 @@ func isKubernetesStringError(errStr string) bool {
 	return false
 }
 
-// truncateNodeConditionMessage builds the node condition message while respecting the max node condition
-// message length. It preserves complete error entries and adds a truncation indicator if needed.
-func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
-	maxLen := int(r.maxNodeConditionMessageLength) - len(truncationSuffix)
+// totalMessageLength returns the byte length of messages joined with ";" separators plus a trailing ";".
+func totalMessageLength(messages []string) int {
+	total := 0
 
+	for i, msg := range messages {
+		if i > 0 {
+			total++
+		}
+
+		total += len(msg)
+	}
+
+	total++ // trailing ";"
+
+	return total
+}
+
+// compactMessageField truncates the message content before the Recommended Action
+// suffix to maxLen bytes, preserving the Recommended Action suffix needed for
+// recovery matching.
+//
+// Input format:  "ErrorCode:X GPU:3 PCI:addr <diagnostic text> Recommended Action=Y"
+// Output format: "ErrorCode:X GPU:3 PCI:addr <truncated>... Recommended Action=Y"
+func compactMessageField(msg string, maxLen int) string {
+	raIdx := strings.LastIndex(msg, recommendedActionMarker)
+	if raIdx < 0 {
+		return msg
+	}
+
+	beforeRA := strings.TrimRight(msg[:raIdx], " ")
+	raPart := msg[raIdx:]
+
+	if len(beforeRA) <= maxLen {
+		return msg
+	}
+
+	return beforeRA[:maxLen] + truncationSuffix + " " + raPart
+}
+
+// truncateNodeConditionMessage builds the node condition message while respecting the max node condition
+// message length. It applies two tiers of truncation:
+//  1. If full messages exceed the limit, compact each message's free-text diagnostic field
+//     to compactMessageFieldLen bytes, preserving entity identifiers needed for recovery.
+//  2. If compacted messages still exceed the limit, truncate the last entry at the byte level
+//     to fill the remaining space.
+func (r *K8sConnector) truncateNodeConditionMessage(messages []string) string {
+	maxLen := int(r.config.MaxNodeConditionMessageLength)
+
+	// When messages exceed the limit, first remove identity-duplicates (same
+	// ErrorCode + entity + Recommended Action) to reclaim space, then compact.
+	if totalMessageLength(messages) > maxLen {
+		messages = deduplicateMessagesByIdentity(messages)
+
+		compacted := make([]string, len(messages))
+		for i, msg := range messages {
+			compacted[i] = compactMessageField(msg, int(r.config.CompactedHealthEventMsgLen))
+		}
+
+		messages = compacted
+	}
+
+	// Tier 2: build the result, truncating at byte level if compacted messages still don't fit.
 	var result strings.Builder
 
 	truncated := false
 
 	for i, msg := range messages {
-		var newEntry string
-		if i == 0 {
-			newEntry = msg
-		} else {
-			newEntry = ";" + msg
+		separator := ""
+		if i > 0 {
+			separator = ";"
 		}
 
-		// Check if adding this entry would exceed the limit (+1 for trailing semicolon)
-		if result.Len()+len(newEntry)+1 > maxLen {
+		// +1 accounts for the trailing semicolon that is always appended after the loop
+		if result.Len()+len(separator)+len(msg)+1 > maxLen {
+			available := maxLen - result.Len() - len(separator) - 1 - len(truncationSuffix)
+			if available > 0 {
+				result.WriteString(separator)
+				result.WriteString(msg[:available])
+			}
+
 			truncated = true
+
 			break
 		}
 
-		result.WriteString(newEntry)
+		result.WriteString(separator)
+		result.WriteString(msg)
 	}
 
 	result.WriteString(";")

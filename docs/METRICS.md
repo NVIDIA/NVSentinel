@@ -47,6 +47,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_cordons_applied_total` | Counter | - | Total number of cordons applied to nodes |
 | `fault_quarantine_cordons_removed_total` | Counter | - | Total number of cordons removed from nodes |
 | `fault_quarantine_node_quarantine_duration_seconds` | Histogram | - | Time from health event generation to node quarantine completion. Buckets: Prometheus DefBuckets |
+| `fault_quarantine_node_remediation_duration_seconds` | Histogram | - | End-to-end node remediation time: `generatedTimestamp` (from original unhealthy event) to node unquarantine. Emitted on both auto unquarantine (via healthy event) and manual uncordon. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=27), max ~4.4 days |
+| `fault_quarantine_node_remediation_duration_excluding_drain_seconds` | Histogram | - | Remediation time excluding node-drainer duration: `(unquarantineTime - generatedTimestamp) - (drainFinishTimestamp - quarantineFinishTimestamp)`. Emitted only when both `quarantineFinishTimestamp` and `drainFinishTimestamp` are present in the original event document. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=19), max ~4.1 hours |
 
 ### Ruleset Evaluation Metrics
 
