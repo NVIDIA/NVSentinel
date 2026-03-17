@@ -150,23 +150,48 @@ spec:
               value: {{ .Values.csp.nebius.iamToken | quote }}
             {{- end }}
             {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_CERT_PATH
+              value: "{{ .Values.tls.certDir }}/tls.crt"
+            - name: TLS_KEY_PATH
+              value: "{{ .Values.tls.certDir }}/tls.key"
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            - name: AUTH_AUDIENCES
+              value: {{ .Values.auth.audiences | join "," | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
-          {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
+          {{- if or .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
           volumeMounts:
+            {{- if .Values.tls.enabled }}
+            - name: tls-cert
+              mountPath: {{ .Values.tls.certDir }}
+              readOnly: true
+            {{- end }}
+            {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
             - name: nebius-sa-key
               mountPath: /etc/nebius
               readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
+      {{- if or .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
       volumes:
+        {{- if .Values.tls.enabled }}
+        - name: tls-cert
+          secret:
+            secretName: {{ include "provider.fullname" . }}-grpc-cert
+            defaultMode: 420
+        {{- end }}
+        {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}
         - name: nebius-sa-key
           secret:
             secretName: {{ .Values.csp.nebius.serviceAccountKeySecret }}
             defaultMode: 420
+        {{- end }}
       {{- end }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}

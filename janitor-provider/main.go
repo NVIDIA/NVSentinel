@@ -19,17 +19,20 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -38,6 +41,7 @@ import (
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/auth"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
 )
@@ -145,7 +149,42 @@ func run() error {
 		return fmt.Errorf("failed to create csp client: %w", err)
 	}
 
-	svr := grpc.NewServer()
+	var serverOpts []grpc.ServerOption
+
+	certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
+	tlsEnabled := certPath != "" && keyPath != ""
+
+	if certPath != "" != (keyPath != "") {
+		return fmt.Errorf("both TLS_CERT_PATH and TLS_KEY_PATH must be set, got cert=%q key=%q", certPath, keyPath)
+	}
+
+	if tlsEnabled {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS key pair: %w", err)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+		slog.Info("gRPC TLS enabled", "certPath", certPath)
+	}
+
+	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
+		parts := strings.Split(audiences, ",")
+		auds := make([]string, 0, len(parts))
+		for _, a := range parts {
+			if trimmed := strings.TrimSpace(a); trimmed != "" {
+				auds = append(auds, trimmed)
+			}
+		}
+		serverOpts = append(serverOpts,
+			grpc.UnaryInterceptor(
+				auth.TokenReviewInterceptor(k8sClient, auds)))
+
+		slog.Info("gRPC TokenReview auth enabled",
+			"audiences", auds)
+	}
+
+	svr := grpc.NewServer(serverOpts...)
 	cspv1alpha1.RegisterCSPProviderServiceServer(svr, &janitorProviderServer{
 		cspClient: cspClient,
 		k8sClient: k8sClient,

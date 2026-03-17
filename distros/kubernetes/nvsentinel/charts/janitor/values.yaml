@@ -102,6 +102,24 @@ config:
   timeout: "25m"
   # host where the provider is running
   cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+  # CSP provider gRPC connection settings
+  cspProvider:
+    tls:
+      # Enable TLS for gRPC connection to CSP provider
+      enabled: true
+      # Name of the Secret containing the CA certificate (key: ca.crt).
+      # Defaults to the janitor-provider's cert secret name.
+      caSecretName: "janitor-provider-grpc-cert"
+      # Skip TLS verification (for local development only)
+      insecure: false
+    auth:
+      # Enable SA token authentication for gRPC connection to CSP provider
+      enabled: true
+      # Audience for the projected service account token.
+      # The provider validates this audience in TokenReview.
+      audience: "nvsentinel-csp-provider"
+      # Token expiration in seconds (default: 1 hour, K8s auto-rotates before expiry)
+      expirationSeconds: 3600
   # Manual mode - if true, controllers won't send actual reboot/terminate signals
   manualMode: false
   # HTTP endpoint port for exposing runtime configuration

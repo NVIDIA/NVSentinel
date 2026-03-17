@@ -39,10 +39,13 @@ type Config struct {
 
 // GlobalConfig contains global janitor settings
 type GlobalConfig struct {
-	Timeout         time.Duration `mapstructure:"timeout" json:"timeout"`
-	ManualMode      *bool         `mapstructure:"manualMode" json:"manualMode"`
-	Nodes           NodeConfig    `mapstructure:"nodes" json:"nodes"`
-	CSPProviderHost string        `mapstructure:"cspProviderHost" json:"cspProviderHost"`
+	Timeout              time.Duration `mapstructure:"timeout" json:"timeout"`
+	ManualMode           *bool         `mapstructure:"manualMode" json:"manualMode"`
+	Nodes                NodeConfig    `mapstructure:"nodes" json:"nodes"`
+	CSPProviderHost      string        `mapstructure:"cspProviderHost" json:"cspProviderHost"`
+	CSPProviderCAPath    string        `mapstructure:"cspProviderCAPath" json:"cspProviderCAPath,omitempty"`
+	CSPProviderInsecure  bool          `mapstructure:"cspProviderInsecure" json:"cspProviderInsecure,omitempty"`
+	CSPProviderTokenPath string        `mapstructure:"cspProviderTokenPath" json:"cspProviderTokenPath,omitempty"`
 }
 
 // NodeConfig contains configuration for nodes
@@ -63,6 +66,12 @@ type RebootNodeControllerConfig struct {
 	Exclusions []metav1.LabelSelector
 	// CSPProviderHost is the host of the CSP provider
 	CSPProviderHost string
+	// CSPProviderCAPath is the path to the CA bundle PEM file for TLS verification
+	CSPProviderCAPath string
+	// CSPProviderInsecure skips TLS when true (for local development)
+	CSPProviderInsecure bool
+	// CSPProviderTokenPath is the path to the SA token file for gRPC auth
+	CSPProviderTokenPath string
 }
 
 // TerminateNodeControllerConfig contains configuration for terminate node controller
@@ -78,6 +87,12 @@ type TerminateNodeControllerConfig struct {
 	Exclusions []metav1.LabelSelector
 	// CSPProviderHost is the host of the CSP provider
 	CSPProviderHost string
+	// CSPProviderCAPath is the path to the CA bundle PEM file for TLS verification
+	CSPProviderCAPath string
+	// CSPProviderInsecure skips TLS when true (for local development)
+	CSPProviderInsecure bool
+	// CSPProviderTokenPath is the path to the SA token file for gRPC auth
+	CSPProviderTokenPath string
 }
 
 // GPUResetControllerConfig contains configuration for gpu reset controller

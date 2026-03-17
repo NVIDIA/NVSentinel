@@ -69,6 +69,26 @@ service:
 
 extraEnv: []
 
+# gRPC TLS configuration for the provider server
+tls:
+  # Enable TLS for the gRPC server
+  enabled: true
+  # Directory where the TLS cert and key are mounted
+  certDir: "/etc/nvsentinel/janitor-provider/tls"
+  # cert-manager Issuer name (uses the janitor's self-signed issuer by default)
+  issuerName: "janitor-selfsigned-issuer"
+
+# gRPC authentication configuration
+# When enabled, the provider validates incoming requests using
+# Kubernetes TokenReview API against projected SA tokens.
+auth:
+  # Enable TokenReview-based authentication for incoming gRPC requests
+  enabled: true
+  # Audiences to validate in the TokenReview.
+  # Must match the audience configured on the janitor's projected SA token volume.
+  audiences:
+    - "nvsentinel-csp-provider"
+
 # Cloud Service Provider (CSP) Configuration
 # The janitor-provider module supports multiple cloud providers for node reboot operations
 # Configure the appropriate CSP for your environment

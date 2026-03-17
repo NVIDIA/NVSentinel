@@ -181,6 +181,73 @@ func TestJanitorWebhookRejectsNonExistentNode(t *testing.T) {
 	testEnv.Test(t, feature.Feature())
 }
 
+// TestJanitorRebootWithTLSAuth validates the full TLS + SA token auth chain between
+// janitor and janitor-provider. The janitor sends a projected SA token over a TLS
+// connection; the provider validates it via TokenReview and processes the reboot.
+// If TLS or auth is broken the RebootNode CR will fail to reach SignalSent=True.
+func TestJanitorRebootWithTLSAuth(t *testing.T) {
+	feature := features.New("TestJanitorRebootWithTLSAuth").
+		WithLabel("suite", "tls-auth").
+		WithLabel("component", "janitor")
+
+	var selectedNodeName string
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodes, err := helpers.GetAllNodesNames(ctx, client)
+		require.NoError(t, err, "failed to get cluster nodes")
+		require.True(t, len(nodes) > 0, "no nodes found in cluster")
+
+		selectedNodeName = nodes[0]
+		t.Logf("Selected node for TLS auth test: %s", selectedNodeName)
+
+		return ctx
+	})
+
+	feature.Assess("RebootNode completes successfully over TLS with auth", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		crName := fmt.Sprintf("reboot-tls-%s", selectedNodeName)
+		_, err = helpers.CreateRebootNodeCR(ctx, client, selectedNodeName, crName)
+		require.NoError(t, err, "RebootNode CR creation should succeed")
+
+		completedCR := helpers.WaitForCRByName(ctx, t, client, crName, helpers.RebootNodeGVK)
+		require.NotNil(t, completedCR, "RebootNode should complete")
+
+		// Verify SignalSent condition is True (proves the gRPC call over TLS+auth succeeded)
+		signalSent := helpers.GetCRCondition(completedCR, "SignalSent")
+		require.NotNil(t, signalSent, "SignalSent condition should exist")
+		assert.Equal(t, "True", signalSent["status"], "SignalSent should be True")
+
+		// Verify NodeReady condition is True (reboot completed successfully)
+		nodeReady := helpers.GetCRCondition(completedCR, "NodeReady")
+		require.NotNil(t, nodeReady, "NodeReady condition should exist")
+		assert.Equal(t, "True", nodeReady["status"], "NodeReady should be True")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("failed to create kubernetes client for teardown: %v", err)
+			return ctx
+		}
+
+		err = helpers.DeleteAllCRs(ctx, t, client, helpers.RebootNodeGVK)
+		if err != nil {
+			t.Logf("failed to delete RebootNode CRs: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
 func TestJanitorNodeLocking(t *testing.T) {
 	feature := features.New("TestJanitorNodeLocking").
 		WithLabel("suite", "node-locking").

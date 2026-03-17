@@ -101,6 +101,16 @@ spec:
               mountPath: {{ .Values.metrics.tls.certDir }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.enabled }}
+            - name: csp-ca
+              mountPath: /etc/nvsentinel/janitor/csp-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.config.cspProvider .Values.config.cspProvider.auth .Values.config.cspProvider.auth.enabled }}
+            - name: csp-provider-token
+              mountPath: /var/run/secrets/nvsentinel/csp-provider
+              readOnly: true
+            {{- end }}
             {{- if .Values.global.auditLogging.enabled }}
             {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
             {{- end }}
@@ -125,6 +135,24 @@ spec:
               - key: tls.key
                 path: tls.key
             defaultMode: 420
+        {{- end }}
+        {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.enabled }}
+        - name: csp-ca
+          secret:
+            secretName: {{ .Values.config.cspProvider.tls.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+            defaultMode: 420
+        {{- end }}
+        {{- if and .Values.config.cspProvider .Values.config.cspProvider.auth .Values.config.cspProvider.auth.enabled }}
+        - name: csp-provider-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.config.cspProvider.auth.audience | quote }}
+                  expirationSeconds: {{ .Values.config.cspProvider.auth.expirationSeconds | default 3600 }}
+                  path: token
         {{- end }}
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}

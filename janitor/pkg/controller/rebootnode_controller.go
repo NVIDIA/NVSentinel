@@ -25,7 +25,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,6 +36,7 @@ import (
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
+	grpcclient "github.com/nvidia/nvsentinel/janitor/pkg/client"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
@@ -376,7 +376,29 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 //
 //nolint:dupl // Structural duplication with TerminateNode is acceptable - same setup pattern
 func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	conn, err := grpc.NewClient(r.Config.CSPProviderHost, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOpts, err := grpcclient.NewCSPProviderDialOptions(r.Config.CSPProviderCAPath, r.Config.CSPProviderInsecure)
+	if err != nil {
+		return fmt.Errorf("failed to build CSP provider dial options: %w", err)
+	}
+
+	if !r.Config.CSPProviderInsecure {
+		tokenPath := r.Config.CSPProviderTokenPath
+		if tokenPath == "" {
+			tokenPath = grpcclient.DefaultSATokenPath
+		}
+
+		dialOpts = append(dialOpts,
+			grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
+
+		slog.Info("CSP provider gRPC auth enabled",
+			"tokenPath", tokenPath)
+	}
+
+	slog.Info("Connecting to CSP provider",
+		"host", r.Config.CSPProviderHost,
+		"insecure", r.Config.CSPProviderInsecure)
+
+	conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create CSP client: %w", err)
 	}

@@ -105,6 +105,32 @@ func applyCSPProviderHostDefaults(config *Config) {
 	if len(config.GPUReset.CSPProviderHost) == 0 {
 		config.GPUReset.CSPProviderHost = config.Global.CSPProviderHost
 	}
+
+	// Cascade CSP provider TLS settings from global to controller-specific configs
+	if len(config.RebootNode.CSPProviderCAPath) == 0 {
+		config.RebootNode.CSPProviderCAPath = config.Global.CSPProviderCAPath
+	}
+
+	if !config.RebootNode.CSPProviderInsecure {
+		config.RebootNode.CSPProviderInsecure = config.Global.CSPProviderInsecure
+	}
+
+	if len(config.TerminateNode.CSPProviderCAPath) == 0 {
+		config.TerminateNode.CSPProviderCAPath = config.Global.CSPProviderCAPath
+	}
+
+	if !config.TerminateNode.CSPProviderInsecure {
+		config.TerminateNode.CSPProviderInsecure = config.Global.CSPProviderInsecure
+	}
+
+	// Cascade CSP provider token path from global to controller-specific configs
+	if len(config.RebootNode.CSPProviderTokenPath) == 0 {
+		config.RebootNode.CSPProviderTokenPath = config.Global.CSPProviderTokenPath
+	}
+
+	if len(config.TerminateNode.CSPProviderTokenPath) == 0 {
+		config.TerminateNode.CSPProviderTokenPath = config.Global.CSPProviderTokenPath
+	}
 }
 
 func getResources(resources ResourceRequirements) (*corev1.ResourceRequirements, error) {
