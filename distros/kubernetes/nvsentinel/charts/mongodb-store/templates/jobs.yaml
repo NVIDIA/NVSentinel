@@ -58,8 +58,6 @@ metadata:
   name: create-mongodb-database
   annotations:
     argocd.argoproj.io/sync-options: Force=true,Replace=true
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   activeDeadlineSeconds: 600
   template:

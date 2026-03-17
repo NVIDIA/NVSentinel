@@ -1,143 +1,69 @@
-# NVSentinel in Plain English
+# NVSentinel Overview
 
-## What It Is
+## What it is
 
-NVSentinel is an intelligent monitoring and self-healing system for Kubernetes clusters that run GPU workloads. Think of it as an automated health monitoring system for your GPU infrastructure - similar to how a building's fire alarm system continuously monitors for smoke and automatically responds to threats, NVSentinel continuously monitors your GPU hardware and automatically responds to failures.
+NVSentinel is a GPU fault detection and remediation system for Kubernetes. It monitors GPU health, system logs, and cloud provider maintenance events, then takes action: cordoning faulty nodes, draining workloads, and triggering break-fix workflows. The full pipeline runs without human intervention.
 
-## The Problem It Solves
+NVSentinel is running across AWS, GCP, Azure, and OCI on clusters up to 1,100+ nodes and ~40,000 GPUs, processing tens of millions of health events per month. NVIDIA internal deployments run with full remediation enabled by default.
 
-**GPU clusters are expensive and failures are costly**
+## The problem
 
-In modern AI and high-performance computing, organizations run large clusters of servers equipped with expensive NVIDIA GPUs (think $10,000-$30,000+ per GPU). These clusters run critical workloads like:
+GPU failures in large clusters are expensive and disruptive. A single faulty GPU can corrupt training results silently, crash a multi-day distributed job, or leave hundreds of GPUs idle while an operator investigates. Traditional monitoring detects the problem but does not fix it. The gap between detection and remediation is where GPU-hours are wasted and operators get paged.
 
-- AI model training (ChatGPT, autonomous vehicles, drug discovery)
-- Scientific simulations (weather modeling, molecular dynamics)
-- Graphics rendering and video processing
+NVSentinel closes that gap. Detection, quarantine, drain, and remediation happen automatically, typically completing in minutes rather than the hours or days that manual intervention requires.
 
-**When GPUs fail, bad things happen:**
+## How it works
 
-- **Silent corruption**: Faulty GPUs produce wrong results that go undetected
-- **Cascading failures**: One bad GPU can crash an entire multi-day training job
-- **Wasted resources**: Other GPUs sit idle while waiting for the failed node to recover
-- **Manual intervention**: IT teams get paged at 3 AM to investigate and fix issues
-- **Lost productivity**: Data scientists waste hours re-running failed experiments
+NVSentinel is built as a set of independent modules that coordinate through a shared data store and the Kubernetes API. No module communicates directly with another.
 
-**Traditional monitoring isn't enough:**
+**Health monitors** detect faults and send structured health events to the system:
 
-- Most systems only *detect* problems - they don't *fix* them
-- Manual remediation is slow (hours or days)
-- IT staff need deep expertise to diagnose GPU issues
-- No coordination between detection and response
+- **GPU health monitor** watches for thermal issues, ECC errors, and XID events via DCGM
+- **Syslog health monitor** parses system logs for kernel panics, driver crashes, and NVLink errors
+- **CSP health monitor** polls cloud provider APIs (AWS, GCP, Azure, OCI) for scheduled maintenance and hardware events
+- **Kubernetes object monitor** evaluates CEL expressions against any Kubernetes resource to generate health events from custom signals
 
-## What NVSentinel Does
+**Platform connectors** receive health events via gRPC, validate them, persist them to the data store, and update Kubernetes node conditions.
 
-NVSentinel provides **fully automated detection and remediation** of GPU hardware and software failures:
+**Core modules** watch the data store for new events and act independently:
 
-### 1. **Continuous Monitoring** (The Watchers)
+- **Fault quarantine** cordons nodes based on configurable CEL rules, with a circuit breaker to prevent mass quarantines during cluster-wide events
+- **Node drainer** gracefully evicts workloads with per-namespace eviction strategies (immediate, allow-completion, or delete-after-timeout)
+- **Fault remediation** creates maintenance CRDs (GPU reset or node reboot) after drain completes, and collects diagnostic logs
+- **Janitor** executes the maintenance action via cloud provider APIs or direct node commands
+- **Health events analyzer** identifies patterns across events and generates recommended actions
+- **Labeler** tags nodes with DCGM and driver versions so other modules can self-configure
 
-Like security cameras watching every corner of a building, NVSentinel has "watchers" monitoring different aspects of your cluster:
+## GPU reset
 
-- **GPU Health Monitor**: Watches GPU temperature, memory errors, and hardware faults using NVIDIA's DCGM diagnostics
-- **System Log Monitor**: Reads system logs looking for kernel panics, driver crashes, and hardware errors
-- **Cloud Provider Monitor**: Checks with your cloud provider (e.g AWS, GCP, or OCI) for planned maintenance or hardware issues
+For recoverable GPU faults, NVSentinel can reset individual GPUs instead of rebooting the entire node. The GPU health monitor identifies reset-eligible errors, fault remediation creates a GPUReset CRD, and the janitor executes it. This reduces remediation time from minutes (reboot) to seconds (reset) while keeping other GPUs on the node operational.
 
-These monitors work 24/7, checking every few seconds, so problems are caught immediately.
+## Storage
 
-### 2. **Intelligent Analysis** (The Brain)
+NVSentinel supports MongoDB and PostgreSQL as database backends. Both provide change streams for real-time event processing. MongoDB uses native change streams. PostgreSQL uses LISTEN/NOTIFY. All health events are persisted with full audit trails.
 
-When a potential problem is detected, NVSentinel:
+## Getting started
 
-- **Classifies the severity**: Is this a critical failure or a minor hiccup?
-- **Identifies the pattern**: Have we seen this before? Is it getting worse?
-- **Makes decisions**: Should we isolate this node? Drain workloads? Call for help?
+```bash
+helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
+  --version v1.0.0 \
+  --namespace nvsentinel \
+  --create-namespace
+```
 
-### 3. **Automated Response** (The Hands)
+By default, only health monitoring is enabled. This is safe to deploy in any cluster as it only observes and reports. Enable fault quarantine, node drainer, and fault remediation via Helm values as you build confidence in the system's behavior in your environment.
 
-Based on the analysis, NVSentinel automatically takes action:
+See the [Helm Chart Configuration Guide](../distros/kubernetes/README.md) for all options, and the [local fault injection demo](../demos/local-fault-injection-demo/README.md) to see the full pipeline in a KIND cluster without GPU hardware.
 
-- **Quarantine**: Immediately prevents new workloads from being scheduled on the faulty node
-- **Drain**: Gracefully moves running workloads to healthy nodes
-- **Label**: Tags the node with diagnostic information so IT teams know what's wrong
-- **Remediate**: Triggers automated repair workflows or notifies break-fix teams
+## Security and supply chain
 
-> All of this happens automatically, without human intervention.
+All container images are built with ko, attested with SLSA build provenance, and include SPDX SBOMs. In-cluster verification is supported via Sigstore Policy Controller. See [Security](../SECURITY.md) for details.
 
-## Why This Matters
+## Learn more
 
-### For Business Leaders
-
-- **Reduced downtime**: Problems are fixed in minutes instead of hours
-- **Cost savings**: Prevent wasted GPU time (at $2-$10/hour per GPU, this adds up fast)
-- **Predictable operations**: Fewer emergency pages, more time for strategic work
-- **Better ROI**: Your expensive GPU infrastructure actually produces results instead of sitting broken
-
-### For Data Scientists
-
-- **Fewer failed experiments**: Jobs don't mysteriously crash at 90% completion
-- **Faster results**: No waiting for IT to fix broken nodes
-- **Trust in results**: Confidence that your models are trained correctly
-- **Focus on work**: Less time debugging infrastructure, more time on research
-
-### For IT Operations
-
-- **Automation**: The system fixes itself without manual intervention
-- **Visibility**: Clear dashboard showing which nodes are healthy vs. problematic
-- **Reduced toil**: No more 3 AM pages for routine issues
-- **Better diagnostics**: Detailed logs and labels show exactly what went wrong
-
-### For Platform Engineers
-
-- **Compliance ready**: Built-in security with cryptographically signed images and supply chain transparency
-- **Cloud-native**: Works seamlessly with Kubernetes, no special infrastructure needed
-- **Extensible**: Add custom monitors for your specific hardware or use cases
-- **Battle-tested**: Based on NVIDIA's tools used in production clusters world-wide
-
-## How It Works (Simple Explanation)
-
-Imagine NVSentinel as an autonomous system:
-
-1. **Vital Signs Monitoring** (Health Monitors) - Monitors check GPU temperature, memory errors, system logs
-2. **Triage Desk** (Platform Connectors) - Connectors receive health events and store them in a database
-3. **Medical Team Response** (Core Modules) - Modules watch for health events and automatically respond:
-   - **Quarantine Module**: "This node has a fault, don't send new work here"
-   - **Drainer Module**: "Move existing work off this node to healthy ones"
-   - **Remediation Module**: "Call the repair team to fix this hardware"
-4. **Medical Records** (Data Store) - Full audit trail of all failures and responses
-
-## Getting Started
-
-NVSentinel is open source and easy to deploy:
-
-1. **Install** (one command, takes ~5 minutes):
-   ```bash
-   helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel --version v0.6.0
-   ```
-
-2. **Configure** (choose what actions to enable):
-   - Start with monitoring only (safe, just watches)
-   - Enable quarantine (prevents new work on bad nodes)
-   - Enable draining (moves work to healthy nodes)
-   - Enable full automation (complete self-healing)
-
-3. **Observe** (watch it work):
-   - Dashboard shows cluster health in real-time
-   - Alerts show when problems are detected and fixed
-   - Audit logs provide complete history
-
-## Key Principles
-
-* **Safety First**: Start with monitoring mode (no actions), gradually enable automation as you build confidence
-* **Transparency**: Every action is logged, every image is cryptographically verified, every decision is auditable
-* **Kubernetes-Native**: Works with standard Kubernetes APIs, no proprietary lock-in
-* **Modular**: Use only the pieces you need, extend with custom monitors for your environment
-* **Battle-Tested**: Based on learnings from NVIDIA's internal production systems, now available as open source
-
-## Learn More
-
-- **GitHub Repository**: [github.com/NVIDIA/NVSentinel](https://github.com/NVIDIA/NVSentinel)
-- **Quick Start Guide**: [../README.md](../README.md)
-- **Architecture Details**: [../DEVELOPMENT.md](../DEVELOPMENT.md)
-- **Security & Supply Chain**: [../SECURITY.md](../SECURITY.md)
-
-
-> **In One Sentence**: NVSentinel is like having an expert GPU operations team working 24/7 to detect and automatically fix hardware problems in your Kubernetes cluster, so your expensive GPUs stay productive instead of sitting broken.
+- [Architecture and data flow](./DATA_FLOW.md)
+- [Integration guide](./INTEGRATIONS.md) for taints, node conditions, and custom remediation triggers
+- [Metrics reference](./METRICS.md) for Prometheus dashboards and alerts
+- [Component configuration](./configuration/) for per-module setup
+- [Runbooks](./runbooks/) for troubleshooting
+- [Development guide](../DEVELOPMENT.md) for contributing
