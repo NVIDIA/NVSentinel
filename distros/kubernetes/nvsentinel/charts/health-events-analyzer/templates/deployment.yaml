@@ -77,8 +77,11 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           args:
           - "--metrics-port={{ .Values.global.metricsPort }}"
-          {{- if .Values.clientCertMountPath }}
-          - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
+          {{- if $certMountPath }}
+          - "--database-client-cert-mount-path={{ $certMountPath }}"
+          {{- else }}
+          - "--tls-enabled=false"
           {{- end }}
           - "--processing-strategy={{ .Values.processingStrategy }}"
           ports:
@@ -111,14 +114,15 @@ spec:
           - name: config-volume
             mountPath: /etc/config/config.toml
             subPath: config.toml
-          {{- if .Values.clientCertMountPath }}
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
+          {{- if $certMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
-          {{- else }}
+          {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
           - name: mongo-app-client-cert
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
           {{- end }}
           {{- end }}
@@ -130,13 +134,14 @@ spec:
             # App name for connection identification in logs and currentOp
             - name: APP_NAME
               value: {{ .Chart.Name | quote }}
-            {{- if .Values.clientCertMountPath }}
+            {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
+            {{- if $certMountPath }}
             {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
             - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
-              value: {{ .Values.clientCertMountPath }}
+              value: {{ $certMountPath }}
             {{- else }}
             - name: MONGODB_CLIENT_CERT_MOUNT_PATH
-              value: {{ .Values.clientCertMountPath }}
+              value: {{ $certMountPath }}
             {{- end }}
             {{- end }}
           envFrom:
@@ -153,22 +158,17 @@ spec:
       - name: var-run-vol
         hostPath:
           path: /var/run/nvsentinel
-          type: Directory
-      {{- if .Values.clientCertMountPath }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          # DirectoryOrCreate avoids MountVolume failures when the path is not yet a directory (race with other workloads).
+          type: DirectoryOrCreate
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else }}
-      - name: mongo-app-client-cert
-        secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
-          optional: true
-      {{- end }}
+      {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
+      {{- include "nvsentinel.mongodb.certVolume" . | nindent 6 }}
       {{- end }}
       restartPolicy: Always
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}

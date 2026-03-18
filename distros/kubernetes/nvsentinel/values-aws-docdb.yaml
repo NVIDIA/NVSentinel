@@ -1,0 +1,72 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# NVSentinel — AWS DocumentDB values override
+# See docs/external-datastore.md for setup instructions.
+#
+# Usage:
+#   helm upgrade --install nvsentinel . \
+#     -f values.yaml \
+#     -f values-aws-docdb.yaml \
+#     --set-string global.datastore.uri="mongodb://<user>:<pass>@<cluster>.<region>.docdb.amazonaws.com:27017/?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false" \
+#     --namespace nvsentinel
+
+global:
+  mongodbStore:
+    enabled: false
+
+  datastore:
+    provider: "mongodb"
+
+    # Full DocumentDB connection string — must be passed at deploy time via
+    # --set-string (see Usage above). Do not store credentials in this file.
+    # Format: mongodb://<user>:<pass>@<cluster>.<region>.docdb.amazonaws.com:27017/?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
+    uri: ""
+
+    connection:
+      database: "HealthEventsDatabase"
+
+    tls:
+      enabled: true
+      # CA cert secret created from the AWS global CA bundle (see docs/external-datastore.md).
+      caSecretName: "docdb-ca"
+
+    auth:
+      mechanism: "scram"
+
+# DocumentDB uses SCRAM auth with a custom CA cert. clientCertMountPath: "" signals
+# SCRAM mode (no client cert bundle) while still allowing the CA cert to be mounted
+# via the caSecretName above.
+health-events-analyzer:
+  clientCertMountPath: ""
+
+fault-remediation:
+  clientCertMountPath: ""
+
+fault-quarantine:
+  clientCertMountPath: ""
+
+node-drainer:
+  clientCertMountPath: ""
+
+event-exporter:
+  mongodbStore:
+    clientCertMountPath: ""
+
+csp-health-monitor:
+  clientCertMountPath: ""
+
+platformConnector:
+  mongodbStore:
+    clientCertMountPath: ""

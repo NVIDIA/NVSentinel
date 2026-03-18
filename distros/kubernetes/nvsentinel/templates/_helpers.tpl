@@ -105,13 +105,153 @@ Audit logging environment variables
 {{- end }}
 
 {{/*
-MongoDB client certificate secret name
+MongoDB client certificate secret name.
+Returns (in priority order):
+  1. global.datastore.auth.clientCertSecretName  (x509 auth with user-provided cert)
+  2. global.datastore.certificates.secretName     (legacy configurable name)
+  3. mongo-app-client-cert-secret                 (default: cert-manager generated)
 */}}
 {{- define "nvsentinel.certificates.secretName" -}}
-{{- if and .Values.global.datastore .Values.global.datastore.certificates .Values.global.datastore.certificates.secretName -}}
+{{- if and .Values.global.datastore .Values.global.datastore.auth .Values.global.datastore.auth.clientCertSecretName -}}
+{{ .Values.global.datastore.auth.clientCertSecretName }}
+{{- else if and .Values.global.datastore .Values.global.datastore.certificates .Values.global.datastore.certificates.secretName -}}
 {{ .Values.global.datastore.certificates.secretName }}
 {{- else -}}
 mongo-app-client-cert-secret
+{{- end -}}
+{{- end -}}
+
+{{/*
+Renders the MongoDB certificate volume definition for a pod spec.
+Handles three cases:
+  1. External MongoDB with x509 auth  → user-provided client cert secret (tls.crt, tls.key, ca.crt)
+  2. External MongoDB with scram + CA → user-provided CA cert secret (ca.crt only)
+  3. Internal MongoDB (default)       → cert-manager generated secret (optional: true)
+Returns empty string if no cert volume is needed (external MongoDB, no certs configured).
+*/}}
+{{- define "nvsentinel.mongodb.certVolume" -}}
+{{- $useExternal := and .Values.global.datastore
+                        (eq .Values.global.datastore.provider "mongodb")
+                        (not .Values.global.mongodbStore.enabled) -}}
+{{- if $useExternal -}}
+  {{- $authMechanism := "scram" -}}
+  {{- if and .Values.global.datastore.auth .Values.global.datastore.auth.mechanism -}}
+  {{- $authMechanism = .Values.global.datastore.auth.mechanism -}}
+  {{- end -}}
+  {{- $clientCertSecret := "" -}}
+  {{- if and .Values.global.datastore.auth .Values.global.datastore.auth.clientCertSecretName -}}
+  {{- $clientCertSecret = .Values.global.datastore.auth.clientCertSecretName -}}
+  {{- end -}}
+  {{- $caSecret := "" -}}
+  {{- if and .Values.global.datastore.tls .Values.global.datastore.tls.caSecretName -}}
+  {{- $caSecret = .Values.global.datastore.tls.caSecretName -}}
+  {{- end -}}
+  {{- if and (eq $authMechanism "x509") (ne $clientCertSecret "") -}}
+- name: mongo-app-client-cert
+  secret:
+    secretName: {{ $clientCertSecret }}
+    {{- include "nvsentinel.certificates.volumeItems" . | nindent 4 }}
+    optional: false
+  {{- else if ne $caSecret "" -}}
+- name: mongo-app-client-cert
+  secret:
+    secretName: {{ $caSecret }}
+    items:
+    - key: ca.crt
+      path: ca.crt
+    optional: false
+  {{- end -}}
+  {{- /* else: no cert volume — external MongoDB with no custom CA or client certs configured */}}
+{{- else -}}
+- name: mongo-app-client-cert
+  secret:
+    secretName: {{ include "nvsentinel.certificates.secretName" . }}
+    {{- include "nvsentinel.certificates.volumeItems" . | nindent 4 }}
+    optional: true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Returns "true" if a MongoDB cert volume will be rendered by nvsentinel.mongodb.certVolume,
+"false" otherwise. Use this to conditionally render the corresponding volume mount.
+*/}}
+{{- define "nvsentinel.mongodb.hasCertVolume" -}}
+{{- $useExternal := and .Values.global.datastore
+                        (eq .Values.global.datastore.provider "mongodb")
+                        (not .Values.global.mongodbStore.enabled) -}}
+{{- if $useExternal -}}
+  {{- $authMechanism := "scram" -}}
+  {{- if and .Values.global.datastore.auth .Values.global.datastore.auth.mechanism -}}
+  {{- $authMechanism = .Values.global.datastore.auth.mechanism -}}
+  {{- end -}}
+  {{- $clientCertSecret := "" -}}
+  {{- if and .Values.global.datastore.auth .Values.global.datastore.auth.clientCertSecretName -}}
+  {{- $clientCertSecret = .Values.global.datastore.auth.clientCertSecretName -}}
+  {{- end -}}
+  {{- $caSecret := "" -}}
+  {{- if and .Values.global.datastore.tls .Values.global.datastore.tls.caSecretName -}}
+  {{- $caSecret = .Values.global.datastore.tls.caSecretName -}}
+  {{- end -}}
+  {{- if or (and (eq $authMechanism "x509") (ne $clientCertSecret "")) (ne $caSecret "") -}}
+true
+  {{- else -}}
+false
+  {{- end -}}
+{{- else -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Returns the effective MongoDB cert mount path for a pod.
+- Returns .Values.clientCertMountPath if explicitly set (covers x509 client-cert and CA-only modes).
+- Returns /etc/ssl/mongo-ca only for external MongoDB SCRAM + custom CA (caSecretName set,
+  clientCertMountPath empty). Do not use this fallback for in-cluster MongoDB when
+  clientCertMountPath is empty — e.g. values-tilt-mongodb-tls-disabled.yaml disables TLS
+  by setting clientCertMountPath to ""; hasCertVolume is still true in-cluster, but there
+  is no CA secret and no file at /etc/ssl/mongo-ca/ca.crt.
+- Returns empty string otherwise.
+*/}}
+{{- define "nvsentinel.mongodb.certMountPath" -}}
+{{- if .Values.clientCertMountPath -}}
+{{ .Values.clientCertMountPath }}
+{{- else -}}
+  {{- $useExternal := and .Values.global.datastore
+                          (eq .Values.global.datastore.provider "mongodb")
+                          (not .Values.global.mongodbStore.enabled) -}}
+  {{- if $useExternal -}}
+    {{- $caSecret := "" -}}
+    {{- if and .Values.global.datastore.tls .Values.global.datastore.tls.caSecretName -}}
+    {{- $caSecret = .Values.global.datastore.tls.caSecretName -}}
+    {{- end -}}
+    {{- if ne $caSecret "" -}}
+/etc/ssl/mongo-ca
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Same path resolution as nvsentinel.mongodb.certMountPath but reads
+.Values.mongodbStore.clientCertMountPath (event-exporter subchart layout).
+Use this only from charts that store the path under mongodbStore.
+*/}}
+{{- define "nvsentinel.mongodb.certMountPathFromMongoStore" -}}
+{{- if .Values.mongodbStore.clientCertMountPath -}}
+{{ .Values.mongodbStore.clientCertMountPath }}
+{{- else -}}
+  {{- $useExternal := and .Values.global.datastore
+                          (eq .Values.global.datastore.provider "mongodb")
+                          (not .Values.global.mongodbStore.enabled) -}}
+  {{- if $useExternal -}}
+    {{- $caSecret := "" -}}
+    {{- if and .Values.global.datastore.tls .Values.global.datastore.tls.caSecretName -}}
+    {{- $caSecret = .Values.global.datastore.tls.caSecretName -}}
+    {{- end -}}
+    {{- if ne $caSecret "" -}}
+/etc/ssl/mongo-ca
+    {{- end -}}
+  {{- end -}}
 {{- end -}}
 {{- end -}}
 

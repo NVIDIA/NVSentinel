@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */}}
 {{- if .Values.global.datastore }}
+{{- /* Default connection port when not set: PostgreSQL 5432, MongoDB 27017 */}}
+{{- $defaultDatastorePort := ternary 27017 5432 (eq .Values.global.datastore.provider "mongodb") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,10 +25,18 @@ metadata:
 data:
   datastore.yaml: |
     provider: {{ .Values.global.datastore.provider | quote }}
+    {{- if .Values.global.datastore.uri }}
+    uri: {{ .Values.global.datastore.uri | quote }}
+    {{- end }}
+    {{- if .Values.global.datastore.connection }}
     connection:
+      {{- if .Values.global.datastore.connection.host }}
       host: {{ .Values.global.datastore.connection.host | quote }}
-      port: {{ .Values.global.datastore.connection.port | default 5432 }}
+      {{- end }}
+      port: {{ .Values.global.datastore.connection.port | default $defaultDatastorePort }}
+      {{- if .Values.global.datastore.connection.database }}
       database: {{ .Values.global.datastore.connection.database | quote }}
+      {{- end }}
       {{- if .Values.global.datastore.connection.username }}
       username: {{ .Values.global.datastore.connection.username | quote }}
       {{- end }}
@@ -46,6 +56,14 @@ data:
       extraParams:
         {{- toYaml .Values.global.datastore.connection.extraParams | nindent 8 }}
       {{- end }}
+    {{- end }}
+    {{- if .Values.global.datastore.tls }}
+    tls:
+      enabled: {{ .Values.global.datastore.tls.enabled | default true }}
+      {{- if .Values.global.datastore.tls.caSecretName }}
+      caSecretName: {{ .Values.global.datastore.tls.caSecretName | quote }}
+      {{- end }}
+    {{- end }}
     {{- if .Values.global.datastore.options }}
     options:
       {{- toYaml .Values.global.datastore.options | nindent 6 }}
@@ -53,9 +71,14 @@ data:
 
   # Environment variables for components
   DATASTORE_PROVIDER: {{ .Values.global.datastore.provider | quote }}
+  {{- if .Values.global.datastore.connection }}
+  {{- if .Values.global.datastore.connection.host }}
   DATASTORE_HOST: {{ .Values.global.datastore.connection.host | quote }}
-  DATASTORE_PORT: {{ .Values.global.datastore.connection.port | default 5432 | quote }}
+  {{- end }}
+  DATASTORE_PORT: {{ .Values.global.datastore.connection.port | default $defaultDatastorePort | quote }}
+  {{- if .Values.global.datastore.connection.database }}
   DATASTORE_DATABASE: {{ .Values.global.datastore.connection.database | quote }}
+  {{- end }}
   {{- if .Values.global.datastore.connection.username }}
   DATASTORE_USERNAME: {{ .Values.global.datastore.connection.username | quote }}
   {{- end }}
@@ -71,6 +94,7 @@ data:
   {{- if .Values.global.datastore.connection.sslrootcert }}
   DATASTORE_SSLROOTCERT: {{ .Values.global.datastore.connection.sslrootcert | quote }}
   {{- end }}
+  {{- end }}
 
   # Certificate rotation configuration (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods
@@ -78,9 +102,31 @@ data:
   MONGODB_ENABLE_CERT_ROTATION: {{ .Values.global.certificateRotationEnabled | default false | quote }}
   {{- end }}
 
-  # Legacy MongoDB environment variables for backward compatibility
-  # These are set for all providers to support legacy code paths that still use the old config system
+  # TLS configuration
+  # Controls whether TLS is used when connecting to the database.
+  # For external DBs without TLS support, set global.datastore.tls.enabled: false
   {{- if eq .Values.global.datastore.provider "mongodb" }}
+  {{- if and .Values.global.datastore.tls (not (kindIs "invalid" .Values.global.datastore.tls.enabled)) }}
+  MONGODB_TLS_ENABLED: {{ .Values.global.datastore.tls.enabled | quote }}
+  {{- else }}
+  MONGODB_TLS_ENABLED: "true"
+  {{- end }}
+  {{- end }}
+
+  # MongoDB connection URI
+  # If global.datastore.uri is set, it is used directly (supports full connection strings
+  # for external/managed services like Atlas, DocumentDB, Cosmos DB).
+  # Otherwise, URI is constructed from individual connection fields (host, port, extraParams).
+  #
+  # NOTE: Unlike the internal mongodb-config ConfigMap (which stores credential-free cluster
+  # addresses), external managed-service URIs may embed username:password directly in the
+  # connection string. ConfigMaps cannot reference Secret values, so credentials must be
+  # supplied via --set-string at deploy time or a secrets manager (e.g., helm-secrets, ESO).
+  # Migrating MONGODB_URI to a secretKeyRef-backed env var is tracked as a follow-up.
+  {{- if eq .Values.global.datastore.provider "mongodb" }}
+  {{- if .Values.global.datastore.uri }}
+  MONGODB_URI: {{ .Values.global.datastore.uri | quote }}
+  {{- else if .Values.global.datastore.connection }}
   {{- $mongodbURI := printf "mongodb://%s:%d/" .Values.global.datastore.connection.host (int (.Values.global.datastore.connection.port | default 27017)) }}
   {{- if .Values.global.datastore.connection.extraParams }}
   {{- $params := list }}
@@ -90,19 +136,45 @@ data:
   {{- $mongodbURI = printf "%s?%s" $mongodbURI (join "&" $params) }}
   {{- end }}
   MONGODB_URI: {{ $mongodbURI | quote }}
+  {{- end }}
   {{- else }}
   # For non-MongoDB datastores, set empty MongoDB URI
   MONGODB_URI: ""
   {{- end }}
+  {{- if .Values.global.datastore.connection }}
+  {{- if .Values.global.datastore.connection.database }}
   MONGODB_DATABASE_NAME: {{ .Values.global.datastore.connection.database | quote }}
+  {{- end }}
   {{- if .Values.global.datastore.connection.collection }}
   MONGODB_COLLECTION_NAME: {{ .Values.global.datastore.connection.collection | quote }}
   {{- else }}
-  MONGODB_COLLECTION_NAME: "health_events"
+  MONGODB_COLLECTION_NAME: "HealthEvents"
   {{- end }}
   {{- if .Values.global.datastore.connection.tokenCollection }}
   MONGODB_TOKEN_COLLECTION_NAME: {{ .Values.global.datastore.connection.tokenCollection | quote }}
   {{- else }}
   MONGODB_TOKEN_COLLECTION_NAME: "ResumeTokens"
   {{- end }}
+  {{- if .Values.global.datastore.connection.maintenanceEventCollection }}
+  MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: {{ .Values.global.datastore.connection.maintenanceEventCollection | quote }}
+  {{- else }}
+  MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: "MaintenanceEvents"
+  {{- end }}
+  {{- else if .Values.global.datastore.database }}
+  MONGODB_DATABASE_NAME: {{ .Values.global.datastore.database | quote }}
+  MONGODB_COLLECTION_NAME: "HealthEvents"
+  MONGODB_TOKEN_COLLECTION_NAME: "ResumeTokens"
+  MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME: "MaintenanceEvents"
+  {{- end }}
+
+  # Operational defaults — same values as internal mongodb-config.
+  # These control timeouts, retry intervals, and TTL for collections.
+  MONGODB_COLLECTION_EXPIRY_SECONDS: "2592000"
+  MONGODB_PING_TIMEOUT_TOTAL_SECONDS: "30"
+  MONGODB_PING_INTERVAL_SECONDS: "5"
+  CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: "360"
+  CA_CERT_READ_INTERVAL_SECONDS: "5"
+  MONGODB_CHANGE_STREAM_RETRY_DEADLINE_SECONDS: "300"
+  MONGODB_CHANGE_STREAM_RETRY_INTERVAL_SECONDS: "5"
+  UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: "25"
 {{- end }}

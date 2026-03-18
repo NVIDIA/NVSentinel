@@ -114,14 +114,15 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           volumeMounts:
-          {{- if .Values.clientCertMountPath }}
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
+          {{- if $certMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
-          {{- else }}
+          {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
           - name: mongo-app-client-cert
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
           {{- end }}
           {{- end }}
@@ -151,13 +152,14 @@ spec:
             value: "{{ .Values.logCollector.enableGcpSosCollection }}"
           - name: ENABLE_AWS_SOS_COLLECTION
             value: "{{ .Values.logCollector.enableAwsSosCollection }}"
-          {{- if .Values.clientCertMountPath }}
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
+          {{- if $certMountPath }}
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: POSTGRESQL_CLIENT_CERT_MOUNT_PATH
-            value: {{ .Values.clientCertMountPath }}
+            value: {{ $certMountPath }}
           {{- else }}
           - name: MONGODB_CLIENT_CERT_MOUNT_PATH
-            value: {{ .Values.clientCertMountPath }}
+            value: {{ $certMountPath }}
           {{- end }}
           {{- end }}
           envFrom:
@@ -165,21 +167,15 @@ spec:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
       volumes:
-      {{- if .Values.clientCertMountPath }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else }}
-      - name: mongo-app-client-cert
-        secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
-          optional: true
-      {{- end }}
+      {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
+      {{- include "nvsentinel.mongodb.certVolume" . | nindent 6 }}
       {{- end }}
       - name: config-volume
         configMap:

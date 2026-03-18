@@ -1,0 +1,283 @@
+{{/*
+Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{/*
+This job runs only when using an external MongoDB (mongodbStore.enabled=false +
+global.datastore set with provider=mongodb). It creates the required database,
+collections, and indexes in the external MongoDB.
+
+When using internal MongoDB (mongodbStore.enabled=true), the equivalent job runs
+inside the mongodb-store subchart instead.
+*/}}
+{{- $useExternalMongodb := and .Values.global.datastore
+                               (eq .Values.global.datastore.provider "mongodb")
+                               (not .Values.global.mongodbStore.enabled) }}
+{{- if $useExternalMongodb }}
+
+{{- $setupJob := ((.Values.global.datastore).setupJob) | default dict }}
+{{- $image := ($setupJob.image) | default dict }}
+{{- $imageRepo := $image.repository | default "ghcr.io/rtsp/docker-mongosh" }}
+{{- $imageTag := $image.tag | default "2.5.2" }}
+{{- $imagePullPolicy := $image.pullPolicy | default "IfNotPresent" }}
+
+{{- $tlsEnabled := true }}
+{{- if and .Values.global.datastore.tls (kindIs "bool" .Values.global.datastore.tls.enabled) }}
+{{- $tlsEnabled = .Values.global.datastore.tls.enabled }}
+{{- end }}
+
+{{- $authMechanism := "scram" }}
+{{- if and .Values.global.datastore.auth .Values.global.datastore.auth.mechanism }}
+{{- $authMechanism = .Values.global.datastore.auth.mechanism }}
+{{- end }}
+
+{{- $caSecretName := "" }}
+{{- if and .Values.global.datastore.tls .Values.global.datastore.tls.caSecretName }}
+{{- $caSecretName = .Values.global.datastore.tls.caSecretName }}
+{{- end }}
+
+{{- $clientCertSecretName := "" }}
+{{- if and .Values.global.datastore.auth .Values.global.datastore.auth.clientCertSecretName }}
+{{- $clientCertSecretName = .Values.global.datastore.auth.clientCertSecretName }}
+{{- end }}
+
+{{- $adminSecret := "" }}
+{{- if $setupJob.adminSecret }}
+{{- $adminSecret = $setupJob.adminSecret }}
+{{- else if and .Values.global.datastore.auth .Values.global.datastore.auth.existingSecret }}
+{{- $adminSecret = .Values.global.datastore.auth.existingSecret }}
+{{- end }}
+
+{{- $needCertVolume := or (ne $caSecretName "") (ne $clientCertSecretName "") }}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-external-mongodb-setup
+  labels:
+    {{- include "nvsentinel.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: mongo-setup
+        image: "{{ $imageRepo }}:{{ $imageTag }}"
+        imagePullPolicy: {{ $imagePullPolicy }}
+        command:
+          - sh
+          - -c
+          - |
+            set -e
+
+            echo "=============================="
+            echo "Starting external MongoDB setup job..."
+            echo "=============================="
+            echo "MONGODB_URI:          [REDACTED]"
+            echo "MONGODB_DATABASE_NAME: $MONGODB_DATABASE_NAME"
+            echo "MONGODB_TLS_ENABLED:  $MONGODB_TLS_ENABLED"
+            echo "MONGODB_AUTH_MECHANISM: $MONGODB_AUTH_MECHANISM"
+
+            # Build mongosh connection arguments dynamically
+            MONGOSH_ARGS="$MONGODB_URI"
+
+            # TLS flags
+            if [ "$MONGODB_TLS_ENABLED" = "true" ]; then
+              MONGOSH_ARGS="$MONGOSH_ARGS --tls"
+              # CA cert may come from a dedicated CA secret or from the client cert secret
+              if [ -f /ca-certs/ca.crt ]; then
+                MONGOSH_ARGS="$MONGOSH_ARGS --tlsCAFile /ca-certs/ca.crt"
+                echo "Using CA cert: /ca-certs/ca.crt"
+              elif [ -f /client-certs/ca.crt ]; then
+                MONGOSH_ARGS="$MONGOSH_ARGS --tlsCAFile /client-certs/ca.crt"
+                echo "Using CA cert: /client-certs/ca.crt"
+              else
+                echo "No CA cert found, using system CAs"
+              fi
+            fi
+
+            # X.509 client cert (only for x509 auth mechanism)
+            if [ "$MONGODB_AUTH_MECHANISM" = "x509" ]; then
+              if [ -f /client-certs/tls.crt ] && [ -f /client-certs/tls.key ]; then
+                cat /client-certs/tls.crt /client-certs/tls.key > /tmp/client.pem
+                MONGOSH_ARGS="$MONGOSH_ARGS --tlsCertificateKeyFile /tmp/client.pem"
+                MONGOSH_ARGS="$MONGOSH_ARGS --authenticationMechanism MONGODB-X509"
+                echo "Using X.509 client certificate"
+              else
+                echo "ERROR: auth.mechanism=x509 but no client cert found at /client-certs/tls.crt"
+                exit 1
+              fi
+            fi
+
+            # SCRAM credentials (only if provided via adminSecret and not embedded in URI)
+            if [ -n "$MONGODB_ADMIN_USERNAME" ] && [ -n "$MONGODB_ADMIN_PASSWORD" ]; then
+              MONGOSH_ARGS="$MONGOSH_ARGS --username $MONGODB_ADMIN_USERNAME \
+                --password $MONGODB_ADMIN_PASSWORD \
+                --authenticationDatabase admin \
+                --authenticationMechanism SCRAM-SHA-256"
+              echo "Using SCRAM-SHA-256 with provided credentials"
+            fi
+
+            echo "=============================="
+            echo "Connecting to MongoDB and creating collections..."
+            echo "=============================="
+
+            until mongosh $MONGOSH_ARGS \
+              --eval "
+                db = db.getSiblingDB('$MONGODB_DATABASE_NAME');
+
+                // Create collections if they don't exist
+                ['$MONGODB_COLLECTION_NAME',
+                 '$MONGODB_TOKEN_COLLECTION_NAME',
+                 '$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME'].forEach(function(col) {
+                  if (!db.getCollectionNames().includes(col)) {
+                    db.createCollection(col);
+                    print('Created collection: ' + col);
+                  } else {
+                    print('Collection already exists: ' + col);
+                  }
+                });
+
+                // Create TTL and query indexes
+                db.$MONGODB_COLLECTION_NAME.createIndex(
+                  { 'createdAt': 1 },
+                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                );
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'actualEndTime': 1 },
+                  { expireAfterSeconds: $MONGODB_COLLECTION_EXPIRY_SECONDS }
+                );
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'scheduledStartTime': 1 }
+                );
+                db.$MONGODB_MAINTENANCE_EVENT_COLLECTION_NAME.createIndex(
+                  { 'cspStatus': 1 }
+                );
+                db.$MONGODB_COLLECTION_NAME.createIndex({
+                  'healthevent.nodename': 1,
+                  'healthevent.entitiesimpacted.entitytype': 1,
+                  'healthevent.entitiesimpacted.entityvalue': 1,
+                  'healthevent.generatedtimestamp.seconds': 1
+                });
+
+                {{- if eq $authMechanism "x509" }}
+                // X.509 user creation (only for x509 auth mechanism)
+                var appUserDN = '$MONGODB_APPLICATION_USER_DN';
+                var opsUserDN = '$MONGODB_DGXCOPS_USER_DN';
+
+                var userExists = db.getSiblingDB('\$external').getUser(appUserDN);
+                if (userExists) {
+                  print('App user already exists, skipping.');
+                } else {
+                  db.getSiblingDB('\$external').runCommand({
+                    createUser: appUserDN,
+                    roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('App user created: ' + appUserDN);
+                }
+
+                var opsUserExists = db.getSiblingDB('\$external').getUser(opsUserDN);
+                if (opsUserExists) {
+                  print('Ops user already exists, skipping.');
+                } else {
+                  db.getSiblingDB('\$external').runCommand({
+                    createUser: opsUserDN,
+                    roles: [{ role: 'read', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('Ops user created: ' + opsUserDN);
+                }
+                {{- end }}
+
+                print('MongoDB setup complete.');
+              "
+            do
+              echo "Waiting for MongoDB to be ready...";
+              sleep 5;
+            done
+
+            echo "=============================="
+            echo "External MongoDB setup completed."
+            echo "=============================="
+        env:
+          - name: MONGODB_TLS_ENABLED
+            value: {{ $tlsEnabled | quote }}
+          - name: MONGODB_AUTH_MECHANISM
+            value: {{ $authMechanism | quote }}
+          {{- if eq $authMechanism "x509" }}
+          - name: MONGODB_APPLICATION_USER_DN
+            value: {{ (.Values.global.datastore.auth).x509ApplicationUserDN | default "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US" | quote }}
+          - name: MONGODB_DGXCOPS_USER_DN
+            value: {{ (.Values.global.datastore.auth).x509DgxcopsUserDN | default "CN=mongo-dgxcops-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US" | quote }}
+          {{- end }}
+          {{- if ne $adminSecret "" }}
+          - name: MONGODB_ADMIN_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ $adminSecret }}
+                key: username
+          - name: MONGODB_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ $adminSecret }}
+                key: password
+          {{- end }}
+        envFrom:
+          - configMapRef:
+              name: {{ .Release.Name }}-datastore-config
+        {{- if $needCertVolume }}
+        volumeMounts:
+          {{- if ne $clientCertSecretName "" }}
+          - name: mongo-client-certs
+            mountPath: /client-certs
+            readOnly: true
+          {{- end }}
+          {{- if ne $caSecretName "" }}
+          - name: mongo-ca-certs
+            mountPath: /ca-certs
+            readOnly: true
+          {{- end }}
+        {{- end }}
+      {{- if $needCertVolume }}
+      volumes:
+        {{- if ne $clientCertSecretName "" }}
+        # x509 auth: client cert secret (contains tls.crt, tls.key, and optionally ca.crt)
+        - name: mongo-client-certs
+          secret:
+            secretName: {{ $clientCertSecretName }}
+        {{- end }}
+        {{- if ne $caSecretName "" }}
+        # TLS only: CA cert secret (contains ca.crt)
+        - name: mongo-ca-certs
+          secret:
+            secretName: {{ $caSecretName }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.global.systemNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.systemNodeTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      restartPolicy: OnFailure
+{{- end }}

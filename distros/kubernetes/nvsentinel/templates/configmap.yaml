@@ -27,7 +27,7 @@ data:
       "MaxNodeConditionMessageLength": {{ .Values.platformConnector.k8sConnector.maxNodeConditionMessageLength }},
       "CompactedHealthEventMsgLen": {{ .Values.platformConnector.k8sConnector.compactedHealthEventMsgLen }},
       "StoreConnectorMaxRetries": {{ .Values.platformConnector.mongodbStore.maxRetries }},
-      "enableMongoDBStorePlatformConnector": "{{ .Values.global.mongodbStore.enabled }}",
+      "enableMongoDBStorePlatformConnector": "{{ or .Values.global.mongodbStore.enabled (and .Values.global.datastore (eq (default "" .Values.global.datastore.provider) "mongodb")) }}",
       "enablePostgresDBStorePlatformConnector": {{ if and .Values.global.datastore .Values.global.datastore.provider }}{{ eq .Values.global.datastore.provider "postgresql" | quote }}{{ else }}"false"{{ end }}
       {{- with .Values.platformConnector.pipeline }}
       ,"pipeline": {{ . | toJson }}

@@ -141,7 +141,33 @@ func setMongoDBTLSDefaults(config *DataStoreConfig) {
 		return
 	}
 
+	// CA-only: server certificate verification for SCRAM auth (e.g. DocumentDB, managed MongoDB).
+	// Only valid when neither client cert var is set. If one is set but not the other,
+	// that is a misconfiguration — log an error instead of silently downgrading to CA-only.
+	if caPath != "" {
+		if certPath != "" || keyPath != "" {
+			slog.Error("Incomplete x509 client cert configuration: MONGODB_CA_CERT_PATH is set "+
+				"alongside only one of MONGODB_CLIENT_CERT_PATH / MONGODB_CLIENT_KEY_PATH; "+
+				"both must be provided together. TLS will not be configured.",
+				"certPath", certPath, "keyPath", keyPath, "caPath", caPath)
+
+			return
+		}
+
+		config.Connection.TLSConfig = &TLSConfig{
+			CAPath: caPath,
+		}
+
+		return
+	}
+
 	// Final fallback: hardcoded legacy path if certs exist there
+	applyLegacyTLSCertPath(config)
+}
+
+// applyLegacyTLSCertPath falls back to a hardcoded legacy certificate path for
+// backward compatibility when no other TLS configuration is present.
+func applyLegacyTLSCertPath(config *DataStoreConfig) {
 	legacyPath := "/etc/ssl/mongo-client"
 
 	if fileExists(legacyPath + "/ca.crt") {

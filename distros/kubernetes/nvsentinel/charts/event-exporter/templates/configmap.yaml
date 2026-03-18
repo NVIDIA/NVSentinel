@@ -45,16 +45,16 @@ data:
     [exporter.backfill]
     enabled = {{ .Values.exporter.backfill.enabled }}
     max_age = "{{ .Values.exporter.backfill.maxAge }}"
-    max_events = {{ .Values.exporter.backfill.maxEvents }}
-    batch_size = {{ .Values.exporter.backfill.batchSize }}
-    rate_limit = {{ .Values.exporter.backfill.rateLimit }}
+    max_events = {{ .Values.exporter.backfill.maxEvents | int }}
+    batch_size = {{ .Values.exporter.backfill.batchSize | int }}
+    rate_limit = {{ .Values.exporter.backfill.rateLimit | int }}
 
     [exporter.resume_token]
     database = "{{ .Values.exporter.resumeToken.database }}"
     collection = "{{ .Values.exporter.resumeToken.collection }}"
 
     [exporter.failure_handling]
-    max_retries = {{ .Values.exporter.failureHandling.maxRetries }}
+    max_retries = {{ .Values.exporter.failureHandling.maxRetries | int }}
     initial_backoff = "{{ .Values.exporter.failureHandling.initialBackoff }}"
     max_backoff = "{{ .Values.exporter.failureHandling.maxBackoff }}"
     backoff_multiplier = {{ .Values.exporter.failureHandling.backoffMultiplier }}

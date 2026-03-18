@@ -117,9 +117,9 @@ spec:
           - name: client-certs-fixed
             mountPath: /etc/ssl/client-certs
             readOnly: true
-          {{- else if .Values.mongodbStore.clientCertMountPath }}
+          {{- else if and (eq (include "nvsentinel.mongodb.hasCertVolume" .) "true") (include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim) }}
           - name: mongo-app-client-cert
-            mountPath: {{ .Values.mongodbStore.clientCertMountPath }}
+            mountPath: {{ include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
             readOnly: true
           {{- end }}
           - name: var-run-vol
@@ -138,6 +138,14 @@ spec:
               value: {{ printf "%s/tls.key" .Values.mongodbStore.clientCertMountPath | quote }}
             - name: MONGODB_CA_CERT_PATH
               value: {{ printf "%s/ca.crt" .Values.mongodbStore.clientCertMountPath | quote }}
+            {{- else if include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
+            {{- $mongoCertMount := include "nvsentinel.mongodb.certMountPathFromMongoStore" . | trim }}
+            - name: MONGODB_CLIENT_CERT_PATH
+              value: {{ printf "%s/tls.crt" $mongoCertMount | quote }}
+            - name: MONGODB_CLIENT_KEY_PATH
+              value: {{ printf "%s/tls.key" $mongoCertMount | quote }}
+            - name: MONGODB_CA_CERT_PATH
+              value: {{ printf "%s/ca.crt" $mongoCertMount | quote }}
             {{- end }}
           envFrom:
             - configMapRef:
@@ -165,12 +173,8 @@ spec:
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else if .Values.mongodbStore.clientCertMountPath }}
-      - name: mongo-app-client-cert
-        secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
-          optional: true
+      {{- else }}
+      {{- include "nvsentinel.mongodb.certVolume" . | nindent 6 }}
       {{- end }}
       restartPolicy: Always
       {{- with (.Values.global.systemNodeSelector | default .Values.nodeSelector) }}

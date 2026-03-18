@@ -40,7 +40,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "csp-health-monitor.fullname" . }}
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
@@ -75,19 +75,15 @@ spec:
           items:
           - key: config.toml
             path: config.toml
-      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       - name: postgresql-client-cert-original
         secret:
           secretName: postgresql-client-cert
           optional: false
       - name: client-certs-fixed
         emptyDir: {}
-      {{- else if .Values.clientCertMountPath }}
-      - name: mongo-app-client-cert
-        secret:
-          secretName: {{ include "nvsentinel.certificates.secretName" . }}
-          {{- include "nvsentinel.certificates.volumeItems" . | nindent 10 }}
-          optional: true
+      {{- else }}
+      {{- include "nvsentinel.mongodb.certVolume" . | nindent 6 }}
       {{- end }}
       - name: platform-connector-uds
         hostPath:
@@ -102,12 +98,14 @@ spec:
             runAsUser: 1001
             runAsGroup: 1001
           {{- end }}
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
-          {{- if .Values.clientCertMountPath }}
-          - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- if $certMountPath }}
+          - "--database-client-cert-mount-path={{ $certMountPath }}"
           {{- else }}
+          # csp-health-monitor does not register --tls-enabled; empty mount path disables TLS (see store-client env_loader).
           - "--database-client-cert-mount-path="
           {{- end }}
           resources:
@@ -135,14 +133,16 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          {{- if $certMountPath }}
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
-          {{- else if .Values.clientCertMountPath }}
+          {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
           - name: mongo-app-client-cert
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
+          {{- end }}
           {{- end }}
           env:
             - name: LOG_LEVEL
@@ -165,10 +165,11 @@ spec:
             {{- else }}
             runAsUser: 0
             {{- end }}
+          {{- $certMountPath := include "nvsentinel.mongodb.certMountPath" . }}
           args:
           - "--config=/etc/config/config.toml"
-          {{- if .Values.clientCertMountPath }}
-          - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- if $certMountPath }}
+          - "--database-client-cert-mount-path={{ $certMountPath }}"
           {{- else }}
           - "--database-client-cert-mount-path="
           {{- end }}
@@ -200,14 +201,16 @@ spec:
           volumeMounts:
           - name: config-volume
             mountPath: /etc/config/
-          {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+          {{- if $certMountPath }}
+          {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           - name: client-certs-fixed
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
-          {{- else if .Values.clientCertMountPath }}
+          {{- else if eq (include "nvsentinel.mongodb.hasCertVolume" .) "true" }}
           - name: mongo-app-client-cert
-            mountPath: {{ .Values.clientCertMountPath }}
+            mountPath: {{ $certMountPath }}
             readOnly: true
+          {{- end }}
           {{- end }}
           - name: platform-connector-uds
             mountPath: /run/nvsentinel

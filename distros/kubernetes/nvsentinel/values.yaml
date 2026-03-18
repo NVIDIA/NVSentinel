@@ -23,19 +23,79 @@ global:
   metricsPort: 2112
 
   # Datastore configuration
-  # By default, datastore is not configured (use mongodb-config ConfigMap directly)
-  # To use the centralized datastore configuration, uncomment and configure below
+  # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
+  # Uncomment and configure this section to use an external/managed database service,
+  # or to switch providers (e.g. from MongoDB to PostgreSQL).
+  #
+  # When using an external DB, also set:
+  #   global.mongodbStore.enabled: false   (skip deploying internal MongoDB)
+  #
   # datastore:
-  #   provider: "mongodb"  # or "postgresql"
+  #   # Database provider. Supported values: "mongodb", "postgresql"
+  #   provider: "mongodb"
+  #
+  #   # --- Connection ---
+  #   # Option 1 — full connection URI (use for external/managed MongoDB services).
+  #   # Required for Atlas, DocumentDB, and Cosmos DB which need a full connection string.
+  #   # If set, takes priority over the individual connection fields below.
+  #   # Examples:
+  #   #   MongoDB Atlas:    mongodb+srv://user:pass@cluster.mongodb.net/
+  #   #   AWS DocumentDB:   mongodb://user:pass@cluster.xxx.us-east-1.docdb.amazonaws.com:27017/
+  #   #   Azure Cosmos DB:  mongodb://account:key==@account.mongo.cosmos.azure.com:10255/?ssl=true
+  #   uri: ""
+  #
+  #   # Option 2 — individual connection fields (use for PostgreSQL).
+  #   # PostgreSQL requires separate fields for SSL mode, cert paths, etc.
+  #   # Not needed for external MongoDB — use the uri field above instead.
   #   connection:
-  #     host: "mongodb"
-  #     port: 27017
-  #     database: "nvsentinel"
-  #   certificates:
-  #     secretName: "mongo-app-client-cert-secret"  # Secret containing client certificates
-  #     certKey: "tls.crt"      # Key for client certificate (default: tls.crt)
-  #     keyKey: "tls.key"       # Key for client private key (default: tls.key)
-  #     caKey: "ca.crt"         # Key for CA certificate (default: ca.crt)
+  #     host: ""
+  #     port: 5432           # 5432 for PostgreSQL, 27017 for MongoDB
+  #     database: "HealthEventsDatabase"
+  #     # PostgreSQL-only fields:
+  #     # username: ""
+  #     # sslmode: "require"   # disable | require | verify-ca | verify-full
+  #
+  #   # --- TLS ---
+  #   tls:
+  #     # Set to false only if the external DB does not support TLS (not recommended).
+  #     enabled: true
+  #     # Name of a Kubernetes Secret containing the CA certificate (key: ca.crt).
+  #     # Required when connecting to an external DB with a private/custom CA.
+  #     # Leave empty to use system CAs (e.g. public cloud services with public CA certs).
+  #     caSecretName: ""
+  #
+  #   # --- Authentication ---
+  #   auth:
+  #     # Authentication mechanism:
+  #     #   scram  - username/password (SCRAM-SHA-256). Credentials embedded in uri, or via existingSecret.
+  #     #   x509   - client certificate authentication (used by internal MongoDB).
+  #     mechanism: "scram"
+  #     # For scram: name of a Kubernetes Secret containing DB credentials.
+  #     # Secret must have keys: username, password.
+  #     # Not needed if credentials are already embedded in the uri field above.
+  #     existingSecret: ""
+  #     # For x509: name of a Kubernetes Secret containing the client certificate.
+  #     # Secret must have keys: tls.crt, tls.key, ca.crt.
+  #     clientCertSecretName: ""
+  #     # For x509: Subject DN of the application user certificate.
+  #     # Defaults to the NVIDIA internal DN if not set.
+  #     x509ApplicationUserDN: ""
+  #     # For x509: Subject DN of the dgxcops user certificate.
+  #     # Defaults to the NVIDIA internal DN if not set.
+  #     x509DgxcopsUserDN: ""
+  #
+  #   # --- Database setup job ---
+  #   # The setup job creates required collections and indexes in the external MongoDB.
+  #   # It runs once on install/upgrade when using an external DB.
+  #   setupJob:
+  #     image:
+  #       repository: ghcr.io/rtsp/docker-mongosh
+  #       tag: "2.5.2"
+  #       pullPolicy: IfNotPresent
+  #     # Optional: name of an existing Kubernetes Secret with admin credentials
+  #     # for the setup job to authenticate. Secret must have keys: username, password.
+  #     # Not needed if admin credentials are embedded in the uri field above.
+  #     adminSecret: ""
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.
