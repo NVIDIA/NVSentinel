@@ -20,6 +20,8 @@ import (
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
+const NodeNameLabelKey = "nvsentinel.nvidia.com/node-name"
+
 type TemplateData struct {
 	HealthEvent *protos.HealthEvent
 	EventID     string
