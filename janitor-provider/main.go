@@ -37,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
@@ -158,14 +159,18 @@ func run() error {
 		return fmt.Errorf("both TLS_CERT_PATH and TLS_KEY_PATH must be set, got cert=%q key=%q", certPath, keyPath)
 	}
 
+	var certWatcher *certwatcher.CertWatcher
 	if tlsEnabled {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		certWatcher, err = certwatcher.New(certPath, keyPath)
 		if err != nil {
-			return fmt.Errorf("failed to load TLS key pair: %w", err)
+			return fmt.Errorf("failed to create cert watcher: %w", err)
 		}
-		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		tlsCfg := &tls.Config{
+			GetCertificate: certWatcher.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		}
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-		slog.Info("gRPC TLS enabled", "certPath", certPath)
+		slog.Info("gRPC TLS enabled with cert hot-reload", "certPath", certPath)
 	}
 
 	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
@@ -191,6 +196,15 @@ func run() error {
 	})
 
 	g, gCtx := errgroup.WithContext(ctx)
+
+	if certWatcher != nil {
+		g.Go(func() error {
+			if err := certWatcher.Start(gCtx); err != nil {
+				return fmt.Errorf("cert watcher failed: %w", err)
+			}
+			return nil
+		})
+	}
 
 	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {

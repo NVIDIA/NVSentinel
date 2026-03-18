@@ -19,7 +19,7 @@ metadata:
   labels:
     {{- include "provider.labels" . | nindent 4 }}
 spec:
-  secretName: {{ include "provider.fullname" . }}-grpc-cert
+  secretName: {{ .Values.tls.secretName | default (printf "%s-grpc-cert" (include "provider.fullname" .)) }}
   duration: 2160h  # 90 days
   renewBefore: 720h  # 30 days
   subject:

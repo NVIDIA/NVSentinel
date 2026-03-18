@@ -183,7 +183,7 @@ spec:
         {{- if .Values.tls.enabled }}
         - name: tls-cert
           secret:
-            secretName: {{ include "provider.fullname" . }}-grpc-cert
+            secretName: {{ .Values.tls.secretName | default (printf "%s-grpc-cert" (include "provider.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- if and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret }}

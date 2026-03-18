@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
 	"github.com/nvidia/nvsentinel/janitor/pkg/config"
 	"github.com/nvidia/nvsentinel/janitor/pkg/distributedlock"
@@ -93,7 +94,9 @@ var _ = Describe("TerminateNodeReconciler", func() {
 			Config: &config.TerminateNodeControllerConfig{
 				ManualMode: ptr.To(false),
 			},
-			CSPClient: mockCSP.Client,
+			dialProviderFunc: func(_ context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
+				return mockCSP.Client, func() {}, nil
+			},
 			NodeLock:  distributedlock.NewNodeLock(k8sClient, "default"),
 		}
 
