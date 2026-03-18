@@ -340,6 +340,8 @@ func (r *TerminateNodeReconciler) getTimeout() time.Duration {
 // dialProvider creates a fresh gRPC connection to the CSP provider.
 // A new connection is created per reconciliation so that rotated CA bundles
 // and SA tokens are picked up from disk automatically without watchers.
+//
+//nolint:dupl // Structural duplication with RebootNode is acceptable - same dial pattern
 func (r *TerminateNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
 	if r.dialProviderFunc != nil {
 		return r.dialProviderFunc(ctx)
@@ -355,6 +357,7 @@ func (r *TerminateNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1
 		if tokenPath == "" {
 			tokenPath = grpcclient.DefaultSATokenPath
 		}
+
 		dialOpts = append(dialOpts,
 			grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
 	}
@@ -368,8 +371,6 @@ func (r *TerminateNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1
 }
 
 // SetupWithManager sets up the controller with the Manager.
-//
-//nolint:dupl // Structural duplication with RebootNode is acceptable - same setup pattern
 func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	slog.Info("Configuring CSP provider connection",
 		"host", r.Config.CSPProviderHost,
@@ -380,6 +381,7 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if tokenPath == "" {
 			tokenPath = grpcclient.DefaultSATokenPath
 		}
+
 		slog.Info("CSP provider gRPC auth enabled", "tokenPath", tokenPath)
 	}
 

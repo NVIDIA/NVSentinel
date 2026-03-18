@@ -160,15 +160,18 @@ func run() error {
 	}
 
 	var certWatcher *certwatcher.CertWatcher
+
 	if tlsEnabled {
 		certWatcher, err = certwatcher.New(certPath, keyPath)
 		if err != nil {
 			return fmt.Errorf("failed to create cert watcher: %w", err)
 		}
+
 		tlsCfg := &tls.Config{
 			GetCertificate: certWatcher.GetCertificate,
 			MinVersion:     tls.VersionTLS12,
 		}
+
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
 		slog.Info("gRPC TLS enabled with cert hot-reload", "certPath", certPath)
 	}
@@ -176,11 +179,13 @@ func run() error {
 	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
 		parts := strings.Split(audiences, ",")
 		auds := make([]string, 0, len(parts))
+
 		for _, a := range parts {
 			if trimmed := strings.TrimSpace(a); trimmed != "" {
 				auds = append(auds, trimmed)
 			}
 		}
+
 		serverOpts = append(serverOpts,
 			grpc.UnaryInterceptor(
 				auth.TokenReviewInterceptor(k8sClient, auds)))
