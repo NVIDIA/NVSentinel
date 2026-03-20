@@ -309,11 +309,11 @@ func TestJanitorNodeLocking(t *testing.T) {
 		assert.True(t, periodOverlapsOnNode1And2, "RebootNode periods on different nodes should overlap")
 
 		// Clean up both CRs
-		err = helpers.DeleteCR(ctx, client, rebootNodeCR)
+		err = helpers.DeleteCR(ctx, t, client, rebootNodeCR, false)
 		require.NoError(t, err, "RebootNode should be deleted successfully")
-		err = helpers.DeleteCR(ctx, client, rebootNodeCR2)
+		err = helpers.DeleteCR(ctx, t, client, rebootNodeCR2, false)
 		require.NoError(t, err, "RebootNode should be deleted successfully")
-		err = helpers.DeleteCR(ctx, client, gpuResetCR)
+		err = helpers.DeleteCR(ctx, t, client, gpuResetCR, false)
 		require.NoError(t, err, "GPUReset should be deleted successfully")
 
 		return ctx

@@ -74,11 +74,6 @@ var (
 		Buckets: prometheus.LinearBuckets(30, 30, 10),
 	}, []string{"node", "status"})
 
-	GPUResetPendingRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "gpu_reset_pending_requests",
-		Help: "The number of GPU reset requests currently pending (e.g., waiting due to resource contention).",
-	}, []string{"node"})
-
 	GPUResetActiveRequests = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gpu_reset_active_requests",
 		Help: "The number of GPU reset requests currently in progress.",
@@ -102,7 +97,6 @@ func NewActionMetrics() *ActionMetrics {
 		GPUResetRequestsTotal,
 		GPUResetRequestsCompletedTotal,
 		GPUResetDurationSeconds,
-		GPUResetPendingRequests,
 		GPUResetActiveRequests,
 		GPUResetFailureReasonsTotal,
 	)

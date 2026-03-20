@@ -294,6 +294,10 @@ class DCGMWatcher:
 
         # Initial DCGM handle and monitoring setup
         while not exit.is_set():
+            # Wait for poll interval to allow DCGM initialization
+            log.debug("Waiting till next cycle")
+            exit.wait(self._poll_interval_seconds)
+
             with metrics.overall_reconcile_loop_time.time():
                 if dcgm_handle is None:
                     try:
@@ -322,9 +326,6 @@ class DCGMWatcher:
                             types.CallbackInterface.health_event_occurred.__name__,
                             [health_status, gpu_ids],
                         )
-
-            log.debug("Waiting till next cycle")
-            exit.wait(self._poll_interval_seconds)
 
         # Cleanup on exit
         self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
