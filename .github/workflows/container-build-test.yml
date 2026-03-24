@@ -60,8 +60,6 @@ jobs:
             make_command: 'make -C health-monitors/gpu-health-monitor docker-build-dcgm4'
           - component: syslog-health-monitor
             make_command: 'make -C health-monitors/syslog-health-monitor docker-build'
-          - component: nic-health-monitor
-            make_command: 'make -C health-monitors/nic-health-monitor docker-build'
           # Log Collection (Docker-based)
           - component: log-collector
             make_command: 'make -C log-collector docker-build-log-collector'
@@ -135,6 +133,8 @@ jobs:
           - module: health-monitors/csp-health-monitor
             path: ./cmd/maintenance-notifier
           - module: health-monitors/kubernetes-object-monitor
+            path: .
+          - module: health-monitors/nic-health-monitor
             path: .
           - module: event-exporter
             path: .
