@@ -37,6 +37,13 @@ updates:
       interval: "weekly"
     labels: ["dependencies"]
 
+  - package-ecosystem: "gomod"
+    directory: "/health-monitors/nic-health-monitor"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies"]
+
   # API
   - package-ecosystem: "gomod"
     directory: "/api"

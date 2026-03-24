@@ -99,9 +99,6 @@ global:
   preflight:
     enabled: true
 
-  nicHealthMonitor:
-    enabled: false
-
   metricsPort: 2112
 
 # Preflight subchart: use Tilt fake DCGM (nvidia-dcgm.gpu-operator.svc) and quick diag for faster E2E pass.

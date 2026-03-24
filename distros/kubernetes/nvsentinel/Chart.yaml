@@ -46,9 +46,6 @@ dependencies:
   - name: syslog-health-monitor
     version: "0.1.0"
     condition: global.syslogHealthMonitor.enabled
-  - name: nic-health-monitor
-    version: "0.1.0"
-    condition: global.nicHealthMonitor.enabled
   - name: incluster-file-server
     version: "0.1.0"
     condition: global.inclusterFileServer.enabled
