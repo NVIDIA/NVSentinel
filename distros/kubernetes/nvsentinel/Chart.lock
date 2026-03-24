@@ -26,6 +26,9 @@ dependencies:
 - name: syslog-health-monitor
   repository: ""
   version: 0.1.0
+- name: nic-health-monitor
+  repository: ""
+  version: 0.1.0
 - name: incluster-file-server
   repository: ""
   version: 0.1.0

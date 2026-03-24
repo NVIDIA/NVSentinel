@@ -114,6 +114,7 @@ jobs:
           - component: syslog-health-monitor
           - component: csp-health-monitor
           - component: kubernetes-object-monitor
+          - component: nic-health-monitor
           - component: gpu-health-monitor
             install_dcgm: 'true'
             python_required: 'true'

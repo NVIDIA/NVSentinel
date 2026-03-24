@@ -152,6 +152,8 @@ global:
     enabled: false
   syslogHealthMonitor:
     enabled: true
+  nicHealthMonitor:
+    enabled: false
   labeler:
     enabled: true
   metadataCollector:

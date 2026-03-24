@@ -90,6 +90,7 @@ jobs:
           - nvsentinel-fake-dcgm
           - nvsentinel/preflight
           - nvsentinel/preflight-dcgm-diag
+          - nvsentinel/nic-health-monitor
           - nvsentinel/preflight-nccl-allreduce
 
     steps:
