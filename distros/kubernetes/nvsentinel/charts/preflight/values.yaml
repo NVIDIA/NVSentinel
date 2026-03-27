@@ -80,6 +80,12 @@ webhook:
   # Only used when createIssuer=false
   certIssuer: ""
   caCertificateName: ""
+  # Certificate provider: "cert-manager" or "openshift-service-ca"
+  # Use "openshift-service-ca" on OpenShift to use the built-in service-ca-operator
+  # instead of cert-manager for webhook TLS certificate management.
+  # Example:
+  # certProvider: openshift-service-ca
+  certProvider: cert-manager
 
 # Local fallback values - global.dcgm takes precedence when set
 dcgm:

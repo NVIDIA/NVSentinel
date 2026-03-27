@@ -17,6 +17,10 @@ metadata:
   name: {{ include "janitor.fullname" . }}
   labels:
     {{- include "janitor.labels" . | nindent 4 }}
+{{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ include "janitor.fullname" . }}-webhook-cert
+{{- end }}
 spec:
   type: ClusterIP
   selector:

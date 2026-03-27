@@ -13,6 +13,7 @@
 # limitations under the License.
 
 # TLS Certificate for webhook, issued by CA Issuer for proper rotation support
+{{- if ne .Values.webhook.certProvider "openshift-service-ca" }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -38,3 +39,4 @@ spec:
     {{- end }}
     kind: Issuer
     group: cert-manager.io
+{{- end }}

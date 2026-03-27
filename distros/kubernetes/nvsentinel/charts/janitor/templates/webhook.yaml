@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ---
+{{- if ne .Values.webhook.certProvider "openshift-service-ca" }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -32,6 +33,7 @@ spec:
   issuerRef:
     name: {{ .Values.webhook.certIssuer | default "selfsigned-issuer" }}
     kind: Issuer
+{{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -40,7 +42,11 @@ metadata:
   labels:
     {{- include "janitor.labels" . | nindent 4 }}
   annotations:
+{{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+{{- else }}
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "janitor.fullname" . }}-webhook-cert
+{{- end }}
 webhooks:
   - name: vrebootnode-v1alpha1.kb.io
     clientConfig:

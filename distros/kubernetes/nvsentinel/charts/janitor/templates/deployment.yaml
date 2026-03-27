@@ -126,6 +126,9 @@ spec:
         {{- if .Values.metrics.tls.enabled }}
         - name: metrics-certs
           secret:
+            {{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+            secretName: {{ include "janitor.fullname" . }}-webhook-cert
+            {{- else }}
             secretName: {{ include "janitor.fullname" . }}-metrics-cert
             items:
               - key: ca.crt
@@ -134,6 +137,7 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+            {{- end }}
             defaultMode: 420
         {{- end }}
         {{- if and .Values.config.cspProvider .Values.config.cspProvider.tls .Values.config.cspProvider.tls.enabled }}

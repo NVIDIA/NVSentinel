@@ -18,6 +18,9 @@ metadata:
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
   annotations:
+{{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+    service.beta.openshift.io/inject-cabundle: "true"
+{{- else }}
     # cert-manager injects the CA bundle from the CA certificate (not the leaf cert)
     # This ensures stable CA across leaf certificate rotations
     {{- if .Values.webhook.createIssuer }}
@@ -25,6 +28,7 @@ metadata:
     {{- else }}
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ .Values.webhook.caCertificateName }}
     {{- end }}
+{{- end }}
 webhooks:
   - name: {{ include "preflight.webhookName" . }}
     clientConfig:
