@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/auth"
@@ -121,13 +122,24 @@ func (s *janitorProviderServer) SendTerminateSignal(
 }
 
 func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	logger.SetDefaultStructuredLogger("janitor-provider", version)
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("janitor-provider"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+	defer auditlogger.CloseAuditLogger() //nolint:errcheck
+
 	if err := run(); err != nil {
 		slog.Error("Failed to run", "error", err)
-		os.Exit(1)
+		return 1
 	}
+
+	return 0
 }
 
 func run() error {

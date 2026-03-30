@@ -44,6 +44,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "provider.serviceAccountName" . }}
+      {{- if .Values.global.auditLogging.enabled }}
+      securityContext:
+        fsGroup: 65532
+      {{- end }}
+      {{- if .Values.global.auditLogging.enabled }}
+      initContainers:
+        {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: janitor-provider
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -56,8 +64,15 @@ spec:
             - name: service
               containerPort: {{ .Values.service.port | default "50051" }}
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: JANITOR_PROVIDER_PORT
               value: {{ .Values.service.port | default 50051 | quote }}
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.envVars" . | nindent 12 }}
+            {{- end }}
             - name: METRICS_PORT
               value: {{ ((.Values.global).metricsPort) | default 2112 | quote }}
             # Cloud Service Provider configuration
@@ -165,8 +180,11 @@ spec:
             {{- end }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
-          {{- if or .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
+          {{- if or .Values.global.auditLogging.enabled .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
           volumeMounts:
+            {{- if .Values.global.auditLogging.enabled }}
+            {{- include "nvsentinel.auditLogging.volumeMount" . | nindent 12 }}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: tls-cert
               mountPath: {{ .Values.tls.certDir }}
@@ -178,8 +196,11 @@ spec:
               readOnly: true
             {{- end }}
           {{- end }}
-      {{- if or .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
+      {{- if or .Values.global.auditLogging.enabled .Values.tls.enabled (and (eq (.Values.csp.provider | default "kind") "nebius") .Values.csp.nebius.serviceAccountKeySecret) }}
       volumes:
+        {{- if .Values.global.auditLogging.enabled }}
+        {{- include "nvsentinel.auditLogging.volume" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.tls.enabled }}
         - name: tls-cert
           secret:
