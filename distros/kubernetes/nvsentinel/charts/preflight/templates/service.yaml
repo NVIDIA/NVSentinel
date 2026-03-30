@@ -19,6 +19,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
+{{- if eq .Values.webhook.certProvider "openshift-service-ca" }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ include "preflight.certSecretName" . }}
+{{- end }}
 spec:
   type: {{ .Values.service.type }}
   ports:

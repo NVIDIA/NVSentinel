@@ -14,7 +14,7 @@
 
 # CA Certificate - long-lived, used to sign webhook certificates
 # This is what inject-ca-from should reference for stable CA rotation
-{{- if .Values.webhook.createIssuer }}
+{{- if and .Values.webhook.createIssuer (ne .Values.webhook.certProvider "openshift-service-ca") }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
