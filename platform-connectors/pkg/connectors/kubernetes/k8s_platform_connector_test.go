@@ -241,7 +241,7 @@ func TestK8sNodeConditions(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create node", "error", err)
+		slog.ErrorContext(ctx, "Failed to create node", "error", err)
 		os.Exit(1)
 	}
 	for testCase, healthEvent := range healthEventsList {
@@ -339,7 +339,7 @@ func TestK8sNodeEvents(t *testing.T) {
 	fakeNode := getNode()
 	_, err := clientSet.CoreV1().Nodes().Create(ctx, fakeNode, metav1.CreateOptions{})
 	if err != nil {
-		slog.Error("Failed to create node", "error", err)
+		slog.ErrorContext(ctx, "Failed to create node", "error", err)
 		os.Exit(1)
 	}
 
@@ -1752,7 +1752,7 @@ func TestTruncateConditionMessage(t *testing.T) {
 				},
 			}
 
-			result := connector.truncateNodeConditionMessage(tc.messages)
+			_, result := connector.truncateNodeConditionMessage(tc.messages)
 
 			t.Logf("Test: %s", tc.description)
 			t.Logf("Max limit: %d, Result length: %d", tc.maxNodeConditionMessageLength, len(result))
@@ -1798,7 +1798,7 @@ func TestTruncateConditionMessage_EntityIdentifierPreservation(t *testing.T) {
 				"Recommended Action=RESTART_VM", i, pciAddresses[i], i, i))
 	}
 
-	result := connector.truncateNodeConditionMessage(msgs)
+	_, result := connector.truncateNodeConditionMessage(msgs)
 
 	t.Logf("Result length: %d / 1024", len(result))
 	assert.LessOrEqual(t, len(result), 1024)
@@ -1908,7 +1908,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgUnrelated, msgNew}
-		result := connector.truncateNodeConditionMessage(messages)
+		_, result := connector.truncateNodeConditionMessage(messages)
 
 		assert.Contains(t, result, "pid=1582259", "Old message should be preserved below limit")
 		assert.Contains(t, result, "pid=9999999", "New message should be preserved below limit")
@@ -1922,7 +1922,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgUnrelated, msgNew}
-		result := connector.truncateNodeConditionMessage(messages)
+		_, result := connector.truncateNodeConditionMessage(messages)
 		parts := strings.Split(result, ";")
 		count := 0
 
@@ -1947,7 +1947,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgNew}
-		result := connector.truncateNodeConditionMessage(messages)
+		_, result := connector.truncateNodeConditionMessage(messages)
 
 		var entries []string
 		for _, p := range strings.Split(result, ";") {

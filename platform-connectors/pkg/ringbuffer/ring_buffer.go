@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -32,9 +33,20 @@ const (
 	DefaultMaxDelay  = 3 * time.Second
 )
 
+// QueuedHealthEvents carries health events and the trace context from the gRPC handler
+// so store and K8s connectors can continue the same trace.
+type QueuedHealthEvents struct {
+	Events            *protos.HealthEvents
+	ParentSpanContext trace.SpanContext
+}
+
+func NewQueuedHealthEvents(events *protos.HealthEvents) *QueuedHealthEvents {
+	return &QueuedHealthEvents{Events: events, ParentSpanContext: trace.SpanContext{}}
+}
+
 type RingBuffer struct {
 	ringBufferIdentifier string
-	healthMetricQueue    workqueue.TypedRateLimitingInterface[*protos.HealthEvents]
+	healthMetricQueue    workqueue.TypedRateLimitingInterface[*QueuedHealthEvents]
 	ctx                  context.Context
 }
 
@@ -63,14 +75,14 @@ func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *
 
 	workqueue.SetProvider(prometheusMetricsProvider{})
 
-	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[*protos.HealthEvents](
+	rateLimiter := workqueue.NewTypedItemExponentialFailureRateLimiter[*QueuedHealthEvents](
 		cfg.baseDelay,
 		cfg.maxDelay,
 	)
 
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
 		rateLimiter,
-		workqueue.TypedRateLimitingQueueConfig[*protos.HealthEvents]{
+		workqueue.TypedRateLimitingQueueConfig[*QueuedHealthEvents]{
 			Name: ringBufferName,
 		},
 	)
@@ -82,21 +94,21 @@ func NewRingBuffer(ringBufferName string, ctx context.Context, opts ...Option) *
 	}
 }
 
-func (rb *RingBuffer) Enqueue(data *protos.HealthEvents) {
-	rb.healthMetricQueue.Add(data)
+func (rb *RingBuffer) Enqueue(item *QueuedHealthEvents) {
+	rb.healthMetricQueue.Add(item)
 }
 
-func (rb *RingBuffer) Dequeue() (*protos.HealthEvents, bool) {
+func (rb *RingBuffer) Dequeue() (*QueuedHealthEvents, bool) {
 	healthEvents, quit := rb.healthMetricQueue.Get()
 	if quit {
-		slog.Info("Queue signaled shutdown")
+		slog.InfoContext(rb.ctx, "Queue signaled shutdown")
 		return nil, true
 	}
 
-	slog.Info("Successfully got item", "healthEvents", healthEvents)
+	slog.InfoContext(rb.ctx, "Successfully got item", "healthEvents", healthEvents.Events)
 
 	if errors.Is(rb.ctx.Err(), context.Canceled) {
-		slog.Info("Context cancelled, signaling quit")
+		slog.InfoContext(rb.ctx, "Context cancelled, signaling quit")
 		rb.healthMetricQueue.Forget(healthEvents)
 		rb.healthMetricQueue.Done(healthEvents)
 
@@ -106,22 +118,22 @@ func (rb *RingBuffer) Dequeue() (*protos.HealthEvents, bool) {
 	return healthEvents, false
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *protos.HealthEvents) {
+func (rb *RingBuffer) HealthMetricEleProcessingCompleted(data *QueuedHealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
 }
 
-func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *protos.HealthEvents) {
+func (rb *RingBuffer) HealthMetricEleProcessingFailed(data *QueuedHealthEvents) {
 	rb.healthMetricQueue.Forget(data)
 	rb.healthMetricQueue.Done(data)
 }
 
-func (rb *RingBuffer) AddRateLimited(data *protos.HealthEvents) {
+func (rb *RingBuffer) AddRateLimited(data *QueuedHealthEvents) {
 	rb.healthMetricQueue.AddRateLimited(data)
 	rb.healthMetricQueue.Done(data)
 }
 
-func (rb *RingBuffer) NumRequeues(data *protos.HealthEvents) int {
+func (rb *RingBuffer) NumRequeues(data *QueuedHealthEvents) int {
 	return rb.healthMetricQueue.NumRequeues(data)
 }
 

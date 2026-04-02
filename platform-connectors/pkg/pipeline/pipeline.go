@@ -20,6 +20,9 @@ import (
 	"context"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -37,12 +40,28 @@ func New(transformers ...Transformer) *Pipeline {
 }
 
 func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.pipeline.process")
+	defer span.End()
+
+	var failedCount int
+
 	for _, t := range p.transformers {
 		if err := t.Transform(ctx, event); err != nil {
-			slog.Warn("Transformer failed",
+			failedCount++
+
+			slog.WarnContext(ctx, "Transformer failed",
 				"transformer", t.Name(),
 				"node", event.NodeName,
 				"error", err)
+			tracing.RecordError(span, err)
+			span.SetAttributes(
+				attribute.String("platform_connector.pipeline.failed_transformer", t.Name()),
+			)
 		}
 	}
+
+	span.SetAttributes(
+		attribute.Int("platform_connector.pipeline.transformers_run", len(p.transformers)),
+		attribute.Int("platform_connector.pipeline.transformers_failed", failedCount),
+	)
 }
