@@ -119,10 +119,6 @@ func (r *K8sConnector) FetchAndProcessHealthMetric(ctx context.Context) {
 			batchCtx, span := tracing.StartSpanWithLinkFromSpanContext(
 				ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.k8s.fetch_and_process_health_metric")
 
-			span.SetAttributes(
-				attribute.Int("platform_connector.k8s.batch_event_count", len(healthEvents.GetEvents())),
-			)
-
 			if err := r.processHealthEvents(batchCtx, healthEvents); err != nil {
 				slog.ErrorContext(batchCtx, "Not able to process healthEvent", "error", err)
 				tracing.RecordError(span, err)

@@ -117,9 +117,6 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 				ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.store.fetch_and_process_health_metric")
 
 			eventCount := len(healthEvents.GetEvents())
-			span.SetAttributes(
-				attribute.Int("platform_connector.store.batch_event_count", eventCount),
-			)
 
 			err := r.insertHealthEvents(batchCtx, healthEvents)
 			if err != nil {
@@ -198,10 +195,6 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	ctx, span := tracing.StartSpan(ctx, "platform_connector.store.insert_health_events")
 	defer span.End()
 
-	span.SetAttributes(
-		attribute.Int("platform_connector.grpc.events_count", len(healthEvents.GetEvents())),
-	)
-
 	healthEventWithStatusList := make([]interface{}, 0, len(healthEvents.GetEvents()))
 	traceID := span.SpanContext().TraceID().String()
 
@@ -243,10 +236,6 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 
 	dbCtx, dbSpan := tracing.StartSpan(ctx, "platform_connector.db.insert")
 	defer dbSpan.End()
-
-	dbSpan.SetAttributes(
-		attribute.Int("platform_connector.db.document_count", len(healthEventWithStatusList)),
-	)
 
 	// Insert all documents in a single batch operation
 	// This ensures MongoDB generates INSERT operations (not UPDATE) for change streams

@@ -75,6 +75,11 @@ func (a *Augmentor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 	metadata, err := a.getOrFetchMetadata(ctx, event.NodeName)
 	if err != nil {
 		tracing.RecordError(span, err)
+		span.SetAttributes(
+			attribute.String("platform_connector.transformer.metadata.error.type", "failed_to_get_metadata"),
+			attribute.String("platform_connector.transformer.metadata.error.message", err.Error()),
+		)
+
 		return fmt.Errorf("failed to get metadata for node %s: %w", event.NodeName, err)
 	}
 

@@ -1752,7 +1752,7 @@ func TestTruncateConditionMessage(t *testing.T) {
 				},
 			}
 
-			_, result := connector.truncateNodeConditionMessage(tc.messages)
+			result := connector.truncateNodeConditionMessage(tc.messages)
 
 			t.Logf("Test: %s", tc.description)
 			t.Logf("Max limit: %d, Result length: %d", tc.maxNodeConditionMessageLength, len(result))
@@ -1798,7 +1798,7 @@ func TestTruncateConditionMessage_EntityIdentifierPreservation(t *testing.T) {
 				"Recommended Action=RESTART_VM", i, pciAddresses[i], i, i))
 	}
 
-	_, result := connector.truncateNodeConditionMessage(msgs)
+	result := connector.truncateNodeConditionMessage(msgs)
 
 	t.Logf("Result length: %d / 1024", len(result))
 	assert.LessOrEqual(t, len(result), 1024)
@@ -1908,7 +1908,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgUnrelated, msgNew}
-		_, result := connector.truncateNodeConditionMessage(messages)
+		result := connector.truncateNodeConditionMessage(messages)
 
 		assert.Contains(t, result, "pid=1582259", "Old message should be preserved below limit")
 		assert.Contains(t, result, "pid=9999999", "New message should be preserved below limit")
@@ -1922,7 +1922,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgUnrelated, msgNew}
-		_, result := connector.truncateNodeConditionMessage(messages)
+		result := connector.truncateNodeConditionMessage(messages)
 		parts := strings.Split(result, ";")
 		count := 0
 
@@ -1947,7 +1947,7 @@ func TestDeduplicationBehavior(t *testing.T) {
 		}}
 
 		messages := []string{msgOld, msgNew}
-		_, result := connector.truncateNodeConditionMessage(messages)
+		result := connector.truncateNodeConditionMessage(messages)
 
 		var entries []string
 		for _, p := range strings.Split(result, ";") {

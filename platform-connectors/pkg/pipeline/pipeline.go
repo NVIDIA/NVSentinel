@@ -21,6 +21,7 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -54,14 +55,11 @@ func (p *Pipeline) Process(ctx context.Context, event *pb.HealthEvent) {
 				"node", event.NodeName,
 				"error", err)
 			tracing.RecordError(span, err)
-			span.SetAttributes(
+			span.AddEvent("platform_connector.pipeline.transformer_failed", trace.WithAttributes(
 				attribute.String("platform_connector.pipeline.failed_transformer", t.Name()),
-			)
+				attribute.String("platform_connector.pipeline.error.type", "running_transformer_failed"),
+				attribute.String("platform_connector.pipeline.error.message", err.Error()),
+			))
 		}
 	}
-
-	span.SetAttributes(
-		attribute.Int("platform_connector.pipeline.transformers_run", len(p.transformers)),
-		attribute.Int("platform_connector.pipeline.transformers_failed", failedCount),
-	)
 }

@@ -93,8 +93,9 @@ func (p *Processor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 
 		if matches {
 			p.applyOverride(ctx, event, rule, original)
-			span.SetAttributes(attribute.String("override.matched_rule", rule.name))
-			p.setOverrideSpanAttributes(span, original, event)
+			span.AddEvent("platform_connector.transformer.overrides", trace.WithAttributes(
+				attribute.String("platform_connector.transformer.overrides.matched_rule", rule.name),
+			))
 
 			return nil
 		}
@@ -105,29 +106,6 @@ func (p *Processor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 
 func (p *Processor) Name() string {
 	return "OverrideTransformer"
-}
-
-func (p *Processor) setOverrideSpanAttributes(span trace.Span, original originalState, event *pb.HealthEvent) {
-	if event.IsFatal != original.isFatal {
-		span.SetAttributes(
-			attribute.Bool("override.is_fatal.before", original.isFatal),
-			attribute.Bool("override.is_fatal.after", event.IsFatal),
-		)
-	}
-
-	if event.IsHealthy != original.isHealthy {
-		span.SetAttributes(
-			attribute.Bool("override.is_healthy.before", original.isHealthy),
-			attribute.Bool("override.is_healthy.after", event.IsHealthy),
-		)
-	}
-
-	if event.RecommendedAction != original.recommendedAction {
-		span.SetAttributes(
-			attribute.String("override.recommended_action.before", original.recommendedAction.String()),
-			attribute.String("override.recommended_action.after", event.RecommendedAction.String()),
-		)
-	}
 }
 
 func (p *Processor) applyOverride(
