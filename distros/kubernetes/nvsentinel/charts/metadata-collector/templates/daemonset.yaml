@@ -58,6 +58,10 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            {{- if .Values.kubeletHost }}
+            - name: KUBELET_HOST
+              {{- toYaml .Values.kubeletHost | nindent 14 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

@@ -34,7 +34,7 @@ const (
 	PreflightNamespaceLabel    = "nvsentinel.nvidia.com/preflight"
 	PreflightNamespaceLabelVal = "enabled"
 	PreflightDCGMDiagName      = "preflight-dcgm-diag"
-	PreflightConfigMapName     = "nvsentinel-preflight-config"
+	PreflightConfigMapName     = "preflight"
 	PreflightConfigKey         = "config.yaml"
 
 	GangConfigMapLabelManagedBy = "nvsentinel.nvidia.com/managed-by"

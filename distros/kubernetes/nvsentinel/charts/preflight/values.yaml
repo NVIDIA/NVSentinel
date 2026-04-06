@@ -17,11 +17,9 @@ replicaCount: 1
 image:
   repository: ghcr.io/nvidia/nvsentinel/preflight
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: ""
 
 imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
 
 serviceAccount:
   create: true
@@ -103,7 +101,9 @@ dcgm:
 
 initContainers:
   - name: preflight-dcgm-diag
-    image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag
+      tag: ""
     volumeMounts:
       - name: nvsentinel-socket
         mountPath: /var/run
@@ -112,9 +112,11 @@ initContainers:
     #   limits:
     #     memory: 512Mi
 
-  # # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
+  # NCCL loopback test - validates intra-node GPU-to-GPU communication (NVLink/PCIe)
   - name: preflight-nccl-loopback
-    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback
+      tag: ""
     env:
       - name: BW_THRESHOLD_GBPS
       # Minimum acceptable bus bandwidth
@@ -135,7 +137,9 @@ initContainers:
   # NCCL all-reduce test - validates multi-node GPU communication
   # Requires gangCoordination.enabled=true and gang-aware scheduler (Volcano, Kueue, etc.)
   - name: preflight-nccl-allreduce
-    image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
+    image:
+      repository: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce
+      tag: ""
     securityContext:
       capabilities:
         add: ["IPC_LOCK"]  # Required for RDMA memory registration

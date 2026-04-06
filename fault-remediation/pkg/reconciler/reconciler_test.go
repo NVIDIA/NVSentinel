@@ -1029,3 +1029,55 @@ func TestLogCollectorOnlyCalledWhenShouldCreateCR(t *testing.T) {
 		})
 	}
 }
+
+func TestAdaptEvents_DoneChannelClosesOnInputClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan datastore.EventWithToken)
+	_, done := AdaptEvents(ctx, in)
+
+	// Close the input channel to simulate change stream death
+	close(in)
+
+	select {
+	case <-done:
+		// done channel closed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel was not closed after input channel closed")
+	}
+}
+
+func TestAdaptEvents_DoneChannelClosesOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	in := make(chan datastore.EventWithToken)
+	_, done := AdaptEvents(ctx, in)
+
+	cancel()
+
+	select {
+	case <-done:
+		// done channel closed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel was not closed after context cancellation")
+	}
+}
+
+func TestAdaptEvents_ForwardsEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan datastore.EventWithToken, 1)
+	out, _ := AdaptEvents(ctx, in)
+
+	testEvent := datastore.EventWithToken{}
+	in <- testEvent
+
+	select {
+	case <-out:
+		// Event forwarded successfully
+	case <-time.After(2 * time.Second):
+		t.Fatal("event was not forwarded through AdaptEvents")
+	}
+}

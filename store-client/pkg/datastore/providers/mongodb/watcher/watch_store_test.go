@@ -236,6 +236,52 @@ func TestChangeStreamWatcher_Start(t *testing.T) {
 		// Close the change stream to release the mtest session
 		_ = watcher.changeStream.Close(context.Background())
 	})
+
+	mt.Run("Start deletes stale resume token on ChangeStreamHistoryLost error", func(mt *mtest.T) {
+		mt.AddMockResponses(
+			// Initial change stream cursor
+			mtest.CreateCursorResponse(1, "testdb.testcollection", mtest.FirstBatch),
+			// getMore returns ChangeStreamHistoryLost
+			mtest.CreateCommandErrorResponse(mtest.CommandError{
+				Code:    280,
+				Message: "Resume of change stream was not possible, the resume token was not found",
+			}),
+			// DeleteOne for the stale resume token
+			mtest.CreateSuccessResponse(),
+		)
+
+		coll := mt.Client.Database("testdb").Collection("testcollection")
+		changeStream, err := coll.Watch(context.Background(), mongo.Pipeline{})
+		require.NoError(mt, err)
+
+		resumeTokenCol := mt.Client.Database("tokendb").Collection("ResumeTokens")
+
+		watcher := &ChangeStreamWatcher{
+			client:         mt.Client,
+			changeStream:   changeStream,
+			eventChannel:   make(chan Event, 1),
+			resumeTokenCol: resumeTokenCol,
+			clientName:     "testclient-stale",
+			done:           make(chan struct{}),
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		watcher.Start(ctx)
+
+		select {
+		case <-watcher.done:
+			// Goroutine exited as expected after detecting stale token
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for goroutine to exit on stale token error")
+		}
+
+		_, open := <-watcher.eventChannel
+		require.False(t, open, "event channel should be closed after stale token error")
+
+		_ = watcher.changeStream.Close(context.Background())
+	})
 }
 
 func TestChangeStreamWatcher_MarkProcessed(t *testing.T) {
@@ -1132,7 +1178,7 @@ func TestOpenChangeStreamWithConfigurableRetry(t *testing.T) {
 		opts := mongoOptions.ChangeStream()
 
 		// Call openChangeStream with no resume token (should use SecondaryPreferred)
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false)
+		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, cs)
@@ -1163,7 +1209,7 @@ func TestOpenChangeStreamWithConfigurableRetry(t *testing.T) {
 		opts := mongoOptions.ChangeStream()
 
 		// Call openChangeStream with no resume token
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false)
+		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, cs)
@@ -1194,7 +1240,7 @@ func TestOpenChangeStreamWithConfigurableRetry(t *testing.T) {
 		opts := mongoOptions.ChangeStream()
 
 		// Call openChangeStream
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false)
+		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, cs)
@@ -1222,45 +1268,93 @@ func TestOpenChangeStreamWithConfigurableRetry(t *testing.T) {
 		opts := mongoOptions.ChangeStream()
 
 		// Call openChangeStream without resume token (hasResumeToken = false)
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false)
+		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, false, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, cs)
 		defer cs.Close(context.Background())
 	})
 
-	mt.Run("Retries with resume token and falls back to Primary", func(mt *mtest.T) {
-		// Use a very short deadline to test fallback quickly
+	mt.Run("Recovers from stale resume token by deleting token and starting fresh", func(mt *mtest.T) {
 		mongoConfig := MongoDBConfig{
 			Database:                         "testdb",
 			Collection:                       "testcollection",
-			ChangeStreamRetryDeadlineSeconds: 1, // 1 second deadline for quick test
-			ChangeStreamRetryIntervalSeconds: 1, // 1 second interval
+			ChangeStreamRetryDeadlineSeconds: 1,
+			ChangeStreamRetryIntervalSeconds: 1,
 		}
 
-		// First attempt will fail with ChangeStreamHistoryLost error
-		// Note: In real scenarios, we'd simulate multiple failures before success
-		// For this test, we'll just show it handles the error path
+		// First Watch call fails with ChangeStreamHistoryLost, then recovery
+		// deletes the stale token and opens a fresh stream.
 		mt.AddMockResponses(
+			// 1. Watch fails with stale token error
 			mtest.CreateCommandErrorResponse(mtest.CommandError{
-				Code:    280, // ChangeStreamHistoryLost error code
+				Code:    280,
 				Message: "Resume of change stream was not possible",
 			}),
+			// 2. DeleteOne for the stale resume token
+			mtest.CreateSuccessResponse(),
+			// 3. Fresh Watch succeeds
+			mtest.CreateSuccessResponse(
+				bson.E{Key: "cursor", Value: bson.D{
+					{Key: "id", Value: int64(1)},
+					{Key: "ns", Value: "testdb.testcollection"},
+					{Key: "firstBatch", Value: bson.A{event}},
+				}},
+			),
 		)
 
 		pipeline := mongo.Pipeline{}
 		opts := mongoOptions.ChangeStream().SetResumeAfter(resumeToken)
+		tokenColl := mt.Client.Database("testdb").Collection("ResumeTokens")
 
-		// Call openChangeStream with resume token (hasResumeToken = true)
-		// This will try SecondaryPreferred first, fail, and should attempt Primary
-		// Note: In the mock environment, we can't fully simulate the retry logic,
-		// but we're testing that the function handles the configuration correctly
-		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, true)
+		cs, err := openChangeStream(context.Background(), mt.Client, mongoConfig, pipeline, opts, true,
+			tokenColl, "test-client")
 
-		// In this mock test, it will fail because we only provided one error response
-		// In a real environment, it would retry and fall back to Primary
-		require.Error(t, err)
-		require.Nil(t, cs)
+		require.NoError(t, err)
+		require.NotNil(t, cs)
+		defer cs.Close(context.Background())
+	})
+}
+
+func TestIsUnrecoverableResumeTokenError(t *testing.T) {
+	t.Run("detects error code 280 (ChangeStreamFatalError)", func(t *testing.T) {
+		err := mongo.CommandError{Code: 280, Message: "Resume of change stream was not possible"}
+		require.True(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("detects error code 286 (ChangeStreamHistoryLost)", func(t *testing.T) {
+		err := mongo.CommandError{Code: 286, Message: "Executor error during getMore: cannot resume stream"}
+		require.True(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("detects error code 260 (InvalidResumeToken)", func(t *testing.T) {
+		err := mongo.CommandError{Code: 260, Message: "Invalid resume token"}
+		require.True(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("detects error code 9 (FailedToParse)", func(t *testing.T) {
+		err := mongo.CommandError{Code: 9, Message: "resume token string was not a valid hex string"}
+		require.True(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("returns false for other MongoDB errors", func(t *testing.T) {
+		err := mongo.CommandError{Code: 123, Message: "some other error"}
+		require.False(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("returns false for non-MongoDB errors", func(t *testing.T) {
+		err := fmt.Errorf("generic error")
+		require.False(t, isUnrecoverableResumeTokenError(err))
+	})
+
+	t.Run("returns false for nil error", func(t *testing.T) {
+		require.False(t, isUnrecoverableResumeTokenError(nil))
+	})
+
+	t.Run("detects wrapped MongoDB error", func(t *testing.T) {
+		inner := mongo.CommandError{Code: 280, Message: "history lost"}
+		wrapped := fmt.Errorf("change stream failed: %w", inner)
+		require.True(t, isUnrecoverableResumeTokenError(wrapped))
 	})
 }
 

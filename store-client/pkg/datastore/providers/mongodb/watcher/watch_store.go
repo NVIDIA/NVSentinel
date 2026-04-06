@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -33,7 +35,19 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
+	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+)
+
+var resumeTokenRecoveries = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "change_stream_resume_token_recoveries_total",
+		Help: "Total number of times a stale or invalid resume token was detected and deleted, " +
+			"causing the change stream to restart from the current position.",
+	},
+	[]string{"client", "phase"},
 )
 
 // Event represents a database-agnostic event that abstracts away provider-specific types
@@ -171,8 +185,10 @@ func NewChangeStreamWatcher(
 			tokenConfig.TokenDatabase, tokenConfig.TokenCollection, err)
 	}
 
-	// Open the change stream with appropriate read preference based on resume token presence
-	cs, err := openChangeStream(ctx, client, mongoConfig, pipeline, opts, hasResumeToken)
+	// Open the change stream with appropriate read preference based on resume token presence.
+	// Pass the token collection so stale tokens can be deleted and retried automatically.
+	cs, err := openChangeStream(ctx, client, mongoConfig, pipeline, opts, hasResumeToken,
+		tokenColl, tokenConfig.ClientName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open change stream: %w", err)
 	}
@@ -211,7 +227,8 @@ func validatePingConfig(config MongoDBConfig) error {
 
 // openChangeStream opens a change stream with the appropriate read preference based on whether
 // a resume token is present. When resuming, it attempts SecondaryPreferred with bounded retries
-// before falling back to Primary. When starting fresh, it uses SecondaryPreferred directly.
+// before falling back to Primary. If the resume token is stale (oplog history lost), the token
+// is deleted and the stream is reopened fresh. When starting fresh, it uses SecondaryPreferred directly.
 func openChangeStream(
 	ctx context.Context,
 	client *mongo.Client,
@@ -219,6 +236,8 @@ func openChangeStream(
 	pipeline mongo.Pipeline,
 	opts *options.ChangeStreamOptions,
 	hasResumeToken bool,
+	tokenColl *mongo.Collection,
+	clientName string,
 ) (*mongo.ChangeStream, error) {
 	// Set default values if not configured
 	retryDeadlineSeconds := mongoConfig.ChangeStreamRetryDeadlineSeconds
@@ -233,7 +252,7 @@ func openChangeStream(
 
 	if hasResumeToken {
 		return openChangeStreamWithRetry(ctx, client, mongoConfig, pipeline, opts,
-			retryDeadlineSeconds, retryIntervalSeconds)
+			retryDeadlineSeconds, retryIntervalSeconds, tokenColl, clientName)
 	}
 
 	// No resume token, open on SecondaryPreferred directly
@@ -250,6 +269,9 @@ func openChangeStream(
 
 // openChangeStreamWithRetry attempts to open a change stream with retries on SecondaryPreferred
 // before falling back to Primary. This is used when resuming from a stored token.
+// If the error indicates the resume token is stale (oplog history lost), the stored token is
+// deleted and the stream is reopened without a resume token so the watcher can recover
+// automatically instead of entering an unrecoverable crash loop.
 func openChangeStreamWithRetry(
 	ctx context.Context,
 	client *mongo.Client,
@@ -258,6 +280,8 @@ func openChangeStreamWithRetry(
 	opts *options.ChangeStreamOptions,
 	retryDeadlineSeconds int,
 	retryIntervalSeconds int,
+	tokenColl *mongo.Collection,
+	clientName string,
 ) (*mongo.ChangeStream, error) {
 	// Try SecondaryPreferred first with bounded retries
 	collSP := client.Database(mongoConfig.Database).Collection(
@@ -269,6 +293,10 @@ func openChangeStreamWithRetry(
 		cs, openErr := collSP.Watch(ctx, pipeline, opts)
 		if openErr == nil {
 			return cs, nil
+		}
+
+		if isUnrecoverableResumeTokenError(openErr) {
+			return recoverFromStaleResumeToken(ctx, collSP, pipeline, opts, tokenColl, clientName)
 		}
 
 		// If context was cancelled, return immediately
@@ -284,12 +312,16 @@ func openChangeStreamWithRetry(
 			collP := client.Database(mongoConfig.Database).Collection(
 				mongoConfig.Collection, options.Collection().SetReadPreference(readpref.Primary()))
 
-			cs, err := collP.Watch(ctx, pipeline, opts)
-			if err != nil {
-				return nil, fmt.Errorf("failed to start change stream on primary after retries: %w", err)
+			cs, primaryErr := collP.Watch(ctx, pipeline, opts)
+			if primaryErr == nil {
+				return cs, nil
 			}
 
-			return cs, nil
+			if isUnrecoverableResumeTokenError(primaryErr) {
+				return recoverFromStaleResumeToken(ctx, collSP, pipeline, opts, tokenColl, clientName)
+			}
+
+			return nil, fmt.Errorf("failed to start change stream on primary after retries: %w", primaryErr)
 		}
 
 		slog.Warn("Failed to open change stream on SecondaryPreferred while resuming, retrying",
@@ -305,6 +337,54 @@ func openChangeStreamWithRetry(
 	}
 }
 
+// recoverFromStaleResumeToken deletes an unrecoverable resume token from the database
+// and reopens the change stream without it. This handles cases where the token is stale
+// (oplog rolled over), corrupt, or otherwise unrecognizable by MongoDB.
+func recoverFromStaleResumeToken(
+	ctx context.Context,
+	coll *mongo.Collection,
+	pipeline mongo.Pipeline,
+	opts *options.ChangeStreamOptions,
+	tokenColl *mongo.Collection,
+	clientName string,
+) (*mongo.ChangeStream, error) {
+	slog.Warn("Resume token is unrecoverable, deleting token and starting fresh",
+		"client", clientName)
+	resumeTokenRecoveries.WithLabelValues(clientName, "initialization").Inc()
+
+	if _, err := tokenColl.DeleteOne(ctx, bson.M{"clientName": clientName}); err != nil {
+		slog.Error("Failed to delete resume token", "client", clientName, "error", err)
+	}
+
+	opts.SetResumeAfter(nil)
+	opts.SetStartAfter(nil)
+
+	cs, err := coll.Watch(ctx, pipeline, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open change stream after stale token recovery: %w", err)
+	}
+
+	slog.Info("Successfully recovered from stale resume token, stream started fresh", "client", clientName)
+
+	return cs, nil
+}
+
+// isUnrecoverableResumeTokenError returns true if the error indicates the stored resume
+// token is invalid and the change stream cannot be opened with it. This covers:
+//   - 9: FailedToParse (token data is not valid hex / malformed)
+//   - 260: InvalidResumeToken (token is structurally corrupt or unrecognizable)
+//   - 280: ChangeStreamFatalError (general fatal change stream error)
+//   - 286: ChangeStreamHistoryLost (oplog rolled over past the token's position)
+func isUnrecoverableResumeTokenError(err error) bool {
+	var serverErr mongo.ServerError
+	if errors.As(err, &serverErr) {
+		return serverErr.HasErrorCode(9) || serverErr.HasErrorCode(260) ||
+			serverErr.HasErrorCode(280) || serverErr.HasErrorCode(286)
+	}
+
+	return false
+}
+
 func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 	// Create a child context that we can cancel on Close()
 	watchCtx, cancel := context.WithCancel(ctx) //nolint:gosec // G118 - cancel is stored in w.cancel and called in Close()
@@ -316,57 +396,83 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 				close(w.eventChannel)
 				slog.Info("ChangeStreamWatcher event channel closed", "client", w.clientName)
 			})
-			// Signal that the event loop has exited
-			// Check if done channel exists (it might be nil in tests)
+
 			if w.done != nil {
 				close(w.done)
 			}
 		}()
 
-		for {
-			select {
-			case <-watchCtx.Done():
-				slog.Info("ChangeStreamWatcher context cancelled, stopping event processing", "client", w.clientName)
+		w.eventLoop(watchCtx)
+	}()
+}
+
+func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("ChangeStreamWatcher context cancelled, stopping event processing", "client", w.clientName)
+			return
+		default:
+			// Use read lock to allow concurrent Next() calls but prevent Close() during Next()
+			w.closeMu.RLock()
+			hasNext := w.changeStream.Next(ctx)
+			csErr := w.changeStream.Err()
+			w.closeMu.RUnlock()
+
+			if hasNext {
+				w.processNextEvent(ctx)
+			} else if csErr != nil {
+				w.handleChangeStreamError(csErr)
 				return
-			default:
-				// Use read lock to allow concurrent Next() calls but prevent Close() during Next()
-				// This prevents data races without causing deadlock with MarkProcessed()
-				w.closeMu.RLock()
-				hasNext := w.changeStream.Next(watchCtx)
-				csErr := w.changeStream.Err()
-				w.closeMu.RUnlock()
-
-				if hasNext {
-					var event bson.M
-
-					w.mu.Lock()
-					err := w.changeStream.Decode(&event)
-					w.mu.Unlock()
-
-					if err != nil {
-						slog.Error("Failed to decode change stream event", "client", w.clientName, "error", err)
-						continue
-					}
-
-					// Convert MongoDB-specific bson.M to database-agnostic Event type
-					genericEvent := Event(event)
-
-					// Use select to safely send on channel with context cancellation check
-					// This prevents panic if channel is closed during shutdown
-					select {
-					case <-watchCtx.Done():
-						slog.Info("Context cancelled while sending event, stopping", "client", w.clientName)
-						return
-					case w.eventChannel <- genericEvent:
-						// Event sent successfully
-					}
-				} else if csErr != nil {
-					slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
-					return
-				}
 			}
 		}
-	}()
+	}
+}
+
+func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
+	var event bson.M
+
+	w.mu.Lock()
+	err := w.changeStream.Decode(&event)
+	w.mu.Unlock()
+
+	if err != nil {
+		slog.Error("Failed to decode change stream event", "client", w.clientName, "error", err)
+		return
+	}
+
+	genericEvent := Event(event)
+
+	select {
+	case <-ctx.Done():
+		slog.Info("Context cancelled while sending event, stopping", "client", w.clientName)
+	case w.eventChannel <- genericEvent:
+	}
+}
+
+func (w *ChangeStreamWatcher) handleChangeStreamError(csErr error) {
+	if isUnrecoverableResumeTokenError(csErr) {
+		slog.Warn("Change stream failed due to unrecoverable resume token error, "+
+			"deleting token so next restart recovers automatically",
+			"client", w.clientName, "error", csErr)
+
+		w.deleteStaleResumeToken()
+	} else {
+		slog.Error("Failed to watch change stream", "client", w.clientName, "error", csErr)
+	}
+}
+
+func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
+	resumeTokenRecoveries.WithLabelValues(w.clientName, "runtime").Inc()
+
+	//nolint:gosec // G118 - parent context is already cancelled when we reach this path
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer deleteCancel()
+
+	if _, delErr := w.resumeTokenCol.DeleteOne(deleteCtx, bson.M{"clientName": w.clientName}); delErr != nil {
+		slog.Error("Failed to delete stale resume token during event loop recovery",
+			"client", w.clientName, "error", delErr)
+	}
 }
 
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
@@ -622,7 +728,10 @@ func constructMongoClientOptions(
 
 	clientOpts := options.Client().
 		ApplyURI(mongoConfig.URI).
-		SetServerSelectionTimeout(serverSelectionTimeout)
+		SetServerSelectionTimeout(serverSelectionTimeout).
+		SetMonitor(otelmongo.NewMonitor(
+			otelmongo.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
+		))
 
 	// Set AppName for MongoDB connection tracking if provided
 	if mongoConfig.AppName != "" {

@@ -36,7 +36,7 @@ spec:
       serviceAccountName: {{ include "preflight.serviceAccountName" . }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --port={{ .Values.webhook.port }}
@@ -67,7 +67,7 @@ spec:
             secretName: {{ include "preflight.certSecretName" . }}
         - name: config
           configMap:
-            name: {{ include "preflight.fullname" . }}-config
+            name: {{ include "preflight.fullname" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

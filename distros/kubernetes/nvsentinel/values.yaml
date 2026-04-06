@@ -116,6 +116,14 @@ global:
       # DCGM hostengine service port
       port: 5555
 
+  # OpenTelemetry tracing configuration
+  tracing:
+    enabled: false # Enable/disable tracing for all components
+    insecure: false # Set to true if the collector endpoint does not use TLS
+    # OTLP gRPC endpoint (host:port) where services send traces.
+    # Point this to your tracing backend's (Tempo, Jaeger, Zipkin, etc.) gRPC ingestion endpoint.
+    endpoint: ""
+
   # Audit logging configuration
   auditLogging:
     enabled: false  # Enable/disable audit logging for all components
@@ -300,3 +308,4 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+  

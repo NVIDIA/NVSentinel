@@ -41,6 +41,7 @@ message HealthEventStatus {
   google.protobuf.Timestamp drainFinishTimestamp = 4;
   google.protobuf.BoolValue faultRemediated = 5;
   google.protobuf.Timestamp lastRemediationTimestamp = 6;
+  map<string, string> spanIds = 7;
 }
 
 // HealthEventWithStatus combines HealthEvent and HealthEventStatus for CRD generation.

@@ -52,6 +52,18 @@ func (h *MongoHealthEventStore) UpdateHealthEventStatus(ctx context.Context, id 
 	return nil
 }
 
+// UpdateSpanID writes a service's span ID into the span_ids map for trace context propagation.
+func (h *MongoHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
+	err := h.databaseClient.UpdateDocumentStatusFields(ctx, id, map[string]interface{}{
+		"healtheventstatus.spanids." + serviceName: spanID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update span ID: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateHealthEventStatusByNode updates health event status by node
 func (h *MongoHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Context, nodeName string,
 	status datastore.HealthEventStatus) error {

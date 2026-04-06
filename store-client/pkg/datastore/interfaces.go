@@ -81,6 +81,9 @@ type HealthEventStore interface {
 	UpdatePodEvictionStatus(ctx context.Context, eventID string, status OperationStatus) error
 	UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error
 
+	// Writes a service's span ID into the span_ids map for trace context propagation.
+	UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error
+
 	// Node drain specific operations
 	CheckIfNodeAlreadyDrained(ctx context.Context, nodeName string) (bool, error)
 	FindLatestEventForNode(ctx context.Context, nodeName string) (*HealthEventWithStatus, error)
