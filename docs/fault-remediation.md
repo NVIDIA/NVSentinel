@@ -49,16 +49,29 @@ fault-remediation:
         completeConditionType: "NodeReady"
         templateFileName: "rebootnode-template.yaml"
         equivalenceGroup: "restart"
-      "COMPONENT_RESET": 
-        apiGroup: "janitor.dgxc.nvidia.com"
-        version: "v1alpha1"
-        kind: "GPUReset"
-        scope: "Cluster"
-        completeConditionType: "Complete"
-        templateFileName: "gpureset-template.yaml"
-        equivalenceGroup: "reset"
-        impactedEntityScope: "GPU_UUID"
-        supersedingEquivalenceGroups: ["restart"]
+
+    componentActions:
+      "GPU":
+        "COMPONENT_RESET":
+          apiGroup: "janitor.dgxc.nvidia.com"
+          version: "v1alpha1"
+          kind: "GPUReset"
+          scope: "Cluster"
+          completeConditionType: "Complete"
+          templateFileName: "gpureset-template.yaml"
+          equivalenceGroup: "reset"
+          impactedEntityScope: "GPU_UUID"
+          supersedingEquivalenceGroups: ["restart"]
+      "LPU":
+        "COMPONENT_RESET":
+          apiGroup: "janitor.dgxc.nvidia.com"
+          version: "v1alpha1"
+          kind: "LPURemediation"
+          scope: "Cluster"
+          completeConditionType: "Complete"
+          templateFileName: "lpu-remediation-template.yaml"
+          equivalenceGroup: "reset"
+          supersedingEquivalenceGroups: ["restart"]
 
     templates:
       "rebootnode-template.yaml": |
@@ -78,12 +91,25 @@ fault-remediation:
           selector:
             uuids:
               - {{ .ImpactedEntityScopeValue }}
+      "lpu-remediation-template.yaml": |
+        apiVersion: {{.ApiGroup}}/{{.Version}}
+        kind: LPURemediation
+        metadata:
+          name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+        spec:
+          nodeName: {{ .HealthEvent.NodeName }}
+          device: {{ index .HealthEvent.Metadata "device" }}
   
   logCollector:
     enabled: false       # Enable log collection before remediation
     uploadURL: "http://nvsentinel-incluster-file-server.nvsentinel.svc.cluster.local/upload"
     timeout: "10m"
 ```
+
+Resolution order is:
+
+- `maintenance.componentActions[componentClass][recommendedAction]`
+- fallback to `maintenance.actions[recommendedAction]`
 
 ### Configuration Options
 
