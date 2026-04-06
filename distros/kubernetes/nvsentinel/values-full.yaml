@@ -682,6 +682,12 @@ fault-remediation:
       #   Policy → policys (✗ should be policies)
       # Use CRD kinds that follow regular pluralization rules.
 
+    # Optional component-specific remediation definitions.
+    # Resolution order is:
+    #   1. maintenance.componentActions[componentClass][recommendedAction]
+    #   2. maintenance.actions[recommendedAction]
+    componentActions: {}
+
     # Template content for each remediation action
     # Key matches the templateFileName name from actions above
     templates:

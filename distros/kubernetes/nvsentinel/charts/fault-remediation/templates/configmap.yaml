@@ -47,6 +47,30 @@ data:
     supersedingEquivalenceGroups = {{ $config.supersedingEquivalenceGroups | toJson }}
     {{- end }}
     {{- end }}
+
+    {{- range $componentClass, $actions := .Values.maintenance.componentActions }}
+    {{- range $actionName, $config := $actions }}
+    [componentRemediationActions.{{ $componentClass | quote }}.{{ $actionName | quote }}]
+    apiGroup = {{ $config.apiGroup | quote }}
+    version = {{ $config.version | quote }}
+    kind = {{ $config.kind | quote }}
+    scope = {{ $config.scope | default "Cluster" | quote }}
+    {{- if $config.namespace }}
+    namespace = {{ $config.namespace | quote }}
+    {{- end }}
+    completeConditionType = {{ $config.completeConditionType | default "NodeReady" | quote }}
+    templateFileName = {{ $config.templateFileName | quote }}
+    {{- if $config.equivalenceGroup }}
+    equivalenceGroup = {{ $config.equivalenceGroup | quote }}
+    {{- end }}
+    {{- if $config.impactedEntityScope }}
+    impactedEntityScope = {{ $config.impactedEntityScope | quote }}
+    {{- end }}
+    {{- if $config.supersedingEquivalenceGroups }}
+    supersedingEquivalenceGroups = {{ $config.supersedingEquivalenceGroups | toJson }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
     
     [updateRetry]
     maxRetries = {{ .Values.updateRetry.maxRetries }}
