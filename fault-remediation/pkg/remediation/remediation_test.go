@@ -311,7 +311,7 @@ spec:
 					},
 				},
 			}
-			groupConfig, err := common.GetGroupConfigForEvent(remediationConfig.RemediationActions,
+			groupConfig, err := common.GetGroupConfigForEvent(&remediationConfig,
 				healthEventDoc.HealthEvent)
 			assert.NoError(t, err)
 

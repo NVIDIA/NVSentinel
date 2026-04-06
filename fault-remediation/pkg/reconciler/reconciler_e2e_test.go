@@ -403,7 +403,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, healthEventDoc.HealthEvent)
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(), healthEventDoc.HealthEvent)
 		assert.NoError(t, err)
 
 		// TODO: ignoring error otherwise need to properly walk state transitions
@@ -468,7 +468,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(), event1.HealthEvent)
 		assert.NoError(t, err)
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.RemediatingLabelValue, false)
@@ -528,7 +528,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(), event1.HealthEvent)
 		assert.NoError(t, err)
 		// TODO: ignoring error otherwise need to properly walk state transitions
 		// TODO: also why does this return an error but also put the change through
@@ -567,7 +567,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event2.HealthEvent)
+		groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(), event2.HealthEvent)
 		assert.NoError(t, err)
 
 		//TODO: is this a bug? if you enter remediation-succeeded it won't let you get back to remediating
@@ -622,7 +622,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 				},
 			},
 		}
-		groupConfig1, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		groupConfig1, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 			event1.HealthEvent)
 		assert.NoError(t, err)
 
@@ -641,7 +641,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			NodeName:          nodeName,
 			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		}
-		groupConfig2, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		groupConfig2, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 			event2Health)
 		assert.NoError(t, err)
 
@@ -707,7 +707,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event1.HealthEvent)
 	assert.NoError(t, err)
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
@@ -727,7 +727,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		NodeName:          nodeName,
 		RecommendedAction: protos.RecommendedAction_RESTART_VM,
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event2)
 	assert.NoError(t, err)
 	shouldCreate, existingCR, err := r.checkExistingCRStatus(ctx, event2, groupConfig)
@@ -747,7 +747,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		NodeName:          nodeName,
 		RecommendedAction: protos.RecommendedAction_RESTART_BM,
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event3)
 	assert.NoError(t, err)
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
@@ -761,7 +761,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 		NodeName:          nodeName,
 		RecommendedAction: protos.RecommendedAction_RESTART_BM,
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event4)
 	assert.NoError(t, err)
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
@@ -784,7 +784,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event5.HealthEvent)
 	assert.NoError(t, err)
 	crName2, err := r.performRemediation(ctx, event5, groupConfig)
@@ -849,7 +849,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event1.HealthEvent)
 	assert.NoError(t, err)
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
@@ -877,7 +877,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		},
 	}
 
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event2.HealthEvent)
 	assert.NoError(t, err)
 	shouldSkip := r.shouldSkipEvent(ctx, event2, groupConfig)
@@ -906,7 +906,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event3)
 	assert.NoError(t, err)
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event3, groupConfig)
@@ -926,7 +926,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event4)
 	assert.NoError(t, err)
 	shouldCreate, _, err = r.checkExistingCRStatus(ctx, event4, groupConfig)
@@ -955,7 +955,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event5.HealthEvent)
 	assert.NoError(t, err)
 	crName2, err := r.performRemediation(ctx, event5, groupConfig)
@@ -979,7 +979,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			},
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event6)
 	assert.NoError(t, err)
 	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event6, groupConfig)
@@ -1009,7 +1009,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		},
 	}
 
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event7.HealthEvent)
 	assert.NoError(t, err)
 	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, groupConfig)
@@ -1049,7 +1049,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 		},
 	}
 
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event8)
 	assert.NoError(t, err)
 	shouldCreate, existingCR, err = r.checkExistingCRStatus(ctx, event8, groupConfig)
@@ -1078,7 +1078,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
 		},
 	}
-	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 		event9.HealthEvent)
 	assert.Error(t, err)
 	assert.Nil(t, groupConfig)
@@ -1296,7 +1296,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 				RecommendedAction: protos.RecommendedAction_UNKNOWN,
 			},
 		}
-		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
+		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig(),
 			healthEvent.HealthEvent)
 		assert.NoError(t, err)
 

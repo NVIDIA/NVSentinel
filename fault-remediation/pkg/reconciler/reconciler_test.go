@@ -68,7 +68,7 @@ type mockStatusChecker struct {
 	callCount  int
 }
 
-func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string) bool {
+func (statusChecker *mockStatusChecker) ShouldSkipCRCreation(context.Context, string, string, string) bool {
 	shouldSkip := statusChecker.shouldSkip[statusChecker.callCount]
 	if statusChecker.callCount < len(statusChecker.shouldSkip)-1 {
 		statusChecker.callCount++

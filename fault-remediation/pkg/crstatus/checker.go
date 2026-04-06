@@ -18,6 +18,7 @@ import (
 	"context"
 	"log/slog"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,33 +27,35 @@ import (
 )
 
 type CRStatusChecker struct {
-	client             client.Client
-	remediationActions map[string]config.MaintenanceResource
-	dryRun             bool
+	client            client.Client
+	remediationConfig *config.TomlConfig
+	dryRun            bool
 }
 
 func NewCRStatusChecker(
 	client client.Client,
-	remediationActions map[string]config.MaintenanceResource,
+	remediationConfig *config.TomlConfig,
 	dryRun bool,
 ) *CRStatusChecker {
 	return &CRStatusChecker{
-		client:             client,
-		remediationActions: remediationActions,
-		dryRun:             dryRun,
+		client:            client,
+		remediationConfig: remediationConfig,
+		dryRun:            dryRun,
 	}
 }
 
 // ShouldSkipCRCreation returns true if the CR exists and is not in a terminal state otherwise returns false.
-func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName string, crName string) bool {
-	resource, exists := c.remediationActions[actionName]
-	if !exists {
-		slog.Error("No remediation configuration found for action", "action", actionName)
+func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, componentClass, actionName, crName string) bool {
+	if c.dryRun {
+		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
 		return false
 	}
 
-	if c.dryRun {
-		slog.Info("DRY-RUN: CR doesn't exist (dry-run mode)", "crName", crName, "action", actionName)
+	resource, _, exists := c.remediationConfig.ResolveMaintenanceResource(componentClass, actionName)
+	if !exists {
+		slog.Error("No remediation configuration found for action",
+			"action", actionName,
+			"componentClass", componentClass)
 		return false
 	}
 
@@ -68,6 +71,10 @@ func (c *CRStatusChecker) ShouldSkipCRCreation(ctx context.Context, actionName s
 	key := client.ObjectKey{Name: crName, Namespace: resource.Namespace}
 
 	if err := c.client.Get(ctx, key, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false
+		}
+
 		slog.Warn("Failed to get CR, allowing create", "crName", crName, "gvk", gvk.String(), "error", err)
 		return false
 	}
