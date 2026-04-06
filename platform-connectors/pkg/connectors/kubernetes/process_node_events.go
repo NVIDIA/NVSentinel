@@ -572,7 +572,6 @@ func (r *K8sConnector) processHealthEvents(ctx context.Context, healthEvents *pr
 				attribute.String("platform_connector.k8s.node_name", nodeName),
 				attribute.String("platform_connector.k8s.error.message", err.Error()),
 			))
-
 		} else if updated {
 			nodeConditionsUpdated++
 		}
