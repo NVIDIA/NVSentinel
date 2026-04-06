@@ -71,6 +71,10 @@ type UpdateRetry struct {
 	RetryDelaySeconds int `toml:"retryDelaySeconds"`
 }
 
+// ComponentRemediationActions holds component-specific remediation overrides.
+// The first key is componentClass and the second key is RecommendedAction.
+type ComponentRemediationActions map[string]map[string]MaintenanceResource
+
 // TomlConfig holds the complete TOML configuration for fault remediation
 type TomlConfig struct {
 	// Template mount configuration
@@ -78,6 +82,10 @@ type TomlConfig struct {
 
 	// Multi-template configuration - map from RecommendedAction string to MaintenanceResource
 	RemediationActions map[string]MaintenanceResource `toml:"remediationActions"`
+
+	// Component-specific remediation configuration - map from componentClass to
+	// RecommendedAction to MaintenanceResource.
+	ComponentRemediationActions ComponentRemediationActions `toml:"componentRemediationActions"`
 
 	// Templates contains the actual template content keyed by filename
 	Templates map[string]string `toml:"templates"`
@@ -98,6 +106,14 @@ func (c *TomlConfig) Validate() error {
 		}
 	}
 
+	for componentClass, actions := range c.ComponentRemediationActions {
+		for actionName, resource := range actions {
+			if err := c.validateComponentRemediationAction(componentClass, actionName, resource); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -110,7 +126,7 @@ func (c *TomlConfig) validateTemplate() error {
 }
 
 func (c *TomlConfig) validateRemediationAction(actionName string, resource MaintenanceResource) error {
-	if err := c.validateEquivalenceGroup(actionName, resource); err != nil {
+	if err := c.validateEquivalenceGroup(actionName, resource, c.allMaintenanceResources()); err != nil {
 		return err
 	}
 
@@ -129,6 +145,31 @@ func (c *TomlConfig) validateRemediationAction(actionName string, resource Maint
 	return nil
 }
 
+func (c *TomlConfig) validateComponentRemediationAction(componentClass, actionName string, resource MaintenanceResource) error {
+	if componentClass == "" {
+		return fmt.Errorf("componentRemediationActions must have a non-empty componentClass")
+	}
+
+	if err := c.validateEquivalenceGroup(actionName, resource, c.allMaintenanceResources()); err != nil {
+		return fmt.Errorf("componentClass '%s' action '%s': %w", componentClass, actionName, err)
+	}
+
+	if resource.TemplateFileName == "" {
+		return fmt.Errorf("componentClass '%s' action '%s' must have a non-empty templateFileName",
+			componentClass, actionName)
+	}
+
+	if err := c.validateTemplateFileExists(actionName, resource.TemplateFileName); err != nil {
+		return fmt.Errorf("componentClass '%s': %w", componentClass, err)
+	}
+
+	if err := validateScope(actionName, resource.Scope, resource.Namespace); err != nil {
+		return fmt.Errorf("componentClass '%s': %w", componentClass, err)
+	}
+
+	return nil
+}
+
 /*
 EquivalenceGroup requirements:
 - All MaintenanceResources must have an EquivalenceGroup defined.
@@ -141,13 +182,15 @@ not a use-case for it.
 Additionally, the ImpactedEntityScope must be included in EntityTypeToResourceNames (meaning that partial draining is
 enabled for that entity).
 */
-func (c *TomlConfig) validateEquivalenceGroup(actionName string, resource MaintenanceResource) error {
+func (c *TomlConfig) validateEquivalenceGroup(actionName string, resource MaintenanceResource,
+	allResources []MaintenanceResource,
+) error {
 	if len(resource.EquivalenceGroup) == 0 {
 		return fmt.Errorf("action '%s' must have a non-empty EquivalenceGroup", actionName)
 	}
 
 	for _, group := range resource.SupersedingEquivalenceGroups {
-		if err := validateOneSupersedingGroup(actionName, group, resource, c.RemediationActions); err != nil {
+		if err := validateOneSupersedingGroup(actionName, group, resource, allResources); err != nil {
 			return err
 		}
 	}
@@ -156,7 +199,7 @@ func (c *TomlConfig) validateEquivalenceGroup(actionName string, resource Mainte
 }
 
 func validateOneSupersedingGroup(actionName, group string, resource MaintenanceResource,
-	remediationActions map[string]MaintenanceResource,
+	allResources []MaintenanceResource,
 ) error {
 	if group == resource.EquivalenceGroup {
 		return fmt.Errorf("action '%s': SupersedingEquivalenceGroup cannot include the EquivalenceGroup itself: %s",
@@ -165,7 +208,7 @@ func validateOneSupersedingGroup(actionName, group string, resource MaintenanceR
 
 	foundGroup := false
 
-	for _, maintenanceResource := range remediationActions {
+	for _, maintenanceResource := range allResources {
 		if group != maintenanceResource.EquivalenceGroup {
 			continue
 		}
@@ -184,6 +227,42 @@ func validateOneSupersedingGroup(actionName, group string, resource MaintenanceR
 	}
 
 	return nil
+}
+
+func (c *TomlConfig) allMaintenanceResources() []MaintenanceResource {
+	allResources := make([]MaintenanceResource, 0,
+		len(c.RemediationActions)+len(c.ComponentRemediationActions))
+
+	for _, resource := range c.RemediationActions {
+		allResources = append(allResources, resource)
+	}
+
+	for _, actions := range c.ComponentRemediationActions {
+		for _, resource := range actions {
+			allResources = append(allResources, resource)
+		}
+	}
+
+	return allResources
+}
+
+// ResolveMaintenanceResource returns the component-specific remediation action when present,
+// otherwise it falls back to the shared action-level configuration.
+func (c *TomlConfig) ResolveMaintenanceResource(componentClass, actionName string) (MaintenanceResource, string, bool) {
+	if componentClass != "" {
+		if componentActions, exists := c.ComponentRemediationActions[componentClass]; exists {
+			if resource, ok := componentActions[actionName]; ok {
+				return resource, componentClass + "/" + actionName, true
+			}
+		}
+	}
+
+	resource, exists := c.RemediationActions[actionName]
+	if !exists {
+		return MaintenanceResource{}, "", false
+	}
+
+	return resource, actionName, true
 }
 
 func validateResourceImpactedEntityScope(actionName string, resource MaintenanceResource) error {
