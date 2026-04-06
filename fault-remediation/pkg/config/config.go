@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -246,13 +247,24 @@ func (c *TomlConfig) allMaintenanceResources() []MaintenanceResource {
 	return allResources
 }
 
+// ResolvedActionKey returns the canonical key used for resolved remediation actions.
+// Shared actions use the action name directly, while component-specific overrides are
+// namespaced by componentClass.
+func ResolvedActionKey(componentClass, actionName string) string {
+	if componentClass == "" {
+		return actionName
+	}
+
+	return componentClass + "/" + actionName
+}
+
 // ResolveMaintenanceResource returns the component-specific remediation action when present,
 // otherwise it falls back to the shared action-level configuration.
 func (c *TomlConfig) ResolveMaintenanceResource(componentClass, actionName string) (MaintenanceResource, string, bool) {
 	if componentClass != "" {
 		if componentActions, exists := c.ComponentRemediationActions[componentClass]; exists {
 			if resource, ok := componentActions[actionName]; ok {
-				return resource, componentClass + "/" + actionName, true
+				return resource, ResolvedActionKey(componentClass, actionName), true
 			}
 		}
 	}
@@ -263,6 +275,33 @@ func (c *TomlConfig) ResolveMaintenanceResource(componentClass, actionName strin
 	}
 
 	return resource, actionName, true
+}
+
+func (c *TomlConfig) SharedActionNames() []string {
+	actions := make([]string, 0, len(c.RemediationActions))
+	for action := range c.RemediationActions {
+		actions = append(actions, action)
+	}
+
+	sort.Strings(actions)
+
+	return actions
+}
+
+func (c *TomlConfig) ComponentActionNames(componentClass string) []string {
+	componentActions, exists := c.ComponentRemediationActions[componentClass]
+	if !exists {
+		return nil
+	}
+
+	actions := make([]string, 0, len(componentActions))
+	for action := range componentActions {
+		actions = append(actions, action)
+	}
+
+	sort.Strings(actions)
+
+	return actions
 }
 
 func validateResourceImpactedEntityScope(actionName string, resource MaintenanceResource) error {

@@ -430,3 +430,38 @@ func TestTomlConfig_ResolveMaintenanceResource(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedActionKeyAndActionNameHelpers(t *testing.T) {
+	config := TomlConfig{
+		RemediationActions: map[string]MaintenanceResource{
+			"RESTART_VM":      {},
+			"COMPONENT_RESET": {},
+		},
+		ComponentRemediationActions: ComponentRemediationActions{
+			"GPU": {
+				"COMPONENT_RESET": {},
+				"RESTART_BM":      {},
+			},
+		},
+	}
+
+	if got := ResolvedActionKey("", "COMPONENT_RESET"); got != "COMPONENT_RESET" {
+		t.Fatalf("ResolvedActionKey() = %q, want %q", got, "COMPONENT_RESET")
+	}
+
+	if got := ResolvedActionKey("GPU", "COMPONENT_RESET"); got != "GPU/COMPONENT_RESET" {
+		t.Fatalf("ResolvedActionKey() = %q, want %q", got, "GPU/COMPONENT_RESET")
+	}
+
+	if got := config.SharedActionNames(); len(got) != 2 || got[0] != "COMPONENT_RESET" || got[1] != "RESTART_VM" {
+		t.Fatalf("SharedActionNames() = %v, want %v", got, []string{"COMPONENT_RESET", "RESTART_VM"})
+	}
+
+	if got := config.ComponentActionNames("GPU"); len(got) != 2 || got[0] != "COMPONENT_RESET" || got[1] != "RESTART_BM" {
+		t.Fatalf("ComponentActionNames(GPU) = %v, want %v", got, []string{"COMPONENT_RESET", "RESTART_BM"})
+	}
+
+	if got := config.ComponentActionNames("LPU"); got != nil {
+		t.Fatalf("ComponentActionNames(LPU) = %v, want nil", got)
+	}
+}

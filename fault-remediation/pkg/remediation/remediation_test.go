@@ -111,6 +111,56 @@ func TestNewRemediationClient(t *testing.T) {
 	}
 }
 
+func TestNewRemediationClient_LoadsComponentSpecificTemplates(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rebootTemplate := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .HealthEvent.NodeName }}`
+	gpuTemplate := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: GPUReset
+metadata:
+  name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .HealthEvent.NodeName }}`
+
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "rebootnode-template.yaml"), []byte(rebootTemplate), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "gpureset-template.yaml"), []byte(gpuTemplate), 0644))
+
+	testConfig := config.TomlConfig{
+		Template: config.Template{MountPath: tempDir},
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_COMPONENT_RESET.String(): {
+				Version:               "v1alpha1",
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Kind:                  "RebootNode",
+				CompleteConditionType: "NodeReady",
+				TemplateFileName:      "rebootnode-template.yaml",
+			},
+		},
+		ComponentRemediationActions: config.ComponentRemediationActions{
+			"GPU": {
+				protos.RecommendedAction_COMPONENT_RESET.String(): {
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "GPUReset",
+					CompleteConditionType: "Complete",
+					TemplateFileName:      "gpureset-template.yaml",
+				},
+			},
+		},
+	}
+
+	result, err := NewRemediationClient(fake.NewClientBuilder().Build(), false, testConfig)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, result.templates, protos.RecommendedAction_COMPONENT_RESET.String())
+	assert.Contains(t, result.templates, "GPU/"+protos.RecommendedAction_COMPONENT_RESET.String())
+}
+
 func TestNewRemediationClient_MissingTemplateFile_E2E(t *testing.T) {
 	// Create a temporary directory for test files
 
@@ -359,6 +409,101 @@ spec:
 			}
 		})
 	}
+}
+
+func TestCreateMaintenanceResource_UsesComponentSpecificOverride(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rebootTemplate := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: RebootNode
+metadata:
+  name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .HealthEvent.NodeName }}
+  force: false`
+	gpuTemplate := `apiVersion: janitor.dgxc.nvidia.com/v1alpha1
+kind: GPUReset
+metadata:
+  name: maintenance-{{ .HealthEvent.NodeName }}-{{ .HealthEventID }}
+spec:
+  nodeName: {{ .HealthEvent.NodeName }}
+  selector:
+    uuids:
+      - {{ .ImpactedEntityScopeValue }}`
+
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "rebootnode-template.yaml"), []byte(rebootTemplate), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "gpureset-template.yaml"), []byte(gpuTemplate), 0644))
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node-override"},
+	}
+	fakeClient := fake.NewClientBuilder().WithObjects(node).Build()
+
+	cfg := config.TomlConfig{
+		Template: config.Template{MountPath: tempDir},
+		RemediationActions: map[string]config.MaintenanceResource{
+			protos.RecommendedAction_COMPONENT_RESET.String(): {
+				Namespace:             "dgxc-janitor",
+				Version:               "v1alpha1",
+				ApiGroup:              "janitor.dgxc.nvidia.com",
+				Kind:                  "RebootNode",
+				CompleteConditionType: "NodeReady",
+				TemplateFileName:      "rebootnode-template.yaml",
+				EquivalenceGroup:      "restart",
+			},
+		},
+		ComponentRemediationActions: config.ComponentRemediationActions{
+			"GPU": {
+				protos.RecommendedAction_COMPONENT_RESET.String(): {
+					Namespace:             "dgxc-janitor",
+					Version:               "v1alpha1",
+					ApiGroup:              "janitor.dgxc.nvidia.com",
+					Kind:                  "GPUReset",
+					CompleteConditionType: "Complete",
+					TemplateFileName:      "gpureset-template.yaml",
+					EquivalenceGroup:      "reset",
+					ImpactedEntityScope:   "GPU_UUID",
+				},
+			},
+		},
+	}
+
+	remediationClient, err := NewRemediationClient(fakeClient, false, cfg)
+	require.NoError(t, err)
+
+	healthEventDoc := &events.HealthEventData{
+		ID: uuid.New().String(),
+		HealthEventWithStatus: model.HealthEventWithStatus{
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          "test-node-override",
+				ComponentClass:    "GPU",
+				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+				EntitiesImpacted: []*protos.Entity{
+					{
+						EntityType:  "GPU_UUID",
+						EntityValue: "GPU-123",
+					},
+				},
+			},
+		},
+	}
+	groupConfig, err := common.GetGroupConfigForEvent(&cfg, healthEventDoc.HealthEvent)
+	require.NoError(t, err)
+
+	crName, err := remediationClient.CreateMaintenanceResource(context.Background(), healthEventDoc, groupConfig)
+	require.NoError(t, err)
+	require.NotEmpty(t, crName)
+
+	gvk := schema.GroupVersionKind{
+		Group:   "janitor.dgxc.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "GPUReset",
+	}
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: crName}, obj)
+	require.NoError(t, err)
+	assert.Equal(t, "GPUReset", obj.GetKind())
 }
 
 func TestRunLogCollectorJob(t *testing.T) {

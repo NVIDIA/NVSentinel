@@ -86,22 +86,33 @@ func NewRemediationClient(
 
 	// Load templates for multi-template actions
 	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
-		if maintenanceResource.TemplateFileName == "" {
-			return nil, fmt.Errorf("remediation action %s is missing template file configuration", actionName)
+		if err := loadTemplateForAction(templates, templateMountPath, actionName, maintenanceResource); err != nil {
+			return nil, err
 		}
+	}
 
-		tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load template for action %s: %w", actionName, err)
+	for componentClass, actions := range remediationConfig.ComponentRemediationActions {
+		for actionName, maintenanceResource := range actions {
+			actionKey := config.ResolvedActionKey(componentClass, actionName)
+			if err := loadTemplateForAction(templates, templateMountPath, actionKey, maintenanceResource); err != nil {
+				return nil, err
+			}
 		}
-
-		templates[actionName] = tmpl
 	}
 
 	// Validate namespace configuration for namespaced resources
 	for actionName, maintenanceResource := range remediationConfig.RemediationActions {
 		if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace == "" {
 			return nil, fmt.Errorf("remediation action %s is namespaced but missing namespace configuration", actionName)
+		}
+	}
+
+	for componentClass, actions := range remediationConfig.ComponentRemediationActions {
+		for actionName, maintenanceResource := range actions {
+			if maintenanceResource.Scope == "Namespaced" && maintenanceResource.Namespace == "" {
+				return nil, fmt.Errorf("remediation action %s for componentClass %s is namespaced but missing namespace configuration",
+					actionName, componentClass)
+			}
 		}
 	}
 
@@ -155,6 +166,23 @@ func loadAndParseTemplate(mountPath, fileName, templateName string) (*template.T
 	return tmpl, nil
 }
 
+func loadTemplateForAction(templates map[string]*template.Template, templateMountPath, actionKey string,
+	maintenanceResource config.MaintenanceResource,
+) error {
+	if maintenanceResource.TemplateFileName == "" {
+		return fmt.Errorf("remediation action %s is missing template file configuration", actionKey)
+	}
+
+	tmpl, err := loadAndParseTemplate(templateMountPath, maintenanceResource.TemplateFileName, actionKey)
+	if err != nil {
+		return fmt.Errorf("failed to load template for action %s: %w", actionKey, err)
+	}
+
+	templates[actionKey] = tmpl
+
+	return nil
+}
+
 func (c *FaultRemediationClient) GetAnnotationManager() annotation.NodeAnnotationManagerInterface {
 	return c.annotationManager
 }
@@ -180,7 +208,7 @@ func (c *FaultRemediationClient) CreateMaintenanceResource(ctx context.Context, 
 	recommendedActionName := healthEvent.RecommendedAction.String()
 
 	maintenanceResource, selectedTemplate, actionKey, err :=
-		c.selectRemediationActionAndTemplate(recommendedActionName, healthEvent.NodeName)
+		c.selectRemediationActionAndTemplate(healthEvent.ComponentClass, recommendedActionName, healthEvent.NodeName)
 	if err != nil {
 		return "", fmt.Errorf("error selecting remediation action and template: %w", err)
 	}
@@ -326,36 +354,34 @@ func setNodeOwnerRef(maintenance *unstructured.Unstructured, node *corev1.Node) 
 }
 
 func (c *FaultRemediationClient) selectRemediationActionAndTemplate(
+	componentClass string,
 	recommendedActionName string,
 	nodeName string,
 ) (config.MaintenanceResource, *template.Template, string, error) {
-	resource, exists := c.remediationConfig.RemediationActions[recommendedActionName]
+	resource, actionKey, exists := c.remediationConfig.ResolveMaintenanceResource(componentClass, recommendedActionName)
 	if !exists {
 		slog.Error("No remediation configuration found for action",
 			"action", recommendedActionName,
+			"componentClass", componentClass,
 			"node", nodeName,
-			"availableActions", func() []string {
-				actions := make([]string, 0, len(c.remediationConfig.RemediationActions))
-				for action := range c.remediationConfig.RemediationActions {
-					actions = append(actions, action)
-				}
-
-				return actions
-			}())
+			"availableSharedActions", c.remediationConfig.SharedActionNames(),
+			"availableComponentActions", c.remediationConfig.ComponentActionNames(componentClass))
 
 		return config.MaintenanceResource{}, nil, "", fmt.Errorf("no remediation config for action")
 	}
 
-	tmpl := c.templates[recommendedActionName]
+	tmpl := c.templates[actionKey]
 	if tmpl == nil {
 		slog.Error("No template available for remediation action",
 			"action", recommendedActionName,
+			"componentClass", componentClass,
+			"actionKey", actionKey,
 			"node", nodeName)
 
 		return config.MaintenanceResource{}, nil, "", fmt.Errorf("no template available for remediation action")
 	}
 
-	return resource, tmpl, recommendedActionName, nil
+	return resource, tmpl, actionKey, nil
 }
 
 // getNodeForOwnerReference retrieves the node for setting owner reference on the CR.
