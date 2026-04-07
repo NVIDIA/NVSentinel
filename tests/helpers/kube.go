@@ -1274,6 +1274,57 @@ func WaitForDeploymentRollout(
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
 }
 
+// WaitForDeploymentRolloutWithTimeout is like WaitForDeploymentRollout but accepts a
+// custom timeout. Use this when a tighter deadline is needed (e.g., to fail fast on
+// expected crash loops).
+func WaitForDeploymentRolloutWithTimeout(
+	ctx context.Context, t *testing.T, c klient.Client, name, namespace string, timeout time.Duration,
+) {
+	t.Helper()
+
+	t.Logf("Waiting for rollout to complete for deployment %s/%s (timeout %v)",
+		namespace, name, timeout)
+
+	require.Eventually(t, func() bool {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
+			t.Logf("Error getting deployment: %v", err)
+			return false
+		}
+
+		expectedReplicas, replicasReady := checkDeploymentReplicaStatus(t, deployment)
+		if !replicasReady {
+			return false
+		}
+
+		if expectedReplicas == 0 {
+			t.Logf("Rollout complete: deployment %s/%s scaled to zero", deployment.Namespace, deployment.Name)
+			return true
+		}
+
+		selector := buildMatchLabelSelector(t, deployment)
+		if selector == "" {
+			t.Logf("Deployment %s/%s has empty or invalid selector", deployment.Namespace, deployment.Name)
+			return false
+		}
+
+		currentRS, foundReplicaSet := findCurrentReplicaSet(ctx, t, c, selector, deployment, namespace)
+		if !foundReplicaSet {
+			return false
+		}
+
+		if !hasReadyPodFromReplicaSet(ctx, t, c, selector, namespace, currentRS) {
+			return false
+		}
+
+		t.Logf("Rollout complete: all %d replicas are updated, ready, and available", expectedReplicas)
+
+		return true
+	}, timeout, WaitInterval, "deployment %s/%s rollout should complete within %v", namespace, name, timeout)
+
+	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
+}
+
 func checkDeploymentReplicaStatus(t *testing.T, deployment *appsv1.Deployment) (int32, bool) {
 	t.Helper()
 

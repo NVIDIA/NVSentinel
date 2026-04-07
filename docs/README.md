@@ -50,4 +50,5 @@ Individual component feature documentation:
 - [Labeler](./labeler.md)
 - [Log Collection](./log-collection.md)
 - [Platform Connectors](./platform-connectors.md)
+- [Preflight](./preflight.md)
 - [State Manager](./state-manager.md)

@@ -52,20 +52,29 @@ class OperationStatus(_message.Message):
     def __init__(self, status: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
 
 class HealthEventStatus(_message.Message):
-    __slots__ = ("nodeQuarantined", "quarantineFinishTimestamp", "userPodsEvictionStatus", "drainFinishTimestamp", "faultRemediated", "lastRemediationTimestamp")
+    __slots__ = ("nodeQuarantined", "quarantineFinishTimestamp", "userPodsEvictionStatus", "drainFinishTimestamp", "faultRemediated", "lastRemediationTimestamp", "spanIds")
+    class SpanIdsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
     NODEQUARANTINED_FIELD_NUMBER: _ClassVar[int]
     QUARANTINEFINISHTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     USERPODSEVICTIONSTATUS_FIELD_NUMBER: _ClassVar[int]
     DRAINFINISHTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
     FAULTREMEDIATED_FIELD_NUMBER: _ClassVar[int]
     LASTREMEDIATIONTIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    SPANIDS_FIELD_NUMBER: _ClassVar[int]
     nodeQuarantined: str
     quarantineFinishTimestamp: _timestamp_pb2.Timestamp
     userPodsEvictionStatus: OperationStatus
     drainFinishTimestamp: _timestamp_pb2.Timestamp
     faultRemediated: _wrappers_pb2.BoolValue
     lastRemediationTimestamp: _timestamp_pb2.Timestamp
-    def __init__(self, nodeQuarantined: _Optional[str] = ..., quarantineFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., userPodsEvictionStatus: _Optional[_Union[OperationStatus, _Mapping]] = ..., drainFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., faultRemediated: _Optional[_Union[_wrappers_pb2.BoolValue, _Mapping]] = ..., lastRemediationTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+    spanIds: _containers.ScalarMap[str, str]
+    def __init__(self, nodeQuarantined: _Optional[str] = ..., quarantineFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., userPodsEvictionStatus: _Optional[_Union[OperationStatus, _Mapping]] = ..., drainFinishTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., faultRemediated: _Optional[_Union[_wrappers_pb2.BoolValue, _Mapping]] = ..., lastRemediationTimestamp: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., spanIds: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class HealthEventWithStatus(_message.Message):
     __slots__ = ("createdAt", "healthEvent", "healthEventStatus")

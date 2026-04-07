@@ -1,5 +1,7 @@
 # ADR-026: Feature — Preflight Checks
 
+**Operator guide:** [Preflight configuration](../configuration/preflight.md)
+
 ## Context
 
 GPU failures during training waste compute time. Running diagnostics before the workload starts catches bad GPUs early.

@@ -103,6 +103,11 @@ func (m *MockHealthEventStore) UpdateHealthEventStatusByNode(ctx context.Context
 	return args.Error(0)
 }
 
+func (m *MockHealthEventStore) UpdateSpanID(ctx context.Context, id string, serviceName string, spanID string) error {
+	args := m.Called(ctx, id, serviceName, spanID)
+	return args.Error(0)
+}
+
 func (m *MockHealthEventStore) FindHealthEventsByNode(ctx context.Context, nodeName string) ([]datastore.HealthEventWithStatus, error) {
 	args := m.Called(ctx, nodeName)
 	if args.Get(0) == nil {

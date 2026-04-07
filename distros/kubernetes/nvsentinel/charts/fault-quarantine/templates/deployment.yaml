@@ -167,6 +167,7 @@ spec:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
+            {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 12 }}
       volumes:
       - name: config-volume
         configMap:

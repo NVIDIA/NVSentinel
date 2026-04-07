@@ -145,5 +145,9 @@ spec:
                 lastRemediationTimestamp:
                   type: string
                   format: RFC3339
+                spanIds:
+                  type: object
+                  additionalProperties:
+                    type: string
           description: HealthEventResource is the root type for CRD generation. This will map to Kubernetes .spec and .status fields.
       additionalPrinterColumns: []

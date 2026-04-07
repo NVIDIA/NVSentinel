@@ -259,33 +259,48 @@ class DCGMWatcher:
 
         Returns:
             A tuple of (dcgm_group, gpu_ids, gpu_serials)
+
+        If any step after group creation fails the group is deleted before the
+        exception propagates so that it does not leak on the DCGM server.
         """
         dcgm_group = self._create_dcgm_group_with_all_entities(dcgm_handle)
-        with metrics.dcgm_api_latency.labels("group_health_set").time():
-            dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
+        try:
+            with metrics.dcgm_api_latency.labels("group_health_set").time():
+                dcgm_group.health.Set(dcgm_structs.DCGM_HEALTH_WATCH_ALL)
 
-        gpu_ids = dcgm_group.GetGpuIds()
-        gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
-        log.info(f"dcgm gpu_id are {gpu_ids}")
+            gpu_ids = dcgm_group.GetGpuIds()
+            gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
+            log.info(f"dcgm gpu_id are {gpu_ids}")
 
-        return dcgm_group, gpu_ids, gpu_serials
+            return dcgm_group, gpu_ids, gpu_serials
+        except Exception as e:
+            log.warning(f"DCGM monitoring initialization failed, rolling back group: {e}")
+            try:
+                dcgm_group.Delete()
+            except Exception as del_err:
+                log.warning(f"Failed to delete DCGM group during init rollback: {del_err}")
+                metrics.dcgm_api_failures.labels("init_group_rollback").inc()
+            raise
 
     def _cleanup_dcgm_resources(
         self,
         dcgm_group: pydcgm.DcgmGroup,
         dcgm_handle: pydcgm.DcgmHandle,
     ):
-        """Clean up DCGM resources safely."""
-        try:
-            if dcgm_group:
+        """Clean up DCGM resources safely.
+
+        Group deletion and handle shutdown are in separate try blocks so that
+        a failure in Delete() does not prevent Shutdown() from running.
+        """
+        if dcgm_group:
+            try:
                 dcgm_group.Delete()
-                dcgm_group = None
-            if dcgm_handle:
-                # Clean up the handle
-                dcgm_handle.Shutdown()
-                del dcgm_handle
-        except Exception as e:
-            log.error(f"Error cleaning up DCGM handle: {e}")
+            except Exception as e:
+                log.warning(f"Error deleting DCGM group (will still shut down handle): {e}")
+                metrics.dcgm_api_failures.labels("group_delete_error").inc()
+
+        if dcgm_handle:
+            dcgm_handle.Shutdown()
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
         dcgm_handle = None

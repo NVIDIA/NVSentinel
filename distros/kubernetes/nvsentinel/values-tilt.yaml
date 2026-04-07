@@ -121,7 +121,9 @@ preflight:
     diagLevel: 3
   initContainers:
     - name: preflight-dcgm-diag
-      image: busybox:latest
+      image:
+        repository: busybox
+        tag: latest
       command: ["/bin/sh", "-c"]
       args: ["echo 'preflight-dcgm-diag: no real GPU, exiting ok'; exit 0"]
 

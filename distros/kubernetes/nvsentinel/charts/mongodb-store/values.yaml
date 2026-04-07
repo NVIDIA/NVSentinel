@@ -35,7 +35,7 @@ usePerconaOperator: false
 # Instead of X.509 cert-based users, the Job creates a SCRAM-SHA-256 user
 # with readWrite access to the NVSentinel database.
 # NOTE: This only provisions the user in MongoDB. To use it, configure
-# MONGODB_URI with the SCRAM credentials (e.g. mongodb://nvsentinel:pass@host/db).
+# MONGODB_URI with the SCRAM credentials (build the URL from this user, the resolved password, and host/db).
 scramAppUser:
   username: nvsentinel
   # Secret and key containing the application user password.

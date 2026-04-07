@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import dcgm_structs, dcgm_errors, dcgm_fields, dcgm_field_helpers
 from threading import Event, Thread
 from ctypes import pointer
+import pytest
 
 
 class FakeEventProcessorInTest(dcgm.types.CallbackInterface):
@@ -505,3 +506,63 @@ class TestDCGMHealthChecks:
         assert len(gpu_serials) == 4
         # Verify that health.Set was called on the actual group object
         group.health.Set.assert_called_once()
+
+
+class TestDCGMHandleLeakFix:
+    """Tests for the DCGM handle/connection leak fix (issue #1078).
+
+    Covers: split try-blocks in cleanup and init rollback.
+    """
+
+    def _make_watcher(self):
+        return dcgm.DCGMWatcher(
+            addr="localhost:5555",
+            poll_interval_seconds=10,
+            callbacks=[],
+            dcgm_k8s_service_enabled=False,
+        )
+
+    @pytest.mark.parametrize(
+        "group_is_none, delete_raises",
+        [
+            (False, True),
+            (True, False),
+        ],
+        ids=["delete_throws", "none_group"],
+    )
+    def test_cleanup_dcgm_resources(self, group_is_none, delete_raises):
+        """Shutdown() always runs regardless of Delete() outcome."""
+        watcher = self._make_watcher()
+        dcgm_handle_mock = MagicMock()
+
+        dcgm_group_mock = None
+        if not group_is_none:
+            dcgm_group_mock = MagicMock()
+            if delete_raises:
+                dcgm_group_mock.Delete.side_effect = Exception("Delete failed")
+
+        watcher._cleanup_dcgm_resources(dcgm_group_mock, dcgm_handle_mock)
+
+        dcgm_handle_mock.Shutdown.assert_called_once()
+        if not group_is_none:
+            dcgm_group_mock.Delete.assert_called_once()
+
+    @patch("pydcgm.DcgmGroup.__new__")
+    def test_init_monitoring_rolls_back_group_on_failure(self, mock_dcgm_group):
+        """Group must be deleted if initialization fails after group creation."""
+        watcher = self._make_watcher()
+        dcgm_handle_mock = MagicMock()
+        dcgm_group_mock = MagicMock()
+        mock_dcgm_group.return_value = dcgm_group_mock
+
+        dcgm_system_mock = MagicMock()
+        dcgm_system_mock.discovery.GetEntityGroupEntities.return_value = [0, 1]
+        dcgm_handle_mock.GetSystem.return_value = dcgm_system_mock
+
+        # health.Set() fails after group is created
+        dcgm_group_mock.health.Set.side_effect = Exception("DCGM connection lost")
+
+        with pytest.raises(Exception, match="DCGM connection lost"):
+            watcher._initialize_dcgm_monitoring(dcgm_handle_mock)
+
+        dcgm_group_mock.Delete.assert_called_once()
