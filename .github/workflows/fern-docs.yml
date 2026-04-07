@@ -50,14 +50,12 @@ on:
         required: false
         type: string
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   # Detect changed files for conditional job execution
   changed-files:
     runs-on: linux-amd64-cpu32
+    permissions:
+      contents: read
     # Skip for tag pushes - version release doesn't need changed-files check
     if: github.ref_type != 'tag'
     outputs:
@@ -71,11 +69,14 @@ jobs:
       - name: Check for docs changes
         id: changes
         run: |
-          if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -qE '^(docs/|fern/)'; then
-            echo "docs=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "docs=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "docs=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # New branch push - treat as having docs changes
+            echo "docs=true" >> $GITHUB_OUTPUT
+          elif git diff --name-only "${{ github.event.before }}" HEAD 2>/dev/null | grep -qE '^(docs/|fern/)'; then
             echo "docs=true" >> $GITHUB_OUTPUT
           else
             echo "docs=false" >> $GITHUB_OUTPUT
@@ -93,6 +94,8 @@ jobs:
       needs.changed-files.outputs.docs == 'true' &&
       github.event_name == 'pull_request'
     runs-on: linux-amd64-cpu32
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -103,7 +106,7 @@ jobs:
           node-version: '22'
 
       - name: Install Fern CLI
-        run: npm install -g fern-api
+        run: npm install -g fern-api@4.23.0
 
       - name: Validate Fern configuration
         run: fern check
@@ -116,6 +119,8 @@ jobs:
       needs.changed-files.outputs.docs == 'true' &&
       github.event_name == 'pull_request'
     runs-on: linux-amd64-cpu32
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,7 +131,7 @@ jobs:
           node-version: '22'
 
       - name: Install Fern CLI
-        run: npm install -g fern-api
+        run: npm install -g fern-api@4.23.0
 
       - name: Check for broken links
         run: fern docs broken-links
@@ -145,6 +150,9 @@ jobs:
       needs.changed-files.outputs.docs == 'true' &&
       (github.event.inputs.tag == '' || github.event.inputs.tag == null)
     runs-on: linux-amd64-cpu32
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Determine context
         id: ctx
@@ -208,6 +216,9 @@ jobs:
             cp -r source-checkout/fern/assets docs-checkout/fern/assets
           fi
 
+      - name: Install yq
+        uses: mikefarah/yq@v4
+
       - name: Transform paths in dev.yml for docs-website layout
         run: |
           # In the source repo, index.yml uses paths relative to docs/ (e.g. OVERVIEW.md).
@@ -247,7 +258,7 @@ jobs:
         id: changes
         run: |
           cd docs-checkout
-          if git diff --quiet && git diff --cached --quiet; then
+          if [ -z "$(git status --porcelain)" ]; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
             echo "No changes detected"
           else
@@ -264,7 +275,7 @@ jobs:
 
       - name: Install Fern CLI
         if: steps.changes.outputs.has_changes == 'true'
-        run: npm install -g fern-api
+        run: npm install -g fern-api@4.23.0
 
       ##########################################################################
       # PREVIEW - Generate a preview URL for docs changes
@@ -293,7 +304,7 @@ jobs:
           fi
 
       - name: Comment preview URL on PR
-        if: steps.ctx.outputs.is_main != 'true' && steps.preview.outputs.url != ''
+        if: steps.ctx.outputs.is_main != 'true' && steps.preview.outputs.url != '' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -347,6 +358,8 @@ jobs:
       github.ref_type == 'tag' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && github.event.inputs.tag != null)
     runs-on: linux-amd64-cpu32
+    permissions:
+      contents: write
     steps:
       - name: Determine version tag
         id: version
@@ -410,11 +423,11 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
 
           find "fern/pages-$TAG" -name "*.md" -o -name "*.mdx" | while read file; do
-            if grep -q "github.com/pdmack/NVSentinel/tree/main" "$file"; then
-              sed -i "s|github.com/pdmack/NVSentinel/tree/main|github.com/pdmack/NVSentinel/tree/$TAG|g" "$file"
+            if grep -q "github.com/NVIDIA/NVSentinel/tree/main" "$file"; then
+              sed -i "s|github.com/NVIDIA/NVSentinel/tree/main|github.com/NVIDIA/NVSentinel/tree/$TAG|g" "$file"
             fi
-            if grep -q "github.com/pdmack/NVSentinel/blob/main" "$file"; then
-              sed -i "s|github.com/pdmack/NVSentinel/blob/main|github.com/pdmack/NVSentinel/blob/$TAG|g" "$file"
+            if grep -q "github.com/NVIDIA/NVSentinel/blob/main" "$file"; then
+              sed -i "s|github.com/NVIDIA/NVSentinel/blob/main|github.com/NVIDIA/NVSentinel/blob/$TAG|g" "$file"
             fi
           done
 
@@ -436,6 +449,9 @@ jobs:
 
           echo "Created $VERSION_FILE"
 
+      - name: Install yq
+        uses: mikefarah/yq@v4
+
       - name: Update docs.yml with new version
         run: |
           TAG="${{ steps.version.outputs.tag }}"
@@ -451,6 +467,10 @@ jobs:
 
           # Find the index of the "dev" entry and insert new version right after it
           DEV_IDX=$(yq '.products[0].versions | to_entries | map(select(.value.display-name == "dev")) | .[0].key' "$DOCS_FILE")
+          if [ -z "$DEV_IDX" ] || [ "$DEV_IDX" = "null" ]; then
+            echo "::error::Could not find 'dev' version entry in docs.yml products[0].versions"
+            exit 1
+          fi
           INSERT_IDX=$((DEV_IDX + 1))
 
           yq -i "
@@ -498,7 +518,7 @@ jobs:
           node-version: '22'
 
       - name: Install Fern CLI
-        run: npm install -g fern-api
+        run: npm install -g fern-api@4.23.0
 
       - name: Publish Docs
         env:

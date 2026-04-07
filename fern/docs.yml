@@ -27,7 +27,7 @@ redirects:
 # GitHub repository link in navbar
 navbar-links:
   - type: github
-    value: https://github.com/pdmack/NVSentinel
+    value: https://github.com/NVIDIA/NVSentinel
 
 footer: ./components/CustomFooter.tsx
 

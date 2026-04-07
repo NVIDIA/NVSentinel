@@ -365,7 +365,7 @@ animation-range: 0 50px;
   .bd-footer__inner { padding: 0 1.5rem; }
   .footer-items__start { gap: 1rem; }
   .footer-links { flex-direction: row; gap: 0.5rem 0.75rem; }
-  .footer-links a { white-space: normal; word-break: break-word; }
+  .footer-links a { white-space: normal; overflow-wrap: break-word; }
 }
 @media (max-width: 480px) {
   .footer-links { gap: 0.5rem; }
@@ -539,14 +539,8 @@ svg.card-icon{
     opacity: 0.05;
     pointer-events: none;
     z-index: 5;
-    mask-image: url('https://www.figma.com/api/mcp/asset/27509afa-9c16-46bb-8415-4395e2e5a347');
-    mask-repeat: no-repeat;
-    mask-position: 0% -17px;
-    mask-size: 100% auto;
-    -webkit-mask-image: url('https://www.figma.com/api/mcp/asset/27509afa-9c16-46bb-8415-4395e2e5a347');
-    -webkit-mask-repeat: no-repeat;
-    -webkit-mask-position: 0% -17px;
-    -webkit-mask-size: 100% auto;
+    /* mask-image removed: external Figma asset URL was broken (404).
+       To restore the masked gradient, download the SVG and host it under fern/assets/. */
 }
 
 /* Landing Page Gradients Wrapper */

@@ -19,7 +19,7 @@ export default function CustomFooter() {
                 className="footer-brand"
                 href="https://www.nvidia.com"
                 target="_blank"
-                rel="noopener"
+                rel="noopener noreferrer"
               >
                 <img src={logoUrl} className="logo__image only-light" alt="NVIDIA" />
                 <img src={logoUrl} className="logo__image only-dark" alt="NVIDIA" />
@@ -64,21 +64,21 @@ export default function CustomFooter() {
           </div>
           <div className="footer-item">
             <div className="footer-links">
-              <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/" target="_blank" rel="noopener">Privacy Policy</a>
+              <a href="https://www.nvidia.com/en-us/about-nvidia/privacy-policy/" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/preferences/cookie-policy/" target="_blank" rel="noopener">Manage My Privacy</a>
+              <a href="https://www.nvidia.com/en-us/preferences/cookie-policy/" target="_blank" rel="noopener noreferrer">Manage My Privacy</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/preferences/start/" target="_blank" rel="noopener">Do Not Sell or Share My Data</a>
+              <a href="https://www.nvidia.com/en-us/preferences/start/" target="_blank" rel="noopener noreferrer">Do Not Sell or Share My Data</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/" target="_blank" rel="noopener">Terms of Service</a>
+              <a href="https://www.nvidia.com/en-us/about-nvidia/terms-of-service/" target="_blank" rel="noopener noreferrer">Terms of Service</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/about-nvidia/accessibility/" target="_blank" rel="noopener">Accessibility</a>
+              <a href="https://www.nvidia.com/en-us/about-nvidia/accessibility/" target="_blank" rel="noopener noreferrer">Accessibility</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/about-nvidia/company-policies/" target="_blank" rel="noopener">Corporate Policies</a>
+              <a href="https://www.nvidia.com/en-us/about-nvidia/company-policies/" target="_blank" rel="noopener noreferrer">Corporate Policies</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/product-security/" target="_blank" rel="noopener">Product Security</a>
+              <a href="https://www.nvidia.com/en-us/product-security/" target="_blank" rel="noopener noreferrer">Product Security</a>
               <span className="pipe-separator"> | </span>
-              <a href="https://www.nvidia.com/en-us/contact/" target="_blank" rel="noopener">Contact</a>
+              <a href="https://www.nvidia.com/en-us/contact/" target="_blank" rel="noopener noreferrer">Contact</a>
             </div>
           </div>
           <div className="footer-item">
