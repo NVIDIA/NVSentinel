@@ -104,6 +104,10 @@ jobs:
         if: matrix.component == 'helm-charts'
         run: make helm-lint
 
+      - name: Run Helm Chart Unit Tests
+        if: matrix.component == 'helm-charts'
+        run: make helm-test
+
   health-monitors-lint-test:
     if: github.repository == 'nvidia/nvsentinel'
     runs-on: linux-amd64-cpu16

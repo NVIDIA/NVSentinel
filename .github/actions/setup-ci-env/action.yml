@@ -48,6 +48,7 @@ runs:
         echo "goimports_version=$(yq '.go_tools.goimports' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "crane_version=$(yq '.go_tools.crane' .versions.yaml)" >> $GITHUB_OUTPUT
         echo "helm_version=$(yq '.testing_tools.helm' .versions.yaml)" >> $GITHUB_OUTPUT
+        echo "helm_unittest_version=$(yq '.testing_tools.helm_unittest' .versions.yaml)" >> $GITHUB_OUTPUT
 
     - name: Install base dependencies
       shell: bash
@@ -94,6 +95,11 @@ runs:
       shell: bash
       run: |
         helm plugin install https://github.com/chartmuseum/helm-push || echo "Helm push plugin may already be installed"
+
+    - name: Install Helm unittest plugin
+      shell: bash
+      run: |
+        helm plugin install https://github.com/helm-unittest/helm-unittest --version ${{ steps.versions.outputs.helm_unittest_version }} || echo "Helm unittest plugin may already be installed"
 
     - name: Set up Go
       uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00  # v6.0.0
