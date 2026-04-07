@@ -302,5 +302,12 @@ namespaceSelector:
   matchLabels:
     nvsentinel.nvidia.com/preflight: "enabled"
 
+# Pod-level opt-in filtering (empty = no objectSelector emitted, all pods matched)
+# Example: target only pods with a specific label:
+#   objectSelector:
+#     matchLabels:
+#       nvsentinel.nvidia.com/preflight: "enabled"
+objectSelector: {}
+
 networkPolicy:
   enabled: true
