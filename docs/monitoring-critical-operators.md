@@ -252,7 +252,7 @@ If you receive these events, investigate the pod status:
 
 1. **Check if the pod matches the policy predicate:**
    ```bash
-   kubectl get pod <pod-name> -n <namespace> -o yaml
+   kubectl get pod <pod-name> -n `<namespace>` -o yaml
    ```
    Verify the pod is in the correct namespace and meets all predicate conditions.
 
@@ -267,7 +267,7 @@ If you receive these events, investigate the pod status:
 
 1. **Check if the DaemonSet still targets the node:**
    ```bash
-   kubectl get ds <daemonset-name> -n <namespace> -o yaml | grep -A 10 nodeSelector
+   kubectl get ds <daemonset-name> -n `<namespace>` -o yaml | grep -A 10 nodeSelector
    ```
 
 2. **Check the policy match annotation on the node:**

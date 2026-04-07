@@ -1,4 +1,4 @@
-# ADR-XXX: <Category> — <Concise Decision Title>
+# ADR-XXX: `<Category>` — <Concise Decision Title>
 
 ## Context
 
@@ -36,10 +36,10 @@
 ## Alternatives Considered
 
 ### <Alternative A>
-**Rejected** because: <reasons>
+**Rejected** because: `<reasons>`
 
 ### <Alternative B>
-**Rejected** because: <reasons>
+**Rejected** because: `<reasons>`
 
 ## Notes
 
