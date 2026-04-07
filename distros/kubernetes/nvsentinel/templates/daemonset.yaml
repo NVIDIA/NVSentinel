@@ -168,6 +168,12 @@ spec:
             - name: MONGODB_CLIENT_CERT_MOUNT_PATH
               value: {{ $mongoPC }}
             {{- end }}
+            {{- if .Values.global.tracing.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.global.tracing.insecure | quote }}
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}

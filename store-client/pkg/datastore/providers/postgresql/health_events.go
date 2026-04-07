@@ -234,9 +234,18 @@ func (p *PostgreSQLHealthEventStore) UpdateSpanID(
 		updated_at = NOW()
 		WHERE id = $3`
 
-	_, err := p.db.ExecContext(ctx, query, serviceName, spanID, id)
+	result, err := p.db.ExecContext(ctx, query, serviceName, spanID, id)
 	if err != nil {
 		return fmt.Errorf("failed to update span ID: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("health event not found: %s", id)
 	}
 
 	return nil

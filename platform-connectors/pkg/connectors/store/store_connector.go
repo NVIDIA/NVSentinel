@@ -22,14 +22,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	_ "github.com/nvidia/nvsentinel/store-client/pkg/datastore/providers"
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
+)
+
+const (
+	ServicePlatformConnector = "platform-connector"
 )
 
 type DatabaseStoreConnector struct {
@@ -74,7 +80,7 @@ func InitializeDatabaseStoreConnector(ctx context.Context, ringbuffer *ringbuffe
 		return nil, fmt.Errorf("failed to create database client: %w", err)
 	}
 
-	slog.Info("Successfully initialized database store connector", "maxRetries", maxRetries)
+	slog.InfoContext(ctx, "Successfully initialized database store connector", "maxRetries", maxRetries)
 
 	return new(databaseClient, ringbuffer, nodeName, maxRetries), nil
 }
@@ -92,53 +98,71 @@ func (r *DatabaseStoreConnector) FetchAndProcessHealthMetric(ctx context.Context
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Context canceled, exiting health metric processing loop")
+			slog.InfoContext(ctx, "Context canceled, exiting health metric processing loop")
 			return
 		default:
-			healthEvents, quit := r.ringBuffer.Dequeue()
+			queuedHealthEvents, quit := r.ringBuffer.Dequeue()
 			if quit {
-				slog.Info("Queue signaled shutdown, exiting processing loop")
+				slog.InfoContext(ctx, "Queue signaled shutdown, exiting processing loop")
 				return
 			}
 
+			healthEvents := queuedHealthEvents.Events
 			if healthEvents == nil || len(healthEvents.GetEvents()) == 0 {
-				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 				continue
 			}
 
-			err := r.insertHealthEvents(ctx, healthEvents)
-			if err != nil {
-				retryCount := r.ringBuffer.NumRequeues(healthEvents)
-				if retryCount < r.maxRetries {
-					slog.Warn("Error inserting health events, will retry with exponential backoff",
-						"error", err,
-						"retryCount", retryCount,
-						"maxRetries", r.maxRetries,
-						"eventCount", len(healthEvents.GetEvents()))
+			batchCtx, span := tracing.StartSpanWithLinkFromSpanContext(
+				ctx, queuedHealthEvents.ParentSpanContext, "platform_connector.store.fetch_and_process_health_metric")
 
-					r.ringBuffer.AddRateLimited(healthEvents)
-				} else {
-					slog.Error("Max retries exceeded, dropping health events permanently",
+			eventCount := len(healthEvents.GetEvents())
+
+			err := r.insertHealthEvents(batchCtx, healthEvents)
+			if err != nil {
+				retryCount := r.ringBuffer.NumRequeues(queuedHealthEvents)
+
+				tracing.RecordError(span, err)
+				span.SetAttributes(
+					attribute.String("platform_connector.store.error", err.Error()),
+					attribute.Int("platform_connector.store.retry_count", retryCount),
+					attribute.Int("platform_connector.store.max_retries", r.maxRetries),
+				)
+
+				if retryCount < r.maxRetries {
+					slog.WarnContext(batchCtx, "Error inserting health events, will retry with exponential backoff",
 						"error", err,
 						"retryCount", retryCount,
 						"maxRetries", r.maxRetries,
-						"eventCount", len(healthEvents.GetEvents()),
+						"eventCount", eventCount)
+
+					r.ringBuffer.AddRateLimited(queuedHealthEvents)
+				} else {
+					span.SetAttributes(attribute.String("platform_connector.store.status", "failed"))
+					slog.ErrorContext(batchCtx, "Max retries exceeded, dropping health events permanently",
+						"error", err,
+						"retryCount", retryCount,
+						"maxRetries", r.maxRetries,
+						"eventCount", eventCount,
 						"firstEventNodeName", healthEvents.GetEvents()[0].GetNodeName(),
 						"firstEventCheckName", healthEvents.GetEvents()[0].GetCheckName())
-					r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+					r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 				}
 			} else {
-				r.ringBuffer.HealthMetricEleProcessingCompleted(healthEvents)
+				span.SetAttributes(attribute.String("platform_connector.store.status", "inserted"))
+				r.ringBuffer.HealthMetricEleProcessingCompleted(queuedHealthEvents)
 			}
+
+			span.End()
 		}
 	}
 }
 
-func (r *DatabaseStoreConnector) ShutdownRingBuffer() {
+func (r *DatabaseStoreConnector) ShutdownRingBuffer(ctx context.Context) {
 	if r.ringBuffer != nil {
-		slog.Info("Shutting down database store connector ring buffer with drain")
+		slog.InfoContext(ctx, "Shutting down database store connector ring buffer with drain")
 		r.ringBuffer.ShutDownHealthMetricQueue()
-		slog.Info("Database store connector ring buffer drained successfully")
+		slog.InfoContext(ctx, "Database store connector ring buffer drained successfully")
 	}
 }
 
@@ -153,12 +177,12 @@ func (r *DatabaseStoreConnector) Disconnect(ctx context.Context) error {
 	if err != nil {
 		// Log but don't return error if already disconnected
 		// This can happen in tests where mtest framework also disconnects
-		slog.Warn("Error disconnecting database client (may already be disconnected)", "error", err)
+		slog.WarnContext(ctx, "Error disconnecting database client (may already be disconnected)", "error", err)
 
 		return nil
 	}
 
-	slog.Info("Successfully disconnected database client")
+	slog.InfoContext(ctx, "Successfully disconnected database client")
 
 	return nil
 }
@@ -168,40 +192,67 @@ func (r *DatabaseStoreConnector) insertHealthEvents(
 	healthEvents *protos.HealthEvents,
 ) error {
 	// Prepare all documents for batch insertion
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.store.insert_health_events")
+	defer span.End()
+
 	healthEventWithStatusList := make([]interface{}, 0, len(healthEvents.GetEvents()))
+	traceID := span.SpanContext().TraceID().String()
 
 	for i, healthEvent := range healthEvents.GetEvents() {
+		_, eventSpan := tracing.StartSpan(ctx, "platform_connector.process_event")
+
 		// CRITICAL FIX: Clone the HealthEvent to avoid pointer reuse issues with gRPC buffers
 		// Without this clone, the healthEvent pointer may point to reused gRPC buffer memory
 		// that gets overwritten by subsequent requests, causing data corruption in MongoDB.
 		// This manifests as events having wrong isfatal/ishealthy/message values.
 		clonedHealthEvent := proto.Clone(healthEvent).(*protos.HealthEvent)
 
-		slog.Debug("Processing health event for insertion", "index", i, "nodeName", clonedHealthEvent.NodeName)
+		if clonedHealthEvent.Metadata == nil {
+			clonedHealthEvent.Metadata = make(map[string]string)
+		}
+
+		clonedHealthEvent.Metadata[tracing.MetadataKeyTraceID] = traceID
+
+		slog.DebugContext(ctx, "Processing health event for insertion", "index", i, "nodeName", clonedHealthEvent.NodeName)
+
+		tracing.AddHealthEventAttributes(eventSpan, clonedHealthEvent)
 
 		healthEventWithStatusObj := model.HealthEventWithStatus{
 			CreatedAt:   time.Now().UTC(),
 			HealthEvent: clonedHealthEvent,
 			HealthEventStatus: &protos.HealthEventStatus{
 				UserPodsEvictionStatus: &protos.OperationStatus{},
+				SpanIds: map[string]string{
+					ServicePlatformConnector: tracing.SpanIDFromSpan(eventSpan),
+				},
 			},
 		}
 		healthEventWithStatusList = append(healthEventWithStatusList, healthEventWithStatusObj)
+
+		eventSpan.End()
 	}
 
-	slog.Debug("Inserting health events batch", "documentCount", len(healthEventWithStatusList))
+	slog.DebugContext(ctx, "Inserting health events batch", "documentCount", len(healthEventWithStatusList))
+
+	dbCtx, dbSpan := tracing.StartSpan(ctx, "platform_connector.db.insert")
+	defer dbSpan.End()
 
 	// Insert all documents in a single batch operation
 	// This ensures MongoDB generates INSERT operations (not UPDATE) for change streams
 	// Note: InsertMany is already atomic - either all documents are inserted or none are
-	_, err := r.databaseClient.InsertMany(ctx, healthEventWithStatusList)
+	_, err := r.databaseClient.InsertMany(dbCtx, healthEventWithStatusList)
 	if err != nil {
-		slog.Error("InsertMany failed", "error", err)
+		slog.ErrorContext(ctx, "InsertMany failed", "error", err)
+		tracing.RecordError(dbSpan, err)
+		dbSpan.SetAttributes(
+			attribute.String("platform_connector.error.type", "insert_many_failed"),
+			attribute.String("platform_connector.error.message", err.Error()),
+		)
 
 		return fmt.Errorf("insertMany failed: %w", err)
 	}
 
-	slog.Debug("InsertMany completed successfully")
+	slog.DebugContext(ctx, "InsertMany completed successfully")
 
 	return nil
 }
