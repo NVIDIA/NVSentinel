@@ -21,6 +21,10 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
 
@@ -53,7 +57,7 @@ func NewProcessor(config *Config) (*Processor, error) {
 		return nil, fmt.Errorf("failed to compile rules: %w", err)
 	}
 
-	slog.Info("Override processor initialized",
+	slog.InfoContext(context.Background(), "Override processor initialized",
 		"enabled", config.Enabled,
 		"rule_count", len(rules))
 
@@ -68,12 +72,15 @@ func (p *Processor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		return nil
 	}
 
-	originalState := captureOriginalState(event)
+	ctx, span := tracing.StartSpan(ctx, "platform_connector.transformer.overrides")
+	defer span.End()
+
+	original := captureOriginalState(event)
 
 	for _, rule := range p.rules {
-		matches, err := rule.evaluate(event)
+		matches, err := rule.evaluate(ctx, event)
 		if err != nil {
-			slog.Error("Failed to evaluate override rule",
+			slog.ErrorContext(ctx, "Failed to evaluate override rule",
 				"rule", rule.name,
 				"node", event.NodeName,
 				"agent", event.Agent,
@@ -85,7 +92,11 @@ func (p *Processor) Transform(ctx context.Context, event *pb.HealthEvent) error 
 		}
 
 		if matches {
-			p.applyOverride(event, rule, originalState)
+			p.applyOverride(ctx, event, rule, original)
+			span.AddEvent("platform_connector.transformer.overrides", trace.WithAttributes(
+				attribute.String("platform_connector.transformer.overrides.matched_rule", rule.name),
+			))
+
 			return nil
 		}
 	}
@@ -97,7 +108,9 @@ func (p *Processor) Name() string {
 	return "OverrideTransformer"
 }
 
-func (p *Processor) applyOverride(event *pb.HealthEvent, rule compiledRule, original originalState) {
+func (p *Processor) applyOverride(
+	ctx context.Context, event *pb.HealthEvent, rule compiledRule, original originalState,
+) {
 	changed := []string{}
 
 	if rule.override.IsFatal != nil && *rule.override.IsFatal != original.isFatal {
@@ -117,7 +130,7 @@ func (p *Processor) applyOverride(event *pb.HealthEvent, rule compiledRule, orig
 	if rule.override.RecommendedAction != nil {
 		newAction, err := rule.override.ParseRecommendedAction()
 		if err != nil {
-			slog.Error("Failed to parse recommended action",
+			slog.ErrorContext(ctx, "Failed to parse recommended action",
 				"rule", rule.name,
 				"node", event.NodeName,
 				"agent", event.Agent,
@@ -138,7 +151,7 @@ func (p *Processor) applyOverride(event *pb.HealthEvent, rule compiledRule, orig
 	}
 
 	if len(changed) > 0 {
-		slog.Info("Applied health event override",
+		slog.InfoContext(ctx, "Applied health event override",
 			"rule", rule.name,
 			"node", event.NodeName,
 			"agent", event.Agent,

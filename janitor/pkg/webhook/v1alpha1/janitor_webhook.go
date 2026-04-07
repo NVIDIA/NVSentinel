@@ -374,7 +374,7 @@ func (v *JanitorCustomValidator) ValidateCreate(ctx context.Context, obj runtime
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for all Janitor CRD types.
-// nolint:cyclop,lll
+// nolint:cyclop,lll,gocognit
 func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	var (
 		objName        string
@@ -382,6 +382,8 @@ func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 		nodeName       string
 		oldNodeName    string
 	)
+
+	allowDeletedNode := false
 
 	switch typedObj := newObj.(type) {
 	case *janitordgxcnvidiacomv1alpha1.RebootNode:
@@ -441,12 +443,18 @@ func (v *JanitorCustomValidator) ValidateUpdate(ctx context.Context, oldObj, new
 			}
 		}
 
+		// The gpu-reset-controller needs to be able to issue an update request to remove the
+		// janitor.dgxc.nvidia.com/finalizer whether the current node exists or not. Note that the delete webhook
+		// handler for GPUReset CRs already allows the initial delete request to succeed if the corresponding node
+		// is deleted.
+		allowDeletedNode = true
+
 	default:
 		return nil, fmt.Errorf("expected a Janitor CR object but got %T", newObj)
 	}
 
 	// Validate node existence for CRs that reference nodes
-	if nodeName != "" {
+	if len(nodeName) != 0 && !allowDeletedNode {
 		if err := v.validateNodeExists(ctx, nodeName); err != nil {
 			janitorWebhookLog.Info(
 				"Node validation failed", // nolint:lll

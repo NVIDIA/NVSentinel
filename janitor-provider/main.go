@@ -37,8 +37,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
+	"github.com/nvidia/nvsentinel/commons/pkg/auditlogger"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/auth"
@@ -59,78 +61,101 @@ type janitorProviderServer struct {
 	k8sClient kubernetes.Interface
 }
 
-func (s *janitorProviderServer) SendRebootSignal(ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest) (*cspv1alpha1.SendRebootSignalResponse, error) {
+func (s *janitorProviderServer) SendRebootSignal(
+	ctx context.Context, req *cspv1alpha1.SendRebootSignalRequest,
+) (*cspv1alpha1.SendRebootSignalResponse, error) {
 	slog.Info("Sending reboot signal", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
+
 	requestID, err := s.cspClient.SendRebootSignal(ctx, *node)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to send reboot signal: %v", err)
 	}
+
 	return &cspv1alpha1.SendRebootSignalResponse{
 		RequestId: string(requestID),
 	}, nil
 }
 
-func (s *janitorProviderServer) IsNodeReady(ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest) (*cspv1alpha1.IsNodeReadyResponse, error) {
+func (s *janitorProviderServer) IsNodeReady(
+	ctx context.Context, req *cspv1alpha1.IsNodeReadyRequest,
+) (*cspv1alpha1.IsNodeReadyResponse, error) {
 	slog.Info("Checking if node is ready", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
+
 	isReady, err := s.cspClient.IsNodeReady(ctx, *node, req.RequestId)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check if node is ready: %v", err)
 	}
+
 	return &cspv1alpha1.IsNodeReadyResponse{
 		IsReady: isReady,
 	}, nil
 }
 
-func (s *janitorProviderServer) SendTerminateSignal(ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest) (*cspv1alpha1.SendTerminateSignalResponse, error) {
+func (s *janitorProviderServer) SendTerminateSignal(
+	ctx context.Context, req *cspv1alpha1.SendTerminateSignalRequest,
+) (*cspv1alpha1.SendTerminateSignalResponse, error) {
 	slog.Info("Sending terminate signal", "node", req.NodeName)
+
 	node, err := s.k8sClient.CoreV1().Nodes().Get(ctx, req.NodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to get node: %v", err)
 	}
+
 	requestID, err := s.cspClient.SendTerminateSignal(ctx, *node)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to send terminate signal: %v", err)
 	}
+
 	return &cspv1alpha1.SendTerminateSignalResponse{
 		RequestId: string(requestID),
 	}, nil
 }
 
 func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	logger.SetDefaultStructuredLogger("janitor-provider", version)
 	slog.Info("Starting janitor-provider", "version", version, "commit", commit, "date", date)
 
+	if err := auditlogger.InitAuditLogger("janitor-provider"); err != nil {
+		slog.Warn("Failed to initialize audit logger", "error", err)
+	}
+	defer auditlogger.CloseAuditLogger() //nolint:errcheck
+
 	if err := run(); err != nil {
 		slog.Error("Failed to run", "error", err)
-		os.Exit(1)
+		return 1
 	}
+
+	return 0
 }
 
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", os.Getenv("JANITOR_PROVIDER_PORT")))
+	var lc net.ListenConfig
+
+	lis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%s", os.Getenv("JANITOR_PROVIDER_PORT")))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
-	k8sRestConfig, err := rest.InClusterConfig()
+	k8sClient, err := newK8sClient()
 	if err != nil {
-		return fmt.Errorf("failed to create kubernetes clientset: %w", err)
-	}
-
-	k8sClient, err := kubernetes.NewForConfig(k8sRestConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create kubernetes client: %w", err)
+		return err
 	}
 
 	metricsPort, err := strconv.Atoi(os.Getenv("METRICS_PORT"))
@@ -149,39 +174,9 @@ func run() error {
 		return fmt.Errorf("failed to create csp client: %w", err)
 	}
 
-	var serverOpts []grpc.ServerOption
-
-	certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
-	tlsEnabled := certPath != "" && keyPath != ""
-
-	if certPath != "" != (keyPath != "") {
-		return fmt.Errorf("both TLS_CERT_PATH and TLS_KEY_PATH must be set, got cert=%q key=%q", certPath, keyPath)
-	}
-
-	if tlsEnabled {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS key pair: %w", err)
-		}
-		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
-		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-		slog.Info("gRPC TLS enabled", "certPath", certPath)
-	}
-
-	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
-		parts := strings.Split(audiences, ",")
-		auds := make([]string, 0, len(parts))
-		for _, a := range parts {
-			if trimmed := strings.TrimSpace(a); trimmed != "" {
-				auds = append(auds, trimmed)
-			}
-		}
-		serverOpts = append(serverOpts,
-			grpc.UnaryInterceptor(
-				auth.TokenReviewInterceptor(k8sClient, auds)))
-
-		slog.Info("gRPC TokenReview auth enabled",
-			"audiences", auds)
+	serverOpts, certWatcher, err := buildServerOpts(k8sClient)
+	if err != nil {
+		return err
 	}
 
 	svr := grpc.NewServer(serverOpts...)
@@ -191,6 +186,16 @@ func run() error {
 	})
 
 	g, gCtx := errgroup.WithContext(ctx)
+
+	if certWatcher != nil {
+		g.Go(func() error {
+			if err := certWatcher.Start(gCtx); err != nil {
+				return fmt.Errorf("cert watcher failed: %w", err)
+			}
+
+			return nil
+		})
+	}
 
 	// Metrics server failures are logged but do NOT terminate the service
 	g.Go(func() error {
@@ -223,4 +228,75 @@ func run() error {
 	})
 
 	return g.Wait()
+}
+
+func newK8sClient() (kubernetes.Interface, error) {
+	k8sRestConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
+	}
+
+	k8sClient, err := kubernetes.NewForConfig(k8sRestConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
+	}
+
+	return k8sClient, nil
+}
+
+// buildServerOpts constructs gRPC server options for TLS and auth,
+// returning any cert watcher that needs to be started.
+func buildServerOpts(
+	k8sClient kubernetes.Interface,
+) ([]grpc.ServerOption, *certwatcher.CertWatcher, error) {
+	var serverOpts []grpc.ServerOption
+
+	certPath, keyPath := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
+	tlsEnabled := certPath != "" && keyPath != ""
+
+	if certPath != "" != (keyPath != "") {
+		return nil, nil, fmt.Errorf(
+			"both TLS_CERT_PATH and TLS_KEY_PATH must be set, got cert=%q key=%q",
+			certPath, keyPath,
+		)
+	}
+
+	var certWatcher *certwatcher.CertWatcher
+
+	if tlsEnabled {
+		var err error
+
+		certWatcher, err = certwatcher.New(certPath, keyPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create cert watcher: %w", err)
+		}
+
+		tlsCfg := &tls.Config{
+			GetCertificate: certWatcher.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		}
+
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+
+		slog.Info("gRPC TLS enabled with cert hot-reload", "certPath", certPath)
+	}
+
+	if audiences := os.Getenv("AUTH_AUDIENCES"); audiences != "" {
+		parts := strings.Split(audiences, ",")
+		auds := make([]string, 0, len(parts))
+
+		for _, a := range parts {
+			if trimmed := strings.TrimSpace(a); trimmed != "" {
+				auds = append(auds, trimmed)
+			}
+		}
+
+		serverOpts = append(serverOpts,
+			grpc.UnaryInterceptor(
+				auth.TokenReviewInterceptor(k8sClient, auds)))
+
+		slog.Info("gRPC TokenReview auth enabled", "audiences", auds)
+	}
+
+	return serverOpts, certWatcher, nil
 }

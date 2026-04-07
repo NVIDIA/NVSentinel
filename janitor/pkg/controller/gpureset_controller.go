@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -108,15 +107,23 @@ func (r *GPUResetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("failed to get GPUReset %s: %w", req.NamespacedName, err)
 	}
 
-	if !gpuReset.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &gpuReset)
-	}
-
+	reconcileDelete := !gpuReset.DeletionTimestamp.IsZero()
 	completedReconciling := gpuReset.Status.CompletionTime != nil
-	if !completedReconciling {
+
+	if !completedReconciling || reconcileDelete {
 		locked := r.NodeLock.LockNode(ctx, &gpuReset, gpuReset.Spec.NodeName)
 		if !locked {
 			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+		}
+
+		// We need to lock the current node because reconcileDelete executes FinalizerRestoringServices which can conflict
+		// with TearingDownServices from active GPUResets which currently have the node lock.
+		// Note that the current CR will be removed after reconcileDelete removes the finalizer, and we'll exit above
+		// with a no-op when the GPUReset is not found. We do not need to explicitly call CheckUnlock because
+		// garbage collection will ensure that the lease lock is deleted. This also prevents us from needing to handle
+		// failures related to CheckUnlock failing when the current GPUReset is removed from API.
+		if reconcileDelete {
+			return r.reconcileDelete(ctx, &gpuReset)
 		}
 
 		result, err := r.reconcileHelper(ctx, &gpuReset)
@@ -296,75 +303,14 @@ func (r *GPUResetReconciler) reconcileDelete(ctx context.Context, gr *v1alpha1.G
 //
 // It also enforces the 'pending' and 'active' gauge metrics based on the current cluster state.
 func (r *GPUResetReconciler) isReady(ctx context.Context, gr *v1alpha1.GPUReset) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	nodeName := gr.Spec.NodeName
 
-	var gpuResetsForNode v1alpha1.GPUResetList
-	if err := r.List(ctx, &gpuResetsForNode, client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to list GPUResets for node %s: %w", nodeName, err)
-	}
-
-	var gpuResetCandidates []*v1alpha1.GPUReset
-
-	for i := range gpuResetsForNode.Items {
-		gpuReset := &gpuResetsForNode.Items[i]
-		if gpuReset.Status.CompletionTime == nil {
-			gpuResetCandidates = append(gpuResetCandidates, gpuReset)
-		}
-	}
-
-	if len(gpuResetCandidates) == 0 {
-		// update metrics: enforce the absolute state (Active=0, Pending=0)
-		metrics.GPUResetActiveRequests.WithLabelValues(nodeName).Set(0)
-		metrics.GPUResetPendingRequests.WithLabelValues(nodeName).Set(0)
-
-		log.V(1).Info("No pending GPU resets found for node, will recheck", "node", nodeName,
-			"recheck_after", 5*time.Second)
-
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	sort.Slice(gpuResetCandidates, func(i, j int) bool {
-		return gpuResetCandidates[i].CreationTimestamp.Before(&gpuResetCandidates[j].CreationTimestamp)
-	})
-
-	var reason v1alpha1.GPUResetReason
-
-	var message string
-
-	var status metav1.ConditionStatus
-
-	isCandidateToRun := gpuResetCandidates[0].UID == gr.UID
-	ready := false
-
-	if isCandidateToRun {
-		status = metav1.ConditionTrue
-		reason = v1alpha1.ReasonReadyForReset
-		message = "Node ready for GPU reset"
-		ready = true
-	} else {
-		status = metav1.ConditionFalse
-		reason = v1alpha1.ReasonResourceContention
-		message = fmt.Sprintf("Waiting for %s to complete before starting", gpuResetCandidates[0].Name)
-	}
-
-	if err := r.updateCondition(ctx, gr, v1alpha1.Ready, status, reason, message); err != nil {
+	if err := r.updateCondition(ctx, gr, v1alpha1.Ready, metav1.ConditionTrue, v1alpha1.ReasonReadyForReset,
+		"Node ready for GPU reset"); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update GPUReset %s: %w", gr.Name, err)
 	}
-
-	activeRequestsCount := 1.0
-	pendingRequestsCount := float64(len(gpuResetCandidates) - 1)
-	// update metrics: enforce the absolute state (Active=1, Pending=Total-1)
-	metrics.GPUResetActiveRequests.WithLabelValues(nodeName).Set(activeRequestsCount)
-	metrics.GPUResetPendingRequests.WithLabelValues(nodeName).Set(pendingRequestsCount)
-
-	if !ready {
-		log.V(1).Info("Pending completion of active GPU reset on node", "node", nodeName, "active_reset",
-			gpuResetCandidates[0].Name)
-
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
+	// update metrics: enforce the absolute state (Active=1)
+	metrics.GPUResetActiveRequests.WithLabelValues(nodeName).Set(1.0)
 
 	return ctrl.Result{}, nil
 }
@@ -591,10 +537,30 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 	nodeName := gr.Spec.NodeName
 	managerName := r.serviceManager.Name
+	nodeExists := true
 
-	if len(r.serviceManager.Spec.Apps) == 0 {
-		log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
-			managerName, "node", nodeName)
+	node, err := r.getNode(nodeName)
+	if err != nil {
+		// The restoreServices logic is called during GPUReset reconciling and during GPUReset CR deletion. In both
+		// cases, if the corresponding node doesn't exist, we will consider ServicesRestored as successful with reason
+		// skipped.
+		if !apierrors.IsNotFound(err) {
+			log.V(1).Info("Failed to get node for service restoration, will retry", "node", nodeName, "error", err)
+			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service restoration: %w", nodeName, err)
+		}
+
+		nodeExists = false
+	}
+
+	if len(r.serviceManager.Spec.Apps) == 0 || !nodeExists {
+		if len(r.serviceManager.Spec.Apps) == 0 {
+			log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
+				managerName, "node", nodeName)
+		}
+
+		if !nodeExists {
+			log.V(1).Info("Node no longer exists, skipping service restoration", "node", nodeName)
+		}
 
 		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionTrue, v1alpha1.ReasonSkipped,
 			"No services manager configured, or has no managed services specified"); err != nil {
@@ -626,12 +592,6 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 		return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
 			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName))
-	}
-
-	node, err := r.getNode(nodeName)
-	if err != nil {
-		log.V(1).Info("Failed to get node for service restoration, will retry", "node", nodeName, "error", err)
-		return ctrl.Result{}, fmt.Errorf("failed to get node %s for service restoration: %w", nodeName, err)
 	}
 
 	nodeToUpdate := node.DeepCopy()
@@ -682,8 +642,6 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 			v1alpha1.ReasonServiceRestoreSucceeded, fmt.Sprintf("%s managed services are Ready", managerName)); err != nil {
 			return ctrl.Result{}, err
 		}
-
-		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -1068,8 +1026,6 @@ func (r *GPUResetReconciler) reconcileTerminalFailure(
 		if readyCond != nil && readyCond.Status == metav1.ConditionTrue {
 			// update metrics: enforce the absolute state (Active=0)
 			metrics.GPUResetActiveRequests.WithLabelValues(nodeName).Set(0)
-		} else {
-			metrics.GPUResetPendingRequests.WithLabelValues(nodeName).Dec()
 		}
 
 		metrics.GPUResetRequestsCompletedTotal.WithLabelValues(nodeName, "failure").Inc()

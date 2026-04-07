@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+{{- if ne .Values.webhook.certProvider "openshift-service-ca" }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -21,4 +22,5 @@ metadata:
     {{- include "janitor.labels" . | nindent 4 }}
 spec:
   selfSigned: {}
+{{- end }}
 

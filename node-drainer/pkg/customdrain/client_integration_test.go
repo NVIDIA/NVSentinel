@@ -158,8 +158,9 @@ func testStatusConditions(t *testing.T) {
 		Resource: "drainrequests",
 	}
 
-	isComplete, err := client.GetCRStatus(ctx, crName)
+	found, isComplete, err := client.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
+	assert.True(t, found)
 	assert.False(t, isComplete)
 
 	cr, err := dynamicClient.Resource(gvr).Namespace("default").Get(ctx, crName, metav1.GetOptions{})
@@ -176,8 +177,9 @@ func testStatusConditions(t *testing.T) {
 	_, err = dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(ctx, cr, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	isComplete, err = client.GetCRStatus(ctx, crName)
+	found, isComplete, err = client.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
+	assert.True(t, found)
 	assert.False(t, isComplete)
 
 	cr, err = dynamicClient.Resource(gvr).Namespace("default").Get(ctx, crName, metav1.GetOptions{})
@@ -194,8 +196,9 @@ func testStatusConditions(t *testing.T) {
 	_, err = dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(ctx, cr, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	isComplete, err = client.GetCRStatus(ctx, crName)
+	found, isComplete, err = client.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
+	assert.True(t, found)
 	assert.False(t, isComplete)
 
 	cr, err = dynamicClient.Resource(gvr).Namespace("default").Get(ctx, crName, metav1.GetOptions{})
@@ -212,8 +215,9 @@ func testStatusConditions(t *testing.T) {
 	_, err = dynamicClient.Resource(gvr).Namespace("default").UpdateStatus(ctx, cr, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
-	isComplete, err = client.GetCRStatus(ctx, crName)
+	found, isComplete, err = client.GetCRStatus(ctx, crName)
 	require.NoError(t, err)
+	assert.True(t, found)
 	assert.True(t, isComplete, "Status check should be case-insensitive")
 
 }

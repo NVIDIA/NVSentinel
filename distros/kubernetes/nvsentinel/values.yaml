@@ -15,7 +15,7 @@
 global:
   dryRun: false
   image:
-    tag: "5aa1693"
+    tag: "main"
   initContainerImage:
     repository: docker.io/bitnamilegacy/os-shell
     tag: "12-debian-12-r30"
@@ -23,41 +23,78 @@ global:
   metricsPort: 2112
 
   # Datastore configuration
-  # By default, datastore is not configured (use mongodb-config ConfigMap directly)
-  # To use the centralized datastore configuration, uncomment and configure below
+  # By default, datastore is not configured (internal mongodb-config ConfigMap is used).
+  # Uncomment and configure this section to use an external/managed database service,
+  # or to switch providers (e.g. from MongoDB to PostgreSQL).
+  #
+  # When using an external DB, also set:
+  #   global.mongodbStore.enabled: false   (skip deploying internal MongoDB)
+  #
   # datastore:
-  #   provider: "mongodb"  # or "postgresql"
+  #   # Database provider. Supported values: "mongodb", "postgresql"
+  #   provider: "mongodb"
+  #
+  #   # --- MongoDB connection URI ---
+  #   # External MongoDB (global.mongodbStore.enabled false): full URI only via Secret
+  #   # key MONGODB_URI and credentialsFromSecret.name (envFrom.secretRef). Do not set uri.
+  #   # In-cluster + global.mongodbStore.enabled true: credential-free URI can be built from
+  #   # connection.* in the ConfigMap unless credentialsFromSecret is set; see docs/external-datastore.md.
+  #   credentialsFromSecret:
+  #     name: ""
+  #
+  #   # --- Connection metadata ---
+  #   # Individual fields (PostgreSQL; optional MongoDB metadata such as database/collection names).
+  #   # For external MongoDB, connection.database etc. still configure collection env vars;
+  #   # the URI itself always comes from the Secret above.
   #   connection:
-  #     host: "mongodb"
-  #     port: 27017
-  #     database: "nvsentinel"
+  #     host: ""
+  #     port: 5432           # 5432 for PostgreSQL, 27017 for MongoDB
+  #     database: "HealthEventsDatabase"
+  #     # PostgreSQL-only fields:
+  #     # username: ""
+  #     # sslmode: "require"   # disable | require | verify-ca | verify-full
   #
-  #   # MongoDB Atlas / external MongoDB: set uri directly instead of host/port.
-  #   # The URI must include credentials. To avoid storing the password in a
-  #   # ConfigMap, create a Secret and reference it via uriSecret below instead.
-  #   # Example (SRV):
-  #   #   uri: "mongodb+srv://nvsentinel:<password>@cluster.mongodb.net/"
-  #   # Example (standard):
-  #   #   uri: "mongodb://nvsentinel:<password>@host1:27017,host2:27017/?replicaSet=rs0&authSource=admin"
+  #   # --- TLS ---
+  #   tls:
+  #     # Set to false only if the external DB does not support TLS (not recommended).
+  #     enabled: true
+  #     # Name of a Kubernetes Secret containing the CA certificate (key: ca.crt).
+  #     # Required when connecting to an external DB with a private/custom CA.
+  #     # Leave empty to use system CAs (e.g. public cloud services with public CA certs).
+  #     caSecretName: ""
   #
-  #   # Set to true when connecting to MongoDB Atlas or any deployment that uses
-  #   # publicly trusted TLS certificates (Let's Encrypt, DigiCert, etc.).
-  #   # Removes the need to mount custom CA cert files in pods.
-  #   useSystemTLS: false
+  #   # --- Authentication ---
+  #   auth:
+  #     # Authentication mechanism:
+  #     #   scram  - username/password (SCRAM-SHA-256). Credentials embedded in uri, or via existingSecret.
+  #     #   x509   - client certificate authentication (used by internal MongoDB).
+  #     mechanism: "scram"
+  #     # For scram: name of a Kubernetes Secret containing DB credentials.
+  #     # Secret must have keys: username, password.
+  #     # Not needed when application auth is via MONGODB_URI in credentialsFromSecret only.
+  #     existingSecret: ""
+  #     # For x509: name of a Kubernetes Secret containing the client certificate.
+  #     # Secret must have keys: tls.crt, tls.key, ca.crt.
+  #     clientCertSecretName: ""
+  #     # For x509: Subject DN of the application user certificate.
+  #     # Defaults to the NVIDIA internal DN if not set.
+  #     x509ApplicationUserDN: ""
+  #     # For x509: Subject DN of the dgxcops user certificate.
+  #     # Defaults to the NVIDIA internal DN if not set.
+  #     x509DgxcopsUserDN: ""
   #
-  #   # Name of a Kubernetes Secret whose keys are injected as env vars into all
-  #   # datastore-consuming pods. Use this to supply MONGODB_URI without storing
-  #   # the password in a ConfigMap.
-  #   # Create the secret with:
-  #   #   kubectl create secret generic <name> \
-  #   #     --from-literal=MONGODB_URI='mongodb+srv://user:pass@cluster.mongodb.net/'
-  #   uriSecretName: ""
-  #
-  #   certificates:
-  #     secretName: "mongo-app-client-cert-secret"  # Secret containing client certificates
-  #     certKey: "tls.crt"      # Key for client certificate (default: tls.crt)
-  #     keyKey: "tls.key"       # Key for client private key (default: tls.key)
-  #     caKey: "ca.crt"         # Key for CA certificate (default: ca.crt)
+  #   # --- Database setup job ---
+  #   # The setup job creates required collections and indexes in the external MongoDB.
+  #   # It runs once on install/upgrade when using an external DB.
+  #   setupJob:
+  #     image:
+  #       repository: ghcr.io/rtsp/docker-mongosh
+  #       tag: "2.5.2"
+  #       pullPolicy: IfNotPresent
+  #     # Optional: name of an existing Kubernetes Secret with admin credentials
+  #     # for the setup job to authenticate. Secret must have keys: username, password.
+  #     # Not needed if MONGODB_URI in credentialsFromSecret has sufficient privileges.
+  #     adminSecret: ""
 
   # Certificate rotation (MongoDB only)
   # When enabled, client certificates can be rotated without restarting pods.
@@ -78,6 +115,14 @@ global:
       endpoint: "nvidia-dcgm.gpu-operator.svc"
       # DCGM hostengine service port
       port: 5555
+
+  # OpenTelemetry tracing configuration
+  tracing:
+    enabled: false # Enable/disable tracing for all components
+    insecure: false # Set to true if the collector endpoint does not use TLS
+    # OTLP gRPC endpoint (host:port) where services send traces.
+    # Point this to your tracing backend's (Tempo, Jaeger, Zipkin, etc.) gRPC ingestion endpoint.
+    endpoint: ""
 
   # Audit logging configuration
   auditLogging:
@@ -263,3 +308,4 @@ podMonitor:
   # scrapeTimeout: ""  # Scrape timeout (defaults to Prometheus default if not specified)
   # metricsPath: "/metrics"  # Metrics path (defaults to /metrics)
   # labels: {}  # Additional labels for the PodMonitor resource
+  

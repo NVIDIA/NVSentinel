@@ -77,6 +77,11 @@ tls:
   certDir: "/etc/nvsentinel/janitor-provider/tls"
   # cert-manager Issuer name (uses the janitor's self-signed issuer by default)
   issuerName: "janitor-selfsigned-issuer"
+  # Name of the TLS Secret created by the Certificate resource.
+  # Defaults to "<fullname>-grpc-cert" if empty. Override this when using
+  # externally managed certificates to keep the secret name in sync with
+  # the janitor client's caSecretName.
+  secretName: ""
 
 # gRPC authentication configuration
 # When enabled, the provider validates incoming requests using

@@ -593,14 +593,14 @@ func (r *FaultRemediationReconciler) CloseAll(ctx context.Context) error {
 }
 
 // SetupWithManager configures the reconciler for controller-runtime managed operation.
-// It starts the watcher stream using the provided context and registers the reconciler
-// with the manager using a typed channel source. This method should only be called
-// when running under controller-runtime management.
-func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+// It starts the watcher stream and returns a done channel that is closed when the event
+// adapter goroutine exits. Callers should monitor this channel: if it closes while the
+// context is still active, the change stream died unexpectedly and the pod should exit.
+func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) (<-chan struct{}, error) {
 	r.Watcher.Start(ctx)
 
 	reconciler := builder.TypedControllerManagedBy[*datastore.EventWithToken](mgr)
-	typedCh := AdaptEvents(ctx, r.Watcher.Events())
+	typedCh, watcherDone := AdaptEvents(ctx, r.Watcher.Events())
 
 	src := source.TypedChannel[*datastore.EventWithToken, *datastore.EventWithToken](
 		typedCh,
@@ -615,25 +615,31 @@ func (r *FaultRemediationReconciler) SetupWithManager(ctx context.Context, mgr c
 		},
 	)
 
-	return reconciler.
+	err := reconciler.
 		Named("fault-remediation-controller").
 		WatchesRawSource(
 			src,
 		).
 		Complete(r)
+
+	return watcherDone, err
 }
 
 // AdaptEvents transforms a channel of EventWithToken into a channel of controller-runtime
 // TypedGenericEvent. It spawns a goroutine that continuously reads from the input channel
 // until either the context is cancelled or the input channel is closed.
+// The returned done channel is closed when the adapter goroutine exits. If the input channel
+// closed while the context was still active, this indicates the change stream died unexpectedly.
 func AdaptEvents(
 	ctx context.Context,
 	in <-chan datastore.EventWithToken,
-) <-chan event.TypedGenericEvent[*datastore.EventWithToken] {
+) (<-chan event.TypedGenericEvent[*datastore.EventWithToken], <-chan struct{}) {
 	out := make(chan event.TypedGenericEvent[*datastore.EventWithToken])
+	done := make(chan struct{})
 
 	go func() {
 		defer close(out)
+		defer close(done)
 
 		for {
 			select {
@@ -650,5 +656,5 @@ func AdaptEvents(
 		}
 	}()
 
-	return out
+	return out, done
 }

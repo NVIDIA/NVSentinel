@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "properties": {
+    "webhook": {
+      "type": "object",
+      "properties": {
+        "certProvider": {
+          "type": "string",
+          "title": "Certificate provider for webhook TLS",
+          "description": "Use \"cert-manager\" for cert-manager CRDs or \"openshift-service-ca\" for OpenShift service-ca-operator",
+          "default": "cert-manager",
+          "enum": ["cert-manager", "openshift-service-ca"]
+        }
+      }
+    }
+  }
+}

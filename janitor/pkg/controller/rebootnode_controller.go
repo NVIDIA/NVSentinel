@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -42,15 +41,20 @@ import (
 	"github.com/nvidia/nvsentinel/janitor/pkg/metrics"
 )
 
+// cspProviderDialFunc creates a CSP provider client and returns a cleanup function.
+type cspProviderDialFunc func(ctx context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error)
+
 // RebootNodeReconciler reconciles a RebootNode object
 type RebootNodeReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	Config        *config.RebootNodeControllerConfig
-	CSPClient     cspv1alpha1.CSPProviderServiceClient
 	NodeLock      distributedlock.NodeLock
 	LockNamespace string
-	grpcConn      *grpc.ClientConn
+
+	// dialProviderFunc overrides the default gRPC dial behavior.
+	// Used in tests to inject a mock CSP client.
+	dialProviderFunc cspProviderDialFunc
 }
 
 // errRebootNodeDeleted is returned when the RebootNode was deleted during status update (do not requeue).
@@ -120,12 +124,20 @@ func (r *RebootNodeReconciler) reconcileHelper(
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Create a fresh gRPC connection per reconciliation so that rotated
+	// CA bundles and SA tokens are picked up from disk automatically.
+	cspClient, cleanup, err := r.dialProvider(ctx)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
+	}
+	defer cleanup()
+
 	var result ctrl.Result
 
 	if rebootNode.IsRebootInProgress() {
-		result = r.handleRebootInProgress(ctx, rebootNode, &node)
+		result = r.handleRebootInProgress(ctx, cspClient, rebootNode, &node)
 	} else {
-		result = r.handleRebootNotStarted(ctx, rebootNode, &node)
+		result = r.handleRebootNotStarted(ctx, cspClient, rebootNode, &node)
 	}
 
 	if err := r.updateRebootNodeStatusIfChanged(ctx, originalRebootNode, rebootNode); err != nil {
@@ -201,9 +213,10 @@ func isTransientGRPCError(err error) bool {
 
 // handleRebootInProgress evaluates node ready state and returns the appropriate requeue result.
 func (r *RebootNodeReconciler) handleRebootInProgress(
-	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
+	ctx context.Context, cspClient cspv1alpha1.CSPProviderServiceClient,
+	rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
 ) ctrl.Result {
-	cspReady, nodeReadyErr := r.checkNodeReadyFromCSP(ctx, rebootNode, node.Name)
+	cspReady, nodeReadyErr := r.checkNodeReadyFromCSP(ctx, cspClient, rebootNode, node.Name)
 	kubernetesReady := isNodeKubernetesReady(node)
 
 	if nodeReadyErr != nil {
@@ -256,13 +269,14 @@ func (r *RebootNodeReconciler) completeNodeReadyCheck(
 }
 
 func (r *RebootNodeReconciler) checkNodeReadyFromCSP(
-	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, nodeName string,
+	ctx context.Context, cspClient cspv1alpha1.CSPProviderServiceClient,
+	rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, nodeName string,
 ) (bool, error) {
 	if *r.Config.ManualMode {
 		return true, nil
 	}
 
-	rsp, err := r.CSPClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
+	rsp, err := cspClient.IsNodeReady(ctx, &cspv1alpha1.IsNodeReadyRequest{
 		NodeName:  nodeName,
 		RequestId: rebootNode.GetCSPReqRef(),
 	})
@@ -287,7 +301,8 @@ func isNodeKubernetesReady(node *corev1.Node) bool {
 
 // handleRebootNotStarted handles the case when reboot has not yet started (signal not sent or manual mode).
 func (r *RebootNodeReconciler) handleRebootNotStarted(
-	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
+	ctx context.Context, cspClient cspv1alpha1.CSPProviderServiceClient,
+	rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
 ) ctrl.Result {
 	if hasConditionTrue(rebootNode.Status.Conditions, janitordgxcnvidiacomv1alpha1.RebootNodeConditionSignalSent) {
 		slog.Debug("Reboot signal already sent for node, continuing monitoring", "node", node.Name)
@@ -299,7 +314,7 @@ func (r *RebootNodeReconciler) handleRebootNotStarted(
 		return r.handleManualMode(rebootNode, node)
 	}
 
-	return r.sendRebootSignalAndSetCondition(ctx, rebootNode, node)
+	return r.sendRebootSignalAndSetCondition(ctx, cspClient, rebootNode, node)
 }
 
 func hasConditionTrue(conditions []metav1.Condition, condType string) bool {
@@ -332,12 +347,13 @@ func (r *RebootNodeReconciler) handleManualMode(
 }
 
 func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
-	ctx context.Context, rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
+	ctx context.Context, cspClient cspv1alpha1.CSPProviderServiceClient,
+	rebootNode *janitordgxcnvidiacomv1alpha1.RebootNode, node *corev1.Node,
 ) ctrl.Result {
 	metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeReboot, metrics.StatusStarted, node.Name)
 	slog.Info("Sending reboot signal to node", "node", node.Name)
 
-	rsp, rebootErr := r.CSPClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
+	rsp, rebootErr := cspClient.SendRebootSignal(ctx, &cspv1alpha1.SendRebootSignalRequest{
 		NodeName: node.Name,
 	})
 	if rebootErr == nil {
@@ -372,13 +388,19 @@ func (r *RebootNodeReconciler) sendRebootSignalAndSetCondition(
 	return ctrl.Result{}
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// dialProvider creates a fresh gRPC connection to the CSP provider.
+// A new connection is created per reconciliation so that rotated CA bundles
+// and SA tokens are picked up from disk automatically without watchers.
 //
-//nolint:dupl // Structural duplication with TerminateNode is acceptable - same setup pattern
-func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+//nolint:dupl // Structural duplication with TerminateNode is acceptable - same dial pattern
+func (r *RebootNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
+	if r.dialProviderFunc != nil {
+		return r.dialProviderFunc(ctx)
+	}
+
 	dialOpts, err := grpcclient.NewCSPProviderDialOptions(r.Config.CSPProviderCAPath, r.Config.CSPProviderInsecure)
 	if err != nil {
-		return fmt.Errorf("failed to build CSP provider dial options: %w", err)
+		return nil, nil, fmt.Errorf("create dial options: %w", err)
 	}
 
 	if !r.Config.CSPProviderInsecure {
@@ -389,32 +411,33 @@ func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 		dialOpts = append(dialOpts,
 			grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
-
-		slog.Info("CSP provider gRPC auth enabled",
-			"tokenPath", tokenPath)
 	}
-
-	slog.Info("Connecting to CSP provider",
-		"host", r.Config.CSPProviderHost,
-		"insecure", r.Config.CSPProviderInsecure)
 
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to create CSP client: %w", err)
+		return nil, nil, fmt.Errorf("dial csp-provider: %w", err)
 	}
 
-	r.grpcConn = conn
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+	return cspv1alpha1.NewCSPProviderServiceClient(conn), func() { conn.Close() }, nil
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *RebootNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	slog.Info("Configuring CSP provider connection",
+		"host", r.Config.CSPProviderHost,
+		"insecure", r.Config.CSPProviderInsecure)
+
+	if !r.Config.CSPProviderInsecure {
+		tokenPath := r.Config.CSPProviderTokenPath
+		if tokenPath == "" {
+			tokenPath = grpcclient.DefaultSATokenPath
+		}
+
+		slog.Info("CSP provider gRPC auth enabled", "tokenPath", tokenPath)
+	}
 
 	// Initialize NodeLock for distributed locking across maintenance operations
 	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
-
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		<-ctx.Done()
-		return r.grpcConn.Close()
-	})); err != nil {
-		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
-	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.RebootNode{}).

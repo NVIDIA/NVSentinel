@@ -15,7 +15,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "preflight.fullname" . }}-config
+  name: {{ include "preflight.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
@@ -75,14 +75,16 @@ data:
       {{- end }}
     initContainers:
       {{- $extraEnv := .Values.ncclAllreduceExtraEnv | default list }}
+      {{- $globalTag := ((.Values.global).image).tag | default "" }}
+      {{- $appVersion := .Chart.AppVersion }}
       {{- $result := list }}
       {{- range .Values.initContainers }}
-      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
       {{- $container := deepCopy . }}
+      {{- $tag := $container.image.tag | default $globalTag | default $appVersion }}
+      {{- $_ := set $container "image" (printf "%s:%s" $container.image.repository $tag) }}
+      {{- if and (eq .name "preflight-nccl-allreduce") $extraEnv }}
       {{- $_ := set $container "env" (concat (.env | default list) $extraEnv) }}
-      {{- $result = append $result $container }}
-      {{- else }}
-      {{- $result = append $result . }}
       {{- end }}
+      {{- $result = append $result $container }}
       {{- end }}
       {{- toYaml $result | nindent 6 }}

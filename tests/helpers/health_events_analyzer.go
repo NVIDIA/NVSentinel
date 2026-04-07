@@ -230,7 +230,7 @@ func waitForRemediationToComplete(ctx context.Context, t *testing.T, client klie
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "node should be fully cleaned up before next remediation cycle")
 
-	err := DeleteCR(ctx, client, rebootNodeCR)
+	err := DeleteCR(ctx, t, client, rebootNodeCR, false)
 	require.NoError(t, err, "failed to delete RebootNode CR")
 }
 

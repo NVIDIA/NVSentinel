@@ -6,6 +6,9 @@ IMG ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
 CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
 
+include ../../make/common.mk
+include ../../make/go.mk
+
 .PHONY: help
 help:
 	@echo "Available targets:"
@@ -71,7 +74,7 @@ undeploy:
 clean:
 	rm -rf bin/ dist/ slinky-drainer
 
-SETUP_ENVTEST_COMMAND := go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest && \
+SETUP_ENVTEST_COMMAND := go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION) && \
 	eval $$(setup-envtest use --use-env -p env) &&
 
 .PHONY: test

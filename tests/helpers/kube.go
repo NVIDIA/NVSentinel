@@ -726,7 +726,7 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 	}
 
 	for _, item := range crList.Items {
-		err = DeleteCR(ctx, c, &item)
+		err = DeleteCR(ctx, t, c, &item, false)
 		if err != nil {
 			return fmt.Errorf("failed to delete CR: %w", err)
 		}
@@ -735,7 +735,8 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 	return nil
 }
 
-func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructured) error {
+func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructured.Unstructured,
+	waitForRemoval bool) error {
 	err := c.Resources().Delete(ctx, cr)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -743,6 +744,13 @@ func DeleteCR(ctx context.Context, c klient.Client, cr *unstructured.Unstructure
 		}
 
 		return fmt.Errorf("failed to delete CR %s: %w", cr.GetName(), err)
+	}
+
+	if waitForRemoval {
+		require.Eventually(t, func() bool {
+			err := c.Resources().Get(ctx, cr.GetName(), cr.GetNamespace(), cr)
+			return err != nil && apierrors.IsNotFound(err)
+		}, EventuallyWaitTimeout, WaitInterval, "CR %s should be removed from API", cr.GetName())
 	}
 
 	return nil
@@ -1262,6 +1270,57 @@ func WaitForDeploymentRollout(
 
 		return true
 	}, EventuallyWaitTimeout, WaitInterval, "deployment %s/%s rollout should complete", namespace, name)
+
+	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
+}
+
+// WaitForDeploymentRolloutWithTimeout is like WaitForDeploymentRollout but accepts a
+// custom timeout. Use this when a tighter deadline is needed (e.g., to fail fast on
+// expected crash loops).
+func WaitForDeploymentRolloutWithTimeout(
+	ctx context.Context, t *testing.T, c klient.Client, name, namespace string, timeout time.Duration,
+) {
+	t.Helper()
+
+	t.Logf("Waiting for rollout to complete for deployment %s/%s (timeout %v)",
+		namespace, name, timeout)
+
+	require.Eventually(t, func() bool {
+		deployment := &appsv1.Deployment{}
+		if err := c.Resources().Get(ctx, name, namespace, deployment); err != nil {
+			t.Logf("Error getting deployment: %v", err)
+			return false
+		}
+
+		expectedReplicas, replicasReady := checkDeploymentReplicaStatus(t, deployment)
+		if !replicasReady {
+			return false
+		}
+
+		if expectedReplicas == 0 {
+			t.Logf("Rollout complete: deployment %s/%s scaled to zero", deployment.Namespace, deployment.Name)
+			return true
+		}
+
+		selector := buildMatchLabelSelector(t, deployment)
+		if selector == "" {
+			t.Logf("Deployment %s/%s has empty or invalid selector", deployment.Namespace, deployment.Name)
+			return false
+		}
+
+		currentRS, foundReplicaSet := findCurrentReplicaSet(ctx, t, c, selector, deployment, namespace)
+		if !foundReplicaSet {
+			return false
+		}
+
+		if !hasReadyPodFromReplicaSet(ctx, t, c, selector, namespace, currentRS) {
+			return false
+		}
+
+		t.Logf("Rollout complete: all %d replicas are updated, ready, and available", expectedReplicas)
+
+		return true
+	}, timeout, WaitInterval, "deployment %s/%s rollout should complete within %v", namespace, name, timeout)
 
 	t.Logf("Deployment %s/%s rollout completed successfully", namespace, name)
 }

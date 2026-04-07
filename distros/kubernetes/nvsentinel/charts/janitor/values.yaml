@@ -188,6 +188,12 @@ webhook:
   # Cert-manager issuer to use for webhook certificate
   # Janitor creates its own self-signed issuer
   certIssuer: "janitor-selfsigned-issuer"
+  # Certificate provider: "cert-manager" or "openshift-service-ca"
+  # Use "openshift-service-ca" on OpenShift to use the built-in service-ca-operator
+  # instead of cert-manager for webhook TLS certificate management.
+  # Example:
+  # certProvider: openshift-service-ca
+  certProvider: cert-manager
 
 # Metrics Configuration
 metrics:

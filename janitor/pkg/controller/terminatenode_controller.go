@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	cspv1alpha1 "github.com/nvidia/nvsentinel/api/gen/go/csp/v1alpha1"
 	janitordgxcnvidiacomv1alpha1 "github.com/nvidia/nvsentinel/janitor/api/v1alpha1"
@@ -46,10 +45,12 @@ type TerminateNodeReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	Config        *config.TerminateNodeControllerConfig
-	CSPClient     cspv1alpha1.CSPProviderServiceClient
 	NodeLock      distributedlock.NodeLock
 	LockNamespace string
-	grpcConn      *grpc.ClientConn
+
+	// dialProviderFunc overrides the default gRPC dial behavior.
+	// Used in tests to inject a mock CSP client.
+	dialProviderFunc cspProviderDialFunc
 }
 
 // +kubebuilder:rbac:groups=janitor.dgxc.nvidia.com,resources=terminatenodes,verbs=get;list;watch;create;update;patch;delete
@@ -126,6 +127,14 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 			return ctrl.Result{}, err
 		}
 	}
+
+	// Create a fresh gRPC connection per reconciliation so that rotated
+	// CA bundles and SA tokens are picked up from disk automatically.
+	cspClient, cleanup, err := r.dialProvider(ctx)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("dial csp-provider: %w", err)
+	}
+	defer cleanup()
 
 	if terminateNode.IsTerminateInProgress() {
 		// nolint:gocritic // the if/else chain is fine
@@ -237,7 +246,7 @@ func (r *TerminateNodeReconciler) reconcileHelper(ctx context.Context, terminate
 			} else {
 				slog.Info("Sending terminate signal to node", "node", terminateNode.Spec.NodeName)
 				metrics.GlobalMetrics.IncActionCount(metrics.ActionTypeTerminate, metrics.StatusStarted, node.Name)
-				_, terminateErr := r.CSPClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
+				_, terminateErr := cspClient.SendTerminateSignal(ctx, &cspv1alpha1.SendTerminateSignalRequest{
 					NodeName: node.Name,
 				})
 
@@ -328,13 +337,19 @@ func (r *TerminateNodeReconciler) getTimeout() time.Duration {
 	return cfg.Timeout
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// dialProvider creates a fresh gRPC connection to the CSP provider.
+// A new connection is created per reconciliation so that rotated CA bundles
+// and SA tokens are picked up from disk automatically without watchers.
 //
-//nolint:dupl // Structural duplication with RebootNode is acceptable - same setup pattern
-func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+//nolint:dupl // Structural duplication with RebootNode is acceptable - same dial pattern
+func (r *TerminateNodeReconciler) dialProvider(ctx context.Context) (cspv1alpha1.CSPProviderServiceClient, func(), error) {
+	if r.dialProviderFunc != nil {
+		return r.dialProviderFunc(ctx)
+	}
+
 	dialOpts, err := grpcclient.NewCSPProviderDialOptions(r.Config.CSPProviderCAPath, r.Config.CSPProviderInsecure)
 	if err != nil {
-		return fmt.Errorf("failed to build CSP provider dial options: %w", err)
+		return nil, nil, fmt.Errorf("create dial options: %w", err)
 	}
 
 	if !r.Config.CSPProviderInsecure {
@@ -345,32 +360,33 @@ func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 		dialOpts = append(dialOpts,
 			grpc.WithUnaryInterceptor(grpcclient.TokenInterceptor(tokenPath)))
-
-		slog.Info("CSP provider gRPC auth enabled",
-			"tokenPath", tokenPath)
 	}
-
-	slog.Info("Connecting to CSP provider",
-		"host", r.Config.CSPProviderHost,
-		"insecure", r.Config.CSPProviderInsecure)
 
 	conn, err := grpc.NewClient(r.Config.CSPProviderHost, dialOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to create CSP client: %w", err)
+		return nil, nil, fmt.Errorf("dial csp-provider: %w", err)
 	}
 
-	r.grpcConn = conn
-	r.CSPClient = cspv1alpha1.NewCSPProviderServiceClient(r.grpcConn)
+	return cspv1alpha1.NewCSPProviderServiceClient(conn), func() { conn.Close() }, nil
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *TerminateNodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	slog.Info("Configuring CSP provider connection",
+		"host", r.Config.CSPProviderHost,
+		"insecure", r.Config.CSPProviderInsecure)
+
+	if !r.Config.CSPProviderInsecure {
+		tokenPath := r.Config.CSPProviderTokenPath
+		if tokenPath == "" {
+			tokenPath = grpcclient.DefaultSATokenPath
+		}
+
+		slog.Info("CSP provider gRPC auth enabled", "tokenPath", tokenPath)
+	}
 
 	// Initialize NodeLock for distributed locking across maintenance operations
 	r.NodeLock = distributedlock.NewNodeLock(mgr.GetClient(), r.LockNamespace)
-
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		<-ctx.Done()
-		return r.grpcConn.Close()
-	})); err != nil {
-		return fmt.Errorf("failed to add grpc connection cleanup to manager: %w", err)
-	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&janitordgxcnvidiacomv1alpha1.TerminateNode{}).

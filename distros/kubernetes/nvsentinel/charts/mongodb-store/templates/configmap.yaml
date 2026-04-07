@@ -21,7 +21,7 @@ data:
   DATASTORE_PROVIDER: "mongodb"
   # Legacy MongoDB configuration (maintained for backward compatibility)
   # When TLS is disabled and SCRAM auth is needed, override MONGODB_URI in your
-  # Helm values to include credentials: mongodb://user:pass@host:port/?replicaSet=rs0
+  # Helm values with a full MongoDB URL (credentials from your environment only).
   # ConfigMaps cannot reference Secret values, so credentials must be provided
   # via values override or a separate Secret-backed env var.
 {{- if .Values.usePerconaOperator }}

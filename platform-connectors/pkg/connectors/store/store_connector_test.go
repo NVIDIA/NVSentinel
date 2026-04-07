@@ -181,7 +181,7 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			Events: []*protos.HealthEvent{healthEvent},
 		}
 
-		ringBuffer.Enqueue(healthEvents)
+		ringBuffer.Enqueue(ringbuffer.NewQueuedHealthEvents(healthEvents))
 
 		require.Equal(t, 1, ringBuffer.CurrentLength())
 
@@ -226,7 +226,7 @@ func TestFetchAndProcessHealthMetric(t *testing.T) {
 			Events: []*protos.HealthEvent{healthEvent},
 		}
 
-		ringBuffer.Enqueue(healthEvents)
+		ringBuffer.Enqueue(ringbuffer.NewQueuedHealthEvents(healthEvents))
 
 		require.Equal(t, 1, ringBuffer.CurrentLength())
 
@@ -345,7 +345,7 @@ func TestMessageRetriedOnMongoDBFailure(t *testing.T) {
 		Events: []*protos.HealthEvent{healthEvent},
 	}
 
-	ringBuffer.Enqueue(healthEvents)
+	ringBuffer.Enqueue(ringbuffer.NewQueuedHealthEvents(healthEvents))
 	require.Equal(t, 1, ringBuffer.CurrentLength(), "Event should be in queue")
 	go connector.FetchAndProcessHealthMetric(ctx)
 
@@ -398,7 +398,7 @@ func TestMessageDroppedAfterMaxRetries(t *testing.T) {
 		Events: []*protos.HealthEvent{healthEvent},
 	}
 
-	ringBuffer.Enqueue(healthEvents)
+	ringBuffer.Enqueue(ringbuffer.NewQueuedHealthEvents(healthEvents))
 	require.Equal(t, 1, ringBuffer.CurrentLength())
 
 	go connector.FetchAndProcessHealthMetric(ctx)

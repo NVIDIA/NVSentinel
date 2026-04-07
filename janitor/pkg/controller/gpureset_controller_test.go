@@ -173,7 +173,6 @@ var _ = Describe("GPUReset Controller", func() {
 		metrics.GPUResetRequestsCompletedTotal.Reset()
 		metrics.GPUResetDurationSeconds.Reset()
 		metrics.GPUResetActiveRequests.Reset()
-		metrics.GPUResetPendingRequests.Reset()
 		metrics.GPUResetFailureReasonsTotal.Reset()
 
 		cancel()
@@ -328,6 +327,143 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
 			}, "10s", "250ms").Should(Succeed())
 			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored)).Reason).To(Equal(string(v1alpha1.ReasonServiceRestoreSucceeded)))
+
+			By("Waiting for the reset to be marked as complete")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.CompletionTime).NotTo(BeNil())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Complete)).Reason).To(Equal(string(v1alpha1.ReasonGPUResetSucceeded)))
+		})
+	})
+
+	Context("Successful workflow with GPU Service Manager when node is deleted", func() {
+		var nodeName = "success-test-node-deleted"
+		var resetName = "success-test-reset-node-deleted"
+		var typeNamespacedName = types.NamespacedName{Name: resetName}
+		var node *corev1.Node
+
+		BeforeEach(func() {
+			By("Creating a test node")
+			node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: make(map[string]string)}}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("Cleaning up resources")
+			if err := k8sClient.Delete(ctx, node); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+			reset := &v1alpha1.GPUReset{ObjectMeta: metav1.ObjectMeta{Name: resetName}}
+			if err := k8sClient.Delete(ctx, reset); err != nil && !apierrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+			var jobList batchv1.JobList
+			Expect(k8sClient.List(ctx, &jobList)).To(Succeed())
+			for _, job := range jobList.Items {
+				if strings.HasPrefix(job.Name, resetName) {
+					if err := k8sClient.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+			}
+		})
+
+		It("should reconcile a GPUReset through all states successfully when node is deleted", func() {
+			By("Creating a new GPUReset resource")
+			reset := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+					Selector: &v1alpha1.GPUSelector{
+						UUIDs: []string{"GPU-a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Waiting for the status to be initialized")
+			var updatedReset v1alpha1.GPUReset
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Ready))).NotTo(BeNil())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(controllerutil.ContainsFinalizer(&updatedReset, gpuResetFinalizer)).To(BeTrue())
+
+			By("Waiting for the reset to be scheduled")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetPending))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.Ready)).Reason).To(Equal(string(v1alpha1.ReasonReadyForReset)))
+
+			By("Waiting for services to be torn down")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+
+			By("Waiting for the reset job to be created")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(updatedReset.Status.JobRef).NotTo(BeNil())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+
+				// wait for the job to exist
+				jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+				var createdJob batchv1.Job
+				g.Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+
+				cond := meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCreated))
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationSucceeded)))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCreated)).Reason).To(Equal(string(v1alpha1.ReasonResetJobCreationSucceeded)))
+
+			By("Simulating the job succeeding")
+			var createdJob batchv1.Job
+			jobKey := types.NamespacedName{Name: updatedReset.Status.JobRef.Name, Namespace: updatedReset.Status.JobRef.Namespace}
+			Expect(k8sClient.Get(ctx, jobKey, &createdJob)).To(Succeed())
+			createdJob.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
+
+			By("Waiting for the job to be marked as completed")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ResetJobCompleted)).Reason).To(Equal(string(v1alpha1.ReasonResetJobSucceeded)))
+
+			By("Deleting the node resource mid-workflow")
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			By("Waiting for services to be restored")
+			Eventually(func(g Gomega) {
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored))).To(BeTrue())
+				g.Expect(updatedReset.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
+			}, "10s", "250ms").Should(Succeed())
+			Expect(meta.FindStatusCondition(updatedReset.Status.Conditions, string(v1alpha1.ServicesRestored)).Reason).To(Equal(string(v1alpha1.ReasonSkipped)))
 
 			By("Waiting for the reset to be marked as complete")
 			Eventually(func(g Gomega) {
@@ -649,90 +785,6 @@ var _ = Describe("GPUReset Controller", func() {
 					}
 				}
 			}
-		})
-
-		It("should keep second reset not-ready until the first one is complete", func() {
-			By("Creating the first GPUReset")
-			reset1 := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "first-reset"},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: nodeName,
-				},
-			}
-			Expect(k8sClient.Create(ctx, reset1)).To(Succeed())
-
-			// Ensure a different creation timestamp
-			time.Sleep(2 * time.Second)
-
-			By("Creating the second GPUReset for the same node")
-			reset2 := &v1alpha1.GPUReset{
-				ObjectMeta: metav1.ObjectMeta{Name: "second-reset"},
-				Spec: v1alpha1.GPUResetSpec{
-					NodeName: nodeName,
-				},
-			}
-			Expect(k8sClient.Create(ctx, reset2)).To(Succeed())
-
-			By("Waiting for the first reset to be initialized, scheduled, and the job created")
-			var updatedReset1 v1alpha1.GPUReset
-			var createdJob batchv1.Job
-			reset1Key := types.NamespacedName{Name: reset1.Name}
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reset1Key})
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(k8sClient.Get(ctx, reset1Key, &updatedReset1)).To(Succeed())
-				g.Expect(meta.IsStatusConditionTrue(updatedReset1.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
-				g.Expect(updatedReset1.Status.JobRef).NotTo(BeNil())
-				g.Expect(updatedReset1.Status.Phase).To(Equal(v1alpha1.ResetInProgress))
-
-				// wait for job to exist
-				job1Key := types.NamespacedName{Name: updatedReset1.Status.JobRef.Name, Namespace: updatedReset1.Status.JobRef.Namespace}
-				g.Expect(k8sClient.Get(ctx, job1Key, &createdJob)).To(Succeed())
-			}, "10s", "100ms").Should(Succeed())
-
-			By("Verifying the second reset is not ready due to resource contention")
-			var updatedReset2 v1alpha1.GPUReset
-			reset2Key := types.NamespacedName{Name: reset2.Name}
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reset2Key})
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(k8sClient.Get(ctx, reset2Key, &updatedReset2)).To(Succeed())
-
-				cond := meta.FindStatusCondition(updatedReset2.Status.Conditions, string(v1alpha1.Ready))
-				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-				g.Expect(cond.Reason).To(Equal(string(v1alpha1.ReasonResourceContention)))
-				g.Expect(cond.Message).To(ContainSubstring("Waiting for first-reset to complete"))
-				g.Expect(updatedReset2.Status.Phase).To(Equal(v1alpha1.ResetPending))
-			}, "10s", "100ms").Should(Succeed())
-
-			By("Simulating job success and full completion of the first reset")
-			Expect(updatedReset1.Status.JobRef).NotTo(BeNil(), "Expected reset1 to have a JobRef before simulating completion")
-			job1Key := types.NamespacedName{Name: updatedReset1.Status.JobRef.Name, Namespace: updatedReset1.Status.JobRef.Namespace}
-			Expect(k8sClient.Get(ctx, job1Key, &createdJob)).To(Succeed())
-			createdJob.Status.Succeeded = 1
-			Expect(k8sClient.Status().Update(ctx, &createdJob)).To(Succeed())
-
-			reconciler.checkPodsReadyFn = func(ctx context.Context, nodeName string) (bool, error) {
-				return true, nil
-			}
-
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reset1Key})
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(k8sClient.Get(ctx, reset1Key, &updatedReset1)).To(Succeed())
-				g.Expect(meta.IsStatusConditionTrue(updatedReset1.Status.Conditions, string(v1alpha1.Complete))).To(BeTrue())
-				g.Expect(updatedReset1.Status.Phase).To(Equal(v1alpha1.ResetSucceeded))
-			}, "10s", "100ms").Should(Succeed(), "Timed out waiting for reset1 to reach Complete state")
-
-			By("Waiting for the second reset to become scheduled after the first completed")
-			Eventually(func(g Gomega) {
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: reset2Key})
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(k8sClient.Get(ctx, reset2Key, &updatedReset2)).To(Succeed())
-				g.Expect(meta.IsStatusConditionTrue(updatedReset2.Status.Conditions, string(v1alpha1.Ready))).To(BeTrue())
-				g.Expect(updatedReset2.Status.Phase).To(Equal(v1alpha1.ResetPending))
-			}, "10s", "100ms").Should(Succeed())
 		})
 	})
 
@@ -1278,6 +1330,48 @@ var _ = Describe("GPUReset Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
 			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("true"))
 		})
+
+		It("should allow GPUReset deletion if node is deleted", func() {
+			reset := &v1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{Name: resetName},
+				Spec: v1alpha1.GPUResetSpec{
+					NodeName: nodeName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, reset)).To(Succeed())
+
+			By("Reconciling until services are torn down")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var updatedReset v1alpha1.GPUReset
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &updatedReset)).To(Succeed())
+				g.Expect(meta.IsStatusConditionTrue(updatedReset.Status.Conditions, string(v1alpha1.ServicesTornDown))).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+
+			By("Verifying services are disabled")
+			var updatedNode corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &updatedNode)).To(Succeed())
+			Expect(updatedNode.Labels["nvidia.com/gpu.deploy.device-plugin"]).To(Equal("false"))
+
+			By("Deleting node mid-workflow")
+			Expect(k8sClient.Delete(ctx, node)).To(Succeed())
+
+			By("Deleting the GPUReset resource mid-workflow")
+			Expect(k8sClient.Delete(ctx, reset)).To(Succeed())
+
+			By("Reconciling until the resource is fully deleted")
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var deletedReset v1alpha1.GPUReset
+				err = k8sClient.Get(ctx, typeNamespacedName, &deletedReset)
+				g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+			}, "10s", "250ms").Should(Succeed())
+		})
+
 	})
 
 	Context("Metrics", func() {
@@ -1356,7 +1450,6 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "250ms").Should(Succeed())
 
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsTotal.WithLabelValues(nodeName))).To(Equal(1.0))
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 
 			By("Waiting for promotion to Active")
@@ -1370,7 +1463,6 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			}, "10s", "250ms").Should(Succeed())
 
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(1.0))
 
 			By("Waiting for the job to be created")
@@ -1414,7 +1506,6 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "250ms").Should(Succeed())
 
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(0.0))
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsCompletedTotal.WithLabelValues(nodeName, "success"))).To(Equal(1.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsCompletedTotal.WithLabelValues(nodeName, "failure"))).To(Equal(0.0))
 
@@ -1450,7 +1541,6 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "250ms").Should(Succeed())
 
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsTotal.WithLabelValues(nodeName))).To(Equal(1.0))
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 
 			By("Waiting for promotion to Active")
@@ -1464,7 +1554,6 @@ var _ = Describe("GPUReset Controller", func() {
 				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			}, "10s", "250ms").Should(Succeed())
 
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(1.0))
 
 			By("Waiting for the job to be created")
@@ -1498,7 +1587,6 @@ var _ = Describe("GPUReset Controller", func() {
 			}, "10s", "100ms").Should(Succeed())
 
 			Expect(testutil.ToFloat64(metrics.GPUResetActiveRequests.WithLabelValues(nodeName))).To(Equal(0.0))
-			Expect(testutil.ToFloat64(metrics.GPUResetPendingRequests.WithLabelValues(nodeName))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsCompletedTotal.WithLabelValues(nodeName, "failure"))).To(Equal(1.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetRequestsCompletedTotal.WithLabelValues(nodeName, "success"))).To(Equal(0.0))
 			Expect(testutil.ToFloat64(metrics.GPUResetFailureReasonsTotal.WithLabelValues(nodeName, string(v1alpha1.ReasonResetJobFailed)))).To(Equal(1.0))

@@ -19,17 +19,24 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"tests/helpers"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/statemanager"
+)
+
+const (
+	gpuResetFinalizer = "janitor.dgxc.nvidia.com/finalizer"
 )
 
 func TestGPUReset(t *testing.T) {
@@ -180,7 +187,7 @@ func TestGPUReset(t *testing.T) {
 		assert.NoError(t, err, "failed to get nvidia-dcgm-pod")
 		t.Logf("Restored DCGM pod is : %s", newDCGMPod.Name)
 
-		err = helpers.DeleteCR(ctx, client, gpuReset)
+		err = helpers.DeleteCR(ctx, t, client, gpuReset, true)
 		assert.NoError(t, err, "failed to delete GPUReset CR")
 
 		return ctx
@@ -246,6 +253,160 @@ func TestGPUReset(t *testing.T) {
 		err = helpers.DeleteNamespace(ctx, t, client, namespaceName)
 		assert.NoError(t, err, "failed to delete workloads namespace")
 
+		helpers.RestoreQuarantineConfig(ctx, t, c)
+		helpers.RestoreNodeDrainerConfig(ctx, t, c)
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}
+
+func TestGPUResetScale(t *testing.T) {
+	// Only used for manual testing
+	t.Skip()
+	feature := features.New("TestGPUResetScale").
+		WithLabel("suite", "gpu-reset-scale")
+
+	// Test settings
+	var numNodes = 10                   // the given Kind cluster must have at least this number of real worker nodes
+	var gpusPerNode = 8                 // the number of GPUs per node can be chosen without any Kind infra changes
+	var eventsPerGPU = 2                // number of duplicated unhealthy health events generated per GPU
+	var skipControllerFinalizer = false // determines whether we require gpu-reset-controller to remove its finalizer
+
+	var nodeNames []string
+	var events []*helpers.HealthEventTemplate
+	var startTime time.Time
+	var endTime time.Time
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Logf("Test Overview:")
+		t.Logf("Node count: %d", numNodes)
+		t.Logf("GPUs per node: %d", gpusPerNode)
+		t.Logf("Unhealthy events per GPU: %d", eventsPerGPU)
+		t.Logf("Skip controller finalizer: %t", skipControllerFinalizer)
+		t.Logf("Total GPUs: %d", numNodes*gpusPerNode)
+		t.Logf("Total unhealthy events: %d", numNodes*gpusPerNode*eventsPerGPU)
+
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		ctx = helpers.ApplyQuarantineConfig(ctx, t, c, "data/basic-matching-configmap.yaml")
+		ctx = helpers.ApplyNodeDrainerConfig(ctx, t, c, "data/nd-all-modes.yaml")
+
+		// Use all real (non-KWOK) nodes for scale test to validate actual container execution
+		nodeNames, err = helpers.GetRealNodeNames(ctx, client, numNodes)
+		assert.NoError(t, err, "failed to get real node")
+		assert.True(t, len(nodeNames) == numNodes, "expected at exact number of nodes", numNodes)
+		t.Logf("Found %d real nodes for GPU reset test", len(nodeNames))
+
+		return ctx
+	})
+
+	feature.Assess("Can send fatal health events for all GPUs", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		startTime = time.Now()
+		for _, nodeName := range nodeNames {
+			for i := range gpusPerNode {
+				gpuUUID := uuid.New().String()
+				event := helpers.NewHealthEvent(nodeName).
+					WithErrorCode("119").
+					WithRecommendedAction(2).
+					WithEntitiesImpacted([]helpers.EntityImpacted{
+						{EntityType: "GPU", EntityValue: fmt.Sprintf("%d", i)},
+						{EntityType: "GPU_UUID", EntityValue: fmt.Sprintf("GPU-%s", gpuUUID)},
+					})
+				for j := range eventsPerGPU {
+					t.Logf("Sending unhealthy event for node %s and GPU %s (count %d)", nodeName, gpuUUID, j)
+					helpers.SendHealthEvent(ctx, t, event)
+					if j == 0 { // only keep track of 1 event per GPU
+						events = append(events, event)
+					}
+				}
+			}
+		}
+		return ctx
+	})
+
+	feature.Assess("GPUReset CRs are created and complete for all nodes", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		for _, nodeName := range nodeNames {
+			for i := range gpusPerNode {
+				gpuReset := helpers.WaitForCR(ctx, t, client, nodeName, helpers.GPUResetGVK)
+				t.Logf("Found GPUReset for node %s (count %d)", nodeName, i)
+
+				status, found, err := unstructured.NestedMap(gpuReset.Object, "status")
+				if err != nil || !found {
+					assert.Fail(t, "failed to find status field in CR", gpuReset.GetName(), err)
+				}
+				conditions, found, err := unstructured.NestedSlice(status, "conditions")
+				if err != nil || !found {
+					assert.Fail(t, "failed to find status conditions field in CR", gpuReset.GetName(), err)
+				}
+				var foundCompleteCondition bool
+				for _, c := range conditions {
+					condMap := c.(map[string]interface{})
+
+					if condMap["type"].(string) == "Complete" {
+						foundCompleteCondition = true
+						assert.Equal(t, "GPUResetSucceeded", condMap["reason"].(string))
+						assert.Equal(t, "True", condMap["status"].(string))
+					}
+				}
+				assert.True(t, foundCompleteCondition, "Did not find Complete condition on CR", gpuReset.GetName())
+
+				if skipControllerFinalizer {
+					controllerutil.RemoveFinalizer(gpuReset, gpuResetFinalizer)
+					err := client.Resources().Update(ctx, gpuReset)
+					assert.NoError(t, err, "failed to remove finalizer on CR", gpuReset.GetName())
+				}
+				err = helpers.DeleteCR(ctx, t, client, gpuReset, true)
+				assert.NoError(t, err, "failed to delete GPUReset CR")
+			}
+		}
+
+		endTime = time.Now()
+		duration := endTime.Sub(startTime)
+		t.Logf("Scale test duration seconds: %f", duration.Seconds())
+
+		gpuResetList, err := helpers.ListAllCRs(ctx, client, helpers.GPUResetGVK)
+		assert.NoError(t, err)
+		assert.Equal(t, len(gpuResetList.Items), 0, "Expected all GPUReset CRs to be deleted")
+		return ctx
+	})
+
+	feature.Assess("Can send healthy events for all GPUs", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		// An alternative would be to send 1 healthy event per node without entities impacted to clear all unhealthy events.
+		// We'll send 1 healthy event per GPU to simulate the actual GPU reset workflow.
+		for _, event := range events {
+			event.WithHealthy(true).
+				WithFatal(false).
+				WithMessage("No health failures")
+			gpuUUID := event.EntitiesImpacted[1].EntityValue
+
+			t.Logf("Sending healthy event for node %s and GPU %s", event.NodeName, gpuUUID)
+			helpers.SendHealthEvent(ctx, t, event)
+		}
+		return ctx
+	})
+
+	feature.Assess("Nodes are uncordoned", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		assert.NoError(t, err, "failed to create kubernetes client")
+
+		for _, nodeName := range nodeNames {
+			t.Logf("Waiting for node %s to be uncordoned", nodeName)
+			helpers.WaitForNodesCordonState(ctx, t, client, []string{nodeName}, false)
+
+			// Wait for node condition to be updated to healthy
+			t.Logf("Waiting for node %s condition to become healthy", nodeName)
+			helpers.WaitForNodeConditionWithCheckName(ctx, t, client, nodeName, "GpuXidError",
+				"No Health Failures", "GpuXidErrorIsHealthy", v1.ConditionFalse)
+		}
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		helpers.RestoreQuarantineConfig(ctx, t, c)
 		helpers.RestoreNodeDrainerConfig(ctx, t, c)
 

@@ -344,7 +344,7 @@ test_gpu_monitoring_dcgm() {
     kubectl exec -n gpu-operator "$dcgm_pod" -- dcgmi test --inject --gpuid 0 -f 240 -v 99999 # power watch error
 
     log "Waiting for node events to appear..."
-    local max_wait=30
+    local max_wait=${UAT_EVENT_TIMEOUT:-30}
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "GpuPowerWatchIsNotHealthy") | .reason')
@@ -537,7 +537,7 @@ test_sxid_monitoring_syslog() {
     log "  - SXID 28002 (Non-fatal): Therm Warn Deactivated on Link $link_number"
     kubectl exec -n gpu-operator "$dcgm_pod" -- sh -c "echo '<3>nvidia-nvswitch0: SXid (PCI:${pci_id}): 28002, Non-fatal, Link ${link_number} Therm Warn Deactivated' > /dev/kmsg"
 
-    local max_wait=30
+    local max_wait=${UAT_EVENT_TIMEOUT:-30}
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         power_event=$(kubectl get events --field-selector involvedObject.name="$gpu_node" -o json | jq -r '.items[] | select(.reason == "SysLogsSXIDErrorIsNotHealthy") | .reason')

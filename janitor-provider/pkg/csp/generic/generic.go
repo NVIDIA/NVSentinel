@@ -106,7 +106,8 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 		return "", fmt.Errorf("failed to create reboot job for node %s: %w", node.Name, err)
 	}
 
-	slog.Info("Reboot Job created", "node", node.Name, "job", created.Name, "jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID)
+	slog.Info("Reboot Job created", "node", node.Name, "job", created.Name,
+		"jobNamespace", c.config.RebootJobNamespace, "bootID", preRebootBootID)
 
 	return model.ResetSignalRequestRef(preRebootBootID), nil
 }
@@ -130,6 +131,7 @@ func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID st
 	if !isNodeReady(node) {
 		slog.Info("Node rebooted but not yet Ready", "node", node.Name,
 			"oldBootID", preRebootBootID, "newBootID", currentBootID)
+
 		return false, nil
 	}
 
@@ -237,6 +239,7 @@ func (c *Client) checkRebootJobPodStatus(ctx context.Context, nodeName string) e
 				if isTransientWaitingReason(reason) {
 					continue
 				}
+
 				if reason != "" {
 					return fmt.Errorf("reboot job pod failed to start on node %s: %s", nodeName, reason)
 				}
@@ -277,6 +280,7 @@ func buildImagePullSecrets(names []string) []corev1.LocalObjectReference {
 	for _, name := range names {
 		secrets = append(secrets, corev1.LocalObjectReference{Name: name})
 	}
+
 	return secrets
 }
 
@@ -316,8 +320,8 @@ func loadConfigFromEnv() Config {
 	}
 
 	namespace := os.Getenv("GENERIC_REBOOT_JOB_NAMESPACE")
-
 	ttl := int32(defaultRebootJobTTLSeconds)
+
 	if ttlStr := os.Getenv("GENERIC_REBOOT_JOB_TTL"); ttlStr != "" {
 		parsed, err := strconv.ParseInt(ttlStr, 10, 32)
 		if err != nil || parsed < 0 {
@@ -328,6 +332,7 @@ func loadConfigFromEnv() Config {
 	}
 
 	var pullSecrets []string
+
 	if ps := os.Getenv("GENERIC_REBOOT_IMAGE_PULL_SECRETS"); ps != "" {
 		for s := range strings.SplitSeq(ps, ",") {
 			if trimmed := strings.TrimSpace(s); trimmed != "" {

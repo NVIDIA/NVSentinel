@@ -52,12 +52,11 @@ func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.
 
 // IsNodeReady checks if the node is ready (simulated with randomness for kind)
 func (c *Client) IsNodeReady(ctx context.Context, node corev1.Node, requestID string) (bool, error) {
-	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// simulate some randomness if the node is ready or not (very high success rate for fast tests)
 	// requestID is unused in simulation mode
 	_ = requestID
 
-	return rand.IntN(100) > 5, nil
+	return rand.IntN(100) > 5, nil //nolint:gosec // G404: weak random acceptable for simulation
 }
 
 // SendTerminateSignal simulates terminating a kind node by removing the docker container

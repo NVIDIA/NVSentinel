@@ -265,6 +265,33 @@ var _ = Describe("Janitor Webhook", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("node 'non-existent-node' does not exist in the cluster"))
 		})
+
+		It("Should accept GPUReset updates when node does not exist", func() {
+			oldObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-gpu-reset",
+				},
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "non-existent-node",
+					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
+						UUIDs: []string{"test-uuid"},
+					},
+				},
+			}
+			newObj := &janitordgxcnvidiacomv1alpha1.GPUReset{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-gpu-reset",
+				},
+				Spec: janitordgxcnvidiacomv1alpha1.GPUResetSpec{
+					NodeName: "non-existent-node",
+					Selector: &janitordgxcnvidiacomv1alpha1.GPUSelector{
+						UUIDs: []string{"test-uuid"},
+					},
+				},
+			}
+			_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Context("Existing resource verification", func() {

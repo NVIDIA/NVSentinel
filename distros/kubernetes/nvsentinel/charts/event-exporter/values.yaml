@@ -34,7 +34,10 @@ resources:
 # You must create this secret manually before deploying this chart
 oidcSecretName: "event-exporter-oidc-secret"
 
-# Set to an empty string to disable MongoDB TLS client certificate mounts.
+# MongoDB TLS client certificate mount path.
+# Default is /etc/ssl/mongo-client for internal MongoDB (mTLS).
+# Override to "" in your CSP-specific values file when using managed services
+# (Atlas, DocumentDB with SCRAM, Cosmos DB) that do not require client certificates.
 mongodbStore:
   clientCertMountPath: /etc/ssl/mongo-client
 

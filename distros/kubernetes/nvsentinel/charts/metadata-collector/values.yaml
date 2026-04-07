@@ -29,3 +29,19 @@ resources:
 
 # Runtime class name for the pod. If empty or not set, the field will be omitted.
 runtimeClassName: "nvidia"
+
+# Override the kubelet host used by the pod device mapper. When unset (default),
+# the metadata-collector connects to localhost. Set this to a valid Kubernetes
+# env var spec to override. On clusters where kubelet binds to the node's
+# primary IP instead of 0.0.0.0, use the Downward API:
+#
+#   kubeletHost:
+#     valueFrom:
+#       fieldRef:
+#         fieldPath: status.hostIP
+#
+# A static value also works:
+#
+#   kubeletHost:
+#     value: "10.0.0.1"
+kubeletHost: {}

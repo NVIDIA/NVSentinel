@@ -229,10 +229,10 @@ cert_manager_objects = [
 ]
 if preflight_enabled:
     cert_manager_objects.extend([
-        'nvsentinel-preflight-webhook-cert:certificate',
-        'nvsentinel-preflight-ca:certificate',
-        'nvsentinel-preflight-selfsigned:issuer',
-        'nvsentinel-preflight-ca-issuer:issuer',
+        'preflight-webhook-cert:certificate',
+        'preflight-ca:certificate',
+        'preflight-selfsigned:issuer',
+        'preflight-ca-issuer:issuer',
     ])
 if use_postgresql:
     cert_manager_objects.extend([

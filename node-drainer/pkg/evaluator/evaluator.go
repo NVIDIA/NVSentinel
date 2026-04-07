@@ -344,11 +344,10 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 
 	crName := customdrain.GenerateCRName(nodeName, eventID)
 
-	exists, err := e.customDrainClient.Exists(ctx, crName)
+	nodeHasCR, nodeDrainComplete, err := e.customDrainClient.ExistsForNode(ctx, nodeName)
 	if err != nil {
-		slog.Error("Failed to check if drain CR exists",
+		slog.Error("Failed to check if any drain CR exists for node",
 			"node", nodeName,
-			"crName", crName,
 			"error", err)
 
 		return &DrainActionResult{
@@ -357,7 +356,7 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		}, nil
 	}
 
-	if !exists {
+	if !nodeHasCR {
 		systemNamespaces := e.config.SystemNamespaces
 
 		namespaces, err := e.informers.GetNamespacesMatchingPattern(ctx, "*", systemNamespaces, nodeName)
@@ -376,12 +375,32 @@ func (e *NodeDrainEvaluator) evaluateCustomDrain(ctx context.Context, healthEven
 		}, nil
 	}
 
-	isComplete, err := e.customDrainClient.GetCRStatus(ctx, crName)
+	crExists, isComplete, err := e.customDrainClient.GetCRStatus(ctx, crName)
 	if err != nil {
 		slog.Error("Failed to get drain CR status",
 			"node", nodeName,
 			"crName", crName,
 			"error", err)
+
+		return &DrainActionResult{
+			Action:    ActionWait,
+			WaitDelay: customDrainPollInterval,
+		}, nil
+	}
+
+	if !crExists {
+		if nodeDrainComplete {
+			slog.Info("Another drain CR completed for this node, marking as already drained",
+				"node", nodeName)
+
+			return &DrainActionResult{
+				Action: ActionMarkAlreadyDrained,
+				Status: model.AlreadyDrained,
+			}, nil
+		}
+
+		slog.Info("Another drain CR is in progress for this node, waiting",
+			"node", nodeName)
 
 		return &DrainActionResult{
 			Action:    ActionWait,

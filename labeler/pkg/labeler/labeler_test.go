@@ -16,6 +16,10 @@ package labeler
 
 import (
 	"context"
+	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +31,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
@@ -1144,15 +1149,22 @@ func TestStaleLabelsRemoval(t *testing.T) {
 					return len(dcgmObjs) > 0 || len(driverObjs) > 0
 				}, 10*time.Second, 100*time.Millisecond, "pods not indexed in custom indexes")
 
-				// Restore original labels - reconcileAllNodes() may have removed them
-				// before pods were indexed during the initial sync race
+			// Restore original labels - reconcileAllNodes() may have removed them
+			// before pods were indexed during the initial sync race.
+			// Uses RetryOnConflict because the labeler may concurrently update
+			// the same node during its initial reconciliation.
+			err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 				node, err := cli.CoreV1().Nodes().Get(ctx, tt.existingNode.Name, metav1.GetOptions{})
-				require.NoError(t, err, "failed to get node")
+				if err != nil {
+					return err
+				}
 				for k, v := range tt.existingNode.Labels {
 					node.Labels[k] = v
 				}
 				_, err = cli.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
-				require.NoError(t, err, "failed to restore node labels")
+				return err
+			})
+			require.NoError(t, err, "failed to restore node labels")
 			}
 
 			err = labeler.handleNodeEvent(tt.existingNode)
@@ -1311,5 +1323,171 @@ func TestAssumeDriverInstalled(t *testing.T) {
 				return !driverExists
 			}, 15*time.Second, 500*time.Millisecond, "driver label not set correctly on node %s", tt.existingNode.Name)
 		})
+	}
+}
+
+// TestMemoryUnderNodeUpdatePressure creates nodes in envtest and rapidly updates
+// their status conditions (simulating kubelet heartbeats) to detect unbounded
+// memory growth in the labeler's node event handler path.
+func TestMemoryUnderNodeUpdatePressure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping memory stress test in short mode")
+	}
+
+	const (
+		nodeCount    = 200
+		testDuration = 60 * time.Second
+		workers      = 10
+		maxGrowthMiB = 30
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	testEnv := envtest.Environment{}
+	cfg, err := testEnv.Start()
+	require.NoError(t, err)
+	defer func() { _ = testEnv.Stop() }()
+
+	cli, err := kubernetes.NewForConfig(cfg)
+	require.NoError(t, err)
+
+	createNodes(t, ctx, cli, nodeCount)
+
+	labeler, err := NewLabeler(cli, 30*time.Second, "nvidia-dcgm", "nvidia-driver-daemonset", "nvidia-driver-installer", "", false)
+	require.NoError(t, err)
+
+	labelerCtx, labelerCancel := context.WithCancel(ctx)
+	defer labelerCancel()
+	go func() { _ = labeler.Run(labelerCtx) }()
+
+	require.True(t, cache.WaitForCacheSync(labelerCtx.Done(), labeler.informersSynced...))
+
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	var baseline runtime.MemStats
+	runtime.ReadMemStats(&baseline)
+
+	updateCtx, updateCancel := context.WithTimeout(labelerCtx, testDuration)
+	defer updateCancel()
+
+	var peakHeapInuse atomic.Uint64
+	peakHeapInuse.Store(baseline.HeapInuse)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-updateCtx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				for {
+					cur := peakHeapInuse.Load()
+					if ms.HeapInuse <= cur || peakHeapInuse.CompareAndSwap(cur, ms.HeapInuse) {
+						break
+					}
+				}
+			}
+		}
+	}()
+
+	generateNodeUpdates(t, updateCtx, cli, nodeCount, workers)
+
+	runtime.GC()
+	time.Sleep(200 * time.Millisecond)
+	var final runtime.MemStats
+	runtime.ReadMemStats(&final)
+
+	finalGrowthMiB := int64(final.HeapInuse-baseline.HeapInuse) / 1024 / 1024
+	peakGrowthMiB := int64(peakHeapInuse.Load()-baseline.HeapInuse) / 1024 / 1024
+
+	t.Logf("nodes=%d duration=%s baseline=%dMiB peak=%dMiB final=%dMiB peakGrowth=%dMiB finalGrowth=%dMiB",
+		nodeCount, testDuration,
+		baseline.HeapInuse/1024/1024, peakHeapInuse.Load()/1024/1024, final.HeapInuse/1024/1024,
+		peakGrowthMiB, finalGrowthMiB)
+
+	if peakGrowthMiB > maxGrowthMiB {
+		t.Errorf("peak memory grew by %d MiB (limit %d MiB) — likely unbounded notification buffer growth",
+			peakGrowthMiB, maxGrowthMiB)
+	}
+	if finalGrowthMiB > maxGrowthMiB {
+		t.Errorf("final memory grew by %d MiB (limit %d MiB) — memory not reclaimed after GC",
+			finalGrowthMiB, maxGrowthMiB)
+	}
+}
+
+func createNodes(t *testing.T, ctx context.Context, cli kubernetes.Interface, count int) {
+	t.Helper()
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 20)
+
+	for i := range count {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			_, err := cli.CoreV1().Nodes().Create(ctx, &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   fmt.Sprintf("node-%04d", i),
+					Labels: map[string]string{"nvidia.com/gpu.present": "true"},
+				},
+			}, metav1.CreateOptions{})
+			require.NoError(t, err)
+		}()
+	}
+
+	wg.Wait()
+	t.Logf("created %d nodes", count)
+}
+
+func generateNodeUpdates(t *testing.T, ctx context.Context, cli kubernetes.Interface, nodeCount, workers int) {
+	t.Helper()
+
+	sem := make(chan struct{}, workers)
+
+	for round := 1; ; round++ {
+		var wg sync.WaitGroup
+		cancelled := false
+
+		for i := range nodeCount {
+			select {
+			case <-ctx.Done():
+				cancelled = true
+			case sem <- struct{}{}:
+			}
+			if cancelled {
+				break
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				node, err := cli.CoreV1().Nodes().Get(ctx, fmt.Sprintf("node-%04d", i), metav1.GetOptions{})
+				if err != nil {
+					return
+				}
+				node.Status.Conditions = []corev1.NodeCondition{{
+					Type:              corev1.NodeReady,
+					Status:            corev1.ConditionTrue,
+					LastHeartbeatTime: metav1.Now(),
+					Reason:            fmt.Sprintf("round-%d", round),
+				}}
+				_, _ = cli.CoreV1().Nodes().UpdateStatus(ctx, node, metav1.UpdateOptions{})
+			}()
+		}
+
+		wg.Wait()
+
+		if cancelled {
+			return
+		}
+		t.Logf("heartbeat round %d complete", round)
 	}
 }
