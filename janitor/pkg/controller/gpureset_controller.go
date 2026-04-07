@@ -537,10 +537,30 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 	nodeName := gr.Spec.NodeName
 	managerName := r.serviceManager.Name
+	nodeExists := true
 
-	if len(r.serviceManager.Spec.Apps) == 0 {
-		log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
-			managerName, "node", nodeName)
+	node, err := r.getNode(nodeName)
+	if err != nil {
+		// The restoreServices logic is called during GPUReset reconciling and during GPUReset CR deletion. In both
+		// cases, if the corresponding node doesn't exist, we will consider ServicesRestored as successful with reason
+		// skipped.
+		if !apierrors.IsNotFound(err) {
+			log.V(1).Info("Failed to get node for service restoration, will retry", "node", nodeName, "error", err)
+			return ctrl.Result{}, fmt.Errorf("failed to get node %s for service restoration: %w", nodeName, err)
+		}
+
+		nodeExists = false
+	}
+
+	if len(r.serviceManager.Spec.Apps) == 0 || !nodeExists {
+		if len(r.serviceManager.Spec.Apps) == 0 {
+			log.V(1).Info("GPU services manager has no apps specified, skipping service restoration", "manager",
+				managerName, "node", nodeName)
+		}
+
+		if !nodeExists {
+			log.V(1).Info("Node no longer exists, skipping service restoration", "node", nodeName)
+		}
 
 		if err := r.updateCondition(ctx, gr, v1alpha1.ServicesRestored, metav1.ConditionTrue, v1alpha1.ReasonSkipped,
 			"No services manager configured, or has no managed services specified"); err != nil {
@@ -572,12 +592,6 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 
 		return r.reconcileTerminalFailure(ctx, gr, v1alpha1.ReasonRestoreTimeoutExceeded,
 			fmt.Sprintf("failed to restore %s managed services within the timeout period", managerName))
-	}
-
-	node, err := r.getNode(nodeName)
-	if err != nil {
-		log.V(1).Info("Failed to get node for service restoration, will retry", "node", nodeName, "error", err)
-		return ctrl.Result{}, fmt.Errorf("failed to get node %s for service restoration: %w", nodeName, err)
 	}
 
 	nodeToUpdate := node.DeepCopy()
@@ -628,8 +642,6 @@ func (r *GPUResetReconciler) restoreServices(ctx context.Context, gr *v1alpha1.G
 			v1alpha1.ReasonServiceRestoreSucceeded, fmt.Sprintf("%s managed services are Ready", managerName)); err != nil {
 			return ctrl.Result{}, err
 		}
-
-		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil

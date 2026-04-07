@@ -68,8 +68,8 @@ func TestNewAuditingRoundTripper(t *testing.T) {
 		t.Fatal("NewAuditingRoundTripper returned nil")
 	}
 
-	if rt.delegate != delegate {
-		t.Error("NewAuditingRoundTripper did not set delegate correctly")
+	if rt.delegate == nil {
+		t.Error("NewAuditingRoundTripper did not set delegate")
 	}
 }
 

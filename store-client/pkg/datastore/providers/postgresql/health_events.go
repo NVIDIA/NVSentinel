@@ -219,6 +219,29 @@ func (p *PostgreSQLHealthEventStore) insertHealthEventRecord(
 	return nil
 }
 
+// UpdateSpanID writes a service's span ID into the span_ids map for trace context propagation.
+func (p *PostgreSQLHealthEventStore) UpdateSpanID(
+	ctx context.Context, id string, serviceName string, spanID string,
+) error {
+	query := `
+		UPDATE health_events
+		SET document = jsonb_set(
+			COALESCE(document, '{}'::jsonb),
+			'{healtheventstatus,spanids}',
+			COALESCE(document#>'{healtheventstatus,spanids}', '{}'::jsonb)
+				|| jsonb_build_object($1::text, $2::text)
+		),
+		updated_at = NOW()
+		WHERE id = $3`
+
+	_, err := p.db.ExecContext(ctx, query, serviceName, spanID, id)
+	if err != nil {
+		return fmt.Errorf("failed to update span ID: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateHealthEventStatus updates the status of a health event by ID
 func (p *PostgreSQLHealthEventStore) UpdateHealthEventStatus(
 	ctx context.Context, id string, status datastore.HealthEventStatus,

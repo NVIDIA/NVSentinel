@@ -112,7 +112,20 @@ func run() error {
 		DryRun:                      *dryRun,
 	}
 
-	components, err := initializer.InitializeAll(ctx, params)
+	// Create and start the health/metrics server BEFORE the potentially slow MongoDB
+	// initialization. This ensures Kubernetes liveness probes get HTTP 200 responses
+	// immediately, preventing the pod from being killed during initialization.
+	srv, err := createMetricsServer(*metricsPort)
+	if err != nil {
+		return err
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	startMetricsServer(g, gCtx, srv)
+
+	// Initialize components (may block on MongoDB connectivity / change stream setup)
+	components, err := initializer.InitializeAll(gCtx, params)
 	if err != nil {
 		return fmt.Errorf("failed to initialize components: %w", err)
 	}
@@ -120,39 +133,28 @@ func run() error {
 	// Informers must sync before processing events
 	slog.Info("Starting Kubernetes informers")
 
-	if err := components.Informers.Run(ctx); err != nil {
+	if err := components.Informers.Run(gCtx); err != nil {
 		return fmt.Errorf("failed to start informers: %w", err)
 	}
 
 	slog.Info("Kubernetes informers started and synced")
 
 	slog.Info("Starting queue worker")
-	components.QueueManager.Start(ctx)
+	components.QueueManager.Start(gCtx)
 
 	// Handle cold start - re-process any events that were in-progress during restart
 	slog.Info("Handling cold start")
 
-	if err := handleColdStart(ctx, components); err != nil {
+	if err := handleColdStart(gCtx, components); err != nil {
 		slog.Error("Cold start handling failed", "error", err)
 	}
 
 	slog.Info("Starting database event watcher")
 
 	criticalError := make(chan error)
-	startEventWatcher(ctx, components, criticalError)
+	startEventWatcher(gCtx, components, criticalError)
 
 	slog.Info("All components started successfully")
-
-	srv, err := createMetricsServer(*metricsPort)
-	if err != nil {
-		return err
-	}
-
-	// Start server in errgroup alongside event watcher monitoring
-	g, gCtx := errgroup.WithContext(ctx)
-
-	// Start the metrics/health server
-	startMetricsServer(g, gCtx, srv)
 
 	// Monitor for critical errors or graceful shutdown signals.
 	g.Go(func() error {
@@ -176,7 +178,7 @@ func run() error {
 		return shutdownComponents(ctx, components)
 	})
 
-	// Wait for both goroutines to finish
+	// Wait for all goroutines to finish
 	return g.Wait()
 }
 
@@ -242,7 +244,16 @@ func startEventWatcher(ctx context.Context, components *initializer.Components, 
 			}
 		}
 
-		slog.Info("Event watcher stopped")
+		// The event channel closed. If the context is still active, this means the
+		// change stream died unexpectedly (e.g., MongoDB error). Signal a critical
+		// failure so the pod exits and Kubernetes restarts it.
+		if ctx.Err() == nil {
+			slog.Error("Event watcher channel closed unexpectedly, event processing has stopped")
+
+			criticalError <- fmt.Errorf("event watcher channel closed unexpectedly")
+		} else {
+			slog.Info("Event watcher stopped")
+		}
 	}()
 }
 

@@ -243,6 +243,7 @@ spec:
         envFrom:
           - configMapRef:
               name: {{ .Release.Name }}-datastore-config
+          {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 10 }}
         {{- if $needCertVolume }}
         volumeMounts:
           {{- if ne $clientCertSecretName "" }}

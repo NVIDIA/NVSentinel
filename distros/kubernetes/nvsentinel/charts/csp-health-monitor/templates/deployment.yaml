@@ -154,6 +154,7 @@ spec:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
+            {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 12 }}
 
         - name: maintenance-notifier
           image: "{{ .Values.quarantineTriggerEngine.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
@@ -224,6 +225,7 @@ spec:
             - configMapRef:
                 name: {{ if .Values.global.datastore }}{{ .Release.Name }}-datastore-config{{ else }}mongodb-config{{ end }}
                 optional: true
+            {{- include "nvsentinel.datastore.secretEnvFrom" . | nindent 12 }}
       restartPolicy: Always
       {{- with (((.Values.global).systemNodeSelector) | default .Values.nodeSelector) }}
       nodeSelector:

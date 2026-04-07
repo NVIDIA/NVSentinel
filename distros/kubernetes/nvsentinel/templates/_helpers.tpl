@@ -256,6 +256,29 @@ Use this only from charts that store the path under mongodbStore.
 {{- end -}}
 
 {{/*
+Name of existing Secret that holds MONGODB_URI for external MongoDB (provider mongodb).
+Required whenever global.datastore is enabled with provider mongodb. Returns empty when unset.
+*/}}
+{{- define "nvsentinel.datastore.mongodbUriSecretName" -}}
+{{- if and .Values.global.datastore .Values.global.datastore.credentialsFromSecret .Values.global.datastore.credentialsFromSecret.name -}}
+{{- .Values.global.datastore.credentialsFromSecret.name | trim -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Extra envFrom entry for MongoDB: Secret must define key MONGODB_URI (same as the env var).
+Indent with nindent 12 to match sibling configMapRef under envFrom.
+*/}}
+{{- define "nvsentinel.datastore.secretEnvFrom" -}}
+{{- $sn := include "nvsentinel.datastore.mongodbUriSecretName" . | trim -}}
+{{- if and .Values.global.datastore (eq .Values.global.datastore.provider "mongodb") $sn }}
+- secretRef:
+    name: {{ $sn | quote }}
+    optional: false
+{{- end }}
+{{- end -}}
+
+{{/*
 MongoDB client certificate volume items
 Maps configurable source keys to standard destination paths
 */}}

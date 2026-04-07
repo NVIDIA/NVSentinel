@@ -16,12 +16,14 @@ package factory
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 
+	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq" // PostgreSQL driver
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
@@ -76,8 +78,11 @@ func (f *ClientFactory) CreateDatabaseClient(ctx context.Context) (client.Databa
 
 	switch provider {
 	case string(datastore.ProviderPostgreSQL):
-		// Create PostgreSQL connection
-		db, err := sql.Open("postgres", f.dbConfig.GetConnectionURI())
+		// Create PostgreSQL connection with OTel instrumentation
+		db, err := otelsql.Open("postgres", f.dbConfig.GetConnectionURI(),
+			otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+			otelsql.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
+		)
 		if err != nil {
 			return nil, datastore.NewConnectionError(
 				datastore.ProviderPostgreSQL,

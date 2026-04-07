@@ -221,6 +221,13 @@ global:
   eventExporter:
     enabled: false
 
+  # Preflight - mutating admission webhook for GPU diagnostic init containers
+  # Does not use MongoDB. Requires cert-manager (or OpenShift service CA), DCGM,
+  # and labeled namespaces. Subchart values: top-level preflight: key and
+  # charts/preflight/values.yaml. See docs/configuration/preflight.md
+  preflight:
+    enabled: false
+
 ################################################################################
 # PLATFORM CONNECTOR CONFIGURATION
 #
@@ -1460,6 +1467,320 @@ event-exporter:
       #   Retry 1: 1s, Retry 2: 2s, Retry 3: 4s, Retry 4: 8s, etc.
       # Recommended: 2.0 for standard exponential backoff
       backoffMultiplier: 2.0
+
+################################################################################
+# PREFLIGHT CONFIGURATION
+#
+# Mutating admission webhook that injects GPU diagnostic init containers
+# (DCGM diagnostics, NCCL loopback, NCCL all-reduce) into GPU pods in
+# labeled namespaces. Catches hardware issues before workloads start.
+#
+# Requires: cert-manager (or OpenShift service CA), DCGM hostengine
+# See: docs/configuration/preflight.md
+################################################################################
+preflight:
+  replicaCount: 1
+
+  # Container image configuration for the webhook server
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/preflight
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  imagePullSecrets: []
+
+  # Service account for the preflight webhook (needs ClusterRole for
+  # pods, configmaps, and scheduler CRDs when gang coordination is enabled)
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    capabilities:
+      drop: ["ALL"]
+
+  # Webhook Kubernetes Service
+  service:
+    type: ClusterIP
+    port: 443
+    targetPort: 8443
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1024Mi
+
+  livenessProbe:
+    httpGet:
+      scheme: HTTPS
+      path: /healthz
+      port: 8443
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  readinessProbe:
+    httpGet:
+      scheme: HTTPS
+      path: /healthz
+      port: 8443
+    initialDelaySeconds: 2
+    periodSeconds: 5
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  ##############################################################################
+  # WEBHOOK TLS CONFIGURATION
+  ##############################################################################
+  webhook:
+    # HTTPS port for the webhook server
+    port: 8443
+    # failurePolicy: Fail blocks pod creation if the webhook is down
+    # failurePolicy: Ignore allows pods through (graceful degradation)
+    failurePolicy: Fail
+    # Timeout for the admission review call
+    timeoutSeconds: 10
+    # Set to true to create a self-signed CA + certificate chain
+    # Set to false to use an existing CA issuer (set certIssuer)
+    createIssuer: true
+    # Only used when createIssuer=false - name of existing cert-manager Issuer
+    certIssuer: ""
+    caCertificateName: ""
+    # Certificate provider: "cert-manager" or "openshift-service-ca"
+    # Use "openshift-service-ca" on OpenShift to avoid requiring cert-manager
+    certProvider: cert-manager
+
+  ##############################################################################
+  # DCGM CONFIGURATION
+  #
+  # Shared by the preflight-dcgm-diag init container.
+  # global.dcgm takes precedence when set.
+  ##############################################################################
+  dcgm:
+    service:
+      # DCGM hostengine gRPC endpoint
+      endpoint: "nvidia-dcgm.gpu-operator.svc"
+      port: 5555
+    # Diagnostic level (maps to dcgmi diag -r <level>):
+    #   1 = Short  (~30 s)   - software deployment checks only (permissions, libraries, etc.)
+    #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests
+    #   3 = Long   (~15 min) - adds targeted stress (Diagnostic plugin, default 180 s per GPU)
+    #   4 = XLong  (~1-2 hr) - extended stress with longer Diagnostic plugin duration
+    diagLevel: 2
+    # How downstream modules handle the health event:
+    #   EXECUTE_REMEDIATION - trigger quarantine/drain/remediation pipeline
+    #   STORE_ONLY          - persist the event without acting on it
+    processingStrategy: "EXECUTE_REMEDIATION"
+
+  ##############################################################################
+  # INIT CONTAINERS (PREFLIGHT CHECKS)
+  #
+  # Each entry becomes an init container injected into GPU pods.
+  # Standard corev1.Container fields are supported (image, env, resources,
+  # securityContext, volumeMounts, etc.).
+  #
+  # The webhook automatically injects these env vars on every init container:
+  #   NODE_NAME, PLATFORM_CONNECTOR_SOCKET, PROCESSING_STRATEGY
+  # And for the dcgm-diag container:
+  #   DCGM_DIAG_LEVEL, DCGM_HOSTENGINE_ADDR
+  # And for gang-aware containers:
+  #   GANG_ID, GANG_CONFIG_DIR, GANG_TIMEOUT_SECONDS, POD_NAME
+  ##############################################################################
+  initContainers:
+    # DCGM diagnostic - runs DCGM diag against allocated GPUs
+    # Env: DCGM_DIAG_LEVEL (1-4, set from dcgm.diagLevel above),
+    #       DCGM_HOSTENGINE_ADDR (set from dcgm.service above)
+    - name: preflight-dcgm-diag
+      image: ghcr.io/nvidia/nvsentinel/preflight-dcgm-diag:latest
+      volumeMounts:
+        - name: nvsentinel-socket
+          mountPath: /var/run
+      # resources:
+      #   limits:
+      #     memory: 512Mi
+
+    # NCCL loopback - intra-node GPU-to-GPU all-reduce (NVLink/PCIe)
+    # Env vars:
+    #   BW_THRESHOLD_GBPS  - minimum bus bandwidth in GB/s (default 150)
+    #                        Set ~15 for PCIe interconnect
+    #   TEST_SIZE_MB       - message size in MB (default 256)
+    #   SKIP_BANDWIDTH_CHECK - "true" to pass if benchmark completes (default false)
+    - name: preflight-nccl-loopback
+      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-loopback:latest
+      env:
+        - name: BW_THRESHOLD_GBPS
+          value: "150"
+        - name: TEST_SIZE_MB
+          value: "256"
+      volumeMounts:
+        - name: nvsentinel-socket
+          mountPath: /var/run
+
+    # NCCL all-reduce - multi-node GPU communication test
+    # Requires gangCoordination.enabled=true and a gang-aware scheduler
+    # Env vars:
+    #   BW_THRESHOLD_GBPS    - minimum bus bandwidth in GB/s (default 100)
+    #   MESSAGE_SIZES        - comma-separated sizes e.g. "4G,8G" (default "4G,8G")
+    #   BENCHMARK_ITERS      - timed iterations per size (default 20)
+    #   WARMUP_ITERS         - warmup iterations (default 5)
+    #   NCCL_REDUCE_OP       - reduction op: sum/prod/min/max/avg (default sum)
+    #   SKIP_BANDWIDTH_CHECK - "true" to pass if benchmark completes (default false)
+    #   NCCL_DEBUG           - NCCL log verbosity (e.g. INFO, WARN)
+    #   NCCL_DEBUG_SUBSYS    - NCCL subsystems to log (e.g. INIT,NET)
+    - name: preflight-nccl-allreduce
+      image: ghcr.io/nvidia/nvsentinel/preflight-nccl-allreduce:latest
+      securityContext:
+        capabilities:
+          add: ["IPC_LOCK"]  # Required for RDMA memory registration
+      env:
+        - name: BW_THRESHOLD_GBPS
+          value: "100"
+        - name: MESSAGE_SIZES
+          value: "4G"
+        - name: NCCL_DEBUG
+          value: "INFO"
+        - name: NCCL_DEBUG_SUBSYS
+          value: "INIT,NET"
+      volumeMounts:
+        - name: nvsentinel-socket
+          mountPath: /var/run
+
+  ##############################################################################
+  # NCCL FABRIC CONFIGURATION
+  #
+  # In production the webhook automatically copies NCCL env vars and volume
+  # mounts from the pod's main container using glob patterns below.
+  # For standalone testing, use ncclAllreduceExtraEnv and
+  # gangCoordination.extraHostPathMounts instead.
+  ##############################################################################
+
+  # Glob patterns for env var names to copy from user containers
+  ncclEnvPatterns:
+    - "NCCL_*"
+    - "FI_*"
+    - "LD_LIBRARY_PATH"
+    - "UCX_*"
+    - "TORCH_NCCL_*"
+    - "CUDA_DEVICE_ORDER"
+
+  # Glob patterns for volume mount names to copy from user containers
+  volumeMountPatterns:
+    - "host-opt-amazon*"
+    - "host-libefa*"
+    - "host-libibverbs*"
+    - "amazon-efa*"
+    - "nvtcpxo-*"
+    - "nccl-*"
+    - "dev-shm"
+
+  # Extra env vars appended to preflight-nccl-allreduce AFTER user-container
+  # env vars are copied. Use for standalone testing or overrides.
+  ncclAllreduceExtraEnv: []
+
+  ##############################################################################
+  # GPU AND NETWORK RESOURCE DETECTION
+  ##############################################################################
+
+  # Extended resource names that identify GPU pods for injection
+  gpuResourceNames:
+    - "nvidia.com/gpu"
+
+  # Network resource names copied to init containers (RDMA, InfiniBand, etc.)
+  networkResourceNames:
+    - "nvidia.com/mlnxnics"
+    - "vpc.amazonaws.com/efa"
+    # GCP multi-network resources (TCPXO)
+    - "networking.gke.io.networks/gpu-nic0"
+    - "networking.gke.io.networks/gpu-nic0.IP"
+    - "networking.gke.io.networks/gpu-nic1"
+    - "networking.gke.io.networks/gpu-nic1.IP"
+    - "networking.gke.io.networks/gpu-nic2"
+    - "networking.gke.io.networks/gpu-nic2.IP"
+    - "networking.gke.io.networks/gpu-nic3"
+    - "networking.gke.io.networks/gpu-nic3.IP"
+    - "networking.gke.io.networks/gpu-nic4"
+    - "networking.gke.io.networks/gpu-nic4.IP"
+    - "networking.gke.io.networks/gpu-nic5"
+    - "networking.gke.io.networks/gpu-nic5.IP"
+    - "networking.gke.io.networks/gpu-nic6"
+    - "networking.gke.io.networks/gpu-nic6.IP"
+    - "networking.gke.io.networks/gpu-nic7"
+    - "networking.gke.io.networks/gpu-nic7.IP"
+
+  ##############################################################################
+  # GANG DISCOVERY
+  #
+  # Identifies pods belonging to the same scheduling group for multi-node checks.
+  # Default (empty): K8s 1.35+ native WorkloadRef API.
+  # For PodGroup-based schedulers, set name and other fields.
+  # See: docs/configuration/preflight.md#gang-discovery
+  ##############################################################################
+  gangDiscovery: {}
+    # name: "volcano"
+    # annotationKeys: ["scheduling.k8s.io/group-name"]
+    # labelKeys: []
+    # podGroupGVR:
+    #   group: "scheduling.volcano.sh"
+    #   version: "v1beta1"
+    #   resource: "podgroups"
+    # minCountExpr: "podGroup.spec.minMember"
+
+  ##############################################################################
+  # GANG COORDINATION
+  #
+  # Manages ConfigMaps for multi-node init container coordination.
+  # Required for nccl-allreduce. See: docs/configuration/preflight.md
+  ##############################################################################
+  gangCoordination:
+    # Enable gang coordination (required for gang-wide checks)
+    enabled: true
+    # Maximum time to wait for all gang members to register
+    timeout: "10m"
+    # Port for PyTorch distributed TCP bootstrap (torchrun)
+    masterPort: 29500
+    # Path where gang ConfigMap is mounted in init containers
+    configMapMountPath: "/etc/preflight"
+    # NCCL topology ConfigMap name - required for Azure InfiniBand (NDv4/v5)
+    # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.
+    # Set explicitly for a pre-existing ConfigMap, or use ncclTopoShape below.
+    ncclTopoConfigMap: ""
+    # VM shape for auto-creating NCCL topology ConfigMap from bundled XML.
+    # Supported: "ndv4", "ndv5" (files in charts/preflight/files/).
+    ncclTopoShape: ""
+    # Optional hostPath mounts for NCCL/OFI/CUDA libs on the host.
+    # Fabric-specific; set via overlay files (e.g. values-mnnvl-efa.yaml).
+    extraHostPathMounts: []
+    # Mount pre-existing pod volumes (e.g. GCP TCPXO plugin emptyDir).
+    # Does NOT create new volumes, only adds volumeMounts.
+    extraVolumeMounts: []
+    # Mirror pod-level DRA resource claims to init containers.
+    # Ensures init containers get same device access (GPUs, RDMA NICs,
+    # IMEX channels). Defaults to true when omitted.
+    # mirrorResourceClaims: true
+
+  ##############################################################################
+  # NAMESPACE SELECTION
+  ##############################################################################
+
+  # Webhook only injects into namespaces matching this selector.
+  # Enable a namespace: kubectl label namespace <name> nvsentinel.nvidia.com/preflight=enabled
+  namespaceSelector:
+    matchLabels:
+      nvsentinel.nvidia.com/preflight: "enabled"
+
+  # Network policy to allow API server -> webhook traffic
+  networkPolicy:
+    enabled: true
 
 ################################################################################
 # END OF CONFIGURATION

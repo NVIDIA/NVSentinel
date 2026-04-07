@@ -70,6 +70,7 @@ nvsentinel/
 │   ├── health-events-analyzer/     # Analysis: Event pattern detection
 │   ├── labeler/                    # Utility: Node labeling
 │   ├── mongodb-store/              # Storage: Event database
+│   ├── preflight/                  # Optional: GPU preflight admission webhook
 │   └── incluster-file-server/      # Utility: Log collection storage
 └── templates/                      # Main chart templates
 ```
@@ -109,9 +110,28 @@ global:
     enabled: false
   mongodbStore:
     enabled: false
+  preflight:
+    enabled: false
 ```
 
 ### Module-Specific Configuration
+
+#### Preflight
+
+GPU startup checks via a **mutating admission webhook** (DCGM diagnostics; optional NCCL tests). Disabled by default. Requires namespaces to be labeled for injection (for example `nvsentinel.nvidia.com/preflight=enabled`). Multi-node checks use **gang discovery** (native Workload API or PodGroup-style schedulers like Volcano and Run:ai) and ConfigMap coordination. See the [Preflight configuration guide](../../docs/configuration/preflight.md) for details.
+
+```yaml
+global:
+  preflight:
+    enabled: true
+
+# Subchart values (see charts/preflight/values.yaml)
+preflight:
+  webhook:
+    failurePolicy: Fail
+  gangCoordination:
+    enabled: true
+```
 
 #### Fault Quarantine
 

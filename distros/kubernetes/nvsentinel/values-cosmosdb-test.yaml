@@ -15,11 +15,13 @@
 # NVSentinel — Azure Cosmos DB for MongoDB values override
 # See docs/external-datastore.md for setup instructions.
 #
-# Usage:
+# Usage (URI only in a Kubernetes Secret — set MONGODB_URI from Azure Connection Strings first):
+#   kubectl create secret generic nvsentinel-datastore-mongodb-uri \
+#     --from-literal=MONGODB_URI="$MONGODB_URI" \
+#     --namespace nvsentinel
 #   helm upgrade --install nvsentinel . \
 #     -f values.yaml \
 #     -f values-cosmosdb-test.yaml \
-#     --set-string global.datastore.uri="mongodb+srv://<user>:<pass>@<account>.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000" \
 #     --namespace nvsentinel
 
 global:
@@ -29,11 +31,10 @@ global:
   datastore:
     provider: "mongodb"
 
-    # Full Cosmos DB connection string — must be passed at deploy time via
-    # --set-string (see Usage above). Do not store credentials in this file.
-    # Format: mongodb+srv://<user>:<pass>@<account>.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000
+    # Full URI must be in Secret key MONGODB_URI (see Usage above).
     # Cosmos DB uses a public DigiCert CA — no custom CA cert required.
-    uri: ""
+    credentialsFromSecret:
+      name: nvsentinel-datastore-mongodb-uri
 
     connection:
       database: "HealthEventsDatabase"

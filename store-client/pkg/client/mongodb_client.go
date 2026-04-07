@@ -601,21 +601,10 @@ func resolveMongoFilter(filter interface{}) interface{} {
 func (c *MongoDBClient) UpdateDocument(
 	ctx context.Context, filter interface{}, update interface{},
 ) (*UpdateResult, error) {
-	result, err := c.mongoCol.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return nil, datastore.NewUpdateError(
-			datastore.ProviderMongoDB,
-			"failed to update document",
-			err,
-		).WithMetadata("filter", filter).WithMetadata("update", update)
-	}
-
-	return &UpdateResult{
-		MatchedCount:  result.MatchedCount,
-		ModifiedCount: result.ModifiedCount,
-		UpsertedCount: result.UpsertedCount,
-		UpsertedID:    result.UpsertedID,
-	}, nil
+	return c.executeUpdate(ctx, "db.update_document", filter, update,
+		func(ctx context.Context) (*mongo.UpdateResult, error) {
+			return c.mongoCol.UpdateOne(ctx, filter, update)
+		})
 }
 
 // InsertMany inserts multiple documents
@@ -638,11 +627,23 @@ func (c *MongoDBClient) InsertMany(ctx context.Context, documents []interface{})
 func (c *MongoDBClient) UpdateManyDocuments(
 	ctx context.Context, filter interface{}, update interface{},
 ) (*UpdateResult, error) {
-	result, err := c.mongoCol.UpdateMany(ctx, filter, update)
+	return c.executeUpdate(ctx, "db.update_many_documents", filter, update,
+		func(ctx context.Context) (*mongo.UpdateResult, error) {
+			return c.mongoCol.UpdateMany(ctx, filter, update)
+		})
+}
+
+// executeUpdate is the shared implementation for UpdateDocument and UpdateManyDocuments.
+func (c *MongoDBClient) executeUpdate(
+	ctx context.Context, _ string,
+	filter interface{}, update interface{},
+	fn func(ctx context.Context) (*mongo.UpdateResult, error),
+) (*UpdateResult, error) {
+	result, err := fn(ctx)
 	if err != nil {
 		return nil, datastore.NewUpdateError(
 			datastore.ProviderMongoDB,
-			"failed to update documents",
+			"failed to execute update",
 			err,
 		).WithMetadata("filter", filter).WithMetadata("update", update)
 	}

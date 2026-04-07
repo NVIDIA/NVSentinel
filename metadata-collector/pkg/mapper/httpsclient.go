@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -31,9 +32,10 @@ import (
 
 const (
 	kubeSecurePort      = "10250"
-	kubeletHostName     = "localhost"
+	defaultKubeletHost  = "localhost"
+	kubeletHostEnvVar   = "KUBELET_HOST"
 	bearerTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // not a credential
-	listPodsURLTemplate = "https://%s:%s/pods"
+	listPodsURLTemplate = "https://%s/pods"
 )
 
 type KubeletHTTPSClient interface {
@@ -64,25 +66,32 @@ func NewKubeletHTTPSClient(ctx context.Context) (KubeletHTTPSClient, error) {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
+	kubeletHost := os.Getenv(kubeletHostEnvVar)
+	if kubeletHost == "" {
+		kubeletHost = defaultKubeletHost
+	}
+
 	return &kubeletHTTPSClient{
 		ctx:              ctx,
 		httpRoundTripper: transport,
 		bearerTokenPath:  bearerTokenPath,
-		listPodsURI:      fmt.Sprintf(listPodsURLTemplate, kubeletHostName, kubeSecurePort),
+		listPodsURI:      fmt.Sprintf(listPodsURLTemplate, net.JoinHostPort(kubeletHost, kubeSecurePort)),
 	}, nil
 }
 
 /*
-This function calls the /pods Kubelet endpoint on localhost skipping Kubelet server certificate validation for TLS
+This function calls the /pods Kubelet endpoint skipping Kubelet server certificate validation for TLS
 while passing a service account token for authN and authZ.
+
+- Kubelet host: by default the client connects to localhost, which works when kubelet binds to 0.0.0.0. On clusters
+where kubelet binds to the node's primary IP, set the KUBELET_HOST environment variable to the node's IP. The Helm
+chart injects this via the Kubernetes Downward API (status.hostIP).
 
 - Insecure TLS justification: by default, Kubelet serving certificates are signed by the same certificate authority as
 the kube-apiserver. As a result, the CA mounted in the pod file system at file path
 /var/run/secrets/kubernetes.io/serviceaccount/ca.crt can be used against either server. However, this server certificate
-only has a valid SAN for the node's primary IP and not localhost. To prevent needing to lookup the node's primary IP
-via the K8s API or leveraging a HostPath volume, we will call the server listening on localhost and skip certificate
-validation. The metadata-collector already runs with HostNetwork=true so the localhost interface will match the same one
-that the Kubelet is serving on.
+only has a valid SAN for the node's primary IP and not localhost. We skip certificate validation to handle both cases.
+The metadata-collector already runs with HostNetwork=true.
 
 - Kubelet AuthN + AuthZ: Kubelet's can optionally enabled authentication with a bearer token that is validated via a
 TokenReview and authorization that is validated via a SubjectAccessReview. To ensure that our metadata-collector pod
