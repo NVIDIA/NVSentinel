@@ -252,7 +252,7 @@ if ! command_exists yq; then
         
         if verify_download_url "$YQ_URL" "yq for Linux ${GO_ARCH}"; then
             log_debug "Downloading yq from: $YQ_URL"
-            sudo wget -qO /usr/local/bin/yq "$YQ_URL"
+            sudo curl -fsSL -o /usr/local/bin/yq "$YQ_URL"
             sudo chmod +x /usr/local/bin/yq
             log_debug "yq installed successfully to /usr/local/bin/yq"
         else
@@ -305,7 +305,7 @@ if [[ "${SKIP_GO}" == "false" ]]; then
     if command_exists go; then
         CURRENT_GO=$(go version | grep -o 'go[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/go//' || echo "unknown")
         log_info "Current Go version: ${CURRENT_GO}"
-        
+
         if [[ "${CURRENT_GO}" == "${GO_VERSION}"* ]]; then
             log_success "Go ${GO_VERSION} already installed"
         else
@@ -314,7 +314,19 @@ if [[ "${SKIP_GO}" == "false" ]]; then
         fi
     else
         log_warning "Go not found"
-        log_info "To install Go ${GO_VERSION}, run: make install-go-ci"
+        log_info "Installing Go..."
+        if prompt_continue; then
+            if [[ "${OS}" == "darwin" ]]; then
+                if command_exists brew; then
+                    brew install go
+                    log_success "Go installed via Homebrew"
+                else
+                    log_error "Homebrew not found. Please install Go manually or install Homebrew first."
+                fi
+            elif [[ "${OS}" == "linux" ]]; then
+                make install-go-ci
+            fi
+        fi
     fi
     echo ""
 fi
@@ -385,10 +397,17 @@ if [[ "${SKIP_PYTHON}" == "false" ]]; then
     else
         log_warning "Poetry not found"
         log_info "Installing Poetry ${POETRY_VERSION}..."
-        
+
         if prompt_continue; then
             if [[ "${OS}" == "darwin" ]]; then
-                pip3 install poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}"
+                # Use pipx on macOS to avoid PEP 668 externally-managed-environment errors
+                if ! command_exists pipx; then
+                    log_info "Installing pipx first (required for Poetry on macOS)..."
+                    brew install pipx
+                    pipx ensurepath
+                fi
+                pipx install "poetry==${POETRY_VERSION}"
+                pipx inject poetry "poetry-plugin-export==${POETRY_PLUGIN_EXPORT_VERSION}"
             elif [[ "${OS}" == "linux" ]]; then
                 python3 -m pip install --break-system-packages poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}" || \
                     python3 -m pip install --user poetry=="${POETRY_VERSION}" poetry-plugin-export=="${POETRY_PLUGIN_EXPORT_VERSION}"
@@ -496,7 +515,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
                 TMP_DIR=$(mktemp -d)
                 cd "${TMP_DIR}"
                 log_debug "Downloading protoc from: $PROTOC_URL"
-                wget -q "$PROTOC_URL"
+                curl -fsSL -o "${PROTOC_ZIP}" "$PROTOC_URL"
             else
                 log_error "Failed to download protoc. Please check the version and architecture."
                 exit 1
@@ -538,7 +557,7 @@ if [[ "${SKIP_TOOLS}" == "false" ]]; then
                 
                 if verify_download_url "$SHELLCHECK_URL" "shellcheck ${SHELLCHECK_VERSION} for Linux ${SHELLCHECK_ARCH}"; then
                     log_debug "Downloading shellcheck from: $SHELLCHECK_URL"
-                    wget -q "$SHELLCHECK_URL"
+                    curl -fsSL -o "${SHELLCHECK_FILE}" "$SHELLCHECK_URL"
                 else
                     log_error "Failed to download shellcheck. Please check the version and architecture."
                     exit 1
@@ -630,13 +649,34 @@ if [[ "${SKIP_TOOLS}" == "false" ]] && command_exists go; then
     log_info "Installing Go protobuf/gRPC tools..."
     log_info "  protoc-gen-go:      ${PROTOC_GEN_GO_VERSION}"
     log_info "  protoc-gen-go-grpc: ${PROTOC_GEN_GO_GRPC_VERSION}"
-    
+
     if prompt_continue; then
         go install google.golang.org/protobuf/cmd/protoc-gen-go@"${PROTOC_GEN_GO_VERSION}"
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@"${PROTOC_GEN_GO_GRPC_VERSION}"
         log_success "Go protobuf/gRPC tools installed"
     fi
-    
+
+    # Install addlicense (needed for license-headers-lint)
+    ADDLICENSE_VERSION=$(yq '.linting.addlicense' .versions.yaml)
+    if command_exists addlicense; then
+        log_success "addlicense already installed"
+    else
+        log_info "Installing addlicense ${ADDLICENSE_VERSION}..."
+        if prompt_continue; then
+            go install github.com/google/addlicense@"${ADDLICENSE_VERSION}"
+            log_success "addlicense installed"
+        fi
+    fi
+
+    # Ensure GOPATH/bin is on PATH
+    GOPATH_BIN="$(go env GOPATH)/bin"
+    if [[ ":${PATH}:" != *":${GOPATH_BIN}:"* ]]; then
+        export PATH="${PATH}:${GOPATH_BIN}"
+        log_warning "Added ${GOPATH_BIN} to PATH for this session"
+        log_info "To make this permanent, add to your shell profile:"
+        log_info "  echo 'export PATH=\"\$PATH:\$(go env GOPATH)/bin\"' >> ~/.zshrc"
+    fi
+
     echo ""
 fi
 
