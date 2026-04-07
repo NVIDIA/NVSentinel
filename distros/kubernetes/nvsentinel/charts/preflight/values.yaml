@@ -91,10 +91,11 @@ dcgm:
     # DCGM hostengine service endpoint (fallback when global.dcgm.service not set)
     endpoint: "nvidia-dcgm.gpu-operator.svc"
     port: 5555
-  # Diagnostic level:
-  #   1 = Quick (~30 seconds) - basic health check
-  #   2 = Medium (~2 minutes) - more thorough
-  #   3 = Long (~15 minutes) - comprehensive
+  # Diagnostic level (maps to dcgmi diag -r <level>):
+  #   1 = Short  (~30 s)   - software deployment checks only (permissions, libraries, etc.)
+  #   2 = Medium (~2 min)  - adds PCIe bandwidth and basic GPU stress tests
+  #   3 = Long   (~15 min) - adds targeted stress (Diagnostic plugin, default 180 s per GPU)
+  #   4 = XLong  (~1-2 hr) - extended stress with longer Diagnostic plugin duration
   diagLevel: 2
   # Event processing strategy: EXECUTE_REMEDIATION or STORE_ONLY
   processingStrategy: "EXECUTE_REMEDIATION"

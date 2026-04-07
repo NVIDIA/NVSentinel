@@ -26,6 +26,11 @@ Think of NVSentinel integration in four layers:
    - Define different policies for stateless vs stateful workloads
    - Set timeouts and grace periods per namespace
 
+5. **Should GPU pods run diagnostics before the workload starts?** → Enable **[Preflight](./configuration/preflight.md)**
+   - Opt-in per namespace; webhook injects init-container checks (DCGM, optional NCCL)
+   - Multi-node jobs use **gang discovery** (native Workload API or PodGroup-style schedulers like Volcano and Run:ai)
+   - Separate from the MongoDB health-event pipeline (see [Data flow](./DATA_FLOW.md#preflight-optional-admission-checks))
+
 ### Quick Start
 
 **For Scheduling Decisions:**

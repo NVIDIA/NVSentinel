@@ -125,6 +125,11 @@ nvsentinel/
 ├── health-event-client/       # Event streaming client
 ├── labeler/           # Node labeling controller
 ├── node-drainer/      # Graceful workload eviction
+├── preflight/               # Admission webhook controller (Go)
+├── preflight-checks/        # Init container check images
+│   ├── dcgm-diag/          # Python - DCGM GPU diagnostics
+│   ├── nccl-loopback/      # Go - Single-node NCCL test
+│   └── nccl-allreduce/     # Python - Multi-node NCCL test
 ├── store-client/         # MongoDB interaction library (tested in CI)
 └── log-collector/ # Log aggregation (shell scripts)
 ```
@@ -246,6 +251,9 @@ Go module dependencies are handled automatically:
    make -C health-monitors/syslog-health-monitor lint-test
    make -C platform-connectors lint-test
    make -C health-events-analyzer lint-test
+
+   # Preflight E2E (cluster with preflight enabled, e.g. after make dev-env)
+   # cd tests && go test -tags=amd64_group -run TestPreflightEndToEnd -v ./...
 
    # Test integration with other services via Tilt UI
    # Access services via port-forwards set up by Tilt
@@ -629,6 +637,134 @@ global:
 
 3. **Add Proper RBAC**
    Create Kubernetes RBAC manifests in `distros/kubernetes/nvsentinel/templates/`.
+
+### Creating a New Preflight Check
+
+Preflight checks run as init containers injected by the preflight webhook. Each check is an independent container image under `preflight-checks/`. Checks are language-agnostic — the only requirement is a container that reads configuration from environment variables, runs a diagnostic, and on failure sends a `HealthEventOccurredV1` gRPC call to the platform connector Unix socket (`PLATFORM_CONNECTOR_SOCKET`). Existing checks use Go and Python, but any language with gRPC support works.
+
+#### How injection works
+
+The webhook reads the `initContainers` list from its config (sourced from the Helm chart `preflight.initContainers`). Every container in that list is injected as an init container into GPU pods in labeled namespaces. The webhook automatically provides:
+
+- `NODE_NAME` (downward API), `PLATFORM_CONNECTOR_SOCKET`, `PROCESSING_STRATEGY` on all init containers
+- `DCGM_DIAG_LEVEL` and `DCGM_HOSTENGINE_ADDR` on the container named `preflight-dcgm-diag`
+- `GANG_ID`, `GANG_CONFIG_DIR`, `GANG_TIMEOUT_SECONDS`, `POD_NAME` on gang-aware containers (when gang coordination is enabled)
+
+Your check reads its configuration from environment variables and exits with code 0 on success, non-zero on failure.
+
+#### 1. Create the check module
+
+```bash
+mkdir -p preflight-checks/my-check
+cd preflight-checks/my-check
+```
+
+For example, with Go:
+
+```bash
+go mod init github.com/nvidia/nvsentinel/preflight-checks/my-check
+```
+
+#### 2. Implement the check
+
+A preflight check follows this pattern:
+
+1. Load configuration from environment variables
+2. Run the diagnostic
+3. On failure, send a health event to the platform connector via the Unix domain socket (`PLATFORM_CONNECTOR_SOCKET`) using the `HealthEventOccurredV1` gRPC call, then `exit 1`
+4. On success, optionally send a healthy event, then `exit 0`
+
+**Go example** — see `preflight-checks/nccl-loopback/main.go` for the full pattern:
+
+```go
+reporter := health.NewReporter(cfg.ConnectorSocket, cfg.NodeName, cfg.ProcessingStrategy)
+// ... run your diagnostic ...
+if failed {
+    reporter.SendEvent(ctx, false, true, "my-check failed: ...", "MY_ERROR_CODE")
+    os.Exit(1)
+}
+os.Exit(0)
+```
+
+**Python example** — see `preflight-checks/dcgm-diag/dcgm_diag/__main__.py`:
+
+```python
+reporter = HealthReporter(socket_path=cfg.connector_socket, node_name=cfg.node_name,
+                          processing_strategy=cfg.processing_strategy)
+# ... run your diagnostic ...
+if failures:
+    reporter.send_event(gpu_uuid=uuid, is_healthy=False, is_fatal=True, message="...")
+    sys.exit(1)
+sys.exit(0)
+```
+
+For the gRPC protobuf definitions, generate from `data-models/protobufs/health_event.proto` (see existing Makefiles for `protos-generate` targets).
+
+#### 3. Create the Dockerfile
+
+Build a container image from the repo root context:
+
+```dockerfile
+FROM <base-image>
+COPY preflight-checks/my-check/ /app/
+# ... install deps, set entrypoint ...
+```
+
+#### 4. Create the Makefile
+
+Copy from an existing check and update the module name:
+
+```bash
+cp ../nccl-loopback/Makefile ./Makefile
+# Update IMAGE_NAME, MODULE_NAME, and language-specific settings
+```
+
+Key targets: `lint-test`, `docker-build`, `docker-publish`.
+
+#### 5. Register the image in the Helm chart
+
+Add the container to `initContainers` in `distros/kubernetes/nvsentinel/charts/preflight/values.yaml`:
+
+```yaml
+initContainers:
+  # ... existing checks ...
+  - name: preflight-my-check
+    image: ghcr.io/nvidia/nvsentinel/preflight-my-check:latest
+    env:
+      - name: MY_THRESHOLD
+        value: "42"
+    volumeMounts:
+      - name: nvsentinel-socket
+        mountPath: /var/run
+```
+
+The `nvsentinel-socket` volume mount gives the init container access to the platform connector Unix socket. The webhook creates this volume automatically.
+
+#### 6. Add to CI
+
+Add entries in three workflow files:
+
+- `.github/workflows/lint-test.yml` — add your component to the `preflight-checks-lint-test` matrix
+- `.github/workflows/container-build-test.yml` — add a `docker-build` matrix entry
+- `.github/workflows/publish.yml` — add a `docker-publish` matrix entry
+- `.github/workflows/cleanup-untagged-images.yml` — add the image name for cleanup
+
+#### 7. Test locally
+
+```bash
+# Lint and unit test
+make -C preflight-checks/my-check lint-test
+
+# Build the image
+make -C preflight-checks/my-check docker-build
+
+# Run the E2E suite (cluster must be running with preflight enabled)
+cd tests && go test -tags=amd64_group -run TestPreflightEndToEnd -v ./...
+```
+
+For Tilt development, override `initContainers` in `distros/kubernetes/nvsentinel/values-tilt.yaml` to include or stub your check.
+
+See [Preflight configuration](docs/configuration/preflight.md) for the full operator guide including per-check env var reference.
 
 ## 🧪 Testing
 
