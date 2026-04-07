@@ -25,6 +25,8 @@ NVSentinel is built as a set of independent modules that coordinate through a sh
 
 **Platform connectors** receive health events via gRPC, validate them, persist them to the data store, and update Kubernetes node conditions.
 
+**Preflight** (optional) is not part of the health-event pipeline. A mutating webhook injects GPU diagnostic init containers at pod admission so bad hardware is caught before the workload starts. Multi-node checks can use **gang discovery** (native Workload API or PodGroup-style schedulers) and ConfigMap coordination. See [Preflight configuration](./configuration/preflight.md) and [ADR-026](./designs/026-preflight-checks.md).
+
 **Core modules** watch the data store for new events and act independently:
 
 - **Fault quarantine** cordons nodes based on configurable CEL rules, with a circuit breaker to prevent mass quarantines during cluster-wide events
@@ -51,7 +53,7 @@ helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
   --create-namespace
 ```
 
-By default, only health monitoring is enabled. This is safe to deploy in any cluster as it only observes and reports. Enable fault quarantine, node drainer, and fault remediation via Helm values as you build confidence in the system's behavior in your environment.
+By default, only health monitoring is enabled. This is safe to deploy in any cluster as it only observes and reports. Enable fault quarantine, node drainer, and fault remediation via Helm values as you build confidence in the system's behavior in your environment. **Preflight** is disabled by default; turn it on with `global.preflight.enabled` when you want admission-time GPU checks ([configuration guide](./configuration/preflight.md)).
 
 See the [Helm Chart Configuration Guide](../distros/kubernetes/README.md) for all options, and the [local fault injection demo](../demos/local-fault-injection-demo/README.md) to see the full pipeline in a KIND cluster without GPU hardware.
 
@@ -62,6 +64,7 @@ All container images are built with ko, attested with SLSA build provenance, and
 ## Learn more
 
 - [Architecture and data flow](./DATA_FLOW.md)
+- [Preflight](./configuration/preflight.md) for admission-time GPU checks and gang discovery
 - [Integration guide](./INTEGRATIONS.md) for taints, node conditions, and custom remediation triggers
 - [Metrics reference](./METRICS.md) for Prometheus dashboards and alerts
 - [Component configuration](./configuration/) for per-module setup
